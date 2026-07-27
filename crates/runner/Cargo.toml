@@ -1,0 +1,51 @@
+[package]
+name = "runner"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "buz-runner"
+path = "src/main.rs"
+
+[features]
+default = []
+docker = []
+wasm = []
+
+[dependencies]
+shared = { path = "../shared" }
+
+# Async runtime
+tokio.workspace = true
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+# Config
+config.workspace = true
+clap.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Log masking
+aho-corasick = "1"
+
+# SSH execution
+russh = "0.48"
+russh-keys = "0.48"
+async-trait = "0.1"
+
+# Error handling
+thiserror.workspace = true
+anyhow = "1"
+
+# System information collection
+sysinfo = "0.33"

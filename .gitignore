@@ -1,0 +1,33 @@
+# Rust
+target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+data/
+*.db
+*.db-journal
+*.db-wal
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Config with secrets
+*.local.toml
+.env
+.env.*
+
+# Hugo docs
+docs/public/
+docs/.hugo_build.lock
+docs/logs/

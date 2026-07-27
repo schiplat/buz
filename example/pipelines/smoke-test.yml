@@ -1,0 +1,68 @@
+# ── Buz Pipeline Validation Test ──────────────────────────────────
+# Exercises: local exec, SSH (single + multi-host), dynamic inputs,
+#            continue-on-error, retry, timeout.
+#
+# Place this file under the Manager's yaml_scan_dir (default: ./pipelines/).
+
+name: Integration Smoke Test
+description: Validates all Phase 1 pipeline features across local and SSH engines.
+
+on:
+  manual:
+    inputs:
+      target_env:
+        description: Deployment environment
+        required: true
+        default: staging
+      version:
+        description: App version tag
+        required: false
+        default: latest
+
+runner:
+  labels: [dev, linux-x64]
+  timeout: 10m
+
+env:
+  APP_NAME: buz-smoke
+
+steps:
+  # ── Step 1: Local — system info (always passes) ──────────────────
+  - name: System Check
+    run: |
+      echo "Runner: $(hostname)"
+      echo "Arch:   $(uname -m)"
+      echo "Env:    ${target_env}"
+      echo "Ver:    ${version}"
+
+  # ── Step 2: Local — disk space (non-fatal) ───────────────────────
+  - name: Disk Health
+    run: df -h / || true
+    continue-on-error: true
+
+  # ── Step 3: SSH single host — uptime check ───────────────────────
+  #           Requires a Host named "dev-vm" configured in Manager UI.
+  - name: Remote Uptime
+    uses: ssh
+    host: dev-vm
+    run: |
+      echo "Connected to $(hostname)"
+      uptime
+      free -h
+    timeout: 30s
+
+  # ── Step 4: SSH multi-host — fleet health ────────────────────────
+  #           Runs the same command on every host in the array.
+  - name: Fleet Status
+    uses: ssh
+    host:
+      - dev-vm
+      - dev-vm
+    run: |
+      echo "=== $(hostname) ==="
+      systemctl is-active nginx || echo "nginx not running"
+      docker ps --format 'table {{.Names}}\t{{.Status}}'
+
+  # ── Step 5: Local — final confirmation ───────────────────────────
+  - name: Done
+    run: echo "Smoke test completed for ${target_env} @ ${version}"

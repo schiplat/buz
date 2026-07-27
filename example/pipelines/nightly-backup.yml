@@ -1,0 +1,84 @@
+# ── Nightly Backup Pipeline ───────────────────────────────────────
+# Scheduled backup: dump databases, sync logs, archive to remote storage.
+#
+# Trigger: cron (daily at 2:00 AM)
+
+name: Nightly Backup
+description: Automated daily backup of databases, logs, and configs to remote storage.
+
+on:
+  cron:
+    schedule: "0 2 * * *"
+
+runner:
+  labels: [linux-x64, backup]
+  timeout: 30m
+
+env:
+  BACKUP_ROOT: /data/backups
+  RETENTION_DAYS: 7
+  STORAGE_HOST: backup-server
+  STORAGE_PATH: /mnt/backups
+
+steps:
+  # ── Step 1: Create backup directory ───────────────────────────────
+  - name: Prepare
+    run: |
+      DATE=$(date +%Y-%m-%d_%H-%M-%S)
+      echo "BACKUP_DATE=$DATE" >> $GITHUB_ENV
+      mkdir -p $BACKUP_ROOT/$DATE
+      echo "Starting backup → $BACKUP_ROOT/$DATE"
+
+  # ── Step 2: Dump PostgreSQL via SSH ───────────────────────────────
+  - name: DB Dump
+    uses: ssh
+    host: db-server
+    run: |
+      pg_dumpall -U postgres --clean | gzip > /tmp/full_dump_$(date +%Y%m%d).sql.gz
+      echo "PostgreSQL dump completed"
+    timeout: 15m
+
+  # ── Step 3: Fetch dump to local runner ────────────────────────────
+  - name: Fetch Dump
+    run: |
+      scp backup-user@db-server:/tmp/full_dump_$(date +%Y%m%d).sql.gz $BACKUP_ROOT/$BACKUP_DATE/db.sql.gz
+      echo "Dump fetched to local runner"
+
+  # ── Step 4: Sync logs via rsync ───────────────────────────────────
+  - name: Archive Logs
+    uses: ssh
+    host:
+      - app-server-01
+      - app-server-02
+    run: |
+      tar -czf /tmp/logs_$(hostname)_$(date +%Y%m%d).tar.gz /var/log/app/
+      echo "Logs archived from $(hostname)"
+    timeout: 10m
+    continue-on-error: true
+
+  # ── Step 5: Push to remote storage ────────────────────────────────
+  - name: Upload
+    uses: ssh
+    host: $STORAGE_HOST
+    run: |
+      mkdir -p $STORAGE_PATH/$(date +%Y/%m)
+      rsync -avz backup-user@runner:$BACKUP_ROOT/ $STORAGE_PATH/
+    timeout: 10m
+
+  # ── Step 6: Cleanup old backups ───────────────────────────────────
+  - name: Prune
+    uses: ssh
+    host: $STORAGE_HOST
+    run: |
+      find $STORAGE_PATH -type f -mtime +$RETENTION_DAYS -delete
+      echo "Pruned backups older than $RETENTION_DAYS days"
+    timeout: 5m
+
+  # ── Step 7: Summary ───────────────────────────────────────────────
+  - name: Report
+    run: |
+      echo "=========================================="
+      echo "  Backup completed successfully"
+      echo "  Date: $(date -Iseconds)"
+      echo "  Retention: $RETENTION_DAYS days"
+      echo "=========================================="

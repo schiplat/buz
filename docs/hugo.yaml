@@ -1,0 +1,68 @@
+baseURL: "http://127.0.0.1:3001/"
+title: Buz Docs
+author:
+  name: Buz Team
+theme: hextra
+publishDir: "public"
+
+defaultContentLanguage: en
+hasCJKLanguage: false
+
+markup:
+  _merge: shallow
+  goldmark:
+    renderer:
+      unsafe: true
+  highlight:
+    noClasses: false
+    copy:
+      enable: true
+      display: hover
+
+enableInlineShortcodes: true
+
+params:
+  description: "Buz — Lightweight Cross-Network Orchestration Platform"
+  externalLinkDecoration: true
+  theme:
+    default: light
+    displayToggle: true
+  navbar:
+    displayTitle: true
+    logo:
+      text: Buz
+      fontWeight: "bold"
+  footer:
+    enable: true
+    displayCopyright: true
+    displayPoweredBy: false
+    copyright: "Buz"
+  page:
+    width: wide
+  displayUpdatedDate: true
+  dateFormat: "2006-01-02"
+  toc:
+    enable: true
+    heading: "On this page"
+  search:
+    enable: true
+    placeholder: "Search docs…"
+  editURL:
+    enable: false
+
+menu:
+  main:
+    - identifier: docs
+      name: Docs
+      url: /docs/
+      weight: 1
+    - identifier: github
+      name: GitHub
+      url: https://github.com/buz
+      weight: 2
+      params:
+        external: true
+    - name: Search
+      weight: 3
+      params:
+        type: search

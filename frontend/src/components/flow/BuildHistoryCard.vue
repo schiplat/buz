@@ -1,0 +1,203 @@
+<script setup lang="ts">
+import { ref, computed, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
+import { ChevronDown, ChevronRight, CheckCircle2, XCircle, Loader2, MinusCircle, ArrowRight, Clock } from '@lucide/vue'
+import type { Job, LogChunk } from '@/api/jobs'
+import StepLogPanel from '@/components/flow/StepLogPanel.vue'
+
+const props = defineProps<{
+  job: Job
+  runNumber: number
+  logs: LogChunk[] // per-job logs, passed from parent
+}>()
+
+const router = useRouter()
+const expanded = ref(false)
+const expandedStep = ref<number | null>(null)
+
+const tasks = computed(() => props.job.snapshot?.tasks || [])
+const stepStatuses = computed(() => (props.job.step_statuses || []) as any[])
+
+function getStepStatus(stepOrder: number): string {
+  const found = stepStatuses.value.find((s: any) => Number(s.step_order) === stepOrder)
+  return found?.status || 'pending'
+}
+
+function fmtStepDuration(stepOrder: number): string {
+  const found = stepStatuses.value.find((s: any) => Number(s.step_order) === stepOrder)
+  if (!found?.started_at) return '\u2014'
+  const a = Date.parse(found.started_at.trim().replace(' ', 'T') + '.000Z')
+  const b = found.finished_at ? Date.parse(found.finished_at.trim().replace(' ', 'T') + '.000Z') : Date.now()
+  const sec = Math.max(0, Math.floor((b - a) / 1000))
+  if (sec < 60) return `${sec}s`
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`
+  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
+}
+
+function fmtDuration(start: string | null, end: string | null) {
+  if (!start) return '\u2014'
+  const a = Date.parse(start.trim().replace(' ', 'T') + '.000Z')
+  const b = end ? Date.parse(end.trim().replace(' ', 'T') + '.000Z') : Date.now()
+  const s = Math.max(0, Math.floor((b - a) / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+}
+
+function fmtTime(ts: string | null | undefined) {
+  if (!ts) return ''
+  return ts.trim().replace('T', ' ').slice(0, 19)
+}
+
+function stepIndicatorClasses(status: string) {
+  return {
+    'border-emerald-400/50 bg-emerald-500/5': status === 'success',
+    'border-red-400/50 bg-red-500/5': status === 'failed',
+    'border-amber-400/50 bg-amber-500/5 ring-1 ring-amber-400/20': status === 'running',
+    'border-slate-300/50 bg-slate-500/5': status === 'cancelled',
+    'border-slate-200/50 bg-transparent': status === 'pending',
+  }
+}
+
+const emit = defineEmits<{
+  (e: 'expand', jobId: string): void
+}>()
+
+function toggle() {
+  expanded.value = !expanded.value
+  if (expanded.value) {
+    emit('expand', props.job.id)
+    expandedStep.value = null
+  } else {
+    expandedStep.value = null
+  }
+}
+
+function toggleStepLog(stepOrder: number) {
+  expandedStep.value = expandedStep.value === stepOrder ? null : stepOrder
+  nextTick(() => {
+    // Re-fit terminal if panel exists
+    const el = document.getElementById(`hist-term-${props.job.id}-${stepOrder}`)
+    if (el) { /* StepLogPanel handles fit internally */ }
+  })
+}
+
+function goToStep(stepOrder: number) {
+  router.push(`/jobs/${props.job.id}?step=${stepOrder}`)
+}
+</script>
+
+<template>
+  <div class="rounded-xl border border-border/50 bg-card shadow-sm overflow-hidden">
+    <!-- Run header bar -->
+    <div
+      class="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/20 transition-colors"
+      :class="job.status === 'running' ? 'bg-amber-500/[0.04]' : job.status === 'failed' ? 'bg-red-500/[0.03]' : ''"
+      @click="toggle"
+    >
+      <ChevronDown v-if="expanded" class="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+      <ChevronRight v-else class="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+
+      <span class="font-mono text-[13px] font-bold tabular-nums text-foreground shrink-0">#{{ runNumber }}</span>
+
+      <span
+        class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold shrink-0"
+        :class="job.status === 'success'
+          ? 'bg-emerald-500/10 text-emerald-600'
+          : job.status === 'failed'
+            ? 'bg-red-500/10 text-red-500'
+            : job.status === 'running'
+              ? 'bg-amber-500/10 text-amber-600'
+              : job.status === 'cancelled'
+                ? 'bg-slate-500/10 text-slate-500'
+                : 'bg-slate-500/10 text-slate-500'"
+      >
+        <span class="w-1.5 h-1.5 rounded-full shrink-0"
+          :class="job.status === 'success'
+            ? 'bg-emerald-500'
+            : job.status === 'failed'
+              ? 'bg-red-500'
+              : job.status === 'running'
+                ? 'bg-amber-400 animate-pulse'
+                : 'bg-slate-400'" />
+        {{ job.status }}
+      </span>
+
+      <span class="font-mono text-[11px] tabular-nums text-muted-foreground shrink-0">{{ fmtDuration(job.start_time, job.end_time) }}</span>
+
+      <span class="flex-1" />
+
+      <span class="font-mono text-[11px] text-muted-foreground/70 shrink-0">{{ fmtTime(job.start_time || job.created_at) }}</span>
+
+      <ArrowRight class="h-3 w-3 text-muted-foreground/30 shrink-0" />
+    </div>
+
+    <!-- Step chips row -->
+    <div class="px-4 pb-3">
+      <div class="flex flex-wrap items-center gap-1.5">
+        <template v-for="(task, si) in tasks" :key="task.step_order">
+          <span v-if="Number(si) > 0" class="text-muted-foreground/25 shrink-0">→</span>
+          <div
+            class="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 cursor-pointer hover:shadow-sm transition-all shrink-0"
+            :class="[stepIndicatorClasses(getStepStatus(task.step_order)), getStepStatus(task.step_order) === 'pending' ? 'opacity-50 cursor-default' : '']"
+            @click.stop="getStepStatus(task.step_order) !== 'pending' && goToStep(task.step_order)"
+            :title="task.name + ' (' + fmtStepDuration(task.step_order) + ')'"
+          >
+            <CheckCircle2 v-if="getStepStatus(task.step_order) === 'success'" class="h-3.5 w-3.5 text-emerald-500" />
+            <XCircle v-else-if="getStepStatus(task.step_order) === 'failed'" class="h-3.5 w-3.5 text-red-500" />
+            <Loader2 v-else-if="getStepStatus(task.step_order) === 'running'" class="h-3.5 w-3.5 text-amber-500 animate-spin" />
+            <MinusCircle v-else-if="getStepStatus(task.step_order) === 'cancelled'" class="h-3.5 w-3.5 text-slate-400" />
+            <span v-else class="inline-flex items-center justify-center h-3.5 w-3.5 rounded-full bg-slate-100 dark:bg-slate-800 text-[9px] font-bold text-slate-400 tabular-nums leading-none">{{ task.step_order + 1 }}</span>
+
+            <span class="text-[11px] font-medium text-foreground leading-none max-w-[120px] truncate">{{ task.name }}</span>
+            <span class="text-[9px] text-muted-foreground leading-none shrink-0">{{ fmtStepDuration(task.step_order) }}</span>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Expanded detail: per-step log terminals -->
+    <div v-if="expanded" class="border-t border-border/40 bg-muted/10">
+      <!-- Step selector tabs -->
+      <div class="flex items-center gap-1 px-4 pt-3 pb-2 overflow-x-auto">
+        <button
+          v-for="task in tasks"
+          :key="task.step_order"
+          class="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors shrink-0"
+          :class="expandedStep === task.step_order
+            ? 'bg-background text-foreground shadow-sm'
+            : 'text-muted-foreground hover:text-foreground hover:bg-background/50'"
+          @click="toggleStepLog(task.step_order)"
+        >
+          <span class="w-1.5 h-1.5 rounded-full"
+            :class="getStepStatus(task.step_order) === 'success'
+              ? 'bg-emerald-500'
+              : getStepStatus(task.step_order) === 'failed'
+                ? 'bg-red-500'
+                : getStepStatus(task.step_order) === 'running'
+                  ? 'bg-amber-400 animate-pulse'
+                  : 'bg-slate-300'" />
+          {{ task.name }}
+        </button>
+      </div>
+
+      <!-- Selected step log terminal -->
+      <div v-if="expandedStep != null" class="px-4 pb-4">
+        <div class="rounded-lg border border-border/60 overflow-hidden" style="height: 280px">
+          <StepLogPanel
+            :logs="logs.filter(l => l.step_order === expandedStep)"
+            :step-order="expandedStep"
+            :key="expandedStep"
+          />
+        </div>
+        <div
+          v-if="logs.filter(l => l.step_order === expandedStep).length === 0"
+          class="text-[10px] text-center text-muted-foreground/50 mt-1"
+        >No log records for this step</div>
+      </div>
+      <div v-else class="px-4 pb-3 text-[11px] text-muted-foreground">
+        Select a step above to view its logs
+      </div>
+    </div>
+  </div>
+</template>

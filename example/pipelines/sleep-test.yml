@@ -1,0 +1,68 @@
+# ── Sleep Test Pipeline ───────────────────────────────────────────
+# Test pipeline for verifying cancel, live logs, and step execution.
+#
+# Trigger: manual (no params)
+
+name: Sleep Test
+description: Simple sleep-based pipeline for testing cancel and log streaming.
+
+runner:
+  labels: [linux-x64]
+  timeout: 5m
+
+steps:
+  - name: Step 1 — Startup
+    run: echo "Pipeline started at $(date '+%Y-%m-%d %H:%M:%S')"
+
+  - name: Step 2 — Sleep 30s
+    run: |
+      echo "Sleeping 30 seconds to allow cancel test..."
+      sleep 30
+      echo "Woke up — still running!"
+    timeout: 2m
+
+  - name: Step 3 — Sleep 10s
+    run: |
+      echo "Another short sleep..."
+      sleep 10
+      echo "All done!"
+    retry: 1
+
+  - name: Step 4 — Sleep 10s(If that HTTP call failed for any reason (transient network blip, DB lock, etc.), the job would stay stuck in running forever — this is exactly what happened.)
+    run: |
+      echo "10s"
+      sleep 10
+      echo "10s elapsed"
+
+  - name: Step 5 — Final
+    run: echo "Pipeline finished at $(date '+%Y-%m-%d %H:%M:%S')"
+
+  - name: Step 6 — Sleep 3s
+    run: |
+      echo "Quick 3s sleep..."
+      sleep 3
+      echo "3s elapsed"
+
+  - name: Step 7 — Sleep 2s
+    run: |
+      echo "2s nap..."
+      sleep 2
+      echo "2s elapsed"
+
+  - name: Step 8 — Sleep 4s
+    run: |
+      echo "4s pause..."
+      sleep 4
+      echo "4s elapsed"
+
+  - name: Step 9 — Sleep 1s
+    run: |
+      echo "1s blink..."
+      sleep 1
+      echo "1s elapsed"
+
+  - name: Step 10 — Sleep 5s
+    run: |
+      echo "5s rest..."
+      sleep 5
+      echo "5s elapsed"

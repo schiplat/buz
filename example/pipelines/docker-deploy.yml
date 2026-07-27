@@ -1,0 +1,77 @@
+# ── Docker Deploy Pipeline ──────────────────────────────────────
+# Deploy a Docker container to staging / production
+#
+# Trigger: manual (with inputs) or webhook
+
+name: Docker Deploy
+description: Build, push, and deploy a Docker container to target environment.
+
+on:
+  manual:
+    inputs:
+      service:
+        description: Service name to deploy
+        required: true
+      tag:
+        description: Image tag (e.g. 1.2.0)
+        required: true
+        default: latest
+      target:
+        description: Target host label
+        required: false
+        default: staging
+
+runner:
+  labels: [linux-x64, docker]
+  timeout: 15m
+
+env:
+  REGISTRY: registry.example.com
+  NAMESPACE: apps
+
+steps:
+  # ── Step 1: Pull latest code ──────────────────────────────────────
+  - name: Checkout
+    run: |
+      echo "Preparing deploy for $INPUT_SERVICE:$INPUT_TAG"
+      echo "Target: $INPUT_TARGET"
+      echo "Registry: $REGISTRY/$NAMESPACE"
+
+  # ── Step 2: Build Docker image ────────────────────────────────────
+  - name: Build
+    run: docker build -t $REGISTRY/$NAMESPACE/$INPUT_SERVICE:$INPUT_TAG -f Dockerfile .
+    timeout: 10m
+
+  # ── Step 3: Push to registry ──────────────────────────────────────
+  - name: Push
+    run: docker push $REGISTRY/$NAMESPACE/$INPUT_SERVICE:$INPUT_TAG
+    timeout: 5m
+
+  # ── Step 4: Deploy via SSH ────────────────────────────────────────
+  - name: Deploy
+    uses: ssh
+    host: $INPUT_TARGET
+    run: |
+      docker pull $REGISTRY/$NAMESPACE/$INPUT_SERVICE:$INPUT_TAG
+      docker stop $INPUT_SERVICE || true
+      docker rm $INPUT_SERVICE || true
+      docker run -d --name $INPUT_SERVICE \
+        --restart always \
+        -p 3000:3000 \
+        $REGISTRY/$NAMESPACE/$INPUT_SERVICE:$INPUT_TAG
+    timeout: 5m
+
+  # ── Step 5: Health check (non-blocking) ───────────────────────────
+  - name: Health Check
+    uses: ssh
+    host: $INPUT_TARGET
+    run: |
+      sleep 3
+      curl -f http://localhost:3000/health && echo "OK" || echo "HEALTH_CHECK_FAILED"
+    continue-on-error: true
+    timeout: 30s
+
+  # ── Step 6: Notification ──────────────────────────────────────────
+  - name: Notify
+    run: |
+      echo "Deploy complete: $INPUT_SERVICE -> $INPUT_TAG on $INPUT_TARGET"

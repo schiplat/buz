@@ -1,0 +1,89 @@
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
+import { jobsApi, type Job } from '@/api/jobs'
+import { XCircle } from '@lucide/vue'
+
+const router = useRouter()
+const jobs = ref<Job[]>([])
+const loading = ref(true)
+
+onMounted(async () => {
+  await loadJobs()
+})
+
+async function loadJobs() {
+  loading.value = true
+  try {
+    jobs.value = await jobsApi.list()
+  } catch (e) {
+    console.error(e)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function handleCancel(jobId: string) {
+  try {
+    await jobsApi.cancel(jobId)
+    await loadJobs()
+  } catch (e) {
+    console.error(e)
+  }
+}
+</script>
+
+<template>
+  <div class="space-y-6">
+    <PageHeader
+      title="Jobs"
+      description="Execution history for all pipeline runs."
+    />
+
+    <div v-if="loading" class="surface-card p-8 text-center type-meta">Loading...</div>
+
+    <template v-else>
+      <div v-if="jobs.length === 0" class="surface-card p-8 text-center type-meta">
+        No jobs executed yet
+      </div>
+
+      <div v-else class="surface-card data-table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Pipeline</th>
+              <th>Status</th>
+              <th>Runner</th>
+              <th>Started</th>
+              <th>Duration</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="j in jobs" :key="j.id" class="clickable">
+              <td class="font-medium">{{ j.pipeline_name || j.pipeline_id }}</td>
+              <td>
+                <StatusBadge :status="j.status" />
+              </td>
+              <td class="font-mono text-xs text-muted-foreground">{{ j.runner_id || '—' }}</td>
+              <td class="text-xs text-muted-foreground">{{ j.start_time || '—' }}</td>
+              <td class="text-xs text-muted-foreground">{{ j.end_time || '—' }}</td>
+              <td class="text-right">
+                <div class="flex items-center justify-end gap-1">
+                  <UiButton v-if="j.status === 'running' || j.status === 'pending'" variant="ghost" size="sm" @click="handleCancel(j.id)">
+                    <XCircle class="h-3.5 w-3.5 text-red-500" />
+                    Cancel
+                  </UiButton>
+                  <UiButton variant="ghost" size="sm" @click="router.push(`/jobs/${j.id}`)">View</UiButton>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
+  </div>
+</template>

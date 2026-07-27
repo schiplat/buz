@@ -1,0 +1,24 @@
+# Buz Manager Configuration
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+path = "./data/buz.db"
+max_connections = 8
+
+[auth]
+jwt_secret = "changeme-demo-only"
+admin_user = "admin"
+admin_password = "changeme-demo-only"
+runner_register_token_ttl_hours = 24
+jwt_ttl_hours = 24
+
+[runner]
+heartbeat_timeout_seconds = 90
+long_poll_timeout_seconds = 45
+
+[pipeline]
+yaml_scan_dir = "./pipelines"
+yaml_scan_interval_seconds = 30

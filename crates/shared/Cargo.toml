@@ -1,0 +1,21 @@
+[package]
+name = "shared"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+web = ["axum", "sqlx"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+jsonwebtoken = "9"
+
+# Optional for IntoResponse / From impls
+axum = { version = "0.8", optional = true }
+sqlx = { version = "0.8", optional = true }

@@ -1,0 +1,127 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /*
+   * Warm stone ops console — low chroma, fill over outline.
+   * Hue ~32 keeps warmth without drifting into yellow-cream.
+   */
+  --background: 34 12% 97%;
+  --foreground: 28 10% 12%;
+  --card: 0 0% 100%;
+  --card-foreground: 28 10% 12%;
+  --primary: 28 10% 15%;
+  --primary-foreground: 40 18% 98%;
+  --secondary: 34 10% 93%;
+  --secondary-foreground: 28 9% 22%;
+  --muted: 34 10% 93%;
+  --muted-foreground: 28 7% 36%;
+  --accent: 34 9% 91%;
+  --accent-foreground: 28 10% 14%;
+  --border: 32 9% 86%;
+  --input: 0 0% 100%;
+  --ring: 28 9% 32%;
+  --radius: 0.75rem;
+  --sidebar: 34 11% 95%;
+  --sidebar-foreground: 28 9% 18%;
+  --sidebar-border: 32 8% 89%;
+  --sidebar-accent: 34 10% 91%;
+  --destructive: 4 66% 44%;
+  --destructive-foreground: 0 0% 100%;
+  --success: 152 42% 32%;
+  --success-foreground: 152 35% 96%;
+  --warning: 34 72% 36%;
+  --warning-foreground: 40 40% 97%;
+  --info: 205 48% 38%;
+  --info-foreground: 205 40% 97%;
+  --notice: 272 32% 42%;
+  --notice-foreground: 280 30% 97%;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  body {
+    @apply bg-background text-sm leading-normal text-foreground antialiased;
+    margin: 0;
+    min-height: 100vh;
+    font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: -0.011em;
+  }
+
+  h1 { @apply text-xl font-semibold tracking-tight text-foreground; }
+  h2 { @apply text-base font-semibold tracking-tight text-foreground; }
+  h3 { @apply text-sm font-semibold tracking-tight text-foreground; }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-feature-settings: normal;
+    letter-spacing: 0;
+  }
+
+  ::selection {
+    background: hsl(24 10% 14% / 0.12);
+  }
+}
+
+@layer components {
+  .surface-card { @apply rounded-2xl bg-card; }
+  .surface-muted { @apply rounded-2xl bg-muted; }
+  .surface-inset { @apply rounded-xl bg-muted; }
+
+  .page-stack { @apply w-full max-w-none space-y-7; }
+  .shell-inset { @apply px-6 md:px-8; }
+
+  .type-meta { @apply text-xs leading-relaxed text-muted-foreground; }
+  .type-label { @apply text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground; }
+  .type-eyebrow { @apply text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70; }
+
+  .field-error {
+    @apply rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive;
+  }
+
+  .data-table-scroll {
+    @apply overflow-x-auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .data-table {
+    @apply w-full min-w-[640px] text-left text-sm;
+  }
+
+  .data-table thead { @apply bg-transparent; }
+
+  .data-table th {
+    @apply px-3.5 py-2.5 text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground;
+  }
+
+  .data-table td {
+    @apply px-3.5 py-3 align-middle text-sm;
+  }
+
+  .data-table tbody tr { @apply transition-colors; }
+  .data-table tbody tr + tr td { @apply border-0; }
+  
+  .data-table tbody tr.clickable {
+    @apply cursor-pointer hover:bg-muted/80;
+  }
+
+  .data-table tbody tr.clickable td:first-child { @apply rounded-l-xl; }
+  .data-table tbody tr.clickable td:last-child { @apply rounded-r-xl; }
+
+  .soft-panel {
+    @apply rounded-2xl bg-card p-1;
+    box-shadow: 0 12px 40px rgba(28, 25, 23, 0.08);
+  }
+
+  .mono-chip {
+    @apply inline-flex max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.6875rem] leading-tight tracking-tight text-foreground/75;
+  }
+}

@@ -1,0 +1,17 @@
+# Buz Runner Configuration
+
+[manager]
+url = "http://127.0.0.1:8080"
+# Get this token from Buz Manager web UI → Nodes → New Node
+register_token = "your-register-token"
+
+[node]
+name = "demo-n1"
+labels = ["linux-x64"]
+work_dir = "/tmp/buz-runner"
+
+[engine]
+local_enabled = true
+ssh_enabled = true
+docker_enabled = false
+wasm_enabled = false
