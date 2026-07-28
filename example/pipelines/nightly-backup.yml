@@ -6,6 +6,8 @@
 name: Nightly Backup
 description: Automated daily backup of databases, logs, and configs to remote storage.
 
+team: default
+
 on:
   cron:
     schedule: "0 2 * * *"

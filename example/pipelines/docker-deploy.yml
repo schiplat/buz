@@ -6,6 +6,8 @@
 name: Docker Deploy
 description: Build, push, and deploy a Docker container to target environment.
 
+team: default
+
 on:
   manual:
     inputs:
@@ -33,38 +35,38 @@ steps:
   # ── Step 1: Pull latest code ──────────────────────────────────────
   - name: Checkout
     run: |
-      echo "Preparing deploy for $INPUT_SERVICE:$INPUT_TAG"
-      echo "Target: $INPUT_TARGET"
+      echo "Preparing deploy for $service:$tag"
+      echo "Target: $target"
       echo "Registry: $REGISTRY/$NAMESPACE"
 
   # ── Step 2: Build Docker image ────────────────────────────────────
   - name: Build
-    run: docker build -t $REGISTRY/$NAMESPACE/$INPUT_SERVICE:$INPUT_TAG -f Dockerfile .
+    run: docker build -t $REGISTRY/$NAMESPACE/$service:$tag -f Dockerfile .
     timeout: 10m
 
   # ── Step 3: Push to registry ──────────────────────────────────────
   - name: Push
-    run: docker push $REGISTRY/$NAMESPACE/$INPUT_SERVICE:$INPUT_TAG
+    run: docker push $REGISTRY/$NAMESPACE/$service:$tag
     timeout: 5m
 
   # ── Step 4: Deploy via SSH ────────────────────────────────────────
   - name: Deploy
     uses: ssh
-    host: $INPUT_TARGET
+    host: $target
     run: |
-      docker pull $REGISTRY/$NAMESPACE/$INPUT_SERVICE:$INPUT_TAG
-      docker stop $INPUT_SERVICE || true
-      docker rm $INPUT_SERVICE || true
-      docker run -d --name $INPUT_SERVICE \
+      docker pull $REGISTRY/$NAMESPACE/$service:$tag
+      docker stop $service || true
+      docker rm $service || true
+      docker run -d --name $service \
         --restart always \
         -p 3000:3000 \
-        $REGISTRY/$NAMESPACE/$INPUT_SERVICE:$INPUT_TAG
+        $REGISTRY/$NAMESPACE/$service:$tag
     timeout: 5m
 
   # ── Step 5: Health check (non-blocking) ───────────────────────────
   - name: Health Check
     uses: ssh
-    host: $INPUT_TARGET
+    host: $target
     run: |
       sleep 3
       curl -f http://localhost:3000/health && echo "OK" || echo "HEALTH_CHECK_FAILED"
@@ -74,4 +76,4 @@ steps:
   # ── Step 6: Notification ──────────────────────────────────────────
   - name: Notify
     run: |
-      echo "Deploy complete: $INPUT_SERVICE -> $INPUT_TAG on $INPUT_TARGET"
+      echo "Deploy complete: $service -> $tag on $target"

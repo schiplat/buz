@@ -55,6 +55,10 @@ export default {
           DEFAULT: 'hsl(var(--notice))',
           foreground: 'hsl(var(--notice-foreground))',
         },
+        popover: {
+          DEFAULT: 'hsl(var(--popover))',
+          foreground: 'hsl(var(--popover-foreground))',
+        },
       },
       borderRadius: {
         xl: 'var(--radius, 0.75rem)',

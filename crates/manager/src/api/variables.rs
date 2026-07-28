@@ -5,11 +5,11 @@ use shared::error::AppError;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::api::AppState;
-use crate::middleware::AdminClaims;
+use crate::state::AppState;
+use crate::middleware::{AuthUser, PlatformAdmin};
 
 pub async fn list(
-    _auth: AdminClaims,
+    _auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let rows = sqlx::query(
@@ -34,7 +34,7 @@ pub async fn list(
 }
 
 pub async fn create(
-    _auth: AdminClaims,
+    _auth: PlatformAdmin,
     State(state): State<AppState>,
     Json(req): Json<CreateVariableRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -69,7 +69,7 @@ pub async fn create(
 }
 
 pub async fn get_one(
-    _auth: AdminClaims,
+    _auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -88,7 +88,7 @@ pub async fn get_one(
 }
 
 pub async fn update(
-    _auth: AdminClaims,
+    _auth: PlatformAdmin,
     Path(id): Path<String>,
     State(state): State<AppState>,
     Json(req): Json<UpdateVariableRequest>,
@@ -115,7 +115,7 @@ pub async fn update(
 }
 
 pub async fn delete(
-    _auth: AdminClaims,
+    _auth: PlatformAdmin,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {

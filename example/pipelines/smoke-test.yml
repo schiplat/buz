@@ -3,9 +3,12 @@
 #            continue-on-error, retry, timeout.
 #
 # Place this file under the Manager's yaml_scan_dir (default: ./pipelines/).
+# Team: defaults to "default" if omitted; set `team: <slug>` to assign another team.
 
 name: Integration Smoke Test
 description: Validates all Phase 1 pipeline features across local and SSH engines.
+
+team: default
 
 on:
   manual:

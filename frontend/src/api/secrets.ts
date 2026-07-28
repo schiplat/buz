@@ -4,6 +4,8 @@ export interface Secret {
   id: string
   name: string
   value: string
+  owner_group: string
+  team_id: string
   updated_at: string
 }
 
@@ -13,9 +15,14 @@ export const secretsApi = {
     return resp.data as Secret[]
   },
 
-  async create(data: { name: string; value: string }): Promise<{ id: string; name: string }> {
+  async create(data: {
+    name: string
+    value: string
+    team_id: string
+    owner_group?: string
+  }): Promise<{ id: string; name: string; team_id: string; owner_group: string }> {
     const resp = await apiClient.post('/secrets', data)
-    return resp.data as { id: string; name: string }
+    return resp.data
   },
 
   async get(id: string): Promise<Secret> {
@@ -23,7 +30,10 @@ export const secretsApi = {
     return resp.data as Secret
   },
 
-  async update(id: string, data: { value: string }): Promise<void> {
+  async update(
+    id: string,
+    data: { value: string; team_id?: string; owner_group?: string },
+  ): Promise<void> {
     await apiClient.put(`/secrets/${id}`, data)
   },
 

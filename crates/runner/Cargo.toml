@@ -39,7 +39,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 aho-corasick = "1"
 
 # SSH execution
-russh = "0.48"
+russh = "0.61"
 russh-keys = "0.48"
 async-trait = "0.1"
 
@@ -49,3 +49,6 @@ anyhow = "1"
 
 # System information collection
 sysinfo = "0.33"
+
+[dev-dependencies]
+tempfile = "3"

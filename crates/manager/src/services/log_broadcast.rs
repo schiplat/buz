@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 
@@ -24,37 +24,43 @@ impl LogEntry {
 /// subscribers see messages that arrived before they connected.
 struct JobSink {
     tx: broadcast::Sender<String>,
-    history: VecDeque<String>,
+    history: std::collections::VecDeque<String>,
 }
 
-/// Broadcasts log chunks to connected WebSocket clients per job.
+/// Broadcasts log chunks and job-status updates to connected WebSocket clients.
 #[derive(Clone)]
 pub struct LogBroadcaster {
     sinks: Arc<RwLock<HashMap<String, JobSink>>>,
+    pipeline_sinks: Arc<RwLock<HashMap<String, JobSink>>>,
 }
 
 impl LogBroadcaster {
     pub fn new() -> Self {
         Self {
             sinks: Arc::new(RwLock::new(HashMap::new())),
+            pipeline_sinks: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Get or create a JobSink — ensures history is retained even before any WS client connects.
+    fn get_or_create(map: &Arc<RwLock<HashMap<String, JobSink>>>, key: &str) {
+        let mut m = map.write().unwrap();
+        m.entry(key.to_string()).or_insert_with(|| {
+            let (tx, _) = broadcast::channel(REPLAY_CAPACITY);
+            JobSink {
+                tx,
+                history: std::collections::VecDeque::with_capacity(REPLAY_CAPACITY),
+            }
+        });
     }
 
     /// Subscribe to log chunks for a given job.
     /// Returns a receiver that first drains any buffered history,
     /// then continues receiving live chunks.
     pub fn subscribe(&self, job_id: &str) -> broadcast::Receiver<String> {
-        let mut map = self.sinks.write().unwrap();
-        let sink = map
-            .entry(job_id.to_string())
-            .or_insert_with(|| {
-                let (tx, _) = broadcast::channel(REPLAY_CAPACITY);
-                JobSink {
-                    tx,
-                    history: VecDeque::with_capacity(REPLAY_CAPACITY),
-                }
-            });
-        sink.tx.subscribe()
+        Self::get_or_create(&self.sinks, job_id);
+        let map = self.sinks.read().unwrap();
+        map.get(job_id).unwrap().tx.subscribe()
     }
 
     /// Return a snapshot of recent history for replay (call once after subscribe).
@@ -66,7 +72,9 @@ impl LogBroadcaster {
     }
 
     /// Push a new log entry to all subscribers of the given job.
+    /// Lazily creates the sink so history is retained even before any WS client connects.
     pub fn broadcast(&self, job_id: &str, step_order: i32, content: &str) {
+        Self::get_or_create(&self.sinks, job_id);
         let mut map = self.sinks.write().unwrap();
         if let Some(sink) = map.get_mut(job_id) {
             let entry = LogEntry { step_order, content: content.to_string() };
@@ -87,5 +95,65 @@ impl LogBroadcaster {
     pub fn cleanup(&self, job_id: &str) {
         let mut map = self.sinks.write().unwrap();
         map.remove(job_id);
+    }
+
+    /// Subscribe to job-status updates for all jobs in a pipeline.
+    pub fn pipeline_subscribe(&self, pipeline_id: &str) -> broadcast::Receiver<String> {
+        Self::get_or_create(&self.pipeline_sinks, pipeline_id);
+        let map = self.pipeline_sinks.read().unwrap();
+        map.get(pipeline_id).unwrap().tx.subscribe()
+    }
+
+    /// Return recent status history for a pipeline (call once after subscribe).
+    pub fn pipeline_replay(&self, pipeline_id: &str) -> Vec<String> {
+        let map = self.pipeline_sinks.read().unwrap();
+        map.get(pipeline_id)
+            .map(|s| s.history.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Broadcast a job status update to both job-level and pipeline-level subscribers.
+    /// Lazily creates sinks so history is retained even before any WS client connects.
+    pub fn broadcast_status(&self, job_id: &str, pipeline_id: &str, status_json: &str) {
+        // ── Job-level subscribers ──
+        Self::get_or_create(&self.sinks, job_id);
+        {
+            let mut map = self.sinks.write().unwrap();
+            if let Some(sink) = map.get_mut(job_id) {
+                let msg = format!(
+                    r#"{{"type":"status","data":{}}}"#, status_json
+                );
+                if sink.history.len() >= REPLAY_CAPACITY {
+                    sink.history.pop_front();
+                }
+                sink.history.push_back(msg.clone());
+                if sink.tx.receiver_count() > 0 {
+                    let _ = sink.tx.send(msg);
+                }
+            }
+        }
+        // ── Pipeline-level subscribers ──
+        Self::get_or_create(&self.pipeline_sinks, pipeline_id);
+        {
+            let mut map = self.pipeline_sinks.write().unwrap();
+            if let Some(sink) = map.get_mut(pipeline_id) {
+                let msg = format!(
+                    r#"{{"type":"status","job_id":"{}","data":{}}}"#, job_id, status_json
+                );
+                if sink.history.len() >= REPLAY_CAPACITY {
+                    sink.history.pop_front();
+                }
+                sink.history.push_back(msg.clone());
+                if sink.tx.receiver_count() > 0 {
+                    let _ = sink.tx.send(msg);
+                }
+            }
+        }
+    }
+
+    /// Clean up the pipeline broadcast channel.
+    pub fn pipeline_cleanup(&self, pipeline_id: &str) {
+        let mut map = self.pipeline_sinks.write().unwrap();
+        map.remove(pipeline_id);
     }
 }

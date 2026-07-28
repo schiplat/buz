@@ -8,13 +8,22 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod api;
 mod config;
+mod crypto;
 mod db;
 mod middleware;
+mod password;
+mod rbac;
 mod services;
+mod state;
 
 /// Buz Manager — lightweight cross‑network orchestration control plane.
 #[derive(Parser)]
-#[command(name = "buz-manager", version, about)]
+#[command(
+    name = "buz-manager",
+    version = shared::version::VERSION,
+    about = "Buz Manager — orchestration control plane",
+    long_version = shared::version::VERSION
+)]
 struct Cli {
     /// Path to TOML configuration file
     #[arg(short, long, default_value = "conf/manager.toml")]
@@ -38,8 +47,19 @@ async fn main() -> anyhow::Result<()> {
     let config = config::load(Some(&cli.config))?;
     let db_pool = db::init(&config).await?;
     db::run_migrations(&db_pool).await?;
+    rbac::bootstrap(
+        &db_pool,
+        &config.auth.admin_user,
+        &config.auth.admin_password,
+    )
+    .await?;
 
-    tracing::info!("Buz Manager starting on {}:{}", config.server.host, config.server.port);
+    tracing::info!(
+        "{} starting on {}:{}",
+        shared::version::long_version("manager"),
+        config.server.host,
+        config.server.port
+    );
 
     // Start background runner-health monitor
     services::runner_monitor::spawn_monitor(db_pool.clone(), config.runner.clone());
@@ -59,8 +79,20 @@ async fn main() -> anyhow::Result<()> {
     let frontend_dir = &cli.frontend;
     let index_html = format!("{frontend_dir}/index.html");
 
+    let app_state = crate::state::AppState {
+        pool: db_pool.clone(),
+        config: config.clone(),
+        log_broadcast: crate::services::log_broadcast::LogBroadcaster::new(),
+    };
+
+    // Start cron scheduler for cron-triggered pipelines
+    services::cron_scheduler::spawn_scheduler(
+        app_state.clone(),
+        30, // check every 30 seconds
+    );
+
     let app = Router::new()
-        .nest("/api/v1", api::router(db_pool.clone(), config.clone()))
+        .nest("/api/v1", api::router(app_state.clone()))
         .fallback_service(
             ServeDir::new(frontend_dir).fallback(ServeFile::new(&index_html)),
         )
@@ -68,10 +100,26 @@ async fn main() -> anyhow::Result<()> {
         .layer(cors);
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!("Web UI: http://localhost:{port}", port = config.server.port);
 
-    axum::serve(listener, app).await?;
+    if config.server.tls_enabled() {
+        use axum_server::tls_rustls::RustlsConfig;
+
+        let tls_config = RustlsConfig::from_pem_file(
+            config.server.tls_cert.as_ref().unwrap(),
+            config.server.tls_key.as_ref().unwrap(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to load TLS certificate: {e}"))?;
+
+        tracing::info!("Web UI: https://localhost:{port}", port = config.server.port);
+        axum_server::bind_rustls(addr.parse().unwrap(), tls_config)
+            .serve(app.into_make_service())
+            .await?;
+    } else {
+        let listener = tokio::net::TcpListener::bind(&addr).await?;
+        tracing::info!("Web UI: http://localhost:{port}", port = config.server.port);
+        axum::serve(listener, app).await?;
+    }
 
     Ok(())
 }

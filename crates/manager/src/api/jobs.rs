@@ -1,10 +1,12 @@
 use axum::{Json, extract::{State, Path}};
 use shared::protocol::response::ApiResponse;
 use shared::error::AppError;
+use shared::rbac::Perm;
 use sqlx::Row;
 
-use crate::api::AppState;
-use crate::middleware::{AdminClaims, RunnerClaims};
+use crate::middleware::{AuthUser, RunnerClaims};
+use crate::rbac::{pipeline_team_id, team_in_clause};
+use crate::state::AppState;
 
 /// Return current UTC timestamp in SQLite format ("2026-07-27 10:30:00")
 fn now_utc() -> String {
@@ -14,21 +16,34 @@ fn now_utc() -> String {
 // Admin-protected management handlers
 
 pub async fn list(
-    _auth: AdminClaims,
+    auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let rows = sqlx::query(
-        "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id, 
+    let base = "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
                 j.status, j.trigger_by, j.retry_times,
                 j.step_statuses, j.snapshot,
                 j.start_time, j.end_time, j.created_at, j.updated_at
          FROM jobs j
-         LEFT JOIN pipelines p ON j.pipeline_id = p.id
-         ORDER BY j.created_at DESC
-         LIMIT 200",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+         JOIN pipelines p ON j.pipeline_id = p.id
+         WHERE 1=1";
+
+    let team_filter = team_in_clause(&auth, "p.team_id");
+    let sql = match &team_filter {
+        None => format!("{base} ORDER BY j.created_at DESC LIMIT 200"),
+        Some((clause, _)) if clause == "AND 1=0" => {
+            return Ok(Json(ApiResponse::success(vec![])));
+        }
+        Some((clause, _)) => format!("{base} {clause} ORDER BY j.created_at DESC LIMIT 200"),
+    };
+
+    let mut q = sqlx::query(&sql);
+    if let Some((_, ids)) = &team_filter {
+        for id in ids {
+            q = q.bind(id);
+        }
+    }
+
+    let rows = q.fetch_all(&state.pool).await?;
 
     let jobs: Vec<serde_json::Value> = rows
         .into_iter()
@@ -61,7 +76,7 @@ pub async fn list(
 }
 
 pub async fn get_one(
-    _auth: AdminClaims,
+    auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -77,6 +92,10 @@ pub async fn get_one(
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+
+    let pipeline_id: String = r.get(1);
+    let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+    auth.check_team(&team_id, Perm::TeamView)?;
 
     let trigger_params: Option<String> = r.get(6);
     let snapshot_raw: Option<String> = r.get(7);
@@ -107,7 +126,7 @@ pub async fn get_one(
 }
 
 pub async fn cancel(
-    auth: AdminClaims,
+    auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
@@ -122,15 +141,19 @@ pub async fn cancel(
     .fetch_optional(&state.pool)
     .await?;
 
-    let (old_status, step_statuses_str, pipeline_name) = match ctx {
+    let (old_status, step_statuses_str, pipeline_id, pipeline_name) = match ctx {
         Some(row) => {
             let s: String = row.get(0);
             let ss: String = row.get(1);
+            let pid: String = row.get(2);
             let p: Option<String> = row.try_get(3).ok();
-            (s, ss, p)
+            (s, ss, pid, p)
         }
         None => return Err(AppError::NotFound("job not found".into())),
     };
+
+    let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+    auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     // If a step is currently "running" in step_statuses, flip it to "cancelled"
     let mut step_statuses: Vec<serde_json::Value> =
@@ -181,17 +204,39 @@ pub async fn cancel(
         prev_status = %old_status,
         "Job cancelled by operator"
     );
+
+    // Broadcast cancelled status to WebSocket subscribers
+    if let Ok(Some(pid_row)) = sqlx::query("SELECT pipeline_id FROM jobs WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await
+    {
+        let pid: String = pid_row.get(0);
+        let ss = serde_json::to_string(&step_statuses).unwrap_or_default();
+        let payload = serde_json::json!({
+            "id": id,
+            "status": "cancelled",
+            "step_statuses": serde_json::from_str::<serde_json::Value>(&ss).unwrap_or_default(),
+            "end_time": now_utc(),
+        });
+        state.log_broadcast.broadcast_status(
+            &id,
+            &pid,
+            &serde_json::to_string(&payload).unwrap_or_default(),
+        );
+    }
+
     Ok(Json(ApiResponse::success(())))
 }
 
 pub async fn delete(
-    auth: AdminClaims,
+    auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     // Fetch job context before deletion for logging
     let ctx = sqlx::query(
-        "SELECT j.status, p.name
+        "SELECT j.status, j.pipeline_id, p.name
          FROM jobs j
          LEFT JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.id = ?",
@@ -203,7 +248,10 @@ pub async fn delete(
     match ctx {
         Some(row) => {
             let status: String = row.get(0);
-            let pipeline: Option<String> = row.try_get(1).ok();
+            let pipeline_id: String = row.get(1);
+            let pipeline: Option<String> = row.try_get(2).ok();
+            let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+            auth.check_team(&team_id, Perm::PipelineWrite)?;
             sqlx::query("DELETE FROM jobs WHERE id = ?")
                 .bind(&id)
                 .execute(&state.pool)
@@ -380,5 +428,46 @@ pub async fn update_status(
     }
 
     tracing::info!("Job status updated: {job_id} → {}", req.status);
+
+    // Broadcast status to WebSocket subscribers
+    let pipeline_id: Option<String> = sqlx::query(
+        "SELECT pipeline_id FROM jobs WHERE id = ?",
+    )
+    .bind(&job_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|r: sqlx::sqlite::SqliteRow| r.get(0));
+
+    if let Some(pid) = &pipeline_id {
+        // Build a minimal status snapshot for the broadcast
+        if let Ok(Some(job_row)) = sqlx::query(
+            "SELECT j.status, j.step_statuses, j.start_time, j.end_time
+             FROM jobs j WHERE j.id = ?",
+        )
+        .bind(&job_id)
+        .fetch_optional(&state.pool)
+        .await
+        {
+            let status: String = job_row.get(0);
+            let step_statuses_raw: String = job_row.get(1);
+            let start_time: Option<String> = job_row.get(2);
+            let end_time: Option<String> = job_row.get(3);
+            let payload = serde_json::json!({
+                "id": job_id,
+                "status": status,
+                "step_statuses": serde_json::from_str::<serde_json::Value>(&step_statuses_raw).unwrap_or_default(),
+                "start_time": start_time,
+                "end_time": end_time,
+            });
+            state.log_broadcast.broadcast_status(
+                &job_id,
+                pid,
+                &serde_json::to_string(&payload).unwrap_or_default(),
+            );
+        }
+    }
+
     Ok(Json(ApiResponse::success(())))
 }

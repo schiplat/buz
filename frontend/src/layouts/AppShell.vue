@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
+import { RouterView, useRoute } from 'vue-router'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import TopNav from '@/components/layout/TopNav.vue'
+import ErrorBoundary from '@/components/ErrorBoundary.vue'
 import { useUiStore } from '@/stores/ui'
+import { useAuthStore } from '@/stores/auth'
 
 const ui = useUiStore()
+const auth = useAuthStore()
+const route = useRoute()
 
 function onKeydown(e: KeyboardEvent) {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
@@ -13,7 +18,10 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  void auth.fetchMe()
+})
 onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
@@ -24,7 +32,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       <TopNav />
       <main class="shell-inset flex-1 overflow-auto pb-8 pt-6">
         <div class="page-stack">
-          <RouterView />
+          <ErrorBoundary :reset-key="route.fullPath">
+            <RouterView />
+          </ErrorBoundary>
         </div>
       </main>
     </div>

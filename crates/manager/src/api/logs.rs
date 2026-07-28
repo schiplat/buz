@@ -5,17 +5,34 @@ use axum::Json;
 use futures_util::SinkExt;
 use futures_util::StreamExt;
 use serde::Deserialize;
+use shared::auth::{Role, TokenManager};
 use shared::protocol::response::ApiResponse;
 use shared::error::AppError;
 use shared::protocol::LogChunk;
-use shared::auth::TokenManager;
+use shared::rbac::Perm;
 use sqlx::Row;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::api::AppState;
-use crate::middleware::{AdminClaims, RunnerClaims};
+use crate::middleware::{AuthUser, RunnerClaims};
+use crate::rbac::{load_auth_user, pipeline_team_id};
 use crate::services::log_broadcast::LogBroadcaster;
+use crate::state::AppState;
+
+async fn assert_job_team_view(
+    pool: &sqlx::SqlitePool,
+    auth: &AuthUser,
+    job_id: &str,
+) -> Result<(), AppError> {
+    let row = sqlx::query("SELECT pipeline_id FROM jobs WHERE id = ?")
+        .bind(job_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let pipeline_id: String = row.get(0);
+    let team_id = pipeline_team_id(pool, &pipeline_id).await?;
+    auth.check_team(&team_id, Perm::TeamView)
+}
 
 pub async fn upload(
     _auth: RunnerClaims,
@@ -42,10 +59,12 @@ pub async fn upload(
 }
 
 pub async fn get_logs(
-    _auth: AdminClaims,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    assert_job_team_view(&state.pool, &auth, &job_id).await?;
+
     let rows = sqlx::query(
         "SELECT chunk_index, step_order, log_content, created_at
          FROM job_logs WHERE job_id = ?
@@ -77,23 +96,31 @@ pub struct StreamQuery {
     token: Option<String>,
 }
 
+async fn auth_user_from_query_token(
+    state: &AppState,
+    token: Option<&str>,
+) -> Result<AuthUser, AppError> {
+    let token_str = token.unwrap_or("");
+    let token_mgr = TokenManager::new(&state.config.auth.jwt_secret);
+    let claims = token_mgr
+        .verify(token_str)
+        .map_err(|_| AppError::AuthFailed("invalid or missing token".into()))?;
+
+    if !matches!(claims.role, Role::Admin | Role::User) {
+        return Err(AppError::AuthFailed("user role required".into()));
+    }
+
+    load_auth_user(&state.pool, &claims.sub).await
+}
+
 pub async fn stream_logs(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Path(job_id): Path<String>,
     Query(query): Query<StreamQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    // Validate JWT token
-    let jwt_secret = &state.config.auth.jwt_secret;
-    let token_str = query.token.as_deref().unwrap_or("");
-    let token_mgr = TokenManager::new(jwt_secret);
-    let claims = token_mgr
-        .verify(token_str)
-        .map_err(|_| AppError::AuthFailed("invalid or missing token".into()))?;
-
-    if !matches!(claims.role, shared::auth::Role::Admin) {
-        return Err(AppError::AuthFailed("admin privileges required".into()));
-    }
+    let auth = auth_user_from_query_token(&state, query.token.as_deref()).await?;
+    assert_job_team_view(&state.pool, &auth, &job_id).await?;
 
     let broadcast = state.log_broadcast.clone();
     Ok(ws.on_upgrade(move |socket| handle_stream(socket, broadcast, job_id)))
@@ -154,4 +181,69 @@ async fn handle_stream(socket: WebSocket, broadcast: LogBroadcaster, job_id: Str
     }
 
     broadcast.cleanup(&job_id);
+}
+
+/// WebSocket endpoint that streams job status updates for all jobs
+/// within a pipeline (PipelineDetail build-history live refresh).
+pub async fn pipeline_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Path(pipeline_id): Path<String>,
+    Query(query): Query<StreamQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let auth = auth_user_from_query_token(&state, query.token.as_deref()).await?;
+    let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+    auth.check_team(&team_id, Perm::TeamView)?;
+
+    let broadcast = state.log_broadcast.clone();
+    Ok(ws.on_upgrade(move |socket| handle_pipeline_stream(socket, broadcast, pipeline_id)))
+}
+
+async fn handle_pipeline_stream(
+    socket: WebSocket,
+    broadcast: LogBroadcaster,
+    pipeline_id: String,
+) {
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+    let mut rx = broadcast.pipeline_subscribe(&pipeline_id);
+    let pid_log = pipeline_id.clone();
+
+    // Replay recent status history
+    for chunk in broadcast.pipeline_replay(&pipeline_id) {
+        if ws_sender.send(Message::Text(chunk.into())).await.is_err() {
+            return;
+        }
+    }
+
+    let recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = ws_receiver.next().await {
+            if matches!(msg, Message::Close(_)) {
+                break;
+            }
+        }
+    });
+
+    let send_task = tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(chunk) => {
+                    if ws_sender.send(Message::Text(chunk.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("Pipeline WS lagged by {n} msgs for {pid_log}");
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = recv_task => {}
+        _ = send_task => {}
+    }
+
+    broadcast.pipeline_cleanup(&pipeline_id);
 }

@@ -11,7 +11,12 @@ mod sysinfo;
 
 /// Buz Runner — lightweight cross‑network task execution agent.
 #[derive(Parser)]
-#[command(name = "buz-runner", version, about)]
+#[command(
+    name = "buz-runner",
+    version = shared::version::VERSION,
+    about = "Buz Runner — task execution agent",
+    long_version = shared::version::VERSION
+)]
 struct Cli {
     /// Path to TOML configuration file
     #[arg(short, long, default_value = "conf/runner.toml")]
@@ -31,13 +36,25 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = config::load(Some(&cli.config)).context("failed to load config")?;
-    tracing::info!("Buz Runner starting: {} ({})", config.node.name, config.node.version());
+    tracing::info!(
+        "{} starting: {} ({})",
+        shared::version::long_version("runner"),
+        config.node.name,
+        config.node.version()
+    );
 
     run_loop(config).await
 }
 
 async fn run_loop(config: config::Config) -> anyhow::Result<()> {
-    let http_client = reqwest::Client::new();
+    let mut client_builder = reqwest::Client::builder();
+
+    if config.manager.tls_skip_verify {
+        client_builder = client_builder.danger_accept_invalid_certs(true);
+        tracing::warn!("TLS certificate verification is DISABLED — do not use this in production");
+    }
+
+    let http_client = client_builder.build()?;
     let started_at = std::time::Instant::now();
 
     let runner_token = client::register::register_with_center(&http_client, &config).await?;

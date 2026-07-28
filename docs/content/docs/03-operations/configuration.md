@@ -46,14 +46,17 @@ work_dir = "/tmp/buz-runner"
 [engine]
 local_enabled = true
 ssh_enabled = true
-docker_enabled = false  # Phase 3
+docker_enabled = false  # Phase 3 — design: docs/01-architecture/docker-engine.md
 wasm_enabled = false    # Phase 3
-
-[vault]
-url = "env.BUZ_VAULT_URL"
-token = "env.BUZ_VAULT_TOKEN"
+# insecure (default) | known_hosts
+ssh_host_key_policy = "known_hosts"
+# ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"  # default: ~/.ssh/known_hosts
 ```
 
+| Key | Default | Notes |
+|-----|---------|-------|
+| `engine.ssh_host_key_policy` | `insecure` | `known_hosts` rejects unknown/changed server keys |
+| `engine.ssh_known_hosts_path` | `~/.ssh/known_hosts` | Used when policy is `known_hosts` |
 ## Environment Variables
 
 Sensitive values with the `env.VAR_NAME` pattern in config files are resolved at startup. Values provided via environment variables take precedence over config file defaults.

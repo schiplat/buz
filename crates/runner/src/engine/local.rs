@@ -3,15 +3,29 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
-/// Spawns a command with piped stdout/stderr, returning the child process
-/// and a receiver that yields output chunks line-by-line in real time.
-/// The caller must `.wait()` the child and consume the receiver.
+/// Reader completion signal — resolves when all stdout/stderr has been
+/// fully consumed and the mpsc channel is closed.
+pub struct ReadGuard {
+    _tx_drop: mpsc::UnboundedSender<String>,
+    stdout_handle: JoinHandle<()>,
+    stderr_handle: JoinHandle<()>,
+}
+
+impl ReadGuard {
+    /// Wait until all pipe data has been read and forwarded to the channel.
+    pub async fn join(self) {
+        let _ = tokio::join!(self.stdout_handle, self.stderr_handle);
+        // self._tx_drop is dropped here, closing the channel
+    }
+}
+
 pub async fn execute_streaming(
     command: &str,
     work_dir: Option<&str>,
     extra_env: Option<&HashMap<String, String>>,
-) -> anyhow::Result<(Child, mpsc::UnboundedReceiver<String>)> {
+) -> anyhow::Result<(Child, mpsc::UnboundedReceiver<String>, ReadGuard)> {
     let mut cmd = build_command(command, work_dir, extra_env);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -19,26 +33,36 @@ pub async fn execute_streaming(
     let mut child = cmd.spawn()?;
     let (tx, rx) = mpsc::unbounded_channel();
 
-    if let Some(stdout) = child.stdout.take() {
-        let tx = tx.clone();
-        tokio::spawn(async move {
+    let child_stdout = child.stdout.take();
+    let child_stderr = child.stderr.take();
+
+    let tx_out = tx.clone();
+    let stdout_handle = tokio::spawn(async move {
+        if let Some(stdout) = child_stdout {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                let _ = tx.send(format!("{line}\n"));
+                let _ = tx_out.send(format!("{line}\n"));
             }
-        });
-    }
+        }
+    });
 
-    if let Some(stderr) = child.stderr.take() {
-        tokio::spawn(async move {
+    let tx_err = tx.clone();
+    let stderr_handle = tokio::spawn(async move {
+        if let Some(stderr) = child_stderr {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                let _ = tx.send(format!("{line}\n"));
+                let _ = tx_err.send(format!("{line}\n"));
             }
-        });
-    }
+        }
+    });
 
-    Ok((child, rx))
+    let guard = ReadGuard {
+        _tx_drop: tx,
+        stdout_handle,
+        stderr_handle,
+    };
+
+    Ok((child, rx, guard))
 }
 
 fn build_command(

@@ -1,0 +1,71 @@
+# ── SSH Verification Pipeline ─────────────────────────────────────
+# Minimal end-to-end test for SSH remote execution.
+#
+# Prerequisites:
+#   1. Register a Host named "dev-vm-1" in Manager UI (Infrastructure → Hosts)
+#      - host: actual IP or hostname of your test server
+#      - port: 22
+#      - username: SSH user
+#      - credential_type:
+#          "key_path" — paste private key in the Host form (stored encrypted)
+#          "vault"    — paste password in the Host form (stored encrypted)
+#          "agent"    — no secret in Manager; runner uses SSH_AUTH_SOCK + ssh-add
+#   2. Runner labels must include "linux-x64"
+#   3. Place this file in the Manager's yaml_scan_dir (default: ./pipelines/)
+#   4. Team: scanned pipelines default to team slug "default" (created at Manager bootstrap).
+#      Override with `team: <slug>` below if you created another team.
+
+name: SSH Verify — dev-vm-1
+description: Verify SSH remote execution on dev-vm-1.
+
+# Team slug (optional). Omit to use "default".
+team: default
+
+runner:
+  labels: [linux-x64]
+  timeout: 2m
+
+steps:
+  # ── Step 1: Remote identity check ─────────────────────────────
+  - name: Who Am I
+    uses: ssh
+    host: dev-vm-1
+    run: |
+      echo "=== Identity ==="
+      echo "User:   $(whoami)"
+      echo "Host:   $(hostname)"
+      echo "Kernel: $(uname -r)"
+    timeout: 15s
+
+  # ── Step 2: System resources ──────────────────────────────────
+  - name: System Info
+    uses: ssh
+    host: dev-vm-1
+    run: |
+      echo "=== Resources ==="
+      echo "--- Uptime ---"
+      uptime
+      echo "--- Disk ---"
+      sleep 3 
+      echo " 3 sec end."
+      df -h / | tail -1
+      echo "--- Memory ---"
+      free -h | head -2
+    timeout: 15s
+
+  # ── Step 3: Write & read a temp file ──────────────────────────
+  - name: File I/O
+    uses: ssh
+    host: dev-vm-1
+    run: |
+      echo "=== File Operations ==="
+      echo "Hello from Buz SSH test at $(date -Iseconds)" > /tmp/buz-verify.txt
+      echo "File written, verifying..."
+      cat /tmp/buz-verify.txt
+      rm -f /tmp/buz-verify.txt
+      echo "Cleaned up."
+    timeout: 10s
+
+  # ── Step 4: Done ──────────────────────────────────────────────
+  - name: Complete
+    run: echo "SSH verification completed successfully."

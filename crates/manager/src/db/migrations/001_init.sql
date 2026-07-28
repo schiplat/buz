@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS hosts (
     port INTEGER NOT NULL DEFAULT 22,
     username TEXT NOT NULL,
     credential_type TEXT NOT NULL DEFAULT 'vault',
-    credential_ref TEXT NOT NULL,
+    credential_data TEXT NOT NULL DEFAULT '',
+    credential_passphrase TEXT NOT NULL DEFAULT '',
     labels TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -53,12 +54,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     name TEXT NOT NULL,
     exec_type TEXT NOT NULL DEFAULT 'local',
     host_id TEXT REFERENCES hosts(id),
+    host_names TEXT NOT NULL DEFAULT '',
     host_labels TEXT NOT NULL DEFAULT '',
     command_template TEXT NOT NULL,
     work_dir TEXT NOT NULL DEFAULT '',
     retry_count INTEGER NOT NULL DEFAULT 0,
     timeout_seconds INTEGER NOT NULL DEFAULT 3600,
     fail_strategy TEXT NOT NULL DEFAULT 'stop',
+    step_secrets TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_pipeline ON tasks(pipeline_id, step_order);

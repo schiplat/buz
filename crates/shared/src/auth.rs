@@ -4,7 +4,8 @@ use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: String,          // user id or runner id
+    /// User id, or runner id when role is Runner.
+    pub sub: String,
     pub role: Role,
     pub exp: usize,
     pub iat: usize,
@@ -13,7 +14,11 @@ pub struct Claims {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// Platform administrator (JWT).
     Admin,
+    /// Regular human user (team-scoped).
+    User,
+    /// Runner agent.
     Runner,
 }
 
@@ -28,7 +33,12 @@ impl TokenManager {
         }
     }
 
-    pub fn create_token(&self, sub: impl Into<String>, role: Role, ttl_hours: i64) -> Result<String, jsonwebtoken::errors::Error> {
+    pub fn create_token(
+        &self,
+        sub: impl Into<String>,
+        role: Role,
+        ttl_hours: i64,
+    ) -> Result<String, jsonwebtoken::errors::Error> {
         let now = chrono::Utc::now();
         let claims = Claims {
             sub: sub.into(),

@@ -24,6 +24,10 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8080',
         changeOrigin: true,
+        // Required so job/pipeline log streams survive Vite → manager proxying.
+        // Without this, WS upgrades fail or leave half-open sockets that can
+        // starve the browser connection pool after manager restart.
+        ws: true,
       },
     },
   },

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { ChevronDown, ChevronRight, CheckCircle2, XCircle, Loader2, MinusCircle, ArrowRight, Clock } from '@lucide/vue'
+import { ChevronDown, ChevronRight, ArrowRight } from '@lucide/vue'
+import { parseUtc } from '@/utils/time'
 import type { Job, LogChunk } from '@/api/jobs'
 import StepLogPanel from '@/components/flow/StepLogPanel.vue'
 
@@ -26,8 +27,8 @@ function getStepStatus(stepOrder: number): string {
 function fmtStepDuration(stepOrder: number): string {
   const found = stepStatuses.value.find((s: any) => Number(s.step_order) === stepOrder)
   if (!found?.started_at) return '\u2014'
-  const a = Date.parse(found.started_at.trim().replace(' ', 'T') + '.000Z')
-  const b = found.finished_at ? Date.parse(found.finished_at.trim().replace(' ', 'T') + '.000Z') : Date.now()
+  const a = parseUtc(found.started_at)
+  const b = found.finished_at ? parseUtc(found.finished_at) : Date.now()
   const sec = Math.max(0, Math.floor((b - a) / 1000))
   if (sec < 60) return `${sec}s`
   if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`
@@ -36,8 +37,8 @@ function fmtStepDuration(stepOrder: number): string {
 
 function fmtDuration(start: string | null, end: string | null) {
   if (!start) return '\u2014'
-  const a = Date.parse(start.trim().replace(' ', 'T') + '.000Z')
-  const b = end ? Date.parse(end.trim().replace(' ', 'T') + '.000Z') : Date.now()
+  const a = parseUtc(start)
+  const b = end ? parseUtc(end) : Date.now()
   const s = Math.max(0, Math.floor((b - a) / 1000))
   if (s < 60) return `${s}s`
   if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
@@ -47,16 +48,6 @@ function fmtDuration(start: string | null, end: string | null) {
 function fmtTime(ts: string | null | undefined) {
   if (!ts) return ''
   return ts.trim().replace('T', ' ').slice(0, 19)
-}
-
-function stepIndicatorClasses(status: string) {
-  return {
-    'border-emerald-400/50 bg-emerald-500/5': status === 'success',
-    'border-red-400/50 bg-red-500/5': status === 'failed',
-    'border-amber-400/50 bg-amber-500/5 ring-1 ring-amber-400/20': status === 'running',
-    'border-slate-300/50 bg-slate-500/5': status === 'cancelled',
-    'border-slate-200/50 bg-transparent': status === 'pending',
-  }
 }
 
 const emit = defineEmits<{
@@ -134,23 +125,26 @@ function goToStep(stepOrder: number) {
 
     <!-- Step chips row -->
     <div class="px-4 pb-3">
-      <div class="flex flex-wrap items-center gap-1.5">
+      <div class="flex flex-wrap items-center gap-1">
         <template v-for="(task, si) in tasks" :key="task.step_order">
-          <span v-if="Number(si) > 0" class="text-muted-foreground/25 shrink-0">→</span>
+          <span v-if="Number(si) > 0" class="text-muted-foreground/25 shrink-0 text-[10px]">→</span>
           <div
-            class="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 cursor-pointer hover:shadow-sm transition-all shrink-0"
-            :class="[stepIndicatorClasses(getStepStatus(task.step_order)), getStepStatus(task.step_order) === 'pending' ? 'opacity-50 cursor-default' : '']"
+            class="inline-flex items-center justify-center w-7 h-7 rounded-md text-[10px] font-bold tabular-nums transition-all shrink-0"
+            :class="[
+              getStepStatus(task.step_order) === 'pending'
+                ? 'bg-transparent text-slate-400 border border-slate-200'
+                : getStepStatus(task.step_order) === 'success'
+                  ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-400/40 cursor-pointer hover:bg-emerald-500/20'
+                  : getStepStatus(task.step_order) === 'failed'
+                    ? 'bg-red-500/10 text-red-500 border border-red-400/40 cursor-pointer hover:bg-red-500/20'
+                    : getStepStatus(task.step_order) === 'running'
+                      ? 'bg-amber-500/10 text-amber-600 border border-amber-400/40 ring-1 ring-amber-400/20 cursor-pointer'
+                      : 'bg-slate-500/10 text-slate-500 border border-slate-300/50 cursor-pointer',
+            ]"
+            :title="`#${task.step_order + 1} ${task.name} (${fmtStepDuration(task.step_order)})`"
             @click.stop="getStepStatus(task.step_order) !== 'pending' && goToStep(task.step_order)"
-            :title="task.name + ' (' + fmtStepDuration(task.step_order) + ')'"
           >
-            <CheckCircle2 v-if="getStepStatus(task.step_order) === 'success'" class="h-3.5 w-3.5 text-emerald-500" />
-            <XCircle v-else-if="getStepStatus(task.step_order) === 'failed'" class="h-3.5 w-3.5 text-red-500" />
-            <Loader2 v-else-if="getStepStatus(task.step_order) === 'running'" class="h-3.5 w-3.5 text-amber-500 animate-spin" />
-            <MinusCircle v-else-if="getStepStatus(task.step_order) === 'cancelled'" class="h-3.5 w-3.5 text-slate-400" />
-            <span v-else class="inline-flex items-center justify-center h-3.5 w-3.5 rounded-full bg-slate-100 dark:bg-slate-800 text-[9px] font-bold text-slate-400 tabular-nums leading-none">{{ task.step_order + 1 }}</span>
-
-            <span class="text-[11px] font-medium text-foreground leading-none max-w-[120px] truncate">{{ task.name }}</span>
-            <span class="text-[9px] text-muted-foreground leading-none shrink-0">{{ fmtStepDuration(task.step_order) }}</span>
+            {{ task.step_order + 1 }}
           </div>
         </template>
       </div>

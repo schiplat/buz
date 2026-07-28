@@ -6,10 +6,17 @@ import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, GripVertical, Code, FileText, ChevronDown, ChevronRight, Copy, Check } from '@lucide/vue'
 import { cn } from '@/lib/utils'
 import { pipelinesApi, type PipelineInputDef } from '@/api/pipelines'
+import { secretsApi } from '@/api/secrets'
+import { variablesApi } from '@/api/variables'
+import { teamsApi, type Team } from '@/api/teams'
 import { jobsApi, type Job, type LogChunk } from '@/api/jobs'
+import { parseUtc } from '@/utils/time'
 import { type StepDef } from '@/api/pipelines'
 import PipelineTopologyGraph from '@/components/flow/PipelineTopologyGraph.vue'
 import BuildHistoryCard from '@/components/flow/BuildHistoryCard.vue'
+import MultiSelect from '@/components/ui/MultiSelect.vue'
+import { createManagedWebSocket, type ManagedWebSocket } from '@/utils/ws'
+import { navLog } from '@/utils/navigation'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,19 +29,26 @@ watch(pipelineId, async () => {
   const id = pipelineId.value
   if (!id) return
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+  pipelineWs?.close()
+  pipelineWs = null
   jobs.value = []
   pipeline.value = null
   await loadData()
-  startRefreshTimer()
+  startPipelineWebSocket()
 })
 const jobs = ref<Job[]>([])
 const loading = ref(true)
 const triggering = ref(false)
 const activeTab = computed(() => (route.params.tab as string) || 'stage')
 let refreshTimer: ReturnType<typeof setInterval> | null = null
+let pipelineWs: ManagedWebSocket | null = null
+let alive = true
 
 const showTriggerDialog = ref(false)
 const inputPairs = ref<{ key: string; value: string; required?: boolean }[]>([])
+const editAvailableSecrets = ref<{ id: string; name: string; owner_group: string }[]>([])
+const editAvailableVariables = ref<{ id: string; name: string; value: string }[]>([])
+const editAvailableTeams = ref<Team[]>([])
 
 // Pagination
 const historyPage = ref(1)
@@ -52,6 +66,11 @@ const editForm = ref({
   runner_labels: 'linux-x64',
   runner_timeout: '',
   concurrency_group: '',
+  owner_group: '',
+  team_id: '',
+  var_ids: [] as string[],
+  secret_ids: [] as string[],
+  env: [] as { name: string; value: string }[],
   steps: [] as StepDef[],
   input_defs: [] as PipelineInputDef[],
 })
@@ -65,6 +84,13 @@ function toggleEditStep(idx: number) {
 function editStepHasAdvanced(s: StepDef): boolean {
   return !!(s.dir || s.timeout || (s.retry != null && s.retry > 0) || s.host || s.host_labels || s.continue_on_error)
 }
+
+const editFormHasAdvanced = computed(() => {
+  return !!(editForm.value.runner_timeout.trim() || editForm.value.concurrency_group.trim() ||
+    editForm.value.team_id.trim() ||
+    editForm.value.var_ids.length > 0 || editForm.value.secret_ids.length > 0 ||
+    editForm.value.env.length > 0 || editForm.value.input_defs.length > 0)
+})
 
 function addEditStep() {
   const idx = editForm.value.steps.length
@@ -90,6 +116,14 @@ function addEditInputDef() {
 
 function removeEditInputDef(idx: number) {
   editForm.value.input_defs.splice(idx, 1)
+}
+
+function addEditEnv() {
+  editForm.value.env.push({ name: '', value: '' })
+}
+
+function removeEditEnv(idx: number) {
+  editForm.value.env.splice(idx, 1)
 }
 
 const editCopiedPath = ref(false)
@@ -118,6 +152,11 @@ async function openEditDialog() {
     runner_labels: (p.runner_labels || []).join(', '),
     runner_timeout: p.timeout_seconds ? `${p.timeout_seconds}s` : '',
     concurrency_group: p.concurrency_group || '',
+    owner_group: p.owner_group || '',
+    team_id: p.team_id || '',
+    var_ids: p.var_ids || [],
+    secret_ids: p.secret_ids || [],
+    env: [],
     steps: tasks.map((t: any) => ({
       name: t.name || '',
       run: t.command_template || '',
@@ -139,6 +178,7 @@ async function openEditDialog() {
 async function handleEditSave() {
   if (!editForm.value.name.trim()) return
   if (editForm.value.steps.length === 0) { alert('Add at least one step'); return }
+  if (!editForm.value.team_id.trim()) { alert('Team is required'); return }
 
   editSaving.value = true
   try {
@@ -164,6 +204,12 @@ async function handleEditSave() {
       runner_labels: labels,
       timeout_seconds,
       concurrency_group: editForm.value.concurrency_group.trim() || undefined,
+      team_id: editForm.value.team_id,
+      var_ids: editForm.value.var_ids.length > 0 ? editForm.value.var_ids : undefined,
+      secret_ids: editForm.value.secret_ids.length > 0 ? editForm.value.secret_ids : undefined,
+      env: editForm.value.env.filter(e => e.name.trim() && e.value.trim()).length > 0
+        ? editForm.value.env.filter(e => e.name.trim() && e.value.trim()).map(e => ({ name: e.name.trim(), value: e.value }))
+        : undefined,
       steps: editForm.value.steps.map(s => {
         const rawHost = s.host as string | undefined
         const rawHostLabels = s.host_labels as string | undefined
@@ -274,13 +320,6 @@ function fmtStepDuration(stepIndex: number, stepStatuses: any[] | null): string 
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
 }
 
-/** Parse a SQLite-style UTC timestamp (no zone) as true UTC millis. */
-function parseUtc(ts: string): number {
-  // Normalize "2026-07-27 10:30:00" → ISO UTC "2026-07-27T10:30:00.000Z"
-  const iso = ts.trim().replace(' ', 'T') + '.000Z'
-  return Date.parse(iso)
-}
-
 function fmtTime(ts: string | null | undefined) {
   if (!ts) return '—'
   return ts.slice(5, 19)
@@ -288,39 +327,74 @@ function fmtTime(ts: string | null | undefined) {
 
 onMounted(async () => {
   await loadData()
-  startRefreshTimer()
+  startPipelineWebSocket()
+  try {
+    editAvailableSecrets.value = await secretsApi.list()
+  } catch { /* ignore */ }
+  try {
+    editAvailableVariables.value = await variablesApi.list()
+  } catch { /* ignore */ }
+  try {
+    editAvailableTeams.value = await teamsApi.list()
+  } catch { /* ignore */ }
 })
+
+const editVariableOptions = computed(() =>
+  editAvailableVariables.value.map(v => ({ id: v.id, label: v.name }))
+)
+const editSecretOptions = computed(() =>
+  editAvailableSecrets.value.map(s => ({
+    id: s.id,
+    label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
+  }))
+)
+
+function teamLabel(teamId: string | null | undefined): string {
+  if (!teamId) return '—'
+  const t = editAvailableTeams.value.find(x => x.id === teamId)
+  return t ? `${t.name} (${t.slug})` : teamId
+}
 
 onUnmounted(() => {
+  alive = false
   if (refreshTimer) clearInterval(refreshTimer)
+  pipelineWs?.close()
+  pipelineWs = null
 })
 
+function startPipelineWebSocket() {
+  pipelineWs?.close()
+  const token = localStorage.getItem('buz_token') || ''
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  const wsUrl = `${protocol}://${window.location.host}/api/v1/pipelines/${pipelineId.value}/stream?token=${encodeURIComponent(token)}`
+  pipelineWs = createManagedWebSocket({
+    label: `pipeline:${pipelineId.value.slice(0, 8)}`,
+    onOpen: () => navLog('[PipelineDetail] WS connected'),
+    onMessage: (raw) => {
+      if (!alive) return
+      try {
+        const msg = JSON.parse(raw)
+        if (msg.type !== 'status' || !msg.data) return
+        // Upsert job data into the jobs array
+        const updated = msg.data
+        const idx = jobs.value.findIndex((j: any) => j.id === updated.id)
+        const merged = idx >= 0
+          ? { ...jobs.value[idx], ...updated }
+          : { ...updated, pipeline_id: pipelineId.value }
+        if (idx >= 0) {
+          jobs.value[idx] = merged
+        } else {
+          jobs.value.unshift(merged)
+        }
+      } catch { /* ignore unparseable messages */ }
+    },
+  })
+  pipelineWs.connect(wsUrl)
+}
+
 function startRefreshTimer() {
-  if (refreshTimer) clearInterval(refreshTimer)
-  refreshTimer = setInterval(async () => {
-    try {
-      const j = await jobsApi.list()
-      const allJobs: any[] = Array.isArray(j) ? j : []
-      jobs.value = allJobs
-        .filter((job: any) => job.pipeline_id === pipelineId.value)
-        .map((job: any) => ({
-          ...job,
-          step_statuses: typeof job.step_statuses === 'string'
-            ? JSON.parse(job.step_statuses)
-            : (job.step_statuses || []),
-          snapshot: typeof job.snapshot === 'string'
-            ? JSON.parse(job.snapshot)
-            : (job.snapshot || null),
-        }))
-      // Stop after this poll if nothing is still running
-      if (!hasRunningJobs.value && refreshTimer) {
-        clearInterval(refreshTimer)
-        refreshTimer = null
-      }
-    } catch (e) {
-      // silently ignore poll errors
-    }
-  }, 3000) // poll every 3 seconds while jobs are running
+  // No longer used — status updates arrive via WebSocket.
+  // Kept as empty placeholder for backward compat.
 }
 
 async function loadData() {
@@ -366,6 +440,7 @@ async function doDirectTrigger() {
     router.push(`/jobs/${result.job_id}`)
   } catch (e) {
     console.error(e)
+  } finally {
     triggering.value = false
   }
 }
@@ -393,6 +468,7 @@ async function handleTrigger() {
     router.push(`/jobs/${result.job_id}`)
   } catch (e) {
     console.error(e)
+  } finally {
     triggering.value = false
   }
 }
@@ -423,7 +499,7 @@ async function handleTrigger() {
     <!-- Trigger Dialog -->
     <Teleport to="body">
       <div v-if="showTriggerDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/50" @click="triggering ? null : showTriggerDialog = false" />
+          <div class="absolute inset-0 bg-black/50" @click="showTriggerDialog = false" />
         <div class="relative z-10 w-full max-w-md rounded-xl border border-border bg-background p-6 shadow-2xl">
           <h2 class="text-base font-semibold mb-1">Trigger Pipeline</h2>
           <p class="text-sm text-muted-foreground mb-4">
@@ -444,7 +520,7 @@ async function handleTrigger() {
           </div>
           <button v-if="!hasInputDefs" @click="addInputPair" class="flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors mb-6" :disabled="triggering"><Plus class="h-3.5 w-3.5" /> Add parameter</button>
           <div class="flex items-center justify-end gap-3">
-            <UiButton variant="outline" size="sm" @click="showTriggerDialog = false" :disabled="triggering">Cancel</UiButton>
+            <UiButton variant="outline" size="sm" @click="showTriggerDialog = false">Cancel</UiButton>
             <UiButton size="sm" @click="handleTrigger" :disabled="triggering"><Loader2 v-if="triggering" class="mr-1.5 h-4 w-4 animate-spin" /><Play v-else class="mr-1.5 h-4 w-4" /> Run</UiButton>
           </div>
         </div>
@@ -472,7 +548,7 @@ async function handleTrigger() {
 
           <div class="space-y-4">
             <div>
-              <label class="type-label block mb-1.5">Name</label>
+              <label class="type-label block mb-1.5">Name <span class="text-red-500">*</span></label>
               <input
                 v-model="editForm.name"
                 type="text"
@@ -511,88 +587,180 @@ async function handleTrigger() {
                 />
               </div>
             </div>
-            <div class="grid grid-cols-2 gap-4">
-              <div>
-                <label class="type-label block mb-1.5">Runner Timeout</label>
-                <input
-                  v-model="editForm.runner_timeout"
-                  type="text"
-                  placeholder="e.g. 60m"
-                  class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                />
-              </div>
-              <div>
-                <label class="type-label block mb-1.5">Concurrency Group</label>
-                <input
-                  v-model="editForm.concurrency_group"
-                  type="text"
-                  placeholder="e.g. prod"
-                  class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                />
-              </div>
-            </div>
 
-            <!-- Input parameters (manual trigger only) -->
-            <div v-if="editForm.trigger_type === 'manual'" class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-2">
-                  <GripVertical class="h-4 w-4 text-muted-foreground" />
-                  <span class="text-sm font-medium">Params</span>
-                  <span class="text-[11px] text-muted-foreground">(optional)</span>
-                </div>
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors"
-                  @click="addEditInputDef"
-                >
-                  <Plus class="h-3 w-3" /> Add
-                </button>
-              </div>
-
-              <div v-if="editForm.input_defs.length === 0" class="text-[11px] text-muted-foreground">
-                No input parameters defined.
-              </div>
-
-              <div
-                v-for="(inp, idx) in editForm.input_defs"
-                :key="idx"
-                class="rounded-lg border border-border/50 bg-background px-3 py-2.5"
-              >
-                <div class="flex items-start gap-2 mb-2">
+            <!-- Advanced section -->
+            <details class="group" :open="editFormHasAdvanced">
+              <summary class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider cursor-pointer hover:text-foreground transition-colors select-none">
+                Advanced
+                <span v-if="editFormHasAdvanced" class="text-[10px] font-normal normal-case text-muted-foreground/60 ml-1">
+                  ({{ [editForm.runner_timeout && 1, editForm.concurrency_group && 1, editForm.team_id && 1, editForm.var_ids.length > 0 && 1, editForm.secret_ids.length > 0 && 1, editForm.env.length > 0 && 1, editForm.input_defs.length > 0 && 1].filter(Boolean).length }} configured)
+                </span>
+              </summary>
+              <div class="mt-3 space-y-4">
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="type-label block mb-1.5">Runner Timeout</label>
                   <input
-                    v-model="inp.name"
+                    v-model="editForm.runner_timeout"
                     type="text"
-                    placeholder="param name (e.g. version)"
-                    class="flex-1 rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40"
+                    placeholder="e.g. 60m"
+                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                   />
+                </div>
+                <div>
+                  <label class="type-label block mb-1.5">Concurrency Group</label>
+                  <input
+                    v-model="editForm.concurrency_group"
+                    type="text"
+                    placeholder="e.g. prod"
+                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label class="type-label block mb-1.5">Team <span class="text-red-500">*</span></label>
+                <select
+                  v-model="editForm.team_id"
+                  class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                >
+                  <option value="" disabled>Select a team…</option>
+                  <option v-for="t in editAvailableTeams" :key="t.id" :value="t.id">
+                    {{ t.name }} ({{ t.slug }})
+                  </option>
+                </select>
+                <p class="mt-1 text-[10px] text-muted-foreground">
+                  Same-team secrets from Infrastructure → Secrets are auto-injected. Use Authorized Secrets for cross-team bindings.
+                </p>
+              </div>
+
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="type-label block mb-1.5">Variables</label>
+                  <MultiSelect
+                    v-model="editForm.var_ids"
+                    :options="editVariableOptions"
+                    placeholder="Select platform variables..."
+                  />
+                  <p class="mt-1 text-[10px] text-muted-foreground">
+                    Bind platform variables (Infrastructure → Variables). Available as <code class="font-mono">$NAME</code> in every step.
+                  </p>
+                </div>
+                <div>
+                  <label class="type-label block mb-1.5">Authorized Secrets</label>
+                  <MultiSelect
+                    v-model="editForm.secret_ids"
+                    :options="editSecretOptions"
+                    placeholder="Select secrets..."
+                  />
+                  <p class="mt-1 text-[10px] text-muted-foreground">
+                    Explicit binding via <code class="font-mono">pipeline_secrets</code>. Use for cross-group or empty-group secrets.
+                  </p>
+                </div>
+              </div>
+
+              <!-- Env (pipeline-level key-value pairs, user-defined) -->
+              <div class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <GripVertical class="h-4 w-4 text-muted-foreground" />
+                    <span class="text-sm font-medium">Env</span>
+                    <span class="text-[11px] text-muted-foreground">(user-defined, only for this pipeline)</span>
+                  </div>
                   <button
                     type="button"
-                    class="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-destructive transition-colors shrink-0"
-                    @click="removeEditInputDef(idx)"
+                    class="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors"
+                    @click="addEditEnv"
                   >
-                    <Trash2 class="h-3.5 w-3.5" />
+                    <Plus class="h-3 w-3" /> Add
                   </button>
                 </div>
-                <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div v-if="editForm.env.length === 0" class="text-[11px] text-muted-foreground">
+                  No custom env vars defined. Add key-value pairs specific to this pipeline.
+                </div>
+                <div v-for="(pair, ei) in editForm.env" :key="ei" class="flex items-center gap-3">
                   <input
-                    v-model="inp.description"
+                    v-model="editForm.env[ei].name"
                     type="text"
-                    placeholder="Description"
-                    class="rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs outline-none transition-colors focus:border-ring/40"
+                    placeholder="KEY"
+                    class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                   />
+                  <span class="text-[10px] text-muted-foreground">=</span>
                   <input
-                    v-model="inp.default"
+                    v-model="editForm.env[ei].value"
                     type="text"
-                    placeholder="Default value"
-                    class="rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40"
+                    placeholder="value"
+                    class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                   />
-                  <label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-                    <input v-model="inp.required" type="checkbox" class="rounded border-border" />
-                    Required
-                  </label>
+                  <button type="button" class="text-muted-foreground hover:text-destructive transition-colors" @click="removeEditEnv(ei)">
+                    <X class="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <!-- Input parameters (manual trigger only) -->
+              <div v-if="editForm.trigger_type === 'manual'" class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <GripVertical class="h-4 w-4 text-muted-foreground" />
+                    <span class="text-sm font-medium">Params</span>
+                    <span class="text-[11px] text-muted-foreground">(optional)</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors"
+                    @click="addEditInputDef"
+                  >
+                    <Plus class="h-3 w-3" /> Add
+                  </button>
+                </div>
+
+                <div v-if="editForm.input_defs.length === 0" class="text-[11px] text-muted-foreground">
+                  No input parameters defined.
+                </div>
+
+                <div
+                  v-for="(inp, idx) in editForm.input_defs"
+                  :key="idx"
+                  class="rounded-lg border border-border/50 bg-background px-3 py-2.5"
+                >
+                  <div class="flex items-start gap-2 mb-2">
+                    <input
+                      v-model="inp.name"
+                      type="text"
+                      placeholder="param name (e.g. version)"
+                      class="flex-1 rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40"
+                    />
+                    <button
+                      type="button"
+                      class="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                      @click="removeEditInputDef(idx)"
+                    >
+                      <Trash2 class="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <input
+                      v-model="inp.description"
+                      type="text"
+                      placeholder="Description"
+                      class="rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs outline-none transition-colors focus:border-ring/40"
+                    />
+                    <input
+                      v-model="inp.default"
+                      type="text"
+                      placeholder="Default value"
+                      class="rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40"
+                    />
+                    <label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+                      <input v-model="inp.required" type="checkbox" class="rounded border-border" />
+                      Required
+                    </label>
+                  </div>
                 </div>
               </div>
             </div>
+            </details>
 
             <!-- Webhook config -->
             <div v-if="editForm.trigger_type === 'webhook'" class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
@@ -685,7 +853,7 @@ async function handleTrigger() {
                   <div v-if="expandedEditSteps.has(idx)" class="px-4 pb-4 space-y-3 border-t border-border/40 pt-3">
                     <div class="grid grid-cols-5 gap-3">
                       <div class="col-span-3">
-                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Name</label>
+                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Name <span class="text-red-500">*</span></label>
                         <input
                           v-model="step.name"
                           type="text"
@@ -860,7 +1028,7 @@ async function handleTrigger() {
                 <span>Timeout</span>
                 <span class="font-mono font-medium text-foreground">{{ pipeline.timeout_seconds }}s</span>
               </div>
-              <div v-if="pipeline.runner_labels.length" class="flex justify-between">
+              <div v-if="pipeline.runner_labels?.length" class="flex justify-between">
                 <span>Labels</span>
                 <span class="font-mono font-medium text-foreground text-right">{{ pipeline.runner_labels.join(', ') }}</span>
               </div>
@@ -1082,6 +1250,14 @@ async function handleTrigger() {
                   <div v-if="pipeline.concurrency_group" class="flex gap-3">
                     <span class="text-muted-foreground shrink-0 w-[88px]">Concurrency</span>
                     <code class="mono-chip text-[11px]">{{ pipeline.concurrency_group }}</code>
+                  </div>
+                  <div v-if="pipeline.team_id" class="flex gap-3">
+                    <span class="text-muted-foreground shrink-0 w-[88px]">Team</span>
+                    <code class="mono-chip text-[11px]">{{ teamLabel(pipeline.team_id) }}</code>
+                  </div>
+                  <div v-if="pipeline.owner_group" class="flex gap-3">
+                    <span class="text-muted-foreground shrink-0 w-[88px]">Owner Group</span>
+                    <code class="mono-chip text-[11px]">{{ pipeline.owner_group }}</code>
                   </div>
                 </div>
               </div>

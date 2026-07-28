@@ -82,8 +82,11 @@ export const jobsApi = {
     await apiClient.delete(`/jobs/${id}`)
   },
 
-  async logs(id: string): Promise<LogChunk[]> {
-    const resp = await apiClient.get(`/jobs/${id}/logs`)
+  async logs(id: string, opts?: { signal?: AbortSignal; timeout?: number }): Promise<LogChunk[]> {
+    const resp = await apiClient.get(`/jobs/${id}/logs`, {
+      signal: opts?.signal,
+      timeout: opts?.timeout,
+    })
     return resp.data
   },
 }

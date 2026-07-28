@@ -5,8 +5,9 @@ use shared::auth::TokenManager;
 use shared::error::AppError;
 use axum::http::StatusCode;
 
-use crate::api::AppState;
+use crate::state::AppState;
 use crate::middleware::{AdminClaims, RunnerClaims};
+use crate::crypto;
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -207,72 +208,227 @@ pub async fn poll(
 
     // Fetch tasks for this pipeline
     let task_rows = sqlx::query(
-        "SELECT id, step_order, name, exec_type, host_id, command_template,
-                work_dir, retry_count, timeout_seconds, fail_strategy
+        "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template,
+                work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&pipeline_id)
     .fetch_all(&state.pool)
     .await?;
 
+    // Resolve pipeline secrets from explicit bindings
+    let mut secrets: serde_json::Value = serde_json::json!({});
+
+    // ── Explicit secret bindings (pipeline_secrets table) ──
+    let explicit_rows = sqlx::query(
+        "SELECT s.name, s.value
+         FROM pipeline_secrets ps
+         JOIN secrets s ON s.id = ps.secret_id
+         WHERE ps.pipeline_id = ?",
+    )
+    .bind(&pipeline_id)
+    .fetch_all(&state.pool)
+    .await?;
+    for sr in &explicit_rows {
+        let name: String = sr.get(0);
+        let value: String = sr.get(1);
+        if let Some(obj) = secrets.as_object_mut() {
+            obj.insert(name, serde_json::Value::String(value));
+        }
+    }
+
+    // ── Team auto-access: secrets sharing the pipeline's team_id ──
+    let team_secret_rows = sqlx::query(
+        "SELECT s.name, s.value
+         FROM secrets s
+         JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
+         WHERE p.id = ?",
+    )
+    .bind(&pipeline_id)
+    .fetch_all(&state.pool)
+    .await?;
+    for sr in &team_secret_rows {
+        let name: String = sr.get(0);
+        let value: String = sr.get(1);
+        if let Some(obj) = secrets.as_object_mut() {
+            obj.entry(name).or_insert(serde_json::Value::String(value));
+        }
+    }
+
+    // ── Explicit variable bindings (pipeline_vars table) ──
+    let var_rows = sqlx::query(
+        "SELECT pv.name, pv.value
+         FROM pipeline_vars pvars
+         JOIN platform_vars pv ON pv.id = pvars.var_id
+         WHERE pvars.pipeline_id = ?",
+    )
+    .bind(&pipeline_id)
+    .fetch_all(&state.pool)
+    .await?;
+    for vr in &var_rows {
+        let name: String = vr.get(0);
+        let value: String = vr.get(1);
+        if let Some(obj) = secrets.as_object_mut() {
+            obj.insert(name, serde_json::Value::String(value));
+        }
+    }
+
+    // ── Inline env vars (user-defined per pipeline, from `env:` YAML block or form) ──
+    let env_rows = sqlx::query(
+        "SELECT var_name, value FROM variables
+         WHERE pipeline_id = ? AND source_type = 'inline' AND is_secret = 0",
+    )
+    .bind(&pipeline_id)
+    .fetch_all(&state.pool)
+    .await?;
+    for er in &env_rows {
+        let name: String = er.get(0);
+        let value: String = er.get(1);
+        if let Some(obj) = secrets.as_object_mut() {
+            obj.insert(name, serde_json::Value::String(value));
+        }
+    }
+
     let mut tasks: Vec<serde_json::Value> = Vec::new();
     for t in &task_rows {
         let exec_type: String = t.get(3);
         let host_id_str: String = t.get(4);
+        let host_names_raw: String = t.get(5);
+        let host_labels_raw: String = t.get(6);
+        let step_secrets_str: String = t.get(12);
 
         let mut task_json = serde_json::json!({
             "id": t.get::<String, _>(0),
             "step_order": t.get::<i64, _>(1),
             "name": t.get::<String, _>(2),
             "exec_type": &exec_type,
-            "command_template": t.get::<String, _>(5),
-            "work_dir": t.get::<String, _>(6),
-            "retry_count": t.get::<i64, _>(7),
-            "timeout_seconds": t.get::<i64, _>(8),
-            "fail_strategy": t.get::<String, _>(9),
+            "command_template": t.get::<String, _>(7),
+            "work_dir": t.get::<String, _>(8),
+            "retry_count": t.get::<i64, _>(9),
+            "timeout_seconds": t.get::<i64, _>(10),
+            "fail_strategy": t.get::<String, _>(11),
         });
+
+        // Resolve step-level secrets (only for this step).
+        // Step secrets may come from the step_secrets column (by name, stored at pipeline
+        // creation time) and need to be resolved from the secrets table at dispatch time.
+        let mut step_secrets_map = serde_json::json!({});
+        if !step_secrets_str.is_empty() {
+            let step_names: Vec<&str> = step_secrets_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+            if !step_names.is_empty() {
+                // Query the secrets table directly for step-level secrets
+                let placeholders: Vec<String> = step_names.iter().enumerate().map(|(i, _)| format!("?{}", i+1)).collect();
+                let query = format!(
+                    "SELECT name, value FROM secrets WHERE name IN ({})",
+                    placeholders.join(",")
+                );
+                let mut q = sqlx::query_as::<_, (String, String)>(&query);
+                for name in &step_names {
+                    q = q.bind(*name);
+                }
+                if let Ok(rows) = q.fetch_all(&state.pool).await {
+                    for (name, value) in rows {
+                        if let Some(obj) = step_secrets_map.as_object_mut() {
+                            obj.insert(name, serde_json::Value::String(value));
+                        }
+                    }
+                }
+            }
+        }
 
         // For SSH steps, resolve host IDs → connection details
         if exec_type == "ssh" {
-            let host_ids: Vec<&str> = host_id_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+            let mut host_ids: Vec<String> = host_id_str.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            // ── Dynamic host resolution: resolve variable references ──
+            // Merge trigger_params + secrets into a unified lookup (inputs take priority)
+            let mut unified_vars = serde_json::json!({});
+            if let Some(obj) = secrets.as_object() {
+                for (k, v) in obj {
+                    unified_vars[k] = v.clone();
+                }
+            }
+            if let Some(obj) = trigger_params.as_object() {
+                for (k, v) in obj {
+                    unified_vars[k] = v.clone();
+                }
+            }
+
+            if host_ids.is_empty() || host_names_raw.chars().any(|c| c == '$') || host_labels_raw.chars().any(|c| c == '$') {
+                let resolved_names: Vec<String> = host_names_raw.split(',')
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| resolve_var_ref(s.trim(), &unified_vars))
+                    .flat_map(|resolved| resolved)
+                    .collect();
+
+                let resolved_labels: Vec<String> = host_labels_raw.split(',')
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| resolve_var_ref(s.trim(), &unified_vars))
+                    .flat_map(|resolved| resolved)
+                    .collect();
+
+                // Look up resolved names in hosts table
+                for name in &resolved_names {
+                    if let Ok(Some(row)) = sqlx::query("SELECT id FROM hosts WHERE name = ?")
+                        .bind(name)
+                        .fetch_optional(&state.pool)
+                        .await
+                    {
+                        let id: String = row.get(0);
+                        if !host_ids.contains(&id) {
+                            host_ids.push(id);
+                        }
+                    } else {
+                        tracing::warn!("SSH step '{}': resolved dynamic host name '{}' not found", t.get::<String, _>(2), name);
+                    }
+                }
+
+                // Look up resolved labels
+                for label in &resolved_labels {
+                    let rows = sqlx::query(
+                        "SELECT id FROM hosts, json_each(hosts.labels) WHERE json_each.value = ?",
+                    )
+                    .bind(label)
+                    .fetch_all(&state.pool)
+                    .await
+                    .unwrap_or_default();
+                    for r in &rows {
+                        let id: String = r.get(0);
+                        if !host_ids.contains(&id) {
+                            host_ids.push(id);
+                        }
+                    }
+                }
+            }
 
             if host_ids.len() == 1 {
                 // Single host — return as object (backward-compatible)
                 if let Ok(Some(host_row)) = sqlx::query(
-                    "SELECT host, port, username, credential_type, credential_ref
+                    "SELECT host, port, username, credential_type, credential_data, credential_passphrase
                      FROM hosts WHERE id = ?",
                 )
-                .bind(host_ids[0])
+                .bind(&host_ids[0])
                 .fetch_optional(&state.pool)
                 .await
                 {
-                    task_json["host"] = serde_json::json!({
-                        "host": host_row.get::<String, _>(0),
-                        "port": host_row.get::<i64, _>(1) as u16,
-                        "username": host_row.get::<String, _>(2),
-                        "credential_type": host_row.get::<String, _>(3),
-                        "credential_ref": host_row.get::<String, _>(4),
-                    });
+                    task_json["host"] = build_host_json(&host_row, &state.config.auth.jwt_secret);
                 }
             } else if host_ids.len() > 1 {
                 // Multiple hosts — return as array
                 let mut host_list: Vec<serde_json::Value> = Vec::new();
                 for hid in &host_ids {
                     if let Ok(Some(host_row)) = sqlx::query(
-                        "SELECT host, port, username, credential_type, credential_ref
+                        "SELECT host, port, username, credential_type, credential_data
                          FROM hosts WHERE id = ?",
                     )
-                    .bind(*hid)
+                    .bind(hid)
                     .fetch_optional(&state.pool)
                     .await
                     {
-                        host_list.push(serde_json::json!({
-                            "host": host_row.get::<String, _>(0),
-                            "port": host_row.get::<i64, _>(1) as u16,
-                            "username": host_row.get::<String, _>(2),
-                            "credential_type": host_row.get::<String, _>(3),
-                            "credential_ref": host_row.get::<String, _>(4),
-                        }));
+                        host_list.push(build_host_json(&host_row, &state.config.auth.jwt_secret));
                     }
                 }
                 task_json["host"] = serde_json::Value::Array(host_list);
@@ -280,12 +436,15 @@ pub async fn poll(
                 // No hosts resolved from the database
                 let task_name = task_json["name"].as_str().unwrap_or("unnamed");
                 tracing::warn!(
-                    "SSH step '{task_name}': host_id '{}' resolved to zero hosts in the database",
-                    host_id_str
+                    "SSH step '{task_name}': no hosts resolved (static host_id='{}', raw names='{}', raw labels='{}')",
+                    host_id_str, host_names_raw, host_labels_raw
                 );
                 task_json["host"] = serde_json::Value::Array(vec![]);
             }
         }
+
+        // Attach step-level secrets
+        task_json["step_secrets"] = step_secrets_map;
 
         tasks.push(task_json);
     }
@@ -300,7 +459,108 @@ pub async fn poll(
         "pipeline_id": pipeline_id,
         "tasks": tasks,
         "inputs": trigger_params,
+        "secrets": secrets,
     })))))
+}
+
+/// Resolve a variable reference like `$VAR_NAME` or `${VAR_NAME}` against
+/// the trigger inputs. Returns the resolved value(s) as a Vec — for the
+/// dynamic host resolution, a single input value could map to a host name
+/// or a comma-separated list.
+fn resolve_var_ref(
+    raw: &str,
+    inputs: &serde_json::Value,
+) -> Vec<String> {
+    // Strip wrapping ${...} or leading $
+    let var_name = raw
+        .strip_prefix("${")
+        .and_then(|s| s.strip_suffix('}'))
+        .or_else(|| raw.strip_prefix('$'))
+        .unwrap_or(raw);
+
+    // Look up the variable in trigger inputs
+    if let Some(obj) = inputs.as_object() {
+        if let Some(val) = obj.get(var_name).and_then(|v| v.as_str()) {
+            if val.is_empty() || val == raw {
+                return vec![];
+            }
+            // Support comma-separated multi-host values
+            return val.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        }
+    }
+
+    // If the raw value doesn't contain '$', return it as a literal
+    // (e.g. "dev-vm" stays "dev-vm")
+    if !raw.contains('$') {
+        return vec![raw.to_string()];
+    }
+
+    vec![]
+}
+
+/// Build host connection JSON for dispatch to the runner.
+///
+/// Credential data (private key or password) is decrypted from the encrypted
+/// database value and sent as `credential_value` so the runner can use it
+/// directly without reading local files.
+fn build_host_json(host_row: &sqlx::sqlite::SqliteRow, jwt_secret: &str) -> serde_json::Value {
+    let host: String = host_row.get(0);
+    let port: i64 = host_row.get(1);
+    let username: String = host_row.get(2);
+    let cred_type: String = host_row.get(3);
+    let cred_data_encrypted: String = host_row.get(4);
+    let passphrase_encrypted: String = host_row.get(5);
+
+    let cred_data = if cred_data_encrypted.is_empty() {
+        tracing::warn!(
+            "Host '{}': credential_data is empty — no credential will be sent to runner",
+            host
+        );
+        String::new()
+    } else {
+        match crypto::decrypt(&cred_data_encrypted, jwt_secret) {
+            Ok(decrypted) => {
+                tracing::debug!(
+                    "Host '{}': credential_data decrypted successfully ({} bytes)",
+                    host,
+                    decrypted.len()
+                );
+                decrypted
+            }
+            Err(e) => {
+                tracing::error!("Host '{}': failed to decrypt credential_data: {e}", host);
+                String::new()
+            }
+        }
+    };
+
+    let passphrase = if passphrase_encrypted.is_empty() {
+        String::new()
+    } else {
+        match crypto::decrypt(&passphrase_encrypted, jwt_secret) {
+            Ok(decrypted) => decrypted,
+            Err(e) => {
+                tracing::error!("Host '{}': failed to decrypt passphrase: {e}", host);
+                String::new()
+            }
+        }
+    };
+
+    let mut host_json = serde_json::json!({
+        "host": host,
+        "port": port as u16,
+        "username": username,
+        "credential_type": cred_type,
+    });
+
+    if !cred_data.is_empty() {
+        host_json["credential_value"] = serde_json::Value::String(cred_data);
+    }
+    if !passphrase.is_empty() {
+        host_json["credential_passphrase"] = serde_json::Value::String(passphrase);
+    }
+
+    host_json
 }
 
 pub async fn list_runners(

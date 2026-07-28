@@ -6,13 +6,20 @@ import {
   PanelLeft,
   Puzzle,
   Server,
+  Users,
+  UserRound,
   LayoutDashboard as OverviewIcon,
 } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
 import { cn } from '@/lib/utils'
 import { useUiStore } from '@/stores/ui'
+import { useAuthStore } from '@/stores/auth'
+import { safeNavigate, navLog } from '@/utils/navigation'
+import { healthApi } from '@/api/health'
 
 const ui = useUiStore()
+const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -22,6 +29,7 @@ type NavLink = {
   label: string
   icon: typeof OverviewIcon
   to: string
+  adminOnly?: boolean
 }
 
 type NavSection = {
@@ -31,23 +39,66 @@ type NavSection = {
 
 type NavEntry = NavLink | NavSection
 
-const entries: NavEntry[] = [
+const allEntries: NavEntry[] = [
   { kind: 'link', name: 'dashboard', label: 'Overview', icon: OverviewIcon, to: '/dashboard' },
   { kind: 'section', label: 'Infrastructure' },
-  { kind: 'link', name: 'runners', label: 'Nodes', icon: Server, to: '/runners' },
+  { kind: 'link', name: 'runners', label: 'Nodes', icon: Server, to: '/runners', adminOnly: true },
   { kind: 'link', name: 'hosts', label: 'Hosts', icon: Globe, to: '/hosts' },
   { kind: 'link', name: 'secrets', label: 'Secrets', icon: EyeOff, to: '/secrets' },
   { kind: 'link', name: 'variables', label: 'Variables', icon: Puzzle, to: '/variables' },
   { kind: 'section', label: 'Automation' },
   { kind: 'link', name: 'pipelines', label: 'Pipelines', icon: Box, to: '/pipelines' },
+  { kind: 'section', label: 'Access' },
+  { kind: 'link', name: 'teams', label: 'Teams', icon: Users, to: '/teams' },
+  { kind: 'link', name: 'users', label: 'Users', icon: UserRound, to: '/users', adminOnly: true },
 ]
 
+const entries = computed(() =>
+  allEntries.filter((e) => {
+    if (e.kind === 'section') return true
+    if (e.adminOnly && !auth.isPlatformAdmin) return false
+    return true
+  }),
+)
+
 const copyrightYear = new Date().getFullYear()
-const appVersion = __APP_VERSION__
+const uiVersion = __APP_VERSION__
+const managerVersion = ref<string | null>(null)
+
+const versionLabel = computed(() => {
+  if (managerVersion.value && managerVersion.value !== uiVersion) {
+    return `UI v${uiVersion} · Manager v${managerVersion.value}`
+  }
+  return `v${managerVersion.value || uiVersion}`
+})
+
+onMounted(async () => {
+  try {
+    const info = await healthApi.get()
+    managerVersion.value = info.version
+  } catch {
+    /* offline / starting — fall back to UI package version */
+  }
+})
 
 function isActive(name: string) {
   if (name === 'pipelines') return route.name === 'pipelines' || route.name === 'pipeline-detail'
   return route.name === name
+}
+
+async function onNavClick(e: MouseEvent, to: string) {
+  // Let the browser handle modified clicks (new tab, etc.)
+  if (e.defaultPrevented) return
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+  e.preventDefault()
+  navLog('sidebar click', to)
+  await safeNavigate(router, to)
+}
+
+function onLogoClick(e: MouseEvent) {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+  e.preventDefault()
+  void safeNavigate(router, '/')
 }
 </script>
 
@@ -70,11 +121,11 @@ function isActive(name: string) {
         )
       "
     >
-      <button
-        type="button"
+      <a
+        href="/"
         class="group flex min-w-0 items-center gap-2.5 rounded-xl px-1 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
         :title="ui.isCollapsed ? 'Buz' : undefined"
-        @click="router.push('/')"
+        @click="onLogoClick"
       >
         <span
           class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary text-xs font-semibold tracking-wide text-primary-foreground"
@@ -85,7 +136,7 @@ function isActive(name: string) {
           <span class="block truncate text-sm font-semibold tracking-tight">Buz</span>
           <span class="block truncate text-xs text-muted-foreground">Orchestration</span>
         </span>
-      </button>
+      </a>
       <button
         v-if="!ui.isCollapsed"
         type="button"
@@ -113,9 +164,9 @@ function isActive(name: string) {
           v-else-if="entry.kind === 'section' && ui.isCollapsed"
           class="my-1.5 mx-auto h-px w-6 bg-sidebar-border"
         />
-        <RouterLink
+        <a
           v-else-if="entry.kind === 'link'"
-          :to="entry.to"
+          :href="entry.to"
           :title="ui.isCollapsed ? entry.label : undefined"
           :class="
             cn(
@@ -125,6 +176,7 @@ function isActive(name: string) {
               isActive(entry.name) && 'bg-sidebar-accent text-foreground',
             )
           "
+          @click="onNavClick($event, entry.to)"
         >
           <component
             :is="entry.icon"
@@ -138,7 +190,7 @@ function isActive(name: string) {
             "
           />
           <span v-if="!ui.isCollapsed">{{ entry.label }}</span>
-        </RouterLink>
+        </a>
       </template>
     </nav>
 
@@ -147,8 +199,8 @@ function isActive(name: string) {
       <p class="px-1 text-xs leading-relaxed text-muted-foreground/80">
         &copy; {{ copyrightYear }} Buz
       </p>
-      <p class="px-1 font-mono text-xs text-muted-foreground/60">
-        v{{ appVersion }}
+      <p class="px-1 font-mono text-xs text-muted-foreground/60" :title="versionLabel">
+        {{ versionLabel }}
       </p>
     </div>
   </aside>

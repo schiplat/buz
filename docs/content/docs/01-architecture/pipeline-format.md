@@ -11,6 +11,7 @@ Buz pipeline definitions follow a simplified GitHub Actions-style format with se
 ```yaml
 name: Deploy Production               # required
 description: Build and deploy to prod # optional
+team: default                         # optional team slug (defaults to "default")
 
 on:                                    # optional — defaults to manual trigger
   manual:
@@ -30,10 +31,13 @@ runner:                               # optional
   labels: [prod, linux-x64]
   timeout: 60m
 
-env:                                   # optional — static env vars
+env:                                   # [pipeline-level] inline env vars
   APP_NAME: myapp
 
-secrets:                               # optional — secret names to inject
+variables:                             # [pipeline-level] platform variables
+  - BUILD_CACHE_DIR
+
+secrets:                               # [pipeline-level] secrets (all steps)
   - DOCKER_PASSWORD
   - DEPLOY_KEY
 
@@ -46,7 +50,7 @@ steps:                                 # required — at least one
     continue-on-error: true
 
   - name: Build
-    run: docker build -t ${APP_NAME}:${INPUT_VERSION} .
+    run: docker build -t $APP_NAME:$INPUT_VERSION .
     work_dir: ./src
     timeout: 10m
     retry: 2
@@ -58,9 +62,17 @@ steps:                                 # required — at least one
       - prod-server-02
     host_labels: [prod, web]
     run: |
-      docker pull ${APP_NAME}:${INPUT_VERSION}
+      docker pull $APP_NAME:$INPUT_VERSION
       docker-compose up -d
     continue-on-error: true
+
+  - name: Clone Private Repo
+    secrets: [GIT_SSH_KEY]            # [step-level] secret — only this step
+    run: |
+      echo "$GIT_SSH_KEY" > /tmp/key && chmod 600 /tmp/key
+      GIT_SSH_COMMAND="ssh -i /tmp/key" git clone git@github.com:org/repo.git
+      rm -f /tmp/key
+    timeout: 5m
 ```
 
 ---
@@ -163,6 +175,21 @@ Optional string that acts as a **concurrency group key**. When set, only **one j
 
 ---
 
+### `team`
+
+Team **slug** this pipeline belongs to (Phase 2 RBAC). Alias: `owner_group`.
+
+The YAML scanner resolves the slug to `teams.id`. If omitted or unknown, it falls back to the bootstrapped `default` team.
+
+| | |
+|---|---|
+| YAML | `team: backend` (or `owner_group: backend`) |
+| Form | Advanced → **Team** (required dropdown) |
+| Required | Yes at runtime (`team_id`); YAML may omit and get `default` |
+| See also | [Users, Teams & RBAC](/docs/01-architecture/rbac/) |
+
+---
+
 ### `runner`
 
 Controls which runners can pick up jobs for this pipeline.
@@ -202,27 +229,135 @@ Maximum duration for the **entire pipeline run**. Expressed as `<number><s|m|h>`
 
 ### `env`
 
-Static environment variables injected into every step. Values support `${VAR}` minijinja interpolation.
+Pipeline-level **user-defined** key-value pairs injected as environment variables into **every step**. For non-sensitive configuration specific to this pipeline.
 
 ```yaml
 env:
   APP_NAME: myapp
-  REGISTRY: docker.io
+  LOG_LEVEL: info
 ```
+
+| | |
+|---|---|
+| **Level** | Pipeline — visible to all steps |
+| **Scope** | Every step |
+| **Sensitive** | No — values appear in plain text in step logs |
+| YAML | `env: { KEY: value }` |
+| Form | Env section — key-value pair editor |
+
+---
+
+### `variables`
+
+Platform-level **non-sensitive** key-value pairs defined in the Manager UI under Infrastructure → Variables. Pipelines **bind** to them by name — via YAML or the form's multi-select dropdown. Injected as env vars into **every step**.
+
+```yaml
+# YAML (scanned pipelines) — names must exist in the platform_vars table
+variables:
+  - BUILD_CACHE_DIR
+  - NOTIFY_EMAIL
+```
+
+| | |
+|---|---|
+| **Level** | Pipeline — visible to all steps |
+| **Scope** | Every step |
+| **Sensitive** | No — values appear in step logs |
+| YAML | `variables: [NAME1, NAME2]` — names must match existing platform variables |
+| Form | Variables multi-select dropdown |
+
+> **Import behavior:** If a variable name in YAML does not exist in the Manager's Variables page, the YAML scanner silently skips it. During **Import to Form**, a warning alert is shown listing each unresolved name.
 
 ---
 
 ### `secrets`
 
-List of secret names to inject. The runner fetches these from the secrets store and exposes them as environment variables inside steps. Secret values are **never logged**.
+Sensitive values (passwords, tokens, SSH keys) defined in the Manager UI under Infrastructure → Secrets. Pipelines bind to them by name.
+
+**Pipeline-level secrets** are injected into **every step**. Their values are **never logged** and are masked in terminal output.
 
 ```yaml
+# Pipeline-level — visible to all steps
 secrets:
   - DOCKER_PASSWORD
-  - DEPLOY_KEY
+  - SLACK_WEBHOOK_URL
 ```
 
-> **Note:** Secrets are managed in the Manager UI under Infrastructure → Secrets. The runner fetches the value at dispatch time.
+**Step-level secrets** are scoped to a **single step only** — other steps cannot see them:
+
+```yaml
+steps:
+  - name: Clone Private Repo
+    secrets: [GIT_SSH_KEY]   # only this step sees GIT_SSH_KEY
+    run: git clone git@github.com:org/repo.git
+  - name: Build
+    run: cargo build         # GIT_SSH_KEY NOT available here
+```
+
+| | |
+|---|---|
+| **Level** | Pipeline-level: all steps. Step-level: single step only. |
+| **Scope** | Pipeline-level → every step. Step-level → that step only. |
+| **Sensitive** | Yes — values **never logged**, masked in terminal |
+| YAML (pipeline) | `secrets: [NAME1]` — names must match existing secrets |
+| YAML (step) | `secrets: [NAME1]` under a step — scoped to that step |
+| Form (pipeline) | Secrets multi-select dropdown |
+| Form (step) | Not yet supported — the form shows a warning on import |
+
+> **Import behavior:** Same as variables — unresolved names produce a warning alert during Import to Form.
+
+---
+
+## Variable & Secret Hierarchy
+
+Every placeholder in a pipeline command falls into one of four categories, each with its own **level** (where it's defined) and **scope** (who can see it). This table is the definitive reference:
+
+| Placeholder Type | Declared In | Level | Scope | Sensitive | Reference Syntax |
+|---|---|---|---|---|---|
+| `env` | Top-level `env:` block | **Pipeline** | All steps | No | `$KEY` or `$key` |
+| `variables` | Top-level `variables:` / Manager UI | **Pipeline** | All steps | No | `$VAR_NAME` |
+| `secrets` (pipeline) | Top-level `secrets:` / Manager UI | **Pipeline** | All steps | **Yes** | `$SECRET_NAME` |
+| `secrets` (step) | Step-level `secrets:` | **Step** | That step only | **Yes** | `$SECRET_NAME` |
+| `inputs` (dynamic params) | `on.manual.inputs:` | **Trigger** | All steps | No | `$INPUT_NAME` (uppercased) |
+
+### Resolution Precedence
+
+When a variable name appears in more than one source, the most specific wins:
+
+```
+Step-level secrets  >  Pipeline-level secrets  >  Platform variables  >  Inline env
+        (tightest scope)                                              (widest scope)
+```
+
+- `$APP_NAME` — resolved from `env:` or `variables:` (non-sensitive), falls back to earlier sources
+- `$DOCKER_PASSWORD` — if declared both pipeline-level and step-level, the **step-level** value takes precedence for that step
+- `$INPUT_VERSION` — always from the trigger dialog; has **no overlap** with other types (prefixed with `INPUT_`)
+
+---
+
+## Template Variables
+
+All variables are injected as **environment variables** before each step runs. Commands reference them with standard shell `$VAR` syntax:
+
+```yaml
+steps:
+  - name: Deploy
+    run: |
+      echo "Deploying $APP_NAME version $INPUT_VERSION"
+      echo "$DOCKER_PASSWORD" | docker login -u bot --password-stdin
+      curl -X POST "$SLACK_WEBHOOK_URL"
+```
+
+| Reference | Source | Level |
+|---|---|---|
+| `$APP_NAME` | `env:` block | Pipeline |
+| `$BUILD_CACHE_DIR` | `variables:` (platform) | Pipeline |
+| `$DOCKER_PASSWORD` | `secrets:` (pipeline or step) | Pipeline / Step |
+| `$SLACK_WEBHOOK_URL` | `secrets:` (pipeline) | Pipeline |
+| `$GIT_SSH_KEY` | `secrets:` (step) | Step |
+| `$INPUT_VERSION` | `on.manual.inputs:` | Trigger |
+
+> **Note:** Parameter names from `on.manual.inputs` are **automatically uppercased** and prefixed with `INPUT_`. A parameter named `version` becomes `$INPUT_VERSION` inside commands.
 
 ---
 
@@ -246,7 +381,7 @@ Each step is an atomic unit of work executed **sequentially** by the runner. Ste
 
 #### `run`
 
-**Required.** The actual command(s) to execute. Can be a single line or a multi-line block (YAML `|`). Template variables (`${INPUT_*}` and secrets) are substituted before execution.
+**Required.** The actual command(s) to execute. Can be a single line or a multi-line block (YAML `|`). Environment variables (from env, variables, secrets, inputs) are available as regular `$VAR` references.
 
 ```yaml
 run: cargo build --release
@@ -271,12 +406,32 @@ Selects the execution engine. Defaults to `local` (runner's own shell).
 |-------|-------------|
 | _(omitted)_ | **Local** — runs on the runner host's shell |
 | `ssh` | **SSH** — connects to remote host(s) via SSH (requires `host` and/or `host_labels`) |
-| `docker` | **Docker** — runs inside a Docker container on the runner |
+| `docker` | **Docker** — runs `run:` inside a container on the runner (**design confirmed, not implemented**). Requires `image`. See [Docker Engine](/docs/01-architecture/docker-engine/). |
 
 | | |
 |---|---|
 | YAML | `uses: ssh` |
 | Form | Engine dropdown (Runner Shell / SSH / Docker) |
+
+> **Docker** is design-confirmed only. See [Docker Engine](/docs/01-architecture/docker-engine/). Enabling it requires `engine.docker_enabled = true` on the runner once implemented.
+
+---
+
+#### `image`
+
+**Docker only (design).** Container image reference used when `uses: docker`. Required for that engine; ignored otherwise.
+
+```yaml
+uses: docker
+image: rust:1.85-bookworm
+run: cargo test
+```
+
+| | |
+|---|---|
+| YAML | `image: node:20` |
+| Form | Image (shown when Engine is Docker) |
+| See | [Docker Engine](/docs/01-architecture/docker-engine/) |
 
 ---
 
@@ -376,33 +531,20 @@ If `true`, a failure in this step does **not** stop the pipeline — subsequent 
 
 ---
 
-## Template Variables
-
-Commands are rendered in two passes:
-
-1. `${{ secrets.NAME }}` — replaced with the secret value fetched from the secrets store (never logged)
-2. `${INPUT_<KEY>}` — replaced with the trigger parameter value, uppercased (e.g. parameter `version` → `$INPUT_VERSION`)
-
-Usage:
-
-```yaml
-steps:
-  - name: Deploy
-    run: |
-      docker tag myapp:${{ secrets.DOCKER_TAG }} myapp:${INPUT_VERSION}
-      docker push myapp:${INPUT_VERSION}
-```
-
----
-
 ## Execution Engines
 
 | Value | Engine | Description |
 |-------|--------|-------------|
 | _(omitted)_ | `local` | Run on runner host's shell (default) |
 | `ssh` | `ssh` | Execute on remote host(s) via SSH (russh). Requires `host` and/or `host_labels`. |
-| `docker` | `docker` | Execute in Docker container on the runner |
-| `wasm` | `wasm` | Execute in Wasm sandbox |
+| `docker` | `docker` | Execute `run:` in a Docker container on the runner. **Design:** [Docker Engine](/docs/01-architecture/docker-engine/). Not implemented yet (`engine.docker_enabled`). |
+| `wasm` | `wasm` | Execute in Wasm sandbox (not implemented) |
+
+### Docker step fields (design)
+
+When `uses: docker`, YAML will require `image` (container image reference). Workspace is bind-mounted to `/buz/workspace`. Full rules, non-goals, and Actions mapping: [Docker Engine](/docs/01-architecture/docker-engine/).
+
+> Shelling out to `docker build` / `docker push` on the host is still a **local** (or **ssh**) step — that is not the Docker engine.
 
 ---
 
@@ -410,22 +552,28 @@ steps:
 
 When using the "Import to Form" feature after validating YAML, all fields are automatically populated. The table below shows the exact mapping:
 
-| YAML Field | Form Field | Notes |
-|------------|------------|-------|
-| `name` | Name | |
-| `description` | Description | |
-| `on.manual.inputs` | Params | Name, Description, Required, Default per param |
-| `on.webhook.path` | Webhook Config → URL Path | Only when trigger is webhook |
-| `on.cron.schedule` | Cron Config → Schedule | Only when trigger is cron |
-| `runner.labels` | Runner Labels | Comma-separated in form |
-| `runner.timeout` | Runner Timeout | Preserves original format (e.g. `60m`) |
-| `concurrency` | Concurrency Group | |
-| `steps[].name` | Step Name | |
-| `steps[].run` | Command | Multi-line preserved |
-| `steps[].uses` | Engine | Local/SSH/Docker |
-| `steps[].host` | SSH Host | Comma-separated for multiple |
-| `steps[].host_labels` | Host Labels | Comma-separated for multiple |
-| `steps[].work_dir` / `steps[].dir` | Work Dir | Both YAML keys accepted |
-| `steps[].timeout` | Timeout | |
-| `steps[].retry` | Retry | |
-| `steps[].continue-on-error` | Continue on error | Checkbox |
+| YAML Field | Form Field | Level | Notes |
+|---|---|---|---|
+| `name` | Name | Pipeline | |
+| `description` | Description | Pipeline | |
+| `on.manual.inputs` | Params | Trigger | Name, Description, Required, Default per param |
+| `on.webhook.path` | Webhook Config → URL Path | Pipeline | Only when trigger is webhook |
+| `on.cron.schedule` | Cron Config → Schedule | Pipeline | Only when trigger is cron |
+| `runner.labels` | Runner Labels | Pipeline | Comma-separated in form |
+| `runner.timeout` | Runner Timeout | Pipeline | Preserves original format (e.g. `60m`) |
+| `concurrency` | Concurrency Group | Pipeline | |
+| `team` / `owner_group` | Team | Pipeline | Resolves to `team_id`; form requires Team select |
+| `env` | Env | Pipeline | User-defined key-value pairs, per-pipeline |
+| `variables` | Variables | Pipeline | Multi-select from Infrastructure → Variables (`var_ids`) |
+| `secrets` (pipeline) | Authorized Secrets | Pipeline | Multi-select from Infrastructure → Secrets (`secret_ids` → `pipeline_secrets`) |
+| `secrets` (step) | _(warning on import)_ | Step | Not yet supported in form UI |
+| `steps[].name` | Step Name | Step | |
+| `steps[].run` | Command | Step | Multi-line preserved |
+| `steps[].uses` | Engine | Step | Local/SSH/Docker (Docker = design only; see [Docker Engine](/docs/01-architecture/docker-engine/)) |
+| `steps[].image` | Image | Step | Required when Engine is Docker (design; not in form yet) |
+| `steps[].host` | SSH Host | Step | Comma-separated names from Infrastructure → Hosts |
+| `steps[].host_labels` | Host Labels | Step | Comma-separated; union with `host` |
+| `steps[].work_dir` / `steps[].dir` | Work Dir | Step | Both YAML keys accepted |
+| `steps[].timeout` | Timeout | Step | |
+| `steps[].retry` | Retry | Step | |
+| `steps[].continue-on-error` | Continue on error | Step | Checkbox |

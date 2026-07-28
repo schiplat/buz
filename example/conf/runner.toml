@@ -1,17 +1,30 @@
 # Buz Runner Configuration
 
 [manager]
+# Use https:// when the Manager has TLS enabled
 url = "http://127.0.0.1:8080"
 # Get this token from Buz Manager web UI → Nodes → New Node
 register_token = "your-register-token"
+
+# ── TLS (required when Manager uses HTTPS) ──
+# Set to true only if the Manager uses a self-signed certificate.
+# In production, use a CA-signed certificate and keep this false.
+# tls_skip_verify = false
 
 [node]
 name = "demo-n1"
 labels = ["linux-x64"]
 work_dir = "/tmp/buz-runner"
 
+# ── Ephemeral / workspace cleanup ──
+# clean_workspace_after_job = true   # wipe work_dir after each job (shared runners)
+# ephemeral = true                   # wipe work_dir AND exit after one job (container/VM runners)
+
 [engine]
 local_enabled = true
 ssh_enabled = true
 docker_enabled = false
 wasm_enabled = false
+# Host key policy: "insecure" (default, accept any) or "known_hosts"
+# ssh_host_key_policy = "known_hosts"
+# ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"  # default: ~/.ssh/known_hosts

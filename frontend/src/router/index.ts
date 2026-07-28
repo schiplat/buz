@@ -4,6 +4,7 @@ import {
   type RouteRecordRaw,
 } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { isNavDebugEnabled, navLog } from '@/utils/navigation'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -26,6 +27,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'hosts', name: 'hosts', component: () => import('@/pages/Hosts.vue'), meta: { title: 'Hosts' } },
       { path: 'secrets', name: 'secrets', component: () => import('@/pages/Secrets.vue'), meta: { title: 'Secrets' } },
       { path: 'variables', name: 'variables', component: () => import('@/pages/Variables.vue'), meta: { title: 'Variables' } },
+      { path: 'teams', name: 'teams', component: () => import('@/pages/Teams.vue'), meta: { title: 'Teams' } },
+      { path: 'users', name: 'users', component: () => import('@/pages/Users.vue'), meta: { title: 'Users', adminOnly: true } },
     ],
   },
 ]
@@ -35,9 +38,47 @@ export const router = createRouter({
   routes,
 })
 
-router.beforeEach(async (to) => {
+router.beforeEach((to, from) => {
+  navLog('beforeEach', { from: from.fullPath, to: to.fullPath })
   const auth = useAuthStore()
   if (to.meta.public) return true
-  if (!auth.isAuthenticated) return { name: 'login', query: { redirect: to.fullPath } }
+  if (!auth.isAuthenticated) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  if (to.meta.adminOnly && !auth.isPlatformAdmin) {
+    return { name: 'dashboard' }
+  }
   return true
+})
+
+router.afterEach((to, from, failure) => {
+  if (failure) {
+    navLog('afterEach failure', { to: to.fullPath, failure })
+  } else {
+    navLog('afterEach ok', { from: from.fullPath, to: to.fullPath })
+  }
+})
+
+router.onError((error, to) => {
+  console.error('[buz-nav] router.onError', error)
+  const msg = String((error as Error)?.message || error)
+  const isChunkError =
+    msg.includes('Failed to fetch') ||
+    msg.includes('Loading chunk') ||
+    msg.includes('Loading CSS chunk') ||
+    msg.includes('dynamically imported module') ||
+    msg.includes('Importing a module script failed')
+
+  if (isChunkError && to) {
+    console.warn('[buz-nav] chunk/load error — hard reload', to.fullPath)
+    // Avoid reload loops: only hard-nav once per target within a short window.
+    const key = `buz_nav_reload:${to.fullPath}`
+    const last = Number(sessionStorage.getItem(key) || 0)
+    if (Date.now() - last > 10_000) {
+      sessionStorage.setItem(key, String(Date.now()))
+      window.location.assign(to.fullPath)
+    }
+  } else if (isNavDebugEnabled()) {
+    console.debug('[buz-nav] non-chunk router error (no hard reload)')
+  }
 })

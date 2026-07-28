@@ -1,90 +1,114 @@
-use axum::{Router, routing::{get, post, patch}};
-use sqlx::SqlitePool;
+use axum::{
+    Router,
+    routing::{delete, get, patch, post, put},
+};
 
-use crate::config::Config;
-use crate::services::log_broadcast::LogBroadcaster;
+use crate::state::AppState;
 
 mod auth;
 pub mod runners;
 mod pipelines;
-// Re-export helper functions for YAML scanner
-pub(crate) use pipelines::{insert_steps, insert_env_vars, insert_secret_refs};
+// Re-export helper functions for YAML scanner and trigger logic
+pub(crate) use pipelines::{
+    do_trigger, insert_env_vars, insert_pipeline_secret_bindings, insert_pipeline_var_bindings,
+    insert_steps,
+};
 mod hosts;
 mod jobs;
 mod logs;
 mod secrets;
+mod teams;
+mod users;
 mod variables;
+mod version;
+mod webhook;
 
-pub fn router(pool: SqlitePool, config: Config) -> Router {
-    let app_state = AppState {
-        pool,
-        config,
-        log_broadcast: LogBroadcaster::new(),
-    };
-
+pub fn router(state: AppState) -> Router {
     Router::new()
         // Auth (public)
         .route("/auth/login", post(auth::login))
-        // Runner endpoints (protected via RunnerClaims extractor in handlers)
+        .route("/auth/verify", get(auth::verify))
+        .route("/auth/me", get(auth::me))
+        .route("/auth/change-password", post(auth::change_password))
+        // Public health (includes version)
+        .route("/health", get(version::health))
+        // Users (platform admin)
+        .route("/users", get(users::list).post(users::create))
+        .route("/users/{id}", put(users::update).delete(users::delete))
+        // Teams
+        .route("/teams", get(teams::list).post(teams::create))
+        .route(
+            "/teams/{id}",
+            get(teams::get_one)
+                .put(teams::update)
+                .delete(teams::delete),
+        )
+        .route(
+            "/teams/{id}/members",
+            get(teams::list_members).put(teams::upsert_member),
+        )
+        .route(
+            "/teams/{id}/members/{user_id}",
+            delete(teams::remove_member),
+        )
+        // Runner endpoints
         .route("/runners/register", post(runners::register))
         .route("/runners/heartbeat", post(runners::heartbeat))
         .route("/runners/poll", get(runners::poll))
-        // Health / debug (public)
-        .route("/health", get(|| async { axum::Json(serde_json::json!({"status": "ok"})) }))
-        // Admin-protected management routes
+        // Pipelines / jobs
         .route("/pipelines", get(pipelines::list).post(pipelines::create))
         .route("/pipelines/validate", post(pipelines::validate_yaml))
-        .route("/pipelines/{id}", get(pipelines::get_one).put(pipelines::update).delete(pipelines::delete))
-        .route("/pipelines/{id}/toggle-active", patch(pipelines::toggle_active))
+        .route(
+            "/pipelines/{id}",
+            get(pipelines::get_one)
+                .put(pipelines::update)
+                .delete(pipelines::delete),
+        )
+        .route(
+            "/pipelines/{id}/toggle-active",
+            patch(pipelines::toggle_active),
+        )
         .route("/pipelines/{id}/trigger", post(pipelines::trigger))
         .route("/jobs", get(jobs::list))
-        .route("/jobs/{id}", get(jobs::get_one).delete(jobs::delete))
+        .route(
+            "/jobs/{id}",
+            get(jobs::get_one).delete(jobs::delete),
+        )
         .route("/jobs/{id}/cancel", post(jobs::cancel))
         .route("/jobs/{id}/status-check", get(jobs::status_check))
-        // Runner-protected job routes
         .route("/jobs/{id}/claim", post(jobs::claim))
         .route("/jobs/{id}/status", patch(jobs::update_status))
         .route("/jobs/{id}/logs", post(logs::upload).get(logs::get_logs))
-        // WebSocket log stream (admin)
         .route("/jobs/{id}/logs/stream", get(logs::stream_logs))
-        // Hosts (admin-protected)
+        .route("/pipelines/{id}/stream", get(logs::pipeline_stream))
+        // Hosts / secrets / variables
         .route("/hosts", get(hosts::list).post(hosts::create))
-        .route("/hosts/{id}", get(hosts::get_one).put(hosts::update).delete(hosts::delete))
-        // Secrets (admin-protected) — values are masked in list/get responses
+        .route(
+            "/hosts/{id}",
+            get(hosts::get_one).put(hosts::update).delete(hosts::delete),
+        )
         .route("/secrets", get(secrets::list).post(secrets::create))
-        .route("/secrets/{id}", get(secrets::get_one).put(secrets::update).delete(secrets::delete))
-        // Variables — platform-scoped configuration
+        .route(
+            "/secrets/{id}",
+            get(secrets::get_one)
+                .put(secrets::update)
+                .delete(secrets::delete),
+        )
         .route("/variables", get(variables::list).post(variables::create))
-        .route("/variables/{id}", get(variables::get_one).put(variables::update).delete(variables::delete))
-        // Runner management (admin-protected)
+        .route(
+            "/variables/{id}",
+            get(variables::get_one)
+                .put(variables::update)
+                .delete(variables::delete),
+        )
+        // Runner management (platform admin)
         .route("/runners", get(runners::list_runners).post(runners::create_runner))
-        .route("/runners/{id}", get(runners::get_runner).delete(runners::delete_runner))
+        .route(
+            "/runners/{id}",
+            get(runners::get_runner).delete(runners::delete_runner),
+        )
         .route("/runners/{id}/freeze", patch(runners::toggle_freeze))
         .route("/runners/{id}/events", get(runners::get_events))
-        .with_state(app_state)
-}
-
-#[derive(Clone)]
-pub struct AppState {
-    pub pool: SqlitePool,
-    pub config: Config,
-    pub log_broadcast: LogBroadcaster,
-}
-
-impl axum::extract::FromRef<AppState> for SqlitePool {
-    fn from_ref(state: &AppState) -> Self {
-        state.pool.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for Config {
-    fn from_ref(state: &AppState) -> Self {
-        state.config.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for LogBroadcaster {
-    fn from_ref(state: &AppState) -> Self {
-        state.log_broadcast.clone()
-    }
+        .route("/hooks/{path}", post(webhook::handle))
+        .with_state(state)
 }

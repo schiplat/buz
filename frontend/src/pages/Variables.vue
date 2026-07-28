@@ -75,7 +75,7 @@ onMounted(loadVars)
   <div class="space-y-6">
     <PageHeader
       title="Variables"
-      description="Non-sensitive configuration values shared across pipelines. Visible to authorized operators — never use for passwords."
+      description="Non-sensitive platform config. Bind to a pipeline via Advanced → Variables; available as $NAME in every step. Never store passwords here."
     >
       <template #actions>
         <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> Add Variable</UiButton>
@@ -117,7 +117,10 @@ onMounted(loadVars)
       <div v-else class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <SlidersHorizontal class="h-10 w-10 mb-3 text-muted-foreground/20" />
         <p class="text-sm">No variables configured yet</p>
-        <p class="text-xs mt-1 text-muted-foreground/60">Use <code class="mono-chip text-[10px]">${{ '{{' }} vars.NAME }}</code> in pipeline steps to reference variables.</p>
+        <p class="text-xs mt-1 text-muted-foreground/60">
+          After creating variables, bind them in Pipeline → Advanced → Variables
+          (or YAML <code class="mono-chip text-[10px]">variables: [NAME]</code>).
+        </p>
       </div>
     </div>
 

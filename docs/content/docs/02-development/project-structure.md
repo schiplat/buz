@@ -8,17 +8,17 @@ description: "Buz monorepo directory layout"
 buzproject/
 ├── Cargo.toml              # Workspace root
 ├── conf/
-│   ├── manager.toml          # Manager default config
-│   └── runner.toml           # Runner default config
+│   ├── manager.toml        # Manager default config
+│   └── runner.toml         # Runner default config
 ├── pipelines/              # Pipeline YAML definitions
 ├── crates/
-│   ├── buz-core/           # Shared library
+│   ├── shared/             # Shared library
 │   │   └── src/
-│   │       ├── models/     # Data models (7 tables)
+│   │       ├── models/     # Data models
 │   │       ├── protocol/   # Request/response DTOs, ApiResponse
 │   │       ├── error.rs    # AppError + IntoResponse
 │   │       └── auth.rs     # TokenManager, JWT, Claims
-│   ├── buz-manager/        # Manager binary
+│   ├── manager/            # Manager binary (control plane)
 │   │   └── src/
 │   │       ├── main.rs     # axum bootstrap
 │   │       ├── config.rs   # TOML config loader
@@ -26,21 +26,21 @@ buzproject/
 │   │       ├── api/        # Route handlers
 │   │       ├── middleware/ # Auth middleware
 │   │       └── services/   # Business logic layer
-│   └── buz-runner/         # Runner binary
+│   └── runner/             # Runner binary (execution agent)
 │       └── src/
 │           ├── main.rs     # Register → heartbeat → poll loop
 │           ├── config.rs
 │           ├── client/     # HTTP communication
 │           ├── engine/     # Execution engines (local, ssh)
-│           ├── secret/     # Vault secret management
 │           └── masker/     # Log masking (Aho-Corasick)
 ├── frontend/               # Vue 3 + TypeScript
 │   └── src/
-│       ├── router/         # Hash-mode routes
-│       ├── store/          # Pinia stores
-│       ├── api/            # Axios + interceptors
-│       ├── hooks/          # Composable hooks
+│       ├── router/         # History-mode routes (vue-router)
+│       ├── stores/         # Pinia stores (auth, ui)
+│       ├── api/            # Axios client + resource APIs
+│       ├── utils/          # Navigation, time, WebSocket helpers
 │       ├── components/     # Layout + business components
+│       ├── layouts/        # AppShell layout
 │       ├── pages/          # Route pages
 │       └── types/          # TypeScript type definitions
 └── docs/                   # Hugo documentation site

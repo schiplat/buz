@@ -7,8 +7,10 @@ export interface Host {
   port: number
   username: string
   credential_type: string
-  credential_ref: string
+  credential_data?: string
+  credential_stored?: boolean
   labels: string[]
+  team_id?: string | null
   created_at: string
   updated_at: string
 }
@@ -25,8 +27,10 @@ export const hostsApi = {
     port: number
     username: string
     credential_type?: string
-    credential_ref: string
+    credential_data?: string
+    credential_passphrase?: string
     labels?: string[]
+    team_id?: string | null
   }): Promise<{ id: string; name: string }> {
     const resp = await apiClient.post('/hosts', data)
     return resp.data as { id: string; name: string }
@@ -43,8 +47,10 @@ export const hostsApi = {
     port: number
     username: string
     credential_type: string
-    credential_ref: string
+    credential_data: string
+    credential_passphrase?: string
     labels: string[]
+    team_id: string | null
   }>): Promise<void> {
     await apiClient.put(`/hosts/${id}`, data)
   },

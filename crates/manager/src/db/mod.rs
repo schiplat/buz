@@ -116,12 +116,46 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await;
 
+    // Add owner_group column to secrets table (safe to fail if already present)
+    let _ = sqlx::query(
+        "ALTER TABLE secrets ADD COLUMN owner_group TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+
+    // Add owner_group column to pipelines table (safe to fail if already present)
+    let _ = sqlx::query(
+        "ALTER TABLE pipelines ADD COLUMN owner_group TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+
+    // ── Pipeline ↔ Secret explicit binding (many-to-many) ──
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS pipeline_secrets (
+            pipeline_id TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+            secret_id TEXT NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
+            UNIQUE(pipeline_id, secret_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Index for fast lookup by pipeline_id
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_pipeline_secrets_pipeline
+         ON pipeline_secrets(pipeline_id)",
+    )
+    .execute(pool)
+    .await;
+
     // ── Infrastructure tables (idempotent CREATE TABLE) ──
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS secrets (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
             value TEXT NOT NULL DEFAULT '',
+            owner_group TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )",
     )
@@ -154,6 +188,148 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_runner_events_runner
          ON runner_events(runner_id, created_at DESC)",
+    )
+    .execute(pool)
+    .await;
+
+    // ── Pipeline ↔ Variable binding (many-to-many) ──
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS pipeline_vars (
+            pipeline_id TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+            var_id TEXT NOT NULL REFERENCES platform_vars(id) ON DELETE CASCADE,
+            UNIQUE(pipeline_id, var_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_pipeline_vars_pipeline
+         ON pipeline_vars(pipeline_id)",
+    )
+    .execute(pool)
+    .await;
+
+    // Add value column to variables table for inline env vars (safe to fail if already present)
+    let _ = sqlx::query(
+        "ALTER TABLE variables ADD COLUMN value TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+
+    // Add host_names column to tasks — stores original host names before ID resolution
+    let _ = sqlx::query(
+        "ALTER TABLE tasks ADD COLUMN host_names TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+
+    // Add step_secrets column to tasks — per-step secret scoping
+    let _ = sqlx::query(
+        "ALTER TABLE tasks ADD COLUMN step_secrets TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+
+    // Add credential_data column to hosts — stores key content or password in DB
+    let _ = sqlx::query(
+        "ALTER TABLE hosts ADD COLUMN credential_data TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+
+    // Drop legacy credential_ref column (safe to fail if already dropped or not supported)
+    let _ = sqlx::query(
+        "ALTER TABLE hosts DROP COLUMN credential_ref",
+    )
+    .execute(pool)
+    .await;
+
+    // Add credential_passphrase column to hosts — encrypted passphrase for key-based auth
+    let _ = sqlx::query(
+        "ALTER TABLE hosts ADD COLUMN credential_passphrase TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+
+    // ── Phase 2 RBAC: users / teams / memberships ──
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            is_platform_admin INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS teams (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS team_members (
+            team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (team_id, user_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id)",
+    )
+    .execute(pool)
+    .await;
+
+    // Resource team_id columns (empty string until bootstrap backfill)
+    let _ = sqlx::query(
+        "ALTER TABLE pipelines ADD COLUMN team_id TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+
+    let _ = sqlx::query(
+        "ALTER TABLE secrets ADD COLUMN team_id TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+
+    let _ = sqlx::query(
+        "ALTER TABLE hosts ADD COLUMN team_id TEXT",
+    )
+    .execute(pool)
+    .await;
+
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_pipelines_team ON pipelines(team_id)",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_secrets_team ON secrets(team_id)",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_hosts_team ON hosts(team_id)",
     )
     .execute(pool)
     .await;

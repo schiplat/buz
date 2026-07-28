@@ -12,6 +12,7 @@ shared = { path = "../shared", features = ["web"] }
 
 # Web framework
 axum = { version = "0.8", features = ["ws"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 tokio.workspace = true
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 futures-util = "0.3"
@@ -36,10 +37,21 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Auth
 jsonwebtoken = "9"
+argon2 = "0.5"
+password-hash = "0.5"
+
+# Crypto (AES-256-GCM for credential_data encryption at rest)
+aes-gcm = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
 
 # Error handling
 thiserror.workspace = true
 anyhow = "1"
+
+# Cron expression parser
+cron = "0.15"
 
 # Static file embedding
 rust-embed = "8"

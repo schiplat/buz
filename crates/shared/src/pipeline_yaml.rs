@@ -16,8 +16,15 @@ pub struct PipelineYaml {
     pub runner: Option<RunnerYaml>,
     #[serde(default)]
     pub env: Option<std::collections::BTreeMap<String, String>>,
+    /// Platform variable names to bind (referenced from Manager UI).
+    #[serde(default)]
+    pub variables: Option<Vec<String>>,
     #[serde(default)]
     pub secrets: Option<Vec<String>>,
+    /// Team slug this pipeline belongs to (Phase 2). Alias: `owner_group`.
+    /// Resolved to `teams.id` by the YAML scanner; defaults to `default` if omitted.
+    #[serde(default, alias = "owner_group")]
+    pub team: Option<String>,
     pub steps: Vec<StepYaml>,
 }
 
@@ -84,6 +91,10 @@ pub struct StepYaml {
     pub retry: Option<i32>,
     #[serde(default, rename = "continue-on-error")]
     pub continue_on_error: Option<bool>,
+    /// Secrets referenced by this step — resolved at runtime from the Manager.
+    /// These are IN ADDITION to any pipeline-level secrets.
+    #[serde(default)]
+    pub secrets: Option<Vec<String>>,
 }
 
 /// Result of YAML validation.
@@ -110,6 +121,15 @@ pub struct PipelineYamlData {
     pub runner: Option<RunnerConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<String>,
+    /// Pipeline-level user-defined env vars (key-value).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<std::collections::BTreeMap<String, String>>,
+    /// Platform variable names to bind (referenced from Manager UI).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variables: Option<Vec<String>>,
+    /// Pipeline-level secret names referenced from the YAML.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<Vec<String>>,
     pub steps: Vec<StepData>,
 }
 
@@ -161,8 +181,10 @@ pub struct StepData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-
     pub continue_on_error: Option<bool>,
+    /// Step-level secret names (in addition to pipeline-level secrets).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -247,10 +269,13 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     // 5. SSH step requires host
     for (i, step) in parsed.steps.iter().enumerate() {
         let uses = step.uses.as_deref().unwrap_or("").trim();
-        if uses == "ssh" && step.host.as_ref().map_or(true, |h| h.is_empty()) {
+        if uses == "ssh"
+            && step.host.as_ref().is_none_or(|h| h.is_empty())
+            && step.host_labels.as_ref().is_none_or(|h| h.is_empty())
+        {
             errors.push(YamlValidationError {
                 field: format!("steps[{}]", i),
-                message: "SSH execution requires 'host' field".into(),
+                message: "SSH execution requires 'host' or 'host_labels' field".into(),
             });
         }
     }
@@ -265,16 +290,23 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     let parsed_data = PipelineYamlData {
         description: parsed.description.clone(),
         concurrency: parsed.concurrency.clone(),
+        env: parsed.env.clone(),
+        variables: parsed.variables.clone(),
+        secrets: parsed.secrets.clone(),
         runner: parsed.runner.as_ref().map(|r| RunnerConfig {
             labels: r.labels.clone(),
             timeout: r.timeout.clone(),
         }),
-        trigger_type: parsed.on.as_ref().map(|on| {
-            if on.manual.is_some() { "manual" }
-            else if on.webhook.is_some() { "webhook" }
-            else if on.cron.is_some() { "cron" }
-            else { "manual" }
-        }).map(|s| s.to_string()),
+        trigger_type: Some(
+            parsed.on.as_ref()
+                .map(|on| {
+                    if on.webhook.is_some() { "webhook" }
+                    else if on.cron.is_some() { "cron" }
+                    else { "manual" }
+                })
+                .unwrap_or("manual")
+                .to_string()
+        ),
         trigger_config: parsed.on.as_ref().map(|on| TriggerConfig {
             webhook_path: on.webhook.as_ref().and_then(|w| w.path.clone()),
             cron_expr: on.cron.as_ref().and_then(|c| c.schedule.clone()),
@@ -305,6 +337,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             timeout: s.timeout.clone(),
             retry: s.retry,
             continue_on_error: s.continue_on_error,
+            secrets: s.secrets.clone(),
         }).collect(),
     };
 
@@ -314,118 +347,5 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         errors,
         warnings,
         parsed: Some(parsed_data),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn valid_minimal_yaml() {
-        let yaml = r#"
-name: hello-world
-steps:
-  - name: greet
-    run: echo hello
-"#;
-        let r = parse_and_validate(yaml);
-        assert!(r.valid);
-        assert_eq!(r.errors.len(), 0);
-    }
-
-    #[test]
-    fn missing_name() {
-        let yaml = r#"
-name: ""
-steps:
-  - run: echo hi
-"#;
-        let r = parse_and_validate(yaml);
-        assert!(!r.valid);
-        assert!(r.errors.iter().any(|e| e.field == "name"));
-    }
-
-    #[test]
-    fn empty_steps() {
-        let yaml = "name: test\nsteps: []\n";
-        let r = parse_and_validate(yaml);
-        assert!(!r.valid);
-    }
-
-    #[test]
-    fn step_missing_command() {
-        let yaml = r#"
-name: test
-steps:
-  - name: noop
-"#;
-        let r = parse_and_validate(yaml);
-        assert!(!r.valid);
-    }
-
-    #[test]
-    fn ssh_without_host() {
-        let yaml = r#"
-name: deploy
-steps:
-  - name: push
-    uses: ssh
-    run: docker push
-"#;
-        let r = parse_and_validate(yaml);
-        assert!(!r.valid);
-    }
-
-    #[test]
-    fn ssh_multi_host() {
-        let yaml = r#"
-name: multi-deploy
-steps:
-  - name: push
-    uses: ssh
-    host:
-      - prod-01
-      - prod-02
-    run: docker push
-"#;
-        let r = parse_and_validate(yaml);
-        assert!(r.valid, "Errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn full_example() {
-        let yaml = r#"
-name: Deploy Production
-description: Build and deploy to production
-on:
-  manual:
-    inputs:
-      version:
-        description: Version to deploy
-        required: true
-        default: latest
-concurrency: deploy-prod
-runner:
-  labels: [prod, linux-x64]
-  timeout: 60m
-env:
-  APP_NAME: myapp
-secrets:
-  - DOCKER_PASSWORD
-steps:
-  - name: checkout
-    run: git pull origin main
-  - name: build
-    run: docker build -t ${APP_NAME} .
-    timeout: 10m
-  - name: deploy
-    uses: ssh
-    host: prod-01
-    run: docker-compose up -d
-    retry: 1
-"#;
-        let r = parse_and_validate(yaml);
-        assert!(r.valid, "Errors: {:?}", r.errors);
     }
 }

@@ -6,17 +6,15 @@ use axum::{
 };
 use shared::auth::{Claims, Role, TokenManager};
 
-use crate::api::AppState;
+use crate::rbac::load_auth_user;
+use crate::state::AppState;
 
-/// Extracts Admin JWT claims from the Authorization header.
-/// Fails with 401 if the token is missing, invalid, expired, or not Admin.
-#[derive(Debug, Clone)]
-pub struct AdminClaims {
-    pub username: String,
-    pub claims: Claims,
-}
+pub use crate::rbac::AuthUser;
 
-impl FromRequestParts<AppState> for AdminClaims {
+/// Any authenticated human user (platform admin or team member).
+pub type AuthUserExtractor = AuthUser;
+
+impl FromRequestParts<AppState> for AuthUser {
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
@@ -24,13 +22,60 @@ impl FromRequestParts<AppState> for AdminClaims {
         let tm = TokenManager::new(&state.config.auth.jwt_secret);
         let claims = tm.verify(token).map_err(|_| auth_err("invalid or expired token"))?;
 
-        if claims.role != Role::Admin {
-            return Err(forbidden_err("admin role required"));
+        if !matches!(claims.role, Role::Admin | Role::User) {
+            return Err(forbidden_err("user role required"));
         }
 
+        load_auth_user(&state.pool, &claims.sub)
+            .await
+            .map_err(|e| match e {
+                shared::error::AppError::AuthFailed(msg) => auth_err(&msg),
+                other => {
+                    tracing::error!("load_auth_user failed: {other}");
+                    auth_err("invalid or expired token")
+                }
+            })
+    }
+}
+
+/// Platform administrator only (replaces former AdminClaims for infra routes).
+#[derive(Debug, Clone)]
+pub struct PlatformAdmin(pub AuthUser);
+
+impl std::ops::Deref for PlatformAdmin {
+    type Target = AuthUser;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl FromRequestParts<AppState> for PlatformAdmin {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        if !user.is_platform_admin {
+            return Err(forbidden_err("platform admin required"));
+        }
+        Ok(PlatformAdmin(user))
+    }
+}
+
+/// Backward-compatible alias used by older handlers — means platform admin.
+#[derive(Debug, Clone)]
+pub struct AdminClaims {
+    pub username: String,
+    pub user: AuthUser,
+}
+
+impl FromRequestParts<AppState> for AdminClaims {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let PlatformAdmin(user) = PlatformAdmin::from_request_parts(parts, state).await?;
         Ok(AdminClaims {
-            username: claims.sub.clone(),
-            claims,
+            username: user.username.clone(),
+            user,
         })
     }
 }

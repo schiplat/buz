@@ -11,9 +11,18 @@ export interface Pipeline {
   source: string
   input_defs: PipelineInputDef[] | null
   is_active: boolean
+  owner_group: string
+  team_id?: string
+  secret_ids: string[]
   latest_job_id: string | null
   latest_job_status: string | null
   latest_job_start: string | null
+  /** Total jobs ever created for this pipeline. */
+  job_total: number
+  /** Jobs with status === 'success'. */
+  job_success: number
+  /** job_success / job_total; null when job_total === 0. */
+  success_rate: number | null
   created_at: string
   updated_at: string
 }
@@ -27,6 +36,11 @@ export interface CreatePipelinePayload {
   runner_labels: string[]
   timeout_seconds?: number
   concurrency_group?: string
+  owner_group?: string
+  team_id?: string
+  var_ids?: string[]
+  secret_ids?: string[]
+  env?: { name: string; value: string }[]
   steps: StepDef[]
   input_defs?: PipelineInputDef[]
 }
@@ -64,6 +78,9 @@ export interface YamlParsedData {
   trigger_config?: YamlTriggerConfig | null
   runner?: YamlRunnerConfig | null
   concurrency?: string | null
+  env?: Record<string, string> | null
+  variables?: string[] | null
+  secrets?: string[] | null
   steps: YamlStepData[]
 }
 
@@ -95,6 +112,7 @@ export interface YamlStepData {
   timeout?: string | null
   retry?: number | null
   continue_on_error?: boolean | null
+  secrets?: string[] | null
 }
 
 export interface YamlValidationError {

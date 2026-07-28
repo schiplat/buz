@@ -1,0 +1,73 @@
+# ── Git Clone & Build (Private Repo via SSH) ──────────────────────
+# Demonstrates cloning a private Git repository using an SSH key
+# stored as a Buz secret.
+#
+# Before using:
+#   1. Generate an SSH deploy key:
+#        ssh-keygen -t ed25519 -C "buz-deploy" -f /tmp/buz_deploy_key
+#   2. Add the PUBLIC key as a Deploy Key in your Git host
+#      (GitHub: Repo → Settings → Deploy Keys)
+#   3. Store the PRIVATE key in Buz Manager UI:
+#        Secrets → New Secret
+#        Name:  GIT_SSH_KEY
+#        Value: <paste entire contents of /tmp/buz_deploy_key>
+
+name: Git Clone & Build
+description: Clone private repo via SSH key, run tests, and build.
+
+team: default
+
+on:
+  manual:
+    inputs:
+      - name: REPO_URL
+        description: Git SSH URL (e.g. git@github.com:org/private-repo.git)
+        default: git@github.com:example/hello-world.git
+        required: true
+      - name: BUILD_CMD
+        description: Build command after clone
+        default: make
+        required: false
+
+runner:
+  labels: [linux-x64]
+  timeout: 15m
+
+steps:
+  # ── Setup + Clone: secret only needed in this step ──
+  - name: Clone Private Repository
+    secrets: [GIT_SSH_KEY]
+    run: |
+      echo "==> Writing SSH deploy key"
+      echo "$GIT_SSH_KEY" > /tmp/buz_ssh_key
+      chmod 600 /tmp/buz_ssh_key
+      ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+      echo "==> Cloning $REPO_URL"
+      GIT_SSH_COMMAND="ssh -i /tmp/buz_ssh_key -o StrictHostKeyChecking=no" \
+        git clone --depth 1 "$REPO_URL" /tmp/buz-build
+      echo "Clone complete — $(ls /tmp/buz-build | wc -l) files"
+      # Cleanup key immediately after clone
+      rm -f /tmp/buz_ssh_key
+    timeout: 5m
+
+  - name: Show Git Info
+    run: |
+      echo "Repository: $(git remote get-url origin)"
+      echo "Branch:     $(git branch --show-current)"
+      echo "Commit:     $(git rev-parse --short HEAD)"
+    work_dir: /tmp/buz-build
+
+  - name: Test
+    run: |
+      echo "==> Running tests..."
+      $BUILD_CMD test 2>&1 || echo "Tests completed (check output above)"
+    work_dir: /tmp/buz-build
+    timeout: 10m
+    continue-on-error: true
+
+  - name: Build
+    run: |
+      echo "==> Building with: $BUILD_CMD"
+      $BUILD_CMD
+    work_dir: /tmp/buz-build
+    timeout: 10m

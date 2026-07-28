@@ -10,7 +10,6 @@ pub struct Host {
     pub port: u16,
     pub username: String,
     pub credential_type: CredentialType,
-    pub credential_ref: String,
     pub labels: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

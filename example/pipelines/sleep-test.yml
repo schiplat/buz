@@ -6,6 +6,8 @@
 name: Sleep Test
 description: Simple sleep-based pipeline for testing cancel and log streaming.
 
+team: default
+
 runner:
   labels: [linux-x64]
   timeout: 5m
@@ -28,7 +30,7 @@ steps:
       echo "All done!"
     retry: 1
 
-  - name: Step 4 — Sleep 10s(If that HTTP call failed for any reason (transient network blip, DB lock, etc.), the job would stay stuck in running forever — this is exactly what happened.)
+  - name: Step 4 — Sleep 10s
     run: |
       echo "10s"
       sleep 10

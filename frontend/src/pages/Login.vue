@@ -11,6 +11,7 @@ const username = ref('admin')
 const password = ref('')
 const error = ref('')
 const loading = ref(false)
+const appVersion = __APP_VERSION__
 
 async function handleLogin() {
   error.value = ''
@@ -63,6 +64,8 @@ async function handleLogin() {
           {{ loading ? 'Signing in…' : 'Sign in' }}
         </UiButton>
       </form>
+
+      <p class="text-center font-mono text-[11px] text-muted-foreground/60">v{{ appVersion }}</p>
     </div>
   </div>
 </template>

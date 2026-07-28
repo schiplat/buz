@@ -2,60 +2,129 @@ use axum::{Json, extract::{State, Path}};
 use shared::protocol::{CreateHostRequest, UpdateHostRequest};
 use shared::protocol::response::ApiResponse;
 use shared::error::AppError;
+use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::api::AppState;
-use crate::middleware::AdminClaims;
+use crate::crypto;
+use crate::middleware::AuthUser;
+use crate::rbac::{host_team_id, resolve_optional_team_id};
+use crate::state::AppState;
+
+fn host_json(r: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
+    let labels_raw: String = r.get(7);
+    let cred_data: String = r.get(6);
+    let team_id: Option<String> = r.try_get(10).ok().flatten();
+    serde_json::json!({
+        "id": r.get::<String, _>(0),
+        "name": r.get::<String, _>(1),
+        "host": r.get::<String, _>(2),
+        "port": r.get::<i64, _>(3) as u16,
+        "username": r.get::<String, _>(4),
+        "credential_type": r.get::<String, _>(5),
+        "credential_stored": !cred_data.is_empty(),
+        "labels": serde_json::from_str::<Vec<String>>(&labels_raw).unwrap_or_default(),
+        "created_at": r.get::<Option<String>, _>(8),
+        "updated_at": r.get::<Option<String>, _>(9),
+        "team_id": team_id,
+    })
+}
+
+/// Shared hosts (NULL team_id) are visible to all authenticated users;
+/// team-scoped hosts only to members (or platform admin).
+async fn assert_host_visible(auth: &AuthUser, team_id: &Option<String>) -> Result<(), AppError> {
+    match team_id {
+        None => Ok(()),
+        Some(tid) if tid.is_empty() => Ok(()),
+        Some(tid) => auth.check_team(tid, Perm::TeamView),
+    }
+}
+
+async fn assert_host_manage(auth: &AuthUser, team_id: &Option<String>) -> Result<(), AppError> {
+    match team_id {
+        None => auth.require_platform_admin(),
+        Some(tid) if tid.is_empty() => auth.require_platform_admin(),
+        Some(tid) => auth.check_team(tid, Perm::HostManage),
+    }
+}
 
 pub async fn list(
-    _auth: AdminClaims,
+    auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let rows = sqlx::query(
-        "SELECT id, name, host, port, username, credential_type, credential_ref, labels, created_at, updated_at
-         FROM hosts ORDER BY created_at DESC",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let rows = if auth.is_platform_admin {
+        sqlx::query(
+            "SELECT id, name, host, port, username, credential_type, credential_data, labels,
+                    created_at, updated_at, team_id
+             FROM hosts ORDER BY created_at DESC",
+        )
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        let ids = auth.team_ids();
+        if ids.is_empty() {
+            sqlx::query(
+                "SELECT id, name, host, port, username, credential_type, credential_data, labels,
+                        created_at, updated_at, team_id
+                 FROM hosts WHERE team_id IS NULL OR team_id = ''
+                 ORDER BY created_at DESC",
+            )
+            .fetch_all(&state.pool)
+            .await?
+        } else {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT id, name, host, port, username, credential_type, credential_data, labels,
+                        created_at, updated_at, team_id
+                 FROM hosts
+                 WHERE team_id IS NULL OR team_id = '' OR team_id IN ({placeholders})
+                 ORDER BY created_at DESC"
+            );
+            let mut q = sqlx::query(&sql);
+            for id in &ids {
+                q = q.bind(id);
+            }
+            q.fetch_all(&state.pool).await?
+        }
+    };
 
-    let hosts: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            let labels_raw: String = r.get(7);
-            serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "name": r.get::<String, _>(1),
-                "host": r.get::<String, _>(2),
-                "port": r.get::<i64, _>(3) as u16,
-                "username": r.get::<String, _>(4),
-                "credential_type": r.get::<String, _>(5),
-                "credential_ref": r.get::<String, _>(6),
-                "labels": serde_json::from_str::<Vec<String>>(&labels_raw).unwrap_or_default(),
-                "created_at": r.get::<Option<String>, _>(8),
-                "updated_at": r.get::<Option<String>, _>(9),
-            })
-        })
-        .collect();
-
+    let hosts: Vec<serde_json::Value> = rows.iter().map(host_json).collect();
     Ok(Json(ApiResponse::success(hosts)))
 }
 
 pub async fn create(
-    _auth: AdminClaims,
+    auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<CreateHostRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let team = resolve_optional_team_id(&state.pool, req.team_id.as_deref()).await?;
+    let team_id_opt = team.as_ref().map(|(id, _)| id.clone());
+    assert_host_manage(&auth, &team_id_opt).await?;
+
     let id = Uuid::new_v4().to_string();
-    let cred_type = req.credential_type.unwrap_or_else(|| "key_path".into());
-    let labels_json = serde_json::to_string(
-        &req.labels.unwrap_or_default(),
-    )
-    .unwrap_or_else(|_| "[]".into());
+    let cred_type = req.credential_type.unwrap_or_else(|| "vault".into());
+    let labels_json =
+        serde_json::to_string(&req.labels.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+    let credential_data = req.credential_data.unwrap_or_default();
+    let encrypted_cred_data = if credential_data.is_empty() {
+        String::new()
+    } else {
+        crypto::encrypt(&credential_data, &state.config.auth.jwt_secret)
+            .map_err(|e| AppError::Internal(format!("credential encryption failed: {e}")))?
+    };
+
+    let passphrase = req.credential_passphrase.unwrap_or_default();
+    let encrypted_passphrase = if passphrase.is_empty() {
+        String::new()
+    } else {
+        crypto::encrypt(&passphrase, &state.config.auth.jwt_secret)
+            .map_err(|e| AppError::Internal(format!("passphrase encryption failed: {e}")))?
+    };
 
     sqlx::query(
-        "INSERT INTO hosts (id, name, host, port, username, credential_type, credential_ref, labels)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO hosts (id, name, host, port, username, credential_type, credential_data,
+         credential_passphrase, labels, team_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&req.name)
@@ -63,8 +132,10 @@ pub async fn create(
     .bind(req.port as i64)
     .bind(&req.username)
     .bind(&cred_type)
-    .bind(&req.credential_ref)
+    .bind(&encrypted_cred_data)
+    .bind(&encrypted_passphrase)
     .bind(&labels_json)
+    .bind(&team_id_opt)
     .execute(&state.pool)
     .await?;
 
@@ -73,16 +144,21 @@ pub async fn create(
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
         "name": req.name,
+        "team_id": team_id_opt,
     }))))
 }
 
 pub async fn get_one(
-    _auth: AdminClaims,
+    auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let team_id = host_team_id(&state.pool, &id).await?;
+    assert_host_visible(&auth, &team_id).await?;
+
     let r = sqlx::query(
-        "SELECT id, name, host, port, username, credential_type, credential_ref, labels, created_at, updated_at
+        "SELECT id, name, host, port, username, credential_type, credential_data, labels,
+                created_at, updated_at, team_id
          FROM hosts WHERE id = ?",
     )
     .bind(&id)
@@ -90,33 +166,33 @@ pub async fn get_one(
     .await?
     .ok_or_else(|| AppError::NotFound("host not found".into()))?;
 
-    let labels_raw: String = r.get(7);
-    Ok(Json(ApiResponse::success(serde_json::json!({
-        "id": r.get::<String, _>(0),
-        "name": r.get::<String, _>(1),
-        "host": r.get::<String, _>(2),
-        "port": r.get::<i64, _>(3) as u16,
-        "username": r.get::<String, _>(4),
-        "credential_type": r.get::<String, _>(5),
-        "credential_ref": r.get::<String, _>(6),
-        "labels": serde_json::from_str::<Vec<String>>(&labels_raw).unwrap_or_default(),
-        "created_at": r.get::<Option<String>, _>(8),
-        "updated_at": r.get::<Option<String>, _>(9),
-    }))))
+    Ok(Json(ApiResponse::success(host_json(&r))))
 }
 
 pub async fn update(
-    _auth: AdminClaims,
+    auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
     Json(req): Json<UpdateHostRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    // Verify the host exists
-    let _existing = sqlx::query("SELECT id FROM hosts WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("host not found".into()))?;
+    let current_team = host_team_id(&state.pool, &id).await?;
+    assert_host_manage(&auth, &current_team).await?;
+
+    if let Some(ref tid) = req.team_id {
+        let new_team = if tid.is_empty() {
+            None
+        } else {
+            resolve_optional_team_id(&state.pool, Some(tid))
+                .await?
+                .map(|(id, _)| id)
+        };
+        assert_host_manage(&auth, &new_team).await?;
+        sqlx::query("UPDATE hosts SET team_id = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(&new_team)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+    }
 
     if let Some(labels) = &req.labels {
         let labels_json = serde_json::to_string(labels).unwrap_or_else(|_| "[]".into());
@@ -152,19 +228,45 @@ pub async fn update(
     }
 
     if let Some(ref ct) = req.credential_type {
-        sqlx::query("UPDATE hosts SET credential_type = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(ct)
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE hosts SET credential_type = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(ct)
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
     }
 
-    if let Some(ref cr) = req.credential_ref {
-        sqlx::query("UPDATE hosts SET credential_ref = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(cr)
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
+    if let Some(ref cd) = req.credential_data {
+        let encrypted = if cd.is_empty() {
+            String::new()
+        } else {
+            crypto::encrypt(cd, &state.config.auth.jwt_secret)
+                .map_err(|e| AppError::Internal(format!("credential encryption failed: {e}")))?
+        };
+        sqlx::query(
+            "UPDATE hosts SET credential_data = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&encrypted)
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    }
+
+    if let Some(ref pp) = req.credential_passphrase {
+        let encrypted = if pp.is_empty() {
+            String::new()
+        } else {
+            crypto::encrypt(pp, &state.config.auth.jwt_secret)
+                .map_err(|e| AppError::Internal(format!("passphrase encryption failed: {e}")))?
+        };
+        sqlx::query(
+            "UPDATE hosts SET credential_passphrase = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&encrypted)
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
     }
 
     if let Some(ref n) = req.name {
@@ -184,10 +286,13 @@ pub async fn update(
 }
 
 pub async fn delete(
-    _auth: AdminClaims,
+    auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
+    let team_id = host_team_id(&state.pool, &id).await?;
+    assert_host_manage(&auth, &team_id).await?;
+
     let result = sqlx::query("DELETE FROM hosts WHERE id = ?")
         .bind(&id)
         .execute(&state.pool)

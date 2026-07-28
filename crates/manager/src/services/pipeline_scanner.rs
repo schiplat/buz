@@ -7,7 +7,7 @@ use uuid::Uuid;
 use shared::pipeline_yaml::{parse_and_validate, PipelineYaml, TriggerYaml};
 use shared::protocol::{EnvPair, PipelineInputDef, StepDef};
 
-use crate::api::{insert_steps, insert_env_vars, insert_secret_refs};
+use crate::api::{insert_steps, insert_env_vars, insert_pipeline_secret_bindings, insert_pipeline_var_bindings};
 /// Periodically scan `yaml_scan_dir` for `.yml`/`.yaml` files,
 /// parsing them into pipeline definitions and upserting into the DB.
 pub fn spawn_scanner(pool: SqlitePool, dir: String, interval_secs: u64) {
@@ -121,6 +121,15 @@ async fn upsert_from_yaml(
 
     let concurrency_group = parsed.concurrency.clone();
 
+    // Resolve team: YAML `team:` / `owner_group:` slug → team_id (fallback: default)
+    let team_slug = parsed
+        .team
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("default");
+    let (team_id, resolved_slug) = resolve_team_for_yaml(pool, team_slug).await?;
+
     let steps: Vec<StepDef> = parsed
         .steps
         .iter()
@@ -134,8 +143,13 @@ async fn upsert_from_yaml(
             timeout: s.timeout.clone(),
             retry: s.retry,
             continue_on_error: s.continue_on_error,
+            secrets: s.secrets.clone(),
         })
         .collect();
+
+    // Pipeline-level secrets only — step-level secrets are stored per-task (step_secrets column)
+    // and resolved at poll time per-step. This prevents cross-step secret leakage.
+    let pipeline_secrets: Vec<String> = parsed.secrets.clone().unwrap_or_default();
 
     // Check if pipeline already exists by yaml_path
     let existing = sqlx::query(
@@ -155,7 +169,7 @@ async fn upsert_from_yaml(
         sqlx::query(
             "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?,
              webhook_path = ?, cron_expr = ?, runner_labels = ?, timeout_seconds = ?,
-             concurrency_group = ?, input_defs = ?, is_active = 1,
+             concurrency_group = ?, owner_group = ?, team_id = ?, input_defs = ?, is_active = 1,
              updated_at = datetime('now')
              WHERE id = ?",
         )
@@ -167,6 +181,8 @@ async fn upsert_from_yaml(
         .bind(&labels_json)
         .bind(timeout_seconds)
         .bind(&concurrency_group)
+        .bind(&resolved_slug)
+        .bind(&team_id)
         .bind(&input_defs_json)
         .bind(&id)
         .execute(pool)
@@ -178,6 +194,14 @@ async fn upsert_from_yaml(
             .execute(pool)
             .await?;
         sqlx::query("DELETE FROM variables WHERE pipeline_id = ?")
+            .bind(&id)
+            .execute(pool)
+            .await?;
+        sqlx::query("DELETE FROM pipeline_secrets WHERE pipeline_id = ?")
+            .bind(&id)
+            .execute(pool)
+            .await?;
+        sqlx::query("DELETE FROM pipeline_vars WHERE pipeline_id = ?")
             .bind(&id)
             .execute(pool)
             .await?;
@@ -195,17 +219,41 @@ async fn upsert_from_yaml(
                 .collect();
             insert_env_vars(pool, &id, &pairs).await?;
         }
-        if let Some(ref secrets) = parsed.secrets {
-            insert_secret_refs(pool, &id, secrets).await?;
+        if !pipeline_secrets.is_empty() {
+            // Look up secret IDs by name and create explicit bindings
+            let placeholders: Vec<String> = pipeline_secrets.iter().enumerate().map(|(i, _)| format!("?{}", i+1)).collect();
+            let query = format!(
+                "SELECT id FROM secrets WHERE name IN ({})",
+                placeholders.join(",")
+            );
+            let mut q = sqlx::query_as::<_, (String,)>(&query);
+            for name in &pipeline_secrets {
+                q = q.bind(name);
+            }
+            let secret_ids: Vec<String> = q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+            insert_pipeline_secret_bindings(pool, &id, &secret_ids).await?;
+        }
+        if let Some(ref var_names) = parsed.variables {
+            if !var_names.is_empty() {
+                let placeholders: Vec<String> = var_names.iter().enumerate().map(|(i, _)| format!("?{}", i+1)).collect();
+                let query = format!(
+                    "SELECT id FROM platform_vars WHERE name IN ({})",
+                    placeholders.join(",")
+                );
+                let mut q = sqlx::query_as::<_, (String,)>(&query);
+                for name in var_names { q = q.bind(name); }
+                let var_ids: Vec<String> = q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+                insert_pipeline_var_bindings(pool, &id, &var_ids).await?;
+            }
         }
     } else {
         let id = Uuid::new_v4().to_string();
 
         sqlx::query(
             "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path,
-             cron_expr, runner_labels, timeout_seconds, concurrency_group, source, yaml_path,
-             input_defs, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, 1)",
+             cron_expr, runner_labels, timeout_seconds, concurrency_group, owner_group, team_id,
+             source, yaml_path, input_defs, is_active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, 1)",
         )
         .bind(&id)
         .bind(pipeline_name)
@@ -216,6 +264,8 @@ async fn upsert_from_yaml(
         .bind(&labels_json)
         .bind(timeout_seconds)
         .bind(&concurrency_group)
+        .bind(&resolved_slug)
+        .bind(&team_id)
         .bind(file_path)
         .bind(&input_defs_json)
         .execute(pool)
@@ -233,14 +283,70 @@ async fn upsert_from_yaml(
                 .collect();
             insert_env_vars(pool, &id, &pairs).await?;
         }
-        if let Some(ref secrets) = parsed.secrets {
-            insert_secret_refs(pool, &id, secrets).await?;
+        if !pipeline_secrets.is_empty() {
+            // Look up secret IDs by name and create explicit bindings
+            let placeholders: Vec<String> = pipeline_secrets.iter().enumerate().map(|(i, _)| format!("?{}", i+1)).collect();
+            let query = format!(
+                "SELECT id FROM secrets WHERE name IN ({})",
+                placeholders.join(",")
+            );
+            let mut q = sqlx::query_as::<_, (String,)>(&query);
+            for name in &pipeline_secrets {
+                q = q.bind(name);
+            }
+            let secret_ids: Vec<String> = q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+            insert_pipeline_secret_bindings(pool, &id, &secret_ids).await?;
+        }
+        if let Some(ref var_names) = parsed.variables {
+            if !var_names.is_empty() {
+                let placeholders: Vec<String> = var_names.iter().enumerate().map(|(i, _)| format!("?{}", i+1)).collect();
+                let query = format!(
+                    "SELECT id FROM platform_vars WHERE name IN ({})",
+                    placeholders.join(",")
+                );
+                let mut q = sqlx::query_as::<_, (String,)>(&query);
+                for name in var_names { q = q.bind(name); }
+                let var_ids: Vec<String> = q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+                insert_pipeline_var_bindings(pool, &id, &var_ids).await?;
+            }
         }
 
         tracing::info!("YAML scanner: created pipeline {pipeline_name} ({id}) from {file_path}");
     }
 
     Ok(())
+}
+
+/// Resolve YAML `team` / `owner_group` slug to `(team_id, slug)`.
+/// Creates no teams — falls back to the bootstrapped `default` team when slug is unknown.
+async fn resolve_team_for_yaml(
+    pool: &SqlitePool,
+    slug: &str,
+) -> anyhow::Result<(String, String)> {
+    if let Some(row) = sqlx::query("SELECT id, slug FROM teams WHERE slug = ?")
+        .bind(slug)
+        .fetch_optional(pool)
+        .await?
+    {
+        return Ok((row.get(0), row.get(1)));
+    }
+
+    if slug != "default" {
+        tracing::warn!(
+            "YAML scanner: unknown team slug '{slug}', falling back to 'default'"
+        );
+    }
+
+    if let Some(row) = sqlx::query("SELECT id, slug FROM teams WHERE slug = 'default'")
+        .fetch_optional(pool)
+        .await?
+    {
+        return Ok((row.get(0), row.get(1)));
+    }
+
+    anyhow::bail!(
+        "no team '{slug}' and no 'default' team — ensure RBAC bootstrap has run"
+    )
 }
 
 /// Deactivate pipelines whose YAML source file has been deleted from disk.

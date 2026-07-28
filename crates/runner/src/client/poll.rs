@@ -79,6 +79,20 @@ pub async fn run_poll_loop(client: &Client, config: &Config, token: &str) -> any
                         }
                     }
                 }
+
+                // ── Ephemeral / workspace cleanup ─────────────────────────────
+                if config.node.clean_workspace_after_job || config.node.ephemeral {
+                    tracing::info!("Cleaning workspace: {}", config.node.work_dir);
+                    clean_workspace(&config.node.work_dir);
+                }
+
+                if config.node.ephemeral {
+                    tracing::info!(
+                        "Ephemeral runner exiting after job {job_id} — container/VM will be destroyed"
+                    );
+                    return Ok(());
+                }
+                // ───────────────────────────────────────────────────────────────
             }
             Ok(None) => {
                 // No task — this is a normal poll, reset backoff
@@ -161,8 +175,9 @@ async fn execute_job(
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("missing tasks array"))?;
 
-    // Build env map from trigger inputs
-    let extra_env: std::collections::HashMap<String, String> = task
+    // Build base env from trigger inputs + pipeline-level secrets.
+    // Step-level secrets are merged per-step below.
+    let mut base_env: std::collections::HashMap<String, String> = task
         .get("inputs")
         .and_then(|v| v.as_object())
         .map(|obj| {
@@ -171,6 +186,15 @@ async fn execute_job(
                 .collect()
         })
         .unwrap_or_default();
+
+    // Merge pipeline-level resolved secrets from manager (e.g. env vars, platform vars, pipeline secrets)
+    if let Some(secrets_obj) = task.get("secrets").and_then(|v| v.as_object()) {
+        for (k, v) in secrets_obj {
+            if let Some(s) = v.as_str() {
+                base_env.insert(k.clone(), s.to_string());
+            }
+        }
+    }
 
     // ---- Cancel watcher helper -------------------------------------------------
     /// Returns `true` when the job has been cancelled.
@@ -200,9 +224,27 @@ async fn execute_job(
         let exec_type = step["exec_type"].as_str().unwrap_or("local");
         let fail_strategy = step["fail_strategy"].as_str().unwrap_or("stop");
 
+        // ── Build step-specific env: base (inputs+pipeline-secrets) + step-level secrets ──
+        let mut step_env = base_env.clone();
+        if let Some(ss_obj) = step.get("step_secrets").and_then(|v| v.as_object()) {
+            for (k, v) in ss_obj {
+                if let Some(s) = v.as_str() {
+                    step_env.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+
+        // Collect all secret values for log masking (GitHub Actions-style redaction)
+        let secret_values = crate::masker::collect_secret_values(&step_env);
+
+        let env_count = step_env.len();
         tracing::info!(
             "Step {idx}: {step_name} ({exec_type}){}",
-            if extra_env.is_empty() { "" } else { " [with inputs]" }
+            if env_count > 0 {
+                format!(" [with {env_count} env vars]")
+            } else {
+                String::new()
+            }
         );
 
         update_job_status(client, config, token, job_id, "running", Some(idx as i32)).await?;
@@ -212,15 +254,18 @@ async fn execute_job(
             "local" => {
                 let cmd = command.to_string();
                 let wd = work_dir.map(|s| s.to_string());
-                let env = extra_env.clone();
+                let env = step_env.clone();
                 let c = client.clone();
                 let cfg = config.clone();
                 let t = token.to_string();
                 let jid = job_id.to_string();
                 let sname = step_name.to_string();
 
-                let (mut child, mut output_rx) =
+                let (mut child, mut output_rx, read_guard) =
                     engine::local::execute_streaming(&cmd, wd.as_deref(), Some(&env)).await?;
+
+                // Clone secret values for use in the async upload task
+                let sv_for_upload = secret_values.clone();
 
                 // Background task: stream output chunks to the manager in real time
                 let c_log = client.clone();
@@ -231,14 +276,18 @@ async fn execute_job(
                 let upload_task = tokio::spawn(async move {
                     let mut chunk_num = 0i32;
                     while let Some(chunk) = output_rx.recv().await {
-                        let _ = super::logs::upload_chunk(
+                        let masked_chunk = crate::masker::mask_secrets(&chunk, &sv_for_upload);
+                        match super::logs::upload_chunk(
                             &c_log, &cfg_log, &t_log, &jid_log,
                             LogChunk {
                                 chunk_index: chunk_num,
                                 step_order: idx_i32,
-                                content: chunk,
+                                content: masked_chunk,
                             },
-                        ).await;
+                        ).await {
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!("Log upload chunk {chunk_num} failed: {e}"),
+                        }
                         chunk_num += 1;
                     }
                 });
@@ -246,19 +295,20 @@ async fn execute_job(
                 // Race: child completion vs cancellation
                 let (exit_code, was_cancelled_local) = tokio::select! {
                     status = child.wait() => {
-                        (status?.code().unwrap_or(-1), false)
+                        let code = status?.code().unwrap_or(-1);
+                        // Ensure all pipe data is read before proceeding
+                        let _ = read_guard.join().await;
+                        let _ = upload_task.await;
+                        (code, false)
                     }
                     _ = cancel_watcher(&c, &cfg, &t, &jid) => {
                         tracing::warn!("Job {jid} cancelled during step '{sname}' — killing");
                         let _ = child.kill().await;
                         let _ = child.wait().await;
                         upload_task.abort();
-                        (0, true)
+                        (-1, true)
                     }
                 };
-
-                // Flush trailing output
-                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), upload_task).await;
 
                 (engine::local::LocalOutput {
                     stdout: String::new(),
@@ -271,8 +321,7 @@ async fn execute_job(
                     .map(|a| a.clone())
                     .or_else(|| step["host"].as_object().map(|o| vec![serde_json::Value::Object(o.clone())]))
                     .unwrap_or_else(|| {
-                        let msg = format!("SSH step '{step_name}' missing host connection details");
-                        // We can't await here since we're in a closure. Use a flag.
+                        let _msg = format!("SSH step '{step_name}' missing host connection details");
                         vec![]
                     });
 
@@ -282,6 +331,15 @@ async fn execute_job(
                     } else {
                         format!("SSH step '{step_name}': no hosts resolved from the database. Register your hosts in the Manager UI first.")
                     };
+                    // Upload the error as a log chunk so it appears in the step's terminal
+                    let _ = super::logs::upload_chunk(
+                        client, config, token, job_id,
+                        LogChunk {
+                            chunk_index: (idx * 10000 + 9997) as i32,
+                            step_order: idx as i32,
+                            content: format!("==> ERROR <==\n{msg}\n"),
+                        },
+                    ).await;
                     update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
                     anyhow::bail!(msg);
                 }
@@ -293,6 +351,7 @@ async fn execute_job(
                 let cmd = command.to_string();
                 let c = client.clone();
                 let cfg = config.clone();
+                let cfg_ssh = cfg.clone();
                 let t = token.to_string();
                 let jid = job_id.to_string();
                 let sname = step_name.to_string();
@@ -300,7 +359,7 @@ async fn execute_job(
                 let hosts_json = serde_json::Value::Array(host_values);
 
                 let step_task = tokio::spawn(async move {
-                    execute_ssh_step(&cmd, &hosts_json, step_timeout, &sname).await
+                    execute_ssh_step(&cfg_ssh, &cmd, &hosts_json, step_timeout, &sname).await
                 });
                 let abort_handle = step_task.abort_handle();
 
@@ -330,7 +389,7 @@ async fn execute_job(
                 token,
                 job_id,
                 LogChunk {
-                    chunk_index: idx as i32,
+                    chunk_index: (idx * 10000 + 9998) as i32,
                     step_order: idx as i32,
                     content: "==> CANCELLED <==\nJob was cancelled by user.\n".into(),
                 },
@@ -340,24 +399,27 @@ async fn execute_job(
             anyhow::bail!("job cancelled by user");
         }
 
-        // Upload stdout as log chunk
-        let combined = format!(
-            "==> {step_name} <==\n{}\n{}",
-            output.stdout, output.stderr
-        );
-
-        super::logs::upload_chunk(
-            client,
-            config,
-            token,
-            job_id,
-            LogChunk {
-                chunk_index: idx as i32,
-                step_order: idx as i32,
-                content: combined,
-            },
-        )
-        .await?;
+        // For SSH steps, upload the accumulated output as a summary chunk.
+        // Local steps are fully streamed so we skip this redundant upload.
+        if exec_type == "ssh" {
+            let combined = format!(
+                "==> {step_name} <==\n{}\n{}",
+                output.stdout, output.stderr
+            );
+            let masked = crate::masker::mask_secrets(&combined, &secret_values);
+            super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: (idx * 10000 + 9999) as i32,
+                    step_order: idx as i32,
+                    content: masked,
+                },
+            )
+            .await?;
+        }
 
         if output.exit_code != 0 && fail_strategy == "stop" {
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
@@ -378,6 +440,7 @@ async fn execute_job(
 
 /// Extracted SSH execution logic (keeps `execute_job` readable).
 async fn execute_ssh_step(
+    config: &Config,
     command: &str,
     host_values: &serde_json::Value,
     step_timeout: Option<std::time::Duration>,
@@ -396,11 +459,14 @@ async fn execute_ssh_step(
             .ok_or_else(|| anyhow::anyhow!("SSH step '{step_name}' host[{hi}] is not an object"))?;
 
         let ssh_conn = engine::ssh::SshConnectionParams {
-            host: host_params["host"].as_str().unwrap_or("").to_string(),
-            port: host_params["port"].as_u64().unwrap_or(22) as u16,
-            username: host_params["username"].as_str().unwrap_or("").to_string(),
-            credential_type: host_params["credential_type"].as_str().unwrap_or("key_path").to_string(),
-            credential_ref: host_params["credential_ref"].as_str().unwrap_or("").to_string(),
+            host: host_params.get("host").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            port: host_params.get("port").and_then(|v| v.as_u64()).unwrap_or(22) as u16,
+            username: host_params.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            credential_type: host_params.get("credential_type").and_then(|v| v.as_str()).unwrap_or("key_path").to_string(),
+            credential_value: host_params.get("credential_value").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            credential_passphrase: host_params.get("credential_passphrase").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            host_key_policy: config.engine.ssh_host_key_policy.clone(),
+            known_hosts_path: config.engine.ssh_known_hosts_path.clone(),
         };
 
         let ssh_header = if hosts.len() > 1 {
@@ -487,4 +553,22 @@ async fn update_job_status(
     }
 
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("status update failed after all retries")))
+}
+
+/// Clean the workspace directory by removing all contents.
+/// The directory itself is preserved (recreated if needed) for future jobs.
+fn clean_workspace(work_dir: &str) {
+    match std::fs::remove_dir_all(work_dir) {
+        Ok(()) => {
+            if let Err(e) = std::fs::create_dir_all(work_dir) {
+                tracing::warn!("Failed to recreate workspace dir '{work_dir}': {e}");
+            }
+        }
+        Err(e) => {
+            // If the directory doesn't exist, that's fine — nothing to clean
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!("Failed to clean workspace '{work_dir}': {e}");
+            }
+        }
+    }
 }

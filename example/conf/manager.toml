@@ -4,11 +4,18 @@
 host = "0.0.0.0"
 port = 8080
 
+# ── TLS (recommended for production) ──
+# Uncomment to enable HTTPS. Generate a self-signed cert:
+#   openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"
+# tls_cert = "certs/cert.pem"
+# tls_key  = "certs/key.pem"
+
 [database]
 path = "./data/buz.db"
 max_connections = 8
 
 [auth]
+# export BUZ_JWT_SECRET=$(openssl rand -base64 32)
 jwt_secret = "changeme-demo-only"
 admin_user = "admin"
 admin_password = "changeme-demo-only"

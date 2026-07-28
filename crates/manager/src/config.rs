@@ -20,6 +20,12 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Path to TLS certificate PEM file (enables HTTPS when both cert and key are set)
+    #[serde(default)]
+    pub tls_cert: Option<String>,
+    /// Path to TLS private key PEM file
+    #[serde(default)]
+    pub tls_key: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -27,7 +33,15 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
+            tls_cert: None,
+            tls_key: None,
         }
+    }
+}
+
+impl ServerConfig {
+    pub fn tls_enabled(&self) -> bool {
+        self.tls_cert.is_some() && self.tls_key.is_some()
     }
 }
 
