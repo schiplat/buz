@@ -1,5 +1,5 @@
-use axum::Json;
 use super::health;
+use axum::Json;
 use shared::version::VERSION;
 
 #[tokio::test]

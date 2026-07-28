@@ -1,23 +1,20 @@
-use shared::protocol::{RegisterRequest, RegisterResponse};
 use reqwest::Client;
+use shared::protocol::{RegisterRequest, RegisterResponse};
 
 use crate::config::Config;
 
 pub async fn register_with_center(client: &Client, config: &Config) -> anyhow::Result<String> {
     let req = RegisterRequest {
-        name: config.node.name.clone(),
+        name: config.runner.name.clone(),
         register_token: config.manager.register_token.clone(),
-        labels: config.node.labels.clone(),
-        version: Some(config.node.version().into()),
+        labels: config.runner.labels.clone(),
+        version: Some(config.runner.version().into()),
     };
 
     let url = format!("{}/api/v1/runners/register", config.manager.url);
-    let resp = client
-        .post(&url)
-        .json(&req)
-        .send()
-        .await
-        .map_err(|e| super::friendly_reqwest_error(e, &config.manager.url, "Registration failed"))?;
+    let resp = client.post(&url).json(&req).send().await.map_err(|e| {
+        super::friendly_reqwest_error(e, &config.manager.url, "Registration failed")
+    })?;
 
     let status = resp.status();
     let body = resp.text().await?;

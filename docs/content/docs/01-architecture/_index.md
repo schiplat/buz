@@ -20,7 +20,7 @@ Center and Runner compile as two fully standalone static binaries, completely el
 Designed for heterogeneous networks, cross-datacenter, and multi-region environments.
 
 - **NAT traversal**: HTTP long polling — Runner only needs outbound access to Center, no public IP or inbound ports required
-- **Global coordination**: A single Center node orchestrates runners across regions, datacenters, and network segments
+- **Global coordination**: A single Manager orchestrates runners across regions, datacenters, and network segments
 
 ### Z — Zero (Zero Trust & Zero Burden)
 

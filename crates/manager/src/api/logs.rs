@@ -6,8 +6,8 @@ use futures_util::SinkExt;
 use futures_util::StreamExt;
 use serde::Deserialize;
 use shared::auth::{Role, TokenManager};
-use shared::protocol::response::ApiResponse;
 use shared::error::AppError;
+use shared::protocol::response::ApiResponse;
 use shared::protocol::LogChunk;
 use shared::rbac::Perm;
 use sqlx::Row;
@@ -53,7 +53,9 @@ pub async fn upload(
     .await?;
 
     // Broadcast the log chunk to connected WebSocket clients
-    state.log_broadcast.broadcast(&job_id, chunk.step_order, &chunk.content);
+    state
+        .log_broadcast
+        .broadcast(&job_id, chunk.step_order, &chunk.content);
 
     Ok(Json(ApiResponse::success(())))
 }
@@ -134,11 +136,7 @@ async fn handle_stream(socket: WebSocket, broadcast: LogBroadcaster, job_id: Str
 
     // Replay any chunks buffered before this client connected
     for chunk in broadcast.replay_history(&job_id) {
-        if ws_sender
-            .send(Message::Text(chunk.into()))
-            .await
-            .is_err()
-        {
+        if ws_sender.send(Message::Text(chunk.into())).await.is_err() {
             return;
         }
     }
@@ -157,11 +155,7 @@ async fn handle_stream(socket: WebSocket, broadcast: LogBroadcaster, job_id: Str
         loop {
             match rx.recv().await {
                 Ok(chunk) => {
-                    if ws_sender
-                        .send(Message::Text(chunk.into()))
-                        .await
-                        .is_err()
-                    {
+                    if ws_sender.send(Message::Text(chunk.into())).await.is_err() {
                         break;
                     }
                 }
@@ -199,11 +193,7 @@ pub async fn pipeline_stream(
     Ok(ws.on_upgrade(move |socket| handle_pipeline_stream(socket, broadcast, pipeline_id)))
 }
 
-async fn handle_pipeline_stream(
-    socket: WebSocket,
-    broadcast: LogBroadcaster,
-    pipeline_id: String,
-) {
+async fn handle_pipeline_stream(socket: WebSocket, broadcast: LogBroadcaster, pipeline_id: String) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let mut rx = broadcast.pipeline_subscribe(&pipeline_id);
     let pid_log = pipeline_id.clone();

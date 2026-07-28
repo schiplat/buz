@@ -1,13 +1,13 @@
 use axum::{
-    Router,
     routing::{delete, get, patch, post, put},
+    Router,
 };
 
 use crate::state::AppState;
 
 mod auth;
-pub mod runners;
 mod pipelines;
+pub mod runners;
 // Re-export helper functions for YAML scanner and trigger logic
 pub(crate) use pipelines::{
     do_trigger, insert_env_vars, insert_pipeline_secret_bindings, insert_pipeline_var_bindings,
@@ -39,9 +39,7 @@ pub fn router(state: AppState) -> Router {
         .route("/teams", get(teams::list).post(teams::create))
         .route(
             "/teams/{id}",
-            get(teams::get_one)
-                .put(teams::update)
-                .delete(teams::delete),
+            get(teams::get_one).put(teams::update).delete(teams::delete),
         )
         .route(
             "/teams/{id}/members",
@@ -70,10 +68,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/pipelines/{id}/trigger", post(pipelines::trigger))
         .route("/jobs", get(jobs::list))
-        .route(
-            "/jobs/{id}",
-            get(jobs::get_one).delete(jobs::delete),
-        )
+        .route("/jobs/{id}", get(jobs::get_one).delete(jobs::delete))
         .route("/jobs/{id}/cancel", post(jobs::cancel))
         .route("/jobs/{id}/status-check", get(jobs::status_check))
         .route("/jobs/{id}/claim", post(jobs::claim))
@@ -102,7 +97,10 @@ pub fn router(state: AppState) -> Router {
                 .delete(variables::delete),
         )
         // Runner management (platform admin)
-        .route("/runners", get(runners::list_runners).post(runners::create_runner))
+        .route(
+            "/runners",
+            get(runners::list_runners).post(runners::create_runner),
+        )
         .route(
             "/runners/{id}",
             get(runners::get_runner).delete(runners::delete_runner),

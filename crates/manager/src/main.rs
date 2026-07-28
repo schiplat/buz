@@ -30,7 +30,12 @@ struct Cli {
     config: String,
 
     /// Path to frontend static files
-    #[arg(short = 'f', long, env = "BUZ_FRONTEND_DIR", default_value = "../frontend/dist")]
+    #[arg(
+        short = 'f',
+        long,
+        env = "BUZ_FRONTEND_DIR",
+        default_value = "../frontend/dist"
+    )]
     frontend: String,
 }
 
@@ -39,8 +44,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "buz_manager=info,tower_http=info".into()))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "buz_manager=info,tower_http=info".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -93,9 +100,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .nest("/api/v1", api::router(app_state.clone()))
-        .fallback_service(
-            ServeDir::new(frontend_dir).fallback(ServeFile::new(&index_html)),
-        )
+        .fallback_service(ServeDir::new(frontend_dir).fallback(ServeFile::new(&index_html)))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
@@ -111,7 +116,10 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("failed to load TLS certificate: {e}"))?;
 
-        tracing::info!("Web UI: https://localhost:{port}", port = config.server.port);
+        tracing::info!(
+            "Web UI: https://localhost:{port}",
+            port = config.server.port
+        );
         axum_server::bind_rustls(addr.parse().unwrap(), tls_config)
             .serve(app.into_make_service())
             .await?;

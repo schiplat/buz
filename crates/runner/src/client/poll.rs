@@ -1,5 +1,5 @@
-use shared::protocol::{LogChunk, UpdateJobStatusRequest};
 use reqwest::Client;
+use shared::protocol::{LogChunk, UpdateJobStatusRequest};
 use std::time::Duration;
 
 use crate::config::Config;
@@ -22,7 +22,9 @@ pub async fn check_job_cancelled(
         .timeout(Duration::from_secs(10))
         .send()
         .await
-        .map_err(|e| super::friendly_reqwest_error(e, &config.manager.url, "Status check failed"))?;
+        .map_err(|e| {
+            super::friendly_reqwest_error(e, &config.manager.url, "Status check failed")
+        })?;
 
     if !resp.status().is_success() {
         return Ok(false);
@@ -54,7 +56,10 @@ pub async fn run_poll_loop(client: &Client, config: &Config, token: &str) -> any
                     let msg = e.to_string();
                     if msg.contains("job cancelled by user") {
                         tracing::warn!("Job {job_id} cancelled by user — skipping error log");
-                        if let Err(se) = update_job_status(client, config, token, job_id, "cancelled", None).await {
+                        if let Err(se) =
+                            update_job_status(client, config, token, job_id, "cancelled", None)
+                                .await
+                        {
                             tracing::error!("CRITICAL: Failed to report cancelled status for job {job_id}: {se}");
                         }
                     } else {
@@ -71,22 +76,27 @@ pub async fn run_poll_loop(client: &Client, config: &Config, token: &str) -> any
                                 content: format!("==> ERROR <==\n{e}\n"),
                             },
                         )
-                        .await {
+                        .await
+                        {
                             tracing::warn!("Job {job_id}: failed to upload error log chunk: {le}");
                         }
-                        if let Err(se) = update_job_status(client, config, token, job_id, "failed", None).await {
-                            tracing::error!("CRITICAL: Failed to report failed status for job {job_id}: {se}");
+                        if let Err(se) =
+                            update_job_status(client, config, token, job_id, "failed", None).await
+                        {
+                            tracing::error!(
+                                "CRITICAL: Failed to report failed status for job {job_id}: {se}"
+                            );
                         }
                     }
                 }
 
                 // ── Ephemeral / workspace cleanup ─────────────────────────────
-                if config.node.clean_workspace_after_job || config.node.ephemeral {
-                    tracing::info!("Cleaning workspace: {}", config.node.work_dir);
-                    clean_workspace(&config.node.work_dir);
+                if config.runner.clean_workspace_after_job || config.runner.ephemeral {
+                    tracing::info!("Cleaning workspace: {}", config.runner.work_dir);
+                    clean_workspace(&config.runner.work_dir);
                 }
 
-                if config.node.ephemeral {
+                if config.runner.ephemeral {
                     tracing::info!(
                         "Ephemeral runner exiting after job {job_id} — container/VM will be destroyed"
                     );
@@ -97,9 +107,7 @@ pub async fn run_poll_loop(client: &Client, config: &Config, token: &str) -> any
             Ok(None) => {
                 // No task — this is a normal poll, reset backoff
                 if consecutive_failures > 0 {
-                    tracing::info!(
-                        "Poll recovered after {consecutive_failures} failure(s)"
-                    );
+                    tracing::info!("Poll recovered after {consecutive_failures} failure(s)");
                 }
                 consecutive_failures = 0;
             }
@@ -107,9 +115,9 @@ pub async fn run_poll_loop(client: &Client, config: &Config, token: &str) -> any
                 consecutive_failures += 1;
 
                 let delay_secs = match consecutive_failures {
-                    0 => 0, // unreachable in Err branch
-                    n if n <= 5 => 2u64 << (n - 1),   // 2, 4, 8, 16, 32
-                    _ => 60,                           // cap
+                    0 => 0,                         // unreachable in Err branch
+                    n if n <= 5 => 2u64 << (n - 1), // 2, 4, 8, 16, 32
+                    _ => 60,                        // cap
                 };
                 let delay = Duration::from_secs(delay_secs);
 
@@ -144,9 +152,7 @@ async fn poll_for_task(
         // Distinguish auth failures from transient errors
         let status = resp.status();
         if status.as_u16() == 401 || status.as_u16() == 403 {
-            anyhow::bail!(
-                "auth error ({status}) — token may have expired, re‑register needed"
-            );
+            anyhow::bail!("auth error ({status}) — token may have expired, re‑register needed");
         }
         anyhow::bail!("poll returned {status}");
     }
@@ -199,12 +205,7 @@ async fn execute_job(
     // ---- Cancel watcher helper -------------------------------------------------
     /// Returns `true` when the job has been cancelled.
     /// Polls the Manager every 2 s.
-    async fn cancel_watcher(
-        client: &Client,
-        config: &Config,
-        token: &str,
-        job_id: &str,
-    ) -> bool {
+    async fn cancel_watcher(client: &Client, config: &Config, token: &str, job_id: &str) -> bool {
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             if check_job_cancelled(client, config, token, job_id)
@@ -278,13 +279,18 @@ async fn execute_job(
                     while let Some(chunk) = output_rx.recv().await {
                         let masked_chunk = crate::masker::mask_secrets(&chunk, &sv_for_upload);
                         match super::logs::upload_chunk(
-                            &c_log, &cfg_log, &t_log, &jid_log,
+                            &c_log,
+                            &cfg_log,
+                            &t_log,
+                            &jid_log,
                             LogChunk {
                                 chunk_index: chunk_num,
                                 step_order: idx_i32,
                                 content: masked_chunk,
                             },
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(_) => {}
                             Err(e) => tracing::warn!("Log upload chunk {chunk_num} failed: {e}"),
                         }
@@ -310,18 +316,31 @@ async fn execute_job(
                     }
                 };
 
-                (engine::local::LocalOutput {
-                    stdout: String::new(),
-                    stderr: if was_cancelled_local { "==> CANCELLED <==\n".into() } else { String::new() },
-                    exit_code: if was_cancelled_local { -1 } else { exit_code },
-                }, was_cancelled_local)
+                (
+                    engine::local::LocalOutput {
+                        stdout: String::new(),
+                        stderr: if was_cancelled_local {
+                            "==> CANCELLED <==\n".into()
+                        } else {
+                            String::new()
+                        },
+                        exit_code: if was_cancelled_local { -1 } else { exit_code },
+                    },
+                    was_cancelled_local,
+                )
             }
             "ssh" => {
-                let host_values = step["host"].as_array()
+                let host_values = step["host"]
+                    .as_array()
                     .map(|a| a.clone())
-                    .or_else(|| step["host"].as_object().map(|o| vec![serde_json::Value::Object(o.clone())]))
+                    .or_else(|| {
+                        step["host"]
+                            .as_object()
+                            .map(|o| vec![serde_json::Value::Object(o.clone())])
+                    })
                     .unwrap_or_else(|| {
-                        let _msg = format!("SSH step '{step_name}' missing host connection details");
+                        let _msg =
+                            format!("SSH step '{step_name}' missing host connection details");
                         vec![]
                     });
 
@@ -333,14 +352,19 @@ async fn execute_job(
                     };
                     // Upload the error as a log chunk so it appears in the step's terminal
                     let _ = super::logs::upload_chunk(
-                        client, config, token, job_id,
+                        client,
+                        config,
+                        token,
+                        job_id,
                         LogChunk {
                             chunk_index: (idx * 10000 + 9997) as i32,
                             step_order: idx as i32,
                             content: format!("==> ERROR <==\n{msg}\n"),
                         },
-                    ).await;
-                    update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+                    )
+                    .await;
+                    update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
+                        .await?;
                     anyhow::bail!(msg);
                 }
 
@@ -383,21 +407,24 @@ async fn execute_job(
                 if let Err(e) = engine::docker::preflight(config.engine.docker_enabled, image) {
                     let msg = e.to_string();
                     let _ = super::logs::upload_chunk(
-                        client, config, token, job_id,
+                        client,
+                        config,
+                        token,
+                        job_id,
                         LogChunk {
                             chunk_index: (idx * 10000 + 9997) as i32,
                             step_order: idx as i32,
                             content: format!("==> ERROR <==\n{msg}\n"),
                         },
-                    ).await;
-                    update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+                    )
+                    .await;
+                    update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
+                        .await?;
                     anyhow::bail!(msg);
                 }
 
-                let host_wd = engine::docker::resolve_host_work_dir(
-                    &config.node.work_dir,
-                    work_dir,
-                );
+                let host_wd =
+                    engine::docker::resolve_host_work_dir(&config.runner.work_dir, work_dir);
                 let cmd = command.to_string();
                 let img = image.to_string();
                 let env = step_env.clone();
@@ -421,13 +448,18 @@ async fn execute_job(
                     while let Some(chunk) = output_rx.recv().await {
                         let masked_chunk = crate::masker::mask_secrets(&chunk, &sv_for_upload);
                         match super::logs::upload_chunk(
-                            &c_log, &cfg_log, &t_log, &jid_log,
+                            &c_log,
+                            &cfg_log,
+                            &t_log,
+                            &jid_log,
                             LogChunk {
                                 chunk_index: chunk_num,
                                 step_order: idx_i32,
                                 content: masked_chunk,
                             },
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(_) => {}
                             Err(e) => tracing::warn!("Log upload chunk {chunk_num} failed: {e}"),
                         }
@@ -451,11 +483,18 @@ async fn execute_job(
                     }
                 };
 
-                (engine::local::LocalOutput {
-                    stdout: String::new(),
-                    stderr: if was_cancelled_docker { "==> CANCELLED <==\n".into() } else { String::new() },
-                    exit_code: if was_cancelled_docker { -1 } else { exit_code },
-                }, was_cancelled_docker)
+                (
+                    engine::local::LocalOutput {
+                        stdout: String::new(),
+                        stderr: if was_cancelled_docker {
+                            "==> CANCELLED <==\n".into()
+                        } else {
+                            String::new()
+                        },
+                        exit_code: if was_cancelled_docker { -1 } else { exit_code },
+                    },
+                    was_cancelled_docker,
+                )
             }
             other => anyhow::bail!("unsupported engine type: {other}"),
         };
@@ -481,10 +520,7 @@ async fn execute_job(
         // For SSH steps, upload the accumulated output as a summary chunk.
         // Local steps are fully streamed so we skip this redundant upload.
         if exec_type == "ssh" {
-            let combined = format!(
-                "==> {step_name} <==\n{}\n{}",
-                output.stdout, output.stderr
-            );
+            let combined = format!("==> {step_name} <==\n{}\n{}", output.stdout, output.stderr);
             let masked = crate::masker::mask_secrets(&combined, &secret_values);
             super::logs::upload_chunk(
                 client,
@@ -502,7 +538,10 @@ async fn execute_job(
 
         if output.exit_code != 0 && fail_strategy == "stop" {
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            anyhow::bail!("step '{step_name}' failed with exit code {}", output.exit_code);
+            anyhow::bail!(
+                "step '{step_name}' failed with exit code {}",
+                output.exit_code
+            );
         } else if output.exit_code != 0 && fail_strategy == "continue" {
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
         } else {
@@ -525,7 +564,8 @@ async fn execute_ssh_step(
     step_timeout: Option<std::time::Duration>,
     step_name: &str,
 ) -> anyhow::Result<engine::local::LocalOutput> {
-    let hosts = host_values.as_array()
+    let hosts = host_values
+        .as_array()
         .ok_or_else(|| anyhow::anyhow!("SSH step '{step_name}' host data is not an array"))?;
 
     let mut combined_stdout = String::new();
@@ -534,16 +574,38 @@ async fn execute_ssh_step(
 
     for (hi, hv) in hosts.iter().enumerate() {
         let host_label = hv["host"].as_str().unwrap_or("?");
-        let host_params = hv.as_object()
+        let host_params = hv
+            .as_object()
             .ok_or_else(|| anyhow::anyhow!("SSH step '{step_name}' host[{hi}] is not an object"))?;
 
         let ssh_conn = engine::ssh::SshConnectionParams {
-            host: host_params.get("host").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            port: host_params.get("port").and_then(|v| v.as_u64()).unwrap_or(22) as u16,
-            username: host_params.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            credential_type: host_params.get("credential_type").and_then(|v| v.as_str()).unwrap_or("key_path").to_string(),
-            credential_value: host_params.get("credential_value").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            credential_passphrase: host_params.get("credential_passphrase").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            host: host_params
+                .get("host")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            port: host_params
+                .get("port")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(22) as u16,
+            username: host_params
+                .get("username")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            credential_type: host_params
+                .get("credential_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("key_path")
+                .to_string(),
+            credential_value: host_params
+                .get("credential_value")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            credential_passphrase: host_params
+                .get("credential_passphrase")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             host_key_policy: config.engine.ssh_host_key_policy.clone(),
             known_hosts_path: config.engine.ssh_known_hosts_path.clone(),
         };
@@ -567,7 +629,10 @@ async fn execute_ssh_step(
                 }
                 last_exit_code = o.exit_code as i32;
                 if o.exit_code != 0 {
-                    tracing::warn!("SSH step '{step_name}' on {host_label} exited with code {}", o.exit_code);
+                    tracing::warn!(
+                        "SSH step '{step_name}' on {host_label} exited with code {}",
+                        o.exit_code
+                    );
                 }
             }
             Err(e) => {
@@ -598,7 +663,10 @@ async fn update_job_status(
     let mut last_err = None;
     for attempt in 1..=3 {
         let resp = client
-            .patch(&format!("{}/api/v1/jobs/{job_id}/status", config.manager.url))
+            .patch(&format!(
+                "{}/api/v1/jobs/{job_id}/status",
+                config.manager.url
+            ))
             .header("Authorization", format!("Bearer {token}"))
             .json(&UpdateJobStatusRequest {
                 status: status.to_string(),
@@ -613,9 +681,7 @@ async fn update_job_status(
             Ok(r) => {
                 let code = r.status();
                 let body = r.text().await.unwrap_or_default();
-                last_err = Some(anyhow::anyhow!(
-                    "status update returned {code}: {body}",
-                ));
+                last_err = Some(anyhow::anyhow!("status update returned {code}: {body}",));
             }
             Err(e) => {
                 last_err = Some(super::friendly_reqwest_error(

@@ -73,7 +73,7 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 | 5 | **Workspace**: bind-mount runner step work directory into a fixed container path (default `/buz/workspace`); container cwd = that path |
 | 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution order as local; masking unchanged |
 | 7 | **Gate**: `engine.docker_enabled` must be `true`; otherwise step fails with a clear error (do not fall back to local) |
-| 8 | **Scheduling hint**: pipelines that need Docker should set `runner.labels` to include `docker` (convention; not enforced by Manager in MVP) |
+| 8 | **Scheduling**: pipelines that need Docker should set `runner.labels` to include `docker`; Manager dispatches only to runners that have **all** required labels |
 | 9 | **Private images**: MVP = operator/`run` does `docker login` (secret) or image already present; no first-class `image_pull_secret` yet |
 | 10 | **Security defaults**: no `privileged`, no host network, no arbitrary CLI options in MVP |
 
@@ -270,5 +270,4 @@ On a runner with Docker and `docker_enabled = true`:
 These do **not** block design confirmation:
 
 - Exact shell wrapper (`sh -lc` vs `bash -lc`) and Windows runner stance (MVP = Linux runners with Docker)
-- Whether Manager should refuse to dispatch docker steps to runners that did not advertise a `docker` capability (today labels are soft matching only)
 - First-class registry auth (`image_pull_secret`) vs documented `docker login` in a prior local step

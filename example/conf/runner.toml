@@ -3,8 +3,8 @@
 [manager]
 # Use https:// when the Manager has TLS enabled
 url = "http://127.0.0.1:8080"
-# Get this token from Buz Manager web UI → Nodes → New Node
-# Do not commit real tokens — replace locally after creating a node.
+# Get this token from Buz Manager web UI → Runners → New Runner
+# Do not commit real tokens — replace locally after creating a runner.
 register_token = "your-register-token"
 
 # ── TLS (required when Manager uses HTTPS) ──
@@ -12,11 +12,11 @@ register_token = "your-register-token"
 # In production, use a CA-signed certificate and keep this false.
 # tls_skip_verify = false
 
-[node]
+[runner]
 name = "demo-n1"
 labels = ["macos-armx64"]
 work_dir = "/tmp/buz-runner"
-# Multi-NIC: IPs from these interfaces appear first in Manager Nodes UI.
+# Multi-NIC: IPs from these interfaces appear first in Manager Runners UI.
 # When empty, prefer IPs on the same subnet as manager.url.
 # prefer_interfaces = ["enp26s0"]
 

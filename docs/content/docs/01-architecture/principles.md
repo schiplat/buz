@@ -15,7 +15,7 @@ description: "The three core architectural principles of Buz"
 
 ## U — Unified
 
-A single Center node orchestrates runners across all network segments globally.
+A single Manager orchestrates runners across all network segments globally.
 
 - Standard HTTPS long polling — no gRPC, no WebSocket persistent connections
 - Runners only need outbound HTTPS access to Center

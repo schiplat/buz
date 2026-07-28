@@ -1,22 +1,24 @@
-use axum::{Json, extract::{State, Path}};
-use shared::protocol::{CreateVariableRequest, UpdateVariableRequest};
-use shared::protocol::response::ApiResponse;
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use shared::error::AppError;
+use shared::protocol::response::ApiResponse;
+use shared::protocol::{CreateVariableRequest, UpdateVariableRequest};
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::state::AppState;
 use crate::middleware::{AuthUser, PlatformAdmin};
+use crate::state::AppState;
 
 pub async fn list(
     _auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let rows = sqlx::query(
-        "SELECT id, name, value, updated_at FROM platform_vars ORDER BY name ASC",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let rows =
+        sqlx::query("SELECT id, name, value, updated_at FROM platform_vars ORDER BY name ASC")
+            .fetch_all(&state.pool)
+            .await?;
 
     let vars: Vec<serde_json::Value> = rows
         .into_iter()
@@ -49,7 +51,9 @@ pub async fn create(
         .fetch_optional(&state.pool)
         .await?;
     if existing.is_some() {
-        return Err(AppError::Conflict(format!("variable '{name}' already exists")));
+        return Err(AppError::Conflict(format!(
+            "variable '{name}' already exists"
+        )));
     }
 
     let id = Uuid::new_v4().to_string();

@@ -30,8 +30,8 @@ pub fn encrypt(plaintext: &str, jwt_secret: &str) -> Result<String, String> {
     }
 
     let key = derive_key(jwt_secret);
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| format!("AES-256-GCM init failed: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("AES-256-GCM init failed: {e}"))?;
 
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
@@ -61,13 +61,11 @@ pub fn decrypt(encoded: &str, jwt_secret: &str) -> Result<String, String> {
     }
 
     let key = derive_key(jwt_secret);
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| format!("AES-256-GCM init failed: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("AES-256-GCM init failed: {e}"))?;
 
-    let combined = match base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        encoded,
-    ) {
+    let combined = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+    {
         Ok(data) => data,
         Err(_) => {
             // Not valid base64 — legacy plaintext value (backward-compatible)

@@ -68,74 +68,54 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     for statement in sql.split(';') {
         let trimmed = statement.trim();
         if !trimmed.is_empty() {
-            sqlx::query(trimmed)
-                .execute(pool)
-                .await?;
+            sqlx::query(trimmed).execute(pool).await?;
         }
     }
 
     // Add snapshot column to existing databases (safe to fail if already present)
-    let _ = sqlx::query(
-        "ALTER TABLE jobs ADD COLUMN snapshot TEXT NOT NULL DEFAULT '{}'",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN snapshot TEXT NOT NULL DEFAULT '{}'")
+        .execute(pool)
+        .await;
 
     // Add system_info column to runners table (safe to fail if already present)
-    let _ = sqlx::query(
-        "ALTER TABLE runners ADD COLUMN system_info TEXT NOT NULL DEFAULT '{}'",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN system_info TEXT NOT NULL DEFAULT '{}'")
+        .execute(pool)
+        .await;
 
     // Add input_defs column to pipelines table (safe to fail if already present)
-    let _ = sqlx::query(
-        "ALTER TABLE pipelines ADD COLUMN input_defs TEXT NOT NULL DEFAULT '[]'",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN input_defs TEXT NOT NULL DEFAULT '[]'")
+        .execute(pool)
+        .await;
 
     // Add is_frozen column to runners table (safe to fail if already present)
-    let _ = sqlx::query(
-        "ALTER TABLE runners ADD COLUMN is_frozen INTEGER NOT NULL DEFAULT 0",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN is_frozen INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
 
     // Add host_labels column to tasks table (safe to fail if already present)
-    let _ = sqlx::query(
-        "ALTER TABLE tasks ADD COLUMN host_labels TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN host_labels TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 
     // Docker engine: container image for uses=docker steps
-    let _ = sqlx::query(
-        "ALTER TABLE tasks ADD COLUMN image TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN image TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 
     // Add step_statuses column to jobs table (safe to fail if already present)
-    let _ = sqlx::query(
-        "ALTER TABLE jobs ADD COLUMN step_statuses TEXT NOT NULL DEFAULT '[]'",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN step_statuses TEXT NOT NULL DEFAULT '[]'")
+        .execute(pool)
+        .await;
 
     // Add owner_group column to secrets table (safe to fail if already present)
-    let _ = sqlx::query(
-        "ALTER TABLE secrets ADD COLUMN owner_group TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE secrets ADD COLUMN owner_group TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 
     // Add owner_group column to pipelines table (safe to fail if already present)
-    let _ = sqlx::query(
-        "ALTER TABLE pipelines ADD COLUMN owner_group TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN owner_group TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 
     // ── Pipeline ↔ Secret explicit binding (many-to-many) ──
     sqlx::query(
@@ -218,46 +198,35 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     .await;
 
     // Add value column to variables table for inline env vars (safe to fail if already present)
-    let _ = sqlx::query(
-        "ALTER TABLE variables ADD COLUMN value TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE variables ADD COLUMN value TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 
     // Add host_names column to tasks — stores original host names before ID resolution
-    let _ = sqlx::query(
-        "ALTER TABLE tasks ADD COLUMN host_names TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN host_names TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 
     // Add step_secrets column to tasks — per-step secret scoping
-    let _ = sqlx::query(
-        "ALTER TABLE tasks ADD COLUMN step_secrets TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN step_secrets TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 
     // Add credential_data column to hosts — stores key content or password in DB
-    let _ = sqlx::query(
-        "ALTER TABLE hosts ADD COLUMN credential_data TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE hosts ADD COLUMN credential_data TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 
     // Drop legacy credential_ref column (safe to fail if already dropped or not supported)
-    let _ = sqlx::query(
-        "ALTER TABLE hosts DROP COLUMN credential_ref",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE hosts DROP COLUMN credential_ref")
+        .execute(pool)
+        .await;
 
     // Add credential_passphrase column to hosts — encrypted passphrase for key-based auth
-    let _ = sqlx::query(
-        "ALTER TABLE hosts ADD COLUMN credential_passphrase TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ =
+        sqlx::query("ALTER TABLE hosts ADD COLUMN credential_passphrase TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await;
 
     // ── Phase 2 RBAC: users / teams / memberships ──
     sqlx::query(
@@ -300,46 +269,33 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    let _ = sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id)",
-    )
-    .execute(pool)
-    .await;
+    let _ =
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id)")
+            .execute(pool)
+            .await;
 
     // Resource team_id columns (empty string until bootstrap backfill)
-    let _ = sqlx::query(
-        "ALTER TABLE pipelines ADD COLUMN team_id TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN team_id TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 
-    let _ = sqlx::query(
-        "ALTER TABLE secrets ADD COLUMN team_id TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE secrets ADD COLUMN team_id TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 
-    let _ = sqlx::query(
-        "ALTER TABLE hosts ADD COLUMN team_id TEXT",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE hosts ADD COLUMN team_id TEXT")
+        .execute(pool)
+        .await;
 
-    let _ = sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_pipelines_team ON pipelines(team_id)",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_secrets_team ON secrets(team_id)",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_hosts_team ON hosts(team_id)",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_pipelines_team ON pipelines(team_id)")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_secrets_team ON secrets(team_id)")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_hosts_team ON hosts(team_id)")
+        .execute(pool)
+        .await;
 
     tracing::info!("Database migrations applied successfully");
     Ok(())

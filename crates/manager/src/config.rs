@@ -81,7 +81,7 @@ impl Default for AuthConfig {
         Self {
             jwt_secret: String::new(),
             admin_user: default_admin_user(),
-                admin_password: default_admin_password(),
+            admin_password: default_admin_password(),
             runner_register_token_ttl_hours: default_token_ttl_hours(),
             jwt_ttl_hours: default_jwt_ttl_hours(),
         }
@@ -124,18 +124,42 @@ impl Default for PipelineConfig {
 
 // -- default value functions --
 
-fn default_host() -> String { "0.0.0.0".into() }
-fn default_port() -> u16 { 8080 }
-fn default_db_path() -> String { "./data/buz.db".into() }
-fn default_max_connections() -> u32 { 8 }
-fn default_admin_user() -> String { "admin".into() }
-fn default_admin_password() -> String { "admin".into() }
-fn default_token_ttl_hours() -> i64 { 24 }
-fn default_jwt_ttl_hours() -> i64 { 24 }
-fn default_heartbeat_timeout() -> i64 { 90 }
-fn default_long_poll_timeout() -> i64 { 45 }
-fn default_yaml_scan_dir() -> String { "./pipelines".into() }
-fn default_yaml_scan_interval() -> u64 { 30 }
+fn default_host() -> String {
+    "0.0.0.0".into()
+}
+fn default_port() -> u16 {
+    8080
+}
+fn default_db_path() -> String {
+    "./data/buz.db".into()
+}
+fn default_max_connections() -> u32 {
+    8
+}
+fn default_admin_user() -> String {
+    "admin".into()
+}
+fn default_admin_password() -> String {
+    "admin".into()
+}
+fn default_token_ttl_hours() -> i64 {
+    24
+}
+fn default_jwt_ttl_hours() -> i64 {
+    24
+}
+fn default_heartbeat_timeout() -> i64 {
+    90
+}
+fn default_long_poll_timeout() -> i64 {
+    45
+}
+fn default_yaml_scan_dir() -> String {
+    "./pipelines".into()
+}
+fn default_yaml_scan_interval() -> u64 {
+    30
+}
 
 // -- loader --
 
@@ -159,7 +183,9 @@ pub fn load(config_path: Option<&str>) -> anyhow::Result<Config> {
 
     // Ensure JWT secret is not default in production
     if cfg.auth.jwt_secret.is_empty() || cfg.auth.jwt_secret == "changeme" {
-        tracing::warn!("JWT secret is not set or is using default value. Set BUZ_JWT_SECRET in production.");
+        tracing::warn!(
+            "JWT secret is not set or is using default value. Set BUZ_JWT_SECRET in production."
+        );
         cfg.auth.jwt_secret = "buz-dev-secret-change-in-production".into();
     }
 

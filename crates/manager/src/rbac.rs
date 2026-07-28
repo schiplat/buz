@@ -68,13 +68,12 @@ impl AuthUser {
 }
 
 pub async fn load_auth_user(pool: &SqlitePool, user_id: &str) -> Result<AuthUser, AppError> {
-    let row = sqlx::query(
-        "SELECT id, username, is_platform_admin, is_active FROM users WHERE id = ?",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::AuthFailed("user not found".into()))?;
+    let row =
+        sqlx::query("SELECT id, username, is_platform_admin, is_active FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| AppError::AuthFailed("user not found".into()))?;
 
     let is_active: i64 = row.get(3);
     if is_active == 0 {
@@ -223,15 +222,19 @@ pub fn team_in_clause(auth: &AuthUser, column: &str) -> Option<(String, Vec<Stri
 }
 
 /// Bootstrap admin user + default team + migrate owner_group → team_id.
-pub async fn bootstrap(pool: &SqlitePool, admin_user: &str, admin_password: &str) -> anyhow::Result<()> {
+pub async fn bootstrap(
+    pool: &SqlitePool,
+    admin_user: &str,
+    admin_password: &str,
+) -> anyhow::Result<()> {
     let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
         .fetch_one(pool)
         .await?;
 
     if user_count == 0 {
         let id = uuid::Uuid::new_v4().to_string();
-        let hash = crate::password::hash_password(admin_password)
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let hash =
+            crate::password::hash_password(admin_password).map_err(|e| anyhow::anyhow!(e))?;
         sqlx::query(
             "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_active)
              VALUES (?, ?, ?, ?, 1, 1)",
@@ -249,11 +252,10 @@ pub async fn bootstrap(pool: &SqlitePool, admin_user: &str, admin_password: &str
     let default_team_id = ensure_team(pool, "default", "Default").await?;
 
     // Platform admin(s) become owners of the default team (for /me visibility)
-    let admin_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM users WHERE is_platform_admin = 1 AND is_active = 1",
-    )
-    .fetch_all(pool)
-    .await?;
+    let admin_ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM users WHERE is_platform_admin = 1 AND is_active = 1")
+            .fetch_all(pool)
+            .await?;
     for admin_id in &admin_ids {
         sqlx::query(
             "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')",
@@ -313,7 +315,11 @@ async fn migrate_owner_groups_to_teams(pool: &SqlitePool) -> anyhow::Result<()> 
     Ok(())
 }
 
-async fn backfill_team_id(pool: &SqlitePool, table: &str, default_team_id: &str) -> anyhow::Result<()> {
+async fn backfill_team_id(
+    pool: &SqlitePool,
+    table: &str,
+    default_team_id: &str,
+) -> anyhow::Result<()> {
     // Match by owner_group slug
     let sql = format!(
         "UPDATE {table} SET team_id = (

@@ -10,7 +10,7 @@ All tables use SQLite with WAL mode enabled, synchronous=NORMAL, and foreign_key
 
 ### runners
 
-Execution node registry.
+Runner registry.
 
 | Column | Type | Notes |
 |--------|------|-------|

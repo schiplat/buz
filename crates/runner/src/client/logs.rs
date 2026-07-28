@@ -1,5 +1,5 @@
-use shared::protocol::LogChunk;
 use reqwest::Client;
+use shared::protocol::LogChunk;
 
 use crate::config::Config;
 

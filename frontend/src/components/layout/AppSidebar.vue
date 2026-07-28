@@ -42,7 +42,7 @@ type NavEntry = NavLink | NavSection
 const allEntries: NavEntry[] = [
   { kind: 'link', name: 'dashboard', label: 'Overview', icon: OverviewIcon, to: '/dashboard' },
   { kind: 'section', label: 'Infrastructure' },
-  { kind: 'link', name: 'runners', label: 'Nodes', icon: Server, to: '/runners', adminOnly: true },
+  { kind: 'link', name: 'runners', label: 'Runners', icon: Server, to: '/runners', adminOnly: true },
   { kind: 'link', name: 'hosts', label: 'Hosts', icon: Globe, to: '/hosts' },
   { kind: 'link', name: 'secrets', label: 'Secrets', icon: EyeOff, to: '/secrets' },
   { kind: 'link', name: 'variables', label: 'Variables', icon: Puzzle, to: '/variables' },

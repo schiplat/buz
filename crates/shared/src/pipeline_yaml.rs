@@ -251,20 +251,19 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
 
         if step.name.as_deref().unwrap_or("").trim().is_empty() {
-            warnings.push(format!("steps[{}] has no 'name' — consider adding one for readability", i));
+            warnings.push(format!(
+                "steps[{}] has no 'name' — consider adding one for readability",
+                i
+            ));
         }
     }
 
     // 4. Detect trigger type (single source of truth for UI auto-fill)
     if let Some(ref on) = parsed.on {
-        let trigger_count = [
-            on.manual.is_some(),
-            on.webhook.is_some(),
-            on.cron.is_some(),
-        ]
-        .iter()
-        .filter(|&&b| b)
-        .count();
+        let trigger_count = [on.manual.is_some(), on.webhook.is_some(), on.cron.is_some()]
+            .iter()
+            .filter(|&&b| b)
+            .count();
 
         if trigger_count > 1 {
             warnings.push("Multiple trigger types defined — only the first will be used".into());
@@ -334,48 +333,61 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             timeout: r.timeout.clone(),
         }),
         trigger_type: Some(
-            parsed.on.as_ref()
+            parsed
+                .on
+                .as_ref()
                 .map(|on| {
-                    if on.webhook.is_some() { "webhook" }
-                    else if on.cron.is_some() { "cron" }
-                    else { "manual" }
+                    if on.webhook.is_some() {
+                        "webhook"
+                    } else if on.cron.is_some() {
+                        "cron"
+                    } else {
+                        "manual"
+                    }
                 })
                 .unwrap_or("manual")
-                .to_string()
+                .to_string(),
         ),
         trigger_config: parsed.on.as_ref().map(|on| TriggerConfig {
             webhook_path: on.webhook.as_ref().and_then(|w| w.path.clone()),
             cron_expr: on.cron.as_ref().and_then(|c| c.schedule.clone()),
             inputs: on.manual.as_ref().and_then(|m| {
                 m.inputs.as_ref().map(|inputs| {
-                    inputs.iter().map(|(k, v)| InputData {
-                        name: k.clone(),
-                        description: v.description.clone(),
-                        required: v.required,
-                        default: v.default.clone(),
-                    }).collect()
+                    inputs
+                        .iter()
+                        .map(|(k, v)| InputData {
+                            name: k.clone(),
+                            description: v.description.clone(),
+                            required: v.required,
+                            default: v.default.clone(),
+                        })
+                        .collect()
                 })
             }),
         }),
-        steps: parsed.steps.iter().map(|s| StepData {
-            name: s.name.clone(),
-            run: s.run.clone(),
-            uses: s.uses.clone(),
-            image: s.image.clone(),
-            host: s.host.as_ref().map(|h| match h {
-                OneOrMany::One(s) => s.clone(),
-                OneOrMany::Many(v) => v.join(","),
-            }),
-            host_labels: s.host_labels.as_ref().map(|h| match h {
-                OneOrMany::One(s) => s.clone(),
-                OneOrMany::Many(v) => v.join(","),
-            }),
-            dir: s.dir.clone(),
-            timeout: s.timeout.clone(),
-            retry: s.retry,
-            continue_on_error: s.continue_on_error,
-            secrets: s.secrets.clone(),
-        }).collect(),
+        steps: parsed
+            .steps
+            .iter()
+            .map(|s| StepData {
+                name: s.name.clone(),
+                run: s.run.clone(),
+                uses: s.uses.clone(),
+                image: s.image.clone(),
+                host: s.host.as_ref().map(|h| match h {
+                    OneOrMany::One(s) => s.clone(),
+                    OneOrMany::Many(v) => v.join(","),
+                }),
+                host_labels: s.host_labels.as_ref().map(|h| match h {
+                    OneOrMany::One(s) => s.clone(),
+                    OneOrMany::Many(v) => v.join(","),
+                }),
+                dir: s.dir.clone(),
+                timeout: s.timeout.clone(),
+                retry: s.retry,
+                continue_on_error: s.continue_on_error,
+                secrets: s.secrets.clone(),
+            })
+            .collect(),
     };
 
     YamlValidationResult {

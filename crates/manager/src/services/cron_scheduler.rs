@@ -1,4 +1,4 @@
-use sqlx::{SqlitePool, Row};
+use sqlx::{Row, SqlitePool};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -22,7 +22,11 @@ fn normalize_cron(expr: &str) -> String {
         7 => expr.to_string(),
         _ => {
             // Unrecognised format — best-effort
-            tracing::warn!("Unrecognised cron expression ({} fields): '{}'", fields.len(), expr);
+            tracing::warn!(
+                "Unrecognised cron expression ({} fields): '{}'",
+                fields.len(),
+                expr
+            );
             expr.to_string()
         }
     }
@@ -72,7 +76,9 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                     Err(e) => {
                         tracing::warn!(
                             "Cron scheduler: invalid expression '{}' for pipeline '{}': {}",
-                            expr, pipeline_name, e
+                            expr,
+                            pipeline_name,
+                            e
                         );
                         continue;
                     }
@@ -98,7 +104,8 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                         if gap < MIN_TRIGGER_GAP_SECS {
                             tracing::debug!(
                                 "Cron scheduler: skipping '{}' (triggered {}s ago)",
-                                pipeline_name, gap
+                                pipeline_name,
+                                gap
                             );
                             continue;
                         }
@@ -107,17 +114,12 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
 
                 tracing::info!(
                     "Cron scheduler: triggering pipeline '{}' ({}) via cron '{}'",
-                    pipeline_name, pipeline_id, expr
+                    pipeline_name,
+                    pipeline_id,
+                    expr
                 );
 
-                match crate::api::do_trigger(
-                    &state,
-                    pipeline_id,
-                    "cron",
-                    &HashMap::new(),
-                )
-                .await
-                {
+                match crate::api::do_trigger(&state, pipeline_id, "cron", &HashMap::new()).await {
                     Ok(resp) => {
                         let body = resp.0;
                         if let Some(job_id) = body
@@ -135,7 +137,8 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                     Err(e) => {
                         tracing::error!(
                             "Cron scheduler: failed to trigger '{}': {}",
-                            pipeline_name, e
+                            pipeline_name,
+                            e
                         );
                     }
                 }

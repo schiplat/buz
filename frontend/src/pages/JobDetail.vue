@@ -6,7 +6,7 @@ import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, XCircle, Trash2, CheckCircle2, Loader2, MinusCircle } from '@lucide/vue'
 import { jobsApi, type Job, type LogChunk } from '@/api/jobs'
-import { parseUtc } from '@/utils/time'
+import { parseUtc, formatLogClock } from '@/utils/time'
 import { createManagedWebSocket, type ManagedWebSocket } from '@/utils/ws'
 import { navLog } from '@/utils/navigation'
 import { Terminal } from '@xterm/xterm'
@@ -48,8 +48,11 @@ function countStepLogLines(stepOrder: number): number {
   const chunks = stepLogs.value.get(stepOrder) || []
   let lines = 0
   for (const c of chunks) {
-    const text = c.content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-    lines += text.length === 0 ? 1 : text.split('\n').length
+    // Normalize; a trailing newline is a terminator, not an extra blank row
+    let text = c.content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    if (text.endsWith('\n')) text = text.slice(0, -1)
+    if (text.length === 0) continue
+    lines += text.split('\n').length
   }
   return lines
 }
@@ -59,8 +62,10 @@ function fitTerminalHeight(stepOrder: number) {
   if (!el) return
   const lines = countStepLogLines(stepOrder)
   const rows = lines === 0
-    ? 5 // room for empty-state message
-    : Math.min(TERM_MAX_ROWS, Math.max(TERM_MIN_ROWS, lines + 1))
+    ? 4 // room for empty-state message
+    : Math.min(TERM_MAX_ROWS, Math.max(TERM_MIN_ROWS, lines))
+  // Height = text rows only; equal inset comes from the wrapper's py-* (xterm ignores parent padding)
+  el.style.padding = '0'
   el.style.height = `${rows * TERM_LINE_HEIGHT}px`
   const st = stepTerminals.value.find(t => t.stepOrder === stepOrder)
   if (st) {
@@ -186,7 +191,7 @@ function startRefreshTimer() {
             const c = l[i]
             if (c.step_order === activeIdx && !st.seenContent.has(c.content)) {
               st.seenContent.add(c.content)
-              const ts = c.created_at ? c.created_at.slice(11, 19) : nowTimeStr()
+              const ts = formatLogClock(c.created_at, nowTimeStr())
               st.term.write(`\x1b[2m[${ts}]\x1b[0m ${c.content.replace(/\n/g, '\r\n')}`)
             }
           }
@@ -239,7 +244,7 @@ function initSingleTerminal(stepOrder: number) {
 
   const seen = new Set<string>()
   for (const chunk of stepLogs.value.get(stepOrder) || []) {
-    const ts = chunk.created_at ? chunk.created_at.slice(11, 19) : '--:--:--'
+    const ts = formatLogClock(chunk.created_at, nowTimeStr())
     term.write(`\x1b[2m[${ts}]\x1b[0m ${chunk.content.replace(/\n/g, '\r\n')}`)
     seen.add(chunk.content)
   }
@@ -265,6 +270,10 @@ function handleWsMessage(raw: string) {
         // Stop the fallback timer when job reaches a terminal state
         if (newStatus.status !== 'running' && newStatus.status !== 'pending') {
           clearRefreshTimer()
+          // Prefer DB timestamps (created_at) over live WS chunks that lacked them
+          void jobsApi.logs(jobId).then((l) => {
+            if (alive) logs.value = l
+          }).catch(() => { /* ignore */ })
         }
         // Auto-expand / auto-collapse steps
         const activeIdx = findActiveStep(job.value.step_statuses)
@@ -294,11 +303,18 @@ function handleWsMessage(raw: string) {
     }
     // ── Log chunk (existing format) ──
     const chunk = data as LogChunk
+    if (!chunk.created_at) {
+      chunk.created_at = new Date().toISOString()
+    }
+    // Avoid duplicating chunks already loaded via REST
+    if (logs.value.some(c => c.step_order === chunk.step_order && c.content === chunk.content)) {
+      return
+    }
     logs.value.push(chunk)
     const st = stepTerminals.value.find(t => t.stepOrder === chunk.step_order)
     if (st && !st.seenContent.has(chunk.content)) {
       st.seenContent.add(chunk.content)
-      const ts = chunk.created_at ? chunk.created_at.slice(11, 19) : nowTimeStr()
+      const ts = formatLogClock(chunk.created_at, nowTimeStr())
       st.term.write(`\x1b[2m[${ts}]\x1b[0m ${chunk.content.replace(/\n/g, '\r\n')}`)
       fitTerminalHeight(chunk.step_order)
     }
@@ -566,7 +582,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
                     <span class="text-[10px] text-muted-foreground/70 font-medium">{{ terminalTitleStatus(getStepStatus(t.step_order)).label }}</span>
                   </div>
                 </div>
-                <div class="relative w-full bg-[#0d1117]">
+                <div class="relative w-full bg-[#0d1117] px-3 py-3">
                   <div :id="'terminal-el-' + t.step_order" class="w-full" />
                   <div
                     v-if="(stepLogs.get(t.step_order) || []).length === 0"

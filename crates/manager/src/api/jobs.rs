@@ -1,6 +1,9 @@
-use axum::{Json, extract::{State, Path}};
-use shared::protocol::response::ApiResponse;
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use shared::error::AppError;
+use shared::protocol::response::ApiResponse;
 use shared::rbac::Perm;
 use sqlx::Row;
 
@@ -184,7 +187,9 @@ pub async fn cancel(
             prev_status = %old_status,
             "Cancel request ignored — job already in terminal state"
         );
-        return Err(AppError::NotFound("job not found or already finished".into()));
+        return Err(AppError::NotFound(
+            "job not found or already finished".into(),
+        ));
     }
 
     // Update step_statuses if we flipped a running step
@@ -344,7 +349,10 @@ pub async fn update_status(
         let now = now_utc();
 
         // Upsert
-        if let Some(existing) = statuses.iter_mut().find(|s| s["step_order"].as_i64() == Some(step_order as i64)) {
+        if let Some(existing) = statuses
+            .iter_mut()
+            .find(|s| s["step_order"].as_i64() == Some(step_order as i64))
+        {
             existing["status"] = serde_json::json!(&req.status);
             // Record started_at when a step transitions to "running"
             if req.status == "running" {
@@ -377,7 +385,10 @@ pub async fn update_status(
     } else {
         // Overall status update
         let now = "datetime('now')";
-        let end_expr = if matches!(req.status.as_str(), "success" | "failed" | "cancelled" | "timeout") {
+        let end_expr = if matches!(
+            req.status.as_str(),
+            "success" | "failed" | "cancelled" | "timeout"
+        ) {
             format!("end_time = {now},")
         } else {
             String::new()
@@ -406,7 +417,8 @@ pub async fn update_status(
                 .await?;
             if let Some(row3) = row3 {
                 let raw: String = row3.get(0);
-                let mut step_statuses: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
+                let mut step_statuses: Vec<serde_json::Value> =
+                    serde_json::from_str(&raw).unwrap_or_default();
                 let mut changed = false;
                 for s in &mut step_statuses {
                     if s.get("status").and_then(|v| v.as_str()) == Some("running") {
@@ -430,15 +442,13 @@ pub async fn update_status(
     tracing::info!("Job status updated: {job_id} → {}", req.status);
 
     // Broadcast status to WebSocket subscribers
-    let pipeline_id: Option<String> = sqlx::query(
-        "SELECT pipeline_id FROM jobs WHERE id = ?",
-    )
-    .bind(&job_id)
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten()
-    .map(|r: sqlx::sqlite::SqliteRow| r.get(0));
+    let pipeline_id: Option<String> = sqlx::query("SELECT pipeline_id FROM jobs WHERE id = ?")
+        .bind(&job_id)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|r: sqlx::sqlite::SqliteRow| r.get(0));
 
     if let Some(pid) = &pipeline_id {
         // Build a minimal status snapshot for the broadcast

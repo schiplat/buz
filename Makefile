@@ -59,10 +59,10 @@ example:
 	@echo ''                                 >> example/conf/runner.toml
 	@echo '[manager]'                         >> example/conf/runner.toml
 	@echo 'url = "http://127.0.0.1:8080"'    >> example/conf/runner.toml
-	@echo '# Get this token from Buz Manager web UI → Nodes → New Node' >> example/conf/runner.toml
+	@echo '# Get this token from Buz Manager web UI → Runners → New Runner' >> example/conf/runner.toml
 	@echo 'register_token = "REPLACE-ME"'    >> example/conf/runner.toml
 	@echo ''                                 >> example/conf/runner.toml
-	@echo '[node]'                           >> example/conf/runner.toml
+	@echo '[runner]'                           >> example/conf/runner.toml
 	@echo 'name = "my-runner"'               >> example/conf/runner.toml
 	@echo 'labels = ["linux-x64"]'           >> example/conf/runner.toml
 	@echo ""                                                                                        && echo "Example configs created in ./example/conf/" && echo ""                                       && echo "Start the Manager:"                                                                          && echo "  (cd example && ../target/release/buz-manager)"                                              && echo ""                                                                                           && echo "Start a Runner (edit register_token first):"                                                && echo "  (cd example && ../target/release/buz-runner)"                                              && echo ""

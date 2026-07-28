@@ -1,4 +1,4 @@
-use sqlx::{SqlitePool, Row};
+use sqlx::{Row, SqlitePool};
 use std::time::Duration;
 use tokio::time;
 use uuid::Uuid;

@@ -1,7 +1,10 @@
-use axum::{Json, extract::{State, Path}};
-use shared::protocol::{CreateUserRequest, UpdateUserRequest};
-use shared::protocol::response::ApiResponse;
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use shared::error::AppError;
+use shared::protocol::response::ApiResponse;
+use shared::protocol::{CreateUserRequest, UpdateUserRequest};
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -97,7 +100,9 @@ pub async fn update(
 
     if let Some(ref pw) = req.password {
         if pw.is_empty() {
-            return Err(AppError::ValidationFailed("password cannot be empty".into()));
+            return Err(AppError::ValidationFailed(
+                "password cannot be empty".into(),
+            ));
         }
         let hash = hash_password(pw).map_err(AppError::Internal)?;
         sqlx::query(
@@ -110,13 +115,11 @@ pub async fn update(
     }
 
     if let Some(ref dn) = req.display_name {
-        sqlx::query(
-            "UPDATE users SET display_name = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(dn)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        sqlx::query("UPDATE users SET display_name = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(dn)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
     }
 
     if let Some(is_admin) = req.is_platform_admin {

@@ -1,15 +1,16 @@
-use axum::{Json, extract::{State, Path}};
-use shared::protocol::{CreatePipelineRequest, StepDef};
-use shared::protocol::response::ApiResponse;
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use shared::error::AppError;
+use shared::protocol::response::ApiResponse;
+use shared::protocol::{CreatePipelineRequest, StepDef};
 use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
 
 use crate::middleware::AuthUser;
-use crate::rbac::{
-    pipeline_team_id, resolve_required_team_id, secret_team_id, team_in_clause,
-};
+use crate::rbac::{pipeline_team_id, resolve_required_team_id, secret_team_id, team_in_clause};
 use crate::state::AppState;
 
 /// Success jobs ÷ total jobs for a pipeline. `None` when there are no builds yet.
@@ -117,8 +118,8 @@ pub async fn create(
 
     let pipeline_id = Uuid::new_v4().to_string();
     let labels_json = serde_json::to_string(&req.runner_labels).unwrap_or_else(|_| "[]".into());
-    let input_defs_json = serde_json::to_string(&req.input_defs.unwrap_or_default())
-        .unwrap_or_else(|_| "[]".into());
+    let input_defs_json =
+        serde_json::to_string(&req.input_defs.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
 
     sqlx::query(
         "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path, cron_expr,
@@ -198,21 +199,18 @@ pub async fn get_one(
     let input_defs = serde_json::from_str::<serde_json::Value>(&input_defs_raw).ok();
 
     // Fetch explicit secret bindings
-    let secret_bind_rows = sqlx::query(
-        "SELECT secret_id FROM pipeline_secrets WHERE pipeline_id = ?",
-    )
-    .bind(&id)
-    .fetch_all(&state.pool)
-    .await?;
+    let secret_bind_rows =
+        sqlx::query("SELECT secret_id FROM pipeline_secrets WHERE pipeline_id = ?")
+            .bind(&id)
+            .fetch_all(&state.pool)
+            .await?;
     let secret_ids: Vec<String> = secret_bind_rows.iter().map(|r| r.get(0)).collect();
 
     // Fetch explicit variable bindings
-    let var_bind_rows = sqlx::query(
-        "SELECT var_id FROM pipeline_vars WHERE pipeline_id = ?",
-    )
-    .bind(&id)
-    .fetch_all(&state.pool)
-    .await?;
+    let var_bind_rows = sqlx::query("SELECT var_id FROM pipeline_vars WHERE pipeline_id = ?")
+        .bind(&id)
+        .fetch_all(&state.pool)
+        .await?;
     let var_ids: Vec<String> = var_bind_rows.iter().map(|r| r.get(0)).collect();
 
     let tasks = sqlx::query(
@@ -294,8 +292,8 @@ pub async fn update(
     verify_pipeline_secret_bindings(&state.pool, &auth, &team_id, req.secret_ids.as_ref()).await?;
 
     let labels_json = serde_json::to_string(&req.runner_labels).unwrap_or_else(|_| "[]".into());
-    let input_defs_json = serde_json::to_string(&req.input_defs.unwrap_or_default())
-        .unwrap_or_else(|_| "[]".into());
+    let input_defs_json =
+        serde_json::to_string(&req.input_defs.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
 
     let result = sqlx::query(
         "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?, webhook_path = ?,
@@ -411,7 +409,11 @@ pub async fn toggle_active(
         .execute(&state.pool)
         .await?;
 
-    let action = if new_active != 0 { "activated" } else { "deactivated" };
+    let action = if new_active != 0 {
+        "activated"
+    } else {
+        "deactivated"
+    };
     let name: String = row.get(0);
     tracing::info!("Pipeline {name} ({id}) {action}");
 
@@ -501,20 +503,19 @@ pub(crate) async fn do_trigger(
     })
     .collect::<Vec<_>>();
 
-    let env_snapshot = sqlx::query(
-        "SELECT var_name, is_secret FROM variables WHERE pipeline_id = ?",
-    )
-    .bind(pipeline_id)
-    .fetch_all(&state.pool)
-    .await?
-    .into_iter()
-    .map(|v| {
-        serde_json::json!({
-            "name": v.get::<String, _>(0),
-            "is_secret": v.get::<i64, _>(1) != 0,
-        })
-    })
-    .collect::<Vec<_>>();
+    let env_snapshot =
+        sqlx::query("SELECT var_name, is_secret FROM variables WHERE pipeline_id = ?")
+            .bind(pipeline_id)
+            .fetch_all(&state.pool)
+            .await?
+            .into_iter()
+            .map(|v| {
+                serde_json::json!({
+                    "name": v.get::<String, _>(0),
+                    "is_secret": v.get::<i64, _>(1) != 0,
+                })
+            })
+            .collect::<Vec<_>>();
 
     let pipeline_snapshot = sqlx::query(
         "SELECT trigger_type, timeout_seconds, source
@@ -607,9 +608,8 @@ pub(crate) async fn insert_steps(
         };
 
         // ── Host names: store raw values, resolve static ones to IDs ──
-        let raw_host_names: Vec<String> = step.host.as_ref()
-            .map(|h| h.to_vec())
-            .unwrap_or_default();
+        let raw_host_names: Vec<String> =
+            step.host.as_ref().map(|h| h.to_vec()).unwrap_or_default();
         let host_names_stored = raw_host_names.join(",");
 
         // ── Host resolution (only for SSH steps) ──
@@ -619,10 +619,16 @@ pub(crate) async fn insert_steps(
             // 1) Explicit host names — skip those containing '$' (dynamic references)
             for name in &raw_host_names {
                 let name = name.trim();
-                if name.is_empty() { continue; }
+                if name.is_empty() {
+                    continue;
+                }
                 if name.contains('$') {
                     // Dynamic reference — defer resolution to poll time
-                    tracing::debug!("Step '{}' has dynamic host reference '{}' — deferring resolution", step.name, name);
+                    tracing::debug!(
+                        "Step '{}' has dynamic host reference '{}' — deferring resolution",
+                        step.name,
+                        name
+                    );
                     continue;
                 }
                 if let Ok(Some(row)) = sqlx::query("SELECT id FROM hosts WHERE name = ?")
@@ -632,7 +638,11 @@ pub(crate) async fn insert_steps(
                 {
                     ids.push(row.get::<String, _>(0));
                 } else {
-                    tracing::warn!("Step '{}' references unknown host '{}' — will fail at dispatch", step.name, name);
+                    tracing::warn!(
+                        "Step '{}' references unknown host '{}' — will fail at dispatch",
+                        step.name,
+                        name
+                    );
                 }
             }
 
@@ -640,9 +650,15 @@ pub(crate) async fn insert_steps(
             if let Some(ref labels) = step.host_labels {
                 for label in &labels.to_vec() {
                     let label = label.trim();
-                    if label.is_empty() { continue; }
+                    if label.is_empty() {
+                        continue;
+                    }
                     if label.contains('$') {
-                        tracing::debug!("Step '{}' has dynamic host label '{}' — deferring resolution", step.name, label);
+                        tracing::debug!(
+                            "Step '{}' has dynamic host label '{}' — deferring resolution",
+                            step.name,
+                            label
+                        );
                         continue;
                     }
                     match sqlx::query(
@@ -654,14 +670,22 @@ pub(crate) async fn insert_steps(
                     {
                         Ok(rows) => {
                             if rows.is_empty() {
-                                tracing::warn!("Step '{}': label '{}' matched no hosts", step.name, label);
+                                tracing::warn!(
+                                    "Step '{}': label '{}' matched no hosts",
+                                    step.name,
+                                    label
+                                );
                             }
                             for row in &rows {
                                 ids.push(row.get::<String, _>(0));
                             }
                         }
                         Err(e) => {
-                            tracing::error!("Step '{}': failed to query hosts by label '{}': {e}", step.name, label);
+                            tracing::error!(
+                                "Step '{}': failed to query hosts by label '{}': {e}",
+                                step.name,
+                                label
+                            );
                         }
                     }
                 }
@@ -677,9 +701,15 @@ pub(crate) async fn insert_steps(
         // Foreign key: bind NULL when no host is resolved (empty string violates REFERENCES).
         let host_id_bind: Option<String> = host_ids.filter(|s| !s.is_empty());
         // Normalize host_labels to a comma-separated string for storage
-        let host_labels_stored = step.host_labels.as_ref().map(|l| l.join(",")).unwrap_or_default();
+        let host_labels_stored = step
+            .host_labels
+            .as_ref()
+            .map(|l| l.join(","))
+            .unwrap_or_default();
         // Step-level secrets (comma-separated)
-        let step_secrets_stored = step.secrets.as_ref()
+        let step_secrets_stored = step
+            .secrets
+            .as_ref()
             .map(|s| s.join(","))
             .unwrap_or_default();
         let image_stored = step

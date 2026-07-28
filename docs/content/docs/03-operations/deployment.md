@@ -59,8 +59,8 @@ cat > conf/runner.toml <<EOF
 url = "https://buz-api.example.com"
 register_token = "your-register-token"
 
-[node]
-name = "prod-node-01"
+[runner]
+name = "prod-runner-01"
 labels = ["prod", "linux-x64"]
 work_dir = "/tmp/buz-runner"
 

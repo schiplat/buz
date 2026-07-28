@@ -46,8 +46,8 @@ impl AppError {
 #[cfg(feature = "web")]
 mod web_impl {
     use super::AppError;
-    use axum::response::{IntoResponse, Response};
     use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
 
     impl IntoResponse for AppError {
         fn into_response(self) -> Response {
@@ -63,7 +63,9 @@ mod web_impl {
                 AppError::NotFound(_) => StatusCode::NOT_FOUND,
                 AppError::Conflict(_) => StatusCode::CONFLICT,
                 AppError::ValidationFailed(_) => StatusCode::UNPROCESSABLE_ENTITY,
-                AppError::Internal(_) | AppError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                AppError::Internal(_) | AppError::DatabaseError(_) => {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
             };
 
             (status, axum::Json(body)).into_response()

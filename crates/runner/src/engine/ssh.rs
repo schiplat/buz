@@ -1,18 +1,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::config::SshHostKeyPolicy;
 use russh::client;
 use russh::client::AuthResult;
 use russh::keys::agent::client::AgentClient;
 use russh::keys::agent::AgentIdentity;
+use russh::keys::check_known_hosts_path;
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::load_secret_key;
 use russh::keys::ssh_key;
 use russh::keys::HashAlg;
 use russh::ChannelMsg;
 use tokio::io::{AsyncRead, AsyncWrite};
-use russh::keys::check_known_hosts_path;
-use crate::config::SshHostKeyPolicy;
 use tokio::time::timeout;
 
 /// Result of an SSH command execution.
@@ -54,17 +54,13 @@ pub async fn execute(
 
     match result {
         Ok(inner) => inner,
-        Err(_elapsed) => anyhow::bail!(
-            "SSH command timed out after {}s",
-            default_timeout.as_secs()
-        ),
+        Err(_elapsed) => {
+            anyhow::bail!("SSH command timed out after {}s", default_timeout.as_secs())
+        }
     }
 }
 
-async fn execute_inner(
-    command: &str,
-    conn: &SshConnectionParams,
-) -> anyhow::Result<SshOutput> {
+async fn execute_inner(command: &str, conn: &SshConnectionParams) -> anyhow::Result<SshOutput> {
     let config = client::Config::default();
     let config = Arc::new(config);
 
@@ -88,8 +84,8 @@ async fn execute_inner(
             known_hosts_path: conn.known_hosts_path.clone(),
         },
     )
-        .await
-        .map_err(|e| anyhow::anyhow!("SSH connection to {addr} failed: {e}"))?;
+    .await
+    .map_err(|e| anyhow::anyhow!("SSH connection to {addr} failed: {e}"))?;
 
     let authenticated = match conn.credential_type.as_str() {
         "key_path" => {
@@ -244,11 +240,17 @@ async fn execute_inner(
 /// Human-readable name for a key algorithm.
 fn key_type_display(alg: &ssh_key::Algorithm) -> &'static str {
     let cloned = alg.clone();
-    if cloned.is_rsa() { return "RSA"; }
+    if cloned.is_rsa() {
+        return "RSA";
+    }
     let cloned = alg.clone();
-    if cloned.is_ed25519() { return "Ed25519"; }
+    if cloned.is_ed25519() {
+        return "Ed25519";
+    }
     let cloned = alg.clone();
-    if cloned.is_ecdsa() { return "ECDSA"; }
+    if cloned.is_ecdsa() {
+        return "ECDSA";
+    }
     "unknown"
 }
 
@@ -285,9 +287,15 @@ async fn authenticate_with_private_key(
             key_type = key_type_display(&alg),
         );
         let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(key.clone()), None);
-        return handle.authenticate_publickey(username, key_with_hash)
+        return handle
+            .authenticate_publickey(username, key_with_hash)
             .await
-            .map_err(|e| anyhow::anyhow!("{key_type} authentication failed: {e}", key_type = key_type_display(&alg)));
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "{key_type} authentication failed: {e}",
+                    key_type = key_type_display(&alg)
+                )
+            });
     }
 
     // ---- RSA: build a fallback hash chain ----
@@ -304,7 +312,9 @@ async fn authenticate_with_private_key(
             None
         }
         Ok(None) | Err(_) => {
-            tracing::info!("SSH server did not advertise server-sig-algs, will try all RSA hash types");
+            tracing::info!(
+                "SSH server did not advertise server-sig-algs, will try all RSA hash types"
+            );
             None
         }
     };
@@ -321,16 +331,9 @@ async fn authenticate_with_private_key(
             _ => "other",
         };
 
-        tracing::info!(
-            "SSH RSA auth attempt {}: trying {}",
-            attempt + 1,
-            label,
-        );
+        tracing::info!("SSH RSA auth attempt {}: trying {}", attempt + 1, label,);
 
-        let key_with_hash = PrivateKeyWithHashAlg::new(
-            Arc::new(key.clone()),
-            *hash_alg,
-        );
+        let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(key.clone()), *hash_alg);
 
         match handle.authenticate_publickey(username, key_with_hash).await {
             Ok(result) if result.success() => {
@@ -467,9 +470,10 @@ async fn authenticate_with_agent_client<R>(
 where
     R: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let identities = agent.request_identities().await.map_err(|e| {
-        anyhow::anyhow!("failed to list identities from SSH agent: {e}")
-    })?;
+    let identities = agent
+        .request_identities()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to list identities from SSH agent: {e}"))?;
 
     if identities.is_empty() {
         anyhow::bail!(
@@ -561,10 +565,7 @@ where
             .await
         {
             Ok(result) if result.success() => {
-                tracing::info!(
-                    "SSH agent RSA auth succeeded with {}",
-                    hash_label(hash_alg)
-                );
+                tracing::info!("SSH agent RSA auth succeeded with {}", hash_label(hash_alg));
                 return Ok(result);
             }
             Ok(result) => {
@@ -646,9 +647,7 @@ where
 }
 
 /// Best RSA signature hash advertised by the server (if any).
-async fn preferred_rsa_hash(
-    handle: &mut russh::client::Handle<HostKeyHandler>,
-) -> Option<HashAlg> {
+async fn preferred_rsa_hash(handle: &mut russh::client::Handle<HostKeyHandler>) -> Option<HashAlg> {
     match handle.best_supported_rsa_hash().await {
         Ok(Some(Some(hash))) => {
             tracing::info!("SSH server prefers {:?} for RSA signatures", hash);
@@ -694,14 +693,12 @@ impl client::Handler for HostKeyHandler {
                 );
                 Ok(true)
             }
-            SshHostKeyPolicy::KnownHosts => {
-                verify_against_known_hosts(
-                    &self.host,
-                    self.port,
-                    server_public_key,
-                    self.known_hosts_path.as_deref(),
-                )
-            }
+            SshHostKeyPolicy::KnownHosts => verify_against_known_hosts(
+                &self.host,
+                self.port,
+                server_public_key,
+                self.known_hosts_path.as_deref(),
+            ),
         }
     }
 }
@@ -752,10 +749,14 @@ fn resolve_known_hosts_path(configured: Option<&str>) -> anyhow::Result<std::pat
     if let Some(p) = configured.map(str::trim).filter(|s| !s.is_empty()) {
         return Ok(std::path::PathBuf::from(p));
     }
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).map_err(|_| {
-        anyhow::anyhow!("HOME/USERPROFILE not set; set engine.ssh_known_hosts_path explicitly")
-    })?;
-    Ok(std::path::PathBuf::from(home).join(".ssh").join("known_hosts"))
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| {
+            anyhow::anyhow!("HOME/USERPROFILE not set; set engine.ssh_known_hosts_path explicitly")
+        })?;
+    Ok(std::path::PathBuf::from(home)
+        .join(".ssh")
+        .join("known_hosts"))
 }
 
 #[cfg(test)]

@@ -17,10 +17,15 @@ pub type AuthUserExtractor = AuthUser;
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = Response;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let token = extract_bearer(parts)?;
         let tm = TokenManager::new(&state.config.auth.jwt_secret);
-        let claims = tm.verify(token).map_err(|_| auth_err("invalid or expired token"))?;
+        let claims = tm
+            .verify(token)
+            .map_err(|_| auth_err("invalid or expired token"))?;
 
         if !matches!(claims.role, Role::Admin | Role::User) {
             return Err(forbidden_err("user role required"));
@@ -52,7 +57,10 @@ impl std::ops::Deref for PlatformAdmin {
 impl FromRequestParts<AppState> for PlatformAdmin {
     type Rejection = Response;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let user = AuthUser::from_request_parts(parts, state).await?;
         if !user.is_platform_admin {
             return Err(forbidden_err("platform admin required"));
@@ -71,7 +79,10 @@ pub struct AdminClaims {
 impl FromRequestParts<AppState> for AdminClaims {
     type Rejection = Response;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let PlatformAdmin(user) = PlatformAdmin::from_request_parts(parts, state).await?;
         Ok(AdminClaims {
             username: user.username.clone(),
@@ -90,10 +101,15 @@ pub struct RunnerClaims {
 impl FromRequestParts<AppState> for RunnerClaims {
     type Rejection = Response;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let token = extract_bearer(parts)?;
         let tm = TokenManager::new(&state.config.auth.jwt_secret);
-        let claims = tm.verify(token).map_err(|_| auth_err("invalid or expired token"))?;
+        let claims = tm
+            .verify(token)
+            .map_err(|_| auth_err("invalid or expired token"))?;
 
         if claims.role != Role::Runner {
             return Err(forbidden_err("runner role required"));

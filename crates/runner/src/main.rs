@@ -39,8 +39,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         "{} starting: {} ({})",
         shared::version::long_version("runner"),
-        config.node.name,
-        config.node.version()
+        config.runner.name,
+        config.runner.version()
     );
 
     run_loop(config).await
@@ -66,13 +66,17 @@ async fn run_loop(config: config::Config) -> anyhow::Result<()> {
             started_at,
             &sysinfo::SysInfoOpts {
                 manager_url: config.manager.url.clone(),
-                prefer_interfaces: config.node.prefer_interfaces.clone(),
+                prefer_interfaces: config.runner.prefer_interfaces.clone(),
             },
         );
         tracing::info!(
             "System: v{} | {} ({}) | {} cores | {} MB RAM | {} GB disk",
-            info.runner_version, info.hostname, info.cpu_arch,
-            info.cpu_cores, info.memory_total_mb, info.disk_total_gb,
+            info.runner_version,
+            info.hostname,
+            info.cpu_arch,
+            info.cpu_cores,
+            info.memory_total_mb,
+            info.disk_total_gb,
         );
     }
 

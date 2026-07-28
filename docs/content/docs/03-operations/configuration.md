@@ -38,8 +38,8 @@ yaml_scan_interval_seconds = 30
 url = "https://buz-api.example.com"
 register_token = "env.BUZ_REGISTER_TOKEN"
 
-[node]
-name = "prod-node-01"
+[runner]
+name = "prod-runner-01"
 labels = ["prod", "linux-x64"]
 work_dir = "/tmp/buz-runner"
 # prefer_interfaces = ["enp26s0"]  # multi-NIC: advertise these IPs first in UI
@@ -56,9 +56,11 @@ ssh_host_key_policy = "known_hosts"
 
 | Key | Default | Notes |
 |-----|---------|-------|
-| `node.prefer_interfaces` | `[]` | NIC names whose IPs are listed first in Nodes UI; if empty, prefer IPs on the same subnet as `manager.url` |
+| `runner.prefer_interfaces` | `[]` | NIC names whose IPs are listed first in Runners UI; if empty, prefer IPs on the same subnet as `manager.url` |
 | `engine.ssh_host_key_policy` | `insecure` | `known_hosts` rejects unknown/changed server keys |
 | `engine.ssh_known_hosts_path` | `~/.ssh/known_hosts` | Used when policy is `known_hosts` |
+
+> Runner identity lives under TOML `[runner]`. Env overrides use `BUZ__RUNNER__*` (e.g. `BUZ__RUNNER__NAME`). Manager’s own `[runner]` section (heartbeat / long-poll timeouts) is unrelated — it only appears in `manager.toml`.
 
 ## Environment Variables
 

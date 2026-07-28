@@ -46,7 +46,10 @@ pub fn collect_system_info(started_at: std::time::Instant, opts: &SysInfoOpts) -
     // ── disk ──
     let disks = Disks::new_with_refreshed_list();
     let (disk_total_bytes, disk_used_bytes) = disks.iter().fold((0u64, 0u64), |(t, u), d| {
-        (t + d.total_space(), u + d.total_space() - d.available_space())
+        (
+            t + d.total_space(),
+            u + d.total_space() - d.available_space(),
+        )
     });
     let disk_total_gb = disk_total_bytes as f64 / 1_073_741_824.0;
     let disk_used_gb = disk_used_bytes as f64 / 1_073_741_824.0;
@@ -170,9 +173,7 @@ fn is_demoted_interface(name: &str) -> bool {
 fn is_ignored_addr(addr: IpAddr) -> bool {
     match addr {
         IpAddr::V4(v4) => v4.is_loopback() || v4.is_link_local() || v4.is_unspecified(),
-        IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.is_unicast_link_local() || v6.is_unspecified()
-        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unicast_link_local() || v6.is_unspecified(),
     }
 }
 

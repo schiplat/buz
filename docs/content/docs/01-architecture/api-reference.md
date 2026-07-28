@@ -99,7 +99,7 @@ Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`
 Request:
 ```json
 {
-  "name": "prod-node-01",
+  "name": "prod-runner-01",
   "labels": ["linux-x64", "prod"],
   "version": "0.1.0"
 }
@@ -111,7 +111,7 @@ Response:
   "code": 0,
   "data": {
     "id": "uuid",
-    "name": "prod-node-01",
+    "name": "prod-runner-01",
     "register_token": "one-time-token"
   }
 }
@@ -122,7 +122,7 @@ Response:
 Request:
 ```json
 {
-  "name": "prod-node-01",
+  "name": "prod-runner-01",
   "register_token": "one-time-token",
   "labels": ["linux-x64"],
   "version": "0.1.0"

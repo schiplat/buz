@@ -1,6 +1,4 @@
-use super::{
-    build_docker_run_args, preflight, resolve_host_work_dir, CONTAINER_WORKSPACE,
-};
+use super::{build_docker_run_args, preflight, resolve_host_work_dir, CONTAINER_WORKSPACE};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -56,8 +54,10 @@ fn build_args_includes_rm_volume_workdir_image_and_shell() {
     assert!(args.iter().any(|a| a == "-i"));
     let vol = format!("/tmp/ws:{CONTAINER_WORKSPACE}");
     assert!(args.iter().any(|a| a == &vol));
-    assert!(args.windows(2).any(|w| w[0] == "-w" && w[1] == CONTAINER_WORKSPACE));
-    assert!(args.iter().any(|a| a == "-e" ));
+    assert!(args
+        .windows(2)
+        .any(|w| w[0] == "-w" && w[1] == CONTAINER_WORKSPACE));
+    assert!(args.iter().any(|a| a == "-e"));
     assert!(args.iter().any(|a| a == "FOO=bar"));
     assert!(args.iter().any(|a| a == "INPUT_FOO=bar"));
 

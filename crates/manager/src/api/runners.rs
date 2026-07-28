@@ -1,18 +1,44 @@
-use axum::{Json, extract::State, response::IntoResponse};
-use shared::protocol::{RegisterRequest, RegisterResponse, HeartbeatRequest, CreateRunnerRequest};
-use shared::protocol::response::ApiResponse;
+use axum::http::StatusCode;
+use axum::{extract::State, response::IntoResponse, Json};
 use shared::auth::TokenManager;
 use shared::error::AppError;
-use axum::http::StatusCode;
+use shared::protocol::response::ApiResponse;
+use shared::protocol::{CreateRunnerRequest, HeartbeatRequest, RegisterRequest, RegisterResponse};
 
-use crate::state::AppState;
-use crate::middleware::{AdminClaims, RunnerClaims};
 use crate::crypto;
+use crate::middleware::{AdminClaims, RunnerClaims};
+use crate::state::AppState;
 use sqlx::Row;
 use uuid::Uuid;
 
+/// True when the runner has **every** label required by the pipeline/job
+/// (intersection / "must match ALL"). Empty `required` matches any runner.
+pub(crate) fn runner_satisfies_labels(runner_labels: &[String], required: &[String]) -> bool {
+    required
+        .iter()
+        .all(|need| runner_labels.iter().any(|have| have == need))
+}
+
+/// Prefer frozen job snapshot `runner_labels`; fall back to live pipeline labels JSON.
+fn required_labels_for_job(snapshot_json: &str, pipeline_labels_json: &str) -> Vec<String> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(snapshot_json) {
+        if let Some(arr) = v.get("runner_labels").and_then(|x| x.as_array()) {
+            return arr
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect();
+        }
+    }
+    serde_json::from_str(pipeline_labels_json).unwrap_or_default()
+}
+
 /// Insert a runner event (fire-and-forget; failures are silently logged).
-async fn log_runner_event(pool: &sqlx::SqlitePool, runner_id: &str, event_type: &str, message: &str) {
+async fn log_runner_event(
+    pool: &sqlx::SqlitePool,
+    runner_id: &str,
+    event_type: &str,
+    message: &str,
+) {
     let id = Uuid::new_v4().to_string();
     if let Err(e) = sqlx::query(
         "INSERT INTO runner_events (id, runner_id, event_type, message) VALUES (?, ?, ?, ?)",
@@ -35,9 +61,8 @@ pub async fn create_runner(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let id = Uuid::new_v4().to_string();
     let register_token = Uuid::new_v4().to_string();
-    let labels_json = serde_json::to_string(
-        &req.labels.unwrap_or_default()
-    ).unwrap_or_else(|_| "[]".into());
+    let labels_json =
+        serde_json::to_string(&req.labels.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
 
     sqlx::query(
         "INSERT INTO runners (id, name, register_token, labels, status, version)
@@ -51,9 +76,18 @@ pub async fn create_runner(
     .execute(&state.pool)
     .await?;
 
-    tracing::info!("Runner created: {} ({id}) register_token={register_token}", req.name);
+    tracing::info!(
+        "Runner created: {} ({id}) register_token={register_token}",
+        req.name
+    );
 
-    log_runner_event(&state.pool, &id, "created", &format!("Runner created, awaiting registration")).await;
+    log_runner_event(
+        &state.pool,
+        &id,
+        "created",
+        &format!("Runner created, awaiting registration"),
+    )
+    .await;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
@@ -70,12 +104,10 @@ pub async fn register(
     let register_token = req.register_token.trim();
 
     // Look up the runner by name first.
-    let existing = sqlx::query(
-        "SELECT id, register_token, token FROM runners WHERE name = ?",
-    )
-    .bind(name)
-    .fetch_optional(&state.pool)
-    .await?;
+    let existing = sqlx::query("SELECT id, register_token, token FROM runners WHERE name = ?")
+        .bind(name)
+        .fetch_optional(&state.pool)
+        .await?;
 
     let runner_id: String;
 
@@ -101,7 +133,7 @@ pub async fn register(
     } else {
         tracing::warn!(
             runner = %name,
-            "Runner registration failed: unknown runner name (create the node in UI first)"
+            "Runner registration failed: unknown runner name (create the runner in UI first)"
         );
         return Err(AppError::AuthFailed(
             "invalid register token or runner name".into(),
@@ -133,8 +165,17 @@ pub async fn register(
 
     tracing::info!("Runner registered: {} ({runner_id})", name);
 
-    log_runner_event(&state.pool, &runner_id, "registered",
-        &format!("Runner registered (version: {}, labels: {:?})", req.version.unwrap_or_default(), req.labels)).await;
+    log_runner_event(
+        &state.pool,
+        &runner_id,
+        "registered",
+        &format!(
+            "Runner registered (version: {}, labels: {:?})",
+            req.version.unwrap_or_default(),
+            req.labels
+        ),
+    )
+    .await;
 
     Ok(Json(ApiResponse::success(RegisterResponse {
         runner_id,
@@ -177,43 +218,77 @@ pub async fn poll(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Option<serde_json::Value>>>, AppError> {
     // Reject frozen runners — they should not be dispatched work
-    let frozen: bool = sqlx::query_scalar(
-        "SELECT is_frozen FROM runners WHERE id = ?",
-    )
-    .bind(&auth.runner_id)
-    .fetch_one(&state.pool)
-    .await
-    .map(|v: i64| v != 0)
-    .unwrap_or(false);
+    let frozen: bool = sqlx::query_scalar("SELECT is_frozen FROM runners WHERE id = ?")
+        .bind(&auth.runner_id)
+        .fetch_one(&state.pool)
+        .await
+        .map(|v: i64| v != 0)
+        .unwrap_or(false);
 
     if frozen {
         tracing::debug!("Runner {} is frozen — skipping poll", auth.runner_id);
         return Ok(Json(ApiResponse::success(None)));
     }
 
-    // Find a pending job whose pipeline's runner_labels match this runner's labels.
-    // For Phase 1 simplicity: dispatch any pending job and bind it to this runner.
-    //
-    // Strategy:
-    // 1. Pick the oldest pending job
-    // 2. Try to claim it atomically (UPDATE WHERE status='pending')
-    // 3. Return the job with its tasks
+    // Load this runner's labels for scheduling.
+    let runner_labels: Vec<String> =
+        sqlx::query_scalar::<_, String>("SELECT labels FROM runners WHERE id = ?")
+            .bind(&auth.runner_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
 
-    let claimed = sqlx::query(
-        "UPDATE jobs SET status = 'running', runner_id = ?, start_time = datetime('now'),
-         updated_at = datetime('now')
-         WHERE id = (
-             SELECT id FROM jobs WHERE status = 'pending'
-             ORDER BY created_at ASC LIMIT 1
-         )
-         RETURNING id, pipeline_id, trigger_params",
+    // Candidates: oldest pending jobs with pipeline (+ snapshot) labels.
+    // Claim only if runner has ALL required labels (see runner_satisfies_labels).
+    let candidates = sqlx::query(
+        "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels
+         FROM jobs j
+         JOIN pipelines p ON p.id = j.pipeline_id
+         WHERE j.status = 'pending'
+         ORDER BY j.created_at ASC
+         LIMIT 50",
     )
-    .bind(&auth.runner_id)
-    .fetch_optional(&state.pool)
+    .fetch_all(&state.pool)
     .await?;
 
+    let mut claimed = None;
+    for row in candidates {
+        let job_id: String = row.get(0);
+        let snapshot_raw: String = row.get(3);
+        let pipeline_labels_json: String = row.get(4);
+        let required = required_labels_for_job(&snapshot_raw, &pipeline_labels_json);
+        if !runner_satisfies_labels(&runner_labels, &required) {
+            continue;
+        }
+
+        let got = sqlx::query(
+            "UPDATE jobs SET status = 'running', runner_id = ?, start_time = datetime('now'),
+             updated_at = datetime('now')
+             WHERE id = ? AND status = 'pending'
+             RETURNING id, pipeline_id, trigger_params",
+        )
+        .bind(&auth.runner_id)
+        .bind(&job_id)
+        .fetch_optional(&state.pool)
+        .await?;
+
+        if let Some(r) = got {
+            tracing::info!(
+                runner = %auth.runner_id,
+                job = %job_id,
+                runner_labels = ?runner_labels,
+                required_labels = ?required,
+                "Runner claimed job"
+            );
+            claimed = Some(r);
+            break;
+        }
+        // Lost the race — try next matching candidate
+    }
+
     let Some(row) = claimed else {
-        // No pending job — return empty
+        // No matching pending job
         return Ok(Json(ApiResponse::success(None)));
     };
 
@@ -334,10 +409,18 @@ pub async fn poll(
         // creation time) and need to be resolved from the secrets table at dispatch time.
         let mut step_secrets_map = serde_json::json!({});
         if !step_secrets_str.is_empty() {
-            let step_names: Vec<&str> = step_secrets_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+            let step_names: Vec<&str> = step_secrets_str
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
             if !step_names.is_empty() {
                 // Query the secrets table directly for step-level secrets
-                let placeholders: Vec<String> = step_names.iter().enumerate().map(|(i, _)| format!("?{}", i+1)).collect();
+                let placeholders: Vec<String> = step_names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", i + 1))
+                    .collect();
                 let query = format!(
                     "SELECT name, value FROM secrets WHERE name IN ({})",
                     placeholders.join(",")
@@ -358,7 +441,8 @@ pub async fn poll(
 
         // For SSH steps, resolve host IDs → connection details
         if exec_type == "ssh" {
-            let mut host_ids: Vec<String> = host_id_str.split(',')
+            let mut host_ids: Vec<String> = host_id_str
+                .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
@@ -377,14 +461,19 @@ pub async fn poll(
                 }
             }
 
-            if host_ids.is_empty() || host_names_raw.chars().any(|c| c == '$') || host_labels_raw.chars().any(|c| c == '$') {
-                let resolved_names: Vec<String> = host_names_raw.split(',')
+            if host_ids.is_empty()
+                || host_names_raw.chars().any(|c| c == '$')
+                || host_labels_raw.chars().any(|c| c == '$')
+            {
+                let resolved_names: Vec<String> = host_names_raw
+                    .split(',')
                     .filter(|s| !s.trim().is_empty())
                     .map(|s| resolve_var_ref(s.trim(), &unified_vars))
                     .flat_map(|resolved| resolved)
                     .collect();
 
-                let resolved_labels: Vec<String> = host_labels_raw.split(',')
+                let resolved_labels: Vec<String> = host_labels_raw
+                    .split(',')
                     .filter(|s| !s.trim().is_empty())
                     .map(|s| resolve_var_ref(s.trim(), &unified_vars))
                     .flat_map(|resolved| resolved)
@@ -402,7 +491,11 @@ pub async fn poll(
                             host_ids.push(id);
                         }
                     } else {
-                        tracing::warn!("SSH step '{}': resolved dynamic host name '{}' not found", t.get::<String, _>(2), name);
+                        tracing::warn!(
+                            "SSH step '{}': resolved dynamic host name '{}' not found",
+                            t.get::<String, _>(2),
+                            name
+                        );
                     }
                 }
 
@@ -471,8 +564,16 @@ pub async fn poll(
 
     tracing::info!("Job dispatched: {job_id} → runner {}", auth.runner_id);
 
-    log_runner_event(&state.pool, &auth.runner_id, "job_dispatched",
-        &format!("Job {job_id} claimed, pipeline={pipeline_id}, {} steps", tasks.len())).await;
+    log_runner_event(
+        &state.pool,
+        &auth.runner_id,
+        "job_dispatched",
+        &format!(
+            "Job {job_id} claimed, pipeline={pipeline_id}, {} steps",
+            tasks.len()
+        ),
+    )
+    .await;
 
     Ok(Json(ApiResponse::success(Some(serde_json::json!({
         "job_id": job_id,
@@ -487,10 +588,7 @@ pub async fn poll(
 /// the trigger inputs. Returns the resolved value(s) as a Vec — for the
 /// dynamic host resolution, a single input value could map to a host name
 /// or a comma-separated list.
-fn resolve_var_ref(
-    raw: &str,
-    inputs: &serde_json::Value,
-) -> Vec<String> {
+fn resolve_var_ref(raw: &str, inputs: &serde_json::Value) -> Vec<String> {
     // Strip wrapping ${...} or leading $
     let var_name = raw
         .strip_prefix("${")
@@ -505,7 +603,11 @@ fn resolve_var_ref(
                 return vec![];
             }
             // Support comma-separated multi-host values
-            return val.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            return val
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
     }
 
@@ -685,7 +787,11 @@ pub async fn toggle_freeze(
         .execute(&state.pool)
         .await?;
 
-    let action = if new_frozen != 0 { "frozen" } else { "unfrozen" };
+    let action = if new_frozen != 0 {
+        "frozen"
+    } else {
+        "unfrozen"
+    };
     let name: String = row.get(0);
     tracing::info!("Runner {name} ({id}) {action}");
 
@@ -710,16 +816,18 @@ pub async fn get_events(
         .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
 
     let page: i64 = params.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
-    let page_size: i64 = params.get("page_size").and_then(|s| s.parse().ok()).unwrap_or(20).clamp(1, 100);
+    let page_size: i64 = params
+        .get("page_size")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20)
+        .clamp(1, 100);
     let offset = (page - 1) * page_size;
 
     // Get total count
-    let total: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM runner_events WHERE runner_id = ?"
-    )
-    .bind(&id)
-    .fetch_one(&state.pool)
-    .await?;
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runner_events WHERE runner_id = ?")
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await?;
 
     let rows = sqlx::query(
         "SELECT id, event_type, message, created_at
@@ -754,3 +862,7 @@ pub async fn get_events(
         "total_pages": ((total as f64) / (page_size as f64)).ceil() as i64,
     }))))
 }
+
+#[cfg(test)]
+#[path = "tests/runner_label_tests.rs"]
+mod tests;

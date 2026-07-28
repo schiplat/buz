@@ -1,4 +1,4 @@
-use shared::version::{PRODUCT_NAME, VERSION, long_version, version_string};
+use shared::version::{long_version, version_string, PRODUCT_NAME, VERSION};
 
 #[test]
 fn version_matches_cargo_pkg() {

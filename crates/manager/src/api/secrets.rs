@@ -1,7 +1,10 @@
-use axum::{Json, extract::{State, Path}};
-use shared::protocol::{CreateSecretRequest, UpdateSecretRequest};
-use shared::protocol::response::ApiResponse;
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use shared::error::AppError;
+use shared::protocol::response::ApiResponse;
+use shared::protocol::{CreateSecretRequest, UpdateSecretRequest};
 use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
@@ -81,7 +84,9 @@ pub async fn create(
         .fetch_optional(&state.pool)
         .await?;
     if existing.is_some() {
-        return Err(AppError::Conflict(format!("secret '{name}' already exists")));
+        return Err(AppError::Conflict(format!(
+            "secret '{name}' already exists"
+        )));
     }
 
     let id = Uuid::new_v4().to_string();

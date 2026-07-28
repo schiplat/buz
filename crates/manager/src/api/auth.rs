@@ -1,13 +1,13 @@
-use axum::{Json, extract::State};
-use shared::protocol::{ChangePasswordRequest, LoginRequest, LoginResponse};
-use shared::protocol::response::ApiResponse;
-use shared::auth::{TokenManager, Role};
+use axum::{extract::State, Json};
+use shared::auth::{Role, TokenManager};
 use shared::error::AppError;
+use shared::protocol::response::ApiResponse;
+use shared::protocol::{ChangePasswordRequest, LoginRequest, LoginResponse};
 use sqlx::Row;
 
+use crate::middleware::AuthUser;
 use crate::password::{hash_password, verify_password};
 use crate::state::AppState;
-use crate::middleware::AuthUser;
 
 pub async fn login(
     State(state): State<AppState>,
@@ -89,7 +89,9 @@ pub(crate) fn validate_change_password(req: &ChangePasswordRequest) -> Result<()
         ));
     }
     if req.new_password.is_empty() {
-        return Err(AppError::ValidationFailed("new_password is required".into()));
+        return Err(AppError::ValidationFailed(
+            "new_password is required".into(),
+        ));
     }
     if req.new_password.len() < 6 {
         return Err(AppError::ValidationFailed(
@@ -125,13 +127,11 @@ pub async fn change_password(
     }
 
     let new_hash = hash_password(&req.new_password).map_err(AppError::Internal)?;
-    sqlx::query(
-        "UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?",
-    )
-    .bind(&new_hash)
-    .bind(&auth.id)
-    .execute(&state.pool)
-    .await?;
+    sqlx::query("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(&new_hash)
+        .bind(&auth.id)
+        .execute(&state.pool)
+        .await?;
 
     Ok(Json(ApiResponse::success(())))
 }

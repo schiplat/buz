@@ -63,7 +63,10 @@ fn daily_cron_upcoming() {
     let normalized = normalize_cron(expr);
     let schedule = cron::Schedule::from_str(&normalized).unwrap();
     let mut upcoming = schedule.upcoming(chrono::Utc);
-    assert!(upcoming.next().is_some(), "should have an upcoming fire time");
+    assert!(
+        upcoming.next().is_some(),
+        "should have an upcoming fire time"
+    );
 }
 
 #[test]

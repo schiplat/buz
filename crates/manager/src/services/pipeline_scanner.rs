@@ -1,4 +1,4 @@
-use sqlx::{SqlitePool, Row};
+use sqlx::{Row, SqlitePool};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time;
@@ -7,14 +7,14 @@ use uuid::Uuid;
 use shared::pipeline_yaml::{parse_and_validate, PipelineYaml, TriggerYaml};
 use shared::protocol::{EnvPair, PipelineInputDef, StepDef};
 
-use crate::api::{insert_steps, insert_env_vars, insert_pipeline_secret_bindings, insert_pipeline_var_bindings};
+use crate::api::{
+    insert_env_vars, insert_pipeline_secret_bindings, insert_pipeline_var_bindings, insert_steps,
+};
 /// Periodically scan `yaml_scan_dir` for `.yml`/`.yaml` files,
 /// parsing them into pipeline definitions and upserting into the DB.
 pub fn spawn_scanner(pool: SqlitePool, dir: String, interval_secs: u64) {
     tokio::spawn(async move {
-        tracing::info!(
-            "Pipeline YAML scanner started (dir: {dir}, interval: {interval_secs}s)"
-        );
+        tracing::info!("Pipeline YAML scanner started (dir: {dir}, interval: {interval_secs}s)");
 
         let mut tick = time::interval(Duration::from_secs(interval_secs));
         // Do an immediate scan on startup
@@ -95,8 +95,7 @@ async fn upsert_from_yaml(
     let pipeline_name = parsed.name.trim();
     let description = parsed.description.clone().unwrap_or_default();
 
-    let (trigger_type, webhook_path, cron_expr, input_defs) =
-        extract_trigger(&parsed.on);
+    let (trigger_type, webhook_path, cron_expr, input_defs) = extract_trigger(&parsed.on);
 
     let runner_labels = parsed
         .runner
@@ -153,16 +152,13 @@ async fn upsert_from_yaml(
     let pipeline_secrets: Vec<String> = parsed.secrets.clone().unwrap_or_default();
 
     // Check if pipeline already exists by yaml_path
-    let existing = sqlx::query(
-        "SELECT id FROM pipelines WHERE yaml_path = ? AND source = 'yaml'",
-    )
-    .bind(file_path)
-    .fetch_optional(pool)
-    .await?;
+    let existing = sqlx::query("SELECT id FROM pipelines WHERE yaml_path = ? AND source = 'yaml'")
+        .bind(file_path)
+        .fetch_optional(pool)
+        .await?;
 
     let labels_json = serde_json::to_string(&runner_labels).unwrap_or_else(|_| "[]".into());
-    let input_defs_json =
-        serde_json::to_string(&input_defs).unwrap_or_else(|_| "[]".into());
+    let input_defs_json = serde_json::to_string(&input_defs).unwrap_or_else(|_| "[]".into());
 
     if let Some(row) = existing {
         let id: String = row.get(0);
@@ -222,7 +218,11 @@ async fn upsert_from_yaml(
         }
         if !pipeline_secrets.is_empty() {
             // Look up secret IDs by name and create explicit bindings
-            let placeholders: Vec<String> = pipeline_secrets.iter().enumerate().map(|(i, _)| format!("?{}", i+1)).collect();
+            let placeholders: Vec<String> = pipeline_secrets
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect();
             let query = format!(
                 "SELECT id FROM secrets WHERE name IN ({})",
                 placeholders.join(",")
@@ -231,19 +231,27 @@ async fn upsert_from_yaml(
             for name in &pipeline_secrets {
                 q = q.bind(name);
             }
-            let secret_ids: Vec<String> = q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+            let secret_ids: Vec<String> =
+                q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
             insert_pipeline_secret_bindings(pool, &id, &secret_ids).await?;
         }
         if let Some(ref var_names) = parsed.variables {
             if !var_names.is_empty() {
-                let placeholders: Vec<String> = var_names.iter().enumerate().map(|(i, _)| format!("?{}", i+1)).collect();
+                let placeholders: Vec<String> = var_names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", i + 1))
+                    .collect();
                 let query = format!(
                     "SELECT id FROM platform_vars WHERE name IN ({})",
                     placeholders.join(",")
                 );
                 let mut q = sqlx::query_as::<_, (String,)>(&query);
-                for name in var_names { q = q.bind(name); }
-                let var_ids: Vec<String> = q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+                for name in var_names {
+                    q = q.bind(name);
+                }
+                let var_ids: Vec<String> =
+                    q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
                 insert_pipeline_var_bindings(pool, &id, &var_ids).await?;
             }
         }
@@ -286,7 +294,11 @@ async fn upsert_from_yaml(
         }
         if !pipeline_secrets.is_empty() {
             // Look up secret IDs by name and create explicit bindings
-            let placeholders: Vec<String> = pipeline_secrets.iter().enumerate().map(|(i, _)| format!("?{}", i+1)).collect();
+            let placeholders: Vec<String> = pipeline_secrets
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect();
             let query = format!(
                 "SELECT id FROM secrets WHERE name IN ({})",
                 placeholders.join(",")
@@ -295,19 +307,27 @@ async fn upsert_from_yaml(
             for name in &pipeline_secrets {
                 q = q.bind(name);
             }
-            let secret_ids: Vec<String> = q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+            let secret_ids: Vec<String> =
+                q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
             insert_pipeline_secret_bindings(pool, &id, &secret_ids).await?;
         }
         if let Some(ref var_names) = parsed.variables {
             if !var_names.is_empty() {
-                let placeholders: Vec<String> = var_names.iter().enumerate().map(|(i, _)| format!("?{}", i+1)).collect();
+                let placeholders: Vec<String> = var_names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", i + 1))
+                    .collect();
                 let query = format!(
                     "SELECT id FROM platform_vars WHERE name IN ({})",
                     placeholders.join(",")
                 );
                 let mut q = sqlx::query_as::<_, (String,)>(&query);
-                for name in var_names { q = q.bind(name); }
-                let var_ids: Vec<String> = q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+                for name in var_names {
+                    q = q.bind(name);
+                }
+                let var_ids: Vec<String> =
+                    q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
                 insert_pipeline_var_bindings(pool, &id, &var_ids).await?;
             }
         }
@@ -320,10 +340,7 @@ async fn upsert_from_yaml(
 
 /// Resolve YAML `team` / `owner_group` slug to `(team_id, slug)`.
 /// Creates no teams — falls back to the bootstrapped `default` team when slug is unknown.
-async fn resolve_team_for_yaml(
-    pool: &SqlitePool,
-    slug: &str,
-) -> anyhow::Result<(String, String)> {
+async fn resolve_team_for_yaml(pool: &SqlitePool, slug: &str) -> anyhow::Result<(String, String)> {
     if let Some(row) = sqlx::query("SELECT id, slug FROM teams WHERE slug = ?")
         .bind(slug)
         .fetch_optional(pool)
@@ -333,9 +350,7 @@ async fn resolve_team_for_yaml(
     }
 
     if slug != "default" {
-        tracing::warn!(
-            "YAML scanner: unknown team slug '{slug}', falling back to 'default'"
-        );
+        tracing::warn!("YAML scanner: unknown team slug '{slug}', falling back to 'default'");
     }
 
     if let Some(row) = sqlx::query("SELECT id, slug FROM teams WHERE slug = 'default'")
@@ -345,16 +360,11 @@ async fn resolve_team_for_yaml(
         return Ok((row.get(0), row.get(1)));
     }
 
-    anyhow::bail!(
-        "no team '{slug}' and no 'default' team — ensure RBAC bootstrap has run"
-    )
+    anyhow::bail!("no team '{slug}' and no 'default' team — ensure RBAC bootstrap has run")
 }
 
 /// Deactivate pipelines whose YAML source file has been deleted from disk.
-async fn deactivate_removed(
-    pool: &SqlitePool,
-    found_paths: &[PathBuf],
-) -> anyhow::Result<()> {
+async fn deactivate_removed(pool: &SqlitePool, found_paths: &[PathBuf]) -> anyhow::Result<()> {
     let found: Vec<String> = found_paths
         .iter()
         .map(|p| p.to_string_lossy().to_string())
@@ -389,7 +399,12 @@ async fn deactivate_removed(
 /// Extract trigger information from the YAML `on` block.
 fn extract_trigger(
     on: &Option<TriggerYaml>,
-) -> (String, Option<String>, Option<String>, Vec<PipelineInputDef>) {
+) -> (
+    String,
+    Option<String>,
+    Option<String>,
+    Vec<PipelineInputDef>,
+) {
     let Some(on) = on else {
         return ("manual".into(), None, None, vec![]);
     };
@@ -413,21 +428,11 @@ fn extract_trigger(
     }
 
     if let Some(ref webhook) = on.webhook {
-        return (
-            "webhook".into(),
-            webhook.path.clone(),
-            None,
-            vec![],
-        );
+        return ("webhook".into(), webhook.path.clone(), None, vec![]);
     }
 
     if let Some(ref cron) = on.cron {
-        return (
-            "cron".into(),
-            None,
-            cron.schedule.clone(),
-            vec![],
-        );
+        return ("cron".into(), None, cron.schedule.clone(), vec![]);
     }
 
     ("manual".into(), None, None, vec![])

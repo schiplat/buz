@@ -1,7 +1,7 @@
 # ── Docker Engine Smoke ─────────────────────────────────────────
 # Runs a step inside an ephemeral container on the runner (uses: docker).
 # Requires runner: engine.docker_enabled = true and Docker CLI/daemon.
-# Prefer runner.labels including "docker" so only capable nodes claim the job.
+# Prefer runner.labels including "docker" so only capable runners claim the job.
 
 name: Docker Engine Smoke
 description: "Verify uses: docker executes run: inside alpine on the runner."

@@ -1,7 +1,10 @@
-use axum::{Json, extract::{State, Path}};
-use shared::protocol::{CreateTeamRequest, UpdateTeamRequest, UpsertTeamMemberRequest};
-use shared::protocol::response::ApiResponse;
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use shared::error::AppError;
+use shared::protocol::response::ApiResponse;
+use shared::protocol::{CreateTeamRequest, UpdateTeamRequest, UpsertTeamMemberRequest};
 use shared::rbac::{Perm, TeamRole};
 use sqlx::Row;
 use uuid::Uuid;
@@ -80,22 +83,20 @@ pub async fn create(
     }
 
     let id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO teams (id, name, slug, description) VALUES (?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(name)
-    .bind(&slug)
-    .bind(req.description.as_deref().unwrap_or(""))
-    .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            AppError::Conflict("team slug already exists".into())
-        } else {
-            AppError::DatabaseError(e.to_string())
-        }
-    })?;
+    sqlx::query("INSERT INTO teams (id, name, slug, description) VALUES (?, ?, ?, ?)")
+        .bind(&id)
+        .bind(name)
+        .bind(&slug)
+        .bind(req.description.as_deref().unwrap_or(""))
+        .execute(&state.pool)
+        .await
+        .map_err(|e| {
+            if e.to_string().contains("UNIQUE") {
+                AppError::Conflict("team slug already exists".into())
+            } else {
+                AppError::DatabaseError(e.to_string())
+            }
+        })?;
 
     // Creator (platform admin) becomes owner if they also want membership — optional.
     // Platform admin already bypasses checks; still add as owner for visibility in /me.
@@ -159,13 +160,11 @@ pub async fn update(
             .await?;
     }
     if let Some(ref desc) = req.description {
-        sqlx::query(
-            "UPDATE teams SET description = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(desc)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        sqlx::query("UPDATE teams SET description = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(desc)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
     }
 
     Ok(Json(ApiResponse::success(serde_json::json!({ "id": id }))))
@@ -178,16 +177,14 @@ pub async fn delete(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     auth.check_team(&id, Perm::TeamDelete)?;
 
-    let pipe_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM pipelines WHERE team_id = ?")
-            .bind(&id)
-            .fetch_one(&state.pool)
-            .await?;
-    let secret_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM secrets WHERE team_id = ?")
-            .bind(&id)
-            .fetch_one(&state.pool)
-            .await?;
+    let pipe_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pipelines WHERE team_id = ?")
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await?;
+    let secret_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM secrets WHERE team_id = ?")
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await?;
     if pipe_count > 0 || secret_count > 0 {
         return Err(AppError::Conflict(format!(
             "team still has {pipe_count} pipeline(s) and {secret_count} secret(s)"
@@ -290,13 +287,12 @@ pub async fn remove_member(
     auth.check_team(&id, Perm::TeamManageMembers)?;
 
     // Keep at least one owner
-    let current_role: Option<String> = sqlx::query_scalar(
-        "SELECT role FROM team_members WHERE team_id = ? AND user_id = ?",
-    )
-    .bind(&id)
-    .bind(&user_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let current_role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM team_members WHERE team_id = ? AND user_id = ?")
+            .bind(&id)
+            .bind(&user_id)
+            .fetch_optional(&state.pool)
+            .await?;
 
     if current_role.as_deref() == Some("owner") {
         let owner_count: i64 = sqlx::query_scalar(

@@ -202,11 +202,11 @@ onMounted(async () => {
 
     <!-- Dialog overlay -->
     <Teleport to="body">
-      <div v-if="showDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showDialog = false" />
-        <div class="relative z-10 w-full max-w-lg mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
-          <h3 class="text-[15px] font-semibold mb-5">{{ editing ? 'Edit Host' : 'New Host' }}</h3>
-          <div class="space-y-4">
+      <div v-if="showDialog" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-8">
+        <div class="fixed inset-0 bg-black/30 backdrop-blur-sm" @click="showDialog = false" />
+        <div class="relative z-10 w-full max-w-lg mx-4 my-auto rounded-2xl border border-border/50 bg-card shadow-2xl flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
+          <h3 class="shrink-0 text-[15px] font-semibold px-6 pt-6 pb-4">{{ editing ? 'Edit Host' : 'New Host' }}</h3>
+          <div class="flex-1 min-h-0 overflow-y-auto px-6 space-y-4">
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-red-400">*</span></label>
               <input v-model="form.name" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="e.g. prod-server-01" />
@@ -300,12 +300,12 @@ onMounted(async () => {
               </div>
               <p class="mt-1 text-[11px] text-muted-foreground">Team-scoped hosts are visible to team members. Shared hosts require admin access.</p>
             </div>
-            <div>
+            <div class="pb-1">
               <label class="block text-[12px] font-medium text-foreground mb-1">Labels <span class="text-muted-foreground/60 font-normal">(comma-separated)</span></label>
               <input v-model="form.labels" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="linux, x64, prod" />
             </div>
           </div>
-          <div class="flex items-center justify-end gap-3 mt-6 pt-5 border-t border-border/30">
+          <div class="shrink-0 flex items-center justify-end gap-3 px-6 py-5 border-t border-border/30">
             <UiButton variant="ghost" size="sm" @click="showDialog = false" :disabled="saving">Cancel</UiButton>
             <UiButton size="sm" @click="handleSave" :disabled="saving">{{ saving ? 'Saving…' : (editing ? 'Update' : 'Create') }}</UiButton>
           </div>

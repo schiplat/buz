@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import type { LogChunk } from '@/api/jobs'
+import { formatLogClock } from '@/utils/time'
 
 const props = defineProps<{
   logs: LogChunk[]
@@ -25,6 +26,10 @@ const terminalTheme = {
   brightCyan: '#56d4dd', brightWhite: '#f0f6fc',
 }
 
+function clockFor(chunk: LogChunk): string {
+  return formatLogClock(chunk.created_at, '--:--:--')
+}
+
 function initTerminal() {
   if (!containerEl.value || term) return
   fitAddon = new FitAddon()
@@ -41,7 +46,7 @@ function initTerminal() {
   // Write initial logs
   const filtered = props.logs.filter(c => c.step_order === props.stepOrder)
   for (const chunk of filtered) {
-    const ts = chunk.created_at ? chunk.created_at.slice(11, 19) : '--:--:--'
+    const ts = clockFor(chunk)
     term.write(`\x1b[2m[${ts}]\x1b[0m ${chunk.content.replace(/\n/g, '\r\n')}`)
   }
 }
@@ -56,7 +61,7 @@ watch(() => props.logs, async () => {
   term.clear()
   const filtered = props.logs.filter(c => c.step_order === props.stepOrder)
   for (const chunk of filtered) {
-    const ts = chunk.created_at ? chunk.created_at.slice(11, 19) : '--:--:--'
+    const ts = clockFor(chunk)
     term.write(`\x1b[2m[${ts}]\x1b[0m ${chunk.content.replace(/\n/g, '\r\n')}`)
   }
 }, { deep: true })

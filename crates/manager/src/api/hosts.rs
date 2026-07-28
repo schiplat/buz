@@ -1,7 +1,10 @@
-use axum::{Json, extract::{State, Path}};
-use shared::protocol::{CreateHostRequest, UpdateHostRequest};
-use shared::protocol::response::ApiResponse;
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use shared::error::AppError;
+use shared::protocol::response::ApiResponse;
+use shared::protocol::{CreateHostRequest, UpdateHostRequest};
 use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;

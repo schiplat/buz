@@ -1,3 +1,4 @@
+use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
@@ -9,14 +10,26 @@ const REPLAY_CAPACITY: usize = 256;
 pub struct LogEntry {
     pub step_order: i32,
     pub content: String,
+    /// RFC3339 UTC timestamp so Job Detail can render `[HH:MM:SS]`.
+    pub created_at: String,
 }
 
 impl LogEntry {
+    pub fn new(step_order: i32, content: impl Into<String>) -> Self {
+        Self {
+            step_order,
+            content: content.into(),
+            created_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        }
+    }
+
     pub fn to_json_string(&self) -> String {
-        // Simple json string without serde overhead at broadcast time
-        format!("{{\"step_order\":{},\"content\":{}}}",
-            self.step_order,
-            serde_json::to_string(&self.content).unwrap_or_else(|_| "\"\"".into()))
+        serde_json::json!({
+            "step_order": self.step_order,
+            "content": self.content,
+            "created_at": self.created_at,
+        })
+        .to_string()
     }
 }
 
@@ -77,7 +90,7 @@ impl LogBroadcaster {
         Self::get_or_create(&self.sinks, job_id);
         let mut map = self.sinks.write().unwrap();
         if let Some(sink) = map.get_mut(job_id) {
-            let entry = LogEntry { step_order, content: content.to_string() };
+            let entry = LogEntry::new(step_order, content);
             let json = entry.to_json_string();
             // Keep a bounded history ring for late joiners
             if sink.history.len() >= REPLAY_CAPACITY {
@@ -86,7 +99,7 @@ impl LogBroadcaster {
             sink.history.push_back(json.clone());
             // Fan‑out to currently connected clients
             if sink.tx.receiver_count() > 0 {
-                let _ = sink.tx.send(json.clone());
+                let _ = sink.tx.send(json);
             }
         }
     }
@@ -120,9 +133,7 @@ impl LogBroadcaster {
         {
             let mut map = self.sinks.write().unwrap();
             if let Some(sink) = map.get_mut(job_id) {
-                let msg = format!(
-                    r#"{{"type":"status","data":{}}}"#, status_json
-                );
+                let msg = format!(r#"{{"type":"status","data":{}}}"#, status_json);
                 if sink.history.len() >= REPLAY_CAPACITY {
                     sink.history.pop_front();
                 }
@@ -138,7 +149,8 @@ impl LogBroadcaster {
             let mut map = self.pipeline_sinks.write().unwrap();
             if let Some(sink) = map.get_mut(pipeline_id) {
                 let msg = format!(
-                    r#"{{"type":"status","job_id":"{}","data":{}}}"#, job_id, status_json
+                    r#"{{"type":"status","job_id":"{}","data":{}}}"#,
+                    job_id, status_json
                 );
                 if sink.history.len() >= REPLAY_CAPACITY {
                     sink.history.pop_front();
@@ -157,3 +169,7 @@ impl LogBroadcaster {
         map.remove(pipeline_id);
     }
 }
+
+#[cfg(test)]
+#[path = "tests/log_broadcast_tests.rs"]
+mod tests;

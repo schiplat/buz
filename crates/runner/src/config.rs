@@ -4,8 +4,9 @@ use serde::Deserialize;
 pub struct Config {
     #[serde(default)]
     pub manager: ManagerConfig,
+    /// Local runner identity (name, labels, workspace). TOML section: `[runner]`.
     #[serde(default)]
-    pub node: NodeConfig,
+    pub runner: RunnerIdentity,
     #[serde(default)]
     pub engine: EngineConfig,
     #[serde(default)]
@@ -24,9 +25,10 @@ pub struct ManagerConfig {
     pub tls_skip_verify: bool,
 }
 
+/// Identity and workspace settings for this runner process (`[runner]` in runner.toml).
 #[derive(Debug, Clone, Deserialize)]
-pub struct NodeConfig {
-    #[serde(default = "default_node_name")]
+pub struct RunnerIdentity {
+    #[serde(default = "default_runner_name")]
     pub name: String,
     #[serde(default = "default_labels")]
     pub labels: Vec<String>,
@@ -56,10 +58,10 @@ impl Default for ManagerConfig {
     }
 }
 
-impl Default for NodeConfig {
+impl Default for RunnerIdentity {
     fn default() -> Self {
         Self {
-            name: default_node_name(),
+            name: default_runner_name(),
             labels: default_labels(),
             work_dir: default_work_dir(),
             clean_workspace_after_job: false,
@@ -118,14 +120,26 @@ pub struct VaultConfig {
     pub token: Option<String>,
 }
 
-fn default_labels() -> Vec<String> { vec!["default".into()] }
-fn default_work_dir() -> String { "/tmp/buz-runner".into() }
-fn default_manager_url() -> String { "http://127.0.0.1:8080".into() }
-fn default_node_name() -> String { "buz-runner".into() }
-fn default_true() -> bool { true }
-fn default_false() -> bool { false }
+fn default_labels() -> Vec<String> {
+    vec!["default".into()]
+}
+fn default_work_dir() -> String {
+    "/tmp/buz-runner".into()
+}
+fn default_manager_url() -> String {
+    "http://127.0.0.1:8080".into()
+}
+fn default_runner_name() -> String {
+    "buz-runner".into()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_false() -> bool {
+    false
+}
 
-impl NodeConfig {
+impl RunnerIdentity {
     pub fn version(&self) -> &str {
         env!("CARGO_PKG_VERSION")
     }
@@ -152,9 +166,13 @@ pub fn load(config_path: Option<&str>) -> anyhow::Result<Config> {
         anyhow::bail!(
             "register_token is required. Set it in conf/runner.toml [manager] section \
              or via BUZ_REGISTER_TOKEN env var.\n  \
-             Get your token from Buz Manager → Nodes → New Node."
+             Get your token from Buz Manager → Runners → New Runner."
         );
     }
 
     Ok(cfg)
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;

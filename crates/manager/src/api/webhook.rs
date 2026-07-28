@@ -1,6 +1,9 @@
-use axum::{Json, extract::{State, Path, Query}};
-use shared::protocol::response::ApiResponse;
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use shared::error::AppError;
+use shared::protocol::response::ApiResponse;
 use sqlx::Row;
 
 use crate::state::AppState;

@@ -19,7 +19,7 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: '', redirect: '/dashboard' },
       { path: 'dashboard', name: 'dashboard', component: () => import('@/pages/Overview.vue'), meta: { title: 'Overview' } },
-      { path: 'runners', name: 'runners', component: () => import('@/pages/Runners.vue'), meta: { title: 'Nodes' } },
+      { path: 'runners', name: 'runners', component: () => import('@/pages/Runners.vue'), meta: { title: 'Runners' } },
       { path: 'pipelines', name: 'pipelines', component: () => import('@/pages/Pipelines.vue'), meta: { title: 'Pipelines' } },
       { path: 'pipelines/:id/:tab(stage|history|definition)?', name: 'pipeline-detail', component: () => import('@/pages/PipelineDetail.vue'), meta: { title: 'Pipeline Detail' } },
       { path: 'jobs', name: 'jobs', component: () => import('@/pages/Jobs.vue'), meta: { title: 'Jobs' } },

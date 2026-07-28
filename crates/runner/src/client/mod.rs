@@ -1,12 +1,16 @@
-pub mod register;
 pub mod heartbeat;
-pub mod poll;
 pub mod logs;
+pub mod poll;
+pub mod register;
 
 /// Wrap a reqwest error into a user-friendly message.
 /// Detects connection errors and produces a readable diagnostic
 /// instead of dumping the raw nested `Caused by` stack.
-pub fn friendly_reqwest_error(err: reqwest::Error, center_url: &str, operation: &str) -> anyhow::Error {
+pub fn friendly_reqwest_error(
+    err: reqwest::Error,
+    center_url: &str,
+    operation: &str,
+) -> anyhow::Error {
     let msg = format!("{operation}: {err}");
 
     // reqwest errors expose is_connect() and is_timeout()

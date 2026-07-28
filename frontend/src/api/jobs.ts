@@ -60,7 +60,7 @@ export interface LogChunk {
   chunk_index: number
   step_order: number
   content: string
-  created_at: string
+  created_at?: string | null
 }
 
 export const jobsApi = {

@@ -23,3 +23,21 @@ export function parseUtc(ts: string): number {
   }
   return ms
 }
+
+/**
+ * Extract `HH:MM:SS` for log line prefixes.
+ *
+ * Accepts SQLite `YYYY-MM-DD HH:MM:SS` and RFC3339. Falls back to `fallback`
+ * (default empty) when the value is missing or unparseable — callers that
+ * need a live clock should pass `nowTimeStr()`.
+ */
+export function formatLogClock(ts?: string | null, fallback = ''): string {
+  if (ts == null || !String(ts).trim()) return fallback
+  const m = String(ts).trim().match(/[T ](\d{2}:\d{2}:\d{2})/)
+  if (m) return m[1]
+  const d = new Date(parseUtc(String(ts)))
+  const hh = String(d.getUTCHours()).padStart(2, '0')
+  const mm = String(d.getUTCMinutes()).padStart(2, '0')
+  const ss = String(d.getUTCSeconds()).padStart(2, '0')
+  return `${hh}:${mm}:${ss}`
+}

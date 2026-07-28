@@ -7,7 +7,10 @@ fn round_trip() {
 
     let encrypted = encrypt(original, secret).unwrap();
     assert!(!encrypted.is_empty());
-    assert_ne!(encrypted, original, "encrypted value should differ from plaintext");
+    assert_ne!(
+        encrypted, original,
+        "encrypted value should differ from plaintext"
+    );
 
     let decrypted = decrypt(&encrypted, secret).unwrap();
     assert_eq!(decrypted, original);

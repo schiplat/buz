@@ -69,7 +69,11 @@ fn load_and_cleanup(
 #[test]
 fn rsa_fallback_chain_deduplicates() {
     let chain = build_rsa_fallback_chain(Some(HashAlg::Sha512));
-    assert_eq!(chain.len(), 3, "Sha512+Sha256+None = 3 (Sha512 deduplicated)");
+    assert_eq!(
+        chain.len(),
+        3,
+        "Sha512+Sha256+None = 3 (Sha512 deduplicated)"
+    );
     assert_eq!(chain[0], Some(HashAlg::Sha512));
     assert_eq!(chain[1], Some(HashAlg::Sha256));
     assert_eq!(chain[2], None);
@@ -144,10 +148,7 @@ fn load_public_key_material_fails() {
 fn agent_identity_label_uses_comment_or_index() {
     assert_eq!(format_agent_identity_label(0, ""), "#1");
     assert_eq!(format_agent_identity_label(2, ""), "#3");
-    assert_eq!(
-        format_agent_identity_label(0, "user@laptop"),
-        "user@laptop"
-    );
+    assert_eq!(format_agent_identity_label(0, "user@laptop"), "user@laptop");
 }
 
 #[test]
@@ -204,12 +205,8 @@ fn known_hosts_rejects_unknown_host() {
     let key = load_and_cleanup(ED25519_PLAIN, None).expect("load ed25519");
     let pubkey = key.public_key().clone();
 
-    let err = verify_against_known_hosts(
-        "unknown.example",
-        22,
-        &pubkey,
-        Some(path.to_str().unwrap()),
-    );
+    let err =
+        verify_against_known_hosts("unknown.example", 22, &pubkey, Some(path.to_str().unwrap()));
     assert!(err.is_err(), "unknown host must fail");
     let msg = err.unwrap_err().to_string();
     assert!(msg.contains("not found"), "{msg}");

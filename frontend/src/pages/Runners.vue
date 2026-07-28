@@ -136,9 +136,9 @@ const eventBadge = (t: string) => {
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Nodes" description="Registered execution nodes and their current status.">
+    <PageHeader title="Runners" description="Registered runners and their current status.">
       <template #actions>
-        <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> New Node</UiButton>
+        <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> New Runner</UiButton>
       </template>
     </PageHeader>
 
@@ -198,7 +198,7 @@ const eventBadge = (t: string) => {
           <!-- Header -->
           <div class="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-6 py-4">
             <div class="flex items-center gap-3 min-w-0">
-              <h2 class="text-base font-semibold tracking-tight truncate">{{ activeRunner?.name || 'Node' }}</h2>
+              <h2 class="text-base font-semibold tracking-tight truncate">{{ activeRunner?.name || 'Runner' }}</h2>
               <StatusBadge v-if="activeRunner" :status="activeRunner.status" />
             </div>
             <button class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors shrink-0" @click="closeDetail">
@@ -421,7 +421,7 @@ const eventBadge = (t: string) => {
       <div v-if="showCreate" class="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]" @click.self="showCreate = false">
         <div class="soft-panel w-full max-w-md p-6 space-y-5">
           <div class="flex items-center justify-between">
-            <h2 class="text-base font-semibold tracking-tight">New Node</h2>
+            <h2 class="text-base font-semibold tracking-tight">New Runner</h2>
             <button type="button" class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground" @click="showCreate = false"><X class="h-4 w-4" /></button>
           </div>
 
@@ -438,7 +438,7 @@ const eventBadge = (t: string) => {
             </div>
             <div class="flex justify-end gap-2 pt-1">
               <UiButton variant="outline" @click="showCreate = false">Cancel</UiButton>
-              <UiButton :disabled="creating || !newName.trim()" @click="handleCreate">{{ creating ? 'Creating...' : 'Create Node' }}</UiButton>
+              <UiButton :disabled="creating || !newName.trim()" @click="handleCreate">{{ creating ? 'Creating...' : 'Create Runner' }}</UiButton>
             </div>
           </template>
 
