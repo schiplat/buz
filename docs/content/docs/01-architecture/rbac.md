@@ -52,6 +52,7 @@ Runners and Manager config remain **global infrastructure** — Platform Admin o
 | 3 | **Team roles**: Owner, Maintainer, Developer, Viewer (four tiers) |
 | 4 | **Developer**: may edit Pipelines (and pipeline Variables); **must not** manage Secrets |
 | 5 | **Delivery**: ship membership filtering with teams (2b) — no multi-user-without-isolation interim |
+| 6 | **Team picker UI**: show Team select only for **platform admins** or users in **multiple teams**. Single-team members auto-bind their sole membership (no Team field in create/edit forms) |
 
 ---
 

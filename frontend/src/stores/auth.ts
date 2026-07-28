@@ -11,6 +11,16 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAuthenticated = computed(() => !!token.value)
 
+  /** Platform admin or multi-team members must pick a team; single-team users inherit theirs. */
+  const showTeamPicker = computed(
+    () => isPlatformAdmin.value || teams.value.length > 1,
+  )
+
+  /** Auto team for single-membership users (empty when picker is shown or no membership). */
+  const soleTeamId = computed(() =>
+    !isPlatformAdmin.value && teams.value.length === 1 ? teams.value[0].id : '',
+  )
+
   async function login(user: string, pass: string) {
     const resp = await authApi.login(user, pass)
     token.value = resp.token
@@ -59,6 +69,8 @@ export const useAuthStore = defineStore('auth', () => {
     isPlatformAdmin,
     teams,
     isAuthenticated,
+    showTeamPicker,
+    soleTeamId,
     login,
     fetchMe,
     logout,

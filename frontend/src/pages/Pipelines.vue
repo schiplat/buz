@@ -12,14 +12,23 @@ import { teamsApi, type Team } from '@/api/teams'
 import { cn } from '@/lib/utils'
 import UiPagination from '@/components/ui/UiPagination.vue'
 import MultiSelect from '@/components/ui/MultiSelect.vue'
+import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
+const auth = useAuthStore()
 
 const pipelines = ref<Pipeline[]>([])
 const loading = ref(true)
 const availableSecrets = ref<{ id: string; name: string; owner_group: string }[]>([])
 const availableVariables = ref<{ id: string; name: string; value: string }[]>([])
 const availableTeams = ref<Team[]>([])
+
+/** Resolve team_id for create/update: picker value, or sole membership. */
+function ensureTeamId(): string {
+  if (auth.showTeamPicker) return form.value.team_id.trim()
+  if (form.value.team_id.trim()) return form.value.team_id.trim()
+  return auth.soleTeamId
+}
 
 const pipelinePage = ref(1)
 const pageSize = 15
@@ -141,7 +150,7 @@ function openCreate() {
   editingId.value = null
   dialogMode.value = 'form'
   dialogTitle.value = 'New Pipeline'
-  form.value = { name: '', description: '', trigger_type: 'manual', webhook_path: genRandomPath(), cron_expr: '', runner_labels: 'linux-x64', runner_timeout: '', concurrency_group: '', owner_group: '', team_id: '', var_ids: [], secret_ids: [], env: [], steps: [], input_defs: [] }
+  form.value = { name: '', description: '', trigger_type: 'manual', webhook_path: genRandomPath(), cron_expr: '', runner_labels: 'linux-x64', runner_timeout: '', concurrency_group: '', owner_group: '', team_id: auth.soleTeamId, var_ids: [], secret_ids: [], env: [], steps: [], input_defs: [] }
   yamlContent.value = ''
   yamlResult.value = null
   yamlImportWarnings.value = []
@@ -202,7 +211,7 @@ async function openEdit(p: Pipeline) {
 
 function addStep() {
   const idx = form.value.steps.length
-  form.value.steps.push({ name: '', run: '' })
+  form.value.steps.push({ name: '', run: '', uses: 'ssh' })
   expandedSteps.add(idx)
 }
 
@@ -224,15 +233,9 @@ function toggleStep(idx: number) {
   else expandedSteps.add(idx)
 }
 
-/** Check whether a step has any advanced option set — used to auto-expand the Advanced section. */
-function stepHasAdvanced(s: StepDef): boolean {
-  return !!(s.dir || s.timeout || (s.retry != null && s.retry > 0) || s.host || s.host_labels || s.image || s.continue_on_error)
-}
-
 /** Check whether the pipeline-level form has any advanced field filled (for auto-expand). */
 const pipelineFormHasAdvanced = computed(() => {
   return !!(form.value.runner_timeout.trim() || form.value.concurrency_group.trim() ||
-    form.value.team_id.trim() ||
     form.value.var_ids.length > 0 || form.value.secret_ids.length > 0 ||
     form.value.env.length > 0 || form.value.input_defs.length > 0)
 })
@@ -346,7 +349,7 @@ function importYamlToForm() {
       runner_timeout: parsed.runner?.timeout || '',
       concurrency_group: parsed.concurrency || '',
       owner_group: '',
-      team_id: '',
+      team_id: auth.soleTeamId,
       var_ids: resolvedVarIds,
       secret_ids: resolvedSecretIds,
       env: parsed.env
@@ -387,7 +390,9 @@ function importYamlToForm() {
 async function handleSave() {
   if (!form.value.name.trim()) return
   if (form.value.steps.length === 0) { alert('Add at least one step'); return }
-  if (!form.value.team_id.trim()) { alert('Team is required'); return }
+  const teamId = ensureTeamId()
+  if (!teamId) { alert('Team is required'); return }
+  form.value.team_id = teamId
   for (const s of form.value.steps) {
     if (s.uses === 'docker' && !(s.image || '').trim()) {
       alert(`Step "${s.name || 'unnamed'}": Docker engine requires Image`)
@@ -798,15 +803,284 @@ async function handleToggleActive(p: Pipeline) {
                 </div>
               </div>
 
-              <!-- Advanced section -->
-              <details class="group" :open="pipelineFormHasAdvanced">
-                <summary class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider cursor-pointer hover:text-foreground transition-colors select-none">
-                  Advanced
-                  <span v-if="pipelineFormHasAdvanced" class="text-[10px] font-normal normal-case text-muted-foreground/60 ml-1">
-                    ({{ [form.runner_timeout && 1, form.concurrency_group && 1, form.team_id && 1, form.var_ids.length > 0 && 1, form.secret_ids.length > 0 && 1, form.env.length > 0 && 1, form.input_defs.length > 0 && 1].filter(Boolean).length }} configured)
+              <div v-if="form.trigger_type === 'webhook'" class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
+                <div class="flex items-center gap-2">
+                  <Code class="h-4 w-4 text-muted-foreground" />
+                  <span class="text-sm font-medium">Webhook Configuration</span>
+                </div>
+                <div>
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">URL Path</label>
+                  <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-1 rounded-lg border border-border bg-muted/50 px-3 py-1.5 text-sm font-mono flex-1 min-w-0">
+                      <span class="text-muted-foreground shrink-0">/api/v1/hooks/</span>
+                      <span class="text-foreground truncate">{{ form.webhook_path || '—' }}</span>
+                    </div>
+                    <button
+                      v-if="form.webhook_path"
+                      type="button"
+                      class="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                      title="Copy full URL"
+                      @click="copyWebhookUrl(form.webhook_path)"
+                    >
+                      <Check v-if="copiedPath" class="h-3.5 w-3.5 text-emerald-500" />
+                      <Copy v-else class="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <p class="text-[11px] text-muted-foreground mt-1.5">
+                    Send POST requests to this URL to trigger execution.
+                  </p>
+                </div>
+              </div>
+
+              <div v-if="form.trigger_type === 'cron'" class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
+                <div class="flex items-center gap-2">
+                  <Code class="h-4 w-4 text-muted-foreground" />
+                  <span class="text-sm font-medium">Cron Configuration</span>
+                </div>
+                <div>
+                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Schedule (cron expression)</label>
+                  <input
+                    v-model="form.cron_expr"
+                    type="text"
+                    placeholder="0 2 * * *"
+                    class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                  />
+                  <p class="text-[11px] text-muted-foreground mt-1.5">
+                    Standard 5‑field cron syntax: minute hour day month weekday.
+                  </p>
+                  <details class="mt-2">
+                    <summary class="text-[11px] text-muted-foreground cursor-pointer hover:text-foreground">Quick reference</summary>
+                    <div class="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono text-muted-foreground">
+                      <span>*/5 * * * *</span><span>Every 5 min</span>
+                      <span>0 * * * *</span><span>Hourly</span>
+                      <span>0 2 * * *</span><span>Daily 2 AM</span>
+                      <span>0 0 * * 0</span><span>Weekly Sun</span>
+                    </div>
+                  </details>
+                </div>
+              </div>
+
+              <div v-if="auth.showTeamPicker">
+                <label class="type-label block mb-1.5">Team <span class="text-red-500">*</span></label>
+                <select
+                  v-model="form.team_id"
+                  class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                >
+                  <option value="" disabled>Select a team…</option>
+                  <option v-for="t in availableTeams" :key="t.id" :value="t.id">
+                    {{ t.name }} ({{ t.slug }})
+                  </option>
+                </select>
+                <p class="mt-1 text-[10px] text-muted-foreground">
+                  Same-team secrets from Infrastructure → Secrets are auto-injected. Use Authorized Secrets for cross-team bindings.
+                </p>
+              </div>
+
+              <!-- Steps editor -->
+              <div>
+                <div class="flex items-center justify-between mb-1.5">
+                  <span class="type-label">Steps</span>
+                  <span class="text-xs text-muted-foreground font-mono">{{ form.steps.length }} step(s)</span>
+                </div>
+
+                <button
+                  v-if="form.steps.length === 0"
+                  type="button"
+                  class="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-dashed border-border px-3 py-2.5 text-[13px] text-muted-foreground hover:border-foreground/25 hover:bg-muted/20 hover:text-foreground transition-colors"
+                  @click="addStep"
+                >
+                  <span class="inline-flex items-center gap-1.5 font-medium">
+                    <Plus class="h-3.5 w-3.5" />
+                    Add Step
                   </span>
+                  <span class="text-border">·</span>
+                  <span class="text-[12px] font-normal text-muted-foreground/70">No steps defined yet</span>
+                </button>
+
+                <template v-else>
+                <div class="space-y-2 mb-3">
+                  <div
+                    v-for="(step, idx) in form.steps"
+                    :key="idx"
+                    class="rounded-xl border border-border/70 overflow-hidden transition-colors"
+                    :class="expandedSteps.has(idx) ? 'bg-card' : 'bg-muted/30'"
+                  >
+                    <!-- Step header (always visible) -->
+                    <button
+                      type="button"
+                      class="w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-muted/30 transition-colors"
+                      @click="toggleStep(idx)"
+                    >
+                      <span class="inline-flex items-center justify-center h-6 w-6 rounded-md bg-muted font-mono text-xs text-muted-foreground shrink-0">
+                        {{ idx + 1 }}
+                      </span>
+                      <div class="flex-1 min-w-0">
+                        <div v-if="step.name" class="text-sm font-medium truncate">{{ step.name }}</div>
+                        <div v-if="step.run" class="text-xs font-mono text-muted-foreground truncate mt-0.5">{{ step.run.slice(0, 60) }}</div>
+                        <div v-if="!step.name && !step.run" class="text-xs text-muted-foreground italic">Empty step</div>
+                      </div>
+                      <div class="flex items-center gap-1 shrink-0">
+                        <span v-if="step.uses" class="mono-chip text-[10px]">{{ step.uses }}</span>
+                        <span v-if="step.continue_on_error" class="mono-chip text-[10px] text-amber-600 bg-amber-500/10">no-fail</span>
+                        <button
+                          type="button"
+                          class="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          @click.stop="removeStep(idx)"
+                        >
+                          <X class="h-3.5 w-3.5" />
+                        </button>
+                        <ChevronDown
+                          v-if="expandedSteps.has(idx)"
+                          class="h-4 w-4 text-muted-foreground transition-transform"
+                        />
+                        <ChevronRight
+                          v-else
+                          class="h-4 w-4 text-muted-foreground transition-transform"
+                        />
+                      </div>
+                    </button>
+
+                    <!-- Step body (expanded) -->
+                    <div v-if="expandedSteps.has(idx)" class="px-4 pb-4 space-y-3 border-t border-border/40 pt-3">
+                      <div class="grid grid-cols-5 gap-3">
+                        <div class="col-span-3">
+                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Name <span class="text-red-500">*</span></label>
+                          <input
+                            v-model="step.name"
+                            type="text"
+                            placeholder="e.g. Install dependencies"
+                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                          />
+                        </div>
+                        <div class="col-span-2">
+                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Engine</label>
+                          <select
+                            v-model="step.uses"
+                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                          >
+                            <option value="ssh">SSH</option>
+                            <option value="">Local</option>
+                            <option value="docker">Docker</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div v-if="step.uses === 'docker'">
+                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
+                          Image <span class="text-red-500">*</span>
+                        </label>
+                        <input
+                          v-model="step.image"
+                          type="text"
+                          placeholder="e.g. alpine:3.20"
+                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                        />
+                      </div>
+
+                      <div>
+                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Command <span class="text-red-500">*</span></label>
+                        <textarea
+                          v-model="step.run"
+                          rows="4"
+                          spellcheck="false"
+                          placeholder="echo Hello&#10;npm run build&#10;cargo test --release"
+                          class="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15 resize-y"
+                        />
+                      </div>
+
+                      <div class="grid grid-cols-3 gap-3">
+                        <div>
+                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Work Dir</label>
+                          <input
+                            v-model="step.dir"
+                            type="text"
+                            placeholder="e.g. ./frontend"
+                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                          />
+                        </div>
+                        <div>
+                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Timeout</label>
+                          <input
+                            v-model="step.timeout"
+                            type="text"
+                            placeholder="e.g. 10m"
+                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                          />
+                        </div>
+                        <div>
+                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Retry</label>
+                          <input
+                            v-model.number="step.retry"
+                            type="number"
+                            min="0"
+                            max="5"
+                            placeholder="0"
+                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                          />
+                        </div>
+                      </div>
+                      <div v-if="step.uses === 'ssh'" class="space-y-3">
+                        <div class="grid grid-cols-2 gap-3">
+                          <div>
+                            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">SSH Host <span class="text-red-500">*</span></label>
+                            <input
+                              v-model="step.host"
+                              type="text"
+                              placeholder="e.g. prod-server-01, prod-server-02"
+                              class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                            />
+                          </div>
+                          <div>
+                            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Host Labels</label>
+                            <input
+                              v-model="step.host_labels"
+                              type="text"
+                              placeholder="e.g. prod, web"
+                              class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                            />
+                          </div>
+                        </div>
+                        <p class="text-[10px] text-muted-foreground">Host labels match hosts by their labels column. Use commas for multiple. Combined with SSH Host above (union).</p>
+                      </div>
+                      <label class="flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          v-model="step.continue_on_error"
+                          class="h-4 w-4 rounded border-border accent-primary"
+                        />
+                        <span class="text-xs text-muted-foreground">Continue on error (next steps will still run)</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <UiButton
+                  variant="outline"
+                  size="sm"
+                  class="w-full"
+                  @click="addStep"
+                >
+                  <Plus class="h-3.5 w-3.5" />
+                  Add Step
+                </UiButton>
+                </template>
+              </div>
+              <!-- Advanced section -->
+              <details class="group/adv rounded-xl border border-dashed border-border/80 bg-muted/10 px-3 py-2.5" :open="pipelineFormHasAdvanced">
+                <summary class="flex items-center gap-3 cursor-pointer list-none select-none py-0.5 [&::-webkit-details-marker]:hidden">
+                  <span class="h-px flex-1 bg-border/80 transition-colors duration-300 group-hover/adv:bg-foreground/20" />
+                  <span class="inline-flex items-center gap-1.5 shrink-0 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground transition-colors duration-300 group-hover/adv:text-foreground">
+                    Advanced
+                    <ChevronDown class="h-3.5 w-3.5 transition-transform duration-300 ease-out group-open/adv:rotate-180" />
+                    <span v-if="pipelineFormHasAdvanced" class="text-[10px] font-normal normal-case tracking-normal text-muted-foreground/60">
+                      ({{ [form.runner_timeout && 1, form.concurrency_group && 1, form.var_ids.length > 0 && 1, form.secret_ids.length > 0 && 1, form.env.length > 0 && 1, form.input_defs.length > 0 && 1].filter(Boolean).length }} configured)
+                    </span>
+                  </span>
+                  <span class="h-px flex-1 bg-border/80 transition-colors duration-300 group-hover/adv:bg-foreground/20" />
                 </summary>
-                <div class="mt-3 space-y-4">
+                <div class="grid grid-rows-[0fr] transition-[grid-template-rows] duration-300 ease-out group-open/adv:grid-rows-[1fr]">
+                  <div class="overflow-hidden">
+                    <div class="mt-3 space-y-4 pt-1">
                 <div class="grid grid-cols-2 gap-4">
                   <div>
                     <label class="type-label block mb-1.5">Runner Timeout</label>
@@ -826,22 +1100,6 @@ async function handleToggleActive(p: Pipeline) {
                       class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                     />
                   </div>
-                </div>
-
-                <div>
-                  <label class="type-label block mb-1.5">Team <span class="text-red-500">*</span></label>
-                  <select
-                    v-model="form.team_id"
-                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                  >
-                    <option value="" disabled>Select a team…</option>
-                    <option v-for="t in availableTeams" :key="t.id" :value="t.id">
-                      {{ t.name }} ({{ t.slug }})
-                    </option>
-                  </select>
-                  <p class="mt-1 text-[10px] text-muted-foreground">
-                    Same-team secrets from Infrastructure → Secrets are auto-injected. Use Authorized Secrets for cross-team bindings.
-                  </p>
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">
@@ -908,6 +1166,7 @@ async function handleToggleActive(p: Pipeline) {
                   </div>
                 </div>
 
+
                 <!-- Input parameters (manual trigger only) -->
                 <div v-if="form.trigger_type === 'manual'" class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
                   <div class="flex items-center justify-between">
@@ -969,250 +1228,12 @@ async function handleToggleActive(p: Pipeline) {
                     </div>
                   </div>
                 </div>
-              </div>
+
+                    </div>
+                  </div>
+                </div>
               </details>
 
-              <!-- Trigger configuration (conditional) -->
-              <div v-if="form.trigger_type === 'webhook'" class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
-                <div class="flex items-center gap-2">
-                  <Code class="h-4 w-4 text-muted-foreground" />
-                  <span class="text-sm font-medium">Webhook Configuration</span>
-                </div>
-                <div>
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">URL Path</label>
-                  <div class="flex items-center gap-2">
-                    <div class="flex items-center gap-1 rounded-lg border border-border bg-muted/50 px-3 py-1.5 text-sm font-mono flex-1 min-w-0">
-                      <span class="text-muted-foreground shrink-0">/api/v1/hooks/</span>
-                      <span class="text-foreground truncate">{{ form.webhook_path || '—' }}</span>
-                    </div>
-                    <button
-                      v-if="form.webhook_path"
-                      class="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                      title="Copy full URL"
-                      @click="copyWebhookUrl(form.webhook_path)"
-                    >
-                      <Check v-if="copiedPath" class="h-3.5 w-3.5 text-emerald-500" />
-                      <Copy v-else class="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                  <p class="text-[11px] text-muted-foreground mt-1.5">
-                    Send POST requests to this URL to trigger execution.
-                  </p>
-                </div>
-              </div>
-
-              <div v-if="form.trigger_type === 'cron'" class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
-                <div class="flex items-center gap-2">
-                  <Code class="h-4 w-4 text-muted-foreground" />
-                  <span class="text-sm font-medium">Cron Configuration</span>
-                </div>
-                <div>
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Schedule (cron expression)</label>
-                  <input
-                    v-model="form.cron_expr"
-                    type="text"
-                    placeholder="0 2 * * *"
-                    class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                  />
-                  <p class="text-[11px] text-muted-foreground mt-1.5">
-                    Standard 5‑field cron syntax: minute hour day month weekday.
-                  </p>
-                  <details class="mt-2">
-                    <summary class="text-[11px] text-muted-foreground cursor-pointer hover:text-foreground">Quick reference</summary>
-                    <div class="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono text-muted-foreground">
-                      <span>*/5 * * * *</span><span>Every 5 min</span>
-                      <span>0 * * * *</span><span>Hourly</span>
-                      <span>0 2 * * *</span><span>Daily 2 AM</span>
-                      <span>0 0 * * 0</span><span>Weekly Sun</span>
-                    </div>
-                  </details>
-                </div>
-              </div>
-
-              <!-- Steps editor -->
-              <div>
-                <div class="flex items-center justify-between mb-1.5">
-                  <span class="type-label">Steps</span>
-                  <span class="text-xs text-muted-foreground font-mono">{{ form.steps.length }} step(s)</span>
-                </div>
-
-                <div v-if="form.steps.length === 0" class="rounded-xl border border-dashed border-border p-4 text-center text-sm text-muted-foreground mb-3">
-                  No steps defined yet. Add your first step below.
-                </div>
-
-                <div v-else class="space-y-2 mb-3">
-                  <div
-                    v-for="(step, idx) in form.steps"
-                    :key="idx"
-                    class="rounded-xl border border-border/70 overflow-hidden transition-colors"
-                    :class="expandedSteps.has(idx) ? 'bg-card' : 'bg-muted/30'"
-                  >
-                    <!-- Step header (always visible) -->
-                    <button
-                      type="button"
-                      class="w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-muted/30 transition-colors"
-                      @click="toggleStep(idx)"
-                    >
-                      <span class="inline-flex items-center justify-center h-6 w-6 rounded-md bg-muted font-mono text-xs text-muted-foreground shrink-0">
-                        {{ idx + 1 }}
-                      </span>
-                      <div class="flex-1 min-w-0">
-                        <div v-if="step.name" class="text-sm font-medium truncate">{{ step.name }}</div>
-                        <div v-if="step.run" class="text-xs font-mono text-muted-foreground truncate mt-0.5">{{ step.run.slice(0, 60) }}</div>
-                        <div v-if="!step.name && !step.run" class="text-xs text-muted-foreground italic">Empty step</div>
-                      </div>
-                      <div class="flex items-center gap-1 shrink-0">
-                        <span v-if="step.uses" class="mono-chip text-[10px]">{{ step.uses }}</span>
-                        <span v-if="step.continue_on_error" class="mono-chip text-[10px] text-amber-600 bg-amber-500/10">no-fail</span>
-                        <button
-                          type="button"
-                          class="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          @click.stop="removeStep(idx)"
-                        >
-                          <X class="h-3.5 w-3.5" />
-                        </button>
-                        <ChevronDown
-                          v-if="expandedSteps.has(idx)"
-                          class="h-4 w-4 text-muted-foreground transition-transform"
-                        />
-                        <ChevronRight
-                          v-else
-                          class="h-4 w-4 text-muted-foreground transition-transform"
-                        />
-                      </div>
-                    </button>
-
-                    <!-- Step body (expanded) -->
-                    <div v-if="expandedSteps.has(idx)" class="px-4 pb-4 space-y-3 border-t border-border/40 pt-3">
-                      <div class="grid grid-cols-5 gap-3">
-                        <div class="col-span-3">
-                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Name <span class="text-red-500">*</span></label>
-                          <input
-                            v-model="step.name"
-                            type="text"
-                            placeholder="e.g. Install dependencies"
-                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                          />
-                        </div>
-                        <div class="col-span-2">
-                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Engine</label>
-                          <select
-                            v-model="step.uses"
-                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                          >
-                            <option value="">Local</option>
-                            <option value="ssh">SSH</option>
-                            <option value="docker">Docker</option>
-                          </select>
-                        </div>
-                      </div>
-
-                      <div v-if="step.uses === 'docker'">
-                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
-                          Image <span class="text-red-500">*</span>
-                        </label>
-                        <input
-                          v-model="step.image"
-                          type="text"
-                          placeholder="e.g. alpine:3.20"
-                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                        />
-                      </div>
-
-                      <div>
-                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Command <span class="text-red-500">*</span></label>
-                        <textarea
-                          v-model="step.run"
-                          rows="4"
-                          spellcheck="false"
-                          placeholder="echo Hello&#10;npm run build&#10;cargo test --release"
-                          class="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15 resize-y"
-                        />
-                      </div>
-
-                      <details class="group" :open="stepHasAdvanced(step)">
-                        <summary class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider cursor-pointer hover:text-foreground transition-colors select-none border-t border-border/30 pt-3">
-                          Advanced
-                        </summary>
-                        <div class="mt-3 space-y-3">
-                        <div class="grid grid-cols-3 gap-3">
-                          <div>
-                            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Work Dir</label>
-                            <input
-                              v-model="step.dir"
-                              type="text"
-                              placeholder="e.g. ./frontend"
-                              class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                            />
-                          </div>
-                          <div>
-                            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Timeout</label>
-                            <input
-                              v-model="step.timeout"
-                              type="text"
-                              placeholder="e.g. 10m"
-                              class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                            />
-                          </div>
-                          <div>
-                            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Retry</label>
-                            <input
-                              v-model.number="step.retry"
-                              type="number"
-                              min="0"
-                              max="5"
-                              placeholder="0"
-                              class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                            />
-                          </div>
-                        </div>
-                        <div v-if="step.uses === 'ssh'" class="space-y-3">
-                          <div class="grid grid-cols-2 gap-3">
-                            <div>
-                              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">SSH Host</label>
-                              <input
-                                v-model="step.host"
-                                type="text"
-                                placeholder="e.g. prod-server-01, prod-server-02"
-                                class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                              />
-                            </div>
-                            <div>
-                              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Host Labels</label>
-                              <input
-                                v-model="step.host_labels"
-                                type="text"
-                                placeholder="e.g. prod, web"
-                                class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                              />
-                            </div>
-                          </div>
-                          <p class="text-[10px] text-muted-foreground">Host labels match hosts by their labels column. Use commas for multiple. Combined with SSH Host above (union).</p>
-                        </div>
-                        <label class="flex items-center gap-2 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            v-model="step.continue_on_error"
-                            class="h-4 w-4 rounded border-border accent-primary"
-                          />
-                          <span class="text-xs text-muted-foreground">Continue on error (next steps will still run)</span>
-                        </label>
-                      </div>
-                      </details>
-                    </div>
-                  </div>
-                </div>
-
-                <UiButton
-                  variant="outline"
-                  size="sm"
-                  class="w-full"
-                  @click="addStep"
-                >
-                  <Plus class="h-3.5 w-3.5" />
-                  Add Step
-                </UiButton>
-              </div>
             </div>
 
             <div class="flex justify-end gap-2 pt-1">
