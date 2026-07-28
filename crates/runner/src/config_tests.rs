@@ -18,3 +18,19 @@ labels = ["docker"]
     assert_eq!(cfg.runner.name, "new-runner");
     assert_eq!(cfg.runner.labels, vec!["docker".to_string()]);
 }
+
+#[test]
+fn ensure_enabled_respects_engine_flags() {
+    let mut eng = EngineConfig::default();
+    assert!(eng.ensure_enabled("local").is_ok());
+    assert!(eng.ensure_enabled("ssh").is_ok());
+    assert!(eng.ensure_enabled("docker").is_err());
+    assert!(eng.ensure_enabled("wasm").is_err());
+
+    eng.docker_enabled = true;
+    assert!(eng.ensure_enabled("docker").is_ok());
+
+    eng.local_enabled = false;
+    let err = eng.ensure_enabled("local").unwrap_err().to_string();
+    assert!(err.contains("local_enabled"), "{err}");
+}

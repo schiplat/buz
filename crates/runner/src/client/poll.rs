@@ -238,6 +238,24 @@ async fn execute_job(
         // Collect all secret values for log masking (GitHub Actions-style redaction)
         let secret_values = crate::masker::collect_secret_values(&step_env);
 
+        if let Err(e) = config.engine.ensure_enabled(exec_type) {
+            let msg = e.to_string();
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: (idx * 10000 + 9997) as i32,
+                    step_order: idx as i32,
+                    content: format!("==> ERROR <==\n{msg}\n"),
+                },
+            )
+            .await;
+            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+            anyhow::bail!(msg);
+        }
+
         let env_count = step_env.len();
         tracing::info!(
             "Step {idx}: {step_name} ({exec_type}){}",

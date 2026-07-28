@@ -147,7 +147,7 @@ Config `[auth] admin_user` / password: **bootstrap only** after Phase 2 ships; p
 
 ### Middleware
 
-- Replace ubiquitous `AdminClaims` with `AuthUser` (any active user).
+- Human routes use `AuthUser` / `PlatformAdmin`; runners use `RunnerClaims`.
 - Helpers: `require_platform_admin()`, `require_team_perm(team_id, Perm::…)`.
 - **List endpoints filter by visible `team_id`s**; do not return foreign-team rows then 403.
 

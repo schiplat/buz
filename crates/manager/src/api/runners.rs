@@ -6,7 +6,7 @@ use shared::protocol::response::ApiResponse;
 use shared::protocol::{CreateRunnerRequest, HeartbeatRequest, RegisterRequest, RegisterResponse};
 
 use crate::crypto;
-use crate::middleware::{AdminClaims, RunnerClaims};
+use crate::middleware::{PlatformAdmin, RunnerClaims};
 use crate::state::AppState;
 use sqlx::Row;
 use uuid::Uuid;
@@ -55,7 +55,7 @@ async fn log_runner_event(
 }
 
 pub async fn create_runner(
-    _auth: AdminClaims,
+    _auth: PlatformAdmin,
     State(state): State<AppState>,
     Json(req): Json<CreateRunnerRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -686,7 +686,7 @@ fn build_host_json(host_row: &sqlx::sqlite::SqliteRow, jwt_secret: &str) -> serd
 }
 
 pub async fn list_runners(
-    _auth: AdminClaims,
+    _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let rows = sqlx::query(
@@ -720,7 +720,7 @@ pub async fn list_runners(
 }
 
 pub async fn get_runner(
-    _auth: AdminClaims,
+    _auth: PlatformAdmin,
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -750,7 +750,7 @@ pub async fn get_runner(
 }
 
 pub async fn delete_runner(
-    _auth: AdminClaims,
+    _auth: PlatformAdmin,
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
@@ -768,7 +768,7 @@ pub async fn delete_runner(
 }
 
 pub async fn toggle_freeze(
-    _auth: AdminClaims,
+    _auth: PlatformAdmin,
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -803,7 +803,7 @@ pub async fn toggle_freeze(
 }
 
 pub async fn get_events(
-    _auth: AdminClaims,
+    _auth: PlatformAdmin,
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     State(state): State<AppState>,

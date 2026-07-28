@@ -9,8 +9,6 @@ pub struct Config {
     pub runner: RunnerIdentity,
     #[serde(default)]
     pub engine: EngineConfig,
-    #[serde(default)]
-    pub vault: VaultConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -114,10 +112,24 @@ impl Default for EngineConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct VaultConfig {
-    pub url: Option<String>,
-    pub token: Option<String>,
+impl EngineConfig {
+    /// Reject steps whose engine is disabled in `runner.toml`.
+    pub fn ensure_enabled(&self, exec_type: &str) -> anyhow::Result<()> {
+        let (enabled, flag) = match exec_type {
+            "local" => (self.local_enabled, "local_enabled"),
+            "ssh" => (self.ssh_enabled, "ssh_enabled"),
+            "docker" => (self.docker_enabled, "docker_enabled"),
+            "wasm" => (self.wasm_enabled, "wasm_enabled"),
+            _ => return Ok(()),
+        };
+        if !enabled {
+            anyhow::bail!(
+                "{exec_type} engine is disabled on this runner \
+                 (set engine.{flag} = true in runner.toml)."
+            );
+        }
+        Ok(())
+    }
 }
 
 fn default_labels() -> Vec<String> {

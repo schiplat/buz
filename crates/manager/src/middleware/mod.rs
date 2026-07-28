@@ -4,15 +4,12 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use shared::auth::{Claims, Role, TokenManager};
+use shared::auth::{Role, TokenManager};
 
 use crate::rbac::load_auth_user;
 use crate::state::AppState;
 
 pub use crate::rbac::AuthUser;
-
-/// Any authenticated human user (platform admin or team member).
-pub type AuthUserExtractor = AuthUser;
 
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = Response;
@@ -43,7 +40,7 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
-/// Platform administrator only (replaces former AdminClaims for infra routes).
+/// Platform administrator only.
 #[derive(Debug, Clone)]
 pub struct PlatformAdmin(pub AuthUser);
 
@@ -69,33 +66,10 @@ impl FromRequestParts<AppState> for PlatformAdmin {
     }
 }
 
-/// Backward-compatible alias used by older handlers — means platform admin.
-#[derive(Debug, Clone)]
-pub struct AdminClaims {
-    pub username: String,
-    pub user: AuthUser,
-}
-
-impl FromRequestParts<AppState> for AdminClaims {
-    type Rejection = Response;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        let PlatformAdmin(user) = PlatformAdmin::from_request_parts(parts, state).await?;
-        Ok(AdminClaims {
-            username: user.username.clone(),
-            user,
-        })
-    }
-}
-
-/// Extracts Runner JWT claims from the Authorization header.
+/// Authenticated runner identity extracted from a Runner JWT.
 #[derive(Debug, Clone)]
 pub struct RunnerClaims {
     pub runner_id: String,
-    pub claims: Claims,
 }
 
 impl FromRequestParts<AppState> for RunnerClaims {
@@ -116,8 +90,7 @@ impl FromRequestParts<AppState> for RunnerClaims {
         }
 
         Ok(RunnerClaims {
-            runner_id: claims.sub.clone(),
-            claims,
+            runner_id: claims.sub,
         })
     }
 }
