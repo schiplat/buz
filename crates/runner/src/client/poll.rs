@@ -378,6 +378,85 @@ async fn execute_job(
                     }
                 }
             }
+            "docker" => {
+                let image = step["image"].as_str().unwrap_or("").trim();
+                if let Err(e) = engine::docker::preflight(config.engine.docker_enabled, image) {
+                    let msg = e.to_string();
+                    let _ = super::logs::upload_chunk(
+                        client, config, token, job_id,
+                        LogChunk {
+                            chunk_index: (idx * 10000 + 9997) as i32,
+                            step_order: idx as i32,
+                            content: format!("==> ERROR <==\n{msg}\n"),
+                        },
+                    ).await;
+                    update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+                    anyhow::bail!(msg);
+                }
+
+                let host_wd = engine::docker::resolve_host_work_dir(
+                    &config.node.work_dir,
+                    work_dir,
+                );
+                let cmd = command.to_string();
+                let img = image.to_string();
+                let env = step_env.clone();
+                let c = client.clone();
+                let cfg = config.clone();
+                let t = token.to_string();
+                let jid = job_id.to_string();
+                let sname = step_name.to_string();
+                let sv_for_upload = secret_values.clone();
+
+                let (mut child, mut output_rx, read_guard) =
+                    engine::docker::execute_streaming(&img, &host_wd, &cmd, &env).await?;
+
+                let c_log = client.clone();
+                let cfg_log = config.clone();
+                let t_log = token.to_string();
+                let jid_log = job_id.to_string();
+                let idx_i32 = idx as i32;
+                let upload_task = tokio::spawn(async move {
+                    let mut chunk_num = 0i32;
+                    while let Some(chunk) = output_rx.recv().await {
+                        let masked_chunk = crate::masker::mask_secrets(&chunk, &sv_for_upload);
+                        match super::logs::upload_chunk(
+                            &c_log, &cfg_log, &t_log, &jid_log,
+                            LogChunk {
+                                chunk_index: chunk_num,
+                                step_order: idx_i32,
+                                content: masked_chunk,
+                            },
+                        ).await {
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!("Log upload chunk {chunk_num} failed: {e}"),
+                        }
+                        chunk_num += 1;
+                    }
+                });
+
+                let (exit_code, was_cancelled_docker) = tokio::select! {
+                    status = child.wait() => {
+                        let code = status?.code().unwrap_or(-1);
+                        let _ = read_guard.join().await;
+                        let _ = upload_task.await;
+                        (code, false)
+                    }
+                    _ = cancel_watcher(&c, &cfg, &t, &jid) => {
+                        tracing::warn!("Job {jid} cancelled during docker step '{sname}' — killing container process");
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        upload_task.abort();
+                        (-1, true)
+                    }
+                };
+
+                (engine::local::LocalOutput {
+                    stdout: String::new(),
+                    stderr: if was_cancelled_docker { "==> CANCELLED <==\n".into() } else { String::new() },
+                    exit_code: if was_cancelled_docker { -1 } else { exit_code },
+                }, was_cancelled_docker)
+            }
             other => anyhow::bail!("unsupported engine type: {other}"),
         };
         // ─────────────────────────────────────────────────────────────────────

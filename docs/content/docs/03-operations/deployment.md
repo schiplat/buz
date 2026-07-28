@@ -75,7 +75,7 @@ export BUZ_REGISTER_TOKEN="your-token"
 ./target/release/buz-runner
 ```
 
-> `docker_enabled` is reserved for the step Docker engine ([design](/docs/01-architecture/docker-engine/)). Host-side `docker build` / SSH `docker …` does **not** need this flag.
+> `docker_enabled`: enable step Docker engine (`uses: docker`). See [Docker Engine](/docs/01-architecture/docker-engine/). Host-side `docker build` / SSH `docker …` does **not** need this flag.
 
 ## Requirements
 

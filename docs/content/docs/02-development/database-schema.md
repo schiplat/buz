@@ -63,6 +63,7 @@ Pipeline step definitions.
 |--------|------|-------|
 | step_order | INT | Execution order |
 | exec_type | TEXT | `local`, `ssh`, `docker`, or `wasm` |
+| image | TEXT | Container image when `exec_type=docker` (empty otherwise) |
 | fail_strategy | TEXT | `stop`, `continue`, or `ignore` |
 
 ### variables

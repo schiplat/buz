@@ -183,6 +183,7 @@ async function openEdit(p: Pipeline) {
         name: t.name || '',
         run: t.command_template || '',
         uses: t.exec_type && t.exec_type !== 'local' ? t.exec_type : undefined,
+        image: t.image || undefined,
         host: t.host_id ? t.host_id : undefined,
         host_labels: t.host_labels || undefined,
         dir: t.work_dir || undefined,
@@ -225,7 +226,7 @@ function toggleStep(idx: number) {
 
 /** Check whether a step has any advanced option set — used to auto-expand the Advanced section. */
 function stepHasAdvanced(s: StepDef): boolean {
-  return !!(s.dir || s.timeout || (s.retry != null && s.retry > 0) || s.host || s.host_labels || s.continue_on_error)
+  return !!(s.dir || s.timeout || (s.retry != null && s.retry > 0) || s.host || s.host_labels || s.image || s.continue_on_error)
 }
 
 /** Check whether the pipeline-level form has any advanced field filled (for auto-expand). */
@@ -355,6 +356,7 @@ function importYamlToForm() {
         name: s.name || '',
         run: s.run || '',
         uses: s.uses && s.uses !== 'local' ? s.uses : undefined,
+        image: s.image || undefined,
         host: normalizeHost(s.host),
         host_labels: normalizeHost(s.host_labels),
         dir: s.dir || undefined,
@@ -386,6 +388,12 @@ async function handleSave() {
   if (!form.value.name.trim()) return
   if (form.value.steps.length === 0) { alert('Add at least one step'); return }
   if (!form.value.team_id.trim()) { alert('Team is required'); return }
+  for (const s of form.value.steps) {
+    if (s.uses === 'docker' && !(s.image || '').trim()) {
+      alert(`Step "${s.name || 'unnamed'}": Docker engine requires Image`)
+      return
+    }
+  }
 
   saving.value = true
   try {
@@ -420,20 +428,26 @@ async function handleSave() {
       steps: form.value.steps.map(s => {
         const rawHost = s.host as string | undefined
         const rawHostLabels = s.host_labels as string | undefined
+        const isDocker = s.uses === 'docker'
         return {
           ...s,
-          host: rawHost
-            ? (() => {
-                const hosts = rawHost.split(',').map((h: string) => h.trim()).filter(Boolean)
-                return hosts.length > 1 ? hosts : (hosts[0] || undefined)
-              })()
-            : undefined,
-          host_labels: rawHostLabels
-            ? (() => {
-                const labels = rawHostLabels.split(',').map((l: string) => l.trim()).filter(Boolean)
-                return labels.length > 1 ? labels : (labels[0] || undefined)
-              })()
-            : undefined,
+          image: isDocker ? (s.image || '').trim() || undefined : undefined,
+          host: isDocker
+            ? undefined
+            : rawHost
+              ? (() => {
+                  const hosts = rawHost.split(',').map((h: string) => h.trim()).filter(Boolean)
+                  return hosts.length > 1 ? hosts : (hosts[0] || undefined)
+                })()
+              : undefined,
+          host_labels: isDocker
+            ? undefined
+            : rawHostLabels
+              ? (() => {
+                  const labels = rawHostLabels.split(',').map((l: string) => l.trim()).filter(Boolean)
+                  return labels.length > 1 ? labels : (labels[0] || undefined)
+                })()
+              : undefined,
         }
       }),
       input_defs: form.value.trigger_type === 'manual' && form.value.input_defs.length > 0
@@ -546,7 +560,7 @@ async function handleToggleActive(p: Pipeline) {
             <tr>
               <th>Name</th>
               <th>Trigger</th>
-              <th>Labels</th>
+              <th>R-Labels</th>
               <th>Last Build</th>
               <th title="Successful jobs ÷ total builds">Rate</th>
               <th>Active</th>
@@ -1093,6 +1107,18 @@ async function handleToggleActive(p: Pipeline) {
                         </div>
                       </div>
 
+                      <div v-if="step.uses === 'docker'">
+                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
+                          Image <span class="text-red-500">*</span>
+                        </label>
+                        <input
+                          v-model="step.image"
+                          type="text"
+                          placeholder="e.g. alpine:3.20"
+                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                        />
+                      </div>
+
                       <div>
                         <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Command <span class="text-red-500">*</span></label>
                         <textarea
@@ -1390,7 +1416,17 @@ steps:
     timeout: 10m
     retry: 2
 
-  # ── Docker push (uses pipeline-level secret) ──
+  # ── Run inside a container on the runner (Docker engine) ──
+  - name: Unit Tests
+    uses: docker
+    image: node:20-bookworm
+    work_dir: ./frontend
+    run: |
+      npm ci
+      npm test
+    timeout: 15m
+
+  # ── Docker push (uses pipeline-level secret; local engine) ──
   - name: Docker Push
     run: |
       echo "$DOCKER_REGISTRY_PASS" | docker login -u bot --password-stdin

@@ -406,20 +406,20 @@ Selects the execution engine. Defaults to `local` (runner's own shell).
 |-------|-------------|
 | _(omitted)_ | **Local** — runs on the runner host's shell |
 | `ssh` | **SSH** — connects to remote host(s) via SSH (requires `host` and/or `host_labels`) |
-| `docker` | **Docker** — runs `run:` inside a container on the runner (**design confirmed, not implemented**). Requires `image`. See [Docker Engine](/docs/01-architecture/docker-engine/). |
+| `docker` | **Docker** — runs `run:` inside a container on the runner. Requires `image`. See [Docker Engine](/docs/01-architecture/docker-engine/). |
 
 | | |
 |---|---|
 | YAML | `uses: ssh` |
 | Form | Engine dropdown (Runner Shell / SSH / Docker) |
 
-> **Docker** is design-confirmed only. See [Docker Engine](/docs/01-architecture/docker-engine/). Enabling it requires `engine.docker_enabled = true` on the runner once implemented.
+> **Docker** is supported (MVP). See [Docker Engine](/docs/01-architecture/docker-engine/). Enable with `engine.docker_enabled = true` on the runner.
 
 ---
 
 #### `image`
 
-**Docker only (design).** Container image reference used when `uses: docker`. Required for that engine; ignored otherwise.
+**Docker only.** Container image reference used when `uses: docker`. Required for that engine; ignored otherwise.
 
 ```yaml
 uses: docker
@@ -537,12 +537,14 @@ If `true`, a failure in this step does **not** stop the pipeline — subsequent 
 |-------|--------|-------------|
 | _(omitted)_ | `local` | Run on runner host's shell (default) |
 | `ssh` | `ssh` | Execute on remote host(s) via SSH (russh). Requires `host` and/or `host_labels`. |
-| `docker` | `docker` | Execute `run:` in a Docker container on the runner. **Design:** [Docker Engine](/docs/01-architecture/docker-engine/). Not implemented yet (`engine.docker_enabled`). |
+| `docker` | `docker` | Execute `run:` in a Docker container on the runner. Requires `image`. Gated by `engine.docker_enabled`. See [Docker Engine](/docs/01-architecture/docker-engine/). |
 | `wasm` | `wasm` | Execute in Wasm sandbox (not implemented) |
 
-### Docker step fields (design)
+### Docker step fields
 
-When `uses: docker`, YAML will require `image` (container image reference). Workspace is bind-mounted to `/buz/workspace`. Full rules, non-goals, and Actions mapping: [Docker Engine](/docs/01-architecture/docker-engine/).
+When `uses: docker`, YAML requires `image` (container image reference). Workspace is bind-mounted to `/buz/workspace`. Full rules: [Docker Engine](/docs/01-architecture/docker-engine/).
+
+Example: `example/pipelines/docker-engine-smoke.yml`.
 
 > Shelling out to `docker build` / `docker push` on the host is still a **local** (or **ssh**) step — that is not the Docker engine.
 
@@ -569,8 +571,8 @@ When using the "Import to Form" feature after validating YAML, all fields are au
 | `secrets` (step) | _(warning on import)_ | Step | Not yet supported in form UI |
 | `steps[].name` | Step Name | Step | |
 | `steps[].run` | Command | Step | Multi-line preserved |
-| `steps[].uses` | Engine | Step | Local/SSH/Docker (Docker = design only; see [Docker Engine](/docs/01-architecture/docker-engine/)) |
-| `steps[].image` | Image | Step | Required when Engine is Docker (design; not in form yet) |
+| `steps[].uses` | Engine | Step | Local/SSH/Docker |
+| `steps[].image` | Image | Step | Required when Engine is Docker |
 | `steps[].host` | SSH Host | Step | Comma-separated names from Infrastructure → Hosts |
 | `steps[].host_labels` | Host Labels | Step | Comma-separated; union with `host` |
 | `steps[].work_dir` / `steps[].dir` | Work Dir | Step | Both YAML keys accepted |

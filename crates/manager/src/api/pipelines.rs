@@ -216,7 +216,7 @@ pub async fn get_one(
     let var_ids: Vec<String> = var_bind_rows.iter().map(|r| r.get(0)).collect();
 
     let tasks = sqlx::query(
-        "SELECT id, step_order, name, exec_type, host_id, host_labels, command_template,
+        "SELECT id, step_order, name, exec_type, host_id, host_labels, command_template, image,
                 work_dir, retry_count, timeout_seconds, fail_strategy
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
@@ -233,10 +233,11 @@ pub async fn get_one(
             "host_id": t.get::<Option<String>, _>(4),
             "host_labels": t.get::<String, _>(5),
             "command_template": t.get::<String, _>(6),
-            "work_dir": t.get::<String, _>(7),
-            "retry_count": t.get::<i64, _>(8),
-            "timeout_seconds": t.get::<i64, _>(9),
-            "fail_strategy": t.get::<String, _>(10),
+            "image": t.get::<String, _>(7),
+            "work_dir": t.get::<String, _>(8),
+            "retry_count": t.get::<i64, _>(9),
+            "timeout_seconds": t.get::<i64, _>(10),
+            "fail_strategy": t.get::<String, _>(11),
         })
     })
     .collect::<Vec<_>>();
@@ -474,7 +475,7 @@ pub(crate) async fn do_trigger(
     // reproducible even if the pipeline is later modified or deleted.
     let tasks_snapshot = sqlx::query(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
-                work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets
+                image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(pipeline_id)
@@ -490,11 +491,12 @@ pub(crate) async fn do_trigger(
             "host_names": t.get::<String, _>(4),
             "host_labels": t.get::<String, _>(5),
             "command_template": t.get::<String, _>(6),
-            "work_dir": t.get::<String, _>(7),
-            "retry_count": t.get::<i64, _>(8),
-            "timeout_seconds": t.get::<i64, _>(9),
-            "fail_strategy": t.get::<String, _>(10),
-            "step_secrets": t.get::<String, _>(11),
+            "image": t.get::<String, _>(7),
+            "work_dir": t.get::<String, _>(8),
+            "retry_count": t.get::<i64, _>(9),
+            "timeout_seconds": t.get::<i64, _>(10),
+            "fail_strategy": t.get::<String, _>(11),
+            "step_secrets": t.get::<String, _>(12),
         })
     })
     .collect::<Vec<_>>();
@@ -680,11 +682,18 @@ pub(crate) async fn insert_steps(
         let step_secrets_stored = step.secrets.as_ref()
             .map(|s| s.join(","))
             .unwrap_or_default();
+        let image_stored = step
+            .image
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("")
+            .to_string();
 
         sqlx::query(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
-             command_template, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(pipeline_id)
@@ -695,6 +704,7 @@ pub(crate) async fn insert_steps(
         .bind(&host_names_stored)
         .bind(&host_labels_stored)
         .bind(&step.run)
+        .bind(&image_stored)
         .bind(step.dir.as_deref().unwrap_or(""))
         .bind(step.retry.unwrap_or(0))
         .bind(parse_timeout_seconds(step.timeout.as_deref()))
@@ -708,6 +718,7 @@ pub(crate) async fn insert_steps(
             "step_order": i,
             "name": step.name,
             "exec_type": exec_type,
+            "image": image_stored,
         }));
     }
 

@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     host_names TEXT NOT NULL DEFAULT '',
     host_labels TEXT NOT NULL DEFAULT '',
     command_template TEXT NOT NULL,
+    image TEXT NOT NULL DEFAULT '',
     work_dir TEXT NOT NULL DEFAULT '',
     retry_count INTEGER NOT NULL DEFAULT 0,
     timeout_seconds INTEGER NOT NULL DEFAULT 3600,

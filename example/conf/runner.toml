@@ -4,6 +4,7 @@
 # Use https:// when the Manager has TLS enabled
 url = "http://127.0.0.1:8080"
 # Get this token from Buz Manager web UI → Nodes → New Node
+# Do not commit real tokens — replace locally after creating a node.
 register_token = "your-register-token"
 
 # ── TLS (required when Manager uses HTTPS) ──
@@ -23,7 +24,7 @@ work_dir = "/tmp/buz-runner"
 [engine]
 local_enabled = true
 ssh_enabled = true
-docker_enabled = false
+docker_enabled = false   # set true to accept uses: docker steps (see docs/docker-engine)
 wasm_enabled = false
 # Host key policy: "insecure" (default, accept any) or "known_hosts"
 # ssh_host_key_policy = "known_hosts"

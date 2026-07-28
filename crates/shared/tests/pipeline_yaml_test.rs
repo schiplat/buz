@@ -245,3 +245,60 @@ steps:
     let parsed = r.parsed.unwrap();
     assert_eq!(parsed.trigger_type.as_deref(), Some("manual"));
 }
+
+#[test]
+fn docker_step_with_image_valid() {
+    let yaml = r#"
+name: Docker Smoke
+steps:
+  - name: hello
+    uses: docker
+    image: alpine:3.20
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    let parsed = r.parsed.unwrap();
+    assert_eq!(parsed.steps[0].uses.as_deref(), Some("docker"));
+    assert_eq!(parsed.steps[0].image.as_deref(), Some("alpine:3.20"));
+}
+
+#[test]
+fn docker_step_missing_image_rejected() {
+    let yaml = r#"
+name: Docker Bad
+steps:
+  - name: hello
+    uses: docker
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.message.contains("image")),
+        "Errors: {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn docker_step_with_host_rejected() {
+    let yaml = r#"
+name: Docker Bad Host
+steps:
+  - name: hello
+    uses: docker
+    image: alpine:3.20
+    host: prod-01
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.message.contains("host") || e.message.contains("host_labels")),
+        "Errors: {:?}",
+        r.errors
+    );
+}

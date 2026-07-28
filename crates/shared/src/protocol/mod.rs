@@ -295,6 +295,9 @@ pub struct StepDef {
     pub name: String,
     pub run: String,
     pub uses: Option<String>,
+    /// Container image when `uses` is `docker`.
+    #[serde(default)]
+    pub image: Option<String>,
     /// Host name(s) — single string or array. Only relevant for SSH steps.
     #[serde(default)]
     pub host: Option<OneOrMany>,

@@ -12,20 +12,23 @@ target/
 .DS_Store
 Thumbs.db
 
-# Data
+# Runtime / local data (never commit — may contain secrets, tokens, job logs)
 data/
+example/data/
 *.db
 *.db-journal
 *.db-wal
+*.db-shm
 
 # Node / Frontend
 frontend/node_modules/
 frontend/dist/
 
-# Config with secrets
+# Config with secrets (use *.example.toml or placeholders in committed samples)
 *.local.toml
 .env
 .env.*
+**/conf/*.local.toml
 
 # Hugo docs
 docs/public/

@@ -209,7 +209,7 @@ pub async fn poll(
     // Fetch tasks for this pipeline
     let task_rows = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template,
-                work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets
+                work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, image
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&pipeline_id)
@@ -296,6 +296,7 @@ pub async fn poll(
         let host_names_raw: String = t.get(5);
         let host_labels_raw: String = t.get(6);
         let step_secrets_str: String = t.get(12);
+        let image: String = t.get(13);
 
         let mut task_json = serde_json::json!({
             "id": t.get::<String, _>(0),
@@ -307,6 +308,7 @@ pub async fn poll(
             "retry_count": t.get::<i64, _>(9),
             "timeout_seconds": t.get::<i64, _>(10),
             "fail_strategy": t.get::<String, _>(11),
+            "image": image,
         });
 
         // Resolve step-level secrets (only for this step).

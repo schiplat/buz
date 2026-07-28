@@ -46,7 +46,7 @@ work_dir = "/tmp/buz-runner"
 [engine]
 local_enabled = true
 ssh_enabled = true
-docker_enabled = false  # Phase 3 — design: docs/01-architecture/docker-engine.md
+docker_enabled = false  # MVP: set true for uses: docker — docs/01-architecture/docker-engine.md
 wasm_enabled = false    # Phase 3
 # insecure (default) | known_hosts
 ssh_host_key_policy = "known_hosts"

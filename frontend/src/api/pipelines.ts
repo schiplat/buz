@@ -56,6 +56,7 @@ export interface StepDef {
   name: string
   run: string
   uses?: string
+  image?: string
   host?: string | string[]
   host_labels?: string | string[]
   dir?: string
@@ -106,6 +107,7 @@ export interface YamlStepData {
   name?: string | null
   run?: string | null
   uses?: string | null
+  image?: string | null
   host?: string | null
   host_labels?: string | null
   dir?: string | null

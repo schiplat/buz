@@ -6,7 +6,7 @@ description: "Step-level Docker execution on the runner — design target aligne
 
 ## Status
 
-**Confirmed design (not yet implemented).** Config already has `engine.docker_enabled = false` (Phase 3). Runner rejects `uses: docker` today (`unsupported engine type`).
+**Implemented (MVP).** Step-level `uses: docker` with required `image`, ephemeral `docker run --rm`, workspace mount at `/buz/workspace`, gated by `engine.docker_enabled`. See acceptance criteria below.
 
 Related: [Pipeline Format](/docs/01-architecture/pipeline-format/) (`uses` / execution engines), [Configuration](/docs/03-operations/configuration/).
 

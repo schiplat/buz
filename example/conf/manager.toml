@@ -15,6 +15,7 @@ path = "./data/buz.db"
 max_connections = 8
 
 [auth]
+# Demo defaults only — change before any shared/production deploy.
 # export BUZ_JWT_SECRET=$(openssl rand -base64 32)
 jwt_secret = "changeme-demo-only"
 admin_user = "admin"

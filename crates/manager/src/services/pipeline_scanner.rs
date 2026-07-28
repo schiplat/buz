@@ -137,6 +137,7 @@ async fn upsert_from_yaml(
             name: s.name.clone().unwrap_or_else(|| "unnamed".into()),
             run: s.run.clone().unwrap_or_default(),
             uses: s.uses.clone(),
+            image: s.image.clone(),
             host: s.host.clone(),
             host_labels: s.host_labels.clone(),
             dir: s.dir.clone(),

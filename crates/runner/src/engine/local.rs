@@ -14,6 +14,18 @@ pub struct ReadGuard {
 }
 
 impl ReadGuard {
+    pub fn new(
+        tx_drop: mpsc::UnboundedSender<String>,
+        stdout_handle: JoinHandle<()>,
+        stderr_handle: JoinHandle<()>,
+    ) -> Self {
+        Self {
+            _tx_drop: tx_drop,
+            stdout_handle,
+            stderr_handle,
+        }
+    }
+
     /// Wait until all pipe data has been read and forwarded to the channel.
     pub async fn join(self) {
         let _ = tokio::join!(self.stdout_handle, self.stderr_handle);
@@ -56,11 +68,7 @@ pub async fn execute_streaming(
         }
     });
 
-    let guard = ReadGuard {
-        _tx_drop: tx,
-        stdout_handle,
-        stderr_handle,
-    };
+    let guard = ReadGuard::new(tx, stdout_handle, stderr_handle);
 
     Ok((child, rx, guard))
 }

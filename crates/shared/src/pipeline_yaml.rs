@@ -79,6 +79,9 @@ pub struct StepYaml {
     pub run: Option<String>,
     #[serde(default)]
     pub uses: Option<String>,
+    /// Container image when `uses: docker`.
+    #[serde(default)]
+    pub image: Option<String>,
     #[serde(default)]
     pub host: Option<OneOrMany>,
     #[serde(default, alias = "work_dir")]
@@ -170,6 +173,8 @@ pub struct StepData {
     pub run: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uses: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -280,6 +285,37 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
     }
 
+    // 6. Docker engine rules
+    for (i, step) in parsed.steps.iter().enumerate() {
+        let uses = step.uses.as_deref().unwrap_or("").trim();
+        if uses != "docker" {
+            continue;
+        }
+        let field = format!("steps[{i}]");
+        let run = step.run.as_deref().unwrap_or("").trim();
+        if run.is_empty() {
+            errors.push(YamlValidationError {
+                field: field.clone(),
+                message: "Docker step requires 'run'".into(),
+            });
+        }
+        let image = step.image.as_deref().unwrap_or("").trim();
+        if image.is_empty() {
+            errors.push(YamlValidationError {
+                field: field.clone(),
+                message: "Docker step requires non-empty 'image'".into(),
+            });
+        }
+        if step.host.as_ref().is_some_and(|h| !h.is_empty())
+            || step.host_labels.as_ref().is_some_and(|h| !h.is_empty())
+        {
+            errors.push(YamlValidationError {
+                field,
+                message: "Docker step must not set 'host' or 'host_labels' (SSH-only)".into(),
+            });
+        }
+    }
+
     let valid = errors.is_empty();
 
     if valid {
@@ -325,6 +361,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             name: s.name.clone(),
             run: s.run.clone(),
             uses: s.uses.clone(),
+            image: s.image.clone(),
             host: s.host.as_ref().map(|h| match h {
                 OneOrMany::One(s) => s.clone(),
                 OneOrMany::Many(v) => v.join(","),

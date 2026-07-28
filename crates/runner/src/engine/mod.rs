@@ -1,5 +1,6 @@
 pub mod local;
 pub mod ssh;
+pub mod docker;
 
 use shared::models::task::ExecType;
 
