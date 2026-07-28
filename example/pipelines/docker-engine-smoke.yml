@@ -4,7 +4,7 @@
 # Prefer runner.labels including "docker" so only capable nodes claim the job.
 
 name: Docker Engine Smoke
-description: Verify uses:docker executes run: inside alpine on the runner.
+description: "Verify uses: docker executes run: inside alpine on the runner."
 
 team: default
 

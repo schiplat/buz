@@ -14,8 +14,11 @@ register_token = "your-register-token"
 
 [node]
 name = "demo-n1"
-labels = ["linux-x64"]
+labels = ["macos-armx64"]
 work_dir = "/tmp/buz-runner"
+# Multi-NIC: IPs from these interfaces appear first in Manager Nodes UI.
+# When empty, prefer IPs on the same subnet as manager.url.
+# prefer_interfaces = ["enp26s0"]
 
 # ── Ephemeral / workspace cleanup ──
 # clean_workspace_after_job = true   # wipe work_dir after each job (shared runners)
@@ -24,7 +27,7 @@ work_dir = "/tmp/buz-runner"
 [engine]
 local_enabled = true
 ssh_enabled = true
-docker_enabled = false   # set true to accept uses: docker steps (see docs/docker-engine)
+docker_enabled = true   # set true to accept uses: docker steps (see docs/docker-engine)
 wasm_enabled = false
 # Host key policy: "insecure" (default, accept any) or "known_hosts"
 # ssh_host_key_policy = "known_hosts"

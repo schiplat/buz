@@ -62,7 +62,13 @@ async fn run_loop(config: config::Config) -> anyhow::Result<()> {
 
     // Log initial system info once for visibility
     {
-        let info = sysinfo::collect_system_info(started_at);
+        let info = sysinfo::collect_system_info(
+            started_at,
+            &sysinfo::SysInfoOpts {
+                manager_url: config.manager.url.clone(),
+                prefer_interfaces: config.node.prefer_interfaces.clone(),
+            },
+        );
         tracing::info!(
             "System: v{} | {} ({}) | {} cores | {} MB RAM | {} GB disk",
             info.runner_version, info.hostname, info.cpu_arch,

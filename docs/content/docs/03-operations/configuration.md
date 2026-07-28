@@ -42,6 +42,7 @@ register_token = "env.BUZ_REGISTER_TOKEN"
 name = "prod-node-01"
 labels = ["prod", "linux-x64"]
 work_dir = "/tmp/buz-runner"
+# prefer_interfaces = ["enp26s0"]  # multi-NIC: advertise these IPs first in UI
 
 [engine]
 local_enabled = true
@@ -55,8 +56,10 @@ ssh_host_key_policy = "known_hosts"
 
 | Key | Default | Notes |
 |-----|---------|-------|
+| `node.prefer_interfaces` | `[]` | NIC names whose IPs are listed first in Nodes UI; if empty, prefer IPs on the same subnet as `manager.url` |
 | `engine.ssh_host_key_policy` | `insecure` | `known_hosts` rejects unknown/changed server keys |
 | `engine.ssh_known_hosts_path` | `~/.ssh/known_hosts` | Used when policy is `known_hosts` |
+
 ## Environment Variables
 
 Sensitive values with the `env.VAR_NAME` pattern in config files are resolved at startup. Values provided via environment variables take precedence over config file defaults.

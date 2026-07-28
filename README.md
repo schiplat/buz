@@ -12,8 +12,6 @@ buz-runner --version
 # Web UI: sidebar footer / login page; API: GET /api/v1/health
 ```
 
-![Buz overview](docs/static/image/buz_overview.png)
-
 ## Quick Start
 
 ```bash
@@ -43,7 +41,6 @@ Buz follows three core principles:
 - **U (Unified)** — Single Manager orchestrates runners across all network segments.
 - **Z (Zero)** — Zero-trust security + zero operations burden.
 
-![Buz pipeline steps](docs/static/image/buz_steps.png)
 
 ## Tech Stack
 

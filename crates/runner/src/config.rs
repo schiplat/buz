@@ -40,6 +40,10 @@ pub struct NodeConfig {
     /// Useful for container-based runners that are destroyed after one job.
     #[serde(default)]
     pub ephemeral: bool,
+    /// Interface names whose IPs are advertised first in Manager UI (multi-NIC VMs).
+    /// Example: `["enp26s0"]`. When empty, IPs on the same subnet as `manager.url` are preferred.
+    #[serde(default)]
+    pub prefer_interfaces: Vec<String>,
 }
 
 impl Default for ManagerConfig {
@@ -60,6 +64,7 @@ impl Default for NodeConfig {
             work_dir: default_work_dir(),
             clean_workspace_after_job: false,
             ephemeral: false,
+            prefer_interfaces: Vec::new(),
         }
     }
 }

@@ -6,7 +6,13 @@ use crate::config::Config;
 pub async fn run_heartbeat_loop(client: &Client, config: &Config, token: &str, started_at: std::time::Instant) {
     loop {
         // Refresh system info on every heartbeat so CPU/mem/disk stay current
-        let system_info = crate::sysinfo::collect_system_info(started_at);
+        let system_info = crate::sysinfo::collect_system_info(
+            started_at,
+            &crate::sysinfo::SysInfoOpts {
+                manager_url: config.manager.url.clone(),
+                prefer_interfaces: config.node.prefer_interfaces.clone(),
+            },
+        );
 
         match send_heartbeat(client, config, token, &system_info).await {
             Ok(()) => tracing::debug!("Heartbeat sent"),

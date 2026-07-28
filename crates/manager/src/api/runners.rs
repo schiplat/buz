@@ -86,6 +86,10 @@ pub async fn register(
             // First-time registration — must match the one-shot register_token.
             let stored_rt: String = row.get(1);
             if stored_rt != register_token {
+                tracing::warn!(
+                    runner = %name,
+                    "Runner registration failed: invalid register token"
+                );
                 return Err(AppError::AuthFailed(
                     "invalid register token or runner name".into(),
                 ));
@@ -95,6 +99,10 @@ pub async fn register(
 
         runner_id = row.get(0);
     } else {
+        tracing::warn!(
+            runner = %name,
+            "Runner registration failed: unknown runner name (create the node in UI first)"
+        );
         return Err(AppError::AuthFailed(
             "invalid register token or runner name".into(),
         ));
@@ -110,12 +118,15 @@ pub async fn register(
         .map_err(|e| AppError::Internal(format!("token generation failed: {e}")))?;
 
     let labels_json = serde_json::to_string(&req.labels).unwrap_or_else(|_| "[]".into());
+    let version = req.version.as_deref().filter(|v| !v.is_empty());
 
     sqlx::query(
-        "UPDATE runners SET token = ?, register_token = '', status = 'online', labels = ?, last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+        "UPDATE runners SET token = ?, register_token = '', status = 'online', labels = ?, \
+         version = COALESCE(?, version), last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&runner_jwt)
     .bind(&labels_json)
+    .bind(version)
     .bind(&runner_id)
     .execute(&state.pool)
     .await?;
@@ -141,12 +152,19 @@ pub async fn heartbeat(
         .as_ref()
         .and_then(|si| serde_json::to_string(si).ok())
         .unwrap_or_else(|| "{}".into());
+    let version = req
+        .system_info
+        .as_ref()
+        .map(|si| si.runner_version.as_str())
+        .filter(|v| !v.is_empty());
 
     sqlx::query(
-        "UPDATE runners SET status = ?, system_info = ?, last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+        "UPDATE runners SET status = ?, system_info = ?, version = COALESCE(?, version), \
+         last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&req.status)
     .bind(&system_info_json)
+    .bind(version)
     .bind(&auth.runner_id)
     .execute(&state.pool)
     .await?;

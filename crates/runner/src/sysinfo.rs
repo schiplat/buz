@@ -1,9 +1,20 @@
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
 use shared::protocol::{NetworkInterfaceInfo, SystemInfo};
 use sysinfo::{Disks, Networks, System};
 
+/// Options controlling which IPs are advertised first to the Manager UI.
+#[derive(Debug, Clone, Default)]
+pub struct SysInfoOpts {
+    /// Manager base URL — used to prefer local IPs on the same subnet as the Manager host.
+    pub manager_url: String,
+    /// Interface names whose addresses should be listed first (e.g. `["enp26s0"]`).
+    pub prefer_interfaces: Vec<String>,
+}
+
 /// Collect host hardware, OS, and network information.
 /// `started_at` is the runner process start instant, used to compute process uptime.
-pub fn collect_system_info(started_at: std::time::Instant) -> SystemInfo {
+pub fn collect_system_info(started_at: std::time::Instant, opts: &SysInfoOpts) -> SystemInfo {
     let mut sys = System::new_all();
     // First refresh: establish baseline CPU / memory / disk counters
     sys.refresh_all();
@@ -41,17 +52,41 @@ pub fn collect_system_info(started_at: std::time::Instant) -> SystemInfo {
     let disk_used_gb = disk_used_bytes as f64 / 1_073_741_824.0;
 
     // ── network interfaces ──
-    let mut ip_addresses: Vec<String> = Vec::new();
+    let manager_host = host_ip_from_url(&opts.manager_url);
+    let prefer_set: Vec<String> = opts
+        .prefer_interfaces
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut candidates: Vec<IpCandidate> = Vec::new();
     let interfaces = Networks::new_with_refreshed_list();
     let network_interfaces: Vec<NetworkInterfaceInfo> = interfaces
         .iter()
         .map(|(name, data)| {
+            let demoted = is_demoted_interface(name);
+            let preferred_iface = prefer_set.iter().any(|p| p == name);
             let ips: Vec<String> = data
                 .ip_networks()
                 .iter()
-                .map(|net| net.addr.to_string())
+                .filter_map(|net| {
+                    let addr = net.addr;
+                    if is_ignored_addr(addr) {
+                        return None;
+                    }
+                    let same_subnet = manager_host
+                        .map(|m| ip_in_network(m, addr, net.prefix))
+                        .unwrap_or(false);
+                    candidates.push(IpCandidate {
+                        ip: addr.to_string(),
+                        preferred_iface,
+                        same_subnet,
+                        demoted,
+                    });
+                    Some(addr.to_string())
+                })
                 .collect();
-            ip_addresses.extend(ips.clone());
             NetworkInterfaceInfo {
                 name: name.clone(),
                 mac: data.mac_address().to_string(),
@@ -59,23 +94,17 @@ pub fn collect_system_info(started_at: std::time::Instant) -> SystemInfo {
             }
         })
         .collect();
-    // Deduplicate IPs: keep only non-loopback IPv4/IPv6 addresses for the global list
-    ip_addresses.sort();
-    ip_addresses.dedup();
-    ip_addresses.retain(|ip| {
-        !ip.starts_with("127.") && !ip.starts_with("::1") && !ip.starts_with("fe80:")
-    });
+
+    let ip_addresses = order_ip_addresses(candidates);
 
     let uptime = started_at.elapsed().as_secs();
 
     // ── CPU usage ──
-    // sysinfo computes usage as delta between two refresh calls,
-    // so we need a second refresh after a brief wait.
     let cpu_usage_percent: f32 = {
         let total: f32 = sys.cpus().iter().map(|c| c.cpu_usage()).sum();
         let count = sys.cpus().len().max(1) as f32;
         let avg = total / count;
-        avg.clamp(0.0, 100.0) // safety clamp; some platforms can briefly exceed 100%
+        avg.clamp(0.0, 100.0)
     };
 
     SystemInfo {
@@ -98,3 +127,107 @@ pub fn collect_system_info(started_at: std::time::Instant) -> SystemInfo {
         uptime_seconds: uptime,
     }
 }
+
+#[derive(Debug, Clone)]
+struct IpCandidate {
+    ip: String,
+    preferred_iface: bool,
+    same_subnet: bool,
+    demoted: bool,
+}
+
+/// Order advertised IPs: preferred interface → same subnet as Manager → non-virtual → lexical.
+fn order_ip_addresses(mut candidates: Vec<IpCandidate>) -> Vec<String> {
+    candidates.sort_by(|a, b| {
+        b.preferred_iface
+            .cmp(&a.preferred_iface)
+            .then(b.same_subnet.cmp(&a.same_subnet))
+            .then(a.demoted.cmp(&b.demoted))
+            .then(a.ip.cmp(&b.ip))
+    });
+    let mut out = Vec::new();
+    for c in candidates {
+        if !out.iter().any(|x| x == &c.ip) {
+            out.push(c.ip);
+        }
+    }
+    out
+}
+
+fn is_demoted_interface(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n == "docker0"
+        || n == "lo"
+        || n.starts_with("br-")
+        || n.starts_with("veth")
+        || n.starts_with("virbr")
+        || n.starts_with("cni")
+        || n.starts_with("flannel")
+        || n.starts_with("tun")
+        || n.starts_with("tap")
+}
+
+fn is_ignored_addr(addr: IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_link_local() || v4.is_unspecified(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.is_unicast_link_local() || v6.is_unspecified()
+        }
+    }
+}
+
+fn host_ip_from_url(url: &str) -> Option<IpAddr> {
+    let trimmed = url.trim();
+    let without_scheme = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or(trimmed);
+    let host = without_scheme.split('/').next()?.split(':').next()?.trim();
+    if host.is_empty() || host == "localhost" {
+        return None;
+    }
+    // Bracketed IPv6: [::1]
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    host.parse().ok()
+}
+
+fn ip_in_network(target: IpAddr, local: IpAddr, prefix: u8) -> bool {
+    match (target, local) {
+        (IpAddr::V4(t), IpAddr::V4(l)) => ipv4_same_network(t, l, prefix),
+        (IpAddr::V6(t), IpAddr::V6(l)) => ipv6_same_network(t, l, prefix),
+        _ => false,
+    }
+}
+
+fn ipv4_same_network(a: Ipv4Addr, b: Ipv4Addr, prefix: u8) -> bool {
+    if prefix > 32 {
+        return false;
+    }
+    let mask = if prefix == 0 {
+        0u32
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    (u32::from(a) & mask) == (u32::from(b) & mask)
+}
+
+fn ipv6_same_network(a: Ipv6Addr, b: Ipv6Addr, prefix: u8) -> bool {
+    if prefix > 128 {
+        return false;
+    }
+    let a = u128::from(a);
+    let b = u128::from(b);
+    let mask = if prefix == 0 {
+        0u128
+    } else {
+        u128::MAX << (128 - prefix)
+    };
+    (a & mask) == (b & mask)
+}
+
+#[cfg(test)]
+#[path = "sysinfo_tests.rs"]
+mod tests;
