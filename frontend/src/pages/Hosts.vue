@@ -1,17 +1,30 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiPagination from '@/components/ui/UiPagination.vue'
 import { Plus, Pencil, Trash2, Server } from '@lucide/vue'
 import { hostsApi, type Host } from '@/api/hosts'
 import { teamsApi, type Team } from '@/api/teams'
+import { useAuthStore } from '@/stores/auth'
 
+const auth = useAuthStore()
 const hosts = ref<Host[]>([])
 const availableTeams = ref<Team[]>([])
 const loading = ref(true)
 const hostPage = ref(1)
 const pageSize = 15
+
+const filteredHosts = computed(() =>
+  hosts.value.filter((h) => auth.matchesActiveTeam(h.team_id, { includeShared: true })),
+)
+
+const pagedHosts = computed(() => {
+  const start = (hostPage.value - 1) * pageSize
+  return filteredHosts.value.slice(start, start + pageSize)
+})
+
+watch(() => auth.activeTeamId, () => { hostPage.value = 1 })
 
 // ── Create / Edit dialog ──
 const showDialog = ref(false)
@@ -21,7 +34,17 @@ const saving = ref(false)
 
 function openCreate() {
   editing.value = null
-  form.value = { name: '', host: '', port: 22, username: '', credential_type: 'key_path', credential_data: '', credential_passphrase: '', labels: '', team_id: '' }
+  form.value = {
+    name: '',
+    host: '',
+    port: 22,
+    username: '',
+    credential_type: 'key_path',
+    credential_data: '',
+    credential_passphrase: '',
+    labels: '',
+    team_id: auth.preferredTeamId || '',
+  }
   showDialog.value = true
 }
 
@@ -109,11 +132,6 @@ async function loadHosts() {
   }
 }
 
-const pagedHosts = computed(() => {
-  const start = (hostPage.value - 1) * pageSize
-  return hosts.value.slice(start, start + pageSize)
-})
-
 function teamLabel(teamId: string | null | undefined): string {
   if (!teamId) return 'Shared (admin)'
   const t = availableTeams.value.find(x => x.id === teamId)
@@ -142,7 +160,7 @@ onMounted(async () => {
     <!-- Table -->
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
     <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
-      <div v-if="hosts.length > 0" class="overflow-x-auto">
+      <div v-if="filteredHosts.length > 0" class="overflow-x-auto">
         <table class="w-full text-[13px]">
           <thead>
             <tr class="border-b border-border/30 bg-muted/10">
@@ -187,12 +205,12 @@ onMounted(async () => {
           </tbody>
         </table>
         <div class="px-5 py-2 border-t border-border/20">
-          <UiPagination v-model:page="hostPage" :total="hosts.length" :page-size="pageSize" />
+          <UiPagination v-model:page="hostPage" :total="filteredHosts.length" :page-size="pageSize" />
         </div>
       </div>
       <div v-else class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <Server class="h-10 w-10 mb-3 text-muted-foreground/20" />
-        <p class="text-sm">No hosts configured yet</p>
+        <p class="text-sm">{{ hosts.length === 0 ? 'No hosts configured yet' : 'No hosts in the selected team' }}</p>
         <p class="text-xs mt-1 text-muted-foreground/60">
           Reference hosts in SSH steps with <code class="mono-chip text-[10px]">host: name</code>
           or <code class="mono-chip text-[10px]">host_labels: [tag]</code>.

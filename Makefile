@@ -1,4 +1,4 @@
-.PHONY: dev dev-frontend dev-manager run build build-frontend build-backend build example test ci
+.PHONY: dev dev-frontend dev-manager run build build-frontend build-backend build example test test-docker-e2e ci
 
 # ── One-step: build everything and run ─────────────────────────────
 run: build
@@ -86,6 +86,10 @@ clean:
 # ── Test & CI ────────────────────────────────────────────────────
 test:
 	cargo test --all
+
+# Real Docker daemon e2e (ignored tests). Requires docker CLI + daemon.
+test-docker-e2e:
+	./scripts/docker-engine-e2e.sh
 
 ci: test
 	cargo fmt --all -- --check

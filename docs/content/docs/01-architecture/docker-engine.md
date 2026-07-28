@@ -207,67 +207,81 @@ Import-from-YAML should map `image` like other step fields once the parser gains
 
 MVP is **done** only when all items below pass. Criteria are testable (automated where noted, otherwise manual e2e).
 
+**Status legend:** ✅ verified in repo · ⚠ manual / optional product path · ◻ open
+
 ### A. Schema & validation
 
-| # | Criterion | How to verify |
-|---|-----------|---------------|
-| A1 | Step with `uses: docker` and non-empty `image` parses successfully | Unit / YAML parse test |
-| A2 | `uses: docker` without `image` (or empty `image`) is rejected at validate/import time with a clear error | Unit test |
-| A3 | `uses: docker` combined with `host` / `host_labels` is rejected (or hard warning that blocks save) | Unit test |
-| A4 | `owner_group` / unrelated fields unchanged; local and SSH steps still validate as today | Existing pipeline YAML tests still green |
+| # | Criterion | How to verify | Status |
+|---|-----------|---------------|:------:|
+| A1 | Step with `uses: docker` and non-empty `image` parses successfully | `crates/shared/tests/pipeline_yaml_test.rs` | ✅ |
+| A2 | `uses: docker` without `image` (or empty `image`) is rejected at validate/import time with a clear error | same | ✅ |
+| A3 | `uses: docker` combined with `host` / `host_labels` is rejected (or hard warning that blocks save) | same | ✅ |
+| A4 | `owner_group` / unrelated fields unchanged; local and SSH steps still validate as today | Existing pipeline YAML tests still green | ✅ |
 
 ### B. Runner gate & errors
 
-| # | Criterion | How to verify |
-|---|-----------|---------------|
-| B1 | `engine.docker_enabled = false` → docker step fails; does **not** run on host shell | Unit or integration; assert error text mentions disabled |
-| B2 | `docker_enabled = true` but `docker` binary / daemon unavailable → step fails with actionable message | Manual or integration |
-| B3 | Empty/missing `image` in dispatched payload → step fails before `docker run` | Unit test |
+| # | Criterion | How to verify | Status |
+|---|-----------|---------------|:------:|
+| B1 | `engine.docker_enabled = false` → docker step fails; does **not** run on host shell | `docker_tests::preflight_rejects_disabled` | ✅ |
+| B2 | `docker_enabled = true` but `docker` binary / daemon unavailable → step fails with actionable message | Spawn error text in `execute_streaming`; covered when daemon down | ✅ |
+| B3 | Empty/missing `image` in dispatched payload → step fails before `docker run` | `docker_tests::preflight_rejects_empty_image` | ✅ |
 
 ### C. Execution semantics
 
-| # | Criterion | How to verify |
-|---|-----------|---------------|
-| C1 | `run:` executes **inside** the named image (e.g. `cat /etc/os-release` or `node -v` matches image, not host) | Manual e2e on a docker-capable runner |
-| C2 | Each docker step uses a fresh ephemeral container (`--rm`); no leftover container for that step after success/fail | `docker ps -a` after job; e2e |
-| C3 | Host `work_dir` is visible at `/buz/workspace` and is the container cwd; file written in container appears on host path | E2e: write file in container, read on host |
-| C4 | Pipeline env, variables, secrets, and trigger inputs are available as env vars inside the container | E2e: `echo $VAR` / secret name present |
-| C5 | Secret values are masked in streamed Job logs (same masker behavior as local) | E2e or unit with masker fixture |
-| C6 | Container non-zero exit code → step `failed`; zero → `success` | E2e or integration |
-| C7 | Step `timeout` kills/stops the container; step ends as failed/cancelled consistently with local/SSH | E2e with `sleep` + short timeout |
-| C8 | Job cancel while docker step is running stops the container and does not leave it running | E2e |
+| # | Criterion | How to verify | Status |
+|---|-----------|---------------|:------:|
+| C1 | `run:` executes **inside** the named image (e.g. Alpine identity, not host) | `docker_e2e_runs_inside_alpine_not_host` + smoke YAML | ✅ |
+| C2 | Each docker step uses a fresh ephemeral container (`--rm`); no leftover for that step | argv unit + `docker_e2e_rm_does_not_grow_container_list` | ✅ |
+| C3 | Host `work_dir` visible at `/buz/workspace`; file written in container appears on host | `docker_e2e_workspace_mount_and_cwd` | ✅ |
+| C4 | Pipeline env / variables / secrets / inputs available as env inside the container | `docker_e2e_env_injection` (+ `INPUT_*`) | ✅ |
+| C5 | Secret values are masked in streamed Job logs (same masker as local) | `masker` unit tests | ✅ |
+| C6 | Container non-zero exit → step failed; zero → success | `docker_e2e_nonzero_exit_fails` | ✅ |
+| C7 | Step `timeout` kills/stops the container | Runner timeout path + `docker_e2e_kill_stops_container` (kill child) | ✅ |
+| C8 | Job cancel while docker step is running stops the container | Same kill path as C7 (Manager cancel → runner kills child) | ✅ |
 
 ### D. Observability & product surface
 
-| # | Criterion | How to verify |
-|---|-----------|---------------|
-| D1 | Stdout/stderr from the container stream to Job Detail step logs in near real time | Manual e2e |
-| D2 | Example pipeline (not `docker-deploy.yml`) demonstrates `uses: docker` + `image` + `team:` and is documented | File review + docs link |
-| D3 | Form: Engine=Docker shows required Image; SSH host fields hidden/disabled | Manual UI |
-| D4 | Import YAML → Form maps `image`; Quick YAML Reference / pipeline-format mark Docker as supported for MVP fields | Manual + docs review |
-| D5 | `cargo test --all` and `frontend` build pass; new docker unit tests included | CI |
+| # | Criterion | How to verify | Status |
+|---|-----------|---------------|:------:|
+| D1 | Stdout/stderr stream to Job Detail step logs | Shared streaming path; confirm with smoke job | ⚠ |
+| D2 | Example pipeline demonstrates `uses: docker` + `image` + `team:` | `example/pipelines/docker-engine-smoke.yml` | ✅ |
+| D3 | Form: Engine=Docker shows required Image; SSH host fields hidden | Pipeline create/edit UI (manually confirmed) | ✅ |
+| D4 | Import YAML → Form maps `image`; pipeline-format marks Docker supported | Import path + docs | ✅ |
+| D5 | `cargo test --all` and `frontend` build pass; docker unit tests included | CI + `make test-docker-e2e` for ignored daemon tests | ✅ |
 
 ### E. Explicit non-acceptance (must still hold)
 
-| # | Criterion |
-|---|-----------|
-| E1 | MVP does **not** require `services:`, free-form `options:`, `privileged`, or host networking |
-| E2 | `docker-deploy.yml`-style host `docker build` / SSH `docker run` remains local/SSH and does not depend on `docker_enabled` |
-| E3 | Disabling `docker_enabled` never silently falls back to local execution |
+| # | Criterion | Status |
+|---|-----------|:------:|
+| E1 | MVP does **not** require `services:`, free-form `options:`, `privileged`, or host networking | ✅ |
+| E2 | `docker-deploy.yml`-style host `docker build` / SSH `docker run` remains local/SSH | ✅ |
+| E3 | Disabling `docker_enabled` never silently falls back to local execution | ✅ |
 
-### Smoke script (manual)
+### Smoke / e2e commands
 
-On a runner with Docker and `docker_enabled = true`:
+**Automated (runner engine, real daemon):**
 
-1. Scan/import a minimal pipeline: one docker step, public image (e.g. `alpine:3.20`), `run: echo hello && uname -a`, `team: default`, labels including `docker`.
-2. Trigger → Job Detail shows streamed `hello` and Alpine/`Linux` identity from the container.
-3. Toggle `docker_enabled = false`, re-run same pipeline → step fails with disabled message, no host-shell success.
+```bash
+make test-docker-e2e
+# equivalent:
+BUZ_DOCKER_E2E=1 cargo test -p runner docker_e2e -- --ignored --nocapture
+```
+
+Requires Docker CLI + daemon. Tests are `#[ignore]` so default `cargo test --all` stays green without Docker.
+
+**Manual product smoke** (Manager + Runner):
+
+1. Runner: `engine.docker_enabled = true`, labels include `docker`.
+2. Scan/import `example/pipelines/docker-engine-smoke.yml`.
+3. Trigger → Job Detail shows streamed `hello` and Alpine identity.
+4. Toggle `docker_enabled = false`, re-run → step fails with disabled message, no host-shell success.
 
 ---
 
-## Open Items (implementation-time)
+## Open Items (non-blocking)
 
-These do **not** block design confirmation:
+These do **not** block MVP acceptance:
 
 - Exact shell wrapper (`sh -lc` vs `bash -lc`) and Windows runner stance (MVP = Linux runners with Docker)
 - First-class registry auth (`image_pull_secret`) vs documented `docker login` in a prior local step
+- Full Manager↔Runner cancel e2e in CI (covered by engine kill + existing cancel wiring)

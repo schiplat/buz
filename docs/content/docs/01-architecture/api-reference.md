@@ -228,6 +228,8 @@ Response:
 | POST | `/api/v1/jobs/:id/claim` | Runner Token |
 | PATCH | `/api/v1/jobs/:id/status` | Runner Token |
 
+List items include `team_id` (from the owning pipeline) so the UI team switcher can filter Jobs client-side. Visibility still follows membership / platform-admin rules via `team_in_clause`.
+
 ## Logs
 
 | Method | Path | Auth |

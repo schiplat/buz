@@ -1,17 +1,30 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiPagination from '@/components/ui/UiPagination.vue'
 import { Plus, Pencil, Trash2, Shield } from '@lucide/vue'
 import { secretsApi, type Secret } from '@/api/secrets'
 import { teamsApi, type Team } from '@/api/teams'
+import { useAuthStore } from '@/stores/auth'
 
+const auth = useAuthStore()
 const secrets = ref<Secret[]>([])
 const teams = ref<Team[]>([])
 const loading = ref(true)
 const secretPage = ref(1)
 const pageSize = 15
+
+const filteredSecrets = computed(() =>
+  secrets.value.filter((s) => auth.matchesActiveTeam(s.team_id)),
+)
+
+const paged = computed(() => {
+  const start = (secretPage.value - 1) * pageSize
+  return filteredSecrets.value.slice(start, start + pageSize)
+})
+
+watch(() => auth.activeTeamId, () => { secretPage.value = 1 })
 
 // ── Create / Edit dialog ──
 const showDialog = ref(false)
@@ -26,7 +39,7 @@ function openCreate() {
   editing.value = null
   formName.value = ''
   formValue.value = ''
-  formTeamId.value = teams.value[0]?.id || ''
+  formTeamId.value = auth.preferredTeamId || teams.value[0]?.id || ''
   showValue.value = false
   showDialog.value = true
 }
@@ -84,11 +97,6 @@ async function loadSecrets() {
   }
 }
 
-const paged = computed(() => {
-  const start = (secretPage.value - 1) * pageSize
-  return secrets.value.slice(start, start + pageSize)
-})
-
 onMounted(loadSecrets)
 </script>
 
@@ -105,7 +113,7 @@ onMounted(loadSecrets)
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
     <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
-      <div v-if="secrets.length > 0" class="overflow-x-auto">
+      <div v-if="filteredSecrets.length > 0" class="overflow-x-auto">
         <table class="w-full text-[13px]">
           <thead>
             <tr class="border-b border-border/30 bg-muted/10">
@@ -134,12 +142,12 @@ onMounted(loadSecrets)
           </tbody>
         </table>
         <div class="px-5 py-2 border-t border-border/20">
-          <UiPagination v-model:page="secretPage" :total="secrets.length" :page-size="pageSize" />
+          <UiPagination v-model:page="secretPage" :total="filteredSecrets.length" :page-size="pageSize" />
         </div>
       </div>
       <div v-else class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <Shield class="h-10 w-10 mb-3 text-muted-foreground/20" />
-        <p class="text-sm">No secrets configured yet</p>
+        <p class="text-sm">{{ secrets.length === 0 ? 'No secrets configured yet' : 'No secrets in the selected team' }}</p>
         <p class="text-xs mt-1 text-muted-foreground/60">
           Create secrets here, then bind them in Pipeline → Advanced → Authorized Secrets,
           or assign the same <code class="mono-chip text-[10px]">Team</code> for auto-access.

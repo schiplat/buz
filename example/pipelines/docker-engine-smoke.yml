@@ -15,6 +15,9 @@ runner:
   labels: [linux-x64, docker]
   timeout: 5m
 
+env:
+  SMOKE_ENV: from-pipeline
+
 steps:
   - name: Hello from container
     uses: docker
@@ -25,4 +28,6 @@ steps:
       cat /etc/os-release | head -3
       echo "workspace ok" > /buz/workspace/smoke.txt
       cat /buz/workspace/smoke.txt
+      echo "SMOKE_ENV=$SMOKE_ENV"
     timeout: 2m
+

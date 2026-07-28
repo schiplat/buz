@@ -53,6 +53,7 @@ Runners and Manager config remain **global infrastructure** — Platform Admin o
 | 4 | **Developer**: may edit Pipelines (and pipeline Variables); **must not** manage Secrets |
 | 5 | **Delivery**: ship membership filtering with teams (2b) — no multi-user-without-isolation interim |
 | 6 | **Team picker UI**: show Team select only for **platform admins** or users in **multiple teams**. Single-team members auto-bind their sole membership (no Team field in create/edit forms) |
+| 7 | **Team switcher**: same visibility as rule 6; filters Pipelines / Secrets / Jobs / Hosts lists. Default = **All my teams**. Hosts filter includes shared (`team_id` null) hosts when a team is selected |
 
 ---
 
@@ -204,10 +205,22 @@ Error codes: keep `1002` auth, `1003` forbidden (insufficient permissions).
 ## Frontend
 
 - Login unchanged UX; session stores user JWT + `/me` cache
-- Team switcher or “All my teams” filter on Pipelines / Secrets / Jobs / Hosts
+- **Team switcher** (top bar): platform admins and multi-team members see **All my teams** | `<team>` filter. Selection persists in `localStorage` (`buz_active_team`)
+- Filtered list pages: Pipelines, Secrets, Jobs, Hosts (Hosts also keep **shared** / unscoped hosts when a team is selected)
+- Create forms prefer the active switcher team (`preferredTeamId`), then sole membership
 - Hide Runners + Users admin from non–platform-admin
-- Pipeline / Secret forms: required Team select (no empty)
+- Pipeline / Secret forms: required Team select only when `showTeamPicker` (admin or multi-team); single-team users auto-bind
 - Host form: Team optional (“Shared (admin)”)
+
+### Team switcher behavior
+
+| Actor | Switcher visible? | Options |
+|-------|:-----------------:|---------|
+| Single-team member | No | N/A — API already membership-scoped |
+| Multi-team member | Yes | All my teams + memberships from `/me` |
+| Platform admin | Yes | All my teams + all teams from `GET /teams` |
+
+Filtering is **client-side** on top of membership-filtered list APIs (no extra query param). Jobs list includes `team_id` (from the pipeline) for the filter.
 
 ---
 

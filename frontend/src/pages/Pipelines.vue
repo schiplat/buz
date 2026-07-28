@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
@@ -33,10 +33,16 @@ function ensureTeamId(): string {
 const pipelinePage = ref(1)
 const pageSize = 15
 
+const filteredPipelines = computed(() =>
+  pipelines.value.filter((p) => auth.matchesActiveTeam(p.team_id)),
+)
+
 const pagedPipelines = computed(() => {
   const start = (pipelinePage.value - 1) * pageSize
-  return pipelines.value.slice(start, start + pageSize)
+  return filteredPipelines.value.slice(start, start + pageSize)
 })
+
+watch(() => auth.activeTeamId, () => { pipelinePage.value = 1 })
 
 /** Format build success rate: successful jobs ÷ total jobs. */
 function formatSuccessRate(p: Pipeline): string {
@@ -150,7 +156,7 @@ function openCreate() {
   editingId.value = null
   dialogMode.value = 'form'
   dialogTitle.value = 'New Pipeline'
-  form.value = { name: '', description: '', trigger_type: 'manual', webhook_path: genRandomPath(), cron_expr: '', runner_labels: 'linux-x64', runner_timeout: '', concurrency_group: '', owner_group: '', team_id: auth.soleTeamId, var_ids: [], secret_ids: [], env: [], steps: [], input_defs: [] }
+  form.value = { name: '', description: '', trigger_type: 'manual', webhook_path: genRandomPath(), cron_expr: '', runner_labels: 'linux-x64', runner_timeout: '', concurrency_group: '', owner_group: '', team_id: auth.preferredTeamId, var_ids: [], secret_ids: [], env: [], steps: [], input_defs: [] }
   yamlContent.value = ''
   yamlResult.value = null
   yamlImportWarnings.value = []
@@ -349,7 +355,7 @@ function importYamlToForm() {
       runner_timeout: parsed.runner?.timeout || '',
       concurrency_group: parsed.concurrency || '',
       owner_group: '',
-      team_id: auth.soleTeamId,
+      team_id: auth.preferredTeamId,
       var_ids: resolvedVarIds,
       secret_ids: resolvedSecretIds,
       env: parsed.env
@@ -555,8 +561,8 @@ async function handleToggleActive(p: Pipeline) {
     <div v-if="loading" class="surface-card p-8 text-center type-meta">Loading...</div>
 
     <template v-else>
-      <div v-if="pipelines.length === 0" class="surface-card p-8 text-center type-meta">
-        No pipelines created yet
+      <div v-if="filteredPipelines.length === 0" class="surface-card p-8 text-center type-meta">
+        {{ pipelines.length === 0 ? 'No pipelines created yet' : 'No pipelines in the selected team' }}
       </div>
 
       <div v-else class="surface-card data-table-scroll">
@@ -673,7 +679,7 @@ async function handleToggleActive(p: Pipeline) {
             </tr>
           </tbody>
         </table>
-        <UiPagination v-model:page="pipelinePage" :total="pipelines.length" :page-size="pageSize" />
+        <UiPagination v-model:page="pipelinePage" :total="filteredPipelines.length" :page-size="pageSize" />
       </div>
     </template>
 
@@ -879,7 +885,7 @@ async function handleToggleActive(p: Pipeline) {
               <!-- Steps editor -->
               <div>
                 <div class="flex items-center justify-between mb-1.5">
-                  <span class="type-label">Steps</span>
+                  <span class="type-label">Steps <span class="text-red-500">*</span></span>
                   <span class="text-xs text-muted-foreground font-mono">{{ form.steps.length }} step(s)</span>
                 </div>
 

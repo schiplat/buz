@@ -3,6 +3,7 @@ import { ChevronDown, KeyRound, LogOut, PanelLeft, User } from '@lucide/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
+import TeamSwitcher from '@/components/layout/TeamSwitcher.vue'
 import { authApi } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
@@ -131,47 +132,50 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="auth.isAuthenticated" ref="menuRoot" class="relative">
-      <button
-        type="button"
-        class="inline-flex items-center gap-2 rounded-full py-1 pl-1.5 pr-2.5 text-sm transition-colors hover:bg-muted"
-        :aria-expanded="menuOpen"
-        aria-haspopup="menu"
-        @click.stop="menuOpen = !menuOpen"
-      >
-        <span class="flex h-7 w-7 items-center justify-center rounded-full bg-secondary text-secondary-foreground text-xs font-semibold uppercase">
-          {{ (auth.username || '?').slice(0, 1) }}
-        </span>
-        <span class="text-sm text-muted-foreground max-w-[120px] truncate">{{ auth.username }}</span>
-        <ChevronDown
-          class="h-3.5 w-3.5 text-muted-foreground transition-transform"
-          :class="menuOpen && 'rotate-180'"
-        />
-      </button>
+    <div v-if="auth.isAuthenticated" class="flex items-center gap-2.5">
+      <TeamSwitcher />
+      <div ref="menuRoot" class="relative">
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-full py-1 pl-1.5 pr-2.5 text-sm transition-colors hover:bg-muted"
+          :aria-expanded="menuOpen"
+          aria-haspopup="menu"
+          @click.stop="menuOpen = !menuOpen"
+        >
+          <span class="flex h-7 w-7 items-center justify-center rounded-full bg-secondary text-secondary-foreground text-xs font-semibold uppercase">
+            {{ (auth.username || '?').slice(0, 1) }}
+          </span>
+          <span class="text-sm text-muted-foreground max-w-[120px] truncate">{{ auth.username }}</span>
+          <ChevronDown
+            class="h-3.5 w-3.5 text-muted-foreground transition-transform"
+            :class="menuOpen && 'rotate-180'"
+          />
+        </button>
 
-      <div
-        v-if="menuOpen"
-        role="menu"
-        class="absolute right-0 top-full z-50 mt-1.5 w-44 overflow-hidden rounded-xl border border-border bg-background py-1 shadow-lg"
-      >
-        <button
-          type="button"
-          role="menuitem"
-          class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-muted"
-          @click="openChangePassword"
+        <div
+          v-if="menuOpen"
+          role="menu"
+          class="absolute right-0 top-full z-50 mt-1.5 w-44 overflow-hidden rounded-xl border border-border bg-background py-1 shadow-lg"
         >
-          <KeyRound class="h-3.5 w-3.5 text-muted-foreground" />
-          Change password
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-muted"
-          @click="handleLogout"
-        >
-          <LogOut class="h-3.5 w-3.5 text-muted-foreground" />
-          Log out
-        </button>
+          <button
+            type="button"
+            role="menuitem"
+            class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-muted"
+            @click="openChangePassword"
+          >
+            <KeyRound class="h-3.5 w-3.5 text-muted-foreground" />
+            Change password
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-muted"
+            @click="handleLogout"
+          >
+            <LogOut class="h-3.5 w-3.5 text-muted-foreground" />
+            Log out
+          </button>
+        </div>
       </div>
     </div>
   </header>

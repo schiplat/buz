@@ -140,3 +140,7 @@ pub async fn execute_streaming(
 #[cfg(test)]
 #[path = "docker_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "docker_e2e_tests.rs"]
+mod e2e_tests;

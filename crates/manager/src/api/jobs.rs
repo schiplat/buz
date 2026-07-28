@@ -25,7 +25,8 @@ pub async fn list(
     let base = "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
                 j.status, j.trigger_by, j.retry_times,
                 j.step_statuses, j.snapshot,
-                j.start_time, j.end_time, j.created_at, j.updated_at
+                j.start_time, j.end_time, j.created_at, j.updated_at,
+                p.team_id
          FROM jobs j
          JOIN pipelines p ON j.pipeline_id = p.id
          WHERE 1=1";
@@ -71,6 +72,7 @@ pub async fn list(
                 "end_time": r.get::<Option<String>, _>(10),
                 "created_at": r.get::<Option<String>, _>(11),
                 "updated_at": r.get::<Option<String>, _>(12),
+                "team_id": r.get::<String, _>(13),
             })
         })
         .collect();

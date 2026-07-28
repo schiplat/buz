@@ -1,15 +1,21 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { jobsApi, type Job } from '@/api/jobs'
 import { XCircle } from '@lucide/vue'
+import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
+const auth = useAuthStore()
 const jobs = ref<Job[]>([])
 const loading = ref(true)
+
+const filteredJobs = computed(() =>
+  jobs.value.filter((j) => auth.matchesActiveTeam(j.team_id)),
+)
 
 onMounted(async () => {
   await loadJobs()
@@ -46,8 +52,8 @@ async function handleCancel(jobId: string) {
     <div v-if="loading" class="surface-card p-8 text-center type-meta">Loading...</div>
 
     <template v-else>
-      <div v-if="jobs.length === 0" class="surface-card p-8 text-center type-meta">
-        No jobs executed yet
+      <div v-if="filteredJobs.length === 0" class="surface-card p-8 text-center type-meta">
+        {{ jobs.length === 0 ? 'No jobs executed yet' : 'No jobs in the selected team' }}
       </div>
 
       <div v-else class="surface-card data-table-scroll">
@@ -63,7 +69,7 @@ async function handleCancel(jobId: string) {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="j in jobs" :key="j.id" class="clickable">
+            <tr v-for="j in filteredJobs" :key="j.id" class="clickable">
               <td class="font-medium">{{ j.pipeline_name || j.pipeline_id }}</td>
               <td>
                 <StatusBadge :status="j.status" />

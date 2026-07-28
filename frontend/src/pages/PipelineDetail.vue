@@ -653,7 +653,7 @@ async function handleTrigger() {
             <!-- Steps editor -->
             <div>
               <div class="flex items-center justify-between mb-1.5">
-                <span class="type-label">Steps</span>
+                <span class="type-label">Steps <span class="text-red-500">*</span></span>
                 <span class="text-xs text-muted-foreground font-mono">{{ editForm.steps.length }} step(s)</span>
               </div>
 

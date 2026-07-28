@@ -15,6 +15,8 @@ export interface Job {
   end_time: string | null
   created_at: string
   updated_at: string
+  /** Pipeline team — used by the top-bar team filter. */
+  team_id?: string
 }
 
 export interface StepStatus {
