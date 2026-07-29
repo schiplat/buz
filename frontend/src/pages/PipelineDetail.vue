@@ -1392,6 +1392,16 @@ async function handleTrigger() {
                         <span class="font-mono text-[10px]">{{ step.retry_count }}</span>
                       </span>
                     </div>
+                    <div v-if="step.image || step.volumes" class="flex flex-wrap items-center gap-2 text-[11px] mt-1.5">
+                      <span v-if="step.image" class="inline-flex items-center gap-1">
+                        <span class="text-muted-foreground">image:</span>
+                        <code class="mono-chip text-[10px]">{{ step.image }}</code>
+                      </span>
+                      <span v-if="step.volumes" class="inline-flex items-center gap-1">
+                        <span class="text-muted-foreground">volumes:</span>
+                        <code class="mono-chip text-[10px]">{{ Array.isArray(step.volumes) ? (step.volumes as string[]).join(', ') : step.volumes }}</code>
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>

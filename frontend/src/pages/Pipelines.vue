@@ -1471,6 +1471,8 @@ steps:
     uses: docker
     image: node:20-bookworm
     work_dir: ./frontend
+    volumes:
+      - "/data/cache:/cache"
     run: |
       npm ci
       npm test
