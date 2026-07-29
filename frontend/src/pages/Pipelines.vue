@@ -388,7 +388,7 @@ function importYamlToForm() {
       steps: parsed.steps.map(s => ({
         name: s.name || '',
         run: s.run || '',
-        uses: s.uses && s.uses !== 'local' ? s.uses : undefined,
+        uses: s.uses || undefined,
         image: s.image || undefined,
         volumes: s.volumes
           ? parseVolumesToRows(s.volumes) as any

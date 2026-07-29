@@ -767,8 +767,8 @@ async function handleTrigger() {
                           v-model="step.uses"
                           class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                         >
+                          <option value="local">Local</option>
                           <option value="ssh">SSH</option>
-                          <option value="">Local</option>
                           <option value="docker">Docker</option>
                         </select>
                       </div>
