@@ -9,7 +9,11 @@ description: "Verify uses: docker executes run: inside alpine on the runner."
 team: default
 
 on:
-  manual: {}
+  manual: 
+    inputs:
+      version:
+        description: Version to deploy
+        required: true
 
 runner:
   labels: [linux-x64, docker]
@@ -18,16 +22,28 @@ runner:
 env:
   SMOKE_ENV: from-pipeline
 
+secrets:
+  - DOCKER_REGISTRY_PASS
+
 steps:
   - name: Hello from container
     uses: docker
     image: alpine:3.20
+    work_dir: /tmp/wd/
+    volumes:
+      - "/tmp/runner:/var/log/app"
     run: |
       echo hello
       uname -a
       cat /etc/os-release | head -3
       echo "workspace ok" > /buz/workspace/smoke.txt
       cat /buz/workspace/smoke.txt
-      echo "SMOKE_ENV=$SMOKE_ENV"
+      sleep 3
+      echo "waiting .... $INPUT_VERSION" > /tmp/res.txt
+      sleep 5
+      echo "SMOKE_ENV=$SMOKE_ENV" >> /tmp/res.txt
+      sleep 5
+      echo "DOCKER_REGISTRY_PASS=$DOCKER_REGISTRY_PASS" >> /tmp/res.txt
+      sleep 3
     timeout: 2m
 

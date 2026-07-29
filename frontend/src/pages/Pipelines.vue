@@ -199,6 +199,7 @@ async function openEdit(p: Pipeline) {
         run: t.command_template || '',
         uses: t.exec_type && t.exec_type !== 'local' ? t.exec_type : undefined,
         image: t.image || undefined,
+        volumes: Array.isArray(t.volumes) ? t.volumes.join(', ') : (t.volumes || undefined),
         host: t.host_id ? t.host_id : undefined,
         host_labels: t.host_labels || undefined,
         dir: t.work_dir || undefined,
@@ -366,6 +367,7 @@ function importYamlToForm() {
         run: s.run || '',
         uses: s.uses && s.uses !== 'local' ? s.uses : undefined,
         image: s.image || undefined,
+        volumes: s.volumes || undefined,
         host: normalizeHost(s.host),
         host_labels: normalizeHost(s.host_labels),
         dir: s.dir || undefined,
@@ -440,9 +442,14 @@ async function handleSave() {
         const rawHost = s.host as string | undefined
         const rawHostLabels = s.host_labels as string | undefined
         const isDocker = s.uses === 'docker'
+        const rawVolumes: string = (s as any).volumes || ''
+        const volumesArray = isDocker && rawVolumes.trim()
+          ? rawVolumes.split(',').map((v: string) => v.trim()).filter(Boolean)
+          : undefined
         return {
           ...s,
           image: isDocker ? (s.image || '').trim() || undefined : undefined,
+          volumes: volumesArray,
           host: isDocker
             ? undefined
             : rawHost
@@ -981,6 +988,20 @@ async function handleToggleActive(p: Pipeline) {
                           placeholder="e.g. alpine:3.20"
                           class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                         />
+                      </div>
+
+                      <div v-if="step.uses === 'docker'">
+                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
+                          Volumes
+                        </label>
+                        <input
+                          :value="(step as any).volumes || ''"
+                          @input="(e) => (step as any).volumes = (e.target as HTMLInputElement).value"
+                          type="text"
+                          placeholder="/data/logs:/var/log/app, /cfg:/etc/app/config"
+                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                        />
+                        <p class="text-[10px] text-muted-foreground/70 mt-0.5">Comma-separated, each entry “host_path:container_path”. All paths must exist on the runner host.</p>
                       </div>
 
                       <div>

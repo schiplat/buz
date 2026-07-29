@@ -120,6 +120,8 @@ pub async fn register(
             if stored_rt != register_token {
                 tracing::warn!(
                     runner = %name,
+                    labels = ?req.labels,
+                    version = ?req.version,
                     "Runner registration failed: invalid register token"
                 );
                 return Err(AppError::AuthFailed(
@@ -133,6 +135,8 @@ pub async fn register(
     } else {
         tracing::warn!(
             runner = %name,
+            labels = ?req.labels,
+            version = ?req.version,
             "Runner registration failed: unknown runner name (create the runner in UI first)"
         );
         return Err(AppError::AuthFailed(
@@ -302,7 +306,7 @@ pub async fn poll(
     // Fetch tasks for this pipeline
     let task_rows = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template,
-                work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, image
+                work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, image, volumes
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&pipeline_id)
@@ -390,6 +394,7 @@ pub async fn poll(
         let host_labels_raw: String = t.get(6);
         let step_secrets_str: String = t.get(12);
         let image: String = t.get(13);
+        let volumes_raw: String = t.get(14);
 
         let mut task_json = serde_json::json!({
             "id": t.get::<String, _>(0),
@@ -402,6 +407,8 @@ pub async fn poll(
             "timeout_seconds": t.get::<i64, _>(10),
             "fail_strategy": t.get::<String, _>(11),
             "image": image,
+            "volumes": serde_json::from_str::<serde_json::Value>(&volumes_raw)
+                .unwrap_or(serde_json::Value::Array(vec![])),
         });
 
         // Resolve step-level secrets (only for this step).
@@ -754,6 +761,13 @@ pub async fn delete_runner(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
+    // Nullify runner references in past jobs so FK constraint is not violated.
+    // Jobs table FK: runner_id TEXT REFERENCES runners(id) — no ON DELETE CASCADE/SET NULL.
+    let _ = sqlx::query("UPDATE jobs SET runner_id = NULL WHERE runner_id = ?")
+        .bind(&id)
+        .execute(&state.pool)
+        .await;
+
     let result = sqlx::query("DELETE FROM runners WHERE id = ?")
         .bind(&id)
         .execute(&state.pool)

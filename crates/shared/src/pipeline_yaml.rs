@@ -82,6 +82,9 @@ pub struct StepYaml {
     /// Container image when `uses: docker`.
     #[serde(default)]
     pub image: Option<String>,
+    /// Extra host→container bind mounts (only for uses: docker). Each entry is "host_path:container_path".
+    #[serde(default)]
+    pub volumes: Option<Vec<String>>,
     #[serde(default)]
     pub host: Option<OneOrMany>,
     #[serde(default, alias = "work_dir")]
@@ -175,6 +178,9 @@ pub struct StepData {
     pub uses: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Comma-separated host:container volume mounts (for frontend import).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volumes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -373,6 +379,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 run: s.run.clone(),
                 uses: s.uses.clone(),
                 image: s.image.clone(),
+                volumes: s.volumes.as_ref().map(|v| v.join(",")),
                 host: s.host.as_ref().map(|h| match h {
                     OneOrMany::One(s) => s.clone(),
                     OneOrMany::Many(v) => v.join(","),

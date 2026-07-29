@@ -102,6 +102,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await;
 
+    // Docker engine: extra host→container volume mounts (JSON array or comma-separated)
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN volumes TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
+
     // Add step_statuses column to jobs table (safe to fail if already present)
     let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN step_statuses TEXT NOT NULL DEFAULT '[]'")
         .execute(pool)

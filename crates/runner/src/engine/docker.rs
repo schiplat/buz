@@ -15,12 +15,13 @@ pub const CONTAINER_WORKSPACE: &str = "/buz/workspace";
 
 /// Build `docker run` argv (without the `docker` binary name).
 ///
-/// Order: global flags → env → image → shell + script.
+/// Order: global flags → volumes → env → image → shell + script.
 pub fn build_docker_run_args(
     image: &str,
     host_work_dir: &Path,
     command: &str,
     env: &HashMap<String, String>,
+    volumes: &[String],
 ) -> Vec<String> {
     let mut args = vec![
         "run".into(),
@@ -43,6 +44,15 @@ pub fn build_docker_run_args(
         }
     }
 
+    // User-defined volumes (host:container bind mounts)
+    for vol in volumes {
+        let v = vol.trim();
+        if !v.is_empty() {
+            args.push("-v".into());
+            args.push(v.to_string());
+        }
+    }
+
     args.push(image.into());
     args.push("sh".into());
     args.push("-lc".into());
@@ -51,19 +61,37 @@ pub fn build_docker_run_args(
 }
 
 /// Resolve the host directory to bind-mount (absolute).
-pub fn resolve_host_work_dir(runner_work_dir: &str, step_work_dir: Option<&str>) -> PathBuf {
-    let base = PathBuf::from(runner_work_dir);
-    match step_work_dir.map(str::trim).filter(|s| !s.is_empty()) {
+///
+/// Only allows paths **within** the runner's `work_dir`. An absolute path
+/// that escapes `runner_work_dir` returns an error — this prevents Docker
+/// containers from mounting arbitrary host paths through `work_dir`.
+pub fn resolve_host_work_dir(runner_work_dir: &str, step_work_dir: Option<&str>) -> std::io::Result<PathBuf> {
+    let base = PathBuf::from(runner_work_dir).canonicalize().unwrap_or_else(|_| PathBuf::from(runner_work_dir));
+    let resolved = match step_work_dir.map(str::trim).filter(|s| !s.is_empty()) {
         Some(rel) => {
             let p = Path::new(rel);
             if p.is_absolute() {
-                p.to_path_buf()
+                // Canonicalize so symlinks / .. don't bypass the sandbox
+                p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
             } else {
                 base.join(rel)
             }
         }
-        None => base,
+        None => base.clone(),
+    };
+
+    // Reject if the resolved path escapes the runner work_dir
+    if !resolved.starts_with(&base) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "work_dir '{}' escapes the runner work directory '{}'",
+                step_work_dir.unwrap_or(""),
+                runner_work_dir,
+            ),
+        ));
     }
+    Ok(resolved)
 }
 
 /// Preconditions before spawning docker.
@@ -88,6 +116,7 @@ pub async fn execute_streaming(
     host_work_dir: &Path,
     command: &str,
     env: &HashMap<String, String>,
+    volumes: &[String],
 ) -> anyhow::Result<(Child, mpsc::UnboundedReceiver<String>, ReadGuard)> {
     std::fs::create_dir_all(host_work_dir).map_err(|e| {
         anyhow::anyhow!(
@@ -96,7 +125,7 @@ pub async fn execute_streaming(
         )
     })?;
 
-    let args = build_docker_run_args(image, host_work_dir, command, env);
+    let args = build_docker_run_args(image, host_work_dir, command, env, volumes);
     let mut cmd = Command::new("docker");
     cmd.args(&args);
     cmd.stdout(Stdio::piped());

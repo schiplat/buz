@@ -108,12 +108,14 @@ steps:
 ```yaml
 # NOT in MVP — do not document as supported until designed
 options: "--cpus 1"           # free-form docker flags
-volumes: ["x:/data"]          # extra mounts beyond workspace
 network: host
 privileged: true
 services: […]
 pull: always
 entrypoint: /bin/bash
+
+# Supported since MVP ✅
+volumes: ["/host/path:/container/path"]
 ```
 
 ---

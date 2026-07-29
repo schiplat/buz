@@ -298,6 +298,9 @@ pub struct StepDef {
     /// Container image when `uses` is `docker`.
     #[serde(default)]
     pub image: Option<String>,
+    /// Extra host→container bind mounts ("host:container"), docker only.
+    #[serde(default)]
+    pub volumes: Option<Vec<String>>,
     /// Host name(s) — single string or array. Only relevant for SSH steps.
     #[serde(default)]
     pub host: Option<OneOrMany>,

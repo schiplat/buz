@@ -215,7 +215,7 @@ pub async fn get_one(
 
     let tasks = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_labels, command_template, image,
-                work_dir, retry_count, timeout_seconds, fail_strategy
+                work_dir, retry_count, timeout_seconds, fail_strategy, volumes
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&id)
@@ -236,6 +236,9 @@ pub async fn get_one(
             "retry_count": t.get::<i64, _>(9),
             "timeout_seconds": t.get::<i64, _>(10),
             "fail_strategy": t.get::<String, _>(11),
+            "volumes": serde_json::from_str::<serde_json::Value>(
+                &t.get::<String, _>(12),
+            ).unwrap_or(serde_json::Value::Array(vec![])),
         })
     })
     .collect::<Vec<_>>();
@@ -477,7 +480,7 @@ pub(crate) async fn do_trigger(
     // reproducible even if the pipeline is later modified or deleted.
     let tasks_snapshot = sqlx::query(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
-                image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets
+                image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(pipeline_id)
@@ -499,6 +502,9 @@ pub(crate) async fn do_trigger(
             "timeout_seconds": t.get::<i64, _>(10),
             "fail_strategy": t.get::<String, _>(11),
             "step_secrets": t.get::<String, _>(12),
+            "volumes": serde_json::from_str::<serde_json::Value>(
+                &t.get::<String, _>(13),
+            ).unwrap_or(serde_json::Value::Array(vec![])),
         })
     })
     .collect::<Vec<_>>();
@@ -720,10 +726,16 @@ pub(crate) async fn insert_steps(
             .unwrap_or("")
             .to_string();
 
+        let volumes_stored = step
+            .volumes
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default())
+            .unwrap_or_default();
+
         sqlx::query(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
-             command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(pipeline_id)
@@ -740,6 +752,7 @@ pub(crate) async fn insert_steps(
         .bind(parse_timeout_seconds(step.timeout.as_deref()))
         .bind(&fail_strategy)
         .bind(&step_secrets_stored)
+        .bind(&volumes_stored)
         .execute(pool)
         .await?;
 

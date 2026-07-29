@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     command_template TEXT NOT NULL,
     image TEXT NOT NULL DEFAULT '',
     work_dir TEXT NOT NULL DEFAULT '',
+    volumes TEXT NOT NULL DEFAULT '',
     retry_count INTEGER NOT NULL DEFAULT 0,
     timeout_seconds INTEGER NOT NULL DEFAULT 3600,
     fail_strategy TEXT NOT NULL DEFAULT 'stop',

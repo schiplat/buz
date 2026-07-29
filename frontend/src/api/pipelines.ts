@@ -57,6 +57,8 @@ export interface StepDef {
   run: string
   uses?: string
   image?: string
+  /** Extra host→container bind mounts when uses: docker. Each entry is "host_path:container_path". */
+  volumes?: string[]
   host?: string | string[]
   host_labels?: string | string[]
   dir?: string
@@ -108,6 +110,8 @@ export interface YamlStepData {
   run?: string | null
   uses?: string | null
   image?: string | null
+  /** Comma-separated "host:container" pairs from YAML volumes array. */
+  volumes?: string | null
   host?: string | null
   host_labels?: string | null
   dir?: string | null

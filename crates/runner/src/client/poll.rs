@@ -441,8 +441,46 @@ async fn execute_job(
                     anyhow::bail!(msg);
                 }
 
-                let host_wd =
-                    engine::docker::resolve_host_work_dir(&config.runner.work_dir, work_dir);
+                let host_wd = match engine::docker::resolve_host_work_dir(
+                    &config.runner.work_dir,
+                    work_dir,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let msg = format!("Docker work_dir error: {e}");
+                        let _ = super::logs::upload_chunk(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            LogChunk {
+                                chunk_index: (idx * 10000 + 9997) as i32,
+                                step_order: idx as i32,
+                                content: format!("==> ERROR <==\n{msg}\n"),
+                            },
+                        )
+                        .await;
+                        update_job_status(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            "failed",
+                            Some(idx as i32),
+                        )
+                        .await?;
+                        anyhow::bail!(msg);
+                    }
+                };
+                let volumes: Vec<String> = step
+                    .get("volumes")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let cmd = command.to_string();
                 let img = image.to_string();
                 let env = step_env.clone();
@@ -454,7 +492,10 @@ async fn execute_job(
                 let sv_for_upload = secret_values.clone();
 
                 let (mut child, mut output_rx, read_guard) =
-                    engine::docker::execute_streaming(&img, &host_wd, &cmd, &env).await?;
+                    engine::docker::execute_streaming(
+                        &img, &host_wd, &cmd, &env, &volumes,
+                    )
+                    .await?;
 
                 let c_log = client.clone();
                 let cfg_log = config.clone();

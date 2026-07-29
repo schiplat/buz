@@ -44,7 +44,7 @@ async fn run_and_collect(
     command: &str,
     env: &HashMap<String, String>,
 ) -> anyhow::Result<(i32, String)> {
-    let (mut child, rx, guard) = execute_streaming(image, host_work_dir, command, env).await?;
+    let (mut child, rx, guard) = execute_streaming(image, host_work_dir, command, env, &[]).await?;
     let status = child.wait().await?;
     drop(guard);
     let logs = drain_logs(rx).await;
@@ -98,7 +98,7 @@ async fn docker_e2e_workspace_mount_and_cwd() {
     assert!(docker_available().await);
 
     let dir = tempdir().unwrap();
-    let host = resolve_host_work_dir(dir.path().to_str().unwrap(), Some("ws"));
+    let host = resolve_host_work_dir(dir.path().to_str().unwrap(), Some("ws")).unwrap();
     std::fs::create_dir_all(&host).unwrap();
 
     let (code, logs) = run_and_collect(
@@ -171,6 +171,7 @@ async fn docker_e2e_rm_does_not_grow_container_list() {
         PathBuf::from("/tmp").as_path(),
         "true",
         &HashMap::new(),
+        &[],
     );
     assert!(args.iter().any(|a| a == "--rm"));
 
@@ -218,6 +219,7 @@ async fn docker_e2e_kill_stops_container() {
         dir.path(),
         "echo started; sleep 120",
         &HashMap::new(),
+        &[],
     )
     .await
     .expect("spawn");

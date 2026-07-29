@@ -158,6 +158,8 @@ async function openEditDialog() {
       name: t.name || '',
       run: t.command_template || '',
       uses: t.exec_type && t.exec_type !== 'local' ? t.exec_type : undefined,
+      image: t.image || undefined,
+      volumes: Array.isArray(t.volumes) ? t.volumes.join(', ') : (t.volumes || undefined),
       host: t.host_id || undefined,
       host_labels: t.host_labels || undefined,
       dir: t.work_dir || undefined,
@@ -217,20 +219,31 @@ async function handleEditSave() {
       steps: editForm.value.steps.map(s => {
         const rawHost = s.host as string | undefined
         const rawHostLabels = s.host_labels as string | undefined
+        const rawVolumes: string = (s as any).volumes || ''
+        const isDocker = s.uses === 'docker'
+        const volumesArray = isDocker && rawVolumes.trim()
+          ? rawVolumes.split(',').map((v: string) => v.trim()).filter(Boolean)
+          : undefined
         return {
           ...s,
-          host: rawHost
-            ? (() => {
-                const hosts = rawHost.split(',').map((h: string) => h.trim()).filter(Boolean)
-                return hosts.length > 1 ? hosts : (hosts[0] || undefined)
-              })()
-            : undefined,
-          host_labels: rawHostLabels
-            ? (() => {
-                const labels = rawHostLabels.split(',').map((l: string) => l.trim()).filter(Boolean)
-                return labels.length > 1 ? labels : (labels[0] || undefined)
-              })()
-            : undefined,
+          image: isDocker ? (s.image || '').trim() || undefined : undefined,
+          volumes: volumesArray,
+          host: isDocker
+            ? undefined
+            : rawHost
+              ? (() => {
+                  const hosts = rawHost.split(',').map((h: string) => h.trim()).filter(Boolean)
+                  return hosts.length > 1 ? hosts : (hosts[0] || undefined)
+                })()
+              : undefined,
+          host_labels: isDocker
+            ? undefined
+            : rawHostLabels
+              ? (() => {
+                  const labels = rawHostLabels.split(',').map((l: string) => l.trim()).filter(Boolean)
+                  return labels.length > 1 ? labels : (labels[0] || undefined)
+                })()
+              : undefined,
         }
       }),
       input_defs: editForm.value.trigger_type === 'manual' && editForm.value.input_defs.length > 0
@@ -728,6 +741,28 @@ async function handleTrigger() {
                           <option value="docker">Docker</option>
                         </select>
                       </div>
+                    </div>
+
+                    <div v-if="step.uses === 'docker'">
+                      <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Image <span class="text-red-500">*</span></label>
+                      <input
+                        v-model="step.image"
+                        type="text"
+                        placeholder="e.g. alpine:3.20"
+                        class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                      />
+                    </div>
+
+                    <div v-if="step.uses === 'docker'">
+                      <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Volumes</label>
+                      <input
+                        :value="(step as any).volumes || ''"
+                        @input="(e) => (step as any).volumes = (e.target as HTMLInputElement).value"
+                        type="text"
+                        placeholder="/data/logs:/var/log/app, /cfg:/etc/app/config"
+                        class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                      />
+                      <p class="text-[10px] text-muted-foreground/70 mt-0.5">Comma-separated "host_path:container_path" pairs</p>
                     </div>
 
                     <div>
