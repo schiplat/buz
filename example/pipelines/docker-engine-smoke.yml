@@ -30,7 +30,8 @@ steps:
     uses: docker
     image: alpine:3.20
     volumes:
-      - "/tmp/runner:/var/log/app"
+      - "/tmp/runner/docker-demo:/var/log/app"
+    work_dir: /demo/app/
     run: |
       echo hello
       uname -a
@@ -38,11 +39,11 @@ steps:
       echo "workspace ok" > /buz/workspace/smoke.txt
       cat /buz/workspace/smoke.txt
       sleep 3
-      echo "waiting .... $INPUT_VERSION" > /tmp/res.txt
+      echo "waiting .... $INPUT_VERSION" > /var/log/app/res.txt
       sleep 5
-      echo "SMOKE_ENV=$SMOKE_ENV" >> /tmp/res.txt
+      echo "SMOKE_ENV=$SMOKE_ENV" >> /var/log/app/res.txt
       sleep 5
-      echo "DOCKER_REGISTRY_PASS=$DOCKER_REGISTRY_PASS" >> /tmp/res.txt
-      sleep 3
+      echo "DOCKER_REGISTRY_PASS=$DOCKER_REGISTRY_PASS" >> /var/log/app/res.txt
+      sleep 30
     timeout: 2m
 
