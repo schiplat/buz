@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
-use super::local::ReadGuard;
+use super::shell::ReadGuard;
 
 /// Fixed mount point / working directory inside the container (design).
 pub const CONTAINER_WORKSPACE: &str = "/buz/workspace";

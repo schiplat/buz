@@ -72,7 +72,7 @@ impl Default for RunnerIdentity {
 #[derive(Debug, Clone, Deserialize)]
 pub struct EngineConfig {
     #[serde(default = "default_true")]
-    pub local_enabled: bool,
+    pub shell_enabled: bool,
     #[serde(default = "default_true")]
     pub ssh_enabled: bool,
     #[serde(default = "default_false")]
@@ -102,7 +102,7 @@ pub enum SshHostKeyPolicy {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            local_enabled: true,
+            shell_enabled: true,
             ssh_enabled: true,
             docker_enabled: false,
             wasm_enabled: false,
@@ -116,7 +116,7 @@ impl EngineConfig {
     /// Reject steps whose engine is disabled in `runner.toml`.
     pub fn ensure_enabled(&self, exec_type: &str) -> anyhow::Result<()> {
         let (enabled, flag) = match exec_type {
-            "local" => (self.local_enabled, "local_enabled"),
+            "local" | "shell" => (self.shell_enabled, "shell_enabled"),
             "ssh" => (self.ssh_enabled, "ssh_enabled"),
             "docker" => (self.docker_enabled, "docker_enabled"),
             "wasm" => (self.wasm_enabled, "wasm_enabled"),

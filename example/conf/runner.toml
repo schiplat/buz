@@ -25,7 +25,7 @@ work_dir = "/tmp/buz-runner"
 # ephemeral = true                   # wipe work_dir AND exit after one job (container/VM runners)
 
 [engine]
-local_enabled = true
+shell_enabled = true
 ssh_enabled = true
 docker_enabled = true   # set true to accept uses: docker steps (see docs/docker-engine)
 wasm_enabled = false

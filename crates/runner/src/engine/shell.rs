@@ -102,7 +102,7 @@ fn build_command(
 }
 
 #[derive(Debug)]
-pub struct LocalOutput {
+pub struct ShellOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,

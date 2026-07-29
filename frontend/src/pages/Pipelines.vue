@@ -205,7 +205,7 @@ async function openEdit(p: Pipeline) {
       steps: (detail.tasks || []).map((t: any) => ({
         name: t.name || '',
         run: t.command_template || '',
-        uses: t.exec_type || 'local',
+        uses: t.exec_type || 'shell',
         image: t.image || undefined,
         volumes: parseVolumesToRows(t.volumes) as any,
         secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
@@ -252,7 +252,7 @@ function rowsToVolumesArray(rows: VolumeRow[]): string[] | undefined {
 
 function addStep() {
   const idx = form.value.steps.length
-  form.value.steps.push({ name: '', run: '', uses: 'local', volumes: [] as any, secrets: [] })
+  form.value.steps.push({ name: '', run: '', uses: 'shell', volumes: [] as any, secrets: [] })
   expandedSteps.add(idx)
 }
 
@@ -388,7 +388,7 @@ function importYamlToForm() {
       steps: parsed.steps.map(s => ({
         name: s.name || '',
         run: s.run || '',
-        uses: s.uses || 'local',
+        uses: s.uses || 'shell',
         image: s.image || undefined,
         volumes: s.volumes
           ? parseVolumesToRows(s.volumes) as any
@@ -994,7 +994,7 @@ async function handleToggleActive(p: Pipeline) {
                             v-model="step.uses"
                             class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                           >
-                            <option value="local">Local</option>
+                            <option value="shell">Shell</option>
                             <option value="ssh">SSH</option>
                             <option value="docker">Docker</option>
                           </select>
@@ -1521,7 +1521,7 @@ secrets:
   - SLACK_WEBHOOK_URL
 
 steps:
-  # ── Basic local step ──
+  # ── Basic shell step ──
   - name: Checkout
     run: |
       echo "==> Cloning repo..."
@@ -1547,7 +1547,7 @@ steps:
       npm test
     timeout: 15m
 
-  # ── Docker push (uses pipeline-level secret; local engine) ──
+  # ── Docker push (uses pipeline-level secret; shell engine) ──
   - name: Docker Push
     run: |
       echo "$DOCKER_REGISTRY_PASS" | docker login -u bot --password-stdin

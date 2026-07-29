@@ -116,7 +116,7 @@ function rowsToVolumesArray(rows: VolumeRow[]): string[] | undefined {
 
 function addEditStep() {
   const idx = editForm.value.steps.length
-  editForm.value.steps.push({ name: '', run: '', uses: 'local', volumes: [] as any, secrets: [] })
+  editForm.value.steps.push({ name: '', run: '', uses: 'shell', volumes: [] as any, secrets: [] })
   expandedEditSteps.add(idx)
 }
 
@@ -182,7 +182,7 @@ async function openEditDialog() {
       steps: tasks.map((t: any) => ({
         name: t.name || '',
         run: t.command_template || '',
-        uses: t.exec_type || 'local',
+        uses: t.exec_type || 'shell',
         image: t.image || undefined,
         volumes: parseVolumesToRows(t.volumes) as any,
         secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
@@ -767,7 +767,7 @@ async function handleTrigger() {
                           v-model="step.uses"
                           class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                         >
-                          <option value="local">Local</option>
+                          <option value="shell">Shell</option>
                           <option value="ssh">SSH</option>
                           <option value="docker">Docker</option>
                         </select>

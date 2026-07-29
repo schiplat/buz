@@ -1,3 +1,3 @@
 pub mod docker;
-pub mod local;
+pub mod shell;
 pub mod ssh;

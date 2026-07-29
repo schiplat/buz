@@ -222,7 +222,7 @@ async fn execute_job(
         let step_name = step["name"].as_str().unwrap_or("unnamed");
         let command = step["command_template"].as_str().unwrap_or("");
         let work_dir = step["work_dir"].as_str().filter(|s| !s.is_empty());
-        let exec_type = step["exec_type"].as_str().unwrap_or("local");
+        let exec_type = step["exec_type"].as_str().unwrap_or("shell");
         let fail_strategy = step["fail_strategy"].as_str().unwrap_or("stop");
 
         // ── Build step-specific env: base (inputs+pipeline-secrets) + step-level secrets ──
@@ -269,8 +269,8 @@ async fn execute_job(
         update_job_status(client, config, token, job_id, "running", Some(idx as i32)).await?;
 
         // ── Race step execution against cancel polling ────────────────────────
-        let (output, was_cancelled): (engine::local::LocalOutput, bool) = match exec_type {
-            "local" => {
+        let (output, was_cancelled): (engine::shell::ShellOutput, bool) = match exec_type {
+            "local" | "shell" => {
                 let cmd = command.to_string();
                 let wd = work_dir.map(|s| s.to_string());
                 let env = step_env.clone();
@@ -281,7 +281,7 @@ async fn execute_job(
                 let sname = step_name.to_string();
 
                 let (mut child, mut output_rx, read_guard) =
-                    engine::local::execute_streaming(&cmd, wd.as_deref(), Some(&env)).await?;
+                    engine::shell::execute_streaming(&cmd, wd.as_deref(), Some(&env)).await?;
 
                 // Clone secret values for use in the async upload task
                 let sv_for_upload = secret_values.clone();
@@ -335,7 +335,7 @@ async fn execute_job(
                 };
 
                 (
-                    engine::local::LocalOutput {
+                    engine::shell::ShellOutput {
                         stdout: String::new(),
                         stderr: if was_cancelled_local {
                             "==> CANCELLED <==\n".into()
@@ -412,7 +412,7 @@ async fn execute_job(
                     _ = cancel_watcher(&c, &cfg, &t, &jid) => {
                         tracing::warn!("Job {jid} cancelled during SSH step '{sname2}' — aborting");
                         abort_handle.abort();
-                        (engine::local::LocalOutput {
+                        (engine::shell::ShellOutput {
                             stdout: String::new(),
                             stderr: format!("==> CANCELLED <==\n"),
                             exit_code: -1,
@@ -543,7 +543,7 @@ async fn execute_job(
                 };
 
                 (
-                    engine::local::LocalOutput {
+                    engine::shell::ShellOutput {
                         stdout: String::new(),
                         stderr: if was_cancelled_docker {
                             "==> CANCELLED <==\n".into()
@@ -622,7 +622,7 @@ async fn execute_ssh_step(
     host_values: &serde_json::Value,
     step_timeout: Option<std::time::Duration>,
     step_name: &str,
-) -> anyhow::Result<engine::local::LocalOutput> {
+) -> anyhow::Result<engine::shell::ShellOutput> {
     let hosts = host_values
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("SSH step '{step_name}' host data is not an array"))?;
@@ -702,7 +702,7 @@ async fn execute_ssh_step(
         }
     }
 
-    Ok(engine::local::LocalOutput {
+    Ok(engine::shell::ShellOutput {
         stdout: combined_stdout,
         stderr: combined_stderr,
         exit_code: last_exit_code,

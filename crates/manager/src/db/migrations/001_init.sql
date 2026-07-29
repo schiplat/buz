@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     pipeline_id TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
     step_order INTEGER NOT NULL,
     name TEXT NOT NULL,
-    exec_type TEXT NOT NULL DEFAULT 'local',
+    exec_type TEXT NOT NULL DEFAULT 'shell',
     host_id TEXT REFERENCES hosts(id),
     host_names TEXT NOT NULL DEFAULT '',
     host_labels TEXT NOT NULL DEFAULT '',
