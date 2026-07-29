@@ -367,7 +367,9 @@ function importYamlToForm() {
         run: s.run || '',
         uses: s.uses && s.uses !== 'local' ? s.uses : undefined,
         image: s.image || undefined,
-        volumes: s.volumes || undefined,
+        volumes: s.volumes
+          ? s.volumes.split(',').map((v: string) => v.trim()).filter(Boolean)
+          : undefined,
         host: normalizeHost(s.host),
         host_labels: normalizeHost(s.host_labels),
         dir: s.dir || undefined,
