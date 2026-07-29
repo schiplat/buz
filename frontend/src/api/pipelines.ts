@@ -65,6 +65,8 @@ export interface StepDef {
   timeout?: string
   retry?: number
   continue_on_error?: boolean
+  /** Step-level secret names (resolved to values at runtime). */
+  secrets?: string[]
 }
 
 export interface YamlValidationResult {

@@ -140,6 +140,14 @@ const secretOptions = computed(() =>
   }))
 )
 
+/** Step-level secrets are stored by name (not id). */
+const stepSecretOptions = computed(() =>
+  availableSecrets.value.map(s => ({
+    id: s.name,
+    label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
+  }))
+)
+
 async function loadPipelines() {
   loading.value = true
   try {
@@ -200,6 +208,7 @@ async function openEdit(p: Pipeline) {
         uses: t.exec_type && t.exec_type !== 'local' ? t.exec_type : undefined,
         image: t.image || undefined,
         volumes: parseVolumesToRows(t.volumes) as any,
+        secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
         host: t.host_id ? t.host_id : undefined,
         host_labels: t.host_labels || undefined,
         dir: t.work_dir || undefined,
@@ -243,7 +252,7 @@ function rowsToVolumesArray(rows: VolumeRow[]): string[] | undefined {
 
 function addStep() {
   const idx = form.value.steps.length
-  form.value.steps.push({ name: '', run: '', uses: 'ssh', volumes: [] as any })
+  form.value.steps.push({ name: '', run: '', uses: 'ssh', volumes: [] as any, secrets: [] })
   expandedSteps.add(idx)
 }
 
@@ -354,17 +363,6 @@ function importYamlToForm() {
       resolvedSecretIds = resolved
     }
 
-    // Step-level secrets: the form StepDef has no per-step secrets field — always warn
-    for (let i = 0; i < parsed.steps.length; i++) {
-      const s = parsed.steps[i]
-      if (s.secrets && s.secrets.length > 0) {
-        const stepLabel = s.name || `Step ${i + 1}`
-        for (const sn of s.secrets) {
-          warnings.push(`Step "${stepLabel}" has per-step secret "${sn}". The form does not yet support step-level secrets — add it manually to pipeline-level Secrets instead.`)
-        }
-      }
-    }
-
     // Normalize host: if coming from YAML array joined with ",", keep as comma-separated for editing
     const normalizeHost = (h: string | null | undefined) => {
       if (!h) return undefined
@@ -395,6 +393,7 @@ function importYamlToForm() {
         volumes: s.volumes
           ? parseVolumesToRows(s.volumes) as any
           : [] as any,
+        secrets: s.secrets || [],
         host: normalizeHost(s.host),
         host_labels: normalizeHost(s.host_labels),
         dir: s.dir || undefined,
@@ -1107,6 +1106,17 @@ async function handleToggleActive(p: Pipeline) {
                           />
                         </div>
                       </div>
+
+                      <div class="mt-3">
+                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Secrets</label>
+                        <MultiSelect
+                          v-model="(step.secrets as string[])"
+                          :options="stepSecretOptions"
+                          placeholder="Inherit from pipeline..."
+                        />
+                        <p class="text-[10px] text-muted-foreground/70 mt-0.5">Authorize secrets for this step only. Injected as env vars at runtime.</p>
+                      </div>
+
                       <div v-if="step.uses === 'ssh'" class="space-y-3">
                         <div class="grid grid-cols-2 gap-3">
                           <div>

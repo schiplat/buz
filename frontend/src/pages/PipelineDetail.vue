@@ -116,7 +116,7 @@ function rowsToVolumesArray(rows: VolumeRow[]): string[] | undefined {
 
 function addEditStep() {
   const idx = editForm.value.steps.length
-  editForm.value.steps.push({ name: '', run: '', uses: 'ssh', volumes: [] as any })
+  editForm.value.steps.push({ name: '', run: '', uses: 'ssh', volumes: [] as any, secrets: [] })
   expandedEditSteps.add(idx)
 }
 
@@ -179,13 +179,14 @@ async function openEditDialog() {
     var_ids: p.var_ids || [],
     secret_ids: p.secret_ids || [],
     env: [],
-    steps: tasks.map((t: any) => ({
-      name: t.name || '',
-      run: t.command_template || '',
-      uses: t.exec_type && t.exec_type !== 'local' ? t.exec_type : undefined,
-      image: t.image || undefined,
-      volumes: parseVolumesToRows(t.volumes) as any,
-      host: t.host_id || undefined,
+      steps: tasks.map((t: any) => ({
+        name: t.name || '',
+        run: t.command_template || '',
+        uses: t.exec_type && t.exec_type !== 'local' ? t.exec_type : undefined,
+        image: t.image || undefined,
+        volumes: parseVolumesToRows(t.volumes) as any,
+        secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+        host: t.host_id || undefined,
       host_labels: t.host_labels || undefined,
       dir: t.work_dir || undefined,
       timeout: t.timeout_seconds ? `${t.timeout_seconds}s` : undefined,
@@ -384,6 +385,14 @@ const editVariableOptions = computed(() =>
 const editSecretOptions = computed(() =>
   editAvailableSecrets.value.map(s => ({
     id: s.id,
+    label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
+  }))
+)
+
+/** Step-level secrets are stored by name (not id). */
+const editStepSecretOptions = computed(() =>
+  editAvailableSecrets.value.map(s => ({
+    id: s.name,
     label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
   }))
 )
@@ -868,6 +877,17 @@ async function handleTrigger() {
                           />
                         </div>
                       </div>
+
+                      <div class="mt-3">
+                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Secrets</label>
+                        <MultiSelect
+                          v-model="(step.secrets as string[])"
+                          :options="editStepSecretOptions"
+                          placeholder="Inherit from pipeline..."
+                        />
+                        <p class="text-[10px] text-muted-foreground/70 mt-0.5">Authorize secrets for this step only. Injected as env vars at runtime.</p>
+                      </div>
+
                       <div v-if="step.uses === 'ssh'" class="space-y-3">
                         <div class="grid grid-cols-2 gap-3">
                           <div>

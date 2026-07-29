@@ -215,7 +215,7 @@ pub async fn get_one(
 
     let tasks = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_labels, command_template, image,
-                work_dir, retry_count, timeout_seconds, fail_strategy, volumes
+                work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&id)
@@ -239,6 +239,7 @@ pub async fn get_one(
             "volumes": serde_json::from_str::<serde_json::Value>(
                 &t.get::<String, _>(12),
             ).unwrap_or(serde_json::Value::Array(vec![])),
+            "step_secrets": t.get::<String, _>(13),
         })
     })
     .collect::<Vec<_>>();
