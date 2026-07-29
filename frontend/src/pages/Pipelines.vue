@@ -205,7 +205,7 @@ async function openEdit(p: Pipeline) {
       steps: (detail.tasks || []).map((t: any) => ({
         name: t.name || '',
         run: t.command_template || '',
-        uses: t.exec_type || undefined,
+        uses: t.exec_type || 'local',
         image: t.image || undefined,
         volumes: parseVolumesToRows(t.volumes) as any,
         secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
@@ -388,7 +388,7 @@ function importYamlToForm() {
       steps: parsed.steps.map(s => ({
         name: s.name || '',
         run: s.run || '',
-        uses: s.uses || undefined,
+        uses: s.uses || 'local',
         image: s.image || undefined,
         volumes: s.volumes
           ? parseVolumesToRows(s.volumes) as any

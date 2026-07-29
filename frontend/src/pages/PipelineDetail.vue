@@ -182,7 +182,7 @@ async function openEditDialog() {
       steps: tasks.map((t: any) => ({
         name: t.name || '',
         run: t.command_template || '',
-        uses: t.exec_type || undefined,
+        uses: t.exec_type || 'local',
         image: t.image || undefined,
         volumes: parseVolumesToRows(t.volumes) as any,
         secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
