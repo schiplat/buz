@@ -116,7 +116,7 @@ function rowsToVolumesArray(rows: VolumeRow[]): string[] | undefined {
 
 function addEditStep() {
   const idx = editForm.value.steps.length
-  editForm.value.steps.push({ name: '', run: '', uses: 'ssh', volumes: [] as any, secrets: [] })
+  editForm.value.steps.push({ name: '', run: '', uses: 'local', volumes: [] as any, secrets: [] })
   expandedEditSteps.add(idx)
 }
 
@@ -182,7 +182,7 @@ async function openEditDialog() {
       steps: tasks.map((t: any) => ({
         name: t.name || '',
         run: t.command_template || '',
-        uses: t.exec_type && t.exec_type !== 'local' ? t.exec_type : undefined,
+        uses: t.exec_type || undefined,
         image: t.image || undefined,
         volumes: parseVolumesToRows(t.volumes) as any,
         secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
