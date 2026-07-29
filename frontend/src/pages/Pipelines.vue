@@ -199,7 +199,7 @@ async function openEdit(p: Pipeline) {
         run: t.command_template || '',
         uses: t.exec_type && t.exec_type !== 'local' ? t.exec_type : undefined,
         image: t.image || undefined,
-        volumes: Array.isArray(t.volumes) ? t.volumes.join(', ') : (t.volumes || undefined),
+        volumes: parseVolumesToRows(t.volumes) as any,
         host: t.host_id ? t.host_id : undefined,
         host_labels: t.host_labels || undefined,
         dir: t.work_dir || undefined,
@@ -216,9 +216,34 @@ async function openEdit(p: Pipeline) {
   }
 }
 
+type VolumeRow = { host: string; container: string }
+
+function parseVolumesToRows(raw: any): VolumeRow[] {
+  if (Array.isArray(raw)) {
+    return raw.map((v: string) => {
+      const [host, container] = v.split(':')
+      return { host: host?.trim() || '', container: container?.trim() || '' }
+    }).filter(r => r.host || r.container)
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    return raw.split(',').map(p => p.trim()).filter(Boolean).map((v: string) => {
+      const [host, container] = v.split(':')
+      return { host: host?.trim() || '', container: container?.trim() || '' }
+    }).filter(r => r.host || r.container)
+  }
+  return []
+}
+
+function rowsToVolumesArray(rows: VolumeRow[]): string[] | undefined {
+  const arr = rows
+    .filter(r => r.host.trim() && r.container.trim())
+    .map(r => `${r.host.trim()}:${r.container.trim()}`)
+  return arr.length > 0 ? arr : undefined
+}
+
 function addStep() {
   const idx = form.value.steps.length
-  form.value.steps.push({ name: '', run: '', uses: 'ssh' })
+  form.value.steps.push({ name: '', run: '', uses: 'ssh', volumes: [] as any })
   expandedSteps.add(idx)
 }
 
@@ -368,8 +393,8 @@ function importYamlToForm() {
         uses: s.uses && s.uses !== 'local' ? s.uses : undefined,
         image: s.image || undefined,
         volumes: s.volumes
-          ? s.volumes.split(',').map((v: string) => v.trim()).filter(Boolean)
-          : undefined,
+          ? parseVolumesToRows(s.volumes) as any
+          : [] as any,
         host: normalizeHost(s.host),
         host_labels: normalizeHost(s.host_labels),
         dir: s.dir || undefined,
@@ -444,10 +469,7 @@ async function handleSave() {
         const rawHost = s.host as string | undefined
         const rawHostLabels = s.host_labels as string | undefined
         const isDocker = s.uses === 'docker'
-        const rawVolumes: string = (s as any).volumes || ''
-        const volumesArray = isDocker && rawVolumes.trim()
-          ? rawVolumes.split(',').map((v: string) => v.trim()).filter(Boolean)
-          : undefined
+        const volumesArray = isDocker ? rowsToVolumesArray((s as any).volumes || []) : undefined
         return {
           ...s,
           image: isDocker ? (s.image || '').trim() || undefined : undefined,
@@ -992,18 +1014,55 @@ async function handleToggleActive(p: Pipeline) {
                         />
                       </div>
 
-                      <div v-if="step.uses === 'docker'">
+                                            <div v-if="step.uses === 'docker'">
                         <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
                           Volumes
                         </label>
-                        <input
-                          :value="(step as any).volumes || ''"
-                          @input="(e) => (step as any).volumes = (e.target as HTMLInputElement).value"
-                          type="text"
-                          placeholder="/data/logs:/var/log/app, /cfg:/etc/app/config"
-                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                        />
-                        <p class="text-[10px] text-muted-foreground/70 mt-0.5">Comma-separated, each entry “host_path:container_path”. All paths must exist on the runner host.</p>
+                        <div v-if="((step as any).volumes || []).length > 0" class="rounded-lg border border-border overflow-hidden mb-1.5">
+                          <div class="grid grid-cols-[1fr_1fr_28px] gap-0 text-[11px] font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border px-3 py-1.5">
+                            <span>Host Path</span>
+                            <span>Container Path</span>
+                            <span />
+                          </div>
+                          <div
+                            v-for="(vol, volIdx) in (step as any).volumes"
+                            :key="volIdx"
+                            class="grid grid-cols-[1fr_1fr_28px] gap-0 border-b border-border/40 last:border-b-0"
+                          >
+                            <input
+                              v-model="vol.host"
+                              type="text"
+                              placeholder="/data/logs"
+                              class="w-full bg-transparent px-3 py-1.5 text-xs font-mono outline-none border-r border-border/30"
+                            />
+                            <input
+                              v-model="vol.container"
+                              type="text"
+                              placeholder="/var/log/app"
+                              class="w-full bg-transparent px-3 py-1.5 text-xs font-mono outline-none border-r border-border/30"
+                            />
+                            <button
+                              type="button"
+                              class="flex items-center justify-center text-muted-foreground/50 hover:text-red-500 transition-colors"
+                              title="Remove volume"
+                              @click="(step as any).volumes.splice(volIdx, 1)"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                            </button>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          class="flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground bg-muted/20 hover:bg-muted/40 rounded-lg border border-dashed border-border/60 transition-colors"
+                          @click="
+                            if (!(step as any).volumes) (step as any).volumes = [];
+                            (step as any).volumes.push({ host: '', container: '' })
+                          "
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                          Add Volume
+                        </button>
+                        <p class="text-[10px] text-muted-foreground/70 mt-1">Map host paths into the container. All host paths must exist on the runner.</p>
                       </div>
 
                       <div>
