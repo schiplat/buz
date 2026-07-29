@@ -29,7 +29,6 @@ steps:
   - name: Hello from container
     uses: docker
     image: alpine:3.20
-    work_dir: /tmp/wd/
     volumes:
       - "/tmp/runner:/var/log/app"
     run: |

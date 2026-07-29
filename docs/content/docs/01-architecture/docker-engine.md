@@ -35,7 +35,7 @@ Reference model: [GitHub Actions job `container`](https://docs.github.com/en/act
 | Manager-side containers | Execution stays on Runner only |
 | Wasm engine | Separate Phase 3 track |
 
-**Not this engine:** a local step that shells out to `docker build` / `docker push` on the runner. That is already `uses` omitted (local) or SSH. Docker engine means **the step command runs inside the container**.
+**Not this engine:** a shell step that shells out to `docker build` / `docker push` on the runner. That is already `uses` omitted (shell) or SSH. Docker engine means **the step command runs inside the container**.
 
 ---
 
@@ -72,7 +72,7 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 | 4 | **Command model**: same as local/SSH — multi-line `run:` executed via container shell (`sh -lc` unless overridden later) |
 | 5 | **Workspace**: bind-mount runner step work directory into a fixed container path (default `/buz/workspace`); container cwd = that path |
 | 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution order as local; masking unchanged |
-| 7 | **Gate**: `engine.docker_enabled` must be `true`; otherwise step fails with a clear error (do not fall back to local) |
+| 7 | **Gate**: `engine.docker_enabled` must be `true`; otherwise step fails with a clear error (do not fall back to shell) |
 | 8 | **Scheduling**: pipelines that need Docker should set `runner.labels` to include `docker`; Manager dispatches only to runners that have **all** required labels |
 | 9 | **Private images**: MVP = operator/`run` does `docker login` (secret) or image already present; no first-class `image_pull_secret` yet |
 | 10 | **Security defaults**: no `privileged`, no host network, no arbitrary CLI options in MVP |
@@ -86,8 +86,8 @@ steps:
   - name: Test
     uses: docker
     image: node:20-bookworm          # required
-    work_dir: ./frontend             # optional; host path relative to job workspace
-    # maps into container at /buz/workspace (cwd)
+    work_dir: ./frontend             # optional; container-side subdirectory under /buz/workspace
+    # runner workspace is always mounted at /buz/workspace
     timeout: 15m
     run: |
       npm ci
@@ -99,7 +99,7 @@ steps:
 | `uses: docker` | ✓ | Selects Docker engine |
 | `image` | ✓ | Image reference (`name:tag` or digest). Pulled if missing (`docker pull` / run pull behavior TBD in impl) |
 | `run` | ✓ | Command(s) inside the container |
-| `work_dir` / `dir` | | Host-side working directory to mount (same meaning as local) |
+| `work_dir` / `dir` | | Container-side subdirectory under `/buz/workspace` (runner workspace always mounted at root) |
 | `timeout` / `retry` / `continue-on-error` | | Same semantics as other engines |
 | `host` / `host_labels` | ✗ | SSH-only; invalid with `uses: docker` (validator should warn/error) |
 
@@ -132,12 +132,12 @@ Failure messages should tell the operator which precondition failed (disabled vs
 
 ### Execution sketch
 
-1. Resolve host `work_dir` under the job workspace (create if needed, same as local).
+1. Runner's workspace_dir (from `runner.toml`) is bind-mounted as the container workspace.
 2. Build `docker run` arguments roughly:
    - `--rm`
    - `-i` (attach stdout/stderr for streaming logs)
-   - `-v <host_work_dir>:/buz/workspace`
-   - `-w /buz/workspace`
+   - `-v <runner.workspace_dir>:/buz/workspace`
+   - `-w /buz/workspace[/<work_dir>]` (defaults to workspace root)
    - `-e KEY=VALUE` for injected env (including secrets — memory only on runner, never logged raw)
    - `<image>`
    - `sh -lc '<run script>'` (exact argv encoding left to implementation)
@@ -160,7 +160,7 @@ Failure messages should tell the operator which precondition failed (disabled vs
 | Job-level `container.image` | Step-level `uses: docker` + `image` |
 | All job steps share one container | Fresh container per docker step |
 | `container.env` / job env | Pipeline + step env / variables / secrets → `-e` |
-| Workspace mount | Host `work_dir` → `/buz/workspace` |
+| Workspace mount | Runner `workspace_dir` → `/buz/workspace` |
 | `container.options` | Deferred |
 | `services:` | Deferred |
 | `uses: docker://image` + entrypoint/args | Not used; keep `run:` |
@@ -234,7 +234,7 @@ MVP is **done** only when all items below pass. Criteria are testable (automated
 |---|-----------|---------------|:------:|
 | C1 | `run:` executes **inside** the named image (e.g. Alpine identity, not host) | `docker_e2e_runs_inside_alpine_not_host` + smoke YAML | ✅ |
 | C2 | Each docker step uses a fresh ephemeral container (`--rm`); no leftover for that step | argv unit + `docker_e2e_rm_does_not_grow_container_list` | ✅ |
-| C3 | Host `work_dir` visible at `/buz/workspace`; file written in container appears on host | `docker_e2e_workspace_mount_and_cwd` | ✅ |
+| C3 | Runner workspace at `/buz/workspace`; file written in container appears on host | `docker_e2e_workspace_mount_and_cwd` | ✅ |
 | C4 | Pipeline env / variables / secrets / inputs available as env inside the container | `docker_e2e_env_injection` (+ `INPUT_*`) | ✅ |
 | C5 | Secret values are masked in streamed Job logs (same masker as local) | `masker` unit tests | ✅ |
 | C6 | Container non-zero exit → step failed; zero → success | `docker_e2e_nonzero_exit_fails` | ✅ |

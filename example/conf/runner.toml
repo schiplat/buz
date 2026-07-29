@@ -15,14 +15,14 @@ register_token = "your-register-token"
 [runner]
 name = "demo-n1"
 labels = ["macos-armx64"]
-work_dir = "/tmp/buz-runner"
+workspace_dir = "/tmp/buz-runner"
 # Multi-NIC: IPs from these interfaces appear first in Manager Runners UI.
 # When empty, prefer IPs on the same subnet as manager.url.
 # prefer_interfaces = ["enp26s0"]
 
 # ── Ephemeral / workspace cleanup ──
-# clean_workspace_after_job = true   # wipe work_dir after each job (shared runners)
-# ephemeral = true                   # wipe work_dir AND exit after one job (container/VM runners)
+# clean_workspace_after_job = true   # wipe workspace_dir after each job (shared runners)
+# ephemeral = true                   # wipe workspace_dir AND exit after one job (container/VM runners)
 
 [engine]
 shell_enabled = true

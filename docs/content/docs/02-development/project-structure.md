@@ -31,7 +31,7 @@ buzproject/
 │           ├── main.rs     # Register → heartbeat → poll loop
 │           ├── config.rs
 │           ├── client/     # HTTP communication
-│           ├── engine/     # Execution engines (local, ssh)
+│           ├── engine/     # Execution engines (shell, ssh, docker)
 │           └── masker/     # Log masking (Aho-Corasick)
 ├── frontend/               # Vue 3 + TypeScript
 │   └── src/

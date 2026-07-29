@@ -6,10 +6,9 @@
 //! ```
 
 use super::{
-    build_docker_run_args, execute_streaming, preflight, resolve_host_work_dir, CONTAINER_WORKSPACE,
+    build_docker_run_args, execute_streaming, preflight, CONTAINER_WORKSPACE,
 };
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::tempdir;
 use tokio::process::Command;
@@ -40,11 +39,13 @@ async fn drain_logs(mut rx: tokio::sync::mpsc::UnboundedReceiver<String>) -> Str
 
 async fn run_and_collect(
     image: &str,
-    host_work_dir: &std::path::Path,
+    runner_workspace_dir: &std::path::Path,
     command: &str,
     env: &HashMap<String, String>,
+    container_work_dir: Option<&str>,
 ) -> anyhow::Result<(i32, String)> {
-    let (mut child, rx, guard) = execute_streaming(image, host_work_dir, command, env, &[]).await?;
+    let (mut child, rx, guard) =
+        execute_streaming(image, runner_workspace_dir, command, env, &[], container_work_dir).await?;
     let status = child.wait().await?;
     drop(guard);
     let logs = drain_logs(rx).await;
@@ -79,6 +80,7 @@ async fn docker_e2e_runs_inside_alpine_not_host() {
         dir.path(),
         "cat /etc/os-release && echo BUZ_MARKER_OK",
         &HashMap::new(),
+        None,
     )
     .await
     .expect("docker run");
@@ -98,16 +100,14 @@ async fn docker_e2e_workspace_mount_and_cwd() {
     assert!(docker_available().await);
 
     let dir = tempdir().unwrap();
-    let host = resolve_host_work_dir(dir.path().to_str().unwrap(), Some("ws")).unwrap();
-    std::fs::create_dir_all(&host).unwrap();
-
     let (code, logs) = run_and_collect(
         "alpine:3.20",
-        &host,
+        dir.path(),
         &format!(
             "pwd && echo from-container > {CONTAINER_WORKSPACE}/smoke.txt && cat {CONTAINER_WORKSPACE}/smoke.txt"
         ),
         &HashMap::new(),
+        None,
     )
     .await
     .expect("docker run");
@@ -117,7 +117,7 @@ async fn docker_e2e_workspace_mount_and_cwd() {
         logs.contains(CONTAINER_WORKSPACE),
         "cwd should be workspace:\n{logs}"
     );
-    let host_file = host.join("smoke.txt");
+    let host_file = dir.path().join("smoke.txt");
     let content = std::fs::read_to_string(&host_file).expect("host file written by container");
     assert!(content.contains("from-container"), "{content}");
 }
@@ -137,6 +137,7 @@ async fn docker_e2e_env_injection() {
         dir.path(),
         "echo \"VAR=$BUZ_E2E_VAR INPUT=$INPUT_BUZ_E2E_VAR\"",
         &env,
+        None,
     )
     .await
     .expect("docker run");
@@ -153,7 +154,7 @@ async fn docker_e2e_nonzero_exit_fails() {
     assert!(docker_available().await);
 
     let dir = tempdir().unwrap();
-    let (code, logs) = run_and_collect("alpine:3.20", dir.path(), "exit 42", &HashMap::new())
+    let (code, logs) = run_and_collect("alpine:3.20", dir.path(), "exit 42", &HashMap::new(), None)
         .await
         .expect("docker run");
 
@@ -168,10 +169,11 @@ async fn docker_e2e_rm_does_not_grow_container_list() {
 
     let args = build_docker_run_args(
         "alpine:3.20",
-        PathBuf::from("/tmp").as_path(),
+        "/tmp",
         "true",
         &HashMap::new(),
         &[],
+        None,
     );
     assert!(args.iter().any(|a| a == "--rm"));
 
@@ -186,7 +188,7 @@ async fn docker_e2e_rm_does_not_grow_container_list() {
         .filter(|l| !l.is_empty())
         .count();
 
-    let (code, logs) = run_and_collect("alpine:3.20", dir.path(), "echo done", &HashMap::new())
+    let (code, logs) = run_and_collect("alpine:3.20", dir.path(), "echo done", &HashMap::new(), None)
         .await
         .expect("docker run");
     assert_eq!(code, 0, "logs:\n{logs}");
@@ -220,6 +222,7 @@ async fn docker_e2e_kill_stops_container() {
         "echo started; sleep 120",
         &HashMap::new(),
         &[],
+        None,
     )
     .await
     .expect("spawn");

@@ -1,6 +1,5 @@
-use super::{build_docker_run_args, preflight, resolve_host_work_dir, CONTAINER_WORKSPACE};
+use super::{build_docker_run_args, preflight, CONTAINER_WORKSPACE};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 #[test]
 fn preflight_rejects_disabled() {
@@ -20,47 +19,61 @@ fn preflight_ok() {
     assert!(preflight(true, "alpine:3.20").is_ok());
 }
 
-// resolve_host_work_dir now returns Result — security: rejects paths escaping runner work_dir.
+// ── build_docker_run_args (new GitHub Actions style) ──
 
 #[test]
-fn resolve_work_dir_joins_relative() {
-    let dir = tempfile::tempdir().unwrap();
-    let base = dir.path().canonicalize().unwrap();
-    let base_str = base.to_str().unwrap();
-    let p = resolve_host_work_dir(base_str, Some("./frontend")).unwrap();
-    assert!(p.ends_with("frontend"), "{p:?}");
-}
-
-#[test]
-fn resolve_work_dir_rejects_escape() {
-    let dir = tempfile::tempdir().unwrap();
-    let base = dir.path().canonicalize().unwrap();
-    let base_str = base.to_str().unwrap();
-    let err = resolve_host_work_dir(base_str, Some("/etc")).unwrap_err();
-    assert!(err.to_string().contains("escapes"), "{err}");
-}
-
-#[test]
-fn resolve_work_dir_defaults_to_runner() {
-    let dir = tempfile::tempdir().unwrap();
-    let expected = dir.path().canonicalize().unwrap();
-    let base_str = expected.to_str().unwrap();
-    let p = resolve_host_work_dir(base_str, None).unwrap();
-    assert_eq!(p, expected);
-}
-
-#[test]
-fn resolve_work_dir_allows_absolute_subpath() {
-    let dir = tempfile::tempdir().unwrap();
-    let base = dir.path().canonicalize().unwrap();
-    std::fs::create_dir_all(base.join("sub")).unwrap();
-    let base_str = base.to_str().unwrap();
-    let sub = base.join("sub");
-    let p = resolve_host_work_dir(base_str, Some(sub.to_str().unwrap())).unwrap();
-    assert!(
-        p.ends_with("sub"),
-        "expected to end with 'sub', got {p:?}"
+fn build_args_mounts_workspace_and_default_cwd() {
+    let args = build_docker_run_args(
+        "alpine:3.20",
+        "/tmp/runner/wd",
+        "echo hi",
+        &HashMap::new(),
+        &[],
+        None,
     );
+
+    assert_eq!(args[0], "run");
+    assert!(args.iter().any(|a| a == "--rm"));
+    assert!(args.iter().any(|a| a == "-i"));
+    let vol = format!("/tmp/runner/wd:{CONTAINER_WORKSPACE}");
+    assert!(args.iter().any(|a| a == &vol));
+    assert!(args
+        .windows(2)
+        .any(|w| w[0] == "-w" && w[1] == CONTAINER_WORKSPACE));
+}
+
+#[test]
+fn build_args_custom_container_work_dir() {
+    let args = build_docker_run_args(
+        "alpine:3.20",
+        "/tmp/runner/wd",
+        "pwd",
+        &HashMap::new(),
+        &[],
+        Some("frontend"),
+    );
+
+    let expected_wd = format!("{CONTAINER_WORKSPACE}/frontend");
+    assert!(args
+        .windows(2)
+        .any(|w| w[0] == "-w" && w[1] == expected_wd));
+}
+
+#[test]
+fn build_args_empty_container_work_dir_ignored() {
+    let args = build_docker_run_args(
+        "alpine:3.20",
+        "/tmp/runner/wd",
+        "pwd",
+        &HashMap::new(),
+        &[],
+        Some("  "),
+    );
+
+    // Whitespace-only → falls back to workspace root
+    assert!(args
+        .windows(2)
+        .any(|w| w[0] == "-w" && w[1] == CONTAINER_WORKSPACE));
 }
 
 #[test]
@@ -69,10 +82,11 @@ fn build_args_includes_volumes() {
     env.insert("FOO".into(), "bar".into());
     let args = build_docker_run_args(
         "alpine:3.20",
-        PathBuf::from("/tmp/ws").as_path(),
+        "/tmp/ws",
         "echo hi",
         &env,
         &[],
+        None,
     );
 
     assert_eq!(args[0], "run");
@@ -98,10 +112,11 @@ fn build_args_extra_volumes() {
     let vols = vec!["/data/app:/mnt/data".into(), "/cfg:/etc/app".into()];
     let args = build_docker_run_args(
         "alpine:3.20",
-        PathBuf::from("/tmp/ws").as_path(),
+        "/tmp/ws",
         "hi",
         &HashMap::new(),
         &vols,
+        None,
     );
 
     // Search for the -v pairs — must appear before the image
@@ -119,10 +134,11 @@ fn build_args_extra_volumes() {
 fn build_args_empty_volumes_ignored() {
     let args = build_docker_run_args(
         "alpine:3.20",
-        PathBuf::from("/tmp/ws").as_path(),
+        "/tmp/ws",
         "hi",
         &HashMap::new(),
         &["".into(), "  ".into(), "  ".into()],
+        None,
     );
     // Only the workspace mount should be present as -v
     let v_count = args.iter().filter(|a| a.as_str() == "-v").count();

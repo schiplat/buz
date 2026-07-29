@@ -400,7 +400,7 @@ run: |
 
 #### `uses` (Engine)
 
-Selects the execution engine. Defaults to `local` (runner's own shell).
+Selects the execution engine. Defaults to `shell` (runner's own shell).
 
 | Value | Description |
 |-------|-------------|

@@ -1,5 +1,6 @@
 use reqwest::Client;
 use shared::protocol::{LogChunk, UpdateJobStatusRequest};
+use std::path::Path;
 use std::time::Duration;
 
 use crate::config::Config;
@@ -92,8 +93,8 @@ pub async fn run_poll_loop(client: &Client, config: &Config, token: &str) -> any
 
                 // ── Ephemeral / workspace cleanup ─────────────────────────────
                 if config.runner.clean_workspace_after_job || config.runner.ephemeral {
-                    tracing::info!("Cleaning workspace: {}", config.runner.work_dir);
-                    clean_workspace(&config.runner.work_dir);
+                    tracing::info!("Cleaning workspace: {}", config.runner.workspace_dir);
+                    clean_workspace(&config.runner.workspace_dir);
                 }
 
                 if config.runner.ephemeral {
@@ -441,37 +442,7 @@ async fn execute_job(
                     anyhow::bail!(msg);
                 }
 
-                let host_wd = match engine::docker::resolve_host_work_dir(
-                    &config.runner.work_dir,
-                    work_dir,
-                ) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        let msg = format!("Docker work_dir error: {e}");
-                        let _ = super::logs::upload_chunk(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            LogChunk {
-                                chunk_index: (idx * 10000 + 9997) as i32,
-                                step_order: idx as i32,
-                                content: format!("==> ERROR <==\n{msg}\n"),
-                            },
-                        )
-                        .await;
-                        update_job_status(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            "failed",
-                            Some(idx as i32),
-                        )
-                        .await?;
-                        anyhow::bail!(msg);
-                    }
-                };
+                let cmd = command.to_string();
                 let volumes: Vec<String> = step
                     .get("volumes")
                     .and_then(|v| v.as_array())
@@ -481,7 +452,6 @@ async fn execute_job(
                             .collect()
                     })
                     .unwrap_or_default();
-                let cmd = command.to_string();
                 let img = image.to_string();
                 let env = step_env.clone();
                 let c = client.clone();
@@ -493,7 +463,12 @@ async fn execute_job(
 
                 let (mut child, mut output_rx, read_guard) =
                     engine::docker::execute_streaming(
-                        &img, &host_wd, &cmd, &env, &volumes,
+                        &img,
+                        Path::new(&config.runner.workspace_dir),
+                        &cmd,
+                        &env,
+                        &volumes,
+                        work_dir,
                     )
                     .await?;
 

@@ -157,7 +157,7 @@ Response (with task):
     "job_id": "uuid",
     "pipeline_id": "uuid",
     "tasks": [
-      { "id": "uuid", "step_order": 0, "name": "build", "exec_type": "local", "command_template": "npm run build", "work_dir": "" }
+      { "id": "uuid", "step_order": 0, "name": "build", "exec_type": "shell", "command_template": "npm run build", "work_dir": "" }
     ]
   }
 }

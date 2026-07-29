@@ -1,7 +1,7 @@
 //! Docker engine — run step `run:` inside an ephemeral container on the runner host.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -15,28 +15,40 @@ pub const CONTAINER_WORKSPACE: &str = "/buz/workspace";
 
 /// Build `docker run` argv (without the `docker` binary name).
 ///
+/// Workspace model (GitHub Actions style):
+/// - The runner's `runner_workspace_dir` is **always** bind-mounted as `CONTAINER_WORKSPACE`.
+/// - `container_work_dir` is an optional path **inside** the container (relative to workspace).
+///   When set, `--workdir` points to `CONTAINER_WORKSPACE/<container_work_dir>`.
+///   When absent, `--workdir` defaults to `CONTAINER_WORKSPACE`.
+///
 /// Order: global flags → volumes → env → image → shell + script.
 pub fn build_docker_run_args(
     image: &str,
-    host_work_dir: &Path,
+    runner_workspace_dir: &str,
     command: &str,
     env: &HashMap<String, String>,
     volumes: &[String],
+    container_work_dir: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec![
         "run".into(),
         "--rm".into(),
         "-i".into(),
         "-v".into(),
-        format!("{}:{CONTAINER_WORKSPACE}", host_work_dir.display()),
+        format!("{runner_workspace_dir}:{CONTAINER_WORKSPACE}"),
         "-w".into(),
-        CONTAINER_WORKSPACE.into(),
     ];
+
+    let wd = match container_work_dir.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(rel) => format!("{CONTAINER_WORKSPACE}/{rel}"),
+        None => CONTAINER_WORKSPACE.into(),
+    };
+    args.push(wd);
 
     for (k, v) in env {
         args.push("-e".into());
         args.push(format!("{k}={v}"));
-        // Match local engine's INPUT_* convention for trigger-style vars.
+        // Match shell engine's INPUT_* convention for trigger-style vars.
         let input_key = format!("INPUT_{}", k.to_uppercase());
         if !env.contains_key(&input_key) {
             args.push("-e".into());
@@ -60,47 +72,13 @@ pub fn build_docker_run_args(
     args
 }
 
-/// Resolve the host directory to bind-mount (absolute).
-///
-/// Only allows paths **within** the runner's `work_dir`. An absolute path
-/// that escapes `runner_work_dir` returns an error — this prevents Docker
-/// containers from mounting arbitrary host paths through `work_dir`.
-pub fn resolve_host_work_dir(runner_work_dir: &str, step_work_dir: Option<&str>) -> std::io::Result<PathBuf> {
-    let base = PathBuf::from(runner_work_dir).canonicalize().unwrap_or_else(|_| PathBuf::from(runner_work_dir));
-    let resolved = match step_work_dir.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(rel) => {
-            let p = Path::new(rel);
-            if p.is_absolute() {
-                // Canonicalize so symlinks / .. don't bypass the sandbox
-                p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
-            } else {
-                base.join(rel)
-            }
-        }
-        None => base.clone(),
-    };
-
-    // Reject if the resolved path escapes the runner work_dir
-    if !resolved.starts_with(&base) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!(
-                "work_dir '{}' escapes the runner work directory '{}'",
-                step_work_dir.unwrap_or(""),
-                runner_work_dir,
-            ),
-        ));
-    }
-    Ok(resolved)
-}
-
 /// Preconditions before spawning docker.
 pub fn preflight(docker_enabled: bool, image: &str) -> anyhow::Result<()> {
     if !docker_enabled {
         anyhow::bail!(
             "Docker engine is disabled on this runner \
              (set engine.docker_enabled = true in runner.toml). \
-             Refusing to fall back to local shell."
+             Refusing to fall back to shell engine."
         );
     }
     let image = image.trim();
@@ -110,22 +88,37 @@ pub fn preflight(docker_enabled: bool, image: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Spawn `docker run` with streaming stdout/stderr (same shape as local engine).
+/// Spawn `docker run` with streaming stdout/stderr (same shape as shell engine).
+///
+/// `runner_workspace_dir` — the runner's own work directory (e.g. `/tmp/buz-runner`).
+/// It is always bind-mounted into the container at `CONTAINER_WORKSPACE`.
+///
+/// `container_work_dir` — optional subdirectory inside the container workspace
+/// to use as the working directory (e.g. `frontend` → `--workdir /buz/workspace/frontend`).
 pub async fn execute_streaming(
     image: &str,
-    host_work_dir: &Path,
+    runner_workspace_dir: &Path,
     command: &str,
     env: &HashMap<String, String>,
     volumes: &[String],
+    container_work_dir: Option<&str>,
 ) -> anyhow::Result<(Child, mpsc::UnboundedReceiver<String>, ReadGuard)> {
-    std::fs::create_dir_all(host_work_dir).map_err(|e| {
+    std::fs::create_dir_all(runner_workspace_dir).map_err(|e| {
         anyhow::anyhow!(
             "failed to create docker workspace {}: {e}",
-            host_work_dir.display()
+            runner_workspace_dir.display()
         )
     })?;
 
-    let args = build_docker_run_args(image, host_work_dir, command, env, volumes);
+    let runner_wd_str = runner_workspace_dir.to_string_lossy();
+    let args = build_docker_run_args(
+        image,
+        &runner_wd_str,
+        command,
+        env,
+        volumes,
+        container_work_dir,
+    );
     let mut cmd = Command::new("docker");
     cmd.args(&args);
     cmd.stdout(Stdio::piped());

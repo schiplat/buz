@@ -41,11 +41,11 @@ register_token = "env.BUZ_REGISTER_TOKEN"
 [runner]
 name = "prod-runner-01"
 labels = ["prod", "linux-x64"]
-work_dir = "/tmp/buz-runner"
+workspace_dir = "/tmp/buz-runner"
 # prefer_interfaces = ["enp26s0"]  # multi-NIC: advertise these IPs first in UI
 
 [engine]
-local_enabled = true
+shell_enabled = true
 ssh_enabled = true
 docker_enabled = false  # MVP: set true for uses: docker — docs/01-architecture/docker-engine.md
 wasm_enabled = false    # Phase 3

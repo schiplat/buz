@@ -30,9 +30,9 @@ pub struct RunnerIdentity {
     pub name: String,
     #[serde(default = "default_labels")]
     pub labels: Vec<String>,
-    #[serde(default = "default_work_dir")]
-    pub work_dir: String,
-    /// Clean the work_dir after each job completes.
+    #[serde(default = "default_workspace_dir")]
+    pub workspace_dir: String,
+    /// Clean the workspace_dir after each job completes.
     /// Recommended for shared runners to prevent data leakage between jobs.
     #[serde(default)]
     pub clean_workspace_after_job: bool,
@@ -61,7 +61,7 @@ impl Default for RunnerIdentity {
         Self {
             name: default_runner_name(),
             labels: default_labels(),
-            work_dir: default_work_dir(),
+            workspace_dir: default_workspace_dir(),
             clean_workspace_after_job: false,
             ephemeral: false,
             prefer_interfaces: Vec::new(),
@@ -135,7 +135,7 @@ impl EngineConfig {
 fn default_labels() -> Vec<String> {
     vec!["default".into()]
 }
-fn default_work_dir() -> String {
+fn default_workspace_dir() -> String {
     "/tmp/buz-runner".into()
 }
 fn default_manager_url() -> String {

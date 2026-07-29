@@ -62,10 +62,10 @@ register_token = "your-register-token"
 [runner]
 name = "prod-runner-01"
 labels = ["prod", "linux-x64"]
-work_dir = "/tmp/buz-runner"
+workspace_dir = "/tmp/buz-runner"
 
 [engine]
-local_enabled = true
+shell_enabled = true
 ssh_enabled = true
 docker_enabled = false
 wasm_enabled = false
