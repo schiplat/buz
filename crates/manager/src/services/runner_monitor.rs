@@ -78,6 +78,46 @@ pub fn spawn_monitor(pool: SqlitePool, runner_config: RunnerConfig) {
                 .bind(format!("Heartbeat timeout — runner {name} marked offline"))
                 .execute(&pool)
                 .await;
+
+                // ── Fail any running/pending jobs left behind by this runner ──
+                let orphaned: Vec<(String,)> = sqlx::query_as(
+                    "SELECT id FROM jobs WHERE runner_id = ? AND status IN ('running', 'pending')",
+                )
+                .bind(&id)
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_default();
+
+                for (job_id,) in &orphaned {
+                    // Mark job as failed
+                    let _ = sqlx::query(
+                        "UPDATE jobs SET status = 'failed', end_time = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+                    )
+                    .bind(job_id)
+                    .execute(&pool)
+                    .await;
+
+                    // Append a log chunk explaining what happened
+                    let log_id = Uuid::new_v4().to_string();
+                    let _ = sqlx::query(
+                        "INSERT INTO job_logs (id, job_id, chunk_index, step_order, content, created_at)
+                         VALUES (?, ?, -2, -1, ?, datetime('now'))",
+                    )
+                    .bind(&log_id)
+                    .bind(job_id)
+                    .bind(format!(
+                        "==> RUNNER LOST <==\nRunner '{name}' went offline while executing this job. The job has been marked as failed.\n"
+                    ))
+                    .execute(&pool)
+                    .await;
+                }
+
+                if !orphaned.is_empty() {
+                    tracing::warn!(
+                        "Runner monitor: failed {} orphaned job(s) left by runner '{name}'",
+                        orphaned.len()
+                    );
+                }
             }
         }
     });
