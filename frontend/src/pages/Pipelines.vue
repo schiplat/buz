@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { Plus, X, Play, Trash2, GripVertical, Code, FileText, CheckCircle, AlertTriangle, AlertCircle, ChevronDown, ChevronRight, Loader2, Puzzle, Pencil, Minus, Snowflake, Copy, Check } from '@lucide/vue'
+import { Plus, X, Play, Trash2, GripVertical, Code, FileText, CheckCircle, AlertTriangle, AlertCircle, ChevronDown, ChevronRight, Loader2, Puzzle, Pencil, Minus, Snowflake, Copy, Check, Clock } from '@lucide/vue'
 import { pipelinesApi, type Pipeline, type StepDef, type YamlValidationResult, type PipelineInputDef, type YamlParsedData } from '@/api/pipelines'
 import { secretsApi } from '@/api/secrets'
 import { variablesApi } from '@/api/variables'
 import { teamsApi, type Team } from '@/api/teams'
+import { jobsApi, type Job } from '@/api/jobs'
 import { cn } from '@/lib/utils'
+import { parseUtc } from '@/utils/time'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import MultiSelect from '@/components/ui/MultiSelect.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -155,8 +157,100 @@ const yamlLineNumbers = computed(() => {
   return Array.from({ length: lines }, (_, i) => i + 1).join('\n')
 })
 
+// ── Jobs stats panel ──
+const allJobs = ref<Job[]>([])
+const statsExpanded = ref(false)
+const statNow = ref(Date.now()) // used to refresh elapsed timers
+let statTimer: ReturnType<typeof setInterval> | null = null
+
+const teamFilteredJobs = computed(() =>
+  allJobs.value.filter(j => auth.matchesActiveTeam(j.team_id))
+)
+
+const runningJobs = computed(() =>
+  teamFilteredJobs.value.filter(j => j.status === 'running')
+)
+const pendingJobs = computed(() =>
+  teamFilteredJobs.value.filter(j => j.status === 'pending')
+)
+const queuedJobs = computed(() =>
+  teamFilteredJobs.value.filter(j => j.status === 'queued')
+)
+const totalJobCount = computed(() => teamFilteredJobs.value.length)
+const hasActiveJobs = computed(() =>
+  runningJobs.value.length > 0 || pendingJobs.value.length > 0 || queuedJobs.value.length > 0
+)
+const activeCount = computed(() =>
+  runningJobs.value.length + pendingJobs.value.length + queuedJobs.value.length
+)
+
+function elapsed(ts: string | null | undefined): string {
+  if (!ts) return '—'
+  const diff = Math.max(0, Math.floor((statNow.value - parseUtc(ts)) / 1000))
+  if (diff < 60) return `${diff}s`
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ${diff % 60}s`
+  return `${Math.floor(diff / 3600)}h ${Math.floor((diff % 3600) / 60)}m`
+}
+
+function jogNameLabel(j: Job): string {
+  return j.pipeline_name || j.pipeline_id?.slice(0, 8) || 'Unknown'
+}
+
+function runNum(job: Job): number {
+  // Per-pipeline numbering: oldest build = #1, newest = highest
+  const same = allJobs.value.filter(j => j.pipeline_id === job.pipeline_id)
+  const idx = same.findIndex(j => j.id === job.id)
+  return idx >= 0 ? same.length - idx : 0
+}
+
+function goJob(jobId: string) {
+  router.push(`/jobs/${jobId}`)
+}
+
+async function cancelStatsJob(jobId: string) {
+  try {
+    await jobsApi.cancel(jobId)
+    // remove optimistically
+    allJobs.value = allJobs.value.filter(j => j.id !== jobId)
+  } catch (e) { console.error(e) }
+}
+
+async function fetchJobs() {
+  try {
+    allJobs.value = await jobsApi.list()
+  } catch { /* ignore */ }
+}
+
+function startStatsTimer() {
+  if (statTimer) return
+  statTimer = setInterval(() => {
+    statNow.value = Date.now()
+    if (!statsExpanded.value && hasActiveJobs.value) {
+      // keep refreshing even when collapsed for the summary dots
+    }
+  }, 5000)
+}
+
+function stopStatsTimer() {
+  if (statTimer) { clearInterval(statTimer); statTimer = null }
+}
+
+function toggleStats() {
+  statsExpanded.value = !statsExpanded.value
+  if (statsExpanded.value) {
+    // refresh elapsed every second while expanded
+    stopStatsTimer()
+    statTimer = setInterval(() => { statNow.value = Date.now() }, 1000)
+  } else {
+    stopStatsTimer()
+    startStatsTimer()
+  }
+}
+
 onMounted(async () => {
   await loadPipelines()
+  fetchJobs()
+  startStatsTimer()
   try {
     availableSecrets.value = await secretsApi.list()
   } catch { /* ignore */ }
@@ -166,6 +260,10 @@ onMounted(async () => {
   try {
     availableTeams.value = await teamsApi.list()
   } catch { /* ignore */ }
+})
+
+onUnmounted(() => {
+  stopStatsTimer()
 })
 
 const variableOptions = computed(() =>
@@ -637,6 +735,145 @@ async function handleToggleActive(p: Pipeline) {
         </UiButton>
       </template>
     </PageHeader>
+
+    <!-- ── Jobs stats panel ── -->
+    <div v-if="!loading && hasActiveJobs">
+      <div
+        class="flex items-center px-1 py-3.5 cursor-pointer select-none hover:bg-muted/10 transition-colors"
+        @click="toggleStats"
+      >
+        <!-- Left: state dots -->
+        <div class="flex items-center gap-5">
+          <span v-if="runningJobs.length > 0" class="inline-flex items-baseline gap-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-amber-500" />
+            <span class="text-base font-bold tabular-nums text-amber-500">{{ runningJobs.length }}</span>
+            <span class="text-xs text-amber-500/70 leading-none">running</span>
+          </span>
+          <span v-if="pendingJobs.length > 0" class="inline-flex items-baseline gap-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-slate-400" />
+            <span class="text-base font-bold tabular-nums text-muted-foreground">{{ pendingJobs.length }}</span>
+            <span class="text-xs text-muted-foreground/50 leading-none">pending</span>
+          </span>
+          <span v-if="queuedJobs.length > 0" class="inline-flex items-baseline gap-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-purple-400" />
+            <span class="text-base font-bold tabular-nums text-purple-400">{{ queuedJobs.length }}</span>
+            <span class="text-xs text-purple-400/70 leading-none">queued</span>
+          </span>
+        </div>
+
+        <!-- Right: summary -->
+        <div class="ml-auto flex items-center gap-2">
+          <span class="inline-flex items-baseline gap-1">
+            <span class="text-sm font-semibold tabular-nums text-muted-foreground/80">{{ activeCount }}</span>
+            <span class="text-xs text-muted-foreground/40 leading-none">of</span>
+            <span class="text-sm tabular-nums text-muted-foreground/60">{{ totalJobCount }}</span>
+          </span>
+          <button
+            class="w-5 h-5 flex items-center justify-center"
+          >
+            <ChevronDown v-if="statsExpanded" class="h-4 w-4 text-muted-foreground/40" />
+            <ChevronRight v-else class="h-4 w-4 text-muted-foreground/40" />
+          </button>
+        </div>
+      </div>
+
+      <!-- Expanded detail panels -->
+      <template v-if="statsExpanded">
+        <!-- Running -->
+        <template v-if="runningJobs.length > 0">
+          <div class="border-t border-border/20" />
+          <div class="px-5 py-2 text-[11px] uppercase tracking-widest text-muted-foreground font-semibold flex items-center justify-between">
+            <span>Running</span>
+            <span class="font-mono tabular-nums text-xs">{{ runningJobs.length }} job{{ runningJobs.length !== 1 ? 's' : '' }}</span>
+          </div>
+          <div class="divide-y divide-border/10">
+            <div
+              v-for="j in runningJobs"
+              :key="j.id"
+              class="px-5 py-2 flex items-center gap-3 text-[13px] hover:bg-muted/30 transition-colors cursor-pointer"
+              @click="goJob(j.id)"
+            >
+              <span class="font-mono text-xs w-10 tabular-nums text-muted-foreground/60 shrink-0">#{{ runNum(j) }}</span>
+              <span class="flex-1 font-medium text-foreground/80 truncate">{{ jogNameLabel(j) }}</span>
+              <span class="text-[11px] font-mono tabular-nums text-amber-500/80 shrink-0">
+                <Clock class="h-3.5 w-3.5 inline mr-0.5 -mt-px" />{{ elapsed(j.start_time) }}
+              </span>
+              <button
+                class="shrink-0 ml-1 rounded p-0.5 hover:bg-red-500/10 transition-colors"
+                title="Cancel"
+                @click.stop="cancelStatsJob(j.id)"
+              >
+                <X class="h-4 w-4 text-red-400/70 hover:text-red-500 transition-colors" />
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Pending -->
+        <template v-if="pendingJobs.length > 0">
+          <div class="border-t border-border/20" />
+          <div class="px-5 py-2 text-[11px] uppercase tracking-widest text-muted-foreground font-semibold flex items-center justify-between">
+            <span>Pending</span>
+            <span class="font-mono tabular-nums text-xs">{{ pendingJobs.length }} job{{ pendingJobs.length !== 1 ? 's' : '' }}</span>
+          </div>
+          <div class="divide-y divide-border/10">
+            <div
+              v-for="j in pendingJobs"
+              :key="j.id"
+              class="px-5 py-2 flex items-center gap-3 text-[13px] hover:bg-muted/30 transition-colors cursor-pointer"
+              @click="goJob(j.id)"
+            >
+              <span class="font-mono text-xs w-10 tabular-nums text-muted-foreground/60 shrink-0">#{{ runNum(j) }}</span>
+              <span class="flex-1 font-medium text-foreground/80 truncate">{{ jogNameLabel(j) }}</span>
+              <span class="text-[11px] font-mono tabular-nums text-muted-foreground/50 shrink-0">{{ elapsed(j.created_at) }} ago</span>
+              <button
+                class="shrink-0 ml-1 rounded p-0.5 hover:bg-red-500/10 transition-colors"
+                title="Cancel"
+                @click.stop="cancelStatsJob(j.id)"
+              >
+                <X class="h-4 w-4 text-red-400/70 hover:text-red-500 transition-colors" />
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Queued -->
+        <template v-if="queuedJobs.length > 0">
+          <div class="border-t border-border/20" />
+          <div class="px-5 py-2 text-[11px] uppercase tracking-widest text-muted-foreground font-semibold flex items-center justify-between">
+            <span>Queued</span>
+            <span class="font-mono tabular-nums text-xs">{{ queuedJobs.length }} job{{ queuedJobs.length !== 1 ? 's' : '' }}</span>
+          </div>
+          <div class="divide-y divide-border/10">
+            <div
+              v-for="j in queuedJobs"
+              :key="j.id"
+              class="px-5 py-2 flex items-center gap-3 text-[13px] hover:bg-muted/30 transition-colors cursor-pointer"
+              @click="goJob(j.id)"
+            >
+              <span class="font-mono text-xs w-10 tabular-nums text-muted-foreground/60 shrink-0">#{{ runNum(j) }}</span>
+              <span class="flex-1 font-medium text-foreground/80 truncate">{{ jogNameLabel(j) }}</span>
+              <span class="text-[11px] font-mono tabular-nums text-muted-foreground/50 shrink-0">{{ elapsed(j.created_at) }} ago</span>
+              <button
+                class="shrink-0 ml-1 rounded p-0.5 hover:bg-red-500/10 transition-colors"
+                title="Cancel"
+                @click.stop="cancelStatsJob(j.id)"
+              >
+                <X class="h-4 w-4 text-red-400/70 hover:text-red-500 transition-colors" />
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <div class="border-t border-border/20" />
+        <div class="px-5 py-2 text-center">
+          <button
+            class="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            @click="fetchJobs"
+          >Refresh</button>
+        </div>
+      </template>
+    </div>
 
     <div v-if="loading" class="surface-card p-8 text-center type-meta">Loading...</div>
 
