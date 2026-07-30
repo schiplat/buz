@@ -14,6 +14,7 @@ mod middleware;
 mod password;
 mod rbac;
 mod services;
+mod ssh_probe;
 mod state;
 
 /// Buz Manager — lightweight cross‑network orchestration control plane.
@@ -54,12 +55,7 @@ async fn main() -> anyhow::Result<()> {
     let config = config::load(Some(&cli.config))?;
     let db_pool = db::init(&config).await?;
     db::run_migrations(&db_pool).await?;
-    rbac::bootstrap(
-        &db_pool,
-        &config.auth.admin_user,
-        &config.auth.admin_password,
-    )
-    .await?;
+    rbac::bootstrap(&db_pool).await?;
 
     tracing::info!(
         "{} starting on {}:{}",

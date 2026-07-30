@@ -341,6 +341,44 @@ steps:
 }
 
 #[test]
+fn docker_step_with_registry_secret_valid() {
+    let yaml = r#"
+name: pull-private
+steps:
+  - name: run
+    uses: docker
+    image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
+    registry_secret: acr-personal
+    run: echo ok
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    let parsed = r.parsed.unwrap();
+    assert_eq!(
+        parsed.steps[0].registry_secret.as_deref(),
+        Some("acr-personal")
+    );
+}
+
+#[test]
+fn shell_step_with_registry_secret_valid() {
+    let yaml = r#"
+name: push-private
+steps:
+  - name: push
+    uses: shell
+    registry_secret: acr-personal
+    run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    assert_eq!(
+        r.parsed.unwrap().steps[0].registry_secret.as_deref(),
+        Some("acr-personal")
+    );
+}
+
+#[test]
 fn concurrency_legacy_string_format() {
     let yaml = r#"
 name: legacy-concurrency

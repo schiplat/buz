@@ -33,22 +33,47 @@ All API endpoints use the prefix `/api/v1/`.
 
 | Method | Path | Auth |
 |--------|------|------|
+| GET | `/api/v1/auth/setup-status` | None |
+| POST | `/api/v1/auth/setup` | None (only when no users) |
 | POST | `/api/v1/auth/login` | None |
 | GET | `/api/v1/auth/me` | JWT |
 | GET | `/api/v1/auth/verify` | JWT |
 | POST | `/api/v1/auth/change-password` | JWT |
 
+### GET /auth/setup-status
+
+```json
+{ "code": 0, "data": { "needs_setup": true } }
+```
+
+`needs_setup` is `true` when the `users` table is empty. The Web UI redirects to `/setup`.
+
+### POST /auth/setup
+
+Create the first platform admin (rejected with conflict if any user already exists). Returns a login JWT (same shape as login).
+
+Request:
+```json
+{ "username": "admin", "password": "at-least-8-chars" }
+```
+
+Rules: username 2–64 chars (`[A-Za-z0-9_.-]`); password ≥ 8 characters and must include **uppercase**, **lowercase**, a **digit**, and a **symbol** (no whitespace). Stored as **Argon2id** (not AES — AES is only for Infrastructure Secrets/Hosts).
+
 ### POST /auth/login
 
 Request:
 ```json
-{ "username": "admin", "password": "admin" }
+{ "username": "admin", "password": "your-password" }
 ```
+
+Username is trimmed server-side. Password is verified with Argon2id against `users.password_hash`.
 
 Response:
 ```json
-{ "code": 0, "data": { "token": "eyJ..." } }
+{ "code": 0, "data": { "token": "eyJ...", "user_id": "…", "username": "admin", "is_platform_admin": true } }
 ```
+
+If the instance is not initialized, login fails and the client should open `/setup`.
 
 ### POST /auth/change-password
 
@@ -82,11 +107,14 @@ Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`
 
 ## Runners
 
+> Policy fields (`max_concurrent_jobs`, engines, cleanup, ephemeral, `ssh_host_key_policy`) are UI-managed. See [Runner Policy](/docs/01-architecture/runner-concurrent-jobs/).
+
 | Method | Path | Auth |
 |--------|------|------|
 | GET | `/api/v1/runners` | Admin JWT |
 | GET | `/api/v1/runners/:id` | Admin JWT |
 | POST | `/api/v1/runners` | Admin JWT |
+| PUT | `/api/v1/runners/:id` | Admin JWT |
 | DELETE | `/api/v1/runners/:id` | Admin JWT |
 | PATCH | `/api/v1/runners/:id/freeze` | Admin JWT |
 | GET | `/api/v1/runners/:id/events` | Admin JWT |
@@ -101,9 +129,19 @@ Request:
 {
   "name": "prod-runner-01",
   "labels": ["linux-x64", "prod"],
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "max_concurrent_jobs": 3,
+  "clean_workspace_after_job": true,
+  "ephemeral": false,
+  "shell_enabled": true,
+  "ssh_enabled": true,
+  "docker_enabled": true,
+  "wasm_enabled": false,
+  "ssh_host_key_policy": "insecure"
 }
 ```
+
+Policy fields are optional. Defaults: `max_concurrent_jobs=1`, cleanup/ephemeral off, shell+ssh on, docker+wasm off, `ssh_host_key_policy=insecure`.
 
 Response:
 ```json
@@ -112,10 +150,28 @@ Response:
   "data": {
     "id": "uuid",
     "name": "prod-runner-01",
-    "register_token": "one-time-token"
+    "register_token": "one-time-token",
+    "max_concurrent_jobs": 3,
+    "policy": { "max_concurrent_jobs": 3, "docker_enabled": true }
   }
 }
 ```
+
+### PUT /runners/:id — Update Runner (Admin)
+
+Request (any field optional):
+```json
+{
+  "labels": ["linux-x64", "docker"],
+  "max_concurrent_jobs": 4,
+  "docker_enabled": true,
+  "ssh_host_key_policy": "known_hosts"
+}
+```
+
+Returns the updated runner object (includes `running_jobs` and all policy fields).
+
+List/get responses include policy columns (`max_concurrent_jobs`, `clean_workspace_after_job`, `ephemeral`, engine flags, `ssh_host_key_policy`) and `running_jobs`.
 
 ### POST /runners/register — Runner Registration
 
@@ -135,7 +191,17 @@ Response:
   "code": 0,
   "data": {
     "runner_id": "uuid",
-    "token": "jwt"
+    "token": "jwt",
+    "policy": {
+      "max_concurrent_jobs": 1,
+      "clean_workspace_after_job": false,
+      "ephemeral": false,
+      "shell_enabled": true,
+      "ssh_enabled": true,
+      "docker_enabled": false,
+      "wasm_enabled": false,
+      "ssh_host_key_policy": "insecure"
+    }
   }
 }
 ```
@@ -147,7 +213,30 @@ Request (Bearer token):
 { "status": "online" }
 ```
 
+Response includes the current UI policy snapshot (Runner refreshes concurrency, engines, cleanup):
+```json
+{
+  "code": 0,
+  "data": {
+    "policy": {
+      "max_concurrent_jobs": 3,
+      "clean_workspace_after_job": true,
+      "ephemeral": false,
+      "shell_enabled": true,
+      "ssh_enabled": true,
+      "docker_enabled": true,
+      "wasm_enabled": false,
+      "ssh_host_key_policy": "insecure"
+    }
+  }
+}
+```
+
 ### GET /runners/poll — Runner Task Poll
+
+Before claiming a job, Manager checks that
+`COUNT(jobs WHERE runner_id=? AND status='running') < max_concurrent_jobs`.
+If the runner is at capacity, poll returns `data: null`.
 
 Response (with task):
 ```json
@@ -243,8 +332,33 @@ List items include `team_id` (from the owning pipeline) so the UI team switcher 
 |--------|------|------|
 | GET | `/api/v1/hosts` | JWT |
 | POST | `/api/v1/hosts` | JWT |
+| POST | `/api/v1/hosts/test` | JWT |
 | PUT | `/api/v1/hosts/:id` | JWT |
 | DELETE | `/api/v1/hosts/:id` | JWT |
+
+### POST /hosts/test
+
+Probe SSH connectivity using the current form values. Runs **from the Manager host** (not a Runner): connect + authenticate + `true`. Host keys are accepted for the probe only.
+
+Request:
+```json
+{
+  "host": "10.0.0.1",
+  "port": 22,
+  "username": "root",
+  "credential_type": "key_path",
+  "credential_data": "-----BEGIN OPENSSH PRIVATE KEY-----...",
+  "credential_passphrase": "",
+  "host_id": "optional-existing-host-uuid"
+}
+```
+
+When `credential_data` is empty and `host_id` is set, Manager decrypts the stored credential. `credential_type: agent` cannot be probed from Manager (agent lives on the Runner).
+
+Response:
+```json
+{ "code": 0, "data": { "ok": true, "latency_ms": 120, "message": "SSH OK — …" } }
+```
 
 `credential_type` values:
 
@@ -263,7 +377,11 @@ List items include `team_id` (from the owning pipeline) so the UI team switcher 
 | PUT | `/api/v1/secrets/:id` | JWT |
 | DELETE | `/api/v1/secrets/:id` | JWT |
 
-Secret values are masked (`***`) in list and get responses.
+- Values are **AES-256-GCM encrypted at rest** (key derived from Manager `jwt_secret`). Plaintext rows are rejected at decrypt (re-save required).
+- List/get return a **partially redacted** preview (`ab****yz`, or JSON with `password`/`token` fields masked) — never full plaintext.
+- When ciphertext cannot be decrypted: `value` is `****` and `reencrypt_required: true`.
+- Empty `value` on PUT keeps the existing ciphertext.
+- For private registries, store JSON credentials and reference the secret **name** via step field `registry_secret` (see [Docker Engine](/docs/01-architecture/docker-engine/)).
 
 ## Variables
 

@@ -9,15 +9,17 @@ use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::crypto;
 use crate::middleware::AuthUser;
 use crate::rbac::{resolve_required_team_id, secret_team_id, team_in_clause};
 use crate::state::AppState;
 
-fn mask_value(raw: &str) -> String {
-    if raw.len() > 4 {
-        format!("{}****{}", &raw[..2], &raw[raw.len() - 2..])
-    } else {
-        "****".to_string()
+/// Decrypt for API display with partial redaction. Plaintext/corrupt rows are
+/// not shown — operators must re-save (`reencrypt_required: true`).
+fn value_fields_for_api(stored: &str, jwt_secret: &str) -> (String, bool) {
+    match crypto::decrypt(stored, jwt_secret) {
+        Ok(plain) => (crypto::mask_for_display(&plain), false),
+        Err(_) => ("****".to_string(), true),
     }
 }
 
@@ -44,13 +46,17 @@ pub async fn list(
     }
 
     let rows = q.fetch_all(&state.pool).await?;
+    let jwt = &state.config.auth.jwt_secret;
     let secrets: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
+            let stored: String = r.get(2);
+            let (value, reencrypt_required) = value_fields_for_api(&stored, jwt);
             serde_json::json!({
                 "id": r.get::<String, _>(0),
                 "name": r.get::<String, _>(1),
-                "value": mask_value(&r.get::<String, _>(2)),
+                "value": value,
+                "reencrypt_required": reencrypt_required,
                 "owner_group": r.get::<String, _>(3),
                 "team_id": r.get::<String, _>(4),
                 "updated_at": r.get::<Option<String>, _>(5),
@@ -69,6 +75,9 @@ pub async fn create(
     let name = req.name.trim().to_string();
     if name.is_empty() {
         return Err(AppError::ValidationFailed("name is required".into()));
+    }
+    if req.value.is_empty() {
+        return Err(AppError::ValidationFailed("value is required".into()));
     }
 
     let (team_id, slug) = resolve_required_team_id(
@@ -89,13 +98,16 @@ pub async fn create(
         )));
     }
 
+    let encrypted = crypto::encrypt(&req.value, &state.config.auth.jwt_secret)
+        .map_err(|e| AppError::Internal(format!("secret encryption failed: {e}")))?;
+
     let id = Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO secrets (id, name, value, owner_group, team_id) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&name)
-    .bind(&req.value)
+    .bind(&encrypted)
     .bind(&slug)
     .bind(&team_id)
     .execute(&state.pool)
@@ -127,10 +139,15 @@ pub async fn get_one(
     .await?
     .ok_or_else(|| AppError::NotFound("secret not found".into()))?;
 
+    let stored: String = r.get(2);
+    let (value, reencrypt_required) =
+        value_fields_for_api(&stored, &state.config.auth.jwt_secret);
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": r.get::<String, _>(0),
         "name": r.get::<String, _>(1),
-        "value": mask_value(&r.get::<String, _>(2)),
+        "value": value,
+        "reencrypt_required": reencrypt_required,
         "owner_group": r.get::<String, _>(3),
         "team_id": r.get::<String, _>(4),
         "updated_at": r.get::<Option<String>, _>(5),
@@ -163,15 +180,29 @@ pub async fn update(
         (team_id, slug)
     };
 
-    sqlx::query(
-        "UPDATE secrets SET value = ?, owner_group = ?, team_id = ?, updated_at = datetime('now') WHERE id = ?",
-    )
-    .bind(&req.value)
-    .bind(&slug)
-    .bind(&new_team_id)
-    .bind(&id)
-    .execute(&state.pool)
-    .await?;
+    // Empty value = keep existing ciphertext (UI: leave blank to keep current).
+    if req.value.is_empty() {
+        sqlx::query(
+            "UPDATE secrets SET owner_group = ?, team_id = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&slug)
+        .bind(&new_team_id)
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    } else {
+        let encrypted = crypto::encrypt(&req.value, &state.config.auth.jwt_secret)
+            .map_err(|e| AppError::Internal(format!("secret encryption failed: {e}")))?;
+        sqlx::query(
+            "UPDATE secrets SET value = ?, owner_group = ?, team_id = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&encrypted)
+        .bind(&slug)
+        .bind(&new_team_id)
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    }
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,

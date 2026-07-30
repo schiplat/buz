@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub manager: ManagerConfig,
@@ -28,16 +28,19 @@ pub struct ManagerConfig {
 pub struct RunnerIdentity {
     #[serde(default = "default_runner_name")]
     pub name: String,
-    #[serde(default = "default_labels")]
+    /// Deprecated in runner.toml — labels are UI-managed (create/edit in Manager).
+    /// Kept for deserialize compatibility only; not sent on register.
+    #[serde(default)]
+    #[allow(dead_code)]
     pub labels: Vec<String>,
     #[serde(default = "default_workspace_dir")]
     pub workspace_dir: String,
-    /// Clean the workspace_dir after each job completes.
-    /// Recommended for shared runners to prevent data leakage between jobs.
+    /// Deprecated in runner.toml — controlled from Manager UI.
+    /// Kept for deserialize compatibility; overwritten by register/heartbeat policy.
     #[serde(default)]
     pub clean_workspace_after_job: bool,
-    /// Ephemeral mode: clean workspace after each job AND exit the runner process.
-    /// Useful for container-based runners that are destroyed after one job.
+    /// Deprecated in runner.toml — controlled from Manager UI.
+    /// Kept for deserialize compatibility; overwritten by register/heartbeat policy.
     #[serde(default)]
     pub ephemeral: bool,
     /// Interface names whose IPs are advertised first in Manager UI (multi-NIC VMs).
@@ -60,7 +63,7 @@ impl Default for RunnerIdentity {
     fn default() -> Self {
         Self {
             name: default_runner_name(),
-            labels: default_labels(),
+            labels: Vec::new(),
             workspace_dir: default_workspace_dir(),
             clean_workspace_after_job: false,
             ephemeral: false,
@@ -71,15 +74,19 @@ impl Default for RunnerIdentity {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EngineConfig {
+    /// Deprecated in runner.toml — controlled from Manager UI (overwritten by policy).
     #[serde(default = "default_true")]
     pub shell_enabled: bool,
+    /// Deprecated in runner.toml — controlled from Manager UI (overwritten by policy).
     #[serde(default = "default_true")]
     pub ssh_enabled: bool,
+    /// Deprecated in runner.toml — controlled from Manager UI (overwritten by policy).
     #[serde(default = "default_false")]
     pub docker_enabled: bool,
+    /// Deprecated in runner.toml — controlled from Manager UI (overwritten by policy).
     #[serde(default = "default_false")]
     pub wasm_enabled: bool,
-    /// SSH host-key verification policy (see [`SshHostKeyPolicy`]).
+    /// Deprecated in runner.toml — controlled from Manager UI (overwritten by policy).
     #[serde(default)]
     pub ssh_host_key_policy: SshHostKeyPolicy,
     /// Path to OpenSSH `known_hosts` when policy is `known_hosts`.
@@ -125,16 +132,13 @@ impl EngineConfig {
         if !enabled {
             anyhow::bail!(
                 "{exec_type} engine is disabled on this runner \
-                 (set engine.{flag} = true in runner.toml)."
+                 (enable {flag} in Manager UI → Runners)."
             );
         }
         Ok(())
     }
 }
 
-fn default_labels() -> Vec<String> {
-    vec!["default".into()]
-}
 fn default_workspace_dir() -> String {
     "/tmp/buz-runner".into()
 }

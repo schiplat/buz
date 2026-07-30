@@ -1,0 +1,142 @@
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
+import { authApi } from '@/api/auth'
+import UiButton from '@/components/ui/UiButton.vue'
+
+const router = useRouter()
+const authStore = useAuthStore()
+
+const username = ref('admin')
+const password = ref('')
+const password2 = ref('')
+const showPassword = ref(false)
+const error = ref('')
+const loading = ref(false)
+const checking = ref(true)
+const appVersion = __APP_VERSION__
+
+onMounted(async () => {
+  try {
+    const s = await authApi.setupStatus()
+    if (!s.needs_setup) {
+      router.replace('/login')
+      return
+    }
+  } catch {
+    // stay on setup; submit will surface errors
+  } finally {
+    checking.value = false
+  }
+})
+
+async function handleSetup() {
+  error.value = ''
+  if (password.value !== password2.value) {
+    error.value = 'Passwords do not match'
+    return
+  }
+  if (password.value.length < 8) {
+    error.value = 'Password must be at least 8 characters'
+    return
+  }
+  const complexity =
+    /[a-z]/.test(password.value) &&
+    /[A-Z]/.test(password.value) &&
+    /[0-9]/.test(password.value) &&
+    /[^A-Za-z0-9\s]/.test(password.value) &&
+    !/\s/.test(password.value)
+  if (!complexity) {
+    error.value =
+      'Password must include uppercase, lowercase, a digit, and a symbol (e.g. !@#$%)'
+    return
+  }
+  loading.value = true
+  try {
+    await authStore.completeSetup(username.value.trim(), password.value)
+    router.push('/dashboard')
+  } catch (e: any) {
+    error.value = e.response?.data?.message || e.message || 'Setup failed'
+  } finally {
+    loading.value = false
+  }
+}
+</script>
+
+<template>
+  <div class="flex min-h-screen items-center justify-center bg-background">
+    <div v-if="checking" class="text-sm text-muted-foreground">Checking…</div>
+    <div v-else class="w-full max-w-sm space-y-6">
+      <div class="text-center space-y-1">
+        <div class="flex justify-center mb-3">
+          <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-sm font-semibold tracking-wide text-primary-foreground">
+            Bz
+          </span>
+        </div>
+        <h1 class="text-lg font-semibold tracking-tight">Initialize Buz</h1>
+        <p class="type-meta">Create the first platform admin. This runs once.</p>
+      </div>
+
+      <form @submit.prevent="handleSetup" class="space-y-4">
+        <div class="space-y-1.5">
+          <label class="type-label">Username <span class="text-red-500">*</span></label>
+          <input
+            v-model="username"
+            type="text"
+            autocomplete="username"
+            placeholder="admin"
+            class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
+          />
+        </div>
+        <div class="space-y-1.5">
+          <label class="type-label">Password <span class="text-red-500">*</span></label>
+          <div class="relative">
+            <input
+              v-model="password"
+              :type="showPassword ? 'text' : 'password'"
+              autocomplete="new-password"
+              placeholder="e.g. Str0ng!Pass"
+              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 pr-14 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
+            />
+            <button
+              type="button"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              @click="showPassword = !showPassword"
+            >
+              {{ showPassword ? 'Hide' : 'Show' }}
+            </button>
+          </div>
+          <p class="text-xs text-muted-foreground">
+            ≥ 8 chars · uppercase · lowercase · digit · symbol
+          </p>
+        </div>
+        <div class="space-y-1.5">
+          <label class="type-label">Confirm password <span class="text-red-500">*</span></label>
+          <div class="relative">
+            <input
+              v-model="password2"
+              :type="showPassword ? 'text' : 'password'"
+              autocomplete="new-password"
+              placeholder="Repeat password"
+              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 pr-14 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
+            />
+            <button
+              type="button"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              @click="showPassword = !showPassword"
+            >
+              {{ showPassword ? 'Hide' : 'Show' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="error" class="field-error">{{ error }}</div>
+        <UiButton type="submit" class="w-full" :disabled="loading || !username.trim() || !password">
+          {{ loading ? 'Creating…' : 'Create admin & continue' }}
+        </UiButton>
+      </form>
+
+      <p class="text-center font-mono text-xs text-muted-foreground/60">v{{ appVersion }}</p>
+    </div>
+  </div>
+</template>

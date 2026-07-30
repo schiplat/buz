@@ -221,33 +221,9 @@ pub fn team_in_clause(auth: &AuthUser, column: &str) -> Option<(String, Vec<Stri
     }
 }
 
-/// Bootstrap admin user + default team + migrate owner_group → team_id.
-pub async fn bootstrap(
-    pool: &SqlitePool,
-    admin_user: &str,
-    admin_password: &str,
-) -> anyhow::Result<()> {
-    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-        .fetch_one(pool)
-        .await?;
-
-    if user_count == 0 {
-        let id = uuid::Uuid::new_v4().to_string();
-        let hash =
-            crate::password::hash_password(admin_password).map_err(|e| anyhow::anyhow!(e))?;
-        sqlx::query(
-            "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_active)
-             VALUES (?, ?, ?, ?, 1, 1)",
-        )
-        .bind(&id)
-        .bind(admin_user)
-        .bind(&hash)
-        .bind(admin_user)
-        .execute(pool)
-        .await?;
-        tracing::info!("Bootstrapped platform admin user '{admin_user}'");
-    }
-
+/// Bootstrap default team + migrate owner_group → team_id.
+/// First platform admin is created via `POST /auth/setup` (web UI), not from config.
+pub async fn bootstrap(pool: &SqlitePool) -> anyhow::Result<()> {
     // Ensure a default team exists for migration of empty owner_group rows
     let default_team_id = ensure_team(pool, "default", "Default").await?;
 

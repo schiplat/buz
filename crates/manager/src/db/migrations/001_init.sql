@@ -10,6 +10,14 @@ CREATE TABLE IF NOT EXISTS runners (
     version TEXT,
     system_info TEXT NOT NULL DEFAULT '{}',
     is_frozen INTEGER NOT NULL DEFAULT 0,
+    max_concurrent_jobs INTEGER NOT NULL DEFAULT 1,
+    clean_workspace_after_job INTEGER NOT NULL DEFAULT 0,
+    ephemeral INTEGER NOT NULL DEFAULT 0,
+    shell_enabled INTEGER NOT NULL DEFAULT 1,
+    ssh_enabled INTEGER NOT NULL DEFAULT 1,
+    docker_enabled INTEGER NOT NULL DEFAULT 0,
+    wasm_enabled INTEGER NOT NULL DEFAULT 0,
+    ssh_host_key_policy TEXT NOT NULL DEFAULT 'insecure',
     last_seen TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -64,6 +72,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     timeout_seconds INTEGER NOT NULL DEFAULT 3600,
     fail_strategy TEXT NOT NULL DEFAULT 'stop',
     step_secrets TEXT NOT NULL DEFAULT '',
+    registry_secret TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_pipeline ON tasks(pipeline_id, step_order);

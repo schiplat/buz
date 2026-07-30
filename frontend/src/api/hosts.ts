@@ -58,4 +58,17 @@ export const hostsApi = {
   async delete(id: string): Promise<void> {
     await apiClient.delete(`/hosts/${id}`)
   },
+
+  async test(data: {
+    host: string
+    port: number
+    username: string
+    credential_type?: string
+    credential_data?: string
+    credential_passphrase?: string
+    host_id?: string
+  }): Promise<{ ok: boolean; latency_ms: number; message: string }> {
+    const resp = await apiClient.post('/hosts/test', data, { timeout: 20_000 })
+    return resp.data as { ok: boolean; latency_ms: number; message: string }
+  },
 }

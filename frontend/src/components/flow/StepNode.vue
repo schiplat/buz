@@ -72,16 +72,16 @@ function handleClick() {
           <XCircle v-else-if="data.status === 'failed'" class="h-4 w-4 text-red-500" />
           <Loader2 v-else-if="data.status === 'running'" class="h-4 w-4 text-amber-500 animate-spin" />
           <MinusCircle v-else-if="data.status === 'cancelled'" class="h-4 w-4 text-slate-400" />
-          <span v-else class="inline-flex items-center justify-center h-4 w-4 rounded-full bg-slate-100 dark:bg-slate-800 text-[10px] font-bold text-slate-400 tabular-nums leading-none">{{ String(data.stepIndex + 1).padStart(2, '0') }}</span>
+          <span v-else class="inline-flex items-center justify-center h-4 w-4 rounded-full bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-400 tabular-nums leading-none">{{ String(data.stepIndex + 1).padStart(2, '0') }}</span>
         </div>
         <div class="min-w-0 flex-1">
-          <div class="text-[12px] font-semibold text-foreground leading-snug break-words">{{ data.name }}</div>
-          <span class="text-[9px] text-muted-foreground/60 uppercase tracking-wider mt-0.5 block">{{ data.execType }}</span>
+          <div class="text-sm font-semibold text-foreground leading-snug break-words">{{ data.name }}</div>
+          <span class="text-xs text-muted-foreground/70 uppercase tracking-wider mt-0.5 block">{{ data.execType }}</span>
         </div>
       </div>
 
       <!-- Duration -->
-      <div class="flex items-center gap-1 text-[10px]">
+      <div class="flex items-center gap-1 text-xs">
         <Clock class="h-2.5 w-2.5 shrink-0 text-muted-foreground/50" />
         <span
           class="font-mono"

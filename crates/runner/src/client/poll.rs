@@ -5,7 +5,24 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::engine;
+use crate::policy::{self, SharedPolicy};
 use std::collections::{HashMap, HashSet};
+
+/// Per-step log chunk layout (`UNIQUE(job_id, chunk_index)`).
+///
+/// Using a hard `0` for the RUN echo previously overwrote the docker-login
+/// banner on step 0 (`INSERT OR REPLACE`), so private-registry failures looked
+/// like "login never ran".
+pub(crate) fn step_log_base(step_idx: usize) -> i32 {
+    (step_idx * 10_000) as i32
+}
+
+pub(crate) const LOG_LOGIN: i32 = 0;
+pub(crate) const LOG_ECHO: i32 = 1;
+pub(crate) const LOG_STREAM_START: i32 = 2;
+pub(crate) const LOG_STEP_ERROR: i32 = 9997;
+const LOG_STEP_META_A: i32 = 9998;
+const LOG_STEP_META_B: i32 = 9999;
 
 /// Build a `bash -x` style echo line showing the command with its environment.
 /// Secret values (from pipeline/key-level secrets) are masked as `***`.
@@ -61,88 +78,113 @@ pub async fn check_job_cancelled(
     Ok(status == "cancelled")
 }
 
-/// Poll loop with exponential backoff.
-/// On each successful poll response (task or no task), the backoff resets.
-/// On failure the backoff doubles (capped at 60s), so the runner degrades
-/// gracefully instead of hammering the Center.
-pub async fn run_poll_loop(client: &Client, config: &Config, token: &str) -> anyhow::Result<()> {
+/// Poll loop with concurrent job slots and exponential backoff on failures.
+///
+/// Capacity and strategy (engines, cleanup, ephemeral) come from Manager UI
+/// via `shared_policy` (refreshed by heartbeat). Ephemeral runners always run
+/// at most one job then exit.
+pub async fn run_poll_loop(
+    client: &Client,
+    config: &Config,
+    token: &str,
+    shared_policy: SharedPolicy,
+) -> anyhow::Result<()> {
+    use tokio::task::JoinSet;
+
     let mut consecutive_failures: u32 = 0;
+    let mut jobs: JoinSet<anyhow::Result<()>> = JoinSet::new();
+    let mut ephemeral_exit = false;
 
     loop {
+        // Reap finished jobs
+        while let Some(joined) = jobs.try_join_next() {
+            match joined {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::error!("Job task error: {e}"),
+                Err(e) => tracing::error!("Job task panicked: {e}"),
+            }
+            if policy::ephemeral(&shared_policy) {
+                ephemeral_exit = true;
+            }
+        }
+
+        if ephemeral_exit && jobs.is_empty() {
+            tracing::info!("Ephemeral runner exiting after job — container/VM will be destroyed");
+            return Ok(());
+        }
+
+        let is_ephemeral = policy::ephemeral(&shared_policy);
+        let local_max = if is_ephemeral {
+            1
+        } else {
+            policy::max_concurrent(&shared_policy)
+        };
+        let active = jobs.len() as u32;
+
+        if active >= local_max {
+            // At capacity — wait briefly for a slot or heartbeat update
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+
         match poll_for_task(client, config, token).await {
             Ok(Some(task)) => {
-                // Success — reset backoff and execute
                 consecutive_failures = 0;
 
-                let job_id = task["job_id"].as_str().unwrap_or("unknown");
-                tracing::info!("Executing job {job_id}");
+                let job_id = task["job_id"].as_str().unwrap_or("unknown").to_string();
+                tracing::info!(
+                    "Claimed job {job_id} (active {}/{})",
+                    active + 1,
+                    local_max
+                );
 
-                if let Err(e) = execute_job(client, config, token, &task).await {
-                    let msg = e.to_string();
-                    if msg.contains("job cancelled by user") {
-                        tracing::warn!("Job {job_id} cancelled by user — skipping error log");
-                        if let Err(se) =
-                            update_job_status(client, config, token, job_id, "cancelled", None)
-                                .await
-                        {
-                            tracing::error!("CRITICAL: Failed to report cancelled status for job {job_id}: {se}");
-                        }
-                    } else {
-                        tracing::error!("Job {job_id} failed: {e}");
-                        // Upload the error message so it appears in the live terminal
-                        if let Err(le) = super::logs::upload_chunk(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            LogChunk {
-                                chunk_index: -1,
-                                step_order: -1,
-                                content: format!("==> ERROR <==\n{e}\n"),
-                            },
-                        )
-                        .await
-                        {
-                            tracing::warn!("Job {job_id}: failed to upload error log chunk: {le}");
-                        }
-                        if let Err(se) =
-                            update_job_status(client, config, token, job_id, "failed", None).await
-                        {
-                            tracing::error!(
-                                "CRITICAL: Failed to report failed status for job {job_id}: {se}"
-                            );
-                        }
+                let c = client.clone();
+                let mut job_config = config.clone();
+                let snap = policy::snapshot(&shared_policy);
+                policy::apply_to_config(&mut job_config, &snap);
+                // Isolate workspace per job so parallel jobs do not clash
+                let job_ws = format!(
+                    "{}/{}",
+                    config.runner.workspace_dir.trim_end_matches('/'),
+                    job_id
+                );
+                if let Err(e) = std::fs::create_dir_all(&job_ws) {
+                    tracing::error!("Failed to create job workspace {job_ws}: {e}");
+                    continue;
+                }
+                job_config.runner.workspace_dir = job_ws.clone();
+                let t = token.to_string();
+                let clean = snap.clean_workspace_after_job || snap.ephemeral;
+
+                jobs.spawn(async move {
+                    let result = run_one_job(&c, &job_config, &t, &task).await;
+                    if clean {
+                        tracing::info!("Cleaning job workspace: {job_ws}");
+                        clean_workspace(&job_ws);
                     }
-                }
+                    result
+                });
 
-                // ── Ephemeral / workspace cleanup ─────────────────────────────
-                if config.runner.clean_workspace_after_job || config.runner.ephemeral {
-                    tracing::info!("Cleaning workspace: {}", config.runner.workspace_dir);
-                    clean_workspace(&config.runner.workspace_dir);
+                // If ephemeral, don't claim more — wait for the one job to finish
+                if is_ephemeral {
+                    // Fall through; next loop iteration will see active>=1 and wait
                 }
-
-                if config.runner.ephemeral {
-                    tracing::info!(
-                        "Ephemeral runner exiting after job {job_id} — container/VM will be destroyed"
-                    );
-                    return Ok(());
-                }
-                // ───────────────────────────────────────────────────────────────
             }
             Ok(None) => {
-                // No task — this is a normal poll, reset backoff
                 if consecutive_failures > 0 {
                     tracing::info!("Poll recovered after {consecutive_failures} failure(s)");
                 }
                 consecutive_failures = 0;
+                // Idle: short pause so we don't busy-spin when Manager returns null immediately
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
             Err(e) => {
                 consecutive_failures += 1;
 
                 let delay_secs = match consecutive_failures {
-                    0 => 0,                         // unreachable in Err branch
-                    n if n <= 5 => 2u64 << (n - 1), // 2, 4, 8, 16, 32
-                    _ => 60,                        // cap
+                    0 => 0,
+                    n if n <= 5 => 2u64 << (n - 1),
+                    _ => 60,
                 };
                 let delay = Duration::from_secs(delay_secs);
 
@@ -154,6 +196,52 @@ pub async fn run_poll_loop(client: &Client, config: &Config, token: &str) -> any
             }
         }
     }
+}
+
+/// Execute one claimed job and report terminal status to Manager.
+async fn run_one_job(
+    client: &Client,
+    config: &Config,
+    token: &str,
+    task: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let job_id = task["job_id"].as_str().unwrap_or("unknown");
+
+    if let Err(e) = execute_job(client, config, token, task).await {
+        let msg = e.to_string();
+        if msg.contains("job cancelled by user") {
+            tracing::warn!("Job {job_id} cancelled by user — skipping error log");
+            if let Err(se) =
+                update_job_status(client, config, token, job_id, "cancelled", None).await
+            {
+                tracing::error!(
+                    "CRITICAL: Failed to report cancelled status for job {job_id}: {se}"
+                );
+            }
+        } else {
+            tracing::error!("Job {job_id} failed: {e}");
+            if let Err(le) = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: -1,
+                    step_order: -1,
+                    content: format!("==> ERROR <==\n{e}\n"),
+                },
+            )
+            .await
+            {
+                tracing::warn!("Job {job_id}: failed to upload error log chunk: {le}");
+            }
+            if let Err(se) = update_job_status(client, config, token, job_id, "failed", None).await
+            {
+                tracing::error!("CRITICAL: Failed to report failed status for job {job_id}: {se}");
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn poll_for_task(
@@ -278,7 +366,17 @@ async fn execute_job(
         }
 
         // Collect all secret values for log masking (GitHub Actions-style redaction)
-        let secret_values = crate::masker::collect_secret_values(&step_env);
+        let mut secret_values = crate::masker::collect_secret_values(&step_env);
+        if let Some(pw) = step
+            .get("registry_auth")
+            .and_then(|a| a.get("password"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            secret_values.push(pw.to_string());
+        }
+
+        let log_base = step_log_base(idx);
 
         if let Err(e) = config.engine.ensure_enabled(exec_type) {
             let msg = e.to_string();
@@ -288,7 +386,7 @@ async fn execute_job(
                 token,
                 job_id,
                 LogChunk {
-                    chunk_index: (idx * 10000 + 9997) as i32,
+                    chunk_index: log_base + LOG_STEP_ERROR,
                     step_order: idx as i32,
                     content: format!("==> ERROR <==\n{msg}\n"),
                 },
@@ -310,9 +408,118 @@ async fn execute_job(
 
         update_job_status(client, config, token, job_id, "running", Some(idx as i32)).await?;
 
+        // Fail fast if Manager could not resolve registry_secret.
+        if let Some(err) = step
+            .get("registry_auth_error")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let msg = format!("registry_secret: {err}");
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_ERROR,
+                    step_order: idx as i32,
+                    content: format!("==> ERROR <==\n{msg}\n"),
+                },
+            )
+            .await;
+            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+            anyhow::bail!(msg);
+        }
+
+        let registry_secret_ref = step
+            .get("registry_secret")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+
+        let registry_login = step.get("registry_auth").and_then(|a| {
+            let registry = a.get("registry")?.as_str()?.trim();
+            let username = a.get("username")?.as_str()?.trim();
+            let password = a.get("password")?.as_str()?;
+            if registry.is_empty() || username.is_empty() || password.is_empty() {
+                return None;
+            }
+            Some((
+                registry.to_string(),
+                username.to_string(),
+                password.to_string(),
+            ))
+        });
+
+        // registry_secret set but no usable registry_auth → never silent-skip login.
+        if !registry_secret_ref.is_empty() && registry_login.is_none() {
+            let msg = if step.get("registry_auth").is_some() {
+                format!(
+                    "registry_secret '{registry_secret_ref}' resolved but \
+                     registry/username/password was empty"
+                )
+            } else {
+                format!(
+                    "registry_secret '{registry_secret_ref}' is set but Manager did not \
+                     attach registry_auth — restart Manager with a build that resolves \
+                     registry_secret at claim time"
+                )
+            };
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_ERROR,
+                    step_order: idx as i32,
+                    content: format!("==> ERROR <==\n{msg}\n"),
+                },
+            )
+            .await;
+            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+            anyhow::bail!(msg);
+        }
+
         // ── Race step execution against cancel polling ────────────────────────
         let (output, was_cancelled): (engine::shell::ShellOutput, bool) = match exec_type {
             "local" | "shell" => {
+                if let Some((ref registry, ref username, ref password)) = registry_login {
+                    if let Err(e) =
+                        engine::docker::registry_login(registry, username, password).await
+                    {
+                        let msg = e.to_string();
+                        let masked = crate::masker::mask_secrets(&msg, &secret_values);
+                        let _ = super::logs::upload_chunk(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            LogChunk {
+                                chunk_index: log_base + LOG_STEP_ERROR,
+                                step_order: idx as i32,
+                                content: format!("==> ERROR <==\n{masked}\n"),
+                            },
+                        )
+                        .await;
+                        update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
+                            .await?;
+                        anyhow::bail!(masked);
+                    }
+                    let _ = super::logs::upload_chunk(
+                        client,
+                        config,
+                        token,
+                        job_id,
+                        LogChunk {
+                            chunk_index: log_base + LOG_LOGIN,
+                            step_order: idx as i32,
+                            content: format!("==> docker login {registry} <==\n"),
+                        },
+                    )
+                    .await;
+                }
+
                 let cmd = command.to_string();
                 let wd = work_dir.map(|s| s.to_string());
                 let env = step_env.clone();
@@ -322,7 +529,11 @@ async fn execute_job(
                     let echo_line = build_step_echo(exec_type, &cmd, &env, &step_secret_keys, work_dir);
                     let _ = super::logs::upload_chunk(
                         client, config, token, job_id,
-                        LogChunk { chunk_index: 0, step_order: idx as i32, content: echo_line },
+                        LogChunk {
+                            chunk_index: log_base + LOG_ECHO,
+                            step_order: idx as i32,
+                            content: echo_line,
+                        },
                     ).await;
                 }
 
@@ -332,8 +543,17 @@ async fn execute_job(
                 let jid = job_id.to_string();
                 let sname = step_name.to_string();
 
-                let (mut child, mut output_rx, read_guard) =
-                    engine::shell::execute_streaming(&cmd, wd.as_deref(), Some(&env)).await?;
+                let exec_result =
+                    engine::shell::execute_streaming(&cmd, wd.as_deref(), Some(&env)).await;
+                let (mut child, mut output_rx, read_guard) = match exec_result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if let Some((ref reg, _, _)) = registry_login {
+                            engine::docker::registry_logout(reg).await;
+                        }
+                        return Err(e);
+                    }
+                };
 
                 // Clone secret values for use in the async upload task
                 let sv_for_upload = secret_values.clone();
@@ -344,8 +564,9 @@ async fn execute_job(
                 let t_log = token.to_string();
                 let jid_log = job_id.to_string();
                 let idx_i32 = idx as i32;
+                let stream_base = log_base + LOG_STREAM_START;
                 let upload_task = tokio::spawn(async move {
-                    let mut chunk_num = 1i32;
+                    let mut chunk_num = stream_base;
                     while let Some(chunk) = output_rx.recv().await {
                         let masked_chunk = crate::masker::mask_secrets(&chunk, &sv_for_upload);
                         match super::logs::upload_chunk(
@@ -394,6 +615,10 @@ async fn execute_job(
                     }
                 };
 
+                if let Some((ref reg, _, _)) = registry_login {
+                    engine::docker::registry_logout(reg).await;
+                }
+
                 (
                     engine::shell::ShellOutput {
                         stdout: String::new(),
@@ -437,7 +662,7 @@ async fn execute_job(
                         token,
                         job_id,
                         LogChunk {
-                            chunk_index: (idx * 10000 + 9997) as i32,
+                            chunk_index: log_base + LOG_STEP_ERROR,
                             step_order: idx as i32,
                             content: format!("==> ERROR <==\n{msg}\n"),
                         },
@@ -448,15 +673,30 @@ async fn execute_job(
                     anyhow::bail!(msg);
                 }
 
-                let cmd = command.to_string();
+                let mut ssh_env = step_env.clone();
+                let mut ssh_secret_keys = step_secret_keys.clone();
+                let cmd = if let Some((ref registry, ref username, ref password)) = registry_login {
+                    ssh_env.insert("BUZ_REGISTRY_HOST".into(), registry.clone());
+                    ssh_env.insert("BUZ_REGISTRY_USER".into(), username.clone());
+                    ssh_env.insert("BUZ_REGISTRY_PASSWORD".into(), password.clone());
+                    ssh_secret_keys.insert("BUZ_REGISTRY_PASSWORD".into());
+                    secret_values.push(password.clone());
+                    wrap_remote_cmd_with_registry_login(command)
+                } else {
+                    command.to_string()
+                };
                 let c = client.clone();
 
                 // Debug echo — show the command before execution (like bash -x)
                 {
-                    let echo_line = build_step_echo(exec_type, &cmd, &step_env, &step_secret_keys, work_dir);
+                    let echo_line = build_step_echo(exec_type, &cmd, &ssh_env, &ssh_secret_keys, work_dir);
                     let _ = super::logs::upload_chunk(
                         client, config, token, job_id,
-                        LogChunk { chunk_index: 0, step_order: idx as i32, content: echo_line },
+                        LogChunk {
+                            chunk_index: log_base + LOG_ECHO,
+                            step_order: idx as i32,
+                            content: echo_line,
+                        },
                     ).await;
                 }
 
@@ -467,9 +707,10 @@ async fn execute_job(
                 let sname = step_name.to_string();
                 let sname2 = sname.clone();
                 let hosts_json = serde_json::Value::Array(host_values);
+                let step_env_ssh = ssh_env;
 
                 let step_task = tokio::spawn(async move {
-                    execute_ssh_step(&cfg_ssh, &cmd, &hosts_json, step_timeout, &sname, &step_env).await
+                    execute_ssh_step(&cfg_ssh, &cmd, &hosts_json, step_timeout, &sname, &step_env_ssh).await
                 });
                 let abort_handle = step_task.abort_handle();
 
@@ -498,7 +739,7 @@ async fn execute_job(
                         token,
                         job_id,
                         LogChunk {
-                            chunk_index: (idx * 10000 + 9997) as i32,
+                            chunk_index: log_base + LOG_STEP_ERROR,
                             step_order: idx as i32,
                             content: format!("==> ERROR <==\n{msg}\n"),
                         },
@@ -507,6 +748,45 @@ async fn execute_job(
                     update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
                         .await?;
                     anyhow::bail!(msg);
+                }
+
+                let pull_registry = registry_login
+                    .as_ref()
+                    .map(|(r, _, _)| r.clone());
+                if let Some((ref registry, ref username, ref password)) = registry_login {
+                    if let Err(e) =
+                        engine::docker::registry_login(registry, username, password).await
+                    {
+                        let msg = e.to_string();
+                        let masked = crate::masker::mask_secrets(&msg, &secret_values);
+                        let _ = super::logs::upload_chunk(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            LogChunk {
+                                chunk_index: log_base + LOG_STEP_ERROR,
+                                step_order: idx as i32,
+                                content: format!("==> ERROR <==\n{masked}\n"),
+                            },
+                        )
+                        .await;
+                        update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
+                            .await?;
+                        anyhow::bail!(masked);
+                    }
+                    let _ = super::logs::upload_chunk(
+                        client,
+                        config,
+                        token,
+                        job_id,
+                        LogChunk {
+                            chunk_index: log_base + LOG_LOGIN,
+                            step_order: idx as i32,
+                            content: format!("==> docker login {registry} <==\n"),
+                        },
+                    )
+                    .await;
                 }
 
                 let cmd = command.to_string();
@@ -529,7 +809,11 @@ async fn execute_job(
                     let echo_line = build_step_echo(exec_type, &cmd, &step_env, &step_secret_keys, work_dir);
                     let _ = super::logs::upload_chunk(
                         client, config, token, job_id,
-                        LogChunk { chunk_index: 0, step_order: idx as i32, content: echo_line },
+                        LogChunk {
+                            chunk_index: log_base + LOG_ECHO,
+                            step_order: idx as i32,
+                            content: echo_line,
+                        },
                     ).await;
                 }
 
@@ -542,25 +826,35 @@ async fn execute_job(
                 let sname = step_name.to_string();
                 let sv_for_upload = secret_values.clone();
 
-                let (mut child, mut output_rx, read_guard) =
-                    engine::docker::execute_streaming(
-                        &img,
-                        Path::new(&config.runner.workspace_dir),
-                        &cmd,
-                        &env,
-                        &volumes,
-                        work_dir,
-                        privileged,
-                    )
-                    .await?;
+                let exec_result = engine::docker::execute_streaming(
+                    &img,
+                    Path::new(&config.runner.workspace_dir),
+                    &cmd,
+                    &env,
+                    &volumes,
+                    work_dir,
+                    privileged,
+                )
+                .await;
+
+                let (mut child, mut output_rx, read_guard) = match exec_result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if let Some(reg) = &pull_registry {
+                            engine::docker::registry_logout(reg).await;
+                        }
+                        return Err(e);
+                    }
+                };
 
                 let c_log = client.clone();
                 let cfg_log = config.clone();
                 let t_log = token.to_string();
                 let jid_log = job_id.to_string();
                 let idx_i32 = idx as i32;
+                let stream_base = log_base + LOG_STREAM_START;
                 let upload_task = tokio::spawn(async move {
-                    let mut chunk_num = 1i32;
+                    let mut chunk_num = stream_base;
                     while let Some(chunk) = output_rx.recv().await {
                         let masked_chunk = crate::masker::mask_secrets(&chunk, &sv_for_upload);
                         match super::logs::upload_chunk(
@@ -607,6 +901,10 @@ async fn execute_job(
                     }
                 };
 
+                if let Some(reg) = &pull_registry {
+                    engine::docker::registry_logout(reg).await;
+                }
+
                 (
                     engine::shell::ShellOutput {
                         stdout: String::new(),
@@ -633,7 +931,7 @@ async fn execute_job(
                 token,
                 job_id,
                 LogChunk {
-                    chunk_index: (idx * 10000 + 9998) as i32,
+                    chunk_index: log_base + LOG_STEP_META_A,
                     step_order: idx as i32,
                     content: "==> CANCELLED <==\nJob was cancelled by user.\n".into(),
                 },
@@ -654,7 +952,7 @@ async fn execute_job(
                 token,
                 job_id,
                 LogChunk {
-                    chunk_index: (idx * 10000 + 9999) as i32,
+                    chunk_index: log_base + LOG_STEP_META_B,
                     step_order: idx as i32,
                     content: masked,
                 },
@@ -718,6 +1016,23 @@ fn build_ssh_env_command(
 fn shell_escape(value: &str) -> String {
     let escaped = value.replace('\'', "'\\''");
     format!("'{escaped}'")
+}
+
+/// Wrap a remote (SSH) command with registry login/logout using env credentials.
+///
+/// Expects `BUZ_REGISTRY_HOST`, `BUZ_REGISTRY_USER`, `BUZ_REGISTRY_PASSWORD`
+/// already exported on the remote (via [`build_ssh_env_command`]).
+fn wrap_remote_cmd_with_registry_login(user_command: &str) -> String {
+    format!(
+        r#"printf '%s\n' "$BUZ_REGISTRY_PASSWORD" | docker login -u "$BUZ_REGISTRY_USER" --password-stdin "$BUZ_REGISTRY_HOST"
+_buz_login_rc=$?
+if [ $_buz_login_rc -ne 0 ]; then exit $_buz_login_rc; fi
+set +e
+{user_command}
+_buz_cmd_rc=$?
+docker logout "$BUZ_REGISTRY_HOST" >/dev/null 2>&1 || true
+exit $_buz_cmd_rc"#
+    )
 }
 
 /// Extracted SSH execution logic (keeps `execute_job` readable).
@@ -883,3 +1198,7 @@ fn clean_workspace(work_dir: &str) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "poll_tests.rs"]
+mod tests;

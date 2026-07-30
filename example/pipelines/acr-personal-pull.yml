@@ -1,0 +1,37 @@
+# Private registry login (ACR Personal Edition) for docker pull / push.
+#
+# 1) Create Infrastructure → Secrets named e.g. acr-personal (encrypted at rest).
+#    Value JSON (password never goes in this YAML file):
+#   {
+#     "provider": "acr_personal",
+#     "registry": "crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com",
+#     "username": "<ACR login name>",
+#     "password": "<fixed password from ACR console>"
+#   }
+#    For shell/SSH push steps, `registry` in JSON is required (no step `image` to infer from).
+#    For docker engine pull, `registry` may be omitted when `image` includes the host.
+#
+# 2) Pipeline only references the secret *name* via registry_secret.
+#
+# Personal Edition uses a fixed password (not temporary GetAuthorizationToken).
+
+name: acr-personal-pull
+description: Pull a private ACR Personal Edition image via registry_secret
+team: default
+
+on:
+  manual: {}
+
+runner:
+  labels: [linux-x64]
+  timeout: 15m
+
+steps:
+  - name: Run private image
+    uses: docker
+    image: registry.cn-hongkong.aliyuncs.com/dadou/super-manager
+    registry_secret: acr_personal
+    run: |
+      echo "hello from private ACR image"
+      uname -a || true
+    timeout: 10m

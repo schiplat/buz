@@ -58,14 +58,38 @@ const { page: runnerPage, pageSize, pageCount, total, pageItems: pagedRunners, r
 const showCreate = ref(false)
 const newName = ref('')
 const newLabels = ref('linux-x64')
+const newMaxConcurrent = ref(1)
+const newCleanWorkspace = ref(false)
+const newEphemeral = ref(false)
+const newShellEnabled = ref(true)
+const newSshEnabled = ref(true)
+const newDockerEnabled = ref(false)
+const newWasmEnabled = ref(false)
+const newSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
 const creating = ref(false)
 const createdToken = ref<string | null>(null)
 const copied = ref(false)
+const copiedNameId = ref<string | null>(null)
+
+/** Toml line shown after create — always the real token, never a placeholder. */
+const registerTokenTomlLine = computed(() =>
+  createdToken.value ? `register_token = "${createdToken.value}"` : '',
+)
 
 // Drawer
 const activeRunner = ref<Runner | null>(null)
 const drawerOpen = ref(false)
 const detailTab = ref<'overview' | 'network' | 'logs'>('overview')
+const editMaxConcurrent = ref(1)
+const editLabels = ref('')
+const editCleanWorkspace = ref(false)
+const editEphemeral = ref(false)
+const editShellEnabled = ref(true)
+const editSshEnabled = ref(true)
+const editDockerEnabled = ref(false)
+const editWasmEnabled = ref(false)
+const editSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
+const savingPolicy = ref(false)
 
 onMounted(async () => { await loadRunners() })
 
@@ -75,7 +99,21 @@ async function loadRunners() {
   finally { loading.value = false }
 }
 
-function openDetail(r: Runner) { activeRunner.value = r; detailTab.value = 'overview'; drawerOpen.value = true; loadRunnerEvents(r.id) }
+function openDetail(r: Runner) {
+  activeRunner.value = r
+  detailTab.value = 'overview'
+  editMaxConcurrent.value = r.max_concurrent_jobs || 1
+  editLabels.value = (r.labels || []).join(', ')
+  editCleanWorkspace.value = !!r.clean_workspace_after_job
+  editEphemeral.value = !!r.ephemeral
+  editShellEnabled.value = r.shell_enabled !== false
+  editSshEnabled.value = r.ssh_enabled !== false
+  editDockerEnabled.value = !!r.docker_enabled
+  editWasmEnabled.value = !!r.wasm_enabled
+  editSshHostKeyPolicy.value = r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure'
+  drawerOpen.value = true
+  loadRunnerEvents(r.id)
+}
 function closeDetail() { drawerOpen.value = false; setTimeout(() => { if (!drawerOpen.value) activeRunner.value = null }, 300) }
 
 // ── Runner events log ──
@@ -109,7 +147,19 @@ function eventsGo(page: number) {
 }
 
 function openCreate() {
-  newName.value = ''; newLabels.value = 'linux-x64'; createdToken.value = null; copied.value = false; showCreate.value = true
+  newName.value = ''
+  newLabels.value = 'linux-x64'
+  newMaxConcurrent.value = 1
+  newCleanWorkspace.value = false
+  newEphemeral.value = false
+  newShellEnabled.value = true
+  newSshEnabled.value = true
+  newDockerEnabled.value = false
+  newWasmEnabled.value = false
+  newSshHostKeyPolicy.value = 'insecure'
+  createdToken.value = null
+  copied.value = false
+  showCreate.value = true
 }
 
 async function handleCreate() {
@@ -117,17 +167,89 @@ async function handleCreate() {
   creating.value = true
   try {
     const labels = newLabels.value.split(',').map(s => s.trim()).filter(Boolean)
-    const resp = await runnersApi.create(newName.value.trim(), labels)
+    const max = Math.min(32, Math.max(1, Number(newMaxConcurrent.value) || 1))
+    const resp = await runnersApi.create({
+      name: newName.value.trim(),
+      labels,
+      max_concurrent_jobs: max,
+      clean_workspace_after_job: newCleanWorkspace.value,
+      ephemeral: newEphemeral.value,
+      shell_enabled: newShellEnabled.value,
+      ssh_enabled: newSshEnabled.value,
+      docker_enabled: newDockerEnabled.value,
+      wasm_enabled: newWasmEnabled.value,
+      ssh_host_key_policy: newSshHostKeyPolicy.value,
+    })
     createdToken.value = resp.register_token
     await loadRunners()
   } catch (e) { console.error(e); alert('Failed to create runner') }
   finally { creating.value = false }
 }
 
+function policyDirty(): boolean {
+  if (!activeRunner.value) return false
+  const r = activeRunner.value
+  const labelsNow = editLabels.value.split(',').map(s => s.trim()).filter(Boolean)
+  const labelsWas = r.labels || []
+  const labelsChanged =
+    labelsNow.length !== labelsWas.length ||
+    labelsNow.some((l, i) => l !== labelsWas[i])
+  return (
+    labelsChanged ||
+    editMaxConcurrent.value !== (r.max_concurrent_jobs ?? 1) ||
+    editCleanWorkspace.value !== !!r.clean_workspace_after_job ||
+    editEphemeral.value !== !!r.ephemeral ||
+    editShellEnabled.value !== (r.shell_enabled !== false) ||
+    editSshEnabled.value !== (r.ssh_enabled !== false) ||
+    editDockerEnabled.value !== !!r.docker_enabled ||
+    editWasmEnabled.value !== !!r.wasm_enabled ||
+    editSshHostKeyPolicy.value !== (r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure')
+  )
+}
+
+async function savePolicy() {
+  if (!activeRunner.value) return
+  const max = Math.min(32, Math.max(1, Number(editMaxConcurrent.value) || 1))
+  const labels = editLabels.value.split(',').map(s => s.trim()).filter(Boolean)
+  savingPolicy.value = true
+  try {
+    const updated = await runnersApi.update(activeRunner.value.id, {
+      labels,
+      max_concurrent_jobs: max,
+      clean_workspace_after_job: editCleanWorkspace.value,
+      ephemeral: editEphemeral.value,
+      shell_enabled: editShellEnabled.value,
+      ssh_enabled: editSshEnabled.value,
+      docker_enabled: editDockerEnabled.value,
+      wasm_enabled: editWasmEnabled.value,
+      ssh_host_key_policy: editSshHostKeyPolicy.value,
+    })
+    activeRunner.value = { ...activeRunner.value, ...updated }
+    editLabels.value = (updated.labels || []).join(', ')
+    const idx = runners.value.findIndex(r => r.id === activeRunner.value!.id)
+    if (idx >= 0) runners.value[idx] = { ...runners.value[idx], ...updated }
+  } catch (e) { console.error(e); alert('Failed to update runner policy') }
+  finally { savingPolicy.value = false }
+}
+
 async function copyToken() {
   if (!createdToken.value) return
-  try { await navigator.clipboard.writeText(createdToken.value); copied.value = true; setTimeout(() => (copied.value = false), 2000) }
-  catch { /* fallback */ }
+  try {
+    await navigator.clipboard.writeText(registerTokenTomlLine.value || createdToken.value)
+    copied.value = true
+    setTimeout(() => (copied.value = false), 2000)
+  } catch { /* fallback */ }
+}
+
+async function copyRunnerName(r: Runner, e?: Event) {
+  e?.stopPropagation()
+  try {
+    await navigator.clipboard.writeText(r.name)
+    copiedNameId.value = r.id
+    setTimeout(() => {
+      if (copiedNameId.value === r.id) copiedNameId.value = null
+    }, 1500)
+  } catch { /* fallback */ }
 }
 
 async function handleToggleFreeze(r: Runner) {
@@ -223,6 +345,7 @@ const eventBadge = (t: string) => {
                 </th>
                 <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">IP</th>
                 <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Labels</th>
+                <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Slots</th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('status')">
                     Status
@@ -246,12 +369,32 @@ const eventBadge = (t: string) => {
             </thead>
             <tbody class="divide-y divide-border/20">
               <tr v-for="r in pagedRunners" :key="r.id" class="hover:bg-muted/5 transition-colors">
-                <td class="px-5 py-3 font-mono text-sm font-semibold text-primary cursor-pointer hover:underline whitespace-nowrap" @click="openDetail(r)">{{ r.name }}
-                  <span v-if="r.is_frozen" class="ml-1.5 text-[10px] text-sky-500 font-normal">(frozen)</span>
+                <td class="px-5 py-3 whitespace-nowrap">
+                  <div class="inline-flex items-center gap-1.5 max-w-full">
+                    <button
+                      type="button"
+                      class="font-mono text-sm font-semibold text-primary hover:underline truncate"
+                      :title="`Open ${r.name}`"
+                      @click="openDetail(r)"
+                    >{{ r.name }}</button>
+                    <button
+                      type="button"
+                      class="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-muted hover:text-foreground transition-colors"
+                      title="Copy name"
+                      @click="copyRunnerName(r, $event)"
+                    >
+                      <Check v-if="copiedNameId === r.id" class="h-3 w-3 text-emerald-500" />
+                      <Copy v-else class="h-3 w-3" />
+                    </button>
+                    <span v-if="r.is_frozen" class="text-[10px] text-sky-500 font-normal">(frozen)</span>
+                  </div>
                 </td>
                 <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ r.system_info?.hostname || '—' }}</td>
                 <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ r.system_info?.ip_addresses?.[0] || '—' }}</td>
                 <td class="px-5 py-3"><span v-for="l in r.labels" :key="l" class="mono-chip mr-1">{{ l }}</span></td>
+                <td class="px-5 py-3 font-mono text-xs tabular-nums text-muted-foreground">
+                  {{ r.running_jobs ?? 0 }}/{{ r.max_concurrent_jobs ?? 1 }}
+                </td>
                 <td class="px-5 py-3"><StatusBadge :status="r.status" /></td>
                 <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ r.version || '—' }}</td>
                 <td class="px-5 py-3 text-xs text-muted-foreground">{{ r.last_seen || '—' }}</td>
@@ -308,20 +451,82 @@ const eventBadge = (t: string) => {
               <span>Uptime {{ fmtUptime(activeRunner.system_info!.uptime_seconds) }}</span>
             </div>
 
+            <!-- Runner policy (UI-managed) -->
+            <div class="rounded-xl border border-border/60 bg-muted/30 px-3.5 py-3 space-y-3">
+              <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Runner Policy</div>
+              <div>
+                <label class="text-xs text-muted-foreground block mb-1">Labels</label>
+                <input
+                  v-model="editLabels"
+                  type="text"
+                  placeholder="linux-x64, prod"
+                  class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-none focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                />
+                <p class="text-[10px] text-muted-foreground mt-1">Comma-separated. Used when matching pipeline <code class="font-mono">runner.labels</code>.</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <label class="text-xs text-muted-foreground w-28 shrink-0">Max jobs</label>
+                <input
+                  v-model.number="editMaxConcurrent"
+                  type="number"
+                  min="1"
+                  max="32"
+                  class="w-24 rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-none focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                />
+                <span class="text-[11px] text-muted-foreground tabular-nums">
+                  running {{ activeRunner.running_jobs ?? 0 }} / max {{ activeRunner.max_concurrent_jobs ?? 1 }}
+                </span>
+              </div>
+              <label class="flex items-center gap-2 text-xs cursor-pointer">
+                <input v-model="editCleanWorkspace" type="checkbox" class="rounded border-border" />
+                Clean workspace after each job
+              </label>
+              <label class="flex items-center gap-2 text-xs cursor-pointer">
+                <input v-model="editEphemeral" type="checkbox" class="rounded border-border" />
+                Ephemeral (exit after one job)
+              </label>
+              <div class="pt-1 border-t border-border/40 space-y-2">
+                <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Engines</div>
+                <div class="grid grid-cols-2 gap-2">
+                  <label class="flex items-center gap-2 text-xs cursor-pointer">
+                    <input v-model="editShellEnabled" type="checkbox" class="rounded border-border" /> Shell
+                  </label>
+                  <label class="flex items-center gap-2 text-xs cursor-pointer">
+                    <input v-model="editSshEnabled" type="checkbox" class="rounded border-border" /> SSH
+                  </label>
+                  <label class="flex items-center gap-2 text-xs cursor-pointer">
+                    <input v-model="editDockerEnabled" type="checkbox" class="rounded border-border" /> Docker
+                  </label>
+                  <label class="flex items-center gap-2 text-xs cursor-pointer">
+                    <input v-model="editWasmEnabled" type="checkbox" class="rounded border-border" /> WASM
+                  </label>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <label class="text-xs text-muted-foreground w-28 shrink-0">SSH host key</label>
+                <select
+                  v-model="editSshHostKeyPolicy"
+                  class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs outline-none focus:border-ring/40"
+                >
+                  <option value="insecure">insecure (accept any)</option>
+                  <option value="known_hosts">known_hosts</option>
+                </select>
+              </div>
+              <div class="flex justify-end pt-1">
+                <UiButton
+                  size="sm"
+                  :disabled="savingPolicy || !policyDirty()"
+                  @click="savePolicy"
+                >{{ savingPolicy ? 'Saving…' : 'Save Policy' }}</UiButton>
+              </div>
+              <p class="text-[10px] text-muted-foreground">Label changes apply immediately for job matching. Engine / concurrency changes apply on the next runner heartbeat (~30s).</p>
+            </div>
+
             <!-- OS -->
             <div v-if="hasInfo(activeRunner)" class="rounded-xl border border-border/60 bg-muted/30 px-3.5 py-3">
               <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Operating System</div>
               <div class="text-sm">{{ activeRunner.system_info!.os }}</div>
               <div class="text-xs text-muted-foreground font-mono mt-1">Kernel {{ activeRunner.system_info!.kernel_version }}</div>
-            </div>
-
-            <!-- Labels -->
-            <div>
-              <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">Labels</div>
-              <div class="flex flex-wrap gap-1">
-                <span v-for="l in activeRunner.labels" :key="l" class="mono-chip">{{ l }}</span>
-                <span v-if="activeRunner.labels.length === 0" class="text-xs text-muted-foreground">—</span>
-              </div>
             </div>
 
             <!-- Waiting -->
@@ -521,12 +726,59 @@ const eventBadge = (t: string) => {
           <template v-if="!createdToken">
             <div class="space-y-4">
               <div>
-                <label class="type-label block mb-1.5">Name</label>
+                <label class="type-label block mb-1.5">Name <span class="text-red-500">*</span></label>
                 <input v-model="newName" type="text" placeholder="e.g. prod-runner-01" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15" @keyup.enter="handleCreate" />
               </div>
               <div>
-                <label class="type-label block mb-1.5">Labels (comma-separated)</label>
+                <label class="type-label block mb-1.5">Labels</label>
                 <input v-model="newLabels" type="text" placeholder="linux-x64, prod" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15" @keyup.enter="handleCreate" />
+                <p class="text-[11px] text-muted-foreground mt-1">Configured in UI only (not in runner.toml). Match pipeline runner.labels.</p>
+              </div>
+              <div>
+                <label class="type-label block mb-1.5">Max concurrent jobs</label>
+                <input
+                  v-model.number="newMaxConcurrent"
+                  type="number"
+                  min="1"
+                  max="32"
+                  class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                />
+                <p class="text-[11px] text-muted-foreground mt-1">How many jobs this runner may run in parallel (1–32). Default 1.</p>
+              </div>
+              <div class="space-y-2 rounded-xl border border-border/50 bg-muted/20 px-3 py-3">
+                <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Policy</div>
+                <label class="flex items-center gap-2 text-xs cursor-pointer">
+                  <input v-model="newCleanWorkspace" type="checkbox" class="rounded border-border" />
+                  Clean workspace after each job
+                </label>
+                <label class="flex items-center gap-2 text-xs cursor-pointer">
+                  <input v-model="newEphemeral" type="checkbox" class="rounded border-border" />
+                  Ephemeral (exit after one job)
+                </label>
+                <div class="grid grid-cols-2 gap-2 pt-1">
+                  <label class="flex items-center gap-2 text-xs cursor-pointer">
+                    <input v-model="newShellEnabled" type="checkbox" class="rounded border-border" /> Shell
+                  </label>
+                  <label class="flex items-center gap-2 text-xs cursor-pointer">
+                    <input v-model="newSshEnabled" type="checkbox" class="rounded border-border" /> SSH
+                  </label>
+                  <label class="flex items-center gap-2 text-xs cursor-pointer">
+                    <input v-model="newDockerEnabled" type="checkbox" class="rounded border-border" /> Docker
+                  </label>
+                  <label class="flex items-center gap-2 text-xs cursor-pointer">
+                    <input v-model="newWasmEnabled" type="checkbox" class="rounded border-border" /> WASM
+                  </label>
+                </div>
+                <div>
+                  <label class="type-label block mb-1.5 mt-1">SSH host key policy</label>
+                  <select
+                    v-model="newSshHostKeyPolicy"
+                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none"
+                  >
+                    <option value="insecure">insecure (accept any)</option>
+                    <option value="known_hosts">known_hosts</option>
+                  </select>
+                </div>
               </div>
             </div>
             <div class="flex justify-end gap-2 pt-1">
@@ -542,14 +794,14 @@ const eventBadge = (t: string) => {
                 <p class="font-mono text-sm break-all text-foreground">{{ createdToken }}</p>
               </div>
               <p class="type-meta leading-relaxed">
-                Copy this token into your Runner's <code class="font-mono bg-muted px-1 rounded">conf/runner.toml</code>
-                <code class="block mt-1.5 font-mono bg-muted px-1 rounded">register_token = "this-token"</code>
+                Paste this line into your Runner's <code class="font-mono bg-muted px-1 rounded">conf/runner.toml</code>:
+                <code class="block mt-1.5 font-mono bg-muted px-1 rounded break-all select-all">{{ registerTokenTomlLine }}</code>
               </p>
               <div class="flex gap-2">
                 <UiButton variant="outline" class="flex-1" @click="copyToken">
                   <Copy v-if="!copied" class="h-4 w-4" />
                   <Check v-else class="h-4 w-4" />
-                  {{ copied ? 'Copied' : 'Copy Token' }}
+                  {{ copied ? 'Copied' : 'Copy toml line' }}
                 </UiButton>
                 <UiButton variant="outline" @click="showCreate = false">Done</UiButton>
               </div>

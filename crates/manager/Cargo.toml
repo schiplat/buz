@@ -53,5 +53,6 @@ anyhow = "1"
 # Cron expression parser
 cron = "0.15"
 
-# Static file embedding
-rust-embed = "8"
+# SSH connectivity probe (Hosts → Test)
+russh = "0.61"
+async-trait = "0.1"

@@ -202,12 +202,12 @@ runner:
 
 #### `runner.labels`
 
-Comma-separated list in the form, YAML array in the file. The manager dispatches jobs only to runners whose own labels contain **all** of these (intersection match).
+Optional. Comma-separated list in the form, YAML array in the file. The manager dispatches jobs only to runners whose own labels contain **all** of these (AND / intersection match). Empty list matches any runner.
 
 | | |
 |---|---|
 | YAML | `labels: [linux-x64, docker]` |
-| Form | Runner Labels (comma-separated, e.g. `linux-x64, docker`) |
+| Form | Runner Labels (optional; help text explains AND) |
 
 #### `runner.timeout`
 
@@ -344,19 +344,26 @@ steps:
   - name: Deploy
     run: |
       echo "Deploying $APP_NAME version $INPUT_VERSION"
-      echo "$DOCKER_PASSWORD" | docker login -u bot --password-stdin
       curl -X POST "$SLACK_WEBHOOK_URL"
+
+  - name: Push image
+    uses: shell
+    registry_secret: acr-personal
+    run: |
+      docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:$INPUT_VERSION
 ```
 
 | Reference | Source | Level |
 |---|---|---|
 | `$APP_NAME` | `env:` block | Pipeline |
 | `$BUILD_CACHE_DIR` | `variables:` (platform) | Pipeline |
-| `$DOCKER_PASSWORD` | `secrets:` (pipeline or step) | Pipeline / Step |
+| `$DOCKER_PASSWORD` | `secrets:` (pipeline or step) — env injection | Pipeline / Step |
 | `$SLACK_WEBHOOK_URL` | `secrets:` (pipeline) | Pipeline |
 | `$GIT_SSH_KEY` | `secrets:` (step) | Step |
 | `$INPUT_VERSION` | `on.manual.inputs:` | Trigger |
+| `registry_secret:` | Manager Secret **name** for `docker login` (not an env var) | Step |
 
+> Prefer `registry_secret` for registry login/push instead of piping `$DOCKER_PASSWORD` into `docker login` in the script.
 > **Note:** Parameter names from `on.manual.inputs` are **automatically uppercased** and prefixed with `INPUT_`. A parameter named `version` becomes `$INPUT_VERSION` inside commands.
 
 ---
@@ -413,7 +420,7 @@ Selects the execution engine. Defaults to `shell` (runner's own shell).
 | YAML | `uses: ssh` |
 | Form | Engine dropdown (Runner Shell / SSH / Docker) |
 
-> **Docker** is supported (MVP). See [Docker Engine](/docs/01-architecture/docker-engine/). Enable with `engine.docker_enabled = true` on the runner.
+> **Docker** is supported (MVP). See [Docker Engine](/docs/01-architecture/docker-engine/). Enable **Docker** on the Runner in Manager UI.
 
 ---
 
@@ -435,49 +442,71 @@ run: cargo test
 
 ---
 
-#### `host`
+#### `registry_secret`
 
-**SSH only.** One or more remote host **names** registered in the Manager (Infrastructure → Hosts). Supports both a single string and a YAML array.
+Name of a Manager Secret (not a password) for `docker login`. Valid on **shell**, **SSH**, and **docker** steps. The Secret value is JSON registry credentials, **encrypted at rest**:
 
-```yaml
-# Single host
-host: prod-server-01
-
-# Multiple hosts (the step runs on each)
-host:
-  - prod-server-01
-  - prod-server-02
+```json
+{
+  "provider": "acr_personal",
+  "registry": "crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com",
+  "username": "…",
+  "password": "…"
+}
 ```
 
-In the form, use comma separation: `prod-server-01, prod-server-02`.
+- `provider` (optional): `acr_personal` | `generic` — reserved for multi-vendor auth.
+- `registry` may be omitted on docker steps when `image` already includes the registry host; **required** for shell/SSH (e.g. push) when there is no `image`.
+- Credentials are used for `docker login` only — they are **not** injected as step env (except transient `BUZ_REGISTRY_*` on SSH remotes, then logout).
 
-> The runner resolves host names to SSH connection details (IP, port, credentials) from the hosts table at dispatch time.
+```yaml
+# Docker pull
+uses: docker
+image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
+registry_secret: acr-personal
+run: echo ok
+
+# Shell push
+uses: shell
+registry_secret: acr-personal
+run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
+```
+
+Full orchestration (prepare → build → push → verify): `example/pipelines/acr-personal-build-push.yml`.
 
 | | |
 |---|---|
-| YAML | `host: prod-01` or `host: [prod-01, prod-02]` |
-| Form | SSH Host (comma-separated) |
+| YAML | `registry_secret: acr-personal` |
+| Form | Registry Secret |
+| See | [Docker Engine — ACR Personal Edition](/docs/01-architecture/docker-engine/) |
 
 ---
 
-#### `host_labels`
+#### `host` / `host_labels` (SSH)
 
-**SSH only.** Instead of (or in addition to) naming hosts explicitly, match hosts whose `labels` column contains these tags. Combined with `host` as a **union** (deduplicated).
+**SSH only.** Provide **at least one** of `host` or `host_labels` (validator: requires `host` **or** `host_labels`). Neither field alone is mandatory. When both are set they form a **union** (deduplicated).
 
 ```yaml
-host_labels:
-  - prod
-  - web
+# By Infrastructure → Hosts name (single or many — step runs on each)
+host: prod-server-01
+host:
+  - prod-server-01
+  - prod-server-02
+
+# By Host labels — any host tagged prod OR web
+host_labels: [prod, web]
+
+# Both — named hosts ∪ label matches
+host: bastion-01
+host_labels: [web]
 ```
 
-In the form, use comma separation: `prod, web`.
-
-This is useful when you don't want to update every pipeline YAML whenever a new host is added — just tag the host and it will be picked up automatically.
+In the form: comma-separated for multiple names/labels. Help text states “at least one required; combined as union.”
 
 | | |
 |---|---|
-| YAML | `host_labels: [prod, web]` |
-| Form | Host Labels (comma-separated) |
+| YAML | `host` and/or `host_labels` |
+| Form | SSH Host / Host Labels |
 
 ---
 
@@ -537,14 +566,14 @@ If `true`, a failure in this step does **not** stop the pipeline — subsequent 
 |-------|--------|-------------|
 | _(omitted)_ | `local` | Run on runner host's shell (default) |
 | `ssh` | `ssh` | Execute on remote host(s) via SSH (russh). Requires `host` and/or `host_labels`. |
-| `docker` | `docker` | Execute `run:` in a Docker container on the runner. Requires `image`. Gated by `engine.docker_enabled`. See [Docker Engine](/docs/01-architecture/docker-engine/). |
+| `docker` | `docker` | Execute `run:` in a Docker container on the runner. Requires `image`. Gated by Runner UI `docker_enabled`. See [Docker Engine](/docs/01-architecture/docker-engine/). |
 | `wasm` | `wasm` | Execute in Wasm sandbox (not implemented) |
 
 ### Docker step fields
 
-When `uses: docker`, YAML requires `image` (container image reference). Workspace is bind-mounted to `/buz/workspace`. Full rules: [Docker Engine](/docs/01-architecture/docker-engine/).
+When `uses: docker`, YAML requires `image` (container image reference). Optional `registry_secret` works on docker **and** on shell/SSH steps (for push). Workspace is bind-mounted to `/buz/workspace`. Full rules: [Docker Engine](/docs/01-architecture/docker-engine/).
 
-Example: `example/pipelines/docker-engine-smoke.yml`.
+Examples: `example/pipelines/docker-engine-smoke.yml`, `example/pipelines/acr-personal-pull.yml`, `example/pipelines/acr-personal-push.yml`.
 
 > Shelling out to `docker build` / `docker push` on the host is still a **local** (or **ssh**) step — that is not the Docker engine.
 
@@ -561,7 +590,7 @@ When using the "Import to Form" feature after validating YAML, all fields are au
 | `on.manual.inputs` | Params | Trigger | Name, Description, Required, Default per param |
 | `on.webhook.path` | Webhook Config → URL Path | Pipeline | Only when trigger is webhook |
 | `on.cron.schedule` | Cron Config → Schedule | Pipeline | Only when trigger is cron |
-| `runner.labels` | Runner Labels | Pipeline | Comma-separated in form |
+| `runner.labels` | Runner Labels | Pipeline | Optional; comma-separated; runner must match **all** (AND) |
 | `runner.timeout` | Runner Timeout | Pipeline | Preserves original format (e.g. `60m`) |
 | `concurrency` | Concurrency Group | Pipeline | |
 | `team` / `owner_group` | Team | Pipeline | Resolves to `team_id`; form requires Team select |
@@ -573,8 +602,9 @@ When using the "Import to Form" feature after validating YAML, all fields are au
 | `steps[].run` | Command | Step | Multi-line preserved |
 | `steps[].uses` | Engine | Step | Local/SSH/Docker |
 | `steps[].image` | Image | Step | Required when Engine is Docker |
-| `steps[].host` | SSH Host | Step | Comma-separated names from Infrastructure → Hosts |
-| `steps[].host_labels` | Host Labels | Step | Comma-separated; union with `host` |
+| `steps[].registry_secret` | Registry Secret | Step | Shell / SSH / Docker; Secret JSON for registry login |
+| `steps[].host` | SSH Host | Step | Optional alone; **at least one** of host / host_labels required for SSH |
+| `steps[].host_labels` | Host Labels | Step | Optional alone; union (OR) with `host` |
 | `steps[].work_dir` / `steps[].dir` | Work Dir | Step | Both YAML keys accepted |
 | `steps[].timeout` | Timeout | Step | |
 | `steps[].retry` | Retry | Step | |

@@ -26,6 +26,19 @@ export interface SystemInfo {
   uptime_seconds: number
 }
 
+/** UI-managed runner strategy (synced to the agent via register/heartbeat). */
+export interface RunnerPolicy {
+  max_concurrent_jobs: number
+  clean_workspace_after_job: boolean
+  ephemeral: boolean
+  shell_enabled: boolean
+  ssh_enabled: boolean
+  docker_enabled: boolean
+  wasm_enabled: boolean
+  /** `insecure` | `known_hosts` */
+  ssh_host_key_policy: string
+}
+
 export interface Runner {
   id: string
   name: string
@@ -34,15 +47,44 @@ export interface Runner {
   version: string | null
   system_info: SystemInfo | null
   is_frozen: boolean
+  /** Max parallel jobs (1–32). */
+  max_concurrent_jobs: number
+  clean_workspace_after_job?: boolean
+  ephemeral?: boolean
+  shell_enabled?: boolean
+  ssh_enabled?: boolean
+  docker_enabled?: boolean
+  wasm_enabled?: boolean
+  ssh_host_key_policy?: string
+  /** Currently running jobs on this runner. */
+  running_jobs?: number
   last_seen: string | null
   created_at: string
   updated_at: string
+}
+
+export interface CreateRunnerPayload {
+  name: string
+  labels: string[]
+  max_concurrent_jobs?: number
+  clean_workspace_after_job?: boolean
+  ephemeral?: boolean
+  shell_enabled?: boolean
+  ssh_enabled?: boolean
+  docker_enabled?: boolean
+  wasm_enabled?: boolean
+  ssh_host_key_policy?: string
 }
 
 export interface CreateRunnerResponse {
   id: string
   name: string
   register_token: string
+  max_concurrent_jobs?: number
+}
+
+export type UpdateRunnerPayload = Partial<Omit<RunnerPolicy, never>> & {
+  labels?: string[]
 }
 
 export const runnersApi = {
@@ -51,8 +93,13 @@ export const runnersApi = {
     return resp.data
   },
 
-  async create(name: string, labels: string[]): Promise<CreateRunnerResponse> {
-    const resp = await apiClient.post('/runners', { name, labels })
+  async create(payload: CreateRunnerPayload): Promise<CreateRunnerResponse> {
+    const resp = await apiClient.post('/runners', payload)
+    return resp.data
+  },
+
+  async update(id: string, payload: UpdateRunnerPayload): Promise<Runner> {
+    const resp = await apiClient.put(`/runners/${id}`, payload)
     return resp.data
   },
 

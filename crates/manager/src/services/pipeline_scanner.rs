@@ -161,6 +161,7 @@ async fn upsert_from_yaml(
             continue_on_error: s.continue_on_error,
             secrets: s.secrets.clone(),
             privileged: s.privileged,
+            registry_secret: s.registry_secret.clone(),
         })
         .collect();
 
@@ -285,7 +286,7 @@ async fn upsert_from_yaml(
              cron_expr, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
              concurrency_max_queue, concurrency_queue_timeout_seconds,
              owner_group, team_id, source, yaml_path, input_defs, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, 1)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, 1)",
         )
         .bind(&id)
         .bind(pipeline_name)

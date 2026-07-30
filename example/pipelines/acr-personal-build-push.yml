@@ -1,0 +1,80 @@
+# Build and push to Alibaba Cloud ACR Personal Edition via registry_secret.
+#
+# Prerequisites:
+#   1) Infrastructure → Secrets named `acr-personal` (AES-256-GCM at rest):
+#      {
+#        "provider": "acr_personal",
+#        "registry": "crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com",
+#        "username": "<ACR login name>",
+#        "password": "<fixed password from ACR console>"
+#      }
+#      `registry` is required for shell push (no step `image` to infer from).
+#   2) Runner with Docker CLI/daemon and labels including `docker`.
+#
+# Flow: prepare context → docker build → docker push (login via registry_secret)
+#       → optional verify pull with uses: docker + registry_secret.
+#
+# Replace REGISTRY / NAMESPACE placeholders to match your ACR instance.
+
+name: acr-personal-build-push
+description: Orchestrated docker build + push to ACR Personal Edition (registry_secret)
+team: default
+
+on:
+  manual:
+    inputs:
+      tag:
+        description: Image tag to build and push
+        required: true
+        default: "1.0"
+
+runner:
+  labels: [docker]
+  timeout: 30m
+
+env:
+  REGISTRY: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com
+  NAMESPACE: namespace
+  IMAGE_NAME: hello
+
+steps:
+  # ── 1. Build context (self-contained; no pre-mounted repo required) ──
+  - name: Prepare context
+    run: |
+      mkdir -p hello
+      cat > hello/Dockerfile <<'EOF'
+      FROM alpine:3.20
+      CMD ["echo", "hello from ACR build"]
+      EOF
+      echo "IMAGE=$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
+      cat hello/Dockerfile
+    timeout: 1m
+
+  # ── 2. Build on the runner host (no registry login needed) ──
+  - name: Build image
+    uses: shell
+    run: |
+      IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
+      docker build -t "$IMAGE" -f hello/Dockerfile hello
+      docker images "$IMAGE"
+    timeout: 10m
+
+  # ── 3. Push — Manager resolves registry_secret → Runner docker login/logout ──
+  - name: Push image
+    uses: shell
+    registry_secret: acr-personal
+    run: |
+      IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
+      echo "Pushing $IMAGE"
+      docker push "$IMAGE"
+    timeout: 15m
+
+  # ── 4. Verify — pull + run the image just pushed ──
+  - name: Verify pull
+    uses: shell
+    registry_secret: acr-personal
+    run: |
+      IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
+      docker pull "$IMAGE"
+      docker run --rm "$IMAGE"
+    timeout: 10m

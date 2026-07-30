@@ -27,6 +27,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         // Auth (public)
         .route("/auth/login", post(auth::login))
+        .route("/auth/setup-status", get(auth::setup_status))
+        .route("/auth/setup", post(auth::setup))
         .route("/auth/verify", get(auth::verify))
         .route("/auth/me", get(auth::me))
         .route("/auth/change-password", post(auth::change_password))
@@ -78,6 +80,7 @@ pub fn router(state: AppState) -> Router {
         .route("/pipelines/{id}/stream", get(logs::pipeline_stream))
         // Hosts / secrets / variables
         .route("/hosts", get(hosts::list).post(hosts::create))
+        .route("/hosts/test", post(hosts::test_connection))
         .route(
             "/hosts/{id}",
             get(hosts::get_one).put(hosts::update).delete(hosts::delete),
@@ -103,7 +106,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/runners/{id}",
-            get(runners::get_runner).delete(runners::delete_runner),
+            get(runners::get_runner)
+                .put(runners::update_runner)
+                .delete(runners::delete_runner),
         )
         .route("/runners/{id}/freeze", patch(runners::toggle_freeze))
         .route("/runners/{id}/events", get(runners::get_events))

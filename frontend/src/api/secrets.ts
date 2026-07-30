@@ -3,7 +3,10 @@ import apiClient from './client'
 export interface Secret {
   id: string
   name: string
+  /** Partially redacted value for display (never full plaintext). */
   value: string
+  /** True when stored ciphertext cannot be decrypted (legacy plaintext) — re-save required. */
+  reencrypt_required?: boolean
   owner_group: string
   team_id: string
   updated_at: string

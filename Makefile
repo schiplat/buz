@@ -25,47 +25,27 @@ build-backend:
 	cargo build --release
 
 dev-manager:
-	cargo run --release -p buz-manager
+	cargo run --release -p manager
 
 # ── Quick dev (no release optimization) ───────────────────────────
 dev:
 	@echo "=== Building frontend + debug manager ==="
 	cd frontend && npm run build
-	cargo build -p buz-manager
+	cargo build -p manager
 	@echo "=== Starting ==="
 	cd example && ../target/debug/buz-manager
 
 # ── Example scaffolding ───────────────────────────────────────────
+# Creates data/pipelines dirs. Config templates live in example/conf/*.toml (committed).
 example:
 	mkdir -p example/conf example/data example/pipelines
-	@echo '# Buz Manager Configuration'      >  example/conf/manager.toml
-	@echo ''                                 >> example/conf/manager.toml
-	@echo '[server]'                         >> example/conf/manager.toml
-	@echo 'host = "0.0.0.0"'                 >> example/conf/manager.toml
-	@echo 'port = 8080'                      >> example/conf/manager.toml
-	@echo ''                                 >> example/conf/manager.toml
-	@echo '[database]'                       >> example/conf/manager.toml
-	@echo 'path = "./data/buz.db"'           >> example/conf/manager.toml
-	@echo ''                                 >> example/conf/manager.toml
-	@echo '[auth]'                           >> example/conf/manager.toml
-	@echo 'jwt_secret = "changeme-demo-only"'          >> example/conf/manager.toml
-	@echo 'admin_user = "admin"'             >> example/conf/manager.toml
-	@echo 'admin_password = "changeme-demo-only"'         >> example/conf/manager.toml
-	@echo ''                                 >> example/conf/manager.toml
-	@echo '[pipeline]'                       >> example/conf/manager.toml
-	@echo 'yaml_scan_dir = "./pipelines"'    >> example/conf/manager.toml
-	@echo ''                                 >  example/conf/runner.toml
-	@echo '# Buz Runner Configuration'       >> example/conf/runner.toml
-	@echo ''                                 >> example/conf/runner.toml
-	@echo '[manager]'                         >> example/conf/runner.toml
-	@echo 'url = "http://127.0.0.1:8080"'    >> example/conf/runner.toml
-	@echo '# Get this token from Buz Manager web UI → Runners → New Runner' >> example/conf/runner.toml
-	@echo 'register_token = "REPLACE-ME"'    >> example/conf/runner.toml
-	@echo ''                                 >> example/conf/runner.toml
-	@echo '[runner]'                           >> example/conf/runner.toml
-	@echo 'name = "my-runner"'               >> example/conf/runner.toml
-	@echo 'labels = ["linux-x64"]'           >> example/conf/runner.toml
-	@echo ""                                                                                        && echo "Example configs created in ./example/conf/" && echo ""                                       && echo "Start the Manager:"                                                                          && echo "  (cd example && ../target/release/buz-manager)"                                              && echo ""                                                                                           && echo "Start a Runner (edit register_token first):"                                                && echo "  (cd example && ../target/release/buz-runner)"                                              && echo ""
+	@test -f example/conf/manager.toml || { echo "missing example/conf/manager.toml"; exit 1; }
+	@test -f example/conf/runner.toml || { echo "missing example/conf/runner.toml"; exit 1; }
+	@echo "Example ready in ./example/"
+	@echo "  Manager:  cd example && ../target/release/buz-manager"
+	@echo "  Runner:   edit example/conf/runner.toml register_token, then"
+	@echo "            cd example && ../target/release/buz-runner"
+	@echo "  Labels / engines / concurrency → Manager UI → Runners"
 
 # ── Docs ──────────────────────────────────────────────────────────
 docs-serve:
@@ -81,8 +61,8 @@ docs-clean:
 clean:
 	cargo clean
 	rm -rf frontend/dist
-	rm -rf example
-
+	rm -rf example/data
+	# Keep example/conf and example/pipelines (committed templates)
 # ── Test & CI ────────────────────────────────────────────────────
 test:
 	cargo test --all

@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
@@ -82,7 +83,7 @@ pub fn preflight(docker_enabled: bool, image: &str) -> anyhow::Result<()> {
     if !docker_enabled {
         anyhow::bail!(
             "Docker engine is disabled on this runner \
-             (set engine.docker_enabled = true in runner.toml). \
+             (enable docker_enabled in Manager UI → Runners). \
              Refusing to fall back to shell engine."
         );
     }
@@ -91,6 +92,84 @@ pub fn preflight(docker_enabled: bool, image: &str) -> anyhow::Result<()> {
         anyhow::bail!("Docker step is missing required 'image' field");
     }
     Ok(())
+}
+
+/// `docker login --password-stdin` for a private registry (e.g. ACR Personal Edition).
+pub async fn registry_login(registry: &str, username: &str, password: &str) -> anyhow::Result<()> {
+    let registry = registry.trim();
+    let username = username.trim();
+    if registry.is_empty() || username.is_empty() || password.is_empty() {
+        anyhow::bail!("registry_auth requires non-empty registry, username, and password");
+    }
+
+    let mut child = Command::new("docker")
+        .args(["login", "--username", username, "--password-stdin", registry])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            anyhow::anyhow!("failed to spawn docker login (is the Docker CLI installed?): {e}")
+        })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(password.as_bytes())
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to write password to docker login stdin: {e}"))?;
+        // Drop stdin to close the pipe (EOF for --password-stdin).
+        drop(stdin);
+    }
+
+    let output = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+        .await
+        .map_err(|_| anyhow::anyhow!("docker login timed out after 60s"))?
+        .map_err(|e| anyhow::anyhow!("docker login failed: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "docker login to '{registry}' failed (exit {}): {}{}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim(),
+            if stdout.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" {}", stdout.trim())
+            }
+        );
+    }
+    Ok(())
+}
+
+/// Best-effort `docker logout` so credentials do not linger across jobs on shared runners.
+pub async fn registry_logout(registry: &str) {
+    let registry = registry.trim();
+    if registry.is_empty() {
+        return;
+    }
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        Command::new("docker")
+            .args(["logout", registry])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status(),
+    )
+    .await;
+    match result {
+        Ok(Ok(status)) if status.success() => {}
+        Ok(Ok(status)) => {
+            tracing::warn!(
+                "docker logout from '{registry}' exited {}",
+                status.code().unwrap_or(-1)
+            );
+        }
+        Ok(Err(e)) => tracing::warn!("docker logout from '{registry}' failed: {e}"),
+        Err(_) => tracing::warn!("docker logout from '{registry}' timed out"),
+    }
 }
 
 /// Spawn `docker run` with streaming stdout/stderr (same shape as shell engine).

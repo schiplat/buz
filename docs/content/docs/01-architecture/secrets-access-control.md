@@ -105,6 +105,7 @@ How each resource type connects to a pipeline:
 | Resource | Where created | How bound to a pipeline | Runtime injection |
 |----------|---------------|-------------------------|-------------------|
 | **Secrets** | Infrastructure → Secrets | (1) Matching `owner_group`, or (2) Advanced → **Authorized Secrets** (`secret_ids` → `pipeline_secrets`), or (3) YAML `secrets: [NAME]` | Env vars `$NAME`, masked in logs |
+| **Registry credentials** | Same Secrets store (JSON value) | Step field `registry_secret: <name>` (form: Registry Secret) | `docker login` only — **not** injected as `$NAME` (except transient `BUZ_REGISTRY_*` on SSH) |
 | **Variables** | Infrastructure → Variables | Advanced → **Variables** (`var_ids` → `pipeline_variables`), or YAML `variables: [NAME]` | Env vars `$NAME` (not masked) |
 | **Hosts** | Infrastructure → Hosts | Step fields `host` / `host_labels` (name or label match) when `uses: ssh` | SSH connection params on the runner — not env vars. Auth may be key/password (from Manager) or `agent` (runner's `SSH_AUTH_SOCK`) |
 | **Inline Env** | Pipeline form Env editor / YAML `env:` | Always scoped to that pipeline | Env vars for every step |
@@ -148,7 +149,7 @@ Variables use an analogous `pipeline_variables` table via `var_ids`.
 |-------|------|---------|
 | **Name** | Text (required) | Secret name — used as env var key |
 | **Owner Group / Team** | Team dropdown (required) | Sets `secrets.team_id`. Pipelines in the same team auto-receive this secret. |
-| **Value** | Password input | Encrypted at rest; never returned in plaintext after create |
+| **Value** | Password input | **AES-256-GCM encrypted at rest** (key derived from Manager `jwt_secret`). List/get return a **partially redacted** preview (`ab****yz`, or JSON with `password`/`token` fields masked). Never full plaintext. Empty value on update keeps the existing ciphertext. Plaintext DB rows are rejected — set `reencrypt_required` and re-save. |
 
 ### Variables / Hosts pages
 
@@ -163,10 +164,28 @@ Variables use an analogous `pipeline_variables` table via `var_ids`.
 
 | YAML | Form | Behavior |
 |------|------|----------|
-| `secrets: [GIT_SSH_KEY, DOCKER_PASS]` | Authorized Secrets (after name→ID resolve) | Explicit `pipeline_secrets` binding |
+| `secrets: [GIT_SSH_KEY, DOCKER_PASS]` | Authorized Secrets (after name→ID resolve) | Explicit `pipeline_secrets` binding; injected as env `$NAME` |
 | `variables: [BUILD_CACHE_DIR]` | Variables multi-select | Explicit `pipeline_variables` binding |
 | _(no YAML field)_ | Owner Group | Auto-access by group match |
 | `steps[].host` / `host_labels` | Step → SSH Host / Host Labels | Resolves Infrastructure → Hosts at dispatch |
+| `steps[].registry_secret` | Registry Secret | Secret **name** only; JSON value used for `docker login` on shell / SSH / docker — **not** injected as env |
+
+---
+
+## Registry credentials (`registry_secret`)
+
+For private registries (e.g. Alibaba Cloud ACR Personal Edition), store JSON in Infrastructure → Secrets and reference the **name** on the step:
+
+```yaml
+registry_secret: acr-personal
+```
+
+```json
+{"provider":"acr_personal","registry":"…","username":"…","password":"…"}
+```
+
+- Password is encrypted at rest; API returns partial redaction only.
+- Docker: login before pull. Shell/SSH: login before `run` (for push). See [Docker Engine — ACR Personal Edition](/docs/01-architecture/docker-engine/).
 
 ---
 
@@ -175,8 +194,9 @@ Variables use an analogous `pipeline_variables` table via `var_ids`.
 1. **Use owner_group for team-wide secrets** — docker registry tokens, CI tokens shared by all pipelines in a team
 2. **Use Authorized Secrets for cross-group access** — a pipeline in `staging` that needs a secret owned by `prod`
 3. **Use step-level secrets (YAML) for scoping** — a Git SSH key that only the `checkout` step needs
-4. **Keep owner_group values consistent** — decide on naming (`platform`, `backend-team`, `prod`) and apply them uniformly
-5. **Create Variables/Secrets/Hosts in Infrastructure first**, then bind from the pipeline form or YAML
+4. **Private registry login** — store ACR (etc.) JSON credentials in Infrastructure → Secrets; reference only the **name** via `registry_secret` on docker/shell/SSH steps (never put passwords in YAML)
+5. **Keep owner_group values consistent** — decide on naming (`platform`, `backend-team`, `prod`) and apply them uniformly
+6. **Create Variables/Secrets/Hosts in Infrastructure first**, then bind from the pipeline form or YAML
 
 ---
 

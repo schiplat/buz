@@ -200,6 +200,7 @@ async function openEditDialog() {
       retry: t.retry_count || undefined,
       continue_on_error: t.fail_strategy === 'continue' ? true : undefined,
         privileged: (t as any).privileged === true ? true : undefined,
+        registry_secret: (t.registry_secret || '').trim() || undefined,
     })),
     input_defs: (p.input_defs || []).slice(),
   }
@@ -219,6 +220,21 @@ async function handleEditSave() {
     editForm.value.team_id = auth.soleTeamId || editForm.value.team_id
   }
   if (!editForm.value.team_id.trim()) { alert('Team is required'); return }
+
+  for (const s of editForm.value.steps) {
+    if (s.uses === 'docker' && !(s.image || '').trim()) {
+      alert(`Step "${s.name || 'unnamed'}": Docker engine requires Image`)
+      return
+    }
+    if (s.uses === 'ssh') {
+      const hasHost = !!(s.host || '').toString().trim()
+      const hasLabels = !!(s.host_labels || '').toString().trim()
+      if (!hasHost && !hasLabels) {
+        alert(`Step "${s.name || 'unnamed'}": SSH requires SSH Host and/or Host Labels`)
+        return
+      }
+    }
+  }
 
   editSaving.value = true
   try {
@@ -263,6 +279,7 @@ async function handleEditSave() {
           image: isDocker ? (s.image || '').trim() || undefined : undefined,
           volumes: volumesArray,
           privileged: isDocker ? (s as any).privileged === true || undefined : undefined,
+          registry_secret: ((s as any).registry_secret || '').trim() || undefined,
           host: isDocker
             ? undefined
             : rawHost
@@ -631,7 +648,7 @@ async function handleTrigger() {
     <div class="flex items-center justify-between shrink-0 mb-3">
       <div class="flex items-center gap-2.5 min-w-0">
         <button
-          class="inline-flex items-center gap-1 text-[13px] text-muted-foreground hover:text-foreground transition-colors shrink-0"
+          class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
           @click="router.push('/pipelines')"
         >
           <ArrowLeft class="h-3.5 w-3.5" />
@@ -657,12 +674,12 @@ async function handleTrigger() {
             Keys available as <code class="mono-chip">$INPUT_&lt;KEY&gt;</code> in step commands.
           </p>
           <div class="space-y-2 mb-4">
-            <p v-if="!hasInputDefs" class="text-[11px] text-muted-foreground mb-2">Ad-hoc mode — no params defined in the pipeline.</p>
+            <p v-if="!hasInputDefs" class="text-xs text-muted-foreground mb-2">Ad-hoc mode — no params defined in the pipeline.</p>
             <div v-for="(pair, idx) in inputPairs" :key="idx" class="flex items-center gap-2">
               <div v-if="hasInputDefs" class="flex-1 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground select-none flex items-center gap-1">
                 {{ pair.key }}
-                <span v-if="pair.required" class="text-red-400 text-[13px] font-sans leading-none">*</span>
-                <span v-else class="text-[10px] text-muted-foreground/50 font-sans">(optional)</span>
+                <span v-if="pair.required" class="text-red-500 text-sm font-sans leading-none">*</span>
+                <span v-else class="text-xs text-muted-foreground/50 font-sans">(optional)</span>
               </div>
               <input v-else v-model="pair.key" placeholder="key" class="flex-1 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm" :disabled="triggering" />
               <input v-model="pair.value" :placeholder="pair.required ? 'required' : 'enter value (leave empty for default)'" class="flex-[2] rounded-md border border-border bg-muted/50 px-3 py-2 text-sm" :disabled="triggering" />
@@ -736,6 +753,9 @@ async function handleTrigger() {
                   placeholder="linux-x64, docker"
                   class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                 />
+                <p class="text-xs text-muted-foreground mt-1">
+                  Optional. Comma-separated; runner must have <span class="font-medium text-foreground">all</span> listed labels (AND) to claim jobs.
+                </p>
               </div>
             </div>
 
@@ -745,7 +765,7 @@ async function handleTrigger() {
                 <span class="text-sm font-medium">Webhook Configuration</span>
               </div>
               <div>
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">URL Path</label>
+                <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">URL Path</label>
                 <div class="flex items-center gap-2">
                   <div class="flex items-center gap-1 rounded-lg border border-border bg-muted/50 px-3 py-1.5 text-sm font-mono flex-1 min-w-0">
                     <span class="text-muted-foreground shrink-0">/api/v1/hooks/</span>
@@ -771,7 +791,7 @@ async function handleTrigger() {
                 <span class="text-sm font-medium">Cron Configuration</span>
               </div>
               <div>
-                <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Schedule (cron expression)</label>
+                <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Schedule (cron expression)</label>
                 <input
                   v-model="editForm.cron_expr"
                   type="text"
@@ -792,7 +812,7 @@ async function handleTrigger() {
                   {{ t.name }} ({{ t.slug }})
                 </option>
               </select>
-              <p class="mt-1 text-[10px] text-muted-foreground">
+              <p class="mt-1 text-xs text-muted-foreground">
                 Same-team secrets from Infrastructure → Secrets are auto-injected. Use Authorized Secrets for cross-team bindings.
               </p>
             </div>
@@ -807,7 +827,7 @@ async function handleTrigger() {
               <button
                 v-if="editForm.steps.length === 0"
                 type="button"
-                class="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-dashed border-border px-3 py-2.5 text-[13px] text-muted-foreground hover:border-foreground/25 hover:bg-muted/20 hover:text-foreground transition-colors"
+                class="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-dashed border-border px-3 py-2.5 text-sm text-muted-foreground hover:border-foreground/25 hover:bg-muted/20 hover:text-foreground transition-colors"
                 @click="addEditStep"
               >
                 <span class="inline-flex items-center gap-1.5 font-medium">
@@ -815,7 +835,7 @@ async function handleTrigger() {
                   Add Step
                 </span>
                 <span class="text-border">·</span>
-                <span class="text-[12px] font-normal text-muted-foreground/70">No steps defined yet</span>
+                <span class="text-xs font-normal text-muted-foreground/70">No steps defined yet</span>
               </button>
 
               <template v-else>
@@ -838,8 +858,8 @@ async function handleTrigger() {
                       <div v-if="!step.name && !step.run" class="text-xs text-muted-foreground italic">Empty step</div>
                     </div>
                     <div class="flex items-center gap-1 shrink-0">
-                      <span v-if="step.uses" class="mono-chip text-[10px]">{{ step.uses }}</span>
-                      <span v-if="step.continue_on_error" class="mono-chip text-[10px] text-amber-600 bg-amber-500/10">no-fail</span>
+                      <span v-if="step.uses" class="mono-chip text-xs">{{ step.uses }}</span>
+                      <span v-if="step.continue_on_error" class="mono-chip text-xs text-amber-600 bg-amber-500/10">no-fail</span>
                       <button
                         type="button"
                         class="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
@@ -856,7 +876,7 @@ async function handleTrigger() {
                   <div v-if="expandedEditSteps.has(idx)" class="px-4 pb-4 space-y-3 border-t border-border/40 pt-3">
                     <div class="grid grid-cols-5 gap-3">
                       <div class="col-span-3">
-                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Name <span class="text-red-500">*</span></label>
+                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Name <span class="text-red-500">*</span></label>
                         <input
                           v-model="step.name"
                           type="text"
@@ -865,7 +885,7 @@ async function handleTrigger() {
                         />
                       </div>
                       <div class="col-span-2">
-                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Engine</label>
+                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Engine</label>
                         <select
                           v-model="step.uses"
                           class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
@@ -878,21 +898,42 @@ async function handleTrigger() {
                     </div>
 
                     <div v-if="step.uses === 'docker'">
-                      <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Image <span class="text-red-500">*</span></label>
+                      <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Image <span class="text-red-500">*</span></label>
                       <input
                         v-model="step.image"
                         type="text"
-                        placeholder="e.g. alpine:3.20"
+                        placeholder="e.g. alpine:3.20 or crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0"
                         class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                       />
                     </div>
 
+                    <div>
+                      <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
+                        Registry Secret
+                      </label>
+                      <select
+                        v-model="(step as any).registry_secret"
+                        class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                      >
+                        <option value="">None</option>
+                        <option v-for="opt in editStepSecretOptions" :key="opt.id" :value="opt.id">
+                          {{ opt.label }}
+                        </option>
+                      </select>
+                      <p class="text-xs text-muted-foreground/70 mt-0.5">
+                        Secret <strong>name</strong> for <code class="font-mono">docker login</code> (pull or push).
+                        JSON value (encrypted):
+                        <code class="font-mono">{ "provider", "registry", "username", "password" }</code>.
+                        Shell/SSH: login before step; Docker: login before pull. Not injected as env.
+                      </p>
+                    </div>
+
                                           <div v-if="step.uses === 'docker'">
-                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
+                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
                           Volumes
                         </label>
                         <div v-if="((step as any).volumes || []).length > 0" class="rounded-lg border border-border overflow-hidden mb-1.5">
-                          <div class="grid grid-cols-[1fr_1fr_28px] gap-0 text-[11px] font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border px-3 py-1.5">
+                          <div class="grid grid-cols-[1fr_1fr_28px] gap-0 text-xs font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border px-3 py-1.5">
                             <span>Host Path</span>
                             <span>Container Path</span>
                             <span />
@@ -926,7 +967,7 @@ async function handleTrigger() {
                         </div>
                         <button
                           type="button"
-                          class="flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground bg-muted/20 hover:bg-muted/40 rounded-lg border border-dashed border-border/60 transition-colors"
+                          class="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground bg-muted/20 hover:bg-muted/40 rounded-lg border border-dashed border-border/60 transition-colors"
                           @click="
                             if (!(step as any).volumes) (step as any).volumes = [];
                             (step as any).volumes.push({ host: '', container: '' })
@@ -935,7 +976,7 @@ async function handleTrigger() {
                           <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
                           Add Volume
                         </button>
-                        <p class="text-[10px] text-muted-foreground/70 mt-1">Map host paths into the container. All host paths must exist on the runner.</p>
+                        <p class="text-xs text-muted-foreground/70 mt-1">Map host paths into the container. All host paths must exist on the runner.</p>
                       </div>
 
                       <div v-if="step.uses === 'docker'" class="mb-3">
@@ -947,14 +988,14 @@ async function handleTrigger() {
                           />
                           <div>
                             <span class="text-xs font-medium text-foreground">Privileged mode</span>
-                            <span class="ml-1 px-1 py-0.5 text-[10px] uppercase tracking-wider rounded bg-red-500/10 text-red-600 font-semibold">Security</span>
-                            <p class="text-[10px] text-muted-foreground/70 mt-0.5">Required for Docker-in-Docker (docker:dind). Grants full host capabilities — only use on disposable runner VMs.</p>
+                            <span class="ml-1 px-1 py-0.5 text-xs uppercase tracking-wider rounded bg-red-500/10 text-red-600 font-semibold">Security</span>
+                            <p class="text-xs text-muted-foreground/70 mt-0.5">Required for Docker-in-Docker (docker:dind). Grants full host capabilities — only use on disposable runner VMs.</p>
                           </div>
                         </label>
                       </div>
 
                     <div>
-                      <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Command</label>
+                      <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Command</label>
                       <textarea
                         v-model="step.run"
                         rows="4"
@@ -966,7 +1007,7 @@ async function handleTrigger() {
 
                       <div class="grid grid-cols-3 gap-3">
                         <div>
-                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Work Dir</label>
+                          <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Work Dir</label>
                           <input
                             v-model="step.dir"
                             type="text"
@@ -975,7 +1016,7 @@ async function handleTrigger() {
                           />
                         </div>
                         <div>
-                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Timeout</label>
+                          <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Timeout</label>
                           <input
                             v-model="step.timeout"
                             type="text"
@@ -984,7 +1025,7 @@ async function handleTrigger() {
                           />
                         </div>
                         <div>
-                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Retry</label>
+                          <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Retry</label>
                           <input
                             v-model.number="step.retry"
                             type="number"
@@ -997,19 +1038,23 @@ async function handleTrigger() {
                       </div>
 
                       <div class="mt-3">
-                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Secrets</label>
+                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Secrets</label>
                         <MultiSelect
                           v-model="(step.secrets as string[])"
                           :options="editStepSecretOptions"
                           placeholder="Inherit from pipeline..."
                         />
-                        <p class="text-[10px] text-muted-foreground/70 mt-0.5">Authorize secrets for this step only. Injected as env vars at runtime.</p>
+                        <p class="text-xs text-muted-foreground/70 mt-0.5">Authorize secrets for this step only. Injected as env vars at runtime.</p>
                       </div>
 
                       <div v-if="step.uses === 'ssh'" class="space-y-3">
+                        <p class="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                          SSH targets <span class="text-red-500">*</span>
+                          <span class="normal-case font-normal text-muted-foreground/80"> — at least one of Host or Labels</span>
+                        </p>
                         <div class="grid grid-cols-2 gap-3">
                           <div>
-                            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">SSH Host <span class="text-red-500">*</span></label>
+                            <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">SSH Host</label>
                             <input
                               v-model="step.host"
                               type="text"
@@ -1018,7 +1063,7 @@ async function handleTrigger() {
                             />
                           </div>
                           <div>
-                            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Host Labels</label>
+                            <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Host Labels</label>
                             <input
                               v-model="step.host_labels"
                               type="text"
@@ -1027,7 +1072,9 @@ async function handleTrigger() {
                             />
                           </div>
                         </div>
-                        <p class="text-[10px] text-muted-foreground">Host labels match hosts by their labels column. Use commas for multiple. Combined with SSH Host above (union).</p>
+                        <p class="text-xs text-muted-foreground">
+                          Combined as a union (OR): named hosts plus any host matching a listed label. Multiple values: comma-separated.
+                        </p>
                       </div>
                       <label class="flex items-center gap-2 cursor-pointer select-none">
                         <input
@@ -1043,7 +1090,7 @@ async function handleTrigger() {
 
               <button
                 type="button"
-                class="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-4 py-2 text-[13px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                class="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
                 @click="addEditStep"
               >
                 <Plus class="h-3.5 w-3.5" />
@@ -1055,10 +1102,10 @@ async function handleTrigger() {
             <details class="group/adv rounded-xl border border-dashed border-border/80 bg-muted/10 px-3 py-2.5" :open="editFormHasAdvanced">
               <summary class="flex items-center gap-3 cursor-pointer list-none select-none py-0.5 [&::-webkit-details-marker]:hidden">
                 <span class="h-px flex-1 bg-border/80 transition-colors duration-300 group-hover/adv:bg-foreground/20" />
-                <span class="inline-flex items-center gap-1.5 shrink-0 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground transition-colors duration-300 group-hover/adv:text-foreground">
+                <span class="inline-flex items-center gap-1.5 shrink-0 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground transition-colors duration-300 group-hover/adv:text-foreground">
                   Advanced
                   <ChevronDown class="h-3.5 w-3.5 transition-transform duration-300 ease-out group-open/adv:rotate-180" />
-                  <span v-if="editFormHasAdvanced" class="text-[10px] font-normal normal-case tracking-normal text-muted-foreground/60">
+                  <span v-if="editFormHasAdvanced" class="text-xs font-normal normal-case tracking-normal text-muted-foreground/60">
                     ({{ [editForm.runner_timeout && 1, editForm.concurrency_group && 1, editForm.var_ids.length > 0 && 1, editForm.secret_ids.length > 0 && 1, editForm.env.length > 0 && 1, editForm.input_defs.length > 0 && 1].filter(Boolean).length }} configured)
                   </span>
                 </span>
@@ -1127,7 +1174,7 @@ async function handleTrigger() {
                     :options="editVariableOptions"
                     placeholder="Select platform variables..."
                   />
-                  <p class="mt-1 text-[10px] text-muted-foreground">
+                  <p class="mt-1 text-xs text-muted-foreground">
                     Bind platform variables (Infrastructure → Variables). Available as <code class="font-mono">$NAME</code> in every step.
                   </p>
                 </div>
@@ -1138,7 +1185,7 @@ async function handleTrigger() {
                     :options="editSecretOptions"
                     placeholder="Select secrets..."
                   />
-                  <p class="mt-1 text-[10px] text-muted-foreground">
+                  <p class="mt-1 text-xs text-muted-foreground">
                     Explicit binding via <code class="font-mono">pipeline_secrets</code>. Use for cross-group or empty-group secrets.
                   </p>
                 </div>
@@ -1150,17 +1197,17 @@ async function handleTrigger() {
                   <div class="flex items-center gap-2">
                     <GripVertical class="h-4 w-4 text-muted-foreground" />
                     <span class="text-sm font-medium">Env</span>
-                    <span class="text-[11px] text-muted-foreground">(user-defined, only for this pipeline)</span>
+                    <span class="text-xs text-muted-foreground">(user-defined, only for this pipeline)</span>
                   </div>
                   <button
                     type="button"
-                    class="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors"
+                    class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
                     @click="addEditEnv"
                   >
                     <Plus class="h-3 w-3" /> Add
                   </button>
                 </div>
-                <div v-if="editForm.env.length === 0" class="text-[11px] text-muted-foreground">
+                <div v-if="editForm.env.length === 0" class="text-xs text-muted-foreground">
                   No custom env vars defined. Add key-value pairs specific to this pipeline.
                 </div>
                 <div v-for="(pair, ei) in editForm.env" :key="ei" class="flex items-center gap-3">
@@ -1170,7 +1217,7 @@ async function handleTrigger() {
                     placeholder="KEY"
                     class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                   />
-                  <span class="text-[10px] text-muted-foreground">=</span>
+                  <span class="text-xs text-muted-foreground">=</span>
                   <input
                     v-model="editForm.env[ei].value"
                     type="text"
@@ -1190,18 +1237,18 @@ async function handleTrigger() {
                   <div class="flex items-center gap-2">
                     <GripVertical class="h-4 w-4 text-muted-foreground" />
                     <span class="text-sm font-medium">Params</span>
-                    <span class="text-[11px] text-muted-foreground">(optional)</span>
+                    <span class="text-xs text-muted-foreground">(optional)</span>
                   </div>
                   <button
                     type="button"
-                    class="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors"
+                    class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
                     @click="addEditInputDef"
                   >
                     <Plus class="h-3 w-3" /> Add
                   </button>
                 </div>
 
-                <div v-if="editForm.input_defs.length === 0" class="text-[11px] text-muted-foreground">
+                <div v-if="editForm.input_defs.length === 0" class="text-xs text-muted-foreground">
                   No input parameters defined.
                 </div>
 
@@ -1257,12 +1304,12 @@ async function handleTrigger() {
           <div class="flex justify-end gap-2 pt-1">
             <button
               type="button"
-              class="inline-flex items-center justify-center rounded-xl border border-border px-4 py-2 text-[13px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              class="inline-flex items-center justify-center rounded-xl border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
               @click="showEditDialog = false"
             >Cancel</button>
             <button
               :disabled="editSaving || !editForm.name.trim() || editForm.steps.length === 0"
-              class="inline-flex items-center justify-center rounded-xl bg-primary px-4 py-2 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="inline-flex items-center justify-center rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               @click="handleEditSave"
             >
               {{ editSaving ? 'Saving...' : 'Update Pipeline' }}
@@ -1277,25 +1324,25 @@ async function handleTrigger() {
     <template v-else-if="pipeline">
       <div class="flex gap-0 flex-1 min-h-0 bg-muted/50 rounded-2xl overflow-hidden">
         <!-- ====== Left Sidebar ====== -->
-        <div class="w-[16rem] shrink-0 flex flex-col overflow-y-auto p-4" @click="handleSidebarClick">
+        <div class="w-[18rem] shrink-0 flex flex-col overflow-y-auto p-4" @click="handleSidebarClick">
           <div class="space-y-0.5 mt-1">
             <button
-              class="w-full text-left px-3 py-2 rounded-lg text-[13px] transition-colors"
+              class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors"
               :class="activeTab === 'stage' ? 'bg-card shadow-sm font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
               @click="navigateTab('stage')"
             >
               Stage View
             </button>
             <button
-              class="w-full text-left px-3 py-2 rounded-lg text-[13px] transition-colors flex items-center justify-between"
+              class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center justify-between"
               :class="activeTab === 'history' ? 'bg-card shadow-sm font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
               @click="navigateTab('history')"
             >
               <span>Build History</span>
-              <span v-if="jobs.length > 0" class="text-[11px] tabular-nums">{{ jobs.length }}</span>
+              <span v-if="jobs.length > 0" class="text-xs tabular-nums">{{ jobs.length }}</span>
             </button>
             <button
-              class="w-full text-left px-3 py-2 rounded-lg text-[13px] transition-colors"
+              class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors"
               :class="activeTab === 'definition' ? 'bg-card shadow-sm font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
               @click="navigateTab('definition')"
             >
@@ -1305,8 +1352,8 @@ async function handleTrigger() {
           <div class="mt-5 px-3">
             <!-- Section heading + summary strip -->
             <div class="flex items-center justify-between mb-3">
-              <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Recent Builds</div>
-              <div v-if="jobs.length > 0" class="flex items-center gap-2 text-[10px] tabular-nums">
+              <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Recent Builds</div>
+              <div v-if="jobs.length > 0" class="flex items-center gap-2 text-xs tabular-nums">
                 <span class="flex items-center gap-1 text-emerald-500 font-medium"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500" />{{ successCount }}</span>
                 <span class="flex items-center gap-1 text-red-500 font-medium"><span class="w-1.5 h-1.5 rounded-full bg-red-500" />{{ failedCount }}</span>
                 <span v-if="runningCount > 0" class="flex items-center gap-1 text-amber-500 font-medium"><span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />{{ runningCount }}</span>
@@ -1314,13 +1361,13 @@ async function handleTrigger() {
             </div>
 
             <!-- Empty state -->
-            <div v-if="jobs.length === 0" class="text-[11px] text-muted-foreground/50 py-2">No builds yet. Trigger a build to get started.</div>
+            <div v-if="jobs.length === 0" class="text-xs text-muted-foreground/50 py-2">No builds yet. Trigger a build to get started.</div>
 
             <!-- Grouped timeline -->
             <template v-else>
               <div v-for="group in timelineBuilds" :key="group.label" class="mb-4 last:mb-0">
                 <!-- Date header -->
-                <div class="text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider mb-1.5 pl-0.5">{{ group.label }}</div>
+                <div class="text-xs font-medium text-muted-foreground/70 uppercase tracking-wider mb-1.5 pl-0.5">{{ group.label }}</div>
 
                 <!-- Entries -->
                 <div class="space-y-0.5">
@@ -1342,29 +1389,34 @@ async function handleTrigger() {
 
                     <div class="flex-1 min-w-0"><!-- Row: #N + status + ... menu -->
                       <div class="flex items-center gap-1.5">
-                        <span class="text-[12px] font-mono font-semibold tabular-nums text-foreground">#{{ runNum(j, []) }}</span>
+                        <span class="text-sm font-mono font-semibold tabular-nums text-foreground">#{{ runNum(j, []) }}</span>
 
                         <span
                           v-if="j.status === 'running'"
-                          class="text-[10px] font-mono tabular-nums text-amber-500/90"
+                          class="text-xs font-mono tabular-nums text-amber-500/90"
                         >Running {{ runningDuration(j) }}</span>
                         <span
                           v-else-if="j.status === 'pending'"
-                          class="text-[10px] text-slate-400/80"
+                          class="text-xs text-slate-400/80"
                         >Pending</span>
                         <span
                           v-else-if="j.status === 'queued'"
-                          class="text-[10px] text-purple-400/80"
+                          class="text-xs text-purple-400/80"
                         >Queued</span>
                         <span
                           v-else-if="j.status === 'cancelled'"
-                          class="text-[10px] text-slate-400/80"
+                          class="text-xs text-slate-400/80"
                         >Cancelled</span>
                         <span
                           v-else
-                          class="text-[10px] font-mono tabular-nums"
+                          class="text-xs font-mono tabular-nums"
                           :class="j.status === 'success' ? 'text-emerald-600/80' : 'text-red-500/80'"
                         >{{ j.status === 'success' ? 'Passed' : 'Failed' }}</span>
+
+                        <!-- Runner labels -->
+                        <span v-if="j.snapshot?.runner_labels?.length" class="flex items-center gap-1">
+                          <span v-for="l in j.snapshot.runner_labels" :key="l" class="mono-chip text-xs text-muted-foreground/60">{{ l }}</span>
+                        </span>
 
                         <!-- ... menu trigger -->
                         <div class="ml-auto sidebar-job-menu relative">
@@ -1380,7 +1432,7 @@ async function handleTrigger() {
                           <!-- Dropdown -->
                           <div
                             v-if="showMenuForJob === j.id"
-                            class="absolute right-0 top-full mt-1 w-36 z-30 rounded-lg border border-border bg-card shadow-xl py-1 text-[12px]"
+                            class="absolute right-0 top-full mt-1 w-36 z-30 rounded-lg border border-border bg-card shadow-xl py-1 text-xs"
                           >
                             <button
                               v-if="j.status === 'pending' || j.status === 'running' || j.status === 'queued'"
@@ -1403,12 +1455,12 @@ async function handleTrigger() {
 
                       <!-- Build time: timestamp · duration -->
                       <div class="flex items-center gap-1.5 mt-0.5">
-                        <span class="text-[10px] text-muted-foreground/35">{{ fmtTime(j.created_at) }}</span>
-                        <span class="text-[10px] text-muted-foreground/20 select-none">·</span>
-                        <span v-if="j.start_time && j.end_time" class="text-[10px] font-mono tabular-nums text-muted-foreground/65 font-medium">
+                        <span class="text-xs text-muted-foreground/35">{{ fmtTime(j.created_at) }}</span>
+                        <span class="text-xs text-muted-foreground/20 select-none">·</span>
+                        <span v-if="j.start_time && j.end_time" class="text-xs font-mono tabular-nums text-muted-foreground/65 font-medium">
                           {{ fmtDuration(j.start_time, j.end_time) }}
                         </span>
-                        <span v-else-if="j.start_time && j.status === 'running'" class="text-[10px] font-mono tabular-nums text-amber-500/70">
+                        <span v-else-if="j.start_time && j.status === 'running'" class="text-xs font-mono tabular-nums text-amber-500/70">
                           {{ runningDuration(j) }}
                         </span>
                       </div>
@@ -1434,26 +1486,26 @@ async function handleTrigger() {
               <div class="rounded-xl border border-border/50 bg-card p-5 mb-5 flex items-center gap-6 shadow-sm">
                 <div class="flex items-center gap-5">
                   <div class="text-center min-w-[3rem]">
-                    <div class="text-xl font-bold tabular-nums text-emerald-500">{{ successCount }}</div>
-                    <div class="text-[11px] text-muted-foreground mt-0.5">Passed</div>
+                    <div class="text-lg font-bold tabular-nums text-emerald-500">{{ successCount }}</div>
+                    <div class="text-xs text-muted-foreground mt-0.5">Passed</div>
                   </div>
                   <div class="text-center min-w-[3rem]">
-                    <div class="text-xl font-bold tabular-nums text-red-500">{{ failedCount }}</div>
-                    <div class="text-[11px] text-muted-foreground mt-0.5">Failed</div>
+                    <div class="text-lg font-bold tabular-nums text-red-500">{{ failedCount }}</div>
+                    <div class="text-xs text-muted-foreground mt-0.5">Failed</div>
                   </div>
                   <div class="text-center min-w-[3rem]">
-                    <div class="text-xl font-bold tabular-nums text-foreground">{{ jobs.length }}</div>
-                    <div class="text-[11px] text-muted-foreground mt-0.5">Total</div>
+                    <div class="text-lg font-bold tabular-nums text-foreground">{{ jobs.length }}</div>
+                    <div class="text-xs text-muted-foreground mt-0.5">Total</div>
                   </div>
                 </div>
                 <div class="w-px h-10 bg-border/30" />
                 <div v-if="latestRun" class="min-w-0">
-                  <div class="text-[11px] text-muted-foreground mb-1.5">Last build</div>
-                  <div class="flex items-center gap-2 text-[13px]">
+                  <div class="text-xs text-muted-foreground mb-1.5">Last build</div>
+                  <div class="flex items-center gap-2 text-sm">
                     <span class="font-mono font-semibold text-primary tabular-nums">#{{ runNum(latestRun, []) }}</span>
                     <span
                       :class="cn(
-                        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+                        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
                         latestRun.status === 'success' ? 'bg-emerald-500/10 text-emerald-600' :
                         latestRun.status === 'failed' ? 'bg-red-500/10 text-red-500' :
                         latestRun.status === 'running' ? 'bg-amber-500/10 text-amber-600' :
@@ -1463,12 +1515,12 @@ async function handleTrigger() {
                       <span :class="cn('w-1.5 h-1.5 rounded-full', latestRun.status === 'success' ? 'bg-emerald-500' : latestRun.status === 'failed' ? 'bg-red-500' : latestRun.status === 'running' ? 'bg-amber-400 animate-pulse' : 'bg-slate-400')" />
                       {{ latestRun.status }}
                     </span>
-                    <span class="font-mono text-[12px] text-muted-foreground">{{ fmtDuration(latestRun.start_time, latestRun.end_time) }}</span>
+                    <span class="font-mono text-xs text-muted-foreground">{{ fmtDuration(latestRun.start_time, latestRun.end_time) }}</span>
                     <span class="text-muted-foreground/40">·</span>
-                    <span class="text-[12px] font-mono text-muted-foreground">{{ fmtTime(latestRun.start_time || latestRun.created_at) }}</span>
+                    <span class="text-xs font-mono text-muted-foreground">{{ fmtTime(latestRun.start_time || latestRun.created_at) }}</span>
                   </div>
                 </div>
-                <div v-else class="text-[12px] text-muted-foreground">No builds yet</div>
+                <div v-else class="text-xs text-muted-foreground">No builds yet</div>
               </div>
 
               <!-- Workflow graph — VueFlow + dagre -->
@@ -1489,8 +1541,8 @@ async function handleTrigger() {
             </div>
             <template v-else>
               <div class="flex items-center gap-4 mb-4">
-                <div class="text-[13px] font-semibold text-foreground">Build History</div>
-                <div class="flex items-center gap-3 ml-auto text-[11px]">
+                <div class="text-base font-semibold text-foreground">Build History</div>
+                <div class="flex items-center gap-3 ml-auto text-xs">
                   <span class="flex items-center gap-1 text-emerald-600"><CheckCircle2 class="h-3 w-3" /><span class="font-semibold tabular-nums">{{ successCount }}</span></span>
                   <span class="flex items-center gap-1 text-red-500"><XCircle class="h-3 w-3" /><span class="font-semibold tabular-nums">{{ failedCount }}</span></span>
                   <span class="text-muted-foreground">{{ jobs.length }} total</span>
@@ -1515,12 +1567,12 @@ async function handleTrigger() {
 
                 <!-- Pagination -->
                 <div v-if="historyTotalPages > 1" class="flex items-center justify-between px-4 py-2.5 rounded-xl border border-border/50 bg-card">
-                  <span class="text-[11px] text-muted-foreground">
+                  <span class="text-xs text-muted-foreground">
                     {{ (historyPage - 1) * historyPageSize + 1 }}–{{ Math.min(historyPage * historyPageSize, jobs.length) }} of {{ jobs.length }}
                   </span>
                   <div class="flex items-center gap-1">
                     <button
-                      class="px-2.5 py-1 rounded text-[11px] transition-colors"
+                      class="px-2.5 py-1 rounded text-xs transition-colors"
                       :class="historyPage === 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
                       :disabled="historyPage === 1"
                       @click="historyGo(historyPage - 1)"
@@ -1528,12 +1580,12 @@ async function handleTrigger() {
                     <button
                       v-for="p in Math.min(historyTotalPages, 7)"
                       :key="'pg-'+p"
-                      class="w-7 h-7 rounded text-[11px] tabular-nums transition-colors"
+                      class="w-7 h-7 rounded text-xs tabular-nums transition-colors"
                       :class="p === historyPage ? 'bg-primary text-primary-foreground font-semibold' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
                       @click="historyGo(p)"
                     >{{ p }}</button>
                     <button
-                      class="px-2.5 py-1 rounded text-[11px] transition-colors"
+                      class="px-2.5 py-1 rounded text-xs transition-colors"
                       :class="historyPage === historyTotalPages ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
                       :disabled="historyPage === historyTotalPages"
                       @click="historyGo(historyPage + 1)"
@@ -1551,16 +1603,16 @@ async function handleTrigger() {
               <div class="px-5 pt-4 pb-3 flex items-start justify-between gap-4">
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2.5 flex-wrap">
-                    <h2 class="text-sm font-bold tracking-tight">{{ pipeline.name }}</h2>
-                    <span class="mono-chip text-[9px] text-muted-foreground opacity-60 select-all">{{ pipeline.id?.slice(-8) }}</span>
+                    <h2 class="text-base font-semibold tracking-tight">{{ pipeline.name }}</h2>
+                    <span class="mono-chip text-muted-foreground opacity-60 select-all">{{ pipeline.id?.slice(-8) }}</span>
                   </div>
-                  <p v-if="pipeline.description" class="text-[12px] text-muted-foreground mt-1.5 leading-relaxed">{{ pipeline.description }}</p>
+                  <p v-if="pipeline.description" class="text-sm text-muted-foreground mt-1.5 leading-relaxed">{{ pipeline.description }}</p>
                 </div>
                 <div class="flex items-center gap-2 shrink-0 pt-0.5">
-                  <span v-if="hasYamlSource" class="text-[10px] text-muted-foreground bg-muted/60 rounded px-2.5 py-0.5 font-medium">from YAML</span>
+                  <span v-if="hasYamlSource" class="text-xs text-muted-foreground bg-muted/60 rounded px-2.5 py-0.5 font-medium">from YAML</span>
                   <button
                     v-if="!hasYamlSource"
-                    class="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors"
+                    class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
                     @click="openEditDialog"
                   >
                     <Pencil class="h-3 w-3" />
@@ -1575,19 +1627,19 @@ async function handleTrigger() {
                 <div class="p-4">
                   <div class="flex items-center gap-1.5 mb-3">
                     <Zap class="h-3.5 w-3.5 text-amber-500" />
-                    <span class="text-[10px] font-bold text-foreground/70 uppercase tracking-widest">Trigger</span>
+                    <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Trigger</span>
                   </div>
                   <div class="space-y-1.5">
-                    <span class="mono-chip text-[10px] font-semibold px-2">{{ pipeline.trigger_type?.toUpperCase() }}</span>
+                    <span class="mono-chip text-xs font-semibold px-2">{{ pipeline.trigger_type?.toUpperCase() }}</span>
                     <div v-if="pipeline.webhook_path" class="flex items-center gap-1.5">
-                      <span class="text-[10px] text-muted-foreground/60 font-mono w-10 shrink-0">path</span>
-                      <code class="text-[12px] font-mono text-foreground/70">{{ pipeline.webhook_path }}</code>
+                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">path</span>
+                      <code class="text-xs font-mono text-foreground/70">{{ pipeline.webhook_path }}</code>
                     </div>
                     <div v-if="pipeline.cron_expr" class="flex items-center gap-1.5">
-                      <span class="text-[10px] text-muted-foreground/60 font-mono w-10 shrink-0">cron</span>
-                      <code class="text-[12px] font-mono text-foreground/70">{{ pipeline.cron_expr }}</code>
+                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">cron</span>
+                      <code class="text-xs font-mono text-foreground/70">{{ pipeline.cron_expr }}</code>
                     </div>
-                    <div v-if="!pipeline.webhook_path && !pipeline.cron_expr" class="text-[11px] text-muted-foreground/50 italic">No external trigger configured</div>
+                    <div v-if="!pipeline.webhook_path && !pipeline.cron_expr" class="text-xs text-muted-foreground/50 italic">No external trigger configured</div>
                   </div>
                 </div>
 
@@ -1595,18 +1647,18 @@ async function handleTrigger() {
                 <div class="p-4 border-l border-border/15">
                   <div class="flex items-center gap-1.5 mb-3">
                     <Server class="h-3.5 w-3.5 text-blue-500" />
-                    <span class="text-[10px] font-bold text-foreground/70 uppercase tracking-widest">Runner</span>
-                    <span v-if="(pipeline.runner_labels || []).length" class="text-[9px] text-muted-foreground/50 ml-auto">{{ pipeline.runner_labels.length }} label{{ pipeline.runner_labels.length !== 1 ? 's' : '' }}</span>
+                    <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Runner</span>
+                    <span v-if="(pipeline.runner_labels || []).length" class="text-xs text-muted-foreground/50 ml-auto">{{ pipeline.runner_labels.length }} label{{ pipeline.runner_labels.length !== 1 ? 's' : '' }}</span>
                   </div>
                   <div class="space-y-2">
                     <div class="flex flex-wrap gap-1">
-                      <span v-for="l in (pipeline.runner_labels || [])" :key="l" class="mono-chip text-[10px]">{{ l }}</span>
-                      <span v-if="!(pipeline.runner_labels || []).length" class="text-[11px] text-muted-foreground/50 italic">No labels set</span>
+                      <span v-for="l in (pipeline.runner_labels || [])" :key="l" class="mono-chip text-xs">{{ l }}</span>
+                      <span v-if="!(pipeline.runner_labels || []).length" class="text-xs text-muted-foreground/50 italic">No labels set</span>
                     </div>
                     <div class="flex items-center gap-1.5">
                       <Clock class="h-3 w-3 text-muted-foreground/50" />
-                      <span class="font-mono text-[11px] text-muted-foreground font-medium">{{ pipeline.timeout_seconds }}s</span>
-                      <span class="text-[10px] text-muted-foreground/50">timeout</span>
+                      <span class="font-mono text-xs text-muted-foreground font-medium">{{ pipeline.timeout_seconds }}s</span>
+                      <span class="text-xs text-muted-foreground/50">timeout</span>
                     </div>
                   </div>
                 </div>
@@ -1615,29 +1667,29 @@ async function handleTrigger() {
                 <div class="p-4 border-l border-border/15">
                   <div class="flex items-center gap-1.5 mb-3">
                     <Link class="h-3.5 w-3.5 text-violet-500" />
-                    <span class="text-[10px] font-bold text-foreground/70 uppercase tracking-widest">Bindings</span>
+                    <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Bindings</span>
                   </div>
                   <div class="space-y-2.5">
                     <div>
                       <div class="flex items-center gap-1.5 mb-1">
                         <span class="h-1.5 w-1.5 rounded-full bg-emerald-500/60"></span>
-                        <span class="text-[9px] text-muted-foreground/60 uppercase tracking-wider">Variables</span>
-                        <span v-if="boundVariableNames.length" class="text-[9px] text-muted-foreground/40 ml-auto">{{ boundVariableNames.length }}</span>
+                        <span class="text-xs text-muted-foreground/60 uppercase tracking-wider">Variables</span>
+                        <span v-if="boundVariableNames.length" class="text-xs text-muted-foreground/40 ml-auto">{{ boundVariableNames.length }}</span>
                       </div>
-                      <div v-if="boundVariableNames.length === 0" class="text-[11px] text-muted-foreground/40 pl-3.5">No variables bound</div>
+                      <div v-if="boundVariableNames.length === 0" class="text-xs text-muted-foreground/40 pl-3.5">No variables bound</div>
                       <div v-else class="flex flex-wrap gap-1 pl-3.5">
-                        <code v-for="v in boundVariableNames" :key="v" class="mono-chip text-[10px]">{{ v }}</code>
+                        <code v-for="v in boundVariableNames" :key="v" class="mono-chip text-xs">{{ v }}</code>
                       </div>
                     </div>
                     <div>
                       <div class="flex items-center gap-1.5 mb-1">
                         <span class="h-1.5 w-1.5 rounded-full bg-rose-500/60"></span>
-                        <span class="text-[9px] text-muted-foreground/60 uppercase tracking-wider">Secrets</span>
-                        <span v-if="boundSecretNames.length" class="text-[9px] text-muted-foreground/40 ml-auto">{{ boundSecretNames.length }}</span>
+                        <span class="text-xs text-muted-foreground/60 uppercase tracking-wider">Secrets</span>
+                        <span v-if="boundSecretNames.length" class="text-xs text-muted-foreground/40 ml-auto">{{ boundSecretNames.length }}</span>
                       </div>
-                      <div v-if="boundSecretNames.length === 0" class="text-[11px] text-muted-foreground/40 pl-3.5">No secrets bound</div>
+                      <div v-if="boundSecretNames.length === 0" class="text-xs text-muted-foreground/40 pl-3.5">No secrets bound</div>
                       <div v-else class="flex flex-wrap gap-1 pl-3.5">
-                        <code v-for="s in boundSecretNames" :key="s" class="mono-chip text-[10px]">{{ s }}</code>
+                        <code v-for="s in boundSecretNames" :key="s" class="mono-chip text-xs">{{ s }}</code>
                       </div>
                     </div>
                   </div>
@@ -1647,24 +1699,24 @@ async function handleTrigger() {
                 <div class="p-4 border-l border-border/15">
                   <div class="flex items-center gap-1.5 mb-3">
                     <Settings class="h-3.5 w-3.5 text-muted-foreground/70" />
-                    <span class="text-[10px] font-bold text-foreground/70 uppercase tracking-widest">Config</span>
+                    <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Config</span>
                   </div>
                   <div class="space-y-2">
                     <div v-if="pipeline.team_id" class="flex items-center gap-1.5">
-                      <span class="text-[10px] text-muted-foreground/60 font-mono w-10 shrink-0">team</span>
-                      <code class="mono-chip text-[10px] truncate">{{ teamLabel(pipeline.team_id) }}</code>
+                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">team</span>
+                      <code class="mono-chip text-xs truncate">{{ teamLabel(pipeline.team_id) }}</code>
                     </div>
                     <div class="flex items-center gap-1.5">
-                      <span class="text-[10px] text-muted-foreground/60 font-mono w-10 shrink-0">source</span>
-                      <span class="mono-chip text-[10px]">{{ pipeline.source || 'form' }}</span>
+                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">source</span>
+                      <span class="mono-chip text-xs">{{ pipeline.source || 'form' }}</span>
                     </div>
                     <div v-if="pipeline.concurrency_group" class="flex items-center gap-1.5">
-                      <span class="text-[10px] text-muted-foreground/60 font-mono w-10 shrink-0">conc.</span>
+                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">conc.</span>
                       <div class="flex items-center gap-1.5 min-w-0">
-                        <code class="mono-chip text-[10px] truncate">{{ pipeline.concurrency_group }}</code>
+                        <code class="mono-chip text-xs truncate">{{ pipeline.concurrency_group }}</code>
                         <span
                           v-if="(pipeline as any).concurrency_mode"
-                          class="text-[9px] font-semibold rounded px-1.5 py-0.5 border shrink-0"
+                          class="text-xs font-semibold rounded px-1.5 py-0.5 border shrink-0"
                           :class="{
                             'bg-amber-500/10 text-amber-600 border-amber-500/20': (pipeline as any).concurrency_mode === 'queue',
                             'bg-blue-500/10 text-blue-600 border-blue-500/20': (pipeline as any).concurrency_mode === 'discard-new',
@@ -1683,25 +1735,25 @@ async function handleTrigger() {
               <div v-if="hasInputDefs" class="mt-6 border-t border-border/20 pt-1">
                 <div class="px-5 py-3 bg-muted/10 flex items-center gap-2">
                   <Sliders class="h-3.5 w-3.5 text-foreground/50" />
-                  <span class="text-[10px] font-bold text-foreground/70 uppercase tracking-widest">Parameters</span>
-                  <span class="text-[9px] text-muted-foreground/50 ml-auto">{{ pipeline.input_defs.length }}</span>
+                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Parameters</span>
+                  <span class="text-xs text-muted-foreground/50 ml-auto">{{ pipeline.input_defs.length }}</span>
                 </div>
                 <div class="divide-y divide-border/20">
                   <div
                     v-for="inp in pipeline.input_defs"
                     :key="inp.name"
-                    class="px-5 py-3 flex items-center gap-3 text-[13px]"
+                    class="px-5 py-3 flex items-center gap-3 text-sm"
                   >
                     <span class="font-mono font-semibold text-foreground w-36 shrink-0">{{ inp.name }}</span>
-                    <span v-if="inp.description" class="text-muted-foreground text-[12px] min-w-0">{{ inp.description }}</span>
-                    <span v-else class="italic text-[12px] text-muted-foreground/50">—</span>
+                    <span v-if="inp.description" class="text-muted-foreground text-sm min-w-0">{{ inp.description }}</span>
+                    <span v-else class="italic text-sm text-muted-foreground/50">—</span>
                     <span class="flex-1" />
                     <span
-                      class="text-[10px] font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0"
+                      class="text-xs font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0"
                       :class="inp.required ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20' : 'bg-slate-500/10 text-slate-500 border border-slate-500/20'"
                     >{{ inp.required ? 'required' : 'optional' }}</span>
-                    <span v-if="inp.default" class="text-[11px] text-muted-foreground font-mono shrink-0">= {{ inp.default }}</span>
-                    <span v-else class="text-[11px] text-muted-foreground/35 italic font-mono shrink-0 select-none">= ?</span>
+                    <span v-if="inp.default" class="text-xs text-muted-foreground font-mono shrink-0">= {{ inp.default }}</span>
+                    <span v-else class="text-xs text-muted-foreground/35 italic font-mono shrink-0 select-none">= ?</span>
                   </div>
                 </div>
               </div>
@@ -1710,10 +1762,10 @@ async function handleTrigger() {
               <div class="mt-6 border-t border-border/20 pt-1">
                 <div class="px-5 py-3 bg-muted/10 flex items-center gap-2">
                   <List class="h-3.5 w-3.5 text-foreground/50" />
-                  <span class="text-[10px] font-bold text-foreground/70 uppercase tracking-widest">Steps</span>
-                  <span v-if="(pipeline.tasks || []).length" class="text-[9px] text-muted-foreground/50 ml-auto">{{ pipeline.tasks.length }}</span>
+                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Steps</span>
+                  <span v-if="(pipeline.tasks || []).length" class="text-xs text-muted-foreground/50 ml-auto">{{ pipeline.tasks.length }}</span>
                 </div>
-                <div v-if="!(pipeline.tasks || []).length" class="px-5 py-10 text-center text-[12px] text-muted-foreground/50">
+                <div v-if="!(pipeline.tasks || []).length" class="px-5 py-10 text-center text-xs text-muted-foreground/50">
                   No steps defined.
                 </div>
                 <div v-else class="divide-y divide-border/20">
@@ -1724,20 +1776,20 @@ async function handleTrigger() {
                   >
                     <!-- Step header: number, name, engine badge, flags, metadata -->
                     <div class="flex items-center gap-2 mb-2 flex-wrap">
-                      <span class="font-mono text-[10px] font-bold text-muted-foreground/70 tabular-nums w-6">
+                      <span class="font-mono text-xs font-bold text-muted-foreground/70 tabular-nums w-6">
                         {{ String(Number(idx) + 1).padStart(2, '0') }}
                       </span>
-                      <span class="font-semibold text-foreground text-[13px]">{{ step.name }}</span>
-                      <span class="mono-chip text-[10px] font-medium">{{ step.exec_type }}</span>
+                      <span class="font-semibold text-foreground text-sm">{{ step.name }}</span>
+                      <span class="mono-chip font-medium">{{ step.exec_type }}</span>
 
                       <!-- Timeout -->
-                      <span v-if="step.timeout_seconds > 0" class="inline-flex items-center gap-1 text-[10px] text-muted-foreground/70">
+                      <span v-if="step.timeout_seconds > 0" class="inline-flex items-center gap-1 text-xs text-muted-foreground/70">
                         <Clock class="h-3 w-3" />
                         <span class="font-mono">{{ step.timeout_seconds }}s</span>
                       </span>
 
                       <!-- Retry -->
-                      <span v-if="step.retry_count > 0" class="inline-flex items-center gap-1 text-[10px] text-muted-foreground/70">
+                      <span v-if="step.retry_count > 0" class="inline-flex items-center gap-1 text-xs text-muted-foreground/70">
                         <RotateCw class="h-3 w-3" />
                         <span class="font-mono">{{ step.retry_count }}</span>
                       </span>
@@ -1745,50 +1797,54 @@ async function handleTrigger() {
                       <span class="flex-1" />
 
                       <!-- Flags: continue-on-error, privileged -->
-                      <span v-if="step.fail_strategy === 'continue'" class="text-[10px] font-medium text-amber-600 bg-amber-500/8 border border-amber-500/20 rounded px-1.5 py-0.5">
+                      <span v-if="step.fail_strategy === 'continue'" class="text-xs font-medium text-amber-600 bg-amber-500/8 border border-amber-500/20 rounded px-1.5 py-0.5">
                         continue-on-error
                       </span>
-                      <span v-if="(step as any).privileged" class="text-[10px] font-semibold text-red-500 bg-red-500/8 border border-red-500/20 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                      <span v-if="(step as any).privileged" class="text-xs font-semibold text-red-500 bg-red-500/8 border border-red-500/20 rounded px-1.5 py-0.5 uppercase tracking-wider">
                         privileged
                       </span>
                     </div>
 
-                    <!-- Docker engine extras: image + volumes -->
-                    <div v-if="step.image || step.volumes" class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-[11px]">
+                    <!-- Docker engine extras: image + volumes + pull secret -->
+                    <div v-if="step.image || step.volumes || step.registry_secret" class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-xs">
                       <span v-if="step.image" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-[10px] w-8">image</span>
-                        <code class="mono-chip text-[10px]">{{ step.image }}</code>
+                        <span class="text-muted-foreground/60 text-xs w-8">image</span>
+                        <code class="mono-chip text-xs">{{ step.image }}</code>
+                      </span>
+                      <span v-if="step.registry_secret" class="inline-flex items-center gap-1">
+                        <span class="text-muted-foreground/60 text-xs">registry secret</span>
+                        <code class="mono-chip text-xs">{{ step.registry_secret }}</code>
                       </span>
                       <span v-if="step.volumes" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-[10px] w-14">volumes</span>
-                        <code class="mono-chip text-[10px]">{{ Array.isArray(step.volumes) ? (step.volumes as string[]).join(', ') : step.volumes }}</code>
+                        <span class="text-muted-foreground/60 text-xs w-14">volumes</span>
+                        <code class="mono-chip text-xs">{{ Array.isArray(step.volumes) ? (step.volumes as string[]).join(', ') : step.volumes }}</code>
                       </span>
                     </div>
 
                     <!-- Other step metadata: host, dir -->
-                    <div v-if="step.host_id || step.host_labels || step.work_dir" class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-[11px]">
+                    <div v-if="step.host_id || step.host_labels || step.work_dir" class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-xs">
                       <span v-if="step.work_dir" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-[10px] w-8">dir</span>
-                        <code class="mono-chip text-[10px]">{{ step.work_dir }}</code>
+                        <span class="text-muted-foreground/60 text-xs w-8">dir</span>
+                        <code class="mono-chip text-xs">{{ step.work_dir }}</code>
                       </span>
                       <span v-if="step.host_id" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-[10px] w-14">host</span>
-                        <code class="mono-chip text-[10px]">{{ step.host_id }}</code>
+                        <span class="text-muted-foreground/60 text-xs w-14">host</span>
+                        <code class="mono-chip text-xs">{{ step.host_id }}</code>
                       </span>
                       <span v-if="step.host_labels" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-[10px] w-14">labels</span>
-                        <code class="mono-chip text-[10px]">{{ step.host_labels }}</code>
+                        <span class="text-muted-foreground/60 text-xs w-14">labels</span>
+                        <code class="mono-chip text-xs">{{ step.host_labels }}</code>
                       </span>
                     </div>
 
                     <!-- Step secrets badge -->
-                    <div v-if="step.step_secrets" class="flex items-center gap-1.5 mb-2 text-[10px] text-muted-foreground/70">
+                    <div v-if="step.step_secrets" class="flex items-center gap-1.5 mb-2 text-xs text-muted-foreground/70">
                       <span>step secrets:</span>
-                      <code class="mono-chip text-[10px]">{{ step.step_secrets }}</code>
+                      <code class="mono-chip text-xs">{{ step.step_secrets }}</code>
                     </div>
 
                     <!-- Command block -->
-                    <div class="relative font-mono text-[12px] leading-relaxed text-foreground/80 bg-muted/30 rounded-lg px-3.5 py-3 whitespace-pre-wrap break-all border border-border/25">
+                    <div class="relative font-mono text-sm leading-relaxed text-foreground/80 bg-muted/30 rounded-lg px-3.5 py-3 whitespace-pre-wrap break-all border border-border/25">
                       <div class="absolute left-0 top-1 bottom-1 w-0.5 rounded-full bg-border/30"></div>
                       {{ step.command_template }}
                     </div>

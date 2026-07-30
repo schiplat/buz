@@ -1,13 +1,19 @@
 use reqwest::Client;
-use shared::protocol::{RegisterRequest, RegisterResponse};
+use shared::protocol::{RegisterRequest, RegisterResponse, RunnerPolicyConfig};
 
 use crate::config::Config;
 
-pub async fn register_with_center(client: &Client, config: &Config) -> anyhow::Result<String> {
+pub struct RegisterResult {
+    pub token: String,
+    pub policy: RunnerPolicyConfig,
+}
+
+pub async fn register_with_center(client: &Client, config: &Config) -> anyhow::Result<RegisterResult> {
     let req = RegisterRequest {
         name: config.runner.name.clone(),
         register_token: config.manager.register_token.clone(),
-        labels: config.runner.labels.clone(),
+        // Labels are configured in Manager UI; agent must not overwrite them.
+        labels: Vec::new(),
         version: Some(config.runner.version().into()),
     };
 
@@ -38,7 +44,22 @@ pub async fn register_with_center(client: &Client, config: &Config) -> anyhow::R
         )
     })?;
 
-    tracing::info!("Runner registered: id={}", register_resp.runner_id);
+    let mut policy = register_resp.policy;
+    policy.max_concurrent_jobs = policy.max_concurrent_jobs.max(1);
 
-    Ok(register_resp.token)
+    tracing::info!(
+        "Runner registered: id={} max_concurrent={} ephemeral={} engines=[shell={},ssh={},docker={},wasm={}]",
+        register_resp.runner_id,
+        policy.max_concurrent_jobs,
+        policy.ephemeral,
+        policy.shell_enabled,
+        policy.ssh_enabled,
+        policy.docker_enabled,
+        policy.wasm_enabled,
+    );
+
+    Ok(RegisterResult {
+        token: register_resp.token,
+        policy,
+    })
 }

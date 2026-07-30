@@ -66,24 +66,18 @@ impl Default for DatabaseConfig {
 pub struct AuthConfig {
     #[serde(default)]
     pub jwt_secret: String,
-    #[serde(default = "default_admin_user")]
-    pub admin_user: String,
-    #[serde(default = "default_admin_password")]
-    pub admin_password: String,
-    #[serde(default = "default_token_ttl_hours")]
-    pub runner_register_token_ttl_hours: i64,
     #[serde(default = "default_jwt_ttl_hours")]
     pub jwt_ttl_hours: i64,
+    #[serde(default = "default_token_ttl_hours")]
+    pub runner_register_token_ttl_hours: i64,
 }
 
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             jwt_secret: String::new(),
-            admin_user: default_admin_user(),
-            admin_password: default_admin_password(),
-            runner_register_token_ttl_hours: default_token_ttl_hours(),
             jwt_ttl_hours: default_jwt_ttl_hours(),
+            runner_register_token_ttl_hours: default_token_ttl_hours(),
         }
     }
 }
@@ -92,15 +86,12 @@ impl Default for AuthConfig {
 pub struct RunnerConfig {
     #[serde(default = "default_heartbeat_timeout")]
     pub heartbeat_timeout_seconds: i64,
-    #[serde(default = "default_long_poll_timeout")]
-    pub long_poll_timeout_seconds: i64,
 }
 
 impl Default for RunnerConfig {
     fn default() -> Self {
         Self {
             heartbeat_timeout_seconds: default_heartbeat_timeout(),
-            long_poll_timeout_seconds: default_long_poll_timeout(),
         }
     }
 }
@@ -136,12 +127,6 @@ fn default_db_path() -> String {
 fn default_max_connections() -> u32 {
     8
 }
-fn default_admin_user() -> String {
-    "admin".into()
-}
-fn default_admin_password() -> String {
-    "admin".into()
-}
 fn default_token_ttl_hours() -> i64 {
     24
 }
@@ -150,9 +135,6 @@ fn default_jwt_ttl_hours() -> i64 {
 }
 fn default_heartbeat_timeout() -> i64 {
     90
-}
-fn default_long_poll_timeout() -> i64 {
-    45
 }
 fn default_yaml_scan_dir() -> String {
     "./pipelines".into()
@@ -177,16 +159,19 @@ pub fn load(config_path: Option<&str>) -> anyhow::Result<Config> {
     if let Ok(secret) = std::env::var("BUZ_JWT_SECRET") {
         cfg.auth.jwt_secret = secret;
     }
-    if let Ok(pass) = std::env::var("BUZ_ADMIN_PASSWORD") {
-        cfg.auth.admin_password = pass;
-    }
 
-    // Ensure JWT secret is not default in production
-    if cfg.auth.jwt_secret.is_empty() || cfg.auth.jwt_secret == "changeme" {
+    // Ensure JWT secret is not a placeholder in production
+    if cfg.auth.jwt_secret.is_empty()
+        || cfg.auth.jwt_secret == "changeme"
+        || cfg.auth.jwt_secret.contains("changeme")
+        || cfg.auth.jwt_secret.contains("demo-only")
+    {
         tracing::warn!(
-            "JWT secret is not set or is using default value. Set BUZ_JWT_SECRET in production."
+            "JWT secret looks like a demo placeholder. Set auth.jwt_secret or BUZ_JWT_SECRET before production."
         );
-        cfg.auth.jwt_secret = "buz-dev-secret-change-in-production".into();
+        if cfg.auth.jwt_secret.is_empty() || cfg.auth.jwt_secret == "changeme" {
+            cfg.auth.jwt_secret = "buz-dev-secret-change-in-production".into();
+        }
     }
 
     Ok(cfg)

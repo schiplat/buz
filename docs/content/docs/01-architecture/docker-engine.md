@@ -6,7 +6,7 @@ description: "Step-level Docker execution on the runner — design target aligne
 
 ## Status
 
-**Implemented (MVP).** Step-level `uses: docker` with required `image`, ephemeral `docker run --rm`, workspace mount at `/buz/workspace`, gated by `engine.docker_enabled`. See acceptance criteria below.
+**Implemented (MVP).** Step-level `uses: docker` with required `image`, ephemeral `docker run --rm`, workspace mount at `/buz/workspace`, gated by UI `docker_enabled` on the Runner. See acceptance criteria below.
 
 Related: [Pipeline Format](/docs/01-architecture/pipeline-format/) (`uses` / execution engines), [Configuration](/docs/03-operations/configuration/).
 
@@ -214,10 +214,10 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 | 4 | **Command model**: same as local/SSH — multi-line `run:` executed via container shell (`sh -lc` unless overridden later) |
 | 5 | **Workspace**: bind-mount runner step work directory into a fixed container path (default `/buz/workspace`); container cwd = that path |
 | 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution order as local; masking unchanged |
-| 7 | **Gate**: `engine.docker_enabled` must be `true`; otherwise step fails with a clear error (do not fall back to shell) |
+| 7 | **Gate**: Runner UI `docker_enabled` must be `true`; otherwise step fails with a clear error (do not fall back to shell) |
 | 8 | **Scheduling**: pipelines that need Docker should set `runner.labels` to include `docker`; Manager dispatches only to runners that have **all** required labels |
-| 9 | **Private images**: MVP = operator/`run` does `docker login` (secret) or image already present; no first-class `image_pull_secret` yet |
-| 10 | **Security defaults**: no `privileged`, no host network, no arbitrary CLI options in MVP |
+| 9 | **Private registry auth**: YAML/form stores only a **Secret name** (`registry_secret`) — never the password. Encrypted at rest; Manager sends `registry_auth` to the Runner. **Docker**: login before pull/run. **Shell / SSH**: login before `run` (SSH login happens on the remote host) so `docker push` works; then logout. Target: ACR Personal Edition; optional JSON `provider`. |
+| 10 | **Security defaults**: no host network, no arbitrary CLI options; `privileged` is opt-in for DinD only |
 
 ---
 
@@ -234,12 +234,25 @@ steps:
     run: |
       npm ci
       npm test
+
+  - name: Private ACR image
+    uses: docker
+    image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
+    registry_secret: acr-personal  # Secret *name* only — password lives in Infrastructure → Secrets
+    run: echo ok
+
+  # Shell / SSH also support registry_secret (e.g. docker push):
+  # - name: Push
+  #   uses: shell
+  #   registry_secret: acr-personal
+  #   run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
 ```
 
 | Field | Required | Description |
 |-------|:--------:|-------------|
 | `uses: docker` | ✓ | Selects Docker engine |
 | `image` | ✓ | Image reference (`name:tag` or digest). Pulled if missing (`docker pull` / run pull behavior TBD in impl) |
+| `registry_secret` | | **Name** of a Manager Secret (not the password). JSON credentials, encrypted at rest. Also valid on **shell** / **SSH** for push. |
 | `run` | ✓ | Command(s) inside the container |
 | `work_dir` / `dir` | | Container-side subdirectory under `/buz/workspace` (runner workspace always mounted at root) |
 | `timeout` / `retry` / `continue-on-error` | | Same semantics as other engines |
@@ -251,13 +264,14 @@ steps:
 # NOT in MVP — do not document as supported until designed
 options: "--cpus 1"           # free-form docker flags
 network: host
-privileged: true
 services: […]
 pull: always
 entrypoint: /bin/bash
 
-# Supported since MVP ✅
+# Supported ✅
 volumes: ["/host/path:/container/path"]
+privileged: true              # opt-in DinD only
+registry_secret: acr-personal # docker / shell / SSH
 ```
 
 ---
@@ -266,7 +280,7 @@ volumes: ["/host/path:/container/path"]
 
 ### Preconditions
 
-1. Runner config: `engine.docker_enabled = true`
+1. Runner: enable **Docker** in Manager UI → Runners
 2. `docker` CLI (or equivalent API) reachable on the runner host
 3. Step payload includes non-empty `image`
 
@@ -366,7 +380,7 @@ MVP is **done** only when all items below pass. Criteria are testable (automated
 
 | # | Criterion | How to verify | Status |
 |---|-----------|---------------|:------:|
-| B1 | `engine.docker_enabled = false` → docker step fails; does **not** run on host shell | `docker_tests::preflight_rejects_disabled` | ✅ |
+| B1 | Runner UI `docker_enabled = false` → docker step fails; does **not** run on host shell | `docker_tests::preflight_rejects_disabled` | ✅ |
 | B2 | `docker_enabled = true` but `docker` binary / daemon unavailable → step fails with actionable message | Spawn error text in `execute_streaming`; covered when daemon down | ✅ |
 | B3 | Empty/missing `image` in dispatched payload → step fails before `docker run` | `docker_tests::preflight_rejects_empty_image` | ✅ |
 
@@ -415,7 +429,7 @@ Requires Docker CLI + daemon. Tests are `#[ignore]` so default `cargo test --all
 
 **Manual product smoke** (Manager + Runner):
 
-1. Runner: `engine.docker_enabled = true`, labels include `docker`.
+1. Runner: enable **Docker** in Manager UI → Runners; labels include `docker`.
 2. Scan/import `example/pipelines/docker-engine-smoke.yml`.
 3. Trigger → Job Detail shows streamed `hello` and Alpine identity.
 4. Toggle `docker_enabled = false`, re-run → step fails with disabled message, no host-shell success.
@@ -427,5 +441,69 @@ Requires Docker CLI + daemon. Tests are `#[ignore]` so default `cargo test --all
 These do **not** block MVP acceptance:
 
 - Exact shell wrapper (`sh -lc` vs `bash -lc`) and Windows runner stance (MVP = Linux runners with Docker)
-- First-class registry auth (`image_pull_secret`) vs documented `docker login` in a prior local step
+- Typed Secrets UI for registry credentials (today: JSON string in existing Secrets; optional `provider` in JSON)
 - Full Manager↔Runner cancel e2e in CI (covered by engine kill + existing cancel wiring)
+
+### Secondary priority — other private registries
+
+**Supported today** only when the registry accepts static username + password (or PAT) via `docker login` — use `provider: "generic"` (or omit) with the same JSON schema. No first-class UI/docs beyond that.
+
+| Registry | Status | Notes |
+|---|---|---|
+| Alibaba Cloud **ACR Personal** | **P0 / supported** | Fixed password; `provider: "acr_personal"` |
+| Alibaba Cloud **ACR Enterprise** | P2 | Often temporary `GetAuthorizationToken` — needs token refresh |
+| Docker Hub private / ghcr.io / GitLab / Harbor / Quay | P2 | Static user+PAT usually works as `generic`; document-only for now |
+| AWS ECR / GCP Artifact Registry / Azure ACR (AAD) | P2 | Temporary cloud tokens — not implemented |
+
+Do **not** expand product surface for these until ACR Personal Edition path is proven in production.
+
+---
+
+## Appendix: Alibaba Cloud ACR Personal Edition
+
+Personal Edition login uses a **fixed password** from the ACR console (not temporary STS tokens):
+
+```bash
+docker login --username=<login-name> <registry-host>
+# password: fixed password from ACR console
+```
+
+Registry hosts:
+
+| Edition / era | Example host |
+|---|---|
+| Personal (new) | `crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com` |
+| Personal (legacy) | `registry.cn-hangzhou.aliyuncs.com` |
+
+### Buz wiring (password never in YAML)
+
+1. Create Infrastructure → Secrets with name e.g. `acr-personal`. Value is **AES-256-GCM encrypted at rest**:
+
+```json
+{
+  "provider": "acr_personal",
+  "registry": "crpi-….personal.cr.aliyuncs.com",
+  "username": "…",
+  "password": "…"
+}
+```
+
+- `provider` (optional): `acr_personal` | `generic`
+- `registry`: required for **shell / SSH** (no step `image` to infer from); optional on **docker** when `image` already includes the host
+
+2. Reference **only the secret name** with `registry_secret:` (there is no `image_pull_secret` field).
+
+| Engine | Behavior |
+|--------|----------|
+| **docker** | `docker login` on the runner → pull/`docker run` → `docker logout` |
+| **shell** | `docker login` on the runner → `run` (e.g. `docker push`) → `docker logout` |
+| **ssh** | Login on the **remote** host via transient `BUZ_REGISTRY_*` env → `run` → `docker logout` |
+
+3. API list/get never return full plaintext — partial redaction (JSON `password` / `token` fields masked). Corrupt/plaintext DB rows set `reencrypt_required: true` (re-save required).
+
+Examples:
+
+- Pull (docker engine): `example/pipelines/acr-personal-pull.yml`
+- Push only (shell): `example/pipelines/acr-personal-push.yml`
+- Build + push orchestration: `example/pipelines/acr-personal-build-push.yml`
+  (`Prepare` → `Build` → `Push` with `registry_secret` → `Verify pull`)

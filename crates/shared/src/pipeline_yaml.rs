@@ -118,6 +118,11 @@ pub struct StepYaml {
     /// Only use on disposable runner VMs.
     #[serde(default)]
     pub privileged: Option<bool>,
+    /// Name of a Manager Secret whose value is JSON registry credentials
+    /// (`registry` optional when `image` has a host, `username`, `password`).
+    /// Used for `docker login` on docker / shell / SSH steps.
+    #[serde(default)]
+    pub registry_secret: Option<String>,
     #[serde(default)]
     pub host: Option<OneOrMany>,
     #[serde(default, alias = "work_dir")]
@@ -246,6 +251,9 @@ pub struct StepData {
     /// Privileged mode flag (only for docker steps).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub privileged: Option<bool>,
+    /// Manager Secret name for private registry login (docker / shell / SSH).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -368,6 +376,22 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             });
         }
 
+        let reg_secret = step
+            .registry_secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if reg_secret.is_some() {
+            let engine = if uses.is_empty() { "shell" } else { uses };
+            if !matches!(engine, "shell" | "local" | "ssh" | "docker") {
+                errors.push(YamlValidationError {
+                    field: field.clone(),
+                    message: "'registry_secret' is only valid for shell, ssh, or docker steps"
+                        .into(),
+                });
+            }
+        }
+
         if uses != "docker" {
             continue;
         }
@@ -485,6 +509,12 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 continue_on_error: s.continue_on_error,
                 secrets: s.secrets.clone(),
                 privileged: s.privileged,
+                registry_secret: s
+                    .registry_secret
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string),
             })
             .collect(),
     };

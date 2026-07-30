@@ -20,6 +20,14 @@ Runner registry.
 | token | TEXT | Long-term communication token |
 | labels | TEXT | JSON array, e.g. `["prod","linux-x64"]` |
 | status | TEXT | `online`, `offline`, `busy` |
+| max_concurrent_jobs | INTEGER | Max parallel jobs (1–32). Default `1`. Configured in Manager UI |
+| clean_workspace_after_job | INTEGER | Wipe job workspace after each job (`0`/`1`). UI-managed |
+| ephemeral | INTEGER | Exit runner process after one job (`0`/`1`). UI-managed |
+| shell_enabled | INTEGER | Allow shell/`local` steps (`0`/`1`, default `1`). UI-managed |
+| ssh_enabled | INTEGER | Allow SSH steps (`0`/`1`, default `1`). UI-managed |
+| docker_enabled | INTEGER | Allow Docker steps (`0`/`1`, default `0`). UI-managed |
+| wasm_enabled | INTEGER | Allow WASM steps (`0`/`1`, default `0`). UI-managed |
+| ssh_host_key_policy | TEXT | `insecure` \| `known_hosts`. UI-managed |
 | last_seen | TEXT | ISO 8601 |
 | created_at, updated_at | TEXT | Auto-managed |
 
@@ -64,6 +72,7 @@ Pipeline step definitions.
 | step_order | INT | Execution order |
 | exec_type | TEXT | `local`, `ssh`, `docker`, or `wasm` |
 | image | TEXT | Container image when `exec_type=docker` (empty otherwise) |
+| registry_secret | TEXT | Manager Secret name for `docker login` (shell / SSH / docker; empty otherwise) |
 | fail_strategy | TEXT | `stop`, `continue`, or `ignore` |
 
 ### variables
@@ -109,7 +118,7 @@ Secret storage. Values are stored in the database and injected as environment va
 |--------|------|-------|
 | id | TEXT PK | UUID v4 |
 | name | TEXT UNIQUE | Secret name (e.g. `DOCKER_PASS`, `GIT_SSH_KEY`) |
-| value | TEXT | Secret value |
+| value | TEXT | AES-256-GCM ciphertext only (plaintext rows are rejected at decrypt) |
 | owner_group | TEXT | Phase 1 namespace; Phase 2 → `team_id` (required). See [RBAC](/docs/01-architecture/rbac/) |
 | created_at, updated_at | TEXT | Auto-managed |
 

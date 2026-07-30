@@ -89,10 +89,10 @@ function goToStep(stepOrder: number) {
       <ChevronDown v-if="expanded" class="h-3.5 w-3.5 text-muted-foreground shrink-0" />
       <ChevronRight v-else class="h-3.5 w-3.5 text-muted-foreground shrink-0" />
 
-      <span class="font-mono text-[13px] font-bold tabular-nums text-foreground shrink-0">#{{ runNumber }}</span>
+      <span class="font-mono text-sm font-semibold tabular-nums text-foreground shrink-0">#{{ runNumber }}</span>
 
       <span
-        class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold shrink-0"
+        class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium shrink-0"
         :class="job.status === 'success'
           ? 'bg-emerald-500/10 text-emerald-600'
           : job.status === 'failed'
@@ -114,11 +114,11 @@ function goToStep(stepOrder: number) {
         {{ job.status }}
       </span>
 
-      <span class="font-mono text-[11px] tabular-nums text-muted-foreground shrink-0">{{ fmtDuration(job.start_time, job.end_time) }}</span>
+      <span class="font-mono text-xs tabular-nums text-muted-foreground shrink-0">{{ fmtDuration(job.start_time, job.end_time) }}</span>
 
       <span class="flex-1" />
 
-      <span class="font-mono text-[11px] text-muted-foreground/70 shrink-0">{{ fmtTime(job.start_time || job.created_at) }}</span>
+      <span class="font-mono text-xs text-muted-foreground shrink-0">{{ fmtTime(job.start_time || job.created_at) }}</span>
 
       <ArrowRight class="h-3 w-3 text-muted-foreground/30 shrink-0" />
     </div>
@@ -127,9 +127,9 @@ function goToStep(stepOrder: number) {
     <div class="px-4 pb-3">
       <div class="flex flex-wrap items-center gap-1">
         <template v-for="(task, si) in tasks" :key="task.step_order">
-          <span v-if="Number(si) > 0" class="text-muted-foreground/25 shrink-0 text-[10px]">→</span>
+          <span v-if="Number(si) > 0" class="text-muted-foreground/25 shrink-0 text-xs">→</span>
           <div
-            class="inline-flex items-center justify-center w-7 h-7 rounded-md text-[10px] font-bold tabular-nums transition-all shrink-0"
+            class="inline-flex items-center justify-center w-7 h-7 rounded-md text-xs font-bold tabular-nums transition-all shrink-0"
             :class="[
               getStepStatus(task.step_order) === 'pending'
                 ? 'bg-transparent text-slate-400 border border-slate-200'
@@ -157,7 +157,7 @@ function goToStep(stepOrder: number) {
         <button
           v-for="task in tasks"
           :key="task.step_order"
-          class="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors shrink-0"
+          class="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors shrink-0"
           :class="expandedStep === task.step_order
             ? 'bg-background text-foreground shadow-sm'
             : 'text-muted-foreground hover:text-foreground hover:bg-background/50'"
@@ -186,10 +186,10 @@ function goToStep(stepOrder: number) {
         </div>
         <div
           v-if="logs.filter(l => l.step_order === expandedStep).length === 0"
-          class="text-[10px] text-center text-muted-foreground/50 mt-1"
+          class="text-xs text-center text-muted-foreground/50 mt-1"
         >No log records for this step</div>
       </div>
-      <div v-else class="px-4 pb-3 text-[11px] text-muted-foreground">
+      <div v-else class="px-4 pb-3 text-xs text-muted-foreground">
         Select a step above to view its logs
       </div>
     </div>

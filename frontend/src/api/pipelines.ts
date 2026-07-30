@@ -75,6 +75,8 @@ export interface StepDef {
   secrets?: string[]
   /** Run the Docker container in privileged mode (DinD). */
   privileged?: boolean
+  /** Manager Secret name for docker login (pull/push). Shell / SSH / Docker. */
+  registry_secret?: string
 }
 
 export interface YamlValidationResult {
@@ -139,6 +141,8 @@ export interface YamlStepData {
   secrets?: string[] | null
   /** Privileged mode for docker engine steps. */
   privileged?: boolean | null
+  /** Manager Secret name for docker login (pull/push). */
+  registry_secret?: string | null
 }
 
 export interface YamlValidationError {

@@ -6,6 +6,7 @@ mod client;
 mod config;
 mod engine;
 mod masker;
+mod policy;
 mod secret;
 mod sysinfo;
 
@@ -57,8 +58,13 @@ async fn run_loop(config: config::Config) -> anyhow::Result<()> {
     let http_client = client_builder.build()?;
     let started_at = std::time::Instant::now();
 
-    let runner_token = client::register::register_with_center(&http_client, &config).await?;
-    tracing::info!("Registered with Manager, got token");
+    let register = client::register::register_with_center(&http_client, &config).await?;
+    let runner_token = register.token;
+    let shared_policy = policy::new_shared(register.policy);
+    tracing::info!(
+        "Registered with Manager, got token (max_concurrent={})",
+        policy::max_concurrent(&shared_policy)
+    );
 
     // Log initial system info once for visibility
     {
@@ -83,11 +89,19 @@ async fn run_loop(config: config::Config) -> anyhow::Result<()> {
     let hb_config = config.clone();
     let hb_client = http_client.clone();
     let hb_token = runner_token.clone();
+    let hb_policy = shared_policy.clone();
     let heartbeat_handle = tokio::spawn(async move {
-        client::heartbeat::run_heartbeat_loop(&hb_client, &hb_config, &hb_token, started_at).await
+        client::heartbeat::run_heartbeat_loop(
+            &hb_client,
+            &hb_config,
+            &hb_token,
+            started_at,
+            hb_policy,
+        )
+        .await
     });
 
-    client::poll::run_poll_loop(&http_client, &config, &runner_token).await?;
+    client::poll::run_poll_loop(&http_client, &config, &runner_token, shared_policy).await?;
 
     heartbeat_handle.abort();
     Ok(())

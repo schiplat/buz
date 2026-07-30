@@ -1,13 +1,15 @@
 use reqwest::Client;
-use shared::protocol::HeartbeatRequest;
+use shared::protocol::{HeartbeatRequest, HeartbeatResponse, RunnerPolicyConfig};
 
 use crate::config::Config;
+use crate::policy::{self, SharedPolicy};
 
 pub async fn run_heartbeat_loop(
     client: &Client,
     config: &Config,
     token: &str,
     started_at: std::time::Instant,
+    shared_policy: SharedPolicy,
 ) {
     loop {
         // Refresh system info on every heartbeat so CPU/mem/disk stay current
@@ -20,7 +22,39 @@ pub async fn run_heartbeat_loop(
         );
 
         match send_heartbeat(client, config, token, &system_info).await {
-            Ok(()) => tracing::debug!("Heartbeat sent"),
+            Ok(next) => {
+                let prev = policy::store(&shared_policy, next.clone());
+                if prev.max_concurrent_jobs != next.max_concurrent_jobs
+                    || prev.ephemeral != next.ephemeral
+                    || prev.clean_workspace_after_job != next.clean_workspace_after_job
+                    || prev.shell_enabled != next.shell_enabled
+                    || prev.ssh_enabled != next.ssh_enabled
+                    || prev.docker_enabled != next.docker_enabled
+                    || prev.wasm_enabled != next.wasm_enabled
+                    || prev.ssh_host_key_policy != next.ssh_host_key_policy
+                {
+                    tracing::info!(
+                        "Runner policy updated from Manager: max_concurrent={}→{} ephemeral={}→{} \
+                         clean={}→{} engines=[shell={},ssh={},docker={},wasm={}] ssh_host_key={}",
+                        prev.max_concurrent_jobs,
+                        next.max_concurrent_jobs,
+                        prev.ephemeral,
+                        next.ephemeral,
+                        prev.clean_workspace_after_job,
+                        next.clean_workspace_after_job,
+                        next.shell_enabled,
+                        next.ssh_enabled,
+                        next.docker_enabled,
+                        next.wasm_enabled,
+                        next.ssh_host_key_policy,
+                    );
+                } else {
+                    tracing::debug!(
+                        "Heartbeat sent (max_concurrent={})",
+                        next.max_concurrent_jobs
+                    );
+                }
+            }
             Err(e) => tracing::warn!("Heartbeat failed: {e}"),
         }
 
@@ -33,7 +67,7 @@ async fn send_heartbeat(
     config: &Config,
     token: &str,
     system_info: &shared::protocol::SystemInfo,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<RunnerPolicyConfig> {
     let url = format!("{}/api/v1/runners/heartbeat", config.manager.url);
     let resp = client
         .post(&url)
@@ -50,5 +84,12 @@ async fn send_heartbeat(
         anyhow::bail!("heartbeat returned {}", resp.status());
     }
 
-    Ok(())
+    let body = resp.json::<serde_json::Value>().await?;
+    let mut policy = body
+        .get("data")
+        .and_then(|d| serde_json::from_value::<HeartbeatResponse>(d.clone()).ok())
+        .map(|h| h.policy)
+        .unwrap_or_default();
+    policy.max_concurrent_jobs = policy.max_concurrent_jobs.max(1);
+    Ok(policy)
 }

@@ -8,62 +8,85 @@ description: "All configuration options for Manager and Runner"
 
 ```toml
 [server]
-host = "0.0.0.0"           # Bind address
-port = 8080                # Listen port
+host = "0.0.0.0"
+port = 8080
+# tls_cert = "certs/cert.pem"   # both set → HTTPS
+# tls_key  = "certs/key.pem"
 
 [database]
-path = "./data/buz.db"     # SQLite file path
-max_connections = 8        # Connection pool size
+path = "./data/buz.db"
+max_connections = 8
 
 [auth]
-jwt_secret = "env.BUZ_JWT_SECRET"
-admin_user = "admin"
-admin_password_hash = "env.BUZ_ADMIN_PASSWORD_HASH"
-runner_register_token_ttl_hours = 24
+jwt_secret = "changeme-demo-only"   # or env BUZ_JWT_SECRET
 jwt_ttl_hours = 24
+runner_register_token_ttl_hours = 24
 
 [runner]
 heartbeat_timeout_seconds = 90
-long_poll_timeout_seconds = 45
 
 [pipeline]
 yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30
 ```
 
+| Section | Key | Notes |
+|---------|-----|-------|
+| `server` | `host` / `port` | Listen address |
+| `server` | `tls_cert` + `tls_key` | Optional HTTPS (both required). See [TLS](/docs/03-operations/tls/) |
+| `database` | `path` | SQLite file |
+| `auth` | `jwt_secret` | Signs JWTs + encrypts host credentials |
+| `auth` | `jwt_ttl_hours` | UI/API JWT lifetime |
+| `auth` | `runner_register_token_ttl_hours` | Runner JWT lifetime after register |
+| `runner` | `heartbeat_timeout_seconds` | Offline threshold for runners |
+| `pipeline` | `yaml_scan_*` | Directory sync of pipeline YAML |
+
+**First admin:** not in config. On a fresh database, open the UI — you are redirected to `/setup` to create the platform admin (password ≥ 8 chars, complexity rules apply). After that, use `/login`.
+
+**Password storage:** login passwords use **Argon2id** in `users.password_hash`. This is separate from Secrets/Hosts **AES-256-GCM** encryption. A login failure is almost always a wrong password (or wrong username), not a crypto mismatch.
+
+**Forgot admin password (local/dev recovery):** stop Manager, then from a machine with the Argon2 tooling available set a new hash, e.g. generate one via a one-liner and:
+
+```sql
+UPDATE users SET password_hash = '<argon2id-phc-string>' WHERE username = 'admin';
+```
+
+Then restart Manager and sign in. Prefer changing the password again from the UI after recovery.
+
 ## Runner (`conf/runner.toml`)
+
+Machine-local only. Strategy is **not** configured here — see [Runner Policy](/docs/01-architecture/runner-concurrent-jobs/).
+
+| Managed in UI | Kept in TOML |
+|---------------|--------------|
+| `labels` | `manager.url`, `register_token`, `tls_skip_verify` |
+| `max_concurrent_jobs`, cleanup, ephemeral | `runner.name`, `workspace_dir` |
+| engine enable flags + `ssh_host_key_policy` | `prefer_interfaces`, `ssh_known_hosts_path` |
 
 ```toml
 [manager]
 url = "https://buz-api.example.com"
-register_token = "env.BUZ_REGISTER_TOKEN"
+register_token = "paste-from-ui"   # or env BUZ_REGISTER_TOKEN
+# tls_skip_verify = false
 
 [runner]
-name = "prod-runner-01"
-labels = ["prod", "linux-x64"]
+name = "prod-runner-01"            # must match UI Runner name
 workspace_dir = "/tmp/buz-runner"
-# prefer_interfaces = ["enp26s0"]  # multi-NIC: advertise these IPs first in UI
+# prefer_interfaces = ["enp26s0"]
 
 [engine]
-shell_enabled = true
-ssh_enabled = true
-docker_enabled = false  # MVP: set true for uses: docker — docs/01-architecture/docker-engine.md
-wasm_enabled = false    # Phase 3
-# insecure (default) | known_hosts
-ssh_host_key_policy = "known_hosts"
-# ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"  # default: ~/.ssh/known_hosts
+# ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"
 ```
 
-| Key | Default | Notes |
-|-----|---------|-------|
-| `runner.prefer_interfaces` | `[]` | NIC names whose IPs are listed first in Runners UI; if empty, prefer IPs on the same subnet as `manager.url` |
-| `engine.ssh_host_key_policy` | `insecure` | `known_hosts` rejects unknown/changed server keys |
-| `engine.ssh_known_hosts_path` | `~/.ssh/known_hosts` | Used when policy is `known_hosts` |
+## Environment overrides
 
-> Runner identity lives under TOML `[runner]`. Env overrides use `BUZ__RUNNER__*` (e.g. `BUZ__RUNNER__NAME`). Manager’s own `[runner]` section (heartbeat / long-poll timeouts) is unrelated — it only appears in `manager.toml`.
+| Variable | Effect |
+|----------|--------|
+| `BUZ_JWT_SECRET` | Overrides `auth.jwt_secret` |
+| `BUZ_MANAGER_URL` | Overrides `manager.url` |
+| `BUZ_REGISTER_TOKEN` | Overrides `manager.register_token` |
+| `BUZ__…` | Nested TOML via `config` crate (`BUZ__SERVER__PORT=8081`) |
 
-## Environment Variables
+Priority: CLI args > environment > config file > defaults.
 
-Sensitive values with the `env.VAR_NAME` pattern in config files are resolved at startup. Values provided via environment variables take precedence over config file defaults.
-
-Priority: CLI args > environment variables > config file > defaults.
+> There is **no** `env.VAR_NAME` interpolation inside TOML strings. Use the variables above (or `BUZ__` nested keys).

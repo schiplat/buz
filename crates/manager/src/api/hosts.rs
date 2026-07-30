@@ -4,7 +4,7 @@ use axum::{
 };
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
-use shared::protocol::{CreateHostRequest, UpdateHostRequest};
+use shared::protocol::{CreateHostRequest, TestHostRequest, TestHostResponse, UpdateHostRequest};
 use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::crypto;
 use crate::middleware::AuthUser;
 use crate::rbac::{host_team_id, resolve_optional_team_id};
+use crate::ssh_probe::{self, ProbeParams};
 use crate::state::AppState;
 
 fn host_json(r: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
@@ -307,4 +308,97 @@ pub async fn delete(
 
     tracing::info!("Host deleted: {id}");
     Ok(Json(ApiResponse::success(())))
+}
+
+/// Test SSH connectivity using the Host form values (and optionally stored secrets).
+pub async fn test_connection(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<TestHostRequest>,
+) -> Result<Json<ApiResponse<TestHostResponse>>, AppError> {
+    let host = req.host.trim().to_string();
+    let username = req.username.trim().to_string();
+    let port = if req.port == 0 { 22 } else { req.port };
+    let mut cred_type = req
+        .credential_type
+        .unwrap_or_else(|| "vault".into())
+        .trim()
+        .to_string();
+    let mut cred_data = req.credential_data.unwrap_or_default();
+    let mut passphrase = req.credential_passphrase.unwrap_or_default();
+
+    if let Some(host_id) = req.host_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let team_id = host_team_id(&state.pool, host_id).await?;
+        assert_host_visible(&auth, &team_id).await?;
+
+        let row = sqlx::query(
+            "SELECT credential_type, credential_data, credential_passphrase FROM hosts WHERE id = ?",
+        )
+        .bind(host_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("host not found".into()))?;
+
+        let stored_type: String = row.get(0);
+        if cred_type.is_empty() {
+            cred_type = stored_type.clone();
+        }
+
+        if cred_data.trim().is_empty() && cred_type != "agent" {
+            let stored: String = row.get(1);
+            if stored.is_empty() {
+                return Ok(Json(ApiResponse::success(TestHostResponse {
+                    ok: false,
+                    latency_ms: 0,
+                    message: "no credential stored for this host — paste a key/password to test"
+                        .into(),
+                })));
+            }
+            cred_data = crypto::decrypt(&stored, &state.config.auth.jwt_secret).map_err(|e| {
+                AppError::ValidationFailed(format!(
+                    "stored credential cannot be decrypted ({e}); re-save the host credential"
+                ))
+            })?;
+        }
+
+        if passphrase.trim().is_empty() && cred_type == "key_path" {
+            let stored_pp: String = row.get(2);
+            if !stored_pp.is_empty() {
+                match crypto::decrypt(&stored_pp, &state.config.auth.jwt_secret) {
+                    Ok(pp) => passphrase = pp,
+                    Err(e) => {
+                        tracing::warn!("host probe: passphrase decrypt failed: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    if host.is_empty() || username.is_empty() {
+        return Ok(Json(ApiResponse::success(TestHostResponse {
+            ok: false,
+            latency_ms: 0,
+            message: "address and username are required".into(),
+        })));
+    }
+
+    let result = ssh_probe::probe(ProbeParams {
+        host,
+        port,
+        username,
+        credential_type: cred_type,
+        credential_value: cred_data,
+        credential_passphrase: if passphrase.is_empty() {
+            None
+        } else {
+            Some(passphrase)
+        },
+    })
+    .await;
+
+    Ok(Json(ApiResponse::success(TestHostResponse {
+        ok: result.ok,
+        latency_ms: result.latency_ms,
+        message: result.message,
+    })))
 }

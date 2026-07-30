@@ -15,6 +15,24 @@ export interface MeResponse {
 }
 
 export const authApi = {
+  async setupStatus(): Promise<{ needs_setup: boolean }> {
+    const resp = await apiClient.get('/auth/setup-status')
+    return resp.data
+  },
+
+  async setup(
+    username: string,
+    password: string,
+  ): Promise<{
+    token: string
+    user_id?: string
+    username?: string
+    is_platform_admin?: boolean
+  }> {
+    const resp = await apiClient.post('/auth/setup', { username, password })
+    return resp.data
+  },
+
   async login(
     username: string,
     password: string,

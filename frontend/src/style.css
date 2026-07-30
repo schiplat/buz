@@ -124,6 +124,6 @@
   }
 
   .mono-chip {
-    @apply inline-flex max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.6875rem] leading-tight tracking-tight text-foreground/75;
+    @apply inline-flex max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs leading-tight tracking-tight text-foreground/75;
   }
 }

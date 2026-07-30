@@ -728,7 +728,7 @@ fn verify_against_known_hosts(
             "SSH host key for {host}:{port} was not found in {}\n\
              → Fingerprint: {}\n\
              → Add the host with: ssh-keyscan -p {port} {host} >> {}\n\
-             → Or set engine.ssh_host_key_policy = \"insecure\" for lab environments only",
+             → Or set SSH host key policy to \"insecure\" in Manager UI → Runners (lab only)",
             path.display(),
             server_public_key.fingerprint(HashAlg::Sha256),
             path.display(),

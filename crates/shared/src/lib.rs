@@ -4,4 +4,5 @@ pub mod models;
 pub mod pipeline_yaml;
 pub mod protocol;
 pub mod rbac;
+pub mod registry_auth;
 pub mod version;

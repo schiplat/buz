@@ -3,7 +3,10 @@ use axum::{extract::State, response::IntoResponse, Json};
 use shared::auth::TokenManager;
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
-use shared::protocol::{CreateRunnerRequest, HeartbeatRequest, RegisterRequest, RegisterResponse};
+use shared::protocol::{
+    CreateRunnerRequest, HeartbeatRequest, HeartbeatResponse, RegisterRequest, RegisterResponse,
+    RunnerPolicyConfig, UpdateRunnerRequest,
+};
 
 use crate::crypto;
 use crate::middleware::{PlatformAdmin, RunnerClaims};
@@ -54,6 +57,82 @@ async fn log_runner_event(
     }
 }
 
+/// Validate and clamp max_concurrent_jobs to 1..=32.
+pub(crate) fn normalize_max_concurrent(v: Option<u32>) -> Result<u32, AppError> {
+    let n = v.unwrap_or(1);
+    if !(1..=32).contains(&n) {
+        return Err(AppError::ValidationFailed(
+            "max_concurrent_jobs must be between 1 and 32".into(),
+        ));
+    }
+    Ok(n)
+}
+
+pub(crate) fn normalize_ssh_host_key_policy(v: Option<String>) -> Result<String, AppError> {
+    let p = v.unwrap_or_else(|| "insecure".into());
+    match p.as_str() {
+        "insecure" | "known_hosts" => Ok(p),
+        _ => Err(AppError::ValidationFailed(
+            "ssh_host_key_policy must be 'insecure' or 'known_hosts'".into(),
+        )),
+    }
+}
+
+fn bool_i64(v: Option<bool>, default: bool) -> i64 {
+    if v.unwrap_or(default) { 1 } else { 0 }
+}
+
+fn i64_bool(v: i64) -> bool {
+    v != 0
+}
+
+/// Load UI policy columns for a runner.
+async fn load_runner_policy(
+    pool: &sqlx::SqlitePool,
+    runner_id: &str,
+) -> Result<RunnerPolicyConfig, AppError> {
+    let row = sqlx::query(
+        "SELECT max_concurrent_jobs, clean_workspace_after_job, ephemeral,
+                shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy
+         FROM runners WHERE id = ?",
+    )
+    .bind(runner_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
+
+    Ok(RunnerPolicyConfig {
+        max_concurrent_jobs: row.get::<i64, _>(0).max(1) as u32,
+        clean_workspace_after_job: i64_bool(row.get(1)),
+        ephemeral: i64_bool(row.get(2)),
+        shell_enabled: i64_bool(row.get(3)),
+        ssh_enabled: i64_bool(row.get(4)),
+        docker_enabled: i64_bool(row.get(5)),
+        wasm_enabled: i64_bool(row.get(6)),
+        ssh_host_key_policy: {
+            let p: String = row.get(7);
+            if p == "known_hosts" {
+                p
+            } else {
+                "insecure".into()
+            }
+        },
+    })
+}
+
+fn policy_json(p: &RunnerPolicyConfig) -> serde_json::Value {
+    serde_json::json!({
+        "max_concurrent_jobs": p.max_concurrent_jobs,
+        "clean_workspace_after_job": p.clean_workspace_after_job,
+        "ephemeral": p.ephemeral,
+        "shell_enabled": p.shell_enabled,
+        "ssh_enabled": p.ssh_enabled,
+        "docker_enabled": p.docker_enabled,
+        "wasm_enabled": p.wasm_enabled,
+        "ssh_host_key_policy": p.ssh_host_key_policy,
+    })
+}
+
 pub async fn create_runner(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
@@ -63,21 +142,39 @@ pub async fn create_runner(
     let register_token = Uuid::new_v4().to_string();
     let labels_json =
         serde_json::to_string(&req.labels.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+    let max_concurrent = normalize_max_concurrent(req.max_concurrent_jobs)?;
+    let ssh_policy = normalize_ssh_host_key_policy(req.ssh_host_key_policy.clone())?;
+    let clean = bool_i64(req.clean_workspace_after_job, false);
+    let ephemeral = bool_i64(req.ephemeral, false);
+    let shell = bool_i64(req.shell_enabled, true);
+    let ssh = bool_i64(req.ssh_enabled, true);
+    let docker = bool_i64(req.docker_enabled, false);
+    let wasm = bool_i64(req.wasm_enabled, false);
 
     sqlx::query(
-        "INSERT INTO runners (id, name, register_token, labels, status, version)
-         VALUES (?, ?, ?, ?, 'offline', ?)",
+        "INSERT INTO runners (id, name, register_token, labels, status, version,
+         max_concurrent_jobs, clean_workspace_after_job, ephemeral,
+         shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy)
+         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&req.name)
     .bind(&register_token)
     .bind(&labels_json)
     .bind(&req.version)
+    .bind(max_concurrent as i64)
+    .bind(clean)
+    .bind(ephemeral)
+    .bind(shell)
+    .bind(ssh)
+    .bind(docker)
+    .bind(wasm)
+    .bind(&ssh_policy)
     .execute(&state.pool)
     .await?;
 
     tracing::info!(
-        "Runner created: {} ({id}) register_token={register_token}",
+        "Runner created: {} ({id}) register_token={register_token} max_concurrent={max_concurrent}",
         req.name
     );
 
@@ -85,14 +182,17 @@ pub async fn create_runner(
         &state.pool,
         &id,
         "created",
-        &format!("Runner created, awaiting registration"),
+        &format!("Runner created, awaiting registration (max_concurrent={max_concurrent})"),
     )
     .await;
 
+    let policy = load_runner_policy(&state.pool, &id).await?;
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
         "name": req.name,
         "register_token": register_token,
+        "max_concurrent_jobs": max_concurrent,
+        "policy": policy_json(&policy),
     }))))
 }
 
@@ -153,15 +253,14 @@ pub async fn register(
         )
         .map_err(|e| AppError::Internal(format!("token generation failed: {e}")))?;
 
-    let labels_json = serde_json::to_string(&req.labels).unwrap_or_else(|_| "[]".into());
+    // Labels are UI-managed — do not overwrite from the agent register payload.
     let version = req.version.as_deref().filter(|v| !v.is_empty());
 
     sqlx::query(
-        "UPDATE runners SET token = ?, register_token = '', status = 'online', labels = ?, \
+        "UPDATE runners SET token = ?, register_token = '', status = 'online', \
          version = COALESCE(?, version), last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&runner_jwt)
-    .bind(&labels_json)
     .bind(version)
     .bind(&runner_id)
     .execute(&state.pool)
@@ -169,14 +268,22 @@ pub async fn register(
 
     tracing::info!("Runner registered: {} ({runner_id})", name);
 
+    let policy = load_runner_policy(&state.pool, &runner_id).await?;
+    let labels_db: String =
+        sqlx::query_scalar("SELECT labels FROM runners WHERE id = ?")
+            .bind(&runner_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or_else(|_| "[]".into());
+
     log_runner_event(
         &state.pool,
         &runner_id,
         "registered",
         &format!(
-            "Runner registered (version: {}, labels: {:?})",
+            "Runner registered (version: {}, labels: {})",
             req.version.unwrap_or_default(),
-            req.labels
+            labels_db
         ),
     )
     .await;
@@ -184,6 +291,7 @@ pub async fn register(
     Ok(Json(ApiResponse::success(RegisterResponse {
         runner_id,
         token: runner_jwt,
+        policy,
     })))
 }
 
@@ -214,7 +322,12 @@ pub async fn heartbeat(
     .execute(&state.pool)
     .await?;
 
-    Ok((StatusCode::OK, Json(ApiResponse::success(()))))
+    let policy = load_runner_policy(&state.pool, &auth.runner_id).await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(ApiResponse::success(HeartbeatResponse { policy })),
+    ))
 }
 
 pub async fn poll(
@@ -231,6 +344,34 @@ pub async fn poll(
 
     if frozen {
         tracing::debug!("Runner {} is frozen — skipping poll", auth.runner_id);
+        return Ok(Json(ApiResponse::success(None)));
+    }
+
+    // Capacity gate: do not claim when this runner is already at max concurrent jobs.
+    let max_concurrent: i64 = sqlx::query_scalar(
+        "SELECT max_concurrent_jobs FROM runners WHERE id = ?",
+    )
+    .bind(&auth.runner_id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(1)
+    .max(1);
+
+    let running_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
+    )
+    .bind(&auth.runner_id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0);
+
+    if running_count >= max_concurrent {
+        tracing::debug!(
+            runner = %auth.runner_id,
+            running = running_count,
+            max = max_concurrent,
+            "Runner at capacity — skipping poll"
+        );
         return Ok(Json(ApiResponse::success(None)));
     }
 
@@ -306,7 +447,8 @@ pub async fn poll(
     // Fetch tasks for this pipeline
     let task_rows = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template,
-                work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, image, volumes
+                work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, image, volumes,
+                registry_secret
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&pipeline_id)
@@ -328,9 +470,16 @@ pub async fn poll(
     .await?;
     for sr in &explicit_rows {
         let name: String = sr.get(0);
-        let value: String = sr.get(1);
-        if let Some(obj) = secrets.as_object_mut() {
-            obj.insert(name, serde_json::Value::String(value));
+        let stored: String = sr.get(1);
+        match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
+            Ok(value) => {
+                if let Some(obj) = secrets.as_object_mut() {
+                    obj.insert(name, serde_json::Value::String(value));
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to decrypt pipeline secret '{name}': {e}");
+            }
         }
     }
 
@@ -346,9 +495,17 @@ pub async fn poll(
     .await?;
     for sr in &team_secret_rows {
         let name: String = sr.get(0);
-        let value: String = sr.get(1);
-        if let Some(obj) = secrets.as_object_mut() {
-            obj.entry(name).or_insert(serde_json::Value::String(value));
+        let stored: String = sr.get(1);
+        match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
+            Ok(value) => {
+                if let Some(obj) = secrets.as_object_mut() {
+                    obj.entry(name)
+                        .or_insert(serde_json::Value::String(value));
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to decrypt team secret '{name}': {e}");
+            }
         }
     }
 
@@ -395,6 +552,7 @@ pub async fn poll(
         let step_secrets_str: String = t.get(12);
         let image: String = t.get(13);
         let volumes_raw: String = t.get(14);
+        let registry_secret_name: String = t.get(15);
 
         let mut task_json = serde_json::json!({
             "id": t.get::<String, _>(0),
@@ -406,9 +564,10 @@ pub async fn poll(
             "retry_count": t.get::<i64, _>(9),
             "timeout_seconds": t.get::<i64, _>(10),
             "fail_strategy": t.get::<String, _>(11),
-            "image": image,
+            "image": &image,
             "volumes": serde_json::from_str::<serde_json::Value>(&volumes_raw)
                 .unwrap_or(serde_json::Value::Array(vec![])),
+            "registry_secret": &registry_secret_name,
         });
 
         // Resolve step-level secrets (only for this step).
@@ -437,9 +596,18 @@ pub async fn poll(
                     q = q.bind(*name);
                 }
                 if let Ok(rows) = q.fetch_all(&state.pool).await {
-                    for (name, value) in rows {
-                        if let Some(obj) = step_secrets_map.as_object_mut() {
-                            obj.insert(name, serde_json::Value::String(value));
+                    for (name, stored) in rows {
+                        match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
+                            Ok(value) => {
+                                if let Some(obj) = step_secrets_map.as_object_mut() {
+                                    obj.insert(name, serde_json::Value::String(value));
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to decrypt step secret '{name}': {e}"
+                                );
+                            }
                         }
                     }
                 }
@@ -565,6 +733,70 @@ pub async fn poll(
 
         // Attach step-level secrets
         task_json["step_secrets"] = step_secrets_map;
+
+        // Resolve registry_secret → registry_auth (not injected as env).
+        if !registry_secret_name.trim().is_empty() {
+            match sqlx::query_as::<_, (String,)>(
+                "SELECT value FROM secrets WHERE name = ?",
+            )
+            .bind(registry_secret_name.trim())
+            .fetch_optional(&state.pool)
+            .await
+            {
+                Ok(Some((stored,))) => {
+                    match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
+                        Ok(value) => {
+                            let image_opt = if image.trim().is_empty() {
+                                None
+                            } else {
+                                Some(image.as_str())
+                            };
+                            match shared::registry_auth::parse_registry_secret_value(
+                                &value, image_opt,
+                            ) {
+                                Ok(auth) => {
+                                    tracing::info!(
+                                        secret = %registry_secret_name.trim(),
+                                        registry = %auth.registry,
+                                        "Resolved registry_secret → registry_auth for job dispatch"
+                                    );
+                                    let mut auth_json = serde_json::json!({
+                                        "registry": auth.registry,
+                                        "username": auth.username,
+                                        "password": auth.password,
+                                    });
+                                    if let Some(p) = auth.provider {
+                                        auth_json["provider"] = serde_json::Value::String(p);
+                                    }
+                                    task_json["registry_auth"] = auth_json;
+                                }
+                                Err(e) => {
+                                    task_json["registry_auth_error"] =
+                                        serde_json::Value::String(e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            task_json["registry_auth_error"] = serde_json::Value::String(
+                                format!("failed to decrypt registry_secret: {e}"),
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {
+                    task_json["registry_auth_error"] = serde_json::Value::String(format!(
+                        "registry_secret '{}' not found in Manager Secrets",
+                        registry_secret_name.trim()
+                    ));
+                }
+                Err(e) => {
+                    task_json["registry_auth_error"] = serde_json::Value::String(format!(
+                        "failed to load registry_secret '{}': {e}",
+                        registry_secret_name.trim()
+                    ));
+                }
+            }
+        }
 
         tasks.push(task_json);
     }
@@ -697,7 +929,12 @@ pub async fn list_runners(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let rows = sqlx::query(
-        "SELECT id, name, labels, status, version, system_info, last_seen, is_frozen, created_at, updated_at FROM runners ORDER BY created_at DESC",
+        "SELECT r.id, r.name, r.labels, r.status, r.version, r.system_info, r.last_seen, r.is_frozen,
+                r.max_concurrent_jobs, r.clean_workspace_after_job, r.ephemeral,
+                r.shell_enabled, r.ssh_enabled, r.docker_enabled, r.wasm_enabled, r.ssh_host_key_policy,
+                r.created_at, r.updated_at,
+                (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs
+         FROM runners r ORDER BY r.created_at DESC",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -708,6 +945,19 @@ pub async fn list_runners(
             let labels: String = r.get(2);
             let system_info_raw: String = r.get(5);
             let system_info = serde_json::from_str::<serde_json::Value>(&system_info_raw).ok();
+            let policy = RunnerPolicyConfig {
+                max_concurrent_jobs: r.get::<i64, _>(8).max(1) as u32,
+                clean_workspace_after_job: i64_bool(r.get(9)),
+                ephemeral: i64_bool(r.get(10)),
+                shell_enabled: i64_bool(r.get(11)),
+                ssh_enabled: i64_bool(r.get(12)),
+                docker_enabled: i64_bool(r.get(13)),
+                wasm_enabled: i64_bool(r.get(14)),
+                ssh_host_key_policy: {
+                    let p: String = r.get(15);
+                    if p == "known_hosts" { p } else { "insecure".into() }
+                },
+            };
             serde_json::json!({
                 "id": r.get::<String, _>(0),
                 "name": r.get::<String, _>(1),
@@ -717,8 +967,17 @@ pub async fn list_runners(
                 "system_info": system_info,
                 "last_seen": r.get::<Option<String>, _>(6),
                 "is_frozen": r.get::<i64, _>(7) != 0,
-                "created_at": r.get::<Option<String>, _>(8),
-                "updated_at": r.get::<Option<String>, _>(9),
+                "max_concurrent_jobs": policy.max_concurrent_jobs,
+                "clean_workspace_after_job": policy.clean_workspace_after_job,
+                "ephemeral": policy.ephemeral,
+                "shell_enabled": policy.shell_enabled,
+                "ssh_enabled": policy.ssh_enabled,
+                "docker_enabled": policy.docker_enabled,
+                "wasm_enabled": policy.wasm_enabled,
+                "ssh_host_key_policy": policy.ssh_host_key_policy,
+                "created_at": r.get::<Option<String>, _>(16),
+                "updated_at": r.get::<Option<String>, _>(17),
+                "running_jobs": r.get::<i64, _>(18),
             })
         })
         .collect();
@@ -732,7 +991,8 @@ pub async fn get_runner(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let r = sqlx::query(
-        "SELECT id, name, labels, status, version, system_info, last_seen, register_token, created_at, updated_at FROM runners WHERE id = ?",
+        "SELECT id, name, labels, status, version, system_info, last_seen, register_token,
+                created_at, updated_at FROM runners WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.pool)
@@ -742,6 +1002,15 @@ pub async fn get_runner(
     let labels: String = r.get(2);
     let system_info_raw: String = r.get(5);
     let system_info = serde_json::from_str::<serde_json::Value>(&system_info_raw).ok();
+    let running_jobs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
+    )
+    .bind(&id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0);
+    let policy = load_runner_policy(&state.pool, &id).await?;
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": r.get::<String, _>(0),
         "name": r.get::<String, _>(1),
@@ -753,6 +1022,159 @@ pub async fn get_runner(
         "register_token": r.get::<Option<String>, _>(7),
         "created_at": r.get::<Option<String>, _>(8),
         "updated_at": r.get::<Option<String>, _>(9),
+        "running_jobs": running_jobs,
+        "max_concurrent_jobs": policy.max_concurrent_jobs,
+        "clean_workspace_after_job": policy.clean_workspace_after_job,
+        "ephemeral": policy.ephemeral,
+        "shell_enabled": policy.shell_enabled,
+        "ssh_enabled": policy.ssh_enabled,
+        "docker_enabled": policy.docker_enabled,
+        "wasm_enabled": policy.wasm_enabled,
+        "ssh_host_key_policy": policy.ssh_host_key_policy,
+    }))))
+}
+
+pub async fn update_runner(
+    _auth: PlatformAdmin,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+    Json(req): Json<UpdateRunnerRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM runners WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?;
+    if exists.is_none() {
+        return Err(AppError::NotFound("runner not found".into()));
+    }
+
+    if let Some(labels) = &req.labels {
+        let labels_json = serde_json::to_string(labels).unwrap_or_else(|_| "[]".into());
+        sqlx::query("UPDATE runners SET labels = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(&labels_json)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+    }
+
+    if req.max_concurrent_jobs.is_some() {
+        let max_concurrent = normalize_max_concurrent(req.max_concurrent_jobs)?;
+        sqlx::query(
+            "UPDATE runners SET max_concurrent_jobs = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(max_concurrent as i64)
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    }
+
+    if let Some(v) = req.clean_workspace_after_job {
+        sqlx::query(
+            "UPDATE runners SET clean_workspace_after_job = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(if v { 1i64 } else { 0 })
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    }
+    if let Some(v) = req.ephemeral {
+        sqlx::query("UPDATE runners SET ephemeral = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(if v { 1i64 } else { 0 })
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+    }
+    if let Some(v) = req.shell_enabled {
+        sqlx::query(
+            "UPDATE runners SET shell_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(if v { 1i64 } else { 0 })
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    }
+    if let Some(v) = req.ssh_enabled {
+        sqlx::query("UPDATE runners SET ssh_enabled = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(if v { 1i64 } else { 0 })
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+    }
+    if let Some(v) = req.docker_enabled {
+        sqlx::query(
+            "UPDATE runners SET docker_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(if v { 1i64 } else { 0 })
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    }
+    if let Some(v) = req.wasm_enabled {
+        sqlx::query("UPDATE runners SET wasm_enabled = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(if v { 1i64 } else { 0 })
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+    }
+    if req.ssh_host_key_policy.is_some() {
+        let p = normalize_ssh_host_key_policy(req.ssh_host_key_policy.clone())?;
+        sqlx::query(
+            "UPDATE runners SET ssh_host_key_policy = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&p)
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    }
+
+    log_runner_event(
+        &state.pool,
+        &id,
+        "updated",
+        "Runner policy updated from UI",
+    )
+    .await;
+
+    let r = sqlx::query(
+        "SELECT id, name, labels, status, version, system_info, last_seen, register_token,
+                created_at, updated_at FROM runners WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_one(&state.pool)
+    .await?;
+
+    let labels: String = r.get(2);
+    let system_info_raw: String = r.get(5);
+    let system_info = serde_json::from_str::<serde_json::Value>(&system_info_raw).ok();
+    let running_jobs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
+    )
+    .bind(&id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0);
+    let policy = load_runner_policy(&state.pool, &id).await?;
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "id": r.get::<String, _>(0),
+        "name": r.get::<String, _>(1),
+        "labels": serde_json::from_str::<Vec<String>>(&labels).unwrap_or_default(),
+        "status": r.get::<String, _>(3),
+        "version": r.get::<Option<String>, _>(4),
+        "system_info": system_info,
+        "last_seen": r.get::<Option<String>, _>(6),
+        "register_token": r.get::<Option<String>, _>(7),
+        "created_at": r.get::<Option<String>, _>(8),
+        "updated_at": r.get::<Option<String>, _>(9),
+        "running_jobs": running_jobs,
+        "max_concurrent_jobs": policy.max_concurrent_jobs,
+        "clean_workspace_after_job": policy.clean_workspace_after_job,
+        "ephemeral": policy.ephemeral,
+        "shell_enabled": policy.shell_enabled,
+        "ssh_enabled": policy.ssh_enabled,
+        "docker_enabled": policy.docker_enabled,
+        "wasm_enabled": policy.wasm_enabled,
+        "ssh_host_key_policy": policy.ssh_host_key_policy,
     }))))
 }
 

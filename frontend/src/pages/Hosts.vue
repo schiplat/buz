@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
-import { Plus, Pencil, Trash2, Server } from '@lucide/vue'
+import { Plus, Pencil, Trash2, Server, Loader2 } from '@lucide/vue'
 import { hostsApi, type Host } from '@/api/hosts'
 import { teamsApi, type Team } from '@/api/teams'
 import { useAuthStore } from '@/stores/auth'
@@ -58,9 +58,12 @@ const showDialog = ref(false)
 const editing = ref<Host | null>(null)
 const form = ref({ name: '', host: '', port: 22, username: '', credential_type: 'key_path', credential_data: '', credential_passphrase: '', labels: '', team_id: '' })
 const saving = ref(false)
+const testing = ref(false)
+const testResult = ref<{ ok: boolean; message: string } | null>(null)
 
 function openCreate() {
   editing.value = null
+  testResult.value = null
   form.value = {
     name: '',
     host: '',
@@ -77,6 +80,7 @@ function openCreate() {
 
 function openEdit(h: Host) {
   editing.value = h
+  testResult.value = null
   form.value = {
     name: h.name,
     host: h.host,
@@ -142,6 +146,53 @@ async function handleSave() {
   }
 }
 
+async function handleTest() {
+  testResult.value = null
+  if (!form.value.host.trim() || !form.value.username.trim()) {
+    testResult.value = { ok: false, message: 'Address and username are required' }
+    return
+  }
+  if (
+    form.value.credential_type !== 'agent' &&
+    !form.value.credential_data.trim() &&
+    !(editing.value?.credential_stored)
+  ) {
+    testResult.value = {
+      ok: false,
+      message:
+        form.value.credential_type === 'key_path'
+          ? 'Private key is required to test'
+          : 'Password is required to test',
+    }
+    return
+  }
+
+  testing.value = true
+  try {
+    const payload: Parameters<typeof hostsApi.test>[0] = {
+      host: form.value.host.trim(),
+      port: Number(form.value.port) || 22,
+      username: form.value.username.trim(),
+      credential_type: form.value.credential_type,
+    }
+    const credData = form.value.credential_data.trim()
+    if (credData) payload.credential_data = credData
+    const passphrase = form.value.credential_passphrase.trim()
+    if (passphrase) payload.credential_passphrase = passphrase
+    if (editing.value?.id) payload.host_id = editing.value.id
+
+    const result = await hostsApi.test(payload)
+    testResult.value = { ok: result.ok, message: result.message }
+  } catch (e: any) {
+    testResult.value = {
+      ok: false,
+      message: e.response?.data?.message || e.message || 'Test request failed',
+    }
+  } finally {
+    testing.value = false
+  }
+}
+
 async function handleDelete(h: Host) {
   if (!confirm(`Delete host "${h.name}"? This cannot be undone.`)) return
   await hostsApi.delete(h.id)
@@ -176,7 +227,7 @@ onMounted(async () => {
   <div class="space-y-6">
     <PageHeader
       title="Hosts"
-      description="SSH remote hosts. Reference by name or labels in pipeline steps (uses: ssh + host / host_labels). Auth: SSH Key / Password (encrypted in Manager) or SSH Agent (keys on the runner via ssh-add)."
+      description="SSH remote hosts. Reference by name or labels in pipeline steps (uses: ssh + host / host_labels). Auth: SSH Key / Password (encrypted in Manager) or SSH Agent (keys on the runner via ssh-add). Use Test connection in the form to verify credentials from the Manager host."
     >
       <template #actions>
         <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> Add Host</UiButton>
@@ -395,9 +446,29 @@ onMounted(async () => {
               <input v-model="form.labels" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="linux, x64, prod" />
             </div>
           </div>
-          <div class="shrink-0 flex items-center justify-end gap-3 px-6 py-5 border-t border-border/30">
-            <UiButton variant="ghost" size="sm" @click="showDialog = false" :disabled="saving">Cancel</UiButton>
-            <UiButton size="sm" @click="handleSave" :disabled="saving">{{ saving ? 'Saving…' : (editing ? 'Update' : 'Create') }}</UiButton>
+          <div class="shrink-0 px-6 py-5 border-t border-border/30 space-y-3">
+            <p
+              v-if="testResult"
+              class="text-[12px] leading-relaxed whitespace-pre-wrap rounded-lg px-3 py-2"
+              :class="testResult.ok
+                ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20'
+                : 'bg-red-500/10 text-red-700 dark:text-red-300 border border-red-500/20'"
+            >{{ testResult.message }}</p>
+            <div class="flex items-center justify-between gap-3">
+              <UiButton
+                variant="outline"
+                size="sm"
+                :disabled="saving || testing || !form.host.trim() || !form.username.trim()"
+                @click="handleTest"
+              >
+                <Loader2 v-if="testing" class="h-3.5 w-3.5 animate-spin" />
+                {{ testing ? 'Testing…' : 'Test connection' }}
+              </UiButton>
+              <div class="flex items-center gap-3">
+                <UiButton variant="ghost" size="sm" @click="showDialog = false" :disabled="saving || testing">Cancel</UiButton>
+                <UiButton size="sm" @click="handleSave" :disabled="saving || testing">{{ saving ? 'Saving…' : (editing ? 'Update' : 'Create') }}</UiButton>
+              </div>
+            </div>
           </div>
         </div>
       </div>

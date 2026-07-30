@@ -97,6 +97,40 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await;
 
+    // Max parallel jobs per runner (UI-controlled; default 1 = serial)
+    let _ = sqlx::query(
+        "ALTER TABLE runners ADD COLUMN max_concurrent_jobs INTEGER NOT NULL DEFAULT 1",
+    )
+    .execute(pool)
+    .await;
+
+    // UI-managed runner policy (cleanup / ephemeral / engines / SSH host-key policy)
+    let _ = sqlx::query(
+        "ALTER TABLE runners ADD COLUMN clean_workspace_after_job INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN ephemeral INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN shell_enabled INTEGER NOT NULL DEFAULT 1")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN ssh_enabled INTEGER NOT NULL DEFAULT 1")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN docker_enabled INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN wasm_enabled INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query(
+        "ALTER TABLE runners ADD COLUMN ssh_host_key_policy TEXT NOT NULL DEFAULT 'insecure'",
+    )
+    .execute(pool)
+    .await;
+
     // Add host_labels column to tasks table (safe to fail if already present)
     let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN host_labels TEXT NOT NULL DEFAULT ''")
         .execute(pool)
@@ -221,6 +255,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN step_secrets TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await;
+
+    // Private registry credentials secret name (docker / shell / SSH)
+    let _ = sqlx::query(
+        "ALTER TABLE tasks ADD COLUMN registry_secret TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
 
     // Add credential_data column to hosts — stores key content or password in DB
     let _ = sqlx::query("ALTER TABLE hosts ADD COLUMN credential_data TEXT NOT NULL DEFAULT ''")

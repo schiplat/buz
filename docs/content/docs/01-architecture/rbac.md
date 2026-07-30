@@ -125,7 +125,7 @@ hosts.team_id      TEXT NULL → teams(id)       -- optional
 ### Migration from Phase 1 `owner_group`
 
 1. Create `users` / `teams` / `team_members`.
-2. Bootstrap first `platform_admin` from existing `[auth] admin_user` (password re-hash or forced reset).
+2. If `users` is empty, create the first `platform_admin` via Web UI `/setup` (or `POST /auth/setup`).
 3. For each distinct non-empty `owner_group` on pipelines/secrets: upsert `teams` with `slug = owner_group`.
 4. Backfill `team_id`; fail closed on create/update if `team_id` missing.
 5. UI: Owner Group text field → **Team** dropdown.
@@ -139,13 +139,13 @@ Empty `owner_group` rows from Phase 1 must be assigned a team during upgrade (op
 
 | Concern | Design |
 |---------|--------|
-| Password | Argon2id (or bcrypt) stored in `users.password_hash` |
+| Password | **Argon2id** PHC string in `users.password_hash` (not AES — that is only for Secrets/Hosts) |
 | JWT `sub` | `user_id` (not username) |
 | JWT `role` | Extend shared enum: `admin` (platform_admin) \| `user` \| `runner` |
 | Team list in JWT? | **No** — load `team_members` per request (short TTL cache optional) so membership changes apply immediately |
 | Runner tokens | Unchanged (`Role::Runner`) |
 
-Config `[auth] admin_user` / password: **bootstrap only** after Phase 2 ships; prefer disabling plaintext config password once the first admin exists.
+Config: first platform admin is **not** created from toml. On empty `users`, open the Web UI `/setup` (or `POST /auth/setup`).
 
 ### Middleware
 
@@ -198,7 +198,7 @@ Cross-team secret use: only via explicit binding **and** the binder must be allo
 
 Error codes: keep `1002` auth, `1003` forbidden (insufficient permissions).
 
-**Upgrade note:** Existing JWTs that used username as `sub` are invalid after upgrade — users must log in again. Config `[auth] admin_user` / `admin_password` bootstraps the first platform admin when `users` is empty.
+**Upgrade note:** Existing JWTs that used username as `sub` are invalid after upgrade — users must log in again. First admin is created via `/setup` when `users` is empty (not from config).
 
 ---
 

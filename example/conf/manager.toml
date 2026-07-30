@@ -1,12 +1,11 @@
-# Buz Manager Configuration
+# Buz Manager — example / local demo config
+#
+# Production: set a strong jwt_secret (or BUZ_JWT_SECRET).
+# First admin is created in the web UI at /setup (no password in this file).
 
 [server]
 host = "0.0.0.0"
 port = 8080
-
-# ── TLS (recommended for production) ──
-# Uncomment to enable HTTPS. Generate a self-signed cert:
-#   openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"
 # tls_cert = "certs/cert.pem"
 # tls_key  = "certs/key.pem"
 
@@ -15,18 +14,18 @@ path = "./data/buz.db"
 max_connections = 8
 
 [auth]
-# Demo defaults only — change before any shared/production deploy.
-# export BUZ_JWT_SECRET=$(openssl rand -base64 32)
+# Demo default only — change before any shared deploy.
 jwt_secret = "changeme-demo-only"
-admin_user = "admin"
-admin_password = "changeme-demo-only"
-runner_register_token_ttl_hours = 24
+# JWT lifetime for UI/API users and runner session tokens after register
 jwt_ttl_hours = 24
+# Lifetime of the JWT issued at runner registration (runner→manager auth)
+runner_register_token_ttl_hours = 24
 
 [runner]
+# Mark runner offline when no heartbeat for this many seconds
 heartbeat_timeout_seconds = 90
-long_poll_timeout_seconds = 45
 
 [pipeline]
+# Watch this directory for .yml / .yaml and sync into the DB
 yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30

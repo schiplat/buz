@@ -1,8 +1,12 @@
-//! AES-256-GCM encryption for sensitive data at rest (e.g. credential_data).
+//! AES-256-GCM encryption for sensitive data at rest
+//! (host credentials, Manager Secrets values).
 //!
 //! The encryption key is derived from the Manager's `jwt_secret` via SHA-256,
 //! ensuring that if the database file is leaked, the encrypted values remain
 //! unreadable without the secret.
+//!
+//! Plaintext rows are **not** accepted by [`decrypt`] — re-save via the UI/API
+//! so values are stored as ciphertext.
 
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
@@ -53,8 +57,8 @@ pub fn encrypt(plaintext: &str, jwt_secret: &str) -> Result<String, String> {
 
 /// Decrypt a value previously produced by [`encrypt`].
 ///
-/// Returns the original plaintext, or an empty string if the input is empty
-/// (backward-compatible with unencrypted rows).
+/// Empty input → empty output. Plaintext / corrupt rows return `Err` (no legacy
+/// plaintext passthrough).
 pub fn decrypt(encoded: &str, jwt_secret: &str) -> Result<String, String> {
     if encoded.is_empty() {
         return Ok(String::new());
@@ -64,28 +68,100 @@ pub fn decrypt(encoded: &str, jwt_secret: &str) -> Result<String, String> {
     let cipher =
         Aes256Gcm::new_from_slice(&key).map_err(|e| format!("AES-256-GCM init failed: {e}"))?;
 
-    let combined = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-    {
-        Ok(data) => data,
-        Err(_) => {
-            // Not valid base64 — legacy plaintext value (backward-compatible)
-            return Ok(encoded.to_string());
-        }
-    };
+    let combined = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+        .map_err(|_| {
+            "stored value is not encrypted ciphertext; re-save the secret or host credential \
+             via the Manager UI"
+                .to_string()
+        })?;
 
-    if combined.len() < 12 {
-        // Not encrypted — legacy plaintext value (backward-compatible)
-        return Ok(encoded.to_string());
+    if combined.len() < 12 + 16 {
+        // AES-GCM tag is 16 bytes; nonce is 12. Shorter payloads are invalid.
+        return Err(
+            "stored value is not a valid encrypted blob; re-save via the Manager UI".into(),
+        );
     }
 
     let (nonce_bytes, ciphertext) = combined.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| format!("AES-256-GCM decrypt failed: {e}"))?;
+    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+        "failed to decrypt stored value (wrong jwt_secret, or plaintext row); \
+         re-save via the Manager UI"
+            .to_string()
+    })?;
 
     String::from_utf8(plaintext).map_err(|e| format!("UTF-8 decode failed: {e}"))
+}
+
+/// Keys whose string values are partially redacted when masking JSON secrets.
+const SENSITIVE_JSON_KEYS: &[&str] = &[
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "access_key",
+    "secret_key",
+    "credential",
+    "credentials",
+    "passphrase",
+    "private_key",
+    "api_key",
+];
+
+/// Partial redaction for API display: keep a short head/tail, hide the middle.
+///
+/// For JSON objects, sensitive keys (`password`, `token`, …) are redacted in
+/// place so operators can still see non-sensitive fields (e.g. `provider`,
+/// `registry`, `username`).
+pub fn mask_for_display(plaintext: &str) -> String {
+    let trimmed = plaintext.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if let Ok(serde_json::Value::Object(mut map)) = serde_json::from_str(trimmed) {
+        for (key, value) in map.iter_mut() {
+            if is_sensitive_key(key) {
+                if let Some(s) = value.as_str() {
+                    *value = serde_json::Value::String(mask_string(s));
+                } else {
+                    *value = serde_json::Value::String("****".into());
+                }
+            }
+        }
+        return serde_json::to_string(&serde_json::Value::Object(map))
+            .unwrap_or_else(|_| mask_string(trimmed));
+    }
+
+    mask_string(trimmed)
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    SENSITIVE_JSON_KEYS
+        .iter()
+        .any(|k| lower == *k || lower.ends_with(&format!("_{k}")) || lower.ends_with(k))
+}
+
+/// `ab****yz` style masking for a single string.
+pub fn mask_string(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let n = chars.len();
+    if n == 0 {
+        return String::new();
+    }
+    if n <= 4 {
+        return "****".to_string();
+    }
+    if n <= 8 {
+        let head: String = chars[..1].iter().collect();
+        let tail: String = chars[n - 1..].iter().collect();
+        return format!("{head}****{tail}");
+    }
+    let head: String = chars[..2].iter().collect();
+    let tail: String = chars[n - 2..].iter().collect();
+    format!("{head}****{tail}")
 }
 
 #[cfg(test)]

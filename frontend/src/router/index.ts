@@ -8,6 +8,12 @@ import { isNavDebugEnabled, navLog } from '@/utils/navigation'
 
 const routes: RouteRecordRaw[] = [
   {
+    path: '/setup',
+    name: 'setup',
+    component: () => import('@/pages/Setup.vue'),
+    meta: { public: true },
+  },
+  {
     path: '/login',
     name: 'login',
     component: () => import('@/pages/Login.vue'),
@@ -38,8 +44,42 @@ export const router = createRouter({
   routes,
 })
 
-router.beforeEach((to, from) => {
+let setupChecked = false
+let needsSetupCache = false
+
+/** Call after successful first-admin setup so login is allowed. */
+export function markSetupComplete() {
+  setupChecked = true
+  needsSetupCache = false
+}
+
+async function ensureSetupGate(toName: string | symbol | null | undefined) {
+  // Re-check when entering auth pages so a completed setup is visible after refresh.
+  const forceCheck = toName === 'setup' || toName === 'login' || !setupChecked
+  if (forceCheck) {
+    try {
+      const { authApi } = await import('@/api/auth')
+      const s = await authApi.setupStatus()
+      needsSetupCache = s.needs_setup
+      setupChecked = true
+    } catch {
+      return null
+    }
+  }
+  if (needsSetupCache && toName !== 'setup') {
+    return { name: 'setup' as const }
+  }
+  if (!needsSetupCache && toName === 'setup') {
+    return { name: 'login' as const }
+  }
+  return null
+}
+
+router.beforeEach(async (to, from) => {
   navLog('beforeEach', { from: from.fullPath, to: to.fullPath })
+  const gate = await ensureSetupGate(to.name)
+  if (gate) return gate
+
   const auth = useAuthStore()
   if (to.meta.public) return true
   if (!auth.isAuthenticated) {

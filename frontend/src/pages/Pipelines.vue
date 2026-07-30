@@ -354,6 +354,7 @@ async function openEdit(p: Pipeline) {
         retry: t.retry_count || undefined,
         continue_on_error: t.fail_strategy === 'continue' ? true : undefined,
         privileged: (t as any).privileged === true ? true : undefined,
+        registry_secret: (t.registry_secret || '').trim() || undefined,
       })),
       input_defs: detail.input_defs || [],
     }
@@ -544,6 +545,7 @@ function importYamlToForm() {
         retry: s.retry || undefined,
         continue_on_error: s.continue_on_error || undefined,
         privileged: s.privileged || undefined,
+        registry_secret: s.registry_secret || undefined,
       })),
       input_defs: (parsed.trigger_config?.inputs || []).map(inp => ({
         name: inp.name || '',
@@ -575,6 +577,14 @@ async function handleSave() {
     if (s.uses === 'docker' && !(s.image || '').trim()) {
       alert(`Step "${s.name || 'unnamed'}": Docker engine requires Image`)
       return
+    }
+    if (s.uses === 'ssh') {
+      const hasHost = !!(s.host || '').toString().trim()
+      const hasLabels = !!(s.host_labels || '').toString().trim()
+      if (!hasHost && !hasLabels) {
+        alert(`Step "${s.name || 'unnamed'}": SSH requires SSH Host and/or Host Labels`)
+        return
+      }
     }
   }
 
@@ -621,6 +631,7 @@ async function handleSave() {
           image: isDocker ? (s.image || '').trim() || undefined : undefined,
           volumes: volumesArray,
           privileged: isDocker ? (s as any).privileged === true || undefined : undefined,
+          registry_secret: ((s as any).registry_secret || '').trim() || undefined,
           host: isDocker
             ? undefined
             : rawHost
@@ -746,17 +757,17 @@ async function handleToggleActive(p: Pipeline) {
         <div class="flex items-center gap-5">
           <span v-if="runningJobs.length > 0" class="inline-flex items-baseline gap-2">
             <span class="w-2.5 h-2.5 rounded-full bg-amber-500" />
-            <span class="text-base font-bold tabular-nums text-amber-500">{{ runningJobs.length }}</span>
+            <span class="text-sm font-semibold tabular-nums text-amber-500">{{ runningJobs.length }}</span>
             <span class="text-xs text-amber-500/70 leading-none">running</span>
           </span>
           <span v-if="pendingJobs.length > 0" class="inline-flex items-baseline gap-2">
             <span class="w-2.5 h-2.5 rounded-full bg-slate-400" />
-            <span class="text-base font-bold tabular-nums text-muted-foreground">{{ pendingJobs.length }}</span>
+            <span class="text-sm font-semibold tabular-nums text-muted-foreground">{{ pendingJobs.length }}</span>
             <span class="text-xs text-muted-foreground/50 leading-none">pending</span>
           </span>
           <span v-if="queuedJobs.length > 0" class="inline-flex items-baseline gap-2">
             <span class="w-2.5 h-2.5 rounded-full bg-purple-400" />
-            <span class="text-base font-bold tabular-nums text-purple-400">{{ queuedJobs.length }}</span>
+            <span class="text-sm font-semibold tabular-nums text-purple-400">{{ queuedJobs.length }}</span>
             <span class="text-xs text-purple-400/70 leading-none">queued</span>
           </span>
         </div>
@@ -782,7 +793,7 @@ async function handleToggleActive(p: Pipeline) {
         <!-- Running -->
         <template v-if="runningJobs.length > 0">
           <div class="border-t border-border/20" />
-          <div class="px-5 py-2 text-[11px] uppercase tracking-widest text-muted-foreground font-semibold flex items-center justify-between">
+          <div class="px-5 py-2 text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center justify-between">
             <span>Running</span>
             <span class="font-mono tabular-nums text-xs">{{ runningJobs.length }} job{{ runningJobs.length !== 1 ? 's' : '' }}</span>
           </div>
@@ -790,12 +801,12 @@ async function handleToggleActive(p: Pipeline) {
             <div
               v-for="j in runningJobs"
               :key="j.id"
-              class="px-5 py-2 flex items-center gap-3 text-[13px] hover:bg-muted/30 transition-colors cursor-pointer"
+              class="px-5 py-2 flex items-center gap-3 text-sm hover:bg-muted/30 transition-colors cursor-pointer"
               @click="goJob(j.id)"
             >
               <span class="font-mono text-xs w-10 tabular-nums text-muted-foreground/60 shrink-0">#{{ runNum(j) }}</span>
               <span class="flex-1 font-medium text-foreground/80 truncate">{{ jogNameLabel(j) }}</span>
-              <span class="text-[11px] font-mono tabular-nums text-amber-500/80 shrink-0">
+              <span class="text-xs font-mono tabular-nums text-amber-500/80 shrink-0">
                 <Clock class="h-3.5 w-3.5 inline mr-0.5 -mt-px" />{{ elapsed(j.start_time) }}
               </span>
               <button
@@ -812,7 +823,7 @@ async function handleToggleActive(p: Pipeline) {
         <!-- Pending -->
         <template v-if="pendingJobs.length > 0">
           <div class="border-t border-border/20" />
-          <div class="px-5 py-2 text-[11px] uppercase tracking-widest text-muted-foreground font-semibold flex items-center justify-between">
+          <div class="px-5 py-2 text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center justify-between">
             <span>Pending</span>
             <span class="font-mono tabular-nums text-xs">{{ pendingJobs.length }} job{{ pendingJobs.length !== 1 ? 's' : '' }}</span>
           </div>
@@ -820,12 +831,12 @@ async function handleToggleActive(p: Pipeline) {
             <div
               v-for="j in pendingJobs"
               :key="j.id"
-              class="px-5 py-2 flex items-center gap-3 text-[13px] hover:bg-muted/30 transition-colors cursor-pointer"
+              class="px-5 py-2 flex items-center gap-3 text-sm hover:bg-muted/30 transition-colors cursor-pointer"
               @click="goJob(j.id)"
             >
               <span class="font-mono text-xs w-10 tabular-nums text-muted-foreground/60 shrink-0">#{{ runNum(j) }}</span>
               <span class="flex-1 font-medium text-foreground/80 truncate">{{ jogNameLabel(j) }}</span>
-              <span class="text-[11px] font-mono tabular-nums text-muted-foreground/50 shrink-0">{{ elapsed(j.created_at) }} ago</span>
+              <span class="text-xs font-mono tabular-nums text-muted-foreground/50 shrink-0">{{ elapsed(j.created_at) }} ago</span>
               <button
                 class="shrink-0 ml-1 rounded p-0.5 hover:bg-red-500/10 transition-colors"
                 title="Cancel"
@@ -840,7 +851,7 @@ async function handleToggleActive(p: Pipeline) {
         <!-- Queued -->
         <template v-if="queuedJobs.length > 0">
           <div class="border-t border-border/20" />
-          <div class="px-5 py-2 text-[11px] uppercase tracking-widest text-muted-foreground font-semibold flex items-center justify-between">
+          <div class="px-5 py-2 text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center justify-between">
             <span>Queued</span>
             <span class="font-mono tabular-nums text-xs">{{ queuedJobs.length }} job{{ queuedJobs.length !== 1 ? 's' : '' }}</span>
           </div>
@@ -848,12 +859,12 @@ async function handleToggleActive(p: Pipeline) {
             <div
               v-for="j in queuedJobs"
               :key="j.id"
-              class="px-5 py-2 flex items-center gap-3 text-[13px] hover:bg-muted/30 transition-colors cursor-pointer"
+              class="px-5 py-2 flex items-center gap-3 text-sm hover:bg-muted/30 transition-colors cursor-pointer"
               @click="goJob(j.id)"
             >
               <span class="font-mono text-xs w-10 tabular-nums text-muted-foreground/60 shrink-0">#{{ runNum(j) }}</span>
               <span class="flex-1 font-medium text-foreground/80 truncate">{{ jogNameLabel(j) }}</span>
-              <span class="text-[11px] font-mono tabular-nums text-muted-foreground/50 shrink-0">{{ elapsed(j.created_at) }} ago</span>
+              <span class="text-xs font-mono tabular-nums text-muted-foreground/50 shrink-0">{{ elapsed(j.created_at) }} ago</span>
               <button
                 class="shrink-0 ml-1 rounded p-0.5 hover:bg-red-500/10 transition-colors"
                 title="Cancel"
@@ -907,7 +918,7 @@ async function handleToggleActive(p: Pipeline) {
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
           </select>
-          <span v-if="filteredPipelines.length !== pipelines.length" class="text-[10px] text-muted-foreground ml-auto">
+          <span v-if="filteredPipelines.length !== pipelines.length" class="text-xs text-muted-foreground ml-auto">
             {{ filteredPipelines.length }} of {{ pipelines.length }}
           </span>
         </div>
@@ -959,7 +970,7 @@ async function handleToggleActive(p: Pipeline) {
                   >{{ p.name }}</button>
                   <span
                     v-if="Array.isArray(p.input_defs) && p.input_defs.length > 0"
-                    class="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground"
+                    class="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground"
                     title="Params"
                   >
                     <Puzzle class="h-3 w-3" />
@@ -1007,7 +1018,7 @@ async function handleToggleActive(p: Pipeline) {
                   </span>
                   <span
                     v-if="p.latest_job_start"
-                    class="text-[10px] text-muted-foreground pl-3.5 tabular-nums"
+                    class="text-xs text-muted-foreground pl-3.5 tabular-nums"
                   >{{ p.latest_job_start.slice(5, 19) }}</span>
                 </button>
                 <span v-else class="inline-flex items-center gap-1 text-xs text-muted-foreground">
@@ -1023,7 +1034,7 @@ async function handleToggleActive(p: Pipeline) {
                 >{{ formatSuccessRate(p) }}</span>
                 <span
                   v-if="p.job_total"
-                  class="block text-[10px] text-muted-foreground mt-0.5 tabular-nums"
+                  class="block text-xs text-muted-foreground mt-0.5 tabular-nums"
                   :title="successRateTitle(p)"
                 >{{ p.job_success }}/{{ p.job_total }}</span>
               </td>
@@ -1075,8 +1086,8 @@ async function handleToggleActive(p: Pipeline) {
                 class="flex-1 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground select-none flex items-center gap-1"
               >
                 {{ pair.key }}
-                <span v-if="pair.required" class="text-red-400 text-[13px] font-sans leading-none">*</span>
-                <span v-else class="text-[10px] text-muted-foreground/50 font-sans">(optional)</span>
+                <span v-if="pair.required" class="text-red-500 text-sm font-sans leading-none">*</span>
+                <span v-else class="text-xs text-muted-foreground/50 font-sans">(optional)</span>
               </div>
               <input
                 v-model="pair.value"
@@ -1178,6 +1189,9 @@ async function handleToggleActive(p: Pipeline) {
                     placeholder="linux-x64, docker"
                     class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                   />
+                  <p class="text-xs text-muted-foreground mt-1">
+                    Optional. Comma-separated; runner must have <span class="font-medium text-foreground">all</span> listed labels (AND) to claim jobs.
+                  </p>
                 </div>
               </div>
 
@@ -1187,7 +1201,7 @@ async function handleToggleActive(p: Pipeline) {
                   <span class="text-sm font-medium">Webhook Configuration</span>
                 </div>
                 <div>
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">URL Path</label>
+                  <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">URL Path</label>
                   <div class="flex items-center gap-2">
                     <div class="flex items-center gap-1 rounded-lg border border-border bg-muted/50 px-3 py-1.5 text-sm font-mono flex-1 min-w-0">
                       <span class="text-muted-foreground shrink-0">/api/v1/hooks/</span>
@@ -1204,7 +1218,7 @@ async function handleToggleActive(p: Pipeline) {
                       <Copy v-else class="h-3.5 w-3.5" />
                     </button>
                   </div>
-                  <p class="text-[11px] text-muted-foreground mt-1.5">
+                  <p class="text-xs text-muted-foreground mt-1.5">
                     Send POST requests to this URL to trigger execution.
                   </p>
                 </div>
@@ -1216,19 +1230,19 @@ async function handleToggleActive(p: Pipeline) {
                   <span class="text-sm font-medium">Cron Configuration</span>
                 </div>
                 <div>
-                  <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Schedule (cron expression)</label>
+                  <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Schedule (cron expression)</label>
                   <input
                     v-model="form.cron_expr"
                     type="text"
                     placeholder="0 2 * * *"
                     class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                   />
-                  <p class="text-[11px] text-muted-foreground mt-1.5">
+                  <p class="text-xs text-muted-foreground mt-1.5">
                     Standard 5‑field cron syntax: minute hour day month weekday.
                   </p>
                   <details class="mt-2">
-                    <summary class="text-[11px] text-muted-foreground cursor-pointer hover:text-foreground">Quick reference</summary>
-                    <div class="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono text-muted-foreground">
+                    <summary class="text-xs text-muted-foreground cursor-pointer hover:text-foreground">Quick reference</summary>
+                    <div class="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs font-mono text-muted-foreground">
                       <span>*/5 * * * *</span><span>Every 5 min</span>
                       <span>0 * * * *</span><span>Hourly</span>
                       <span>0 2 * * *</span><span>Daily 2 AM</span>
@@ -1249,7 +1263,7 @@ async function handleToggleActive(p: Pipeline) {
                     {{ t.name }} ({{ t.slug }})
                   </option>
                 </select>
-                <p class="mt-1 text-[10px] text-muted-foreground">
+                <p class="mt-1 text-xs text-muted-foreground">
                   Same-team secrets from Infrastructure → Secrets are auto-injected. Use Authorized Secrets for cross-team bindings.
                 </p>
               </div>
@@ -1264,7 +1278,7 @@ async function handleToggleActive(p: Pipeline) {
                 <button
                   v-if="form.steps.length === 0"
                   type="button"
-                  class="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-dashed border-border px-3 py-2.5 text-[13px] text-muted-foreground hover:border-foreground/25 hover:bg-muted/20 hover:text-foreground transition-colors"
+                  class="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-dashed border-border px-3 py-2.5 text-sm text-muted-foreground hover:border-foreground/25 hover:bg-muted/20 hover:text-foreground transition-colors"
                   @click="addStep"
                 >
                   <span class="inline-flex items-center gap-1.5 font-medium">
@@ -1272,7 +1286,7 @@ async function handleToggleActive(p: Pipeline) {
                     Add Step
                   </span>
                   <span class="text-border">·</span>
-                  <span class="text-[12px] font-normal text-muted-foreground/70">No steps defined yet</span>
+                  <span class="text-xs font-normal text-muted-foreground/70">No steps defined yet</span>
                 </button>
 
                 <template v-else>
@@ -1298,8 +1312,8 @@ async function handleToggleActive(p: Pipeline) {
                         <div v-if="!step.name && !step.run" class="text-xs text-muted-foreground italic">Empty step</div>
                       </div>
                       <div class="flex items-center gap-1 shrink-0">
-                        <span v-if="step.uses" class="mono-chip text-[10px]">{{ step.uses }}</span>
-                        <span v-if="step.continue_on_error" class="mono-chip text-[10px] text-amber-600 bg-amber-500/10">no-fail</span>
+                        <span v-if="step.uses" class="mono-chip text-xs">{{ step.uses }}</span>
+                        <span v-if="step.continue_on_error" class="mono-chip text-xs text-amber-600 bg-amber-500/10">no-fail</span>
                         <button
                           type="button"
                           class="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
@@ -1322,7 +1336,7 @@ async function handleToggleActive(p: Pipeline) {
                     <div v-if="expandedSteps.has(idx)" class="px-4 pb-4 space-y-3 border-t border-border/40 pt-3">
                       <div class="grid grid-cols-5 gap-3">
                         <div class="col-span-3">
-                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Name <span class="text-red-500">*</span></label>
+                          <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Name <span class="text-red-500">*</span></label>
                           <input
                             v-model="step.name"
                             type="text"
@@ -1331,7 +1345,7 @@ async function handleToggleActive(p: Pipeline) {
                           />
                         </div>
                         <div class="col-span-2">
-                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Engine</label>
+                          <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Engine</label>
                           <select
                             v-model="step.uses"
                             class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
@@ -1344,23 +1358,44 @@ async function handleToggleActive(p: Pipeline) {
                       </div>
 
                       <div v-if="step.uses === 'docker'">
-                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
+                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
                           Image <span class="text-red-500">*</span>
                         </label>
                         <input
                           v-model="step.image"
                           type="text"
-                          placeholder="e.g. alpine:3.20"
+                          placeholder="e.g. alpine:3.20 or crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0"
                           class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                         />
                       </div>
 
+                      <div>
+                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
+                          Registry Secret
+                        </label>
+                        <select
+                          v-model="(step as any).registry_secret"
+                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                        >
+                          <option value="">None</option>
+                          <option v-for="opt in stepSecretOptions" :key="opt.id" :value="opt.id">
+                            {{ opt.label }}
+                          </option>
+                        </select>
+                        <p class="text-xs text-muted-foreground/70 mt-0.5">
+                          Secret <strong>name</strong> for <code class="font-mono">docker login</code> (pull or push).
+                          JSON value (encrypted):
+                          <code class="font-mono">{ "provider", "registry", "username", "password" }</code>.
+                          Shell/SSH: login before step; Docker: login before pull. Not injected as env.
+                        </p>
+                      </div>
+
                                             <div v-if="step.uses === 'docker'">
-                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
+                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
                           Volumes
                         </label>
                         <div v-if="((step as any).volumes || []).length > 0" class="rounded-lg border border-border overflow-hidden mb-1.5">
-                          <div class="grid grid-cols-[1fr_1fr_28px] gap-0 text-[11px] font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border px-3 py-1.5">
+                          <div class="grid grid-cols-[1fr_1fr_28px] gap-0 text-xs font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border px-3 py-1.5">
                             <span>Host Path</span>
                             <span>Container Path</span>
                             <span />
@@ -1394,7 +1429,7 @@ async function handleToggleActive(p: Pipeline) {
                         </div>
                         <button
                           type="button"
-                          class="flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground bg-muted/20 hover:bg-muted/40 rounded-lg border border-dashed border-border/60 transition-colors"
+                          class="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground bg-muted/20 hover:bg-muted/40 rounded-lg border border-dashed border-border/60 transition-colors"
                           @click="
                             if (!(step as any).volumes) (step as any).volumes = [];
                             (step as any).volumes.push({ host: '', container: '' })
@@ -1403,7 +1438,7 @@ async function handleToggleActive(p: Pipeline) {
                           <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
                           Add Volume
                         </button>
-                        <p class="text-[10px] text-muted-foreground/70 mt-1">Map host paths into the container. All host paths must exist on the runner.</p>
+                        <p class="text-xs text-muted-foreground/70 mt-1">Map host paths into the container. All host paths must exist on the runner.</p>
                       </div>
 
                       <div v-if="step.uses === 'docker'" class="mb-3">
@@ -1415,14 +1450,14 @@ async function handleToggleActive(p: Pipeline) {
                           />
                           <div>
                             <span class="text-xs font-medium text-foreground">Privileged mode</span>
-                            <span class="ml-1 px-1 py-0.5 text-[10px] uppercase tracking-wider rounded bg-red-500/10 text-red-600 font-semibold">Security</span>
-                            <p class="text-[10px] text-muted-foreground/70 mt-0.5">Required for Docker-in-Docker (docker:dind). Grants full host capabilities — only use on disposable runner VMs.</p>
+                            <span class="ml-1 px-1 py-0.5 text-xs uppercase tracking-wider rounded bg-red-500/10 text-red-600 font-semibold">Security</span>
+                            <p class="text-xs text-muted-foreground/70 mt-0.5">Required for Docker-in-Docker (docker:dind). Grants full host capabilities — only use on disposable runner VMs.</p>
                           </div>
                         </label>
                       </div>
 
                       <div>
-                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Command <span class="text-red-500">*</span></label>
+                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Command <span class="text-red-500">*</span></label>
                         <textarea
                           v-model="step.run"
                           rows="4"
@@ -1434,7 +1469,7 @@ async function handleToggleActive(p: Pipeline) {
 
                       <div class="grid grid-cols-3 gap-3">
                         <div>
-                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Work Dir</label>
+                          <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Work Dir</label>
                           <input
                             v-model="step.dir"
                             type="text"
@@ -1443,7 +1478,7 @@ async function handleToggleActive(p: Pipeline) {
                           />
                         </div>
                         <div>
-                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Timeout</label>
+                          <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Timeout</label>
                           <input
                             v-model="step.timeout"
                             type="text"
@@ -1452,7 +1487,7 @@ async function handleToggleActive(p: Pipeline) {
                           />
                         </div>
                         <div>
-                          <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Retry</label>
+                          <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Retry</label>
                           <input
                             v-model.number="step.retry"
                             type="number"
@@ -1465,19 +1500,23 @@ async function handleToggleActive(p: Pipeline) {
                       </div>
 
                       <div class="mt-3">
-                        <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Secrets</label>
+                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Secrets</label>
                         <MultiSelect
                           v-model="(step.secrets as string[])"
                           :options="stepSecretOptions"
                           placeholder="Inherit from pipeline..."
                         />
-                        <p class="text-[10px] text-muted-foreground/70 mt-0.5">Authorize secrets for this step only. Injected as env vars at runtime.</p>
+                        <p class="text-xs text-muted-foreground/70 mt-0.5">Authorize secrets for this step only. Injected as env vars at runtime.</p>
                       </div>
 
                       <div v-if="step.uses === 'ssh'" class="space-y-3">
+                        <p class="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                          SSH targets <span class="text-red-500">*</span>
+                          <span class="normal-case font-normal text-muted-foreground/80"> — at least one of Host or Labels</span>
+                        </p>
                         <div class="grid grid-cols-2 gap-3">
                           <div>
-                            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">SSH Host <span class="text-red-500">*</span></label>
+                            <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">SSH Host</label>
                             <input
                               v-model="step.host"
                               type="text"
@@ -1486,7 +1525,7 @@ async function handleToggleActive(p: Pipeline) {
                             />
                           </div>
                           <div>
-                            <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Host Labels</label>
+                            <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Host Labels</label>
                             <input
                               v-model="step.host_labels"
                               type="text"
@@ -1495,7 +1534,9 @@ async function handleToggleActive(p: Pipeline) {
                             />
                           </div>
                         </div>
-                        <p class="text-[10px] text-muted-foreground">Host labels match hosts by their labels column. Use commas for multiple. Combined with SSH Host above (union).</p>
+                        <p class="text-xs text-muted-foreground">
+                          Combined as a union (OR): named hosts plus any host matching a listed label. Multiple values: comma-separated.
+                        </p>
                       </div>
                       <label class="flex items-center gap-2 cursor-pointer select-none">
                         <input
@@ -1524,10 +1565,10 @@ async function handleToggleActive(p: Pipeline) {
               <details class="group/adv rounded-xl border border-dashed border-border/80 bg-muted/10 px-3 py-2.5" :open="pipelineFormHasAdvanced">
                 <summary class="flex items-center gap-3 cursor-pointer list-none select-none py-0.5 [&::-webkit-details-marker]:hidden">
                   <span class="h-px flex-1 bg-border/80 transition-colors duration-300 group-hover/adv:bg-foreground/20" />
-                  <span class="inline-flex items-center gap-1.5 shrink-0 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground transition-colors duration-300 group-hover/adv:text-foreground">
+                  <span class="inline-flex items-center gap-1.5 shrink-0 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground transition-colors duration-300 group-hover/adv:text-foreground">
                     Advanced
                     <ChevronDown class="h-3.5 w-3.5 transition-transform duration-300 ease-out group-open/adv:rotate-180" />
-                    <span v-if="pipelineFormHasAdvanced" class="text-[10px] font-normal normal-case tracking-normal text-muted-foreground/60">
+                    <span v-if="pipelineFormHasAdvanced" class="text-xs font-normal normal-case tracking-normal text-muted-foreground/60">
                       ({{ [form.runner_timeout && 1, form.concurrency_group && 1, form.var_ids.length > 0 && 1, form.secret_ids.length > 0 && 1, form.env.length > 0 && 1, form.input_defs.length > 0 && 1].filter(Boolean).length }} configured)
                     </span>
                   </span>
@@ -1596,7 +1637,7 @@ async function handleToggleActive(p: Pipeline) {
                       :options="variableOptions"
                       placeholder="Select platform variables..."
                     />
-                    <p class="mt-1 text-[10px] text-muted-foreground">
+                    <p class="mt-1 text-xs text-muted-foreground">
                       Bind platform variables (Infrastructure → Variables). Available as <code class="font-mono">$NAME</code> in every step.
                     </p>
                   </div>
@@ -1607,7 +1648,7 @@ async function handleToggleActive(p: Pipeline) {
                       :options="secretOptions"
                       placeholder="Select secrets..."
                     />
-                    <p class="mt-1 text-[10px] text-muted-foreground">
+                    <p class="mt-1 text-xs text-muted-foreground">
                       Explicit binding via <code class="font-mono">pipeline_secrets</code>. Use for cross-group or empty-group secrets.
                     </p>
                   </div>
@@ -1619,17 +1660,17 @@ async function handleToggleActive(p: Pipeline) {
                     <div class="flex items-center gap-2">
                       <GripVertical class="h-4 w-4 text-muted-foreground" />
                       <span class="text-sm font-medium">Env</span>
-                      <span class="text-[11px] text-muted-foreground">(user-defined, only for this pipeline)</span>
+                      <span class="text-xs text-muted-foreground">(user-defined, only for this pipeline)</span>
                     </div>
                     <button
                       type="button"
-                      class="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors"
+                      class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
                       @click="addEnv"
                     >
                       <Plus class="h-3 w-3" /> Add
                     </button>
                   </div>
-                  <div v-if="form.env.length === 0" class="text-[11px] text-muted-foreground">
+                  <div v-if="form.env.length === 0" class="text-xs text-muted-foreground">
                     No custom env vars defined. Add key-value pairs specific to this pipeline.
                   </div>
                   <div v-for="(pair, ei) in form.env" :key="ei" class="flex items-center gap-3">
@@ -1639,7 +1680,7 @@ async function handleToggleActive(p: Pipeline) {
                       placeholder="KEY"
                       class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                     />
-                    <span class="text-[10px] text-muted-foreground">=</span>
+                    <span class="text-xs text-muted-foreground">=</span>
                     <input
                       v-model="form.env[ei].value"
                       type="text"
@@ -1659,18 +1700,18 @@ async function handleToggleActive(p: Pipeline) {
                     <div class="flex items-center gap-2">
                       <GripVertical class="h-4 w-4 text-muted-foreground" />
                       <span class="text-sm font-medium">Params</span>
-                      <span class="text-[11px] text-muted-foreground">(optional)</span>
+                      <span class="text-xs text-muted-foreground">(optional)</span>
                     </div>
                     <button
                       type="button"
-                      class="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors"
+                      class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
                       @click="addInputDef"
                     >
                       <Plus class="h-3 w-3" /> Add
                     </button>
                   </div>
 
-                  <div v-if="form.input_defs.length === 0" class="text-[11px] text-muted-foreground">
+                  <div v-if="form.input_defs.length === 0" class="text-xs text-muted-foreground">
                     No input parameters defined. Pipelines without inputs run with fixed configuration.
                   </div>
 
@@ -1738,7 +1779,7 @@ async function handleToggleActive(p: Pipeline) {
                 <!-- Line numbers -->
                 <pre
                   id="yaml-linenums"
-                  class="select-none text-right shrink-0 bg-muted/40 text-[11px] font-mono leading-[1.7] text-muted-foreground/60 py-2.5 pl-2 pr-2 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                  class="select-none text-right shrink-0 bg-muted/40 text-xs font-mono leading-[1.7] text-muted-foreground/60 py-2.5 pl-2 pr-2 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
                   aria-hidden="true"
                   v-text="yamlLineNumbers"
                 />
@@ -1811,13 +1852,13 @@ async function handleToggleActive(p: Pipeline) {
                     <p class="text-sm font-medium text-emerald-600 dark:text-emerald-400">
                       All fields imported successfully
                     </p>
-                    <p class="text-[11px] text-muted-foreground mt-0.5">
+                    <p class="text-xs text-muted-foreground mt-0.5">
                       No missing references detected. You can review the result on the Form tab and save the pipeline.
                     </p>
                   </div>
                   <button
                     type="button"
-                    class="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-medium text-emerald-600 hover:bg-emerald-500/20 transition-colors"
+                    class="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-600 hover:bg-emerald-500/20 transition-colors"
                     @click="dialogMode = 'form'"
                   >
                     <FileText class="h-3 w-3" />
@@ -1837,13 +1878,13 @@ async function handleToggleActive(p: Pipeline) {
                     <p class="text-sm font-medium text-amber-600 dark:text-amber-400">
                       {{ yamlImportWarnings.length }} item(s) could not be fully imported
                     </p>
-                    <p class="text-[11px] text-muted-foreground mt-0.5">
+                    <p class="text-xs text-muted-foreground mt-0.5">
                       The form has been populated with the available data. Review and complete the missing fields on the Form tab.
                     </p>
                   </div>
                   <button
                     type="button"
-                    class="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[11px] font-medium text-amber-600 hover:bg-amber-500/20 transition-colors"
+                    class="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-600 hover:bg-amber-500/20 transition-colors"
                     @click="dialogMode = 'form'"
                   >
                     <FileText class="h-3 w-3" />
@@ -1887,7 +1928,7 @@ on:
 
 # ── Runner ──
 runner:
-  labels: [linux-x64]
+  labels: [linux-x64]             # optional; runner must have ALL listed labels (AND)
   timeout: 60m
 
 # ── Concurrency ── (mode defaults to discard-old)
@@ -1949,15 +1990,40 @@ steps:
       npm test
     timeout: 15m
 
-  # ── Docker push (uses pipeline-level secret; shell engine) ──
-  - name: Docker Push
+  # ── Private image from ACR Personal Edition ──
+  # Secret "acr-personal" is created in Infrastructure → Secrets (encrypted).
+  # Value JSON includes provider/registry/username/password — not this YAML.
+  - name: Run Private Image
+    uses: docker
+    image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
+    registry_secret: acr-personal
     run: |
-      echo "$DOCKER_REGISTRY_PASS" | docker login -u bot --password-stdin
-      docker push myapp:$INPUT_VERSION
+      echo "pulled private image"
+    timeout: 10m
+
+  # ── Docker push via registry_secret (shell engine auto login/logout) ──
+  - name: Docker Push
+    uses: shell
+    registry_secret: acr-personal
+    run: |
+      docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/myapp:$INPUT_VERSION
       echo "CACHE_DIR=$BUILD_CACHE_DIR"
     timeout: 5m
 
-  # ── SSH deploy to multiple hosts ──
+  # ── Build + push orchestration (see example/pipelines/acr-personal-build-push.yml) ──
+  - name: Build Image
+    uses: shell
+    run: |
+      docker build -t crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/hello:$INPUT_VERSION .
+    timeout: 10m
+  - name: Push Image
+    uses: shell
+    registry_secret: acr-personal
+    run: |
+      docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/hello:$INPUT_VERSION
+    timeout: 15m
+
+  # ── SSH deploy (host and/or host_labels — at least one required; union) ──
   - name: Deploy
     uses: ssh
     host:

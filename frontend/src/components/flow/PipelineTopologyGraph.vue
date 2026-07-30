@@ -224,7 +224,7 @@ defineExpose({ refresh: buildGraph })
       <button
         v-for="opt in filterOptions"
         :key="opt.key"
-        class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors"
+        class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
         :class="activeFilter === opt.key
           ? 'bg-foreground/10 text-foreground'
           : 'text-muted-foreground hover:text-foreground hover:bg-foreground/5'"
@@ -232,7 +232,7 @@ defineExpose({ refresh: buildGraph })
       >
         <span class="w-2 h-2 rounded-full shrink-0" :class="opt.dot" />
         <span>{{ opt.label }}</span>
-        <span v-if="filterCounts[opt.key] > 0" class="tabular-nums text-[10px] opacity-60 ml-0.5">{{ filterCounts[opt.key] }}</span>
+        <span v-if="filterCounts[opt.key] > 0" class="tabular-nums text-xs opacity-60 ml-0.5">{{ filterCounts[opt.key] }}</span>
       </button>
     </div>
 

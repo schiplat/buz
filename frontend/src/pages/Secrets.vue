@@ -56,6 +56,28 @@ const formTeamId = ref('')
 const saving = ref(false)
 const showValue = ref(false)
 
+/** Placeholder / sample for private registry credentials (ACR Personal Edition). */
+const ACR_REGISTRY_SAMPLE = `{
+  "provider": "acr_personal",
+  "registry": "crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com",
+  "username": "<ACR login name>",
+  "password": "<fixed password from ACR console>"
+}`
+
+const valuePlaceholder = computed(() =>
+  editing.value && !editing.value.reencrypt_required
+    ? 'Leave empty to keep current value'
+    : 'Paste secret value or registry JSON…',
+)
+
+function insertRegistrySample() {
+  if (formValue.value.trim() && !confirm('Replace the current Value with the ACR sample JSON?')) {
+    return
+  }
+  formValue.value = ACR_REGISTRY_SAMPLE
+  showValue.value = true
+}
+
 function openCreate() {
   editing.value = null
   formName.value = ''
@@ -77,6 +99,14 @@ function openEdit(s: Secret) {
 async function handleSave() {
   if (!formTeamId.value) {
     alert('Team is required')
+    return
+  }
+  if (editing.value?.reencrypt_required && !formValue.value) {
+    alert('This secret must be re-saved with a new value (plaintext storage is no longer accepted).')
+    return
+  }
+  if (!editing.value && !formValue.value) {
+    alert('Value is required')
     return
   }
   saving.value = true
@@ -186,7 +216,15 @@ onMounted(loadSecrets)
               <tr v-for="s in pageItems" :key="s.id" class="hover:bg-muted/5 transition-colors">
                 <td class="px-5 py-3 font-mono text-sm font-semibold whitespace-nowrap">{{ s.name }}</td>
                 <td class="px-5 py-3">
-                  <code class="mono-chip text-xs select-all">{{ s.value }}</code>
+                  <div class="flex flex-col gap-1 min-w-0 max-w-md">
+                    <code class="mono-chip text-xs select-all break-all whitespace-pre-wrap">{{ s.value }}</code>
+                    <span
+                      v-if="s.reencrypt_required"
+                      class="text-[10px] font-medium text-amber-600"
+                    >
+                      Re-save required (legacy plaintext is no longer accepted)
+                    </span>
+                  </div>
                 </td>
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.owner_group || s.team_id || '—' }}</td>
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.updated_at?.slice(0, 10) || '—' }}</td>
@@ -214,13 +252,13 @@ onMounted(loadSecrets)
 
     <!-- Dialog -->
     <Teleport to="body">
-      <div v-if="showDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showDialog = false" />
-        <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
-          <h3 class="text-[15px] font-semibold mb-5">{{ editing ? 'Update Secret' : 'New Secret' }}</h3>
-          <div class="space-y-4">
+      <div v-if="showDialog" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-8">
+        <div class="fixed inset-0 bg-black/30 backdrop-blur-sm" @click="showDialog = false" />
+        <div class="relative z-10 w-full max-w-md mx-4 my-auto rounded-2xl border border-border/50 bg-card shadow-2xl flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
+          <h3 class="shrink-0 text-[15px] font-semibold px-6 pt-6 pb-4">{{ editing ? 'Update Secret' : 'New Secret' }}</h3>
+          <div class="flex-1 min-h-0 overflow-y-auto px-6 space-y-4">
             <div>
-              <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-red-400">*</span></label>
+              <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-red-500">*</span></label>
               <input
                 v-model="formName"
                 :disabled="!!editing"
@@ -239,25 +277,73 @@ onMounted(loadSecrets)
               </select>
               <p class="text-[10px] text-muted-foreground mt-1">Pipelines in the same team auto-receive this secret.</p>
             </div>
-            <div>
+            <div class="pb-1">
               <label class="block text-[12px] font-medium text-foreground mb-1">
-                Value <span class="text-red-400">*</span>
-                <span v-if="editing" class="text-muted-foreground font-normal ml-1">(leave empty to keep current)</span>
+                Value <span class="text-red-500">*</span>
+                <span v-if="editing && !editing.reencrypt_required" class="text-muted-foreground font-normal ml-1">(leave empty to keep current)</span>
+                <span v-else-if="editing?.reencrypt_required" class="text-amber-600 font-normal ml-1">(required — re-encrypt)</span>
               </label>
               <div class="relative">
-                <input
+                <textarea
                   v-model="formValue"
-                  :type="showValue ? 'text' : 'password'"
-                  class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 pr-14 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
-                  :placeholder="editing ? 'new value' : '••••••••'"
+                  rows="6"
+                  spellcheck="false"
+                  class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 pr-14 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 resize-y min-h-[7.5rem]"
+                  :style="showValue ? '' : '-webkit-text-security: disc'"
+                  :placeholder="valuePlaceholder"
                 />
-                <button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer" @click="showValue = !showValue">
+                <button type="button" class="absolute right-2 top-2 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer" @click="showValue = !showValue">
                   {{ showValue ? 'Hide' : 'Show' }}
                 </button>
               </div>
+              <p v-if="editing?.reencrypt_required" class="text-[10px] text-amber-600 mt-1.5">
+                This row is not valid ciphertext. Enter the secret again to encrypt it at rest.
+              </p>
+              <p class="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">
+                Stored encrypted at rest. List view shows a partial redaction only.
+                Plain secrets work as env vars; for private registries use JSON below and reference the secret
+                <span class="font-medium text-foreground">name</span> via
+                <code class="mono-chip text-[10px]">registry_secret</code> on the step.
+              </p>
+              <details class="mt-3 rounded-lg border border-border/50 bg-muted/30 group">
+                <summary class="cursor-pointer select-none px-3 py-2.5 text-[11px] font-medium text-foreground flex items-center gap-2 list-none [&::-webkit-details-marker]:hidden">
+                  <span class="text-muted-foreground/70 font-mono text-[10px] group-open:rotate-90 transition-transform">▸</span>
+                  Registry credentials sample (ACR Personal)
+                </summary>
+                <div class="px-3 pb-2.5 space-y-2 border-t border-border/40 pt-2">
+                  <div class="flex justify-end">
+                    <button
+                      type="button"
+                      class="text-[11px] text-primary hover:underline cursor-pointer"
+                      @click="insertRegistrySample"
+                    >
+                      Insert sample
+                    </button>
+                  </div>
+                  <pre class="text-[10px] font-mono text-muted-foreground whitespace-pre-wrap break-all leading-relaxed">{{ ACR_REGISTRY_SAMPLE }}</pre>
+                  <p class="text-[10px] text-muted-foreground leading-relaxed">
+                    Get login name + fixed password from the ACR console (Personal Edition access credentials).
+                    <code class="mono-chip text-[10px]">registry</code> is required for shell/SSH push;
+                    optional for docker pull when
+                    <code class="mono-chip text-[10px]">image</code> already includes the host.
+                  </p>
+                  <p class="text-[10px] text-muted-foreground leading-relaxed">
+                    Get credentials:
+                    <a
+                      class="text-primary hover:underline"
+                      href="https://help.aliyun.com/zh/acr/user-guide/configure-access-credentials-of-the-personal-edition-of-container-registry"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >Alibaba Cloud — ACR Personal access credentials</a>
+                    . Pipeline wiring:
+                    <span class="font-medium text-foreground">Docker Engine → Appendix: ACR Personal Edition</span>
+                    in project docs (<code class="mono-chip text-[10px]">registry_secret</code>).
+                  </p>
+                </div>
+              </details>
             </div>
           </div>
-          <div class="flex items-center justify-end gap-3 mt-6 pt-5 border-t border-border/30">
+          <div class="shrink-0 flex items-center justify-end gap-3 px-6 py-5 border-t border-border/30">
             <UiButton variant="ghost" size="sm" @click="showDialog = false" :disabled="saving">Cancel</UiButton>
             <UiButton size="sm" @click="handleSave" :disabled="saving">{{ saving ? 'Saving…' : (editing ? 'Update' : 'Create') }}</UiButton>
           </div>

@@ -9,7 +9,7 @@ description: "Deploying Center and Runner in production"
 ```bash
 # One-step: build all + run Center
 make run
-# → http://localhost:8080  (admin / admin)
+# → http://localhost:8080  (first visit → /setup to create admin)
 
 # Or step by step
 make example        # create example config directory
@@ -38,14 +38,22 @@ path = "./data/buz.db"
 
 [auth]
 jwt_secret = "changeme-demo-only"
-admin_user = "admin"
-admin_password_hash = "admin"
+
+[runner]
+heartbeat_timeout_seconds = 90
+
+[pipeline]
+yaml_scan_dir = "./pipelines"
+yaml_scan_interval_seconds = 30
 EOF
 
 # Start
 export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
 ./target/release/buz-manager
+# Open https://… or http://… → /setup to create the first admin
 ```
+
+For HTTPS (including self-signed), see [TLS](/docs/03-operations/tls/).
 
 ## Runner Deployment
 
@@ -55,27 +63,25 @@ Runners can be deployed on any machine with outbound HTTPS access to the Center.
 # Create config
 mkdir -p conf
 cat > conf/runner.toml <<EOF
-[center]
+[manager]
 url = "https://buz-api.example.com"
 register_token = "your-register-token"
 
 [runner]
 name = "prod-runner-01"
-labels = ["prod", "linux-x64"]
+# labels → Manager UI → Runners
 workspace_dir = "/tmp/buz-runner"
 
+# Engine flags / concurrency / cleanup → Manager UI → Runners
 [engine]
-shell_enabled = true
-ssh_enabled = true
-docker_enabled = false
-wasm_enabled = false
+# ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"
 EOF
 
 export BUZ_REGISTER_TOKEN="your-token"
 ./target/release/buz-runner
 ```
 
-> `docker_enabled`: enable step Docker engine (`uses: docker`). See [Docker Engine](/docs/01-architecture/docker-engine/). Host-side `docker build` / SSH `docker …` does **not** need this flag.
+> Enable Docker steps (`uses: docker`) in **Manager UI → Runners → Docker**. See [Docker Engine](/docs/01-architecture/docker-engine/). Host-side `docker build` / SSH `docker …` does **not** need this flag.
 
 ## Requirements
 
@@ -130,7 +136,7 @@ Minimal path after `make example` / `make build`:
 4. Copy `example/pipelines/ssh-verify.yml` (and optionally `smoke-test.yml`) into the Manager `yaml_scan_dir`. Wait for scanner (~interval) or restart Manager.
 5. Pipelines list should show the YAML pipelines under team `default`.
 6. Trigger **SSH Verify**; open Job Detail — steps + live logs should stream.
-7. Runner labels must include `linux-x64` (match YAML `runner.labels`).
+7. Runner labels in Manager UI must include `linux-x64` (match YAML `runner.labels`).
 
 YAML team assignment:
 
@@ -140,12 +146,11 @@ team: default   # or another existing team slug; omit → default
 
 ### SSH host keys (production)
 
-Default policy is `insecure` (accept any server key) for lab convenience. For production runners:
+Default UI policy is `insecure` (accept any server key) for lab convenience. For production, set **SSH host key** to `known_hosts` in Manager UI → Runners. Optionally point the local file in `runner.toml`:
 
 ```toml
 [engine]
-ssh_host_key_policy = "known_hosts"
-# ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"  # optional; default ~/.ssh/known_hosts
+ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"  # optional; default ~/.ssh/known_hosts
 ```
 
 Pre-seed keys with `ssh-keyscan -p 22 host >> ~/.ssh/known_hosts`. A changed host key fails the step with an explicit error.

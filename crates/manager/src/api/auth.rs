@@ -2,22 +2,139 @@ use axum::{extract::State, Json};
 use shared::auth::{Role, TokenManager};
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
-use shared::protocol::{ChangePasswordRequest, LoginRequest, LoginResponse};
+use shared::protocol::{
+    ChangePasswordRequest, LoginRequest, LoginResponse, SetupAdminRequest, SetupStatusResponse,
+};
 use sqlx::Row;
+use uuid::Uuid;
 
 use crate::middleware::AuthUser;
-use crate::password::{hash_password, verify_password};
+use crate::password::{hash_password, validate_password_complexity, verify_password};
 use crate::state::AppState;
+
+pub async fn setup_status(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<SetupStatusResponse>>, AppError> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&state.pool)
+        .await?;
+    Ok(Json(ApiResponse::success(SetupStatusResponse {
+        needs_setup: count == 0,
+    })))
+}
+
+/// Validate first-admin setup fields.
+pub(crate) fn validate_setup(req: &SetupAdminRequest) -> Result<(), AppError> {
+    let username = req.username.trim();
+    if username.is_empty() {
+        return Err(AppError::ValidationFailed("username is required".into()));
+    }
+    if username.len() < 2 || username.len() > 64 {
+        return Err(AppError::ValidationFailed(
+            "username must be 2–64 characters".into(),
+        ));
+    }
+    if !username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        return Err(AppError::ValidationFailed(
+            "username may only contain letters, digits, _ - .".into(),
+        ));
+    }
+    if let Err(msg) = validate_password_complexity(&req.password) {
+        return Err(AppError::ValidationFailed(msg));
+    }
+    Ok(())
+}
+
+/// Create the first platform admin when no users exist. Returns a login JWT.
+pub async fn setup(
+    State(state): State<AppState>,
+    Json(req): Json<SetupAdminRequest>,
+) -> Result<Json<ApiResponse<LoginResponse>>, AppError> {
+    validate_setup(&req)?;
+    let username = req.username.trim().to_string();
+
+    let mut tx = state.pool.begin().await?;
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&mut *tx)
+        .await?;
+    if count > 0 {
+        return Err(AppError::Conflict(
+            "setup already completed — use login".into(),
+        ));
+    }
+
+    let user_id = Uuid::new_v4().to_string();
+    let hash = hash_password(&req.password).map_err(AppError::Internal)?;
+    sqlx::query(
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_active)
+         VALUES (?, ?, ?, ?, 1, 1)",
+    )
+    .bind(&user_id)
+    .bind(&username)
+    .bind(&hash)
+    .bind(&username)
+    .execute(&mut *tx)
+    .await?;
+
+    // Attach to default team (created by bootstrap)
+    let team_id: Option<String> =
+        sqlx::query_scalar("SELECT id FROM teams WHERE slug = 'default'")
+            .fetch_optional(&mut *tx)
+            .await?;
+    if let Some(tid) = team_id {
+        sqlx::query(
+            "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')",
+        )
+        .bind(&tid)
+        .bind(&user_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+
+    tracing::info!("First platform admin created via web setup: {username}");
+
+    let token_mgr = TokenManager::new(&state.config.auth.jwt_secret);
+    let token = token_mgr
+        .create_token(&user_id, Role::Admin, state.config.auth.jwt_ttl_hours)
+        .map_err(|e| AppError::Internal(format!("token generation failed: {e}")))?;
+
+    Ok(Json(ApiResponse::success(LoginResponse {
+        token,
+        user_id: Some(user_id),
+        username: Some(username),
+        is_platform_admin: Some(true),
+    })))
+}
 
 pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<ApiResponse<LoginResponse>>, AppError> {
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&state.pool)
+        .await?;
+    if user_count == 0 {
+        return Err(AppError::AuthFailed(
+            "instance not initialized — open /setup to create the first admin".into(),
+        ));
+    }
+
+    let username = req.username.trim();
+    if username.is_empty() || req.password.is_empty() {
+        return Err(AppError::AuthFailed("invalid username or password".into()));
+    }
+
     let row = sqlx::query(
         "SELECT id, username, password_hash, is_platform_admin, is_active
          FROM users WHERE username = ?",
     )
-    .bind(&req.username)
+    .bind(username)
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::AuthFailed("invalid username or password".into()))?;
@@ -29,6 +146,11 @@ pub async fn login(
 
     let password_hash: String = row.get(2);
     if !verify_password(&req.password, &password_hash) {
+        tracing::warn!(
+            username = %username,
+            hash_prefix = %password_hash.chars().take(20).collect::<String>(),
+            "login rejected: password verify failed"
+        );
         return Err(AppError::AuthFailed("invalid username or password".into()));
     }
 

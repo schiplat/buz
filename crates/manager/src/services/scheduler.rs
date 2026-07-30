@@ -17,9 +17,6 @@ const DISPATCH_INTERVAL_SECS: u64 = 5;
 /// How long a lease lives before another instance can take over.
 const LEASE_TTL_SECS: i64 = 15;
 
-/// How often the leader refreshes its lease.
-const LEASE_REFRESH_SECS: u64 = 10;
-
 /// Start the scheduler background task. Safe to call multiple times — only one
 /// instance will hold the leader lease at any time.
 pub fn start_scheduler(pool: SqlitePool) {
@@ -57,13 +54,14 @@ async fn try_acquire_lease(pool: &SqlitePool, instance_id: &str) -> Result<bool,
     // Try to take the lease if it doesn't exist or has expired
     let rows_affected = sqlx::query(
         "INSERT OR REPLACE INTO scheduler_lease (id, instance_id, expires_at, updated_at)
-         SELECT 1, ?, datetime('now', '+15 seconds'), datetime('now')
+         SELECT 1, ?, datetime('now', ?), datetime('now')
          WHERE NOT EXISTS (
              SELECT 1 FROM scheduler_lease
              WHERE id = 1 AND expires_at > datetime('now')
          )",
     )
     .bind(instance_id)
+    .bind(format!("+{LEASE_TTL_SECS} seconds"))
     .execute(pool)
     .await?;
 
@@ -78,9 +76,10 @@ async fn try_acquire_lease(pool: &SqlitePool, instance_id: &str) -> Result<bool,
             if rows_affected.rows_affected() == 0 {
                 // Already owned, refresh
                 sqlx::query(
-                    "UPDATE scheduler_lease SET expires_at = datetime('now', '+15 seconds'),
+                    "UPDATE scheduler_lease SET expires_at = datetime('now', ?),
                      updated_at = datetime('now') WHERE id = 1",
                 )
+                .bind(format!("+{LEASE_TTL_SECS} seconds"))
                 .execute(pool)
                 .await?;
             }

@@ -62,17 +62,33 @@ export const useAuthStore = defineStore('auth', () => {
     return matchesTeamFilter(resourceTeamId, activeTeamId.value, opts)
   }
 
-  async function login(user: string, pass: string) {
-    const resp = await authApi.login(user, pass)
+  async function applySession(resp: {
+    token: string
+    user_id?: string
+    username?: string
+    is_platform_admin?: boolean
+  }, fallbackUser: string) {
     token.value = resp.token
-    username.value = resp.username || user
+    username.value = resp.username || fallbackUser
     userId.value = resp.user_id || null
     isPlatformAdmin.value = !!resp.is_platform_admin
     localStorage.setItem('buz_token', resp.token)
-    localStorage.setItem('buz_username', username.value || user)
+    localStorage.setItem('buz_username', username.value || fallbackUser)
     if (resp.user_id) localStorage.setItem('buz_user_id', resp.user_id)
     localStorage.setItem('buz_is_admin', isPlatformAdmin.value ? '1' : '0')
     await fetchMe()
+  }
+
+  async function login(user: string, pass: string) {
+    const resp = await authApi.login(user, pass)
+    await applySession(resp, user)
+  }
+
+  async function completeSetup(user: string, pass: string) {
+    const resp = await authApi.setup(user, pass)
+    const { markSetupComplete } = await import('@/router')
+    markSetupComplete()
+    await applySession(resp, user)
   }
 
   async function fetchMe() {
@@ -122,6 +138,7 @@ export const useAuthStore = defineStore('auth', () => {
     setActiveTeamId,
     matchesActiveTeam,
     login,
+    completeSetup,
     fetchMe,
     logout,
   }

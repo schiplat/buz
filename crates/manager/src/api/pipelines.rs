@@ -225,7 +225,8 @@ pub async fn get_one(
 
     let tasks = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_labels, command_template, image,
-                work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets, privileged
+                work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
+                privileged, registry_secret
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&id)
@@ -251,6 +252,7 @@ pub async fn get_one(
             ).unwrap_or(serde_json::Value::Array(vec![])),
             "step_secrets": t.get::<String, _>(13),
             "privileged": t.get::<i64, _>(14) != 0,
+            "registry_secret": t.get::<String, _>(15),
         })
     })
     .collect::<Vec<_>>();
@@ -571,7 +573,8 @@ pub(crate) async fn do_trigger(
     // reproducible even if the pipeline is later modified or deleted.
     let tasks_snapshot = sqlx::query(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
-                image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes, privileged
+                image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes,
+                privileged, registry_secret
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(pipeline_id)
@@ -597,6 +600,7 @@ pub(crate) async fn do_trigger(
                 &t.get::<String, _>(13),
             ).unwrap_or(serde_json::Value::Array(vec![])),
             "privileged": t.get::<i64, _>(14) != 0,
+            "registry_secret": t.get::<String, _>(15),
         })
     })
     .collect::<Vec<_>>();
@@ -827,10 +831,19 @@ pub(crate) async fn insert_steps(
 
         let privileged_val = if step.privileged.unwrap_or(false) { 1i64 } else { 0i64 };
 
+        let registry_secret_stored = step
+            .registry_secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("")
+            .to_string();
+
         sqlx::query(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
-             command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes, privileged)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
+             volumes, privileged, registry_secret)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(pipeline_id)
@@ -849,6 +862,7 @@ pub(crate) async fn insert_steps(
         .bind(&step_secrets_stored)
         .bind(&volumes_stored)
         .bind(privileged_val)
+        .bind(&registry_secret_stored)
         .execute(pool)
         .await?;
 

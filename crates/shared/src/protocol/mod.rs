@@ -51,6 +51,18 @@ pub struct LoginResponse {
     pub is_platform_admin: Option<bool>,
 }
 
+/// First-boot admin creation (only when `users` table is empty).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetupAdminRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetupStatusResponse {
+    pub needs_setup: bool,
+}
+
 /// Authenticated user changes their own password.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChangePasswordRequest {
@@ -111,6 +123,8 @@ pub struct UpsertTeamMemberRequest {
 pub struct RegisterRequest {
     pub name: String,
     pub register_token: String,
+    /// Deprecated: labels are UI-managed. Ignored by Manager on register.
+    #[serde(default)]
     pub labels: Vec<String>,
     pub version: Option<String>,
 }
@@ -119,6 +133,9 @@ pub struct RegisterRequest {
 pub struct RegisterResponse {
     pub runner_id: String,
     pub token: String,
+    /// UI-managed policy snapshot (concurrency, engines, cleanup).
+    #[serde(default)]
+    pub policy: RunnerPolicyConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -126,6 +143,62 @@ pub struct HeartbeatRequest {
     pub status: String,
     #[serde(default)]
     pub system_info: Option<SystemInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HeartbeatResponse {
+    /// UI-managed policy snapshot.
+    #[serde(default)]
+    pub policy: RunnerPolicyConfig,
+}
+
+/// Runner strategy settings controlled from Manager UI (not machine-local paths).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunnerPolicyConfig {
+    #[serde(default = "default_max_concurrent_jobs")]
+    pub max_concurrent_jobs: u32,
+    #[serde(default)]
+    pub clean_workspace_after_job: bool,
+    #[serde(default)]
+    pub ephemeral: bool,
+    #[serde(default = "default_true")]
+    pub shell_enabled: bool,
+    #[serde(default = "default_true")]
+    pub ssh_enabled: bool,
+    #[serde(default)]
+    pub docker_enabled: bool,
+    #[serde(default)]
+    pub wasm_enabled: bool,
+    /// `insecure` | `known_hosts`
+    #[serde(default = "default_ssh_host_key_policy")]
+    pub ssh_host_key_policy: String,
+}
+
+impl Default for RunnerPolicyConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_jobs: 1,
+            clean_workspace_after_job: false,
+            ephemeral: false,
+            shell_enabled: true,
+            ssh_enabled: true,
+            docker_enabled: false,
+            wasm_enabled: false,
+            ssh_host_key_policy: default_ssh_host_key_policy(),
+        }
+    }
+}
+
+fn default_max_concurrent_jobs() -> u32 {
+    1
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_ssh_host_key_policy() -> String {
+    "insecure".into()
 }
 
 /// Hardware / OS information collected by the Runner and reported to the Center.
@@ -164,6 +237,24 @@ pub struct CreateRunnerRequest {
     pub name: String,
     pub labels: Option<Vec<String>>,
     pub version: Option<String>,
+    /// Max parallel jobs (1..=32). Defaults to 1 when omitted.
+    #[serde(default)]
+    pub max_concurrent_jobs: Option<u32>,
+    #[serde(default)]
+    pub clean_workspace_after_job: Option<bool>,
+    #[serde(default)]
+    pub ephemeral: Option<bool>,
+    #[serde(default)]
+    pub shell_enabled: Option<bool>,
+    #[serde(default)]
+    pub ssh_enabled: Option<bool>,
+    #[serde(default)]
+    pub docker_enabled: Option<bool>,
+    #[serde(default)]
+    pub wasm_enabled: Option<bool>,
+    /// `insecure` | `known_hosts`
+    #[serde(default)]
+    pub ssh_host_key_policy: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -171,6 +262,19 @@ pub struct CreateRunnerResponse {
     pub id: String,
     pub name: String,
     pub register_token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateRunnerRequest {
+    pub labels: Option<Vec<String>>,
+    pub max_concurrent_jobs: Option<u32>,
+    pub clean_workspace_after_job: Option<bool>,
+    pub ephemeral: Option<bool>,
+    pub shell_enabled: Option<bool>,
+    pub ssh_enabled: Option<bool>,
+    pub docker_enabled: Option<bool>,
+    pub wasm_enabled: Option<bool>,
+    pub ssh_host_key_policy: Option<String>,
 }
 
 // --- Job ---
@@ -299,6 +403,32 @@ pub struct UpdateHostRequest {
     pub team_id: Option<String>,
 }
 
+/// Probe SSH connectivity using form values and/or a stored host credential.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TestHostRequest {
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    pub username: String,
+    #[serde(default)]
+    pub credential_type: Option<String>,
+    /// Private key or password. When empty and `host_id` is set, stored ciphertext is used.
+    #[serde(default)]
+    pub credential_data: Option<String>,
+    #[serde(default)]
+    pub credential_passphrase: Option<String>,
+    /// Optional existing host — decrypt stored credentials when form fields are blank.
+    #[serde(default)]
+    pub host_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TestHostResponse {
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub message: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StepDef {
     pub name: String,
@@ -328,6 +458,9 @@ pub struct StepDef {
     /// Required for Docker-in-Docker. Has host-escaping security implications.
     #[serde(default)]
     pub privileged: Option<bool>,
+    /// Manager Secret name whose JSON value holds registry credentials for `docker login`.
+    #[serde(default)]
+    pub registry_secret: Option<String>,
 }
 
 // --- Secrets ---

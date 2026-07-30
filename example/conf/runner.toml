@@ -1,34 +1,20 @@
-# Buz Runner Configuration
+# Buz Runner — machine-local config only
+#
+# Strategy (labels, concurrency, engines, cleanup, ephemeral, ssh_host_key_policy)
+# is configured in Manager UI → Runners and applied via register / heartbeat.
+# See docs: Runner Policy (UI-managed).
 
 [manager]
-# Use https:// when the Manager has TLS enabled
 url = "http://127.0.0.1:8080"
-# Get this token from Buz Manager web UI → Runners → New Runner
-# Do not commit real tokens — replace locally after creating a runner.
-register_token = "your-register-token"
-
-# ── TLS (required when Manager uses HTTPS) ──
-# Set to true only if the Manager uses a self-signed certificate.
-# In production, use a CA-signed certificate and keep this false.
-# tls_skip_verify = false
+# From Manager UI → Runners → New Runner (do not commit real tokens)
+register_token = "b5c8fb3a-c231-40b6-bd2a-4f475490ef8a"
+# tls_skip_verify = true   # only for self-signed Manager HTTPS in labs
 
 [runner]
-name = "demo-n1"
-labels = ["macos-armx64"]
+# Must match the Runner name created in the UI
+name = "macos-kit-01"
 workspace_dir = "/tmp/buz-runner"
-# Multi-NIC: IPs from these interfaces appear first in Manager Runners UI.
-# When empty, prefer IPs on the same subnet as manager.url.
-# prefer_interfaces = ["enp26s0"]
-
-# ── Ephemeral / workspace cleanup ──
-# clean_workspace_after_job = true   # wipe workspace_dir after each job (shared runners)
-# ephemeral = true                   # wipe workspace_dir AND exit after one job (container/VM runners)
+# prefer_interfaces = ["enp26s0"]   # multi-NIC: prefer these IPs in UI
 
 [engine]
-shell_enabled = true
-ssh_enabled = true
-docker_enabled = true   # set true to accept uses: docker steps (see docs/docker-engine)
-wasm_enabled = false
-# Host key policy: "insecure" (default, accept any) or "known_hosts"
-# ssh_host_key_policy = "known_hosts"
-# ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"  # default: ~/.ssh/known_hosts
+# ssh_known_hosts_path = "~/.ssh/known_hosts"   # when UI policy is known_hosts
