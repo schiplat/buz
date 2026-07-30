@@ -1,0 +1,94 @@
+# ── DinD CI Pipeline ───────────────────────────────────────────
+# Docker-in-Docker: build, tag, and push a container image inside
+# an isolated docker:dind container with --privileged.
+#
+# Each step runs inside a fresh docker:dind container with its own
+# Docker daemon — no host daemon sharing, no docker.sock mount.
+#
+# Security: privileged containers can escape to the host via nsenter
+# or kernel exploits. Only use this pipeline on disposable runner VMs.
+#
+# Requires: runner with `engine.docker_enabled = true` and
+# labels that include "docker" and "dind".
+
+name: CI Build and Push
+description: Build a Docker image with DinD, push to registry, then deploy via SSH.
+
+team: default
+
+on:
+  manual:
+    inputs:
+      version:
+        description: Version tag for the image
+        required: true
+      target:
+        description: Target host label for deployment
+        required: false
+        default: staging
+
+runner:
+  labels: [linux-x64, docker, dind]
+  timeout: 30m
+
+env:
+  REGISTRY: registry.example.com
+  NAMESPACE: apps
+  IMAGE_NAME: my-service
+
+secrets:
+  - DOCKER_REGISTRY_USER
+  - DOCKER_REGISTRY_PASS
+
+  # │   DESIGN NOTE: DinD login sharing                          │
+  # │   Each uses: docker step is a fresh ephemeral container     │
+  # │   (docker run --rm). The inner dockerd and login state are  │
+  # │   destroyed when the step ends. Therefore build, login, and │
+  # │   push must happen in a SINGLE step — they cannot be split. │
+
+steps:
+  # ── Step 1: Login + Build + Push ──────────────────────────────
+  # Single step: starts inner daemon, logs in, builds, pushes.
+  # All three must share one container because DinD daemon state
+  # cannot persist across steps.
+  - name: Build and Push
+    uses: docker
+    image: docker:27-dind
+    privileged: true
+    run: |
+      echo "Starting inner Docker daemon..."
+      dockerd &
+      sleep 3
+      echo "Logging in to registry..."
+      docker login -u "$DOCKER_REGISTRY_USER" -p "$DOCKER_REGISTRY_PASS" "$REGISTRY"
+      echo "Building $REGISTRY/$NAMESPACE/$IMAGE_NAME:$version"
+      docker build -t "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$version" .
+      echo "Pushing to registry..."
+      docker push "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$version"
+      docker logout "$REGISTRY"
+      echo "Done."
+    timeout: 20m
+
+  # ── Step 2: Deploy via SSH to target host ───────────────────────
+  - name: Deploy
+    uses: ssh
+    host: $target
+    run: |
+      docker pull "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$version"
+      docker stop my-service || true
+      docker rm my-service || true
+      docker run -d --name my-service \
+        --restart always \
+        -p 3000:3000 \
+        "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$version"
+    timeout: 5m
+
+  # ── Step 3: Health check ────────────────────────────────────────
+  - name: Health Check
+    uses: ssh
+    host: $target
+    run: |
+      sleep 3
+      curl -f http://localhost:3000/health && echo "OK" || echo "HEALTH_CHECK_FAILED"
+    continue-on-error: true
+    timeout: 30s

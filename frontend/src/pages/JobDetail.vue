@@ -242,8 +242,32 @@ function initSingleTerminal(stepOrder: number) {
   term.open(el)
   fitAddon.fit()
 
+  const chunks = stepLogs.value.get(stepOrder) || []
+  const hasEcho = chunks.some(c => c.content.startsWith('==> RUN'))
+
   const seen = new Set<string>()
-  for (const chunk of stepLogs.value.get(stepOrder) || []) {
+
+  // Fallback: synthesize echo header from snapshot if the DB echo chunk is missing
+  if (!hasEcho && job.value?.snapshot) {
+    const task = job.value.snapshot.tasks.find(t => Number(t.step_order) === stepOrder)
+    if (task) {
+      const parts = [`==> RUN [${task.exec_type}]`]
+      parts.push('note: GIT_TERMINAL_PROMPT=0 (noninteractive) — interactive prompts will cause failure')
+      if (task.work_dir) parts.push(`cwd: ${task.work_dir}`)
+      const envVars = job.value.snapshot.env || []
+      if (envVars.length > 0) {
+        const items = envVars.map(e => e.is_secret ? `${e.name}=***` : `${e.name}`)
+        parts.push(`env: [${items.join(', ')}]`)
+      }
+      parts.push(`cmd: ${task.command_template}`)
+      const fallbackEcho = parts.join('\n') + '\n'
+      const ts = '--:--:--'
+      term.write(`\x1b[2m[${ts}]\x1b[0m ${fallbackEcho.replace(/\n/g, '\r\n')}`)
+      seen.add(fallbackEcho)
+    }
+  }
+
+  for (const chunk of chunks) {
     const ts = formatLogClock(chunk.created_at, nowTimeStr())
     term.write(`\x1b[2m[${ts}]\x1b[0m ${chunk.content.replace(/\n/g, '\r\n')}`)
     seen.add(chunk.content)
@@ -422,7 +446,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
       <button class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors" @click="router.push('/pipelines/' + (job?.pipeline_id || '') + '/history')">
         <ArrowLeft class="h-4 w-4" />
       </button>
-      <PageHeader :title="`Job ${jobId.slice(0, 8)}...`" :description="job?.pipeline_name || 'Loading...'">
+      <PageHeader :title="`Job ${jobId}`" :description="job?.pipeline_name || 'Loading...'">
         <template #actions>
           <UiButton v-if="job?.status === 'running' || job?.status === 'pending'" variant="outline" size="sm" class="border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs px-3 py-1.5" @click="handleCancel">
             <XCircle class="h-3.5 w-3.5" /> Cancel

@@ -39,6 +39,7 @@ pub async fn execute_streaming(
     extra_env: Option<&HashMap<String, String>>,
 ) -> anyhow::Result<(Child, mpsc::UnboundedReceiver<String>, ReadGuard)> {
     let mut cmd = build_command(command, work_dir, extra_env);
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
@@ -84,7 +85,7 @@ fn build_command(
         c
     } else {
         let mut c = Command::new("sh");
-        c.args(["-c", command]);
+        c.args(["-e", "-c", command]);
         c
     };
 
@@ -94,7 +95,11 @@ fn build_command(
 
     if let Some(env_map) = extra_env {
         for (k, v) in env_map {
-            cmd.env(format!("INPUT_{}", k.to_uppercase()), v);
+            // Set the original env var (e.g. GIT_TERMINAL_PROMPT=0)
+            cmd.env(k, v);
+            // Also export as INPUT_* for trigger-style referencing
+            let input_key = format!("INPUT_{}", k.to_uppercase());
+            cmd.env(input_key, v);
         }
     }
 

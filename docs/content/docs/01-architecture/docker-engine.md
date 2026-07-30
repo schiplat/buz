@@ -39,6 +39,148 @@ Reference model: [GitHub Actions job `container`](https://docs.github.com/en/act
 
 ---
 
+## Docker-in-Docker (DinD) & Building Container Images
+
+When a pipeline needs to **build, push, or manage Docker images** inside a step (e.g. `docker build`, `docker push`, `docker compose`), the step needs access to a Docker daemon. This is the "Docker-in-Docker" (DinD) problem.
+
+### How GitHub Actions Solves It
+
+GitHub Actions uses **privileged-mode DinD**: each runner pod starts with a `docker:dind` sidecar container granted `--privileged`. This gives the sidecar the **same kernel capabilities as the host**, meaning:
+
+- The inner Docker daemon can create containers, manage volumes, and use host networking.
+- A compromised job can escape to the host via `nsenter` or kernel exploits.
+- **Mitigation**: GitHub runs actions on **disposable, isolated VMs** — each job gets a fresh environment destroyed after completion.
+
+The security model is: "the runner VM is sacrificial, never shared across teams or tenants."
+
+### Three Approaches (Ranked by Security)
+
+| Approach | How It Works | Security | Use Case |
+|---|---|---|---|
+| **1. Docker socket mount** | `-v /var/run/docker.sock:/var/run/docker.sock` | **🔴 Root-equivalent to host** — container controls host daemon | Fastest; trusted internal CI only |
+| **2. Privileged DinD** | `docker run --privileged docker:dind` as sidecar | **🟡 Can escape host** via `nsenter`; limited by disposable runner | GitHub Actions style; requires VM-level isolation |
+| **3. Daemonless builders** | Run `kaniko` / `buildah` in an unprivileged container | **🟢 No daemon access needed**; builds to registry | Production CI/CD; recommended for public repos |
+
+### Recommended: Option 2 — Privileged DinD with Disposable Runners
+
+This aligns with GitHub Actions' approach and is the pragmatic choice for most CI/CD pipelines.
+
+**Prerequisites:**
+1. The runner VM must have Docker installed on the host.
+2. The runner VM must be **dedicated and disposable** (not shared with other workloads).
+3. The runner config must enable DinD.
+
+**Step 1: Enable DinD in runner config**
+
+```toml
+# runner.toml
+
+[runner]
+name = "ci-builder-01"
+labels = ["linux-x64", "docker", "dind"]
+workspace_dir = "/tmp/buz-runner"
+
+[engine]
+shell_enabled = true
+docker_enabled = true
+dind_enabled = true            # enables privileged docker:dind sidecar
+```
+
+**Step 2: Pipeline YAML with `image: docker:dind`**
+
+```yaml
+name: Build and Push
+description: Build a Docker image and push to registry
+
+on: manual
+
+runner:
+  labels: [linux-x64, docker, dind]
+
+env:
+  REGISTRY: registry.example.com
+  IMAGE_NAME: my-app
+
+steps:
+  # Step 1: Build the image (runs inside docker:dind)
+  - name: Build
+    uses: docker
+    image: docker:27-dind
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # share host daemon
+    run: |
+      docker build -t $REGISTRY/$IMAGE_NAME:$BUILD_NUMBER .
+    timeout: 10m
+
+  # Step 2: Push to registry
+  - name: Push
+    uses: docker
+    image: docker:27-dind
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    run: |
+      docker push $REGISTRY/$IMAGE_NAME:$BUILD_NUMBER
+    timeout: 5m
+```
+
+**Step 3 (Alternative): True nested DinD without socket sharing**
+
+```yaml
+  - name: Build
+    uses: docker
+    image: docker:27-dind
+    privileged: true                                   # future: --privileged flag
+    run: |
+      dockerd &                                        # start inner daemon
+      sleep 3
+      docker build -t $REGISTRY/$IMAGE_NAME:$BUILD_NUMBER .
+    timeout: 10m
+```
+
+### Option 3 (Advanced): Daemonless Builds with Kaniko
+
+For production environments where runner VM isolation isn't guaranteed:
+
+```yaml
+  - name: Build
+    uses: docker
+    image: gcr.io/kaniko-project/executor:latest
+    volumes:
+      - /path/to/docker-config.json:/kaniko/.docker/config.json:ro
+    run: |
+      /kaniko/executor \
+        --context $CI_PROJECT_DIR \
+        --destination $REGISTRY/$IMAGE_NAME:$BUILD_NUMBER
+    timeout: 10m
+```
+
+No Docker daemon, no privileged mode, no socket sharing. Builds go directly to the registry.
+
+### Security Summary
+
+```
+┌────────────────────────────────────────────────────┐
+│ Socket mount  →  Host daemon exposed               │  "just for CI" is NOT safe
+│ Privileged    →  nsenter escape possible            │  Safe ONLY with disposable runners
+│ Daemonless    →  No daemon, no escape vector        │  Recommended for production
+└────────────────────────────────────────────────────┘
+```
+
+> **Warning**: Mounting `/var/run/docker.sock` into a container gives that container **root-equivalent control of the host**. Any `RUN` step in a Dockerfile, any `npm install` script, or any build tool with shell access can create privileged containers on the host machine. Only use socket mounting on **dedicated, isolated runner VMs** where a compromise is acceptable.
+
+### Current MVP Status
+
+As of the Docker engine MVP:
+
+- ✅ `volumes` support allows mounting `/var/run/docker.sock` — **user opt-in**.
+- ◻ `privileged: true` on steps is deferred (not yet implemented).
+- ◻ `dind_enabled` config gate is deferred.
+- ◻ Kaniko example is documented but not yet tested E2E.
+
+The path to full DinD support requires the `privileged` flag on step declarations (`crates/shared/src/pipeline_yaml.rs`) and the `--privileged` argument in `crates/runner/src/engine/docker.rs`.
+
+---
+
 ## Mental Model
 
 ```

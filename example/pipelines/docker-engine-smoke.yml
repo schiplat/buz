@@ -38,6 +38,11 @@ steps:
       cat /etc/os-release | head -3
       echo "workspace ok" > /buz/workspace/smoke.txt
       cat /buz/workspace/smoke.txt
+      pwd
+      cd /
+      pwd
+      ls -la
+      echo "workspace ok" > /var/log/app/smoke.txt
       sleep 3
       echo "waiting .... $INPUT_VERSION" > /var/log/app/res.txt
       sleep 5

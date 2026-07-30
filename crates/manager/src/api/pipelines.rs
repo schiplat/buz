@@ -32,7 +32,8 @@ pub async fn list(
                 j.id as latest_job_id, j.status as latest_job_status,
                 j.start_time as latest_job_start,
                 COALESCE(js.job_total, 0) as job_total,
-                COALESCE(js.job_success, 0) as job_success
+                COALESCE(js.job_success, 0) as job_success,
+                p.concurrency_mode, p.concurrency_max_queue, p.concurrency_queue_timeout_seconds
          FROM pipelines p
          LEFT JOIN (
              SELECT pipeline_id, MAX(created_at) as max_created
@@ -95,6 +96,9 @@ pub async fn list(
                 "job_total": job_total,
                 "job_success": job_success,
                 "success_rate": job_success_rate(job_success, job_total),
+                "concurrency_mode": r.get::<Option<String>, _>(19),
+                "concurrency_max_queue": r.get::<Option<i64>, _>(20),
+                "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(21),
             })
         })
         .collect();
@@ -123,8 +127,10 @@ pub async fn create(
 
     sqlx::query(
         "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path, cron_expr,
-         runner_labels, timeout_seconds, concurrency_group, owner_group, team_id, input_defs, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+         runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
+         concurrency_max_queue, concurrency_queue_timeout_seconds,
+         owner_group, team_id, input_defs, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(&pipeline_id)
     .bind(&req.name)
@@ -135,6 +141,9 @@ pub async fn create(
     .bind(&labels_json)
     .bind(req.timeout_seconds.unwrap_or(3600))
     .bind(&req.concurrency_group)
+    .bind(req.concurrency_mode.as_deref().unwrap_or(""))
+    .bind(req.concurrency_max_queue.unwrap_or(3))
+    .bind(req.concurrency_queue_timeout_seconds.unwrap_or(1800))
     .bind(&owner_group)
     .bind(&team_id)
     .bind(&input_defs_json)
@@ -186,7 +195,8 @@ pub async fn get_one(
     let r = sqlx::query(
         "SELECT id, name, description, trigger_type, webhook_path, cron_expr,
                 runner_labels, timeout_seconds, source, input_defs, concurrency_group, is_active,
-                owner_group, team_id, created_at, updated_at
+                owner_group, team_id, created_at, updated_at,
+                concurrency_mode, concurrency_max_queue, concurrency_queue_timeout_seconds
          FROM pipelines WHERE id = ?",
     )
     .bind(&id)
@@ -215,7 +225,7 @@ pub async fn get_one(
 
     let tasks = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_labels, command_template, image,
-                work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets
+                work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets, privileged
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&id)
@@ -240,6 +250,7 @@ pub async fn get_one(
                 &t.get::<String, _>(12),
             ).unwrap_or(serde_json::Value::Array(vec![])),
             "step_secrets": t.get::<String, _>(13),
+            "privileged": t.get::<i64, _>(14) != 0,
         })
     })
     .collect::<Vec<_>>();
@@ -263,6 +274,9 @@ pub async fn get_one(
         "var_ids": var_ids,
         "created_at": r.get::<Option<String>, _>(14),
         "updated_at": r.get::<Option<String>, _>(15),
+        "concurrency_mode": r.get::<Option<String>, _>(16),
+        "concurrency_max_queue": r.get::<Option<i64>, _>(17),
+        "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(18),
         "tasks": tasks,
     }))))
 }
@@ -302,6 +316,7 @@ pub async fn update(
     let result = sqlx::query(
         "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?, webhook_path = ?,
          cron_expr = ?, runner_labels = ?, timeout_seconds = ?, concurrency_group = ?,
+         concurrency_mode = ?, concurrency_max_queue = ?, concurrency_queue_timeout_seconds = ?,
          owner_group = ?, team_id = ?, input_defs = ?, updated_at = datetime('now')
          WHERE id = ?",
     )
@@ -313,6 +328,9 @@ pub async fn update(
     .bind(&labels_json)
     .bind(req.timeout_seconds.unwrap_or(3600))
     .bind(&req.concurrency_group)
+    .bind(req.concurrency_mode.as_deref().unwrap_or(""))
+    .bind(req.concurrency_max_queue.unwrap_or(3))
+    .bind(req.concurrency_queue_timeout_seconds.unwrap_or(1800))
     .bind(&owner_group)
     .bind(&team_id)
     .bind(&input_defs_json)
@@ -445,43 +463,115 @@ pub(crate) async fn do_trigger(
     inputs: &std::collections::HashMap<String, String>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let pipeline = sqlx::query(
-        "SELECT id, name, runner_labels, concurrency_group FROM pipelines WHERE id = ? AND is_active = 1",
+        "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
+                concurrency_max_queue, concurrency_queue_timeout_seconds
+         FROM pipelines WHERE id = ? AND is_active = 1",
     )
     .bind(pipeline_id)
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("pipeline not found or inactive".into()))?;
 
-    // Concurrency check: if any job is pending/running for this pipeline with a concurrency group set
     let concurrency_group: Option<String> = pipeline.get(3);
-    if let Some(ref group) = concurrency_group {
-        if !group.is_empty() {
-            let running = sqlx::query(
-                "SELECT COUNT(*) as cnt FROM jobs WHERE pipeline_id = ? AND status IN ('pending', 'running')",
-            )
-            .bind(pipeline_id)
-            .fetch_one(&state.pool)
-            .await?;
+    let concurrency_mode: String = pipeline.get(4);
+    let concurrency_max_queue: i64 = pipeline.get(5);
+    let _concurrency_queue_timeout: i64 = pipeline.get(6);
 
-            let count: i64 = running.get(0);
-            if count > 0 {
-                return Err(AppError::Conflict(format!(
-                    "concurrency group '{group}' has {count} active job(s)"
-                )));
+    // ── Concurrency logic ──
+    let job_status: &str = if let Some(ref group) = concurrency_group {
+        if group.is_empty() {
+            "pending"
+        } else {
+            let mode = if concurrency_mode.is_empty() {
+                // Old pipeline: concurrency_group string without mode → discard-new
+                "discard-new"
+            } else {
+                &concurrency_mode
+            };
+
+            match mode {
+                "discard-new" => {
+                    let running = sqlx::query(
+                        "SELECT COUNT(*) as cnt FROM jobs
+                         WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued')",
+                    )
+                    .bind(pipeline_id)
+                    .fetch_one(&state.pool)
+                    .await?;
+                    let count: i64 = running.get(0);
+                    if count > 0 {
+                        return Err(AppError::Conflict(format!(
+                            "concurrency group '{group}' has {count} active/queued job(s)"
+                        )));
+                    }
+                    "pending"
+                }
+
+                "discard-old" => {
+                    // Cancel all queued jobs in this group
+                    sqlx::query(
+                        "UPDATE jobs SET status = 'cancelled', updated_at = datetime('now')
+                         WHERE pipeline_id = ? AND status = 'queued'",
+                    )
+                    .bind(pipeline_id)
+                    .execute(&state.pool)
+                    .await?;
+                    "pending"
+                }
+
+                "queue" => {
+                    // Check queue depth
+                    let queued_count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM jobs
+                         WHERE pipeline_id = ? AND status = 'queued'",
+                    )
+                    .bind(pipeline_id)
+                    .fetch_one(&state.pool)
+                    .await?;
+
+                    if queued_count >= concurrency_max_queue {
+                        return Err(AppError::Conflict(format!(
+                            "queue full: {queued_count} jobs already queued (max {concurrency_max_queue})"
+                        )));
+                    }
+
+                    // Check if any job is running — if not, dispatch immediately
+                    let running_count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM jobs
+                         WHERE pipeline_id = ? AND status IN ('pending', 'running')",
+                    )
+                    .bind(pipeline_id)
+                    .fetch_one(&state.pool)
+                    .await?;
+
+                    if running_count == 0 {
+                        "pending"
+                    } else {
+                        "queued"
+                    }
+                }
+
+                _ => {
+                    return Err(AppError::ValidationFailed(format!(
+                        "unknown concurrency mode '{mode}'"
+                    )));
+                }
             }
         }
-    }
+    } else {
+        "pending"
+    };
 
+    // ── Freeze snapshot ──
     let job_id = Uuid::new_v4().to_string();
     let pipeline_name: String = pipeline.get(1);
     let runner_labels: String = pipeline.get(2);
 
-    // ── Freeze snapshot ──
     // Capture the full pipeline definition so historical runs are
     // reproducible even if the pipeline is later modified or deleted.
     let tasks_snapshot = sqlx::query(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
-                image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes
+                image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes, privileged
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(pipeline_id)
@@ -506,6 +596,7 @@ pub(crate) async fn do_trigger(
             "volumes": serde_json::from_str::<serde_json::Value>(
                 &t.get::<String, _>(13),
             ).unwrap_or(serde_json::Value::Array(vec![])),
+            "privileged": t.get::<i64, _>(14) != 0,
         })
     })
     .collect::<Vec<_>>();
@@ -555,10 +646,11 @@ pub(crate) async fn do_trigger(
 
     sqlx::query(
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot, created_at, updated_at)
-         VALUES (?, ?, 'pending', ?, ?, ?, datetime('now'), datetime('now'))",
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
     )
     .bind(&job_id)
     .bind(pipeline_id)
+    .bind(job_status)
     .bind(triggered_by)
     .bind(&trigger_params_json)
     .bind(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
@@ -571,7 +663,7 @@ pub(crate) async fn do_trigger(
         "job_id": job_id,
         "pipeline_id": pipeline_id,
         "pipeline_name": pipeline_name,
-        "status": "pending",
+        "status": job_status,
     }))))
 }
 
@@ -733,10 +825,12 @@ pub(crate) async fn insert_steps(
             .map(|v| serde_json::to_string(v).unwrap_or_default())
             .unwrap_or_default();
 
+        let privileged_val = if step.privileged.unwrap_or(false) { 1i64 } else { 0i64 };
+
         sqlx::query(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
-             command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes, privileged)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(pipeline_id)
@@ -754,6 +848,7 @@ pub(crate) async fn insert_steps(
         .bind(&fail_strategy)
         .bind(&step_secrets_stored)
         .bind(&volumes_stored)
+        .bind(privileged_val)
         .execute(pool)
         .await?;
 

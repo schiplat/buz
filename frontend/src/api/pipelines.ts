@@ -8,6 +8,9 @@ export interface Pipeline {
   runner_labels: string[]
   timeout_seconds: number
   concurrency_group: string | null
+  concurrency_mode: string | null
+  concurrency_max_queue: number | null
+  concurrency_queue_timeout_seconds: number | null
   source: string
   input_defs: PipelineInputDef[] | null
   is_active: boolean
@@ -36,6 +39,9 @@ export interface CreatePipelinePayload {
   runner_labels: string[]
   timeout_seconds?: number
   concurrency_group?: string
+  concurrency_mode?: string
+  concurrency_max_queue?: number
+  concurrency_queue_timeout_seconds?: number
   owner_group?: string
   team_id?: string
   var_ids?: string[]
@@ -67,6 +73,8 @@ export interface StepDef {
   continue_on_error?: boolean
   /** Step-level secret names (resolved to values at runtime). */
   secrets?: string[]
+  /** Run the Docker container in privileged mode (DinD). */
+  privileged?: boolean
 }
 
 export interface YamlValidationResult {
@@ -83,6 +91,7 @@ export interface YamlParsedData {
   trigger_config?: YamlTriggerConfig | null
   runner?: YamlRunnerConfig | null
   concurrency?: string | null
+  concurrency_config?: YamlConcurrencyConfig | null
   env?: Record<string, string> | null
   variables?: string[] | null
   secrets?: string[] | null
@@ -107,6 +116,13 @@ export interface YamlRunnerConfig {
   timeout?: string | null
 }
 
+export interface YamlConcurrencyConfig {
+  group: string
+  mode?: string | null
+  max_queue?: number | null
+  queue_timeout?: string | null
+}
+
 export interface YamlStepData {
   name?: string | null
   run?: string | null
@@ -121,6 +137,8 @@ export interface YamlStepData {
   retry?: number | null
   continue_on_error?: boolean | null
   secrets?: string[] | null
+  /** Privileged mode for docker engine steps. */
+  privileged?: boolean | null
 }
 
 export interface YamlValidationError {

@@ -82,6 +82,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await;
 
+    // Add privileged column to tasks table (safe to fail if already present)
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN privileged INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+
     // Add input_defs column to pipelines table (safe to fail if already present)
     let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN input_defs TEXT NOT NULL DEFAULT '[]'")
         .execute(pool)
@@ -301,6 +306,35 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_hosts_team ON hosts(team_id)")
         .execute(pool)
         .await;
+
+    // ── Concurrency queue mode (Phase 7) ──
+    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN concurrency_mode TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
+
+    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN concurrency_max_queue INTEGER NOT NULL DEFAULT 3")
+        .execute(pool)
+        .await;
+
+    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN concurrency_queue_timeout_seconds INTEGER NOT NULL DEFAULT 1800")
+        .execute(pool)
+        .await;
+
+    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN queue_position INTEGER")
+        .execute(pool)
+        .await;
+
+    // ── Scheduler leader-lease table (single-row singleton) ──
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS scheduler_lease (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            instance_id TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     tracing::info!("Database migrations applied successfully");
     Ok(())

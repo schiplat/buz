@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive, watch } from 'vue'
+import { ref, computed, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
@@ -10,9 +10,11 @@ import { secretsApi } from '@/api/secrets'
 import { variablesApi } from '@/api/variables'
 import { teamsApi, type Team } from '@/api/teams'
 import { cn } from '@/lib/utils'
-import UiPagination from '@/components/ui/UiPagination.vue'
+import TablePagination from '@/components/ui/TablePagination.vue'
 import MultiSelect from '@/components/ui/MultiSelect.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useClientSort } from '@/composables/useClientSort'
+import { useClientPagination } from '@/composables/useClientPagination'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -30,19 +32,52 @@ function ensureTeamId(): string {
   return auth.soleTeamId
 }
 
-const pipelinePage = ref(1)
-const pageSize = 15
+const searchQuery = ref('')
+const filterTrigger = ref('')
+const filterSource = ref('')
+const filterActive = ref('')
 
-const filteredPipelines = computed(() =>
-  pipelines.value.filter((p) => auth.matchesActiveTeam(p.team_id)),
-)
-
-const pagedPipelines = computed(() => {
-  const start = (pipelinePage.value - 1) * pageSize
-  return filteredPipelines.value.slice(start, start + pageSize)
+const filteredPipelines = computed(() => {
+  let source = pipelines.value.filter((p) => auth.matchesActiveTeam(p.team_id))
+  if (filterTrigger.value) source = source.filter((p) => p.trigger_type === filterTrigger.value)
+  if (filterSource.value) source = source.filter((p) => p.source === filterSource.value)
+  if (filterActive.value) source = source.filter((p) => (filterActive.value === 'active' ? p.is_active : !p.is_active))
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return source
+  return source.filter((p) => {
+    return [
+      p.name,
+      p.description,
+      p.trigger_type,
+      ...(p.runner_labels || []),
+      p.latest_job_status,
+      p.concurrency_group,
+      p.owner_group,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(q)
+  })
 })
 
-watch(() => auth.activeTeamId, () => { pipelinePage.value = 1 })
+const { sorted, toggleSort, sortIndicator } = useClientSort(filteredPipelines, {
+  initialKey: 'last_build',
+  initialDir: 'desc',
+  getValue: (row, key) => {
+    switch (key) {
+      case 'name': return row.name
+      case 'trigger_type': return row.trigger_type
+      case 'last_build': return row.latest_job_start || ''
+      case 'success_rate': return row.success_rate ?? -1
+      case 'job_total': return row.job_total ?? 0
+      case 'is_active': return row.is_active ? 1 : 0
+      default: return ''
+    }
+  },
+})
+
+const { page, pageSize, pageCount, total, pageItems: pagedPipelines, rangeLabel } = useClientPagination(sorted)
 
 /** Format build success rate: successful jobs ÷ total jobs. */
 function formatSuccessRate(p: Pipeline): string {
@@ -69,6 +104,9 @@ const form = ref({
   runner_labels: 'linux-x64',
   runner_timeout: '',
   concurrency_group: '',
+  concurrency_mode: '',
+  concurrency_max_queue: 3,
+  concurrency_queue_timeout_seconds: 1800,
   owner_group: '',
   team_id: '',
   var_ids: [] as string[],
@@ -152,7 +190,6 @@ async function loadPipelines() {
   loading.value = true
   try {
     pipelines.value = await pipelinesApi.list()
-    pipelinePage.value = 1
   } catch (e) {
     console.error(e)
   } finally {
@@ -164,7 +201,7 @@ function openCreate() {
   editingId.value = null
   dialogMode.value = 'form'
   dialogTitle.value = 'New Pipeline'
-  form.value = { name: '', description: '', trigger_type: 'manual', webhook_path: genRandomPath(), cron_expr: '', runner_labels: 'linux-x64', runner_timeout: '', concurrency_group: '', owner_group: '', team_id: auth.preferredTeamId, var_ids: [], secret_ids: [], env: [], steps: [], input_defs: [] }
+  form.value = { name: '', description: '', trigger_type: 'manual', webhook_path: genRandomPath(), cron_expr: '', runner_labels: 'linux-x64', runner_timeout: '', concurrency_group: '', concurrency_mode: '', concurrency_max_queue: 3, concurrency_queue_timeout_seconds: 1800, owner_group: '', team_id: auth.preferredTeamId, var_ids: [], secret_ids: [], env: [], steps: [], input_defs: [] }
   yamlContent.value = ''
   yamlResult.value = null
   yamlImportWarnings.value = []
@@ -197,6 +234,9 @@ async function openEdit(p: Pipeline) {
       runner_labels: (detail.runner_labels || []).join(', '),
       runner_timeout: detail.timeout_seconds ? `${detail.timeout_seconds}s` : '',
       concurrency_group: detail.concurrency_group || '',
+      concurrency_mode: detail.concurrency_mode || '',
+      concurrency_max_queue: detail.concurrency_max_queue ?? 3,
+      concurrency_queue_timeout_seconds: detail.concurrency_queue_timeout_seconds ?? 1800,
       owner_group: detail.owner_group || '',
       team_id: detail.team_id || '',
       var_ids: detail.var_ids || [],
@@ -215,6 +255,7 @@ async function openEdit(p: Pipeline) {
         timeout: t.timeout_seconds ? `${t.timeout_seconds}s` : undefined,
         retry: t.retry_count || undefined,
         continue_on_error: t.fail_strategy === 'continue' ? true : undefined,
+        privileged: (t as any).privileged === true ? true : undefined,
       })),
       input_defs: detail.input_defs || [],
     }
@@ -277,6 +318,7 @@ function toggleStep(idx: number) {
 /** Check whether the pipeline-level form has any advanced field filled (for auto-expand). */
 const pipelineFormHasAdvanced = computed(() => {
   return !!(form.value.runner_timeout.trim() || form.value.concurrency_group.trim() ||
+    form.value.concurrency_mode ||
     form.value.var_ids.length > 0 || form.value.secret_ids.length > 0 ||
     form.value.env.length > 0 || form.value.input_defs.length > 0)
 })
@@ -378,6 +420,9 @@ function importYamlToForm() {
       runner_labels: (parsed.runner?.labels || []).join(', ') || 'linux-x64',
       runner_timeout: parsed.runner?.timeout || '',
       concurrency_group: parsed.concurrency || '',
+      concurrency_mode: parsed.concurrency_config?.mode ?? '',
+      concurrency_max_queue: parsed.concurrency_config?.max_queue ?? 3,
+      concurrency_queue_timeout_seconds: 1800,
       owner_group: '',
       team_id: auth.preferredTeamId,
       var_ids: resolvedVarIds,
@@ -400,6 +445,7 @@ function importYamlToForm() {
         timeout: s.timeout || undefined,
         retry: s.retry || undefined,
         continue_on_error: s.continue_on_error || undefined,
+        privileged: s.privileged || undefined,
       })),
       input_defs: (parsed.trigger_config?.inputs || []).map(inp => ({
         name: inp.name || '',
@@ -458,6 +504,9 @@ async function handleSave() {
       runner_labels: labels,
       timeout_seconds,
       concurrency_group: form.value.concurrency_group.trim() || undefined,
+      concurrency_mode: form.value.concurrency_group.trim() ? (form.value.concurrency_mode || undefined) : undefined,
+      concurrency_max_queue: form.value.concurrency_mode === 'queue' ? form.value.concurrency_max_queue : undefined,
+      concurrency_queue_timeout_seconds: form.value.concurrency_mode === 'queue' ? form.value.concurrency_queue_timeout_seconds : undefined,
       team_id: form.value.team_id,
       var_ids: form.value.var_ids.length > 0 ? form.value.var_ids : undefined,
       secret_ids: form.value.secret_ids.length > 0 ? form.value.secret_ids : undefined,
@@ -473,6 +522,7 @@ async function handleSave() {
           ...s,
           image: isDocker ? (s.image || '').trim() || undefined : undefined,
           volumes: volumesArray,
+          privileged: isDocker ? (s as any).privileged === true || undefined : undefined,
           host: isDocker
             ? undefined
             : rawHost
@@ -595,16 +645,70 @@ async function handleToggleActive(p: Pipeline) {
         {{ pipelines.length === 0 ? 'No pipelines created yet' : 'No pipelines in the selected team' }}
       </div>
 
-      <div v-else class="surface-card data-table-scroll">
+      <div v-else class="surface-card overflow-hidden">
+        <!-- Filter bar -->
+        <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="Search pipelines…"
+            class="w-full max-w-52 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+          />
+          <select v-model="filterTrigger" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+            <option value="">All triggers</option>
+            <option value="manual">Manual</option>
+            <option value="webhook">Webhook</option>
+            <option value="cron">Cron</option>
+          </select>
+          <select v-model="filterSource" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+            <option value="">All sources</option>
+            <option value="form">Form</option>
+            <option value="yaml">YAML</option>
+          </select>
+          <select v-model="filterActive" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+            <option value="">All</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+          <span v-if="filteredPipelines.length !== pipelines.length" class="text-[10px] text-muted-foreground ml-auto">
+            {{ filteredPipelines.length }} of {{ pipelines.length }}
+          </span>
+        </div>
+        <div class="overflow-x-auto">
         <table class="data-table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Trigger</th>
+              <th>
+                <button type="button" class="inline-flex items-center gap-1 hover:text-foreground transition-colors" @click="toggleSort('name')">
+                  Name
+                  <span class="font-mono text-xs opacity-50">{{ sortIndicator('name') || '↕' }}</span>
+                </button>
+              </th>
+              <th>
+                <button type="button" class="inline-flex items-center gap-1 hover:text-foreground transition-colors" @click="toggleSort('trigger_type')">
+                  Trigger
+                  <span class="font-mono text-xs opacity-50">{{ sortIndicator('trigger_type') || '↕' }}</span>
+                </button>
+              </th>
               <th>R-Labels</th>
-              <th>Last Build</th>
-              <th title="Successful jobs ÷ total builds">Rate</th>
-              <th>Active</th>
+              <th>
+                <button type="button" class="inline-flex items-center gap-1 hover:text-foreground transition-colors" @click="toggleSort('last_build')">
+                  Last Build
+                  <span class="font-mono text-xs opacity-50">{{ sortIndicator('last_build') || '↕' }}</span>
+                </button>
+              </th>
+              <th>
+                <button type="button" class="inline-flex items-center gap-1 hover:text-foreground transition-colors" @click="toggleSort('success_rate')" title="Successful jobs ÷ total builds">
+                  Rate
+                  <span class="font-mono text-xs opacity-50">{{ sortIndicator('success_rate') || '↕' }}</span>
+                </button>
+              </th>
+              <th>
+                <button type="button" class="inline-flex items-center gap-1 hover:text-foreground transition-colors" @click="toggleSort('is_active')">
+                  Active
+                  <span class="font-mono text-xs opacity-50">{{ sortIndicator('is_active') || '↕' }}</span>
+                </button>
+              </th>
               <th class="text-right">Actions</th>
             </tr>
           </thead>
@@ -709,7 +813,8 @@ async function handleToggleActive(p: Pipeline) {
             </tr>
           </tbody>
         </table>
-        <UiPagination v-model:page="pipelinePage" :total="filteredPipelines.length" :page-size="pageSize" />
+        </div>
+        <TablePagination v-model:page="page" v-model:pageSize="pageSize" :total="total" :page-count="pageCount" :range-label="rangeLabel" />
       </div>
     </template>
 
@@ -1064,6 +1169,21 @@ async function handleToggleActive(p: Pipeline) {
                         <p class="text-[10px] text-muted-foreground/70 mt-1">Map host paths into the container. All host paths must exist on the runner.</p>
                       </div>
 
+                      <div v-if="step.uses === 'docker'" class="mb-3">
+                        <label class="flex items-start gap-2 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            v-model="(step as any).privileged"
+                            class="mt-0.5 h-4 w-4 rounded border-border accent-red-500"
+                          />
+                          <div>
+                            <span class="text-xs font-medium text-foreground">Privileged mode</span>
+                            <span class="ml-1 px-1 py-0.5 text-[10px] uppercase tracking-wider rounded bg-red-500/10 text-red-600 font-semibold">Security</span>
+                            <p class="text-[10px] text-muted-foreground/70 mt-0.5">Required for Docker-in-Docker (docker:dind). Grants full host capabilities — only use on disposable runner VMs.</p>
+                          </div>
+                        </label>
+                      </div>
+
                       <div>
                         <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Command <span class="text-red-500">*</span></label>
                         <textarea
@@ -1196,6 +1316,37 @@ async function handleToggleActive(p: Pipeline) {
                       type="text"
                       placeholder="e.g. prod"
                       class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                    />
+                  </div>
+                  <div v-if="form.concurrency_group">
+                    <label class="type-label block mb-1.5">Concurrency Mode</label>
+                    <select
+                      v-model="form.concurrency_mode"
+                      class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                    >
+                      <option value="">discard-old (default)</option>
+                      <option value="queue">queue</option>
+                      <option value="discard-new">discard-new</option>
+                    </select>
+                  </div>
+                  <div v-if="form.concurrency_group && form.concurrency_mode === 'queue'">
+                    <label class="type-label block mb-1.5">Max Queue</label>
+                    <input
+                      v-model.number="form.concurrency_max_queue"
+                      type="number"
+                      min="1"
+                      max="100"
+                      class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                    />
+                  </div>
+                  <div v-if="form.concurrency_group && form.concurrency_mode === 'queue'">
+                    <label class="type-label block mb-1.5">Queue Timeout (seconds)</label>
+                    <input
+                      v-model.number="form.concurrency_queue_timeout_seconds"
+                      type="number"
+                      min="60"
+                      class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                      placeholder="1800"
                     />
                   </div>
                 </div>
@@ -1502,8 +1653,22 @@ runner:
   labels: [linux-x64]
   timeout: 60m
 
-# ── Concurrency ──
-concurrency: prod
+# ── Concurrency ── (mode defaults to discard-old)
+# Default — omit mode entirely (equivalent to discard-old):
+concurrency:
+  group: prod
+
+# Queue mode — jobs wait in FIFO queue until runner is free:
+# concurrency:
+#   group: prod
+#   mode: queue
+#   max_queue: 5
+#   queue_timeout: 30m
+
+# Discard-new — reject new triggers while a job is active:
+# concurrency:
+#   group: prod
+#   mode: discard-new
 
 # ── Pipeline-level env vars (non-sensitive, inline key-value) ──
 env:

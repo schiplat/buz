@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::time;
 use uuid::Uuid;
 
-use shared::pipeline_yaml::{parse_and_validate, PipelineYaml, TriggerYaml};
+use shared::pipeline_yaml::{parse_and_validate, ConcurrencyDef, PipelineYaml, TriggerYaml, default_concurrency_mode};
 use shared::protocol::{EnvPair, PipelineInputDef, StepDef};
 
 use crate::api::{
@@ -118,7 +118,22 @@ async fn upsert_from_yaml(
         })
         .unwrap_or(3600);
 
-    let concurrency_group = parsed.concurrency.clone();
+    let concurrency_group: Option<String> = parsed.concurrency.as_ref().map(|c| match c {
+        ConcurrencyDef::Simple(s) => s.clone(),
+        ConcurrencyDef::Full(f) => f.group.clone(),
+    });
+    let concurrency_mode = parsed.concurrency.as_ref().and_then(|c| match c {
+        ConcurrencyDef::Full(f) if f.mode != default_concurrency_mode() => Some(f.mode.clone()),
+        _ => None,
+    });
+    let concurrency_max_queue = parsed.concurrency.as_ref().and_then(|c| match c {
+        ConcurrencyDef::Full(f) if f.max_queue != 3 => Some(f.max_queue),
+        _ => None,
+    });
+    let concurrency_queue_timeout = parsed.concurrency.as_ref().and_then(|c| match c {
+        ConcurrencyDef::Full(f) => f.queue_timeout.clone(),
+        _ => None,
+    });
 
     // Resolve team: YAML `team:` / `owner_group:` slug → team_id (fallback: default)
     let team_slug = parsed
@@ -145,6 +160,7 @@ async fn upsert_from_yaml(
             retry: s.retry,
             continue_on_error: s.continue_on_error,
             secrets: s.secrets.clone(),
+            privileged: s.privileged,
         })
         .collect();
 
@@ -167,7 +183,9 @@ async fn upsert_from_yaml(
         sqlx::query(
             "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?,
              webhook_path = ?, cron_expr = ?, runner_labels = ?, timeout_seconds = ?,
-             concurrency_group = ?, owner_group = ?, team_id = ?, input_defs = ?, is_active = 1,
+             concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
+             concurrency_queue_timeout_seconds = ?,
+             owner_group = ?, team_id = ?, input_defs = ?, is_active = 1,
              updated_at = datetime('now')
              WHERE id = ?",
         )
@@ -179,6 +197,9 @@ async fn upsert_from_yaml(
         .bind(&labels_json)
         .bind(timeout_seconds)
         .bind(&concurrency_group)
+        .bind(concurrency_mode.as_deref().unwrap_or(""))
+        .bind(concurrency_max_queue.map(|v| v as i64).unwrap_or(3))
+        .bind(parse_concurrency_timeout_seconds(concurrency_queue_timeout.as_deref()))
         .bind(&resolved_slug)
         .bind(&team_id)
         .bind(&input_defs_json)
@@ -261,9 +282,10 @@ async fn upsert_from_yaml(
 
         sqlx::query(
             "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path,
-             cron_expr, runner_labels, timeout_seconds, concurrency_group, owner_group, team_id,
-             source, yaml_path, input_defs, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, 1)",
+             cron_expr, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
+             concurrency_max_queue, concurrency_queue_timeout_seconds,
+             owner_group, team_id, source, yaml_path, input_defs, is_active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, 1)",
         )
         .bind(&id)
         .bind(pipeline_name)
@@ -274,6 +296,9 @@ async fn upsert_from_yaml(
         .bind(&labels_json)
         .bind(timeout_seconds)
         .bind(&concurrency_group)
+        .bind(concurrency_mode.as_deref().unwrap_or(""))
+        .bind(concurrency_max_queue.map(|v| v as i64).unwrap_or(3))
+        .bind(parse_concurrency_timeout_seconds(concurrency_queue_timeout.as_deref()))
         .bind(&resolved_slug)
         .bind(&team_id)
         .bind(file_path)
@@ -437,4 +462,18 @@ fn extract_trigger(
     }
 
     ("manual".into(), None, None, vec![])
+}
+
+fn parse_concurrency_timeout_seconds(raw: Option<&str>) -> i64 {
+    raw.and_then(|s| {
+        let s = s.trim();
+        if s.ends_with('m') {
+            s[..s.len() - 1].parse::<i64>().ok().map(|v| v * 60)
+        } else if s.ends_with('h') {
+            s[..s.len() - 1].parse::<i64>().ok().map(|v| v * 3600)
+        } else {
+            s.parse::<i64>().ok()
+        }
+    })
+    .unwrap_or(1800)
 }

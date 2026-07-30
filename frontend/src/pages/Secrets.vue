@@ -1,30 +1,51 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
-import UiPagination from '@/components/ui/UiPagination.vue'
+import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, Pencil, Trash2, Shield } from '@lucide/vue'
 import { secretsApi, type Secret } from '@/api/secrets'
 import { teamsApi, type Team } from '@/api/teams'
 import { useAuthStore } from '@/stores/auth'
+import { useClientSort } from '@/composables/useClientSort'
+import { useClientPagination } from '@/composables/useClientPagination'
 
 const auth = useAuthStore()
 const secrets = ref<Secret[]>([])
 const teams = ref<Team[]>([])
 const loading = ref(true)
-const secretPage = ref(1)
-const pageSize = 15
+const searchQuery = ref('')
+const filterTeam = ref('')
 
-const filteredSecrets = computed(() =>
-  secrets.value.filter((s) => auth.matchesActiveTeam(s.team_id)),
-)
-
-const paged = computed(() => {
-  const start = (secretPage.value - 1) * pageSize
-  return filteredSecrets.value.slice(start, start + pageSize)
+const filteredSecrets = computed(() => {
+  let source = secrets.value.filter((s) => auth.matchesActiveTeam(s.team_id))
+  if (filterTeam.value) source = source.filter((s) => s.team_id === filterTeam.value)
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return source
+  return source.filter((s) => {
+    const teamName = teams.value.find(t => t.id === s.team_id)?.name || s.team_id || ''
+    return [s.name, s.value, s.owner_group, teamName].filter(Boolean).join(' ').toLowerCase().includes(q)
+  })
 })
 
-watch(() => auth.activeTeamId, () => { secretPage.value = 1 })
+const { sorted, toggleSort, sortIndicator } = useClientSort(filteredSecrets, {
+  initialKey: 'name',
+  initialDir: 'asc',
+  getValue: (row, key) => {
+    switch (key) {
+      case 'name': return row.name
+      case 'value': return row.value
+      case 'team': {
+        const t = teams.value.find(x => x.id === row.team_id)
+        return t ? t.name : (row.team_id || '')
+      }
+      case 'updated_at': return row.updated_at || ''
+      default: return ''
+    }
+  },
+})
+
+const { page, pageSize, pageCount, total, pageItems, rangeLabel } = useClientPagination(sorted)
 
 // ── Create / Edit dialog ──
 const showDialog = ref(false)
@@ -113,38 +134,74 @@ onMounted(loadSecrets)
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
     <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
-      <div v-if="filteredSecrets.length > 0" class="overflow-x-auto">
-        <table class="w-full text-[13px]">
-          <thead>
-            <tr class="border-b border-border/30 bg-muted/10">
-              <th class="text-left px-5 py-2.5 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">Name</th>
-              <th class="text-left px-5 py-2.5 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">Value</th>
-              <th class="text-left px-5 py-2.5 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">Team</th>
-              <th class="text-left px-5 py-2.5 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">Updated</th>
-              <th class="text-right px-5 py-2.5 w-20" />
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-border/20">
-            <tr v-for="s in paged" :key="s.id" class="hover:bg-muted/5 transition-colors">
-              <td class="px-5 py-3 font-mono text-sm font-semibold whitespace-nowrap">{{ s.name }}</td>
-              <td class="px-5 py-3">
-                <code class="mono-chip text-xs select-all">{{ s.value }}</code>
-              </td>
-              <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.owner_group || s.team_id || '—' }}</td>
-              <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.updated_at?.slice(0, 10) || '—' }}</td>
-              <td class="px-5 py-3 text-right whitespace-nowrap">
-                <div class="flex items-center justify-end gap-1">
-                  <UiButton variant="ghost" size="sm" @click="openEdit(s)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
-                  <UiButton variant="ghost" size="sm" @click="handleDelete(s)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <div class="px-5 py-2 border-t border-border/20">
-          <UiPagination v-model:page="secretPage" :total="filteredSecrets.length" :page-size="pageSize" />
-        </div>
+      <!-- Filter bar -->
+      <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="Search secrets…"
+          class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+        />
+        <select v-model="filterTeam" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+          <option value="">All teams</option>
+          <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }}</option>
+        </select>
+        <span v-if="filteredSecrets.length !== secrets.length" class="text-[10px] text-muted-foreground ml-auto">
+          {{ filteredSecrets.length }} of {{ secrets.length }}
+        </span>
       </div>
+      <template v-if="filteredSecrets.length > 0">
+        <div class="overflow-x-auto">
+          <table class="w-full text-[13px]">
+            <thead>
+              <tr class="border-b border-border/30 bg-muted/10">
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
+                    Name
+                    <span class="font-mono text-xs">{{ sortIndicator('name') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('value')">
+                    Value
+                    <span class="font-mono text-xs">{{ sortIndicator('value') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('team')">
+                    Team
+                    <span class="font-mono text-xs">{{ sortIndicator('team') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('updated_at')">
+                    Updated
+                    <span class="font-mono text-xs">{{ sortIndicator('updated_at') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-right px-5 py-2.5 w-20" />
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-border/20">
+              <tr v-for="s in pageItems" :key="s.id" class="hover:bg-muted/5 transition-colors">
+                <td class="px-5 py-3 font-mono text-sm font-semibold whitespace-nowrap">{{ s.name }}</td>
+                <td class="px-5 py-3">
+                  <code class="mono-chip text-xs select-all">{{ s.value }}</code>
+                </td>
+                <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.owner_group || s.team_id || '—' }}</td>
+                <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.updated_at?.slice(0, 10) || '—' }}</td>
+                <td class="px-5 py-3 text-right whitespace-nowrap">
+                  <div class="flex items-center justify-end gap-1">
+                    <UiButton variant="ghost" size="sm" @click="openEdit(s)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
+                    <UiButton variant="ghost" size="sm" @click="handleDelete(s)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <TablePagination v-model:page="page" v-model:pageSize="pageSize" :total="total" :page-count="pageCount" :range-label="rangeLabel" />
+      </template>
       <div v-else class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <Shield class="h-10 w-10 mb-3 text-muted-foreground/20" />
         <p class="text-sm">{{ secrets.length === 0 ? 'No secrets configured yet' : 'No secrets in the selected team' }}</p>

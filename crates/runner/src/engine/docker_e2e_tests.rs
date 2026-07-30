@@ -43,9 +43,10 @@ async fn run_and_collect(
     command: &str,
     env: &HashMap<String, String>,
     container_work_dir: Option<&str>,
+    privileged: bool,
 ) -> anyhow::Result<(i32, String)> {
     let (mut child, rx, guard) =
-        execute_streaming(image, runner_workspace_dir, command, env, &[], container_work_dir).await?;
+        execute_streaming(image, runner_workspace_dir, command, env, &[], container_work_dir, privileged).await?;
     let status = child.wait().await?;
     drop(guard);
     let logs = drain_logs(rx).await;
@@ -81,6 +82,7 @@ async fn docker_e2e_runs_inside_alpine_not_host() {
         "cat /etc/os-release && echo BUZ_MARKER_OK",
         &HashMap::new(),
         None,
+        false,
     )
     .await
     .expect("docker run");
@@ -108,6 +110,7 @@ async fn docker_e2e_workspace_mount_and_cwd() {
         ),
         &HashMap::new(),
         None,
+        false,
     )
     .await
     .expect("docker run");
@@ -138,6 +141,7 @@ async fn docker_e2e_env_injection() {
         "echo \"VAR=$BUZ_E2E_VAR INPUT=$INPUT_BUZ_E2E_VAR\"",
         &env,
         None,
+        false,
     )
     .await
     .expect("docker run");
@@ -154,7 +158,7 @@ async fn docker_e2e_nonzero_exit_fails() {
     assert!(docker_available().await);
 
     let dir = tempdir().unwrap();
-    let (code, logs) = run_and_collect("alpine:3.20", dir.path(), "exit 42", &HashMap::new(), None)
+    let (code, logs) = run_and_collect("alpine:3.20", dir.path(), "exit 42", &HashMap::new(), None, false)
         .await
         .expect("docker run");
 
@@ -174,6 +178,7 @@ async fn docker_e2e_rm_does_not_grow_container_list() {
         &HashMap::new(),
         &[],
         None,
+        false,
     );
     assert!(args.iter().any(|a| a == "--rm"));
 
@@ -188,7 +193,7 @@ async fn docker_e2e_rm_does_not_grow_container_list() {
         .filter(|l| !l.is_empty())
         .count();
 
-    let (code, logs) = run_and_collect("alpine:3.20", dir.path(), "echo done", &HashMap::new(), None)
+    let (code, logs) = run_and_collect("alpine:3.20", dir.path(), "echo done", &HashMap::new(), None, false)
         .await
         .expect("docker run");
     assert_eq!(code, 0, "logs:\n{logs}");
@@ -223,6 +228,7 @@ async fn docker_e2e_kill_stops_container() {
         &HashMap::new(),
         &[],
         None,
+        false,
     )
     .await
     .expect("spawn");

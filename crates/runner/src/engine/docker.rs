@@ -29,15 +29,20 @@ pub fn build_docker_run_args(
     env: &HashMap<String, String>,
     volumes: &[String],
     container_work_dir: Option<&str>,
+    privileged: bool,
 ) -> Vec<String> {
     let mut args = vec![
         "run".into(),
         "--rm".into(),
-        "-i".into(),
-        "-v".into(),
-        format!("{runner_workspace_dir}:{CONTAINER_WORKSPACE}"),
-        "-w".into(),
     ];
+
+    if privileged {
+        args.push("--privileged".into());
+    }
+
+    args.push("-v".into());
+    args.push(format!("{runner_workspace_dir}:{CONTAINER_WORKSPACE}"));
+    args.push("-w".into());
 
     let wd = match container_work_dir.map(str::trim).filter(|s| !s.is_empty()) {
         Some(rel) => format!("{CONTAINER_WORKSPACE}/{rel}"),
@@ -67,7 +72,7 @@ pub fn build_docker_run_args(
 
     args.push(image.into());
     args.push("sh".into());
-    args.push("-lc".into());
+    args.push("-elc".into());
     args.push(command.into());
     args
 }
@@ -95,6 +100,8 @@ pub fn preflight(docker_enabled: bool, image: &str) -> anyhow::Result<()> {
 ///
 /// `container_work_dir` — optional subdirectory inside the container workspace
 /// to use as the working directory (e.g. `frontend` → `--workdir /buz/workspace/frontend`).
+///
+/// `privileged` — when true, adds `--privileged` to the container (required for Docker-in-Docker).
 pub async fn execute_streaming(
     image: &str,
     runner_workspace_dir: &Path,
@@ -102,6 +109,7 @@ pub async fn execute_streaming(
     env: &HashMap<String, String>,
     volumes: &[String],
     container_work_dir: Option<&str>,
+    privileged: bool,
 ) -> anyhow::Result<(Child, mpsc::UnboundedReceiver<String>, ReadGuard)> {
     std::fs::create_dir_all(runner_workspace_dir).map_err(|e| {
         anyhow::anyhow!(
@@ -118,9 +126,11 @@ pub async fn execute_streaming(
         env,
         volumes,
         container_work_dir,
+        privileged,
     );
     let mut cmd = Command::new("docker");
     cmd.args(&args);
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 

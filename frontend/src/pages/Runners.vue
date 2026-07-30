@@ -3,20 +3,56 @@ import { ref, computed, onMounted } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Snowflake, Trash2, ScrollText } from '@lucide/vue'
+import TablePagination from '@/components/ui/TablePagination.vue'
+import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText } from '@lucide/vue'
 import { runnersApi, type Runner } from '@/api/runners'
-import UiPagination from '@/components/ui/UiPagination.vue'
+import { useClientSort } from '@/composables/useClientSort'
+import { useClientPagination } from '@/composables/useClientPagination'
 
 const runners = ref<Runner[]>([])
 const loading = ref(true)
+const searchQuery = ref('')
+const filterStatus = ref('')
+const filterFrozen = ref('')
 
-const runnerPage = ref(1)
-const pageSize = 15
-
-const pagedRunners = computed(() => {
-  const start = (runnerPage.value - 1) * pageSize
-  return runners.value.slice(start, start + pageSize)
+const filteredRunners = computed(() => {
+  let source = runners.value
+  if (filterStatus.value) source = source.filter((r) => r.status === filterStatus.value)
+  if (filterFrozen.value) source = source.filter((r) => (filterFrozen.value === 'frozen' ? r.is_frozen : !r.is_frozen))
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return source
+  return source.filter((r) => {
+    return [
+      r.name,
+      r.system_info?.hostname,
+      ...(r.system_info?.ip_addresses || []),
+      ...(r.labels || []),
+      r.status,
+      r.version,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(q)
+  })
 })
+
+const { sorted, toggleSort, sortIndicator } = useClientSort(filteredRunners, {
+  initialKey: 'name',
+  initialDir: 'asc',
+  getValue: (row, key) => {
+    switch (key) {
+      case 'name': return row.name
+      case 'hostname': return row.system_info?.hostname || ''
+      case 'status': return row.status
+      case 'version': return row.version || ''
+      case 'last_seen': return row.last_seen || ''
+      default: return ''
+    }
+  },
+})
+
+const { page: runnerPage, pageSize, pageCount, total, pageItems: pagedRunners, rangeLabel } = useClientPagination(sorted)
 
 // Create dialog
 const showCreate = ref(false)
@@ -35,7 +71,7 @@ onMounted(async () => { await loadRunners() })
 
 async function loadRunners() {
   loading.value = true
-  try { runners.value = await runnersApi.list(); runnerPage.value = 1 } catch (e) { console.error(e) }
+  try { runners.value = await runnersApi.list() } catch (e) { console.error(e) }
   finally { loading.value = false }
 }
 
@@ -142,31 +178,84 @@ const eventBadge = (t: string) => {
       </template>
     </PageHeader>
 
-    <div class="surface-card overflow-hidden">
-      <div v-if="loading" class="px-4 py-10 text-center type-meta">Loading...</div>
+    <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+      <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
 
       <template v-else-if="runners.length > 0">
-        <div class="data-table-scroll">
-          <table class="data-table">
+        <!-- Filter bar -->
+        <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="Search runners…"
+            class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+          />
+          <select v-model="filterStatus" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+            <option value="">All statuses</option>
+            <option value="online">Online</option>
+            <option value="offline">Offline</option>
+            <option value="error">Error</option>
+          </select>
+          <select v-model="filterFrozen" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+            <option value="">All</option>
+            <option value="frozen">Frozen</option>
+            <option value="active">Active</option>
+          </select>
+          <span v-if="filteredRunners.length !== runners.length" class="text-[10px] text-muted-foreground ml-auto">
+            {{ filteredRunners.length }} of {{ runners.length }}
+          </span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-[13px]">
             <thead>
-              <tr>
-                <th>Name</th><th>Hostname</th><th>IP</th><th>Labels</th>
-                <th>Status</th><th>Version</th><th>Last Seen</th>
-                <th class="text-right">Actions</th>
+              <tr class="border-b border-border/30 bg-muted/10">
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
+                    Name
+                    <span class="font-mono text-xs">{{ sortIndicator('name') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('hostname')">
+                    Hostname
+                    <span class="font-mono text-xs">{{ sortIndicator('hostname') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">IP</th>
+                <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Labels</th>
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('status')">
+                    Status
+                    <span class="font-mono text-xs">{{ sortIndicator('status') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('version')">
+                    Version
+                    <span class="font-mono text-xs">{{ sortIndicator('version') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('last_seen')">
+                    Last Seen
+                    <span class="font-mono text-xs">{{ sortIndicator('last_seen') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-right px-5 py-2.5 w-20" />
               </tr>
             </thead>
-            <tbody>
-              <tr v-for="r in pagedRunners" :key="r.id">
-                <td class="font-medium text-primary cursor-pointer hover:underline" @click="openDetail(r)">{{ r.name }}
+            <tbody class="divide-y divide-border/20">
+              <tr v-for="r in pagedRunners" :key="r.id" class="hover:bg-muted/5 transition-colors">
+                <td class="px-5 py-3 font-mono text-sm font-semibold text-primary cursor-pointer hover:underline whitespace-nowrap" @click="openDetail(r)">{{ r.name }}
                   <span v-if="r.is_frozen" class="ml-1.5 text-[10px] text-sky-500 font-normal">(frozen)</span>
                 </td>
-                <td class="font-mono text-xs text-muted-foreground">{{ r.system_info?.hostname || '—' }}</td>
-                <td class="font-mono text-xs text-muted-foreground">{{ r.system_info?.ip_addresses?.[0] || '—' }}</td>
-                <td><span v-for="l in r.labels" :key="l" class="mono-chip mr-1">{{ l }}</span></td>
-                <td><StatusBadge :status="r.status" /></td>
-                <td class="font-mono text-xs text-muted-foreground">{{ r.version || '—' }}</td>
-                <td class="text-xs text-muted-foreground">{{ r.last_seen || '—' }}</td>
-                <td class="text-right">
+                <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ r.system_info?.hostname || '—' }}</td>
+                <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ r.system_info?.ip_addresses?.[0] || '—' }}</td>
+                <td class="px-5 py-3"><span v-for="l in r.labels" :key="l" class="mono-chip mr-1">{{ l }}</span></td>
+                <td class="px-5 py-3"><StatusBadge :status="r.status" /></td>
+                <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ r.version || '—' }}</td>
+                <td class="px-5 py-3 text-xs text-muted-foreground">{{ r.last_seen || '—' }}</td>
+                <td class="px-5 py-3 text-right">
                   <div class="flex items-center justify-end gap-1">
                     <UiButton variant="ghost" size="sm" @click="handleToggleFreeze(r)" :title="r.is_frozen ? 'Unfreeze' : 'Freeze'">
                       <Snowflake class="h-3.5 w-3.5" :class="r.is_frozen ? 'text-sky-500' : 'text-muted-foreground'" />
@@ -179,10 +268,14 @@ const eventBadge = (t: string) => {
               </tr>
             </tbody>
           </table>
-          <UiPagination v-model:page="runnerPage" :total="runners.length" :page-size="pageSize" />
         </div>
+        <TablePagination v-model:page="runnerPage" v-model:pageSize="pageSize" :total="total" :page-count="pageCount" :range-label="rangeLabel" />
       </template>
-      <div v-else class="px-4 py-10 text-center type-meta">No runners registered yet</div>
+      <div v-else class="flex flex-col items-center justify-center py-16 text-muted-foreground">
+        <Server class="h-10 w-10 mb-3 text-muted-foreground/20" />
+        <p class="text-sm">No runners registered yet</p>
+        <p class="text-xs mt-1 text-muted-foreground/60">Register a runner with the token shown in the creation dialog.</p>
+      </div>
     </div>
 
     <!-- ── Right-side detail drawer ── -->

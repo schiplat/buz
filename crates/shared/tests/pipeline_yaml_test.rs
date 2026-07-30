@@ -109,7 +109,8 @@ on:
         description: Version to deploy
         required: true
         default: latest
-concurrency: deploy-prod
+concurrency:
+  group: deploy-prod
 runner:
   labels: [prod, linux-x64]
   timeout: 60m
@@ -301,4 +302,166 @@ steps:
         "Errors: {:?}",
         r.errors
     );
+}
+
+#[test]
+fn docker_step_with_privileged_valid() {
+    let yaml = r#"
+name: privileged-docker
+steps:
+  - name: dind
+    uses: docker
+    image: docker:27-dind
+    privileged: true
+    run: dockerd &
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+}
+
+#[test]
+fn non_docker_step_with_privileged_rejected() {
+    let yaml = r#"
+name: bad-privileged
+steps:
+  - name: shell-step
+    uses: shell
+    privileged: true
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.message.contains("privileged")),
+        "Errors: {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn concurrency_legacy_string_format() {
+    let yaml = r#"
+name: legacy-concurrency
+concurrency: deploy-prod
+steps:
+  - name: hello
+    run: echo hi
+"#;
+    let parsed: shared::pipeline_yaml::PipelineYaml =
+        serde_yaml::from_str(yaml).expect("parse legacy concurrency");
+    match parsed.concurrency {
+        Some(shared::pipeline_yaml::ConcurrencyDef::Simple(g)) => {
+            assert_eq!(g, "deploy-prod");
+        }
+        _ => panic!("expected Simple concurrency"),
+    }
+}
+
+#[test]
+fn concurrency_block_with_explicit_mode() {
+    let yaml = r#"
+name: queue-concurrency
+concurrency:
+  group: dind-build
+  mode: queue
+  max_queue: 5
+  queue_timeout: 10m
+steps:
+  - name: build
+    run: docker build .
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    let parsed = r.parsed.unwrap();
+    assert_eq!(parsed.concurrency.as_deref(), Some("dind-build"));
+    let cc = parsed.concurrency_config.unwrap();
+    assert_eq!(cc.group, "dind-build");
+    assert_eq!(cc.mode.as_deref(), Some("queue"));
+    assert_eq!(cc.max_queue, Some(5));
+    assert_eq!(cc.queue_timeout.as_deref(), Some("10m"));
+}
+
+#[test]
+fn concurrency_block_defaults_to_discard_old() {
+    let yaml = r#"
+name: default-concurrency
+concurrency:
+  group: ci-build
+steps:
+  - name: test
+    run: cargo test
+"#;
+    let parsed: shared::pipeline_yaml::PipelineYaml =
+        serde_yaml::from_str(yaml).expect("parse default concurrency");
+    match parsed.concurrency {
+        Some(shared::pipeline_yaml::ConcurrencyDef::Full(fc)) => {
+            assert_eq!(fc.group, "ci-build");
+            assert_eq!(fc.mode, "discard-old", "mode should default to discard-old");
+        }
+        _ => panic!("expected Full concurrency block"),
+    }
+}
+
+#[test]
+fn concurrency_invalid_mode_rejected() {
+    let yaml = r#"
+name: bad-mode
+concurrency:
+  group: test
+  mode: unknown-mode
+steps:
+  - name: hi
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.field == "concurrency.mode"),
+        "Errors: {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn concurrency_full_example_with_block_format() {
+    let yaml = r#"
+name: CI Pipeline
+description: Build with queue
+concurrency:
+  group: ci-linux
+on:
+  manual:
+    inputs:
+      version:
+        description: Version tag
+        required: true
+runner:
+  labels: [linux-x64, docker]
+  timeout: 30m
+env:
+  APP_NAME: myservice
+variables:
+  - BUILD_CACHE_DIR
+secrets:
+  - DOCKER_PASSWORD
+steps:
+  - name: checkout
+    run: git pull origin main
+  - name: build
+    run: docker build -t ${APP_NAME} .
+    timeout: 10m
+  - name: deploy
+    uses: ssh
+    host: prod-01
+    run: docker-compose up -d
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    assert!(r.parsed.is_some());
+    let parsed = r.parsed.unwrap();
+    assert_eq!(parsed.concurrency.as_deref(), Some("ci-linux"));
+    assert!(parsed.concurrency_config.is_some());
+    assert_eq!(parsed.concurrency_config.unwrap().group, "ci-linux");
 }

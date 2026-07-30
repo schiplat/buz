@@ -205,6 +205,15 @@ pub struct CreatePipelineRequest {
     pub runner_labels: Vec<String>,
     pub timeout_seconds: Option<i32>,
     pub concurrency_group: Option<String>,
+    /// Concurrency mode: queue | discard-old | discard-new. Default is discard-old.
+    #[serde(default)]
+    pub concurrency_mode: Option<String>,
+    /// Max queued jobs (only for mode=queue). Default 3.
+    #[serde(default)]
+    pub concurrency_max_queue: Option<i32>,
+    /// Queue timeout seconds. Default 1800 (30 minutes).
+    #[serde(default)]
+    pub concurrency_queue_timeout_seconds: Option<i32>,
     #[serde(default)]
     pub owner_group: Option<String>,
     /// Team that owns this pipeline (required in Phase 2).
@@ -315,6 +324,10 @@ pub struct StepDef {
     /// Step-level secret names — scoped only to this step
     #[serde(default)]
     pub secrets: Option<Vec<String>>,
+    /// Run container in privileged mode (docker engine only).
+    /// Required for Docker-in-Docker. Has host-escaping security implications.
+    #[serde(default)]
+    pub privileged: Option<bool>,
 }
 
 // --- Secrets ---

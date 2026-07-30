@@ -1,30 +1,57 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
-import UiPagination from '@/components/ui/UiPagination.vue'
+import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, Pencil, Trash2, Server } from '@lucide/vue'
 import { hostsApi, type Host } from '@/api/hosts'
 import { teamsApi, type Team } from '@/api/teams'
 import { useAuthStore } from '@/stores/auth'
+import { useClientSort } from '@/composables/useClientSort'
+import { useClientPagination } from '@/composables/useClientPagination'
 
 const auth = useAuthStore()
 const hosts = ref<Host[]>([])
 const availableTeams = ref<Team[]>([])
 const loading = ref(true)
-const hostPage = ref(1)
-const pageSize = 15
+const searchQuery = ref('')
+const filterCredentialType = ref('')
 
-const filteredHosts = computed(() =>
-  hosts.value.filter((h) => auth.matchesActiveTeam(h.team_id, { includeShared: true })),
-)
-
-const pagedHosts = computed(() => {
-  const start = (hostPage.value - 1) * pageSize
-  return filteredHosts.value.slice(start, start + pageSize)
+const filteredHosts = computed(() => {
+  let source = hosts.value.filter((h) => auth.matchesActiveTeam(h.team_id, { includeShared: true }))
+  if (filterCredentialType.value) source = source.filter((h) => h.credential_type === filterCredentialType.value)
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return source
+  return source.filter((h) => {
+    const teamName = availableTeams.value.find(t => t.id === h.team_id)?.name || h.team_id || ''
+    return [h.name, h.host, String(h.port), h.username, h.credential_type, teamName, ...(h.labels || [])]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(q)
+  })
 })
 
-watch(() => auth.activeTeamId, () => { hostPage.value = 1 })
+const { sorted, toggleSort, sortIndicator } = useClientSort(filteredHosts, {
+  initialKey: 'name',
+  initialDir: 'asc',
+  getValue: (row, key) => {
+    switch (key) {
+      case 'name': return row.name
+      case 'host': return row.host
+      case 'port': return row.port
+      case 'username': return row.username
+      case 'credential_type': return row.credential_type
+      case 'team': {
+        const t = availableTeams.value.find(x => x.id === row.team_id)
+        return t ? t.name : (row.team_id || '')
+      }
+      default: return ''
+    }
+  },
+})
+
+const { page, pageSize, pageCount, total, pageItems, rangeLabel } = useClientPagination(sorted)
 
 // ── Create / Edit dialog ──
 const showDialog = ref(false)
@@ -80,7 +107,6 @@ async function handleSave() {
     }
     const credData = form.value.credential_data.trim()
     if (form.value.credential_type === 'agent') {
-      // Agent auth stores nothing on the Manager; clear any previous credential.
       payload.credential_data = ''
       payload.credential_passphrase = ''
     } else {
@@ -160,22 +186,70 @@ onMounted(async () => {
     <!-- Table -->
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
     <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+      <!-- Filter bar -->
+      <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="Search hosts…"
+          class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+        />
+        <select v-model="filterCredentialType" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+          <option value="">All auth types</option>
+          <option value="key_path">SSH Key</option>
+          <option value="password">Password</option>
+          <option value="agent">SSH Agent</option>
+        </select>
+        <span v-if="filteredHosts.length !== hosts.length" class="text-[10px] text-muted-foreground ml-auto">
+          {{ filteredHosts.length }} of {{ hosts.length }}
+        </span>
+      </div>
       <div v-if="filteredHosts.length > 0" class="overflow-x-auto">
         <table class="w-full text-[13px]">
           <thead>
             <tr class="border-b border-border/30 bg-muted/10">
-              <th class="text-left px-5 py-2.5 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">Name</th>
-              <th class="text-left px-5 py-2.5 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">Host</th>
-              <th class="text-left px-5 py-2.5 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">Port</th>
-              <th class="text-left px-5 py-2.5 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">User</th>
-              <th class="text-left px-5 py-2.5 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">Auth</th>
-              <th class="text-left px-5 py-2.5 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">Team</th>
-              <th class="text-left px-5 py-2.5 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">Labels</th>
+              <th class="text-left px-5 py-2.5">
+                <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
+                  Name
+                  <span class="font-mono text-xs">{{ sortIndicator('name') || '↕' }}</span>
+                </button>
+              </th>
+              <th class="text-left px-5 py-2.5">
+                <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('host')">
+                  Host
+                  <span class="font-mono text-xs">{{ sortIndicator('host') || '↕' }}</span>
+                </button>
+              </th>
+              <th class="text-left px-5 py-2.5">
+                <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('port')">
+                  Port
+                  <span class="font-mono text-xs">{{ sortIndicator('port') || '↕' }}</span>
+                </button>
+              </th>
+              <th class="text-left px-5 py-2.5">
+                <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('username')">
+                  User
+                  <span class="font-mono text-xs">{{ sortIndicator('username') || '↕' }}</span>
+                </button>
+              </th>
+              <th class="text-left px-5 py-2.5">
+                <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('credential_type')">
+                  Auth
+                  <span class="font-mono text-xs">{{ sortIndicator('credential_type') || '↕' }}</span>
+                </button>
+              </th>
+              <th class="text-left px-5 py-2.5">
+                <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('team')">
+                  Team
+                  <span class="font-mono text-xs">{{ sortIndicator('team') || '↕' }}</span>
+                </button>
+              </th>
+              <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Labels</th>
               <th class="text-right px-5 py-2.5 w-20" />
             </tr>
           </thead>
           <tbody class="divide-y divide-border/20">
-            <tr v-for="h in pagedHosts" :key="h.id" class="hover:bg-muted/5 transition-colors">
+            <tr v-for="h in pageItems" :key="h.id" class="hover:bg-muted/5 transition-colors">
               <td class="px-5 py-3 font-semibold whitespace-nowrap">{{ h.name }}</td>
               <td class="px-5 py-3 font-mono text-xs text-muted-foreground whitespace-nowrap">{{ h.host }}</td>
               <td class="px-5 py-3 font-mono text-xs text-muted-foreground whitespace-nowrap">{{ h.port }}</td>
@@ -204,9 +278,7 @@ onMounted(async () => {
             </tr>
           </tbody>
         </table>
-        <div class="px-5 py-2 border-t border-border/20">
-          <UiPagination v-model:page="hostPage" :total="filteredHosts.length" :page-size="pageSize" />
-        </div>
+        <TablePagination v-model:page="page" v-model:pageSize="pageSize" :total="total" :page-count="pageCount" :range-label="rangeLabel" />
       </div>
       <div v-else class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <Server class="h-10 w-10 mb-3 text-muted-foreground/20" />

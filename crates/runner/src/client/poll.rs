@@ -5,6 +5,30 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::engine;
+use std::collections::{HashMap, HashSet};
+
+/// Build a `bash -x` style echo line showing the command with its environment.
+/// Secret values (from pipeline/key-level secrets) are masked as `***`.
+fn build_step_echo(exec_type: &str, command: &str, env: &HashMap<String, String>, secret_keys: &HashSet<String>, work_dir: Option<&str>) -> String {
+    let mut parts = vec![format!("==> RUN [{}]", exec_type)];
+    parts.push("note: GIT_TERMINAL_PROMPT=0 (noninteractive) — interactive prompts will cause failure".to_string());
+    if let Some(wd) = work_dir {
+        parts.push(format!("cwd: {wd}"));
+    }
+    if !env.is_empty() {
+        let mut items: Vec<String> = Vec::new();
+        for (k, v) in env {
+            if secret_keys.contains(k) {
+                items.push(format!("{k}=***"));
+            } else {
+                items.push(format!("{k}={v}"));
+            }
+        }
+        parts.push(format!("env: [{}]", items.join(", ")));
+    }
+    parts.push(format!("cmd: {command}"));
+    parts.join("\n") + "\n"
+}
 
 /// Poll the manager to check if this job has been cancelled.
 /// Returns `true` if the job is cancelled and execution should stop.
@@ -195,13 +219,21 @@ async fn execute_job(
         .unwrap_or_default();
 
     // Merge pipeline-level resolved secrets from manager (e.g. env vars, platform vars, pipeline secrets)
+    let mut pipeline_secret_keys: HashSet<String> = HashSet::new();
     if let Some(secrets_obj) = task.get("secrets").and_then(|v| v.as_object()) {
         for (k, v) in secrets_obj {
             if let Some(s) = v.as_str() {
                 base_env.insert(k.clone(), s.to_string());
+                pipeline_secret_keys.insert(k.clone());
             }
         }
     }
+
+    // Force non-interactive mode for common tools. When a step tries to read
+    // from stdin (e.g. `git clone` prompting for credentials), these env vars
+    // make the tool fail immediately with a clear error instead of hanging.
+    base_env.entry("GIT_TERMINAL_PROMPT".to_string()).or_insert_with(|| "0".to_string());
+    base_env.entry("DEBIAN_FRONTEND".to_string()).or_insert_with(|| "noninteractive".to_string());
 
     // ---- Cancel watcher helper -------------------------------------------------
     /// Returns `true` when the job has been cancelled.
@@ -225,13 +257,22 @@ async fn execute_job(
         let work_dir = step["work_dir"].as_str().filter(|s| !s.is_empty());
         let exec_type = step["exec_type"].as_str().unwrap_or("shell");
         let fail_strategy = step["fail_strategy"].as_str().unwrap_or("stop");
+        let step_timeout_secs = step["timeout_seconds"].as_u64().unwrap_or(0);
+        let step_timeout = if step_timeout_secs > 0 {
+            Some(Duration::from_secs(step_timeout_secs))
+        } else {
+            None
+        };
+        let has_timeout = step_timeout.is_some();
 
         // ── Build step-specific env: base (inputs+pipeline-secrets) + step-level secrets ──
         let mut step_env = base_env.clone();
+        let mut step_secret_keys = pipeline_secret_keys.clone();
         if let Some(ss_obj) = step.get("step_secrets").and_then(|v| v.as_object()) {
             for (k, v) in ss_obj {
                 if let Some(s) = v.as_str() {
                     step_env.insert(k.clone(), s.to_string());
+                    step_secret_keys.insert(k.clone());
                 }
             }
         }
@@ -275,6 +316,16 @@ async fn execute_job(
                 let cmd = command.to_string();
                 let wd = work_dir.map(|s| s.to_string());
                 let env = step_env.clone();
+
+                // Debug echo — show the command before execution (like bash -x)
+                {
+                    let echo_line = build_step_echo(exec_type, &cmd, &env, &step_secret_keys, work_dir);
+                    let _ = super::logs::upload_chunk(
+                        client, config, token, job_id,
+                        LogChunk { chunk_index: 0, step_order: idx as i32, content: echo_line },
+                    ).await;
+                }
+
                 let c = client.clone();
                 let cfg = config.clone();
                 let t = token.to_string();
@@ -294,7 +345,7 @@ async fn execute_job(
                 let jid_log = job_id.to_string();
                 let idx_i32 = idx as i32;
                 let upload_task = tokio::spawn(async move {
-                    let mut chunk_num = 0i32;
+                    let mut chunk_num = 1i32;
                     while let Some(chunk) = output_rx.recv().await {
                         let masked_chunk = crate::masker::mask_secrets(&chunk, &sv_for_upload);
                         match super::logs::upload_chunk(
@@ -317,21 +368,29 @@ async fn execute_job(
                     }
                 });
 
-                // Race: child completion vs cancellation
-                let (exit_code, was_cancelled_local) = tokio::select! {
+                // Race: child completion vs cancellation vs timeout
+                let (exit_code, was_cancelled_local, was_timeout) = tokio::select! {
                     status = child.wait() => {
                         let code = status?.code().unwrap_or(-1);
                         // Ensure all pipe data is read before proceeding
                         let _ = read_guard.join().await;
                         let _ = upload_task.await;
-                        (code, false)
+                        (code, false, false)
                     }
                     _ = cancel_watcher(&c, &cfg, &t, &jid) => {
                         tracing::warn!("Job {jid} cancelled during step '{sname}' — killing");
                         let _ = child.kill().await;
                         let _ = child.wait().await;
                         upload_task.abort();
-                        (-1, true)
+                        (-1, true, false)
+                    }
+                    _ = tokio::time::sleep(step_timeout.unwrap_or(Duration::from_secs(3600))), if has_timeout => {
+                        tracing::warn!("Step '{sname}' timed out after {step_timeout_secs}s — killing process");
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        let _ = read_guard.join().await;
+                        upload_task.abort();
+                        (-1, false, true)
                     }
                 };
 
@@ -340,10 +399,12 @@ async fn execute_job(
                         stdout: String::new(),
                         stderr: if was_cancelled_local {
                             "==> CANCELLED <==\n".into()
+                        } else if was_timeout {
+                            format!("==> TIMEOUT after {step_timeout_secs}s <==\n")
                         } else {
                             String::new()
                         },
-                        exit_code: if was_cancelled_local { -1 } else { exit_code },
+                        exit_code: if was_cancelled_local || was_timeout { -1 } else { exit_code },
                     },
                     was_cancelled_local,
                 )
@@ -387,12 +448,18 @@ async fn execute_job(
                     anyhow::bail!(msg);
                 }
 
-                let step_timeout = step["timeout_seconds"]
-                    .as_i64()
-                    .map(|s| std::time::Duration::from_secs(s as u64));
-
                 let cmd = command.to_string();
                 let c = client.clone();
+
+                // Debug echo — show the command before execution (like bash -x)
+                {
+                    let echo_line = build_step_echo(exec_type, &cmd, &step_env, &step_secret_keys, work_dir);
+                    let _ = super::logs::upload_chunk(
+                        client, config, token, job_id,
+                        LogChunk { chunk_index: 0, step_order: idx as i32, content: echo_line },
+                    ).await;
+                }
+
                 let cfg = config.clone();
                 let cfg_ssh = cfg.clone();
                 let t = token.to_string();
@@ -402,7 +469,7 @@ async fn execute_job(
                 let hosts_json = serde_json::Value::Array(host_values);
 
                 let step_task = tokio::spawn(async move {
-                    execute_ssh_step(&cfg_ssh, &cmd, &hosts_json, step_timeout, &sname).await
+                    execute_ssh_step(&cfg_ssh, &cmd, &hosts_json, step_timeout, &sname, &step_env).await
                 });
                 let abort_handle = step_task.abort_handle();
 
@@ -452,6 +519,20 @@ async fn execute_job(
                             .collect()
                     })
                     .unwrap_or_default();
+                let privileged = step
+                    .get("privileged")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                // Debug echo — show the command before execution (like bash -x)
+                {
+                    let echo_line = build_step_echo(exec_type, &cmd, &step_env, &step_secret_keys, work_dir);
+                    let _ = super::logs::upload_chunk(
+                        client, config, token, job_id,
+                        LogChunk { chunk_index: 0, step_order: idx as i32, content: echo_line },
+                    ).await;
+                }
+
                 let img = image.to_string();
                 let env = step_env.clone();
                 let c = client.clone();
@@ -469,6 +550,7 @@ async fn execute_job(
                         &env,
                         &volumes,
                         work_dir,
+                        privileged,
                     )
                     .await?;
 
@@ -478,7 +560,7 @@ async fn execute_job(
                 let jid_log = job_id.to_string();
                 let idx_i32 = idx as i32;
                 let upload_task = tokio::spawn(async move {
-                    let mut chunk_num = 0i32;
+                    let mut chunk_num = 1i32;
                     while let Some(chunk) = output_rx.recv().await {
                         let masked_chunk = crate::masker::mask_secrets(&chunk, &sv_for_upload);
                         match super::logs::upload_chunk(
@@ -501,19 +583,27 @@ async fn execute_job(
                     }
                 });
 
-                let (exit_code, was_cancelled_docker) = tokio::select! {
+                let (exit_code, was_cancelled_docker, was_timeout_docker) = tokio::select! {
                     status = child.wait() => {
                         let code = status?.code().unwrap_or(-1);
                         let _ = read_guard.join().await;
                         let _ = upload_task.await;
-                        (code, false)
+                        (code, false, false)
                     }
                     _ = cancel_watcher(&c, &cfg, &t, &jid) => {
                         tracing::warn!("Job {jid} cancelled during docker step '{sname}' — killing container process");
                         let _ = child.kill().await;
                         let _ = child.wait().await;
                         upload_task.abort();
-                        (-1, true)
+                        (-1, true, false)
+                    }
+                    _ = tokio::time::sleep(step_timeout.unwrap_or(Duration::from_secs(3600))), if has_timeout => {
+                        tracing::warn!("Docker step '{sname}' timed out after {step_timeout_secs}s — killing container");
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        let _ = read_guard.join().await;
+                        upload_task.abort();
+                        (-1, false, true)
                     }
                 };
 
@@ -522,10 +612,12 @@ async fn execute_job(
                         stdout: String::new(),
                         stderr: if was_cancelled_docker {
                             "==> CANCELLED <==\n".into()
+                        } else if was_timeout_docker {
+                            format!("==> TIMEOUT after {step_timeout_secs}s <==\n")
                         } else {
                             String::new()
                         },
-                        exit_code: if was_cancelled_docker { -1 } else { exit_code },
+                        exit_code: if was_cancelled_docker || was_timeout_docker { -1 } else { exit_code },
                     },
                     was_cancelled_docker,
                 )
@@ -572,9 +664,19 @@ async fn execute_job(
 
         if output.exit_code != 0 && fail_strategy == "stop" {
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+            let trimmed_cmd = command.trim();
+            let hint = if output.stderr.contains("TIMEOUT") {
+                "the step exceeded its timeout.".to_string()
+            } else {
+                "the command may have tried to read interactive input. \
+                 GIT_TERMINAL_PROMPT=0 is enabled — check that credentials are \
+                 provided via secrets, or add the missing environment variables.".to_string()
+            };
             anyhow::bail!(
-                "step '{step_name}' failed with exit code {}",
-                output.exit_code
+                "step '{}' failed with exit code {}\n\
+                 \x20  command: {}\n\
+                 \x20  hint: {}",
+                step_name, output.exit_code, trimmed_cmd, hint,
             );
         } else if output.exit_code != 0 && fail_strategy == "continue" {
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
@@ -590,6 +692,34 @@ async fn execute_job(
     Ok(())
 }
 
+/// Build an SSH command string with environment variable exports prepended.
+/// Follows the same INPUT_* convention as the shell and docker engines,
+/// and also exports step-level secret values.
+fn build_ssh_env_command(
+    command: &str,
+    env: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut prefix = String::from("set -e; ");
+    if env.is_empty() {
+        return format!("{prefix}{command}");
+    }
+    for (k, v) in env {
+        // Export the raw variable
+        let safe_v = shell_escape(v);
+        prefix.push_str(&format!("export {k}={safe_v} && "));
+        // Also export as INPUT_* for consistency (pipeline inputs convention)
+        let input_key = format!("INPUT_{}", k.to_uppercase());
+        prefix.push_str(&format!("export {input_key}={safe_v} && "));
+    }
+    format!("{}{}", prefix, command)
+}
+
+/// Minimal shell-escaping of values in single-quoted `export` statements.
+fn shell_escape(value: &str) -> String {
+    let escaped = value.replace('\'', "'\\''");
+    format!("'{escaped}'")
+}
+
 /// Extracted SSH execution logic (keeps `execute_job` readable).
 async fn execute_ssh_step(
     config: &Config,
@@ -597,6 +727,7 @@ async fn execute_ssh_step(
     host_values: &serde_json::Value,
     step_timeout: Option<std::time::Duration>,
     step_name: &str,
+    env: &std::collections::HashMap<String, String>,
 ) -> anyhow::Result<engine::shell::ShellOutput> {
     let hosts = host_values
         .as_array()
@@ -650,7 +781,8 @@ async fn execute_ssh_step(
             String::new()
         };
 
-        match engine::ssh::execute(command, &ssh_conn, step_timeout).await {
+        let ssh_cmd = build_ssh_env_command(command, env);
+        match engine::ssh::execute(&ssh_cmd, &ssh_conn, step_timeout).await {
             Ok(o) => {
                 combined_stdout.push_str(&ssh_header);
                 combined_stdout.push_str(&o.stdout);

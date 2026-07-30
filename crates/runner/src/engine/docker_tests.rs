@@ -30,16 +30,31 @@ fn build_args_mounts_workspace_and_default_cwd() {
         &HashMap::new(),
         &[],
         None,
+        false,
     );
 
     assert_eq!(args[0], "run");
     assert!(args.iter().any(|a| a == "--rm"));
-    assert!(args.iter().any(|a| a == "-i"));
+    assert!(!args.iter().any(|a| a == "-i"), "-i (interactive) should not be used in CI");
     let vol = format!("/tmp/runner/wd:{CONTAINER_WORKSPACE}");
     assert!(args.iter().any(|a| a == &vol));
     assert!(args
         .windows(2)
         .any(|w| w[0] == "-w" && w[1] == CONTAINER_WORKSPACE));
+}
+
+#[test]
+fn build_args_privileged_flag() {
+    let args = build_docker_run_args(
+        "docker:27-dind",
+        "/tmp/ws",
+        "echo hi",
+        &HashMap::new(),
+        &[],
+        None,
+        true,
+    );
+    assert!(args.iter().any(|a| a == "--privileged"), "privileged flag present");
 }
 
 #[test]
@@ -51,6 +66,7 @@ fn build_args_custom_container_work_dir() {
         &HashMap::new(),
         &[],
         Some("frontend"),
+        false,
     );
 
     let expected_wd = format!("{CONTAINER_WORKSPACE}/frontend");
@@ -68,6 +84,7 @@ fn build_args_empty_container_work_dir_ignored() {
         &HashMap::new(),
         &[],
         Some("  "),
+        false,
     );
 
     // Whitespace-only → falls back to workspace root
@@ -87,11 +104,12 @@ fn build_args_includes_volumes() {
         &env,
         &[],
         None,
+        false,
     );
 
     assert_eq!(args[0], "run");
     assert!(args.iter().any(|a| a == "--rm"));
-    assert!(args.iter().any(|a| a == "-i"));
+    assert!(!args.iter().any(|a| a == "-i"), "-i (interactive) should not be used in CI");
     let vol = format!("/tmp/ws:{CONTAINER_WORKSPACE}");
     assert!(args.iter().any(|a| a == &vol));
     assert!(args
@@ -103,7 +121,7 @@ fn build_args_includes_volumes() {
 
     let img_pos = args.iter().position(|a| a == "alpine:3.20").expect("image");
     assert_eq!(args[img_pos + 1], "sh");
-    assert_eq!(args[img_pos + 2], "-lc");
+    assert_eq!(args[img_pos + 2], "-elc");
     assert_eq!(args[img_pos + 3], "echo hi");
 }
 
@@ -117,6 +135,7 @@ fn build_args_extra_volumes() {
         &HashMap::new(),
         &vols,
         None,
+        false,
     );
 
     // Search for the -v pairs — must appear before the image
@@ -139,6 +158,7 @@ fn build_args_empty_volumes_ignored() {
         &HashMap::new(),
         &["".into(), "  ".into(), "  ".into()],
         None,
+        false,
     );
     // Only the workspace mount should be present as -v
     let v_count = args.iter().filter(|a| a.as_str() == "-v").count();

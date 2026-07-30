@@ -12,6 +12,12 @@ runner:
   labels: [linux-x64]
   timeout: 5m
 
+concurrency:
+  group: prod
+  mode: queue
+  max_queue: 5
+  queue_timeout: 5m
+  
 steps:
   - name: Step 1 — Startup
     run: echo "Pipeline started at $(date '+%Y-%m-%d %H:%M:%S')"

@@ -1,16 +1,48 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
+import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, Trash2, UserRound } from '@lucide/vue'
 import { usersApi, type User } from '@/api/users'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
+import { useClientSort } from '@/composables/useClientSort'
+import { useClientPagination } from '@/composables/useClientPagination'
 
 const auth = useAuthStore()
 const router = useRouter()
 const users = ref<User[]>([])
 const loading = ref(true)
+const searchQuery = ref('')
+
+const filteredUsers = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return users.value
+  return users.value.filter((u) => {
+    return [u.username, u.display_name, u.is_platform_admin ? 'admin' : 'member', u.is_active ? 'active' : 'disabled']
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(q)
+  })
+})
+
+const { sorted, toggleSort, sortIndicator } = useClientSort(filteredUsers, {
+  initialKey: 'username',
+  initialDir: 'asc',
+  getValue: (row, key) => {
+    switch (key) {
+      case 'username': return row.username
+      case 'role': return row.is_platform_admin ? 1 : 0
+      case 'status': return row.is_active ? 1 : 0
+      default: return ''
+    }
+  },
+})
+
+const { page, pageSize, pageCount, total, pageItems, rangeLabel } = useClientPagination(sorted)
+
 const showCreate = ref(false)
 const formUsername = ref('')
 const formPassword = ref('')
@@ -84,31 +116,60 @@ onMounted(load)
         <UserRound class="h-10 w-10 mb-3 text-muted-foreground/20" />
         <p class="text-sm">No users</p>
       </div>
-      <table v-else class="w-full text-[13px]">
-        <thead>
-          <tr class="border-b border-border/30 bg-muted/10">
-            <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Username</th>
-            <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Role</th>
-            <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Status</th>
-            <th class="text-right px-5 py-2.5 w-28" />
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-border/20">
-          <tr v-for="u in users" :key="u.id" class="hover:bg-muted/5">
-            <td class="px-5 py-3 font-semibold">{{ u.username }}</td>
-            <td class="px-5 py-3 text-xs">{{ u.is_platform_admin ? 'platform admin' : 'member' }}</td>
-            <td class="px-5 py-3 text-xs">{{ u.is_active ? 'active' : 'disabled' }}</td>
-            <td class="px-5 py-3 text-right space-x-1">
-              <UiButton variant="ghost" size="sm" @click="toggleActive(u)">
-                {{ u.is_active ? 'Disable' : 'Enable' }}
-              </UiButton>
-              <UiButton variant="ghost" size="sm" @click="deleteUser(u)">
-                <Trash2 class="h-3.5 w-3.5 text-red-500" />
-              </UiButton>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <template v-else>
+        <!-- Search bar -->
+        <div class="px-5 py-3 border-b border-border/30">
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="Search users…"
+            class="w-full max-w-xs rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+          />
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-[13px]">
+            <thead>
+              <tr class="border-b border-border/30 bg-muted/10">
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('username')">
+                    Username
+                    <span class="font-mono text-xs">{{ sortIndicator('username') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('role')">
+                    Role
+                    <span class="font-mono text-xs">{{ sortIndicator('role') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('status')">
+                    Status
+                    <span class="font-mono text-xs">{{ sortIndicator('status') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-right px-5 py-2.5 w-28" />
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-border/20">
+              <tr v-for="u in pageItems" :key="u.id" class="hover:bg-muted/5">
+                <td class="px-5 py-3 font-semibold">{{ u.username }}</td>
+                <td class="px-5 py-3 text-xs">{{ u.is_platform_admin ? 'platform admin' : 'member' }}</td>
+                <td class="px-5 py-3 text-xs">{{ u.is_active ? 'active' : 'disabled' }}</td>
+                <td class="px-5 py-3 text-right space-x-1">
+                  <UiButton variant="ghost" size="sm" @click="toggleActive(u)">
+                    {{ u.is_active ? 'Disable' : 'Enable' }}
+                  </UiButton>
+                  <UiButton variant="ghost" size="sm" @click="deleteUser(u)">
+                    <Trash2 class="h-3.5 w-3.5 text-red-500" />
+                  </UiButton>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <TablePagination v-model:page="page" v-model:pageSize="pageSize" :total="total" :page-count="pageCount" :range-label="rangeLabel" />
+      </template>
     </div>
 
     <Teleport to="body">

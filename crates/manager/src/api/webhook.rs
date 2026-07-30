@@ -28,7 +28,7 @@ pub async fn handle(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     // Look up pipeline by webhook_path (case-sensitive exact match)
     let pipeline = sqlx::query(
-        "SELECT id, name, is_active FROM pipelines WHERE trigger_type = 'webhook' AND webhook_path = ?",
+        "SELECT id, name, is_active, input_defs FROM pipelines WHERE trigger_type = 'webhook' AND webhook_path = ?",
     )
     .bind(&webhook_path)
     .fetch_optional(&state.pool)
@@ -46,6 +46,27 @@ pub async fn handle(
     }
 
     let inputs = merge_hook_inputs(&query.inputs, &body);
+
+    // ── Validate inputs against pipeline.input_defs ──
+    let input_defs_raw: String = pipeline.get(3);
+    if !input_defs_raw.is_empty() && input_defs_raw != "null" {
+        if let Ok(defs) = serde_json::from_str::<Vec<serde_json::Value>>(&input_defs_raw) {
+            let mut missing: Vec<String> = Vec::new();
+            for def in &defs {
+                let name = def.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let required = def.get("required").and_then(|v| v.as_bool()).unwrap_or(false);
+                if required && !inputs.contains_key(name) {
+                    missing.push(name.to_string());
+                }
+            }
+            if !missing.is_empty() {
+                return Err(AppError::ValidationFailed(format!(
+                    "missing required input(s): {}",
+                    missing.join(", ")
+                )));
+            }
+        }
+    }
 
     tracing::info!(
         "Webhook trigger: pipeline={pipeline_name} path=/{webhook_path} inputs={:?}",

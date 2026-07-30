@@ -98,6 +98,9 @@ async fn main() -> anyhow::Result<()> {
         30, // check every 30 seconds
     );
 
+    // Start concurrency queue scheduler (leader election + dispatch loop)
+    services::scheduler::start_scheduler(db_pool.clone());
+
     let app = Router::new()
         .nest("/api/v1", api::router(app_state.clone()))
         .fallback_service(ServeDir::new(frontend_dir).fallback(ServeFile::new(&index_html)))

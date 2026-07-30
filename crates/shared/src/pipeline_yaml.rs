@@ -8,8 +8,10 @@ pub struct PipelineYaml {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Concurrency control: legacy string (backward compat) or full object.
+    /// "build-lock" = concurrency group "build-lock" with discard-new (current behavior).
     #[serde(default)]
-    pub concurrency: Option<String>,
+    pub concurrency: Option<ConcurrencyDef>,
     #[serde(default)]
     pub on: Option<TriggerYaml>,
     #[serde(default)]
@@ -25,8 +27,33 @@ pub struct PipelineYaml {
     /// Resolved to `teams.id` by the YAML scanner; defaults to `default` if omitted.
     #[serde(default, alias = "owner_group")]
     pub team: Option<String>,
+    #[serde(default)]
     pub steps: Vec<StepYaml>,
 }
+
+/// Concurrency definition: string (legacy) or full object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ConcurrencyDef {
+    /// Legacy: `concurrency: "my-group"` — backward compat, equivalent to discard-new.
+    Simple(String),
+    /// New: `concurrency: { group: "my-group", mode: "queue", ... }`
+    Full(ConcurrencyYaml),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConcurrencyYaml {
+    pub group: String,
+    #[serde(default = "default_concurrency_mode")]
+    pub mode: String,   // "discard-old" (default) | "queue" | "discard-new"
+    #[serde(default = "default_max_queue")]
+    pub max_queue: u32,
+    #[serde(default)]
+    pub queue_timeout: Option<String>,
+}
+
+pub fn default_concurrency_mode() -> String { "discard-old".into() }
+fn default_max_queue() -> u32 { 3 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerYaml {
@@ -85,6 +112,12 @@ pub struct StepYaml {
     /// Extra host→container bind mounts (only for uses: docker). Each entry is "host_path:container_path".
     #[serde(default)]
     pub volumes: Option<Vec<String>>,
+    /// Run the container in privileged mode (only for uses: docker).
+    /// Required for true Docker-in-Docker (docker:dind) to support nested containers.
+    /// WARNING: privileged containers can escape to the host via nsenter or kernel exploits.
+    /// Only use on disposable runner VMs.
+    #[serde(default)]
+    pub privileged: Option<bool>,
     #[serde(default)]
     pub host: Option<OneOrMany>,
     #[serde(default, alias = "work_dir")]
@@ -127,6 +160,9 @@ pub struct PipelineYamlData {
     pub runner: Option<RunnerConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<String>,
+    /// Full concurrency settings (new block format).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrency_config: Option<ConcurrencyConfig>,
     /// Pipeline-level user-defined env vars (key-value).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<std::collections::BTreeMap<String, String>>,
@@ -155,6 +191,17 @@ pub struct RunnerConfig {
     pub labels: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConcurrencyConfig {
+    pub group: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_queue: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_timeout: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -196,6 +243,9 @@ pub struct StepData {
     /// Step-level secret names (in addition to pipeline-level secrets).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secrets: Option<Vec<String>>,
+    /// Privileged mode flag (only for docker steps).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privileged: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -276,7 +326,22 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
     }
 
-    // 5. SSH step requires host
+    // 5. Concurrency mode validation
+    if let Some(ConcurrencyDef::Full(ref fc)) = parsed.concurrency {
+        let valid_modes = ["discard-old", "queue", "discard-new"];
+        if !valid_modes.contains(&fc.mode.as_str()) {
+            errors.push(YamlValidationError {
+                field: "concurrency.mode".into(),
+                message: format!(
+                    "invalid concurrency mode '{}' — must be one of: {}",
+                    fc.mode,
+                    valid_modes.join(", ")
+                ),
+            });
+        }
+    }
+
+    // 6. SSH step requires host
     for (i, step) in parsed.steps.iter().enumerate() {
         let uses = step.uses.as_deref().unwrap_or("").trim();
         if uses == "ssh"
@@ -293,10 +358,19 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     // 6. Docker engine rules
     for (i, step) in parsed.steps.iter().enumerate() {
         let uses = step.uses.as_deref().unwrap_or("").trim();
+        let field = format!("steps[{i}]");
+
+        // privileged is only meaningful for docker
+        if uses != "docker" && step.privileged.unwrap_or(false) {
+            errors.push(YamlValidationError {
+                field: field.clone(),
+                message: "'privileged' is only valid for docker engine steps".into(),
+            });
+        }
+
         if uses != "docker" {
             continue;
         }
-        let field = format!("steps[{i}]");
         let run = step.run.as_deref().unwrap_or("").trim();
         if run.is_empty() {
             errors.push(YamlValidationError {
@@ -327,10 +401,27 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         warnings.push("YAML syntax and structure looks good".into());
     }
 
+    // Resolve the concurrency string for UI auto-fill
+    let (concurrency_group, concurrency_config) = match &parsed.concurrency {
+        Some(ConcurrencyDef::Simple(g)) => (Some(g.clone()), None),
+        Some(ConcurrencyDef::Full(fc)) => {
+            let group = fc.group.clone();
+            let config = ConcurrencyConfig {
+                group: fc.group.clone(),
+                mode: Some(fc.mode.clone()),
+                max_queue: Some(fc.max_queue),
+                queue_timeout: fc.queue_timeout.clone(),
+            };
+            (Some(group), Some(config))
+        }
+        None => (None, None),
+    };
+
     // Build the parsed data snapshot for frontend import-to-form
     let parsed_data = PipelineYamlData {
         description: parsed.description.clone(),
-        concurrency: parsed.concurrency.clone(),
+        concurrency: concurrency_group,
+        concurrency_config,
         env: parsed.env.clone(),
         variables: parsed.variables.clone(),
         secrets: parsed.secrets.clone(),
@@ -393,6 +484,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 retry: s.retry,
                 continue_on_error: s.continue_on_error,
                 secrets: s.secrets.clone(),
+                privileged: s.privileged,
             })
             .collect(),
     };
