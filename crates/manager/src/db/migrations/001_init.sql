@@ -12,7 +12,6 @@ CREATE TABLE IF NOT EXISTS runners (
     is_frozen INTEGER NOT NULL DEFAULT 0,
     max_concurrent_jobs INTEGER NOT NULL DEFAULT 1,
     clean_workspace_after_job INTEGER NOT NULL DEFAULT 0,
-    ephemeral INTEGER NOT NULL DEFAULT 0,
     shell_enabled INTEGER NOT NULL DEFAULT 1,
     ssh_enabled INTEGER NOT NULL DEFAULT 1,
     docker_enabled INTEGER NOT NULL DEFAULT 0,

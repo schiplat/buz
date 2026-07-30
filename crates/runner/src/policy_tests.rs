@@ -14,7 +14,6 @@ fn apply_to_config_overwrites_strategy_keeps_paths() {
     let policy = RunnerPolicyConfig {
         max_concurrent_jobs: 4,
         clean_workspace_after_job: true,
-        ephemeral: true,
         shell_enabled: true,
         ssh_enabled: false,
         docker_enabled: true,
@@ -29,7 +28,6 @@ fn apply_to_config_overwrites_strategy_keeps_paths() {
         Some("/etc/ssh/known_hosts")
     );
     assert!(cfg.runner.clean_workspace_after_job);
-    assert!(cfg.runner.ephemeral);
     assert!(!cfg.engine.ssh_enabled);
     assert!(cfg.engine.docker_enabled);
     assert!(cfg.engine.wasm_enabled);

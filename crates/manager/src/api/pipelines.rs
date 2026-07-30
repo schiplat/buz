@@ -224,7 +224,7 @@ pub async fn get_one(
     let var_ids: Vec<String> = var_bind_rows.iter().map(|r| r.get(0)).collect();
 
     let tasks = sqlx::query(
-        "SELECT id, step_order, name, exec_type, host_id, host_labels, command_template, image,
+        "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
                 work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
                 privileged, registry_secret
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
@@ -240,19 +240,20 @@ pub async fn get_one(
             "name": t.get::<String, _>(2),
             "exec_type": t.get::<String, _>(3),
             "host_id": t.get::<Option<String>, _>(4),
-            "host_labels": t.get::<String, _>(5),
-            "command_template": t.get::<String, _>(6),
-            "image": t.get::<String, _>(7),
-            "work_dir": t.get::<String, _>(8),
-            "retry_count": t.get::<i64, _>(9),
-            "timeout_seconds": t.get::<i64, _>(10),
-            "fail_strategy": t.get::<String, _>(11),
+            "host_names": t.get::<String, _>(5),
+            "host_labels": t.get::<String, _>(6),
+            "command_template": t.get::<String, _>(7),
+            "image": t.get::<String, _>(8),
+            "work_dir": t.get::<String, _>(9),
+            "retry_count": t.get::<i64, _>(10),
+            "timeout_seconds": t.get::<i64, _>(11),
+            "fail_strategy": t.get::<String, _>(12),
             "volumes": serde_json::from_str::<serde_json::Value>(
-                &t.get::<String, _>(12),
+                &t.get::<String, _>(13),
             ).unwrap_or(serde_json::Value::Array(vec![])),
-            "step_secrets": t.get::<String, _>(13),
-            "privileged": t.get::<i64, _>(14) != 0,
-            "registry_secret": t.get::<String, _>(15),
+            "step_secrets": t.get::<String, _>(14),
+            "privileged": t.get::<i64, _>(15) != 0,
+            "registry_secret": t.get::<String, _>(16),
         })
     })
     .collect::<Vec<_>>();

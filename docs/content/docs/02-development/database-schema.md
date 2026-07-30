@@ -22,7 +22,6 @@ Runner registry.
 | status | TEXT | `online`, `offline`, `busy` |
 | max_concurrent_jobs | INTEGER | Max parallel jobs (1–32). Default `1`. Configured in Manager UI |
 | clean_workspace_after_job | INTEGER | Wipe job workspace after each job (`0`/`1`). UI-managed |
-| ephemeral | INTEGER | Exit runner process after one job (`0`/`1`). UI-managed |
 | shell_enabled | INTEGER | Allow shell/`local` steps (`0`/`1`, default `1`). UI-managed |
 | ssh_enabled | INTEGER | Allow SSH steps (`0`/`1`, default `1`). UI-managed |
 | docker_enabled | INTEGER | Allow Docker steps (`0`/`1`, default `0`). UI-managed |
@@ -60,7 +59,7 @@ Pipeline definitions.
 | team_id | TEXT | **Required** team ownership (Phase 2) |
 | trigger_type | TEXT | `manual`, `webhook`, or `cron` |
 | concurrency_group | TEXT | Prevents concurrent execution of same pipeline |
-| owner_group | TEXT | Namespace label for secret auto-access (Phase 1). Phase 2: replaced by `team_id` — see [RBAC](/docs/01-architecture/rbac/) |
+| owner_group | TEXT | Team slug mirror (Phase 1 namespace). Phase 2: ownership via `team_id` — see [RBAC](/docs/01-architecture/rbac/) |
 | source | TEXT | `form` (UI) or `yaml` (file) |
 
 ### tasks
@@ -119,7 +118,9 @@ Secret storage. Values are stored in the database and injected as environment va
 | id | TEXT PK | UUID v4 |
 | name | TEXT UNIQUE | Secret name (e.g. `DOCKER_PASS`, `GIT_SSH_KEY`) |
 | value | TEXT | AES-256-GCM ciphertext only (plaintext rows are rejected at decrypt) |
-| owner_group | TEXT | Phase 1 namespace; Phase 2 → `team_id` (required). See [RBAC](/docs/01-architecture/rbac/) |
+| owner_group | TEXT | Team slug mirror; Phase 2 ownership via `team_id` (required). See [RBAC](/docs/01-architecture/rbac/) |
+| team_id | TEXT | Owning team (required after bootstrap) |
+| team_shared | INTEGER NOT NULL DEFAULT 0 | `1` = same-team pipelines auto-receive this secret at job claim; `0` = explicit bind/reference only. See [Secrets Access Control](/docs/01-architecture/secrets-access-control/) |
 | created_at, updated_at | TEXT | Auto-managed |
 
 ### pipeline_secrets

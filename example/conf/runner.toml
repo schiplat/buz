@@ -1,6 +1,6 @@
 # Buz Runner — machine-local config only
 #
-# Strategy (labels, concurrency, engines, cleanup, ephemeral, ssh_host_key_policy)
+# Strategy (labels, concurrency, engines, cleanup, ssh_host_key_policy)
 # is configured in Manager UI → Runners and applied via register / heartbeat.
 # See docs: Runner Policy (UI-managed).
 

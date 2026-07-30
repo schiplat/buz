@@ -1,8 +1,12 @@
 # ── SSH Verification Pipeline ─────────────────────────────────────
 # Minimal end-to-end test for SSH remote execution.
 #
+# Secrets: this pipeline does NOT declare secrets: / registry_secret.
+# With team_shared defaulting to false, same-team secrets (e.g. ACR JSON)
+# are NOT auto-injected into these steps.
+#
 # Prerequisites:
-#   1. Register a Host named "dev-vm-1" in Manager UI (Infrastructure → Hosts)
+#   1. Register a Host named "r1-agent" in Manager UI (Infrastructure → Hosts)
 #      - host: actual IP or hostname of your test server
 #      - port: 22
 #      - username: SSH user
@@ -15,8 +19,8 @@
 #   4. Team: scanned pipelines default to team slug "default" (created at Manager bootstrap).
 #      Override with `team: <slug>` below if you created another team.
 
-name: SSH Verify — dev-vm-1
-description: Verify SSH remote execution on dev-vm-1.
+name: SSH Verify — r1-agent
+description: Verify SSH remote execution on r1-agent.
 
 # Team slug (optional). Omit to use "default".
 team: default
@@ -29,7 +33,7 @@ steps:
   # ── Step 1: Remote identity check ─────────────────────────────
   - name: Who Am I
     uses: ssh
-    host: dev-vm-1
+    host: r1-agent
     run: |
       echo "=== Identity ==="
       echo "User:   $(whoami)"
@@ -40,7 +44,7 @@ steps:
   # ── Step 2: System resources ──────────────────────────────────
   - name: System Info
     uses: ssh
-    host: dev-vm-1
+    host: r1-agent
     run: |
       echo "=== Resources ==="
       echo "--- Uptime ---"
@@ -56,7 +60,7 @@ steps:
   # ── Step 3: Write & read a temp file ──────────────────────────
   - name: File I/O
     uses: ssh
-    host: dev-vm-1
+    host: r1-agent
     run: |
       echo "=== File Operations ==="
       echo "Hello from Buz SSH test at $(date -Iseconds)" > /tmp/buz-verify.txt

@@ -1,72 +1,80 @@
 ---
 title: Secrets Access Control
 weight: 4
-description: "How Buz controls which pipelines can access secrets, variables, and hosts — owner_group, explicit binding, and three-tier resolution"
+description: "How Buz controls which pipelines can access secrets — team_shared opt-in, explicit binding, and three-tier resolution"
 ---
 
 ## Overview
 
-Buz implements a **lightweight namespace model** for secret access control. Every secret and pipeline can belong to an `owner_group`, and access is granted through a combination of **group-level auto-access** and **explicit per-pipeline bindings**.
+Buz controls secret delivery with a **team ownership boundary** plus an **opt-in team share flag**. Every secret and pipeline belongs to a Team (`team_id`). Runtime injection is granted through:
 
-Platform **Variables** and **Hosts** use a simpler binding model (explicit ID/name references) — see [Resource Binding Map](#resource-binding-map) below.
+1. **Team auto-access** — only when the secret has `team_shared = true` and shares the pipeline’s `team_id`
+2. **Explicit per-pipeline bindings** — `pipeline_secrets` / YAML `secrets:`
+3. **Explicit step references** — step `secrets:` or `registry_secret:`
 
-This is **Scheme B** — chosen over simpler alternatives (e.g. "any pipeline can use any secret") to provide meaningful isolation without requiring a full user/team management system in Phase 1.
+**Default for new secrets: `team_shared = false`.** Same-team pipelines do **not** receive the secret unless they bind or reference it. Cross-team use remains forbidden (future Phase 3 grants).
+
+This is **Scheme B** — chosen over “any pipeline can use any secret” to provide isolation without a full IAM product in early phases. The share flag corrects the earlier over-broad assumption that “same team ⇒ always inject.”
 
 ---
 
-## owner_group
+## `team_shared` (opt-in auto-inject)
 
-`owner_group` is a plain-text label that acts as a **resource namespace**. It serves the same conceptual role as:
+| | |
+|---|---|
+| Column | `secrets.team_shared` (`INTEGER` 0/1, API `boolean`) |
+| Default (create) | `false` |
+| Migration (existing rows) | `false` (secure default; re-enable share or bind as needed) |
+| Who may toggle | Team role with `SecretManage` (Maintainer+) |
 
-| Buz | Equivalent in other systems |
-|-----|----------------------------|
-| `owner_group` | Kubernetes namespace, GitHub organization, GitLab group |
+### Semantics
 
-### Where owner_group appears
+| `team_shared` | Same-team pipeline behavior |
+|---------------|-----------------------------|
+| `false` (default) | **Not** auto-injected. Use Authorized Secrets, YAML `secrets:`, step `secrets:`, or `registry_secret`. |
+| `true` | Auto-injected into every job for pipelines in the same team (legacy convenience for shared CI tokens). |
 
-| Resource | Field | Meaning |
-|----------|-------|---------|
-| Secret | `owner_group` | This secret belongs to this group |
-| Pipeline | `owner_group` | This pipeline belongs to this group |
+`team_shared` does **not** mean “public plaintext” or “cross-team readable.” It only means: *allow Tier‑1 auto-access within the owning team.*
 
-### Rule
+### Recommended usage
 
-**Secrets whose `owner_group` equals a pipeline's `owner_group` are automatically accessible to that pipeline at runtime.** No additional configuration needed.
+| Secret type | Suggested setting | How pipelines use it |
+|-------------|-------------------|----------------------|
+| Shared CI / registry user+pass used by many pipelines as `$NAME` | `team_shared: true` | Auto env inject |
+| Personal ACR JSON, prod DB password, deploy key | `team_shared: false` | Explicit bind / step `secrets:` / `registry_secret` |
+| Registry login only (JSON) | `team_shared: false` | `registry_secret:` only (not as `$NAME` env) |
 
-```
-Secret "DOCKER_PASS" owner_group = "prod-team"
-Pipeline "Deploy API" owner_group = "prod-team"
-→ Runner automatically receives DOCKER_PASS as an env var
-```
+---
 
-If `owner_group` is empty on one or both sides, no auto-access is granted — only explicit bindings take effect.
+## Team + `owner_group`
 
-### Current State
+| Field | Role |
+|-------|------|
+| `team_id` | Ownership, list filtering, CRUD RBAC, runtime same-team checks |
+| `owner_group` | Team **slug** string for display / YAML compat (`team:` / `owner_group:`) |
 
-- **Phase 2 (current):** Pipelines and Secrets require a Team (`team_id`). UI uses a Team dropdown. Same-team secrets auto-inject at job dispatch. See [Users, Teams & RBAC](/docs/01-architecture/rbac/).
-- `owner_group` remains as the Team **slug** string for display / YAML compat (`team:` / `owner_group:` in YAML).
-- YAML scanner resolves `team:` to `team_id`, falling back to bootstrapped `default`
+Phase 1 used free-form `owner_group` equality for auto-access. Phase 2 prefers `team_id`; auto-access additionally requires `team_shared`.
 
 ---
 
 ## Three-Tier Secret Resolution
 
-When the runner polls for a job, the manager resolves secrets from **three sources** in order:
+When the runner polls for a job, the manager resolves secrets as follows:
 
-### Tier 1: Group-Level Auto-Access
-
-Secrets whose `owner_group` matches the pipeline's `owner_group`.
+### Tier 1: Team Auto-Access (opt-in)
 
 ```sql
--- Conceptual: manager matches pipeline.owner_group against secrets.owner_group
-SELECT * FROM secrets WHERE owner_group = ? AND owner_group != ''
+SELECT s.name, s.value
+FROM secrets s
+JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
+WHERE p.id = ? AND s.team_shared = 1
 ```
 
-**Use case:** A team has many pipelines that all need the same Docker registry token. Put everything in `owner_group: "platform"` and all pipelines get it automatically.
+**Use case:** A team-wide Docker registry password every pipeline needs as `$DOCKER_REGISTRY_PASS` without per-pipeline binding.
 
 ### Tier 2: Explicit Per-Pipeline Binding
 
-Secrets explicitly bound to this specific pipeline via the `pipeline_secrets` table.
+Secrets bound via `pipeline_secrets` (form **Authorized Secrets** or YAML top-level `secrets:`).
 
 ```sql
 SELECT s.* FROM secrets s
@@ -74,24 +82,30 @@ JOIN pipeline_secrets ps ON ps.secret_id = s.id
 WHERE ps.pipeline_id = ?
 ```
 
-**Use case:** Pipeline A needs a secret that belongs to a different group (or a group-agnostic secret). The admin explicitly authorizes it in the form's **Authorized Secrets** multi-select.
+Bind-time auth: binder needs `SecretManage` on the pipeline’s team; secret must belong to the **same** team (cross-team forbidden).
 
-### Tier 3: Legacy YAML Name Reference
+**Use case:** Pipeline needs a non-shared secret for all steps as env vars.
 
-Secrets referenced by **name** (not ID) in the pipeline YAML's `secrets:` list or a step's `secrets:` list. At scan/import time these names are resolved to IDs and written as explicit bindings when possible; unresolved names warn in the UI.
+### Tier 3: Explicit name reference (step / registry)
 
-**Use case:** YAML-defined pipelines under `pipelines/`. Prefer creating the secret in Infrastructure → Secrets first, then referencing it by name.
+| Reference | Injection |
+|-----------|-----------|
+| Step `secrets: [NAME]` | Env vars for **that step only** |
+| Step `registry_secret: NAME` | `docker login` credentials only — **not** injected as `$NAME` |
+
+Resolution requires the secret to exist and `secret.team_id == pipeline.team_id`. Name-only lookup across teams is rejected.
+
+**Use case:** Git deploy key only on checkout; ACR JSON only for private pull/push.
 
 ### Resolution Order
 
-All tiers are evaluated, results are **merged and de-duplicated by name**, and the final set is sent to the runner in the poll response:
+Tiers are merged and de-duplicated by name. Explicit bindings / step maps win over auto-access when names collide. The poll payload includes job-level `secrets` plus per-step `step_secrets` / `registry_auth` as applicable.
 
 ```json
 {
   "task": { ... },
   "secrets": {
-    "DOCKER_PASS": "hunter2",
-    "GIT_SSH_KEY": "-----BEGIN OPENSSH PRIVATE KEY-----..."
+    "DOCKER_PASS": "hunter2"
   }
 }
 ```
@@ -100,21 +114,24 @@ All tiers are evaluated, results are **merged and de-duplicated by name**, and t
 
 ## Resource Binding Map
 
-How each resource type connects to a pipeline:
-
 | Resource | Where created | How bound to a pipeline | Runtime injection |
 |----------|---------------|-------------------------|-------------------|
-| **Secrets** | Infrastructure → Secrets | (1) Matching `owner_group`, or (2) Advanced → **Authorized Secrets** (`secret_ids` → `pipeline_secrets`), or (3) YAML `secrets: [NAME]` | Env vars `$NAME`, masked in logs |
-| **Registry credentials** | Same Secrets store (JSON value) | Step field `registry_secret: <name>` (form: Registry Secret) | `docker login` only — **not** injected as `$NAME` (except transient `BUZ_REGISTRY_*` on SSH) |
-| **Variables** | Infrastructure → Variables | Advanced → **Variables** (`var_ids` → `pipeline_variables`), or YAML `variables: [NAME]` | Env vars `$NAME` (not masked) |
-| **Hosts** | Infrastructure → Hosts | Step fields `host` / `host_labels` (name or label match) when `uses: ssh` | SSH connection params on the runner — not env vars. Auth may be key/password (from Manager) or `agent` (runner's `SSH_AUTH_SOCK`) |
-| **Inline Env** | Pipeline form Env editor / YAML `env:` | Always scoped to that pipeline | Env vars for every step |
+| **Secrets** | Infrastructure → Secrets | (1) `team_shared` + same team, or (2) **Authorized Secrets** / YAML `secrets:`, or (3) step `secrets:` / `registry_secret` | Env `$NAME` (**masked in logs**), except `registry_secret` → login only |
+| **Registry credentials** | Same Secrets store (JSON) | Step `registry_secret: <name>` | `docker login` only |
+| **Variables** | Infrastructure → Variables | Advanced → Variables / YAML `variables:` | Env `$NAME` (**not masked**) |
+| **Hosts** | Infrastructure → Hosts | Step `host` / `host_labels` when `uses: ssh` | SSH params on runner |
+| **Inline Env** | Pipeline `env:` | Always scoped to that pipeline | Env for every step (**not masked**) |
+
+At job claim the Manager sends **two** maps to the Runner:
+
+- `secrets` — Infrastructure Secrets only (redacted in `==> RUN` env lines and stream logs)
+- `env` — platform Variables + pipeline inline `env:` (shown in clear)
+
+Trigger `inputs` are separate and are also not treated as secrets for redaction.
 
 ---
 
 ## Pipeline Secrets Table
-
-The `pipeline_secrets` table implements **many-to-many explicit bindings**:
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -124,39 +141,32 @@ The `pipeline_secrets` table implements **many-to-many explicit bindings**:
 
 Bindings are created when:
 
-1. **Form**: A user selects secrets in Advanced → **Authorized Secrets**
-2. **YAML Scan / Import**: Names in `secrets:` are resolved to IDs when they exist in Manager
-3. **API**: `POST` / `PUT` pipelines with `secret_ids` in the payload
-
-Variables use an analogous `pipeline_variables` table via `var_ids`.
+1. **Form**: Advanced → **Authorized Secrets**
+2. **YAML Scan / Import**: Names in `secrets:` resolved to IDs
+3. **API**: `POST` / `PUT` pipelines with `secret_ids`
 
 ---
 
 ## UI Fields
 
-### New Pipeline / Edit Pipeline Form (Advanced)
+### New / Edit Secret
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| **Owner Group / Team** | Team dropdown (required) | Sets `pipelines.team_id` (+ slug in `owner_group`). Same-team secrets auto-accessible. |
-| **Variables** | Multi-select | Explicitly binds platform variables by ID (`var_ids`). Injected as `$NAME` in every step. |
-| **Authorized Secrets** | Multi-select | Explicitly binds secrets by ID (`secret_ids` → `pipeline_secrets`). Labels show `NAME · team`. |
-| **Env** | Key/value list | Pipeline-only inline env (not from Infrastructure). |
+| Field | Purpose |
+|-------|---------|
+| **Name** | Env var key / reference name |
+| **Team** | Required ownership |
+| **Team share** | Opt-in auto-inject for same-team pipelines (default off) |
+| **Value** | AES-256-GCM at rest; list shows partial redaction |
 
-### New Secret / Edit Secret Form
+### Pipeline form (Advanced)
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| **Name** | Text (required) | Secret name — used as env var key |
-| **Owner Group / Team** | Team dropdown (required) | Sets `secrets.team_id`. Pipelines in the same team auto-receive this secret. |
-| **Value** | Password input | **AES-256-GCM encrypted at rest** (key derived from Manager `jwt_secret`). List/get return a **partially redacted** preview (`ab****yz`, or JSON with `password`/`token` fields masked). Never full plaintext. Empty value on update keeps the existing ciphertext. Plaintext DB rows are rejected — set `reencrypt_required` and re-save. |
+| Field | Purpose |
+|-------|---------|
+| **Team** | Pipeline ownership |
+| **Authorized Secrets** | Explicit bindings for non-shared (or extra) secrets |
+| **Variables** / **Env** | Non-secret config |
 
-### Variables / Hosts pages
-
-| Page | Binding reminder in UI |
-|------|------------------------|
-| **Variables** | Bind via Pipeline → Advanced → Variables (or YAML `variables:`) |
-| **Hosts** | Reference in SSH steps with `host: name` or `host_labels: [tag]` |
+Help text: only secrets with **Team share** enabled are auto-injected; otherwise bind or reference explicitly. Cross-team binding is not available.
 
 ---
 
@@ -164,17 +174,14 @@ Variables use an analogous `pipeline_variables` table via `var_ids`.
 
 | YAML | Form | Behavior |
 |------|------|----------|
-| `secrets: [GIT_SSH_KEY, DOCKER_PASS]` | Authorized Secrets (after name→ID resolve) | Explicit `pipeline_secrets` binding; injected as env `$NAME` |
-| `variables: [BUILD_CACHE_DIR]` | Variables multi-select | Explicit `pipeline_variables` binding |
-| _(no YAML field)_ | Owner Group | Auto-access by group match |
-| `steps[].host` / `host_labels` | Step → SSH Host / Host Labels | Resolves Infrastructure → Hosts at dispatch |
-| `steps[].registry_secret` | Registry Secret | Secret **name** only; JSON value used for `docker login` on shell / SSH / docker — **not** injected as env |
+| `secrets: [GIT_SSH_KEY, DOCKER_PASS]` | Authorized Secrets | Explicit binding → job env |
+| `steps[].secrets: [GIT_SSH_KEY]` | Step secrets | Step env only; same-team name resolve |
+| `steps[].registry_secret` | Registry Secret | Login only; same-team name resolve |
+| _(no YAML field)_ | Secret → Team share | Tier‑1 auto-access when enabled |
 
 ---
 
 ## Registry credentials (`registry_secret`)
-
-For private registries (e.g. Alibaba Cloud ACR Personal Edition), store JSON in Infrastructure → Secrets and reference the **name** on the step:
 
 ```yaml
 registry_secret: acr-personal
@@ -184,30 +191,35 @@ registry_secret: acr-personal
 {"provider":"acr_personal","registry":"…","username":"…","password":"…"}
 ```
 
-- Password is encrypted at rest; API returns partial redaction only.
-- Docker: login before pull. Shell/SSH: login before `run` (for push). See [Docker Engine — ACR Personal Edition](/docs/01-architecture/docker-engine/).
+- Prefer **`team_shared: false`** so unrelated pipelines (e.g. SSH smoke tests) never receive the JSON as env.
+- Password encrypted at rest; API returns partial redaction only.
+- See [Docker Engine — ACR Personal Edition](/docs/01-architecture/docker-engine/).
 
 ---
 
 ## Best Practices
 
-1. **Use owner_group for team-wide secrets** — docker registry tokens, CI tokens shared by all pipelines in a team
-2. **Use Authorized Secrets for cross-group access** — a pipeline in `staging` that needs a secret owned by `prod`
-3. **Use step-level secrets (YAML) for scoping** — a Git SSH key that only the `checkout` step needs
-4. **Private registry login** — store ACR (etc.) JSON credentials in Infrastructure → Secrets; reference only the **name** via `registry_secret` on docker/shell/SSH steps (never put passwords in YAML)
-5. **Keep owner_group values consistent** — decide on naming (`platform`, `backend-team`, `prod`) and apply them uniformly
-6. **Create Variables/Secrets/Hosts in Infrastructure first**, then bind from the pipeline form or YAML
+1. **Default deny auto-inject** — leave Team share off unless many pipelines truly need the same `$NAME`
+2. **Use Authorized Secrets / YAML `secrets:`** for pipeline-wide non-shared secrets
+3. **Use step `secrets:`** for keys needed in one step (e.g. checkout)
+4. **Use `registry_secret`** for private registry JSON — do not enable Team share for ACR personal credentials
+5. **Keep team slugs consistent** — `team:` in YAML must match Infrastructure Teams
+6. **Create Secrets in Infrastructure first**, then bind or reference by name
 
 ---
 
-## Future: Phase 2+ RBAC
-
-Full target design (confirmed): **[Users, Teams & RBAC](/docs/01-architecture/rbac/)**.
+## Future: Phase 3+
 
 | Phase | Capability |
 |-------|-----------|
-| Phase 1 (current baseline) | `owner_group` as plain text, three-tier resolution, single admin login |
-| Phase 2 (**implemented**) | `users` + `teams` + four team roles; pipelines/secrets **require** `team_id`; hosts optional; list filtering by membership — see [RBAC](/docs/01-architecture/rbac/) |
-| Phase 3 | SSO, API tokens, audit UI, per-step secrets, cross-team grants |
+| Phase 1 | `owner_group` plain text, three-tier resolution, single admin |
+| Phase 2 (**current**) | Teams + roles; required `team_id`; **`team_shared` opt-in auto-access** |
+| Phase 3 | SSO, API tokens, audit UI, cross-team grants |
 
-The `owner_group` field is intentionally kept as a plain string in Phase 1 so the access control logic can be battle-tested before layering user management on top.
+---
+
+## Related
+
+- [Users, Teams & RBAC](/docs/01-architecture/rbac/)
+- [Database Schema](/docs/02-development/database-schema/)
+- [Pipeline Format](/docs/01-architecture/pipeline-format/)

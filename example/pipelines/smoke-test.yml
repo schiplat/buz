@@ -2,6 +2,9 @@
 # Exercises: local exec, SSH (single + multi-host), dynamic inputs,
 #            continue-on-error, retry, timeout.
 #
+# No secrets:/registry_secret — with team_shared default false, same-team
+# secrets are not auto-injected into this smoke job.
+#
 # Place this file under the Manager's yaml_scan_dir (default: ./pipelines/).
 # Team: defaults to "default" if omitted; set `team: <slug>` to assign another team.
 
@@ -23,7 +26,7 @@ on:
         default: latest
 
 runner:
-  labels: [dev, linux-x64]
+  labels: [linux-x64]
   timeout: 10m
 
 env:

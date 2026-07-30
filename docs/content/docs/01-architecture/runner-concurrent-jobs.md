@@ -45,12 +45,11 @@ Create or edit a Runner under **Runners** in the web UI.
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `labels` | `[]` | Scheduling match for pipeline `runner.labels` (must have **all** required) |
-| `max_concurrent_jobs` | `1` | Parallel job slots, range `1`–`32`. Ephemeral forces `1` |
-| `clean_workspace_after_job` | `false` | Delete `{workspace}/{job_id}` after each job |
-| `ephemeral` | `false` | Clean workspace **and** exit the runner process after one job |
+| `max_concurrent_jobs` | `1` | Parallel job slots, range `1`–`32` |
+| `clean_workspace_after_job` | `false` | Delete `{workspace}/{job_id}` after each job (host files only) |
 | `shell_enabled` | `true` | Allow `shell` / `local` steps |
 | `ssh_enabled` | `true` | Allow `ssh` steps |
-| `docker_enabled` | `false` | Allow `uses: docker` steps |
+| `docker_enabled` | `false` | Allow `uses: docker` steps (`docker run --rm` per step) |
 | `wasm_enabled` | `false` | Allow WASM steps (reserved) |
 | `ssh_host_key_policy` | `insecure` | `insecure` (accept any) or `known_hosts` |
 
@@ -66,14 +65,21 @@ Runner process                        │
        ▼
   SharedPolicy (in-memory)
        │
-       ├── poll capacity (max_concurrent / ephemeral)
+       ├── poll capacity (max_concurrent_jobs)
        └── per-job Config overlay (engines, cleanup, host-key policy)
 ```
 
 1. Admin sets **labels** and policy when creating a Runner, or saves them in the Runner detail drawer.
 2. On `POST /runners/register` and `POST /runners/heartbeat`, Manager returns a `policy` snapshot for engines/concurrency. Labels stay in the DB and are used at poll time; the agent register payload **cannot** overwrite them.
-3. The Runner applies the snapshot on the next poll / job without restart (except when `ephemeral` exits after one job).
+3. The Runner applies the snapshot on the next poll / job without restart. A failed or successful job **never** stops a persistent runner process.
 4. On `GET /runners/poll`, Manager enforces `running < max_concurrent_jobs` and claims only jobs whose required labels are all present on the runner.
+
+### Cleanup: workspace vs Docker containers
+
+| What | How |
+|------|-----|
+| Job workspace files on the runner host | `clean_workspace_after_job` (UI checkbox) |
+| Container from a `uses: docker` step | Always `docker run --rm` — removed when the step ends; **not** a Runner Policy toggle |
 
 Label edits take effect on the **next poll**. Engine / concurrency edits typically within **one heartbeat (~30s)**.
 
@@ -90,7 +96,7 @@ Label edits take effect on the **next poll**. Engine / concurrency edits typical
 
 ## Upgrade notes
 
-Existing `runner.toml` keys such as `runner.labels`, `engine.docker_enabled`, `clean_workspace_after_job`, `ephemeral`, and `ssh_host_key_policy` still deserialize for compatibility, but labels are **ignored on register**, and engine/cleanup keys are **overwritten** by the Manager policy after register/heartbeat.
+Existing `runner.toml` keys such as `runner.labels`, `engine.docker_enabled`, `clean_workspace_after_job`, and `ssh_host_key_policy` still deserialize for compatibility, but labels are **ignored on register**, and engine/cleanup keys are **overwritten** by the Manager policy after register/heartbeat.
 
 After upgrading:
 
@@ -102,7 +108,7 @@ After upgrading:
 
 Policy columns live on `runners` (see [Database Schema](/docs/02-development/database-schema/)):
 
-`max_concurrent_jobs`, `clean_workspace_after_job`, `ephemeral`, `shell_enabled`, `ssh_enabled`, `docker_enabled`, `wasm_enabled`, `ssh_host_key_policy`.
+`max_concurrent_jobs`, `clean_workspace_after_job`, `shell_enabled`, `ssh_enabled`, `docker_enabled`, `wasm_enabled`, `ssh_host_key_policy`.
 
 ## Related
 

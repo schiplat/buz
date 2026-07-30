@@ -104,13 +104,14 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await;
 
-    // UI-managed runner policy (cleanup / ephemeral / engines / SSH host-key policy)
+    // UI-managed runner policy (cleanup / engines / SSH host-key policy)
     let _ = sqlx::query(
         "ALTER TABLE runners ADD COLUMN clean_workspace_after_job INTEGER NOT NULL DEFAULT 0",
     )
     .execute(pool)
     .await;
-    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN ephemeral INTEGER NOT NULL DEFAULT 0")
+    // Removed: runners.ephemeral (process-exit / redundant with docker --rm + clean_workspace)
+    let _ = sqlx::query("ALTER TABLE runners DROP COLUMN ephemeral")
         .execute(pool)
         .await;
     let _ = sqlx::query("ALTER TABLE runners ADD COLUMN shell_enabled INTEGER NOT NULL DEFAULT 1")
@@ -187,6 +188,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
             name TEXT NOT NULL UNIQUE,
             value TEXT NOT NULL DEFAULT '',
             owner_group TEXT NOT NULL DEFAULT '',
+            team_shared INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )",
     )
@@ -333,6 +335,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("ALTER TABLE secrets ADD COLUMN team_id TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await;
+
+    // Opt-in team auto-inject (default false = explicit bind/reference only)
+    let _ = sqlx::query(
+        "ALTER TABLE secrets ADD COLUMN team_shared INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(pool)
+    .await;
 
     let _ = sqlx::query("ALTER TABLE hosts ADD COLUMN team_id TEXT")
         .execute(pool)

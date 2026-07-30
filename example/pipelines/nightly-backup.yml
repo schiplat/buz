@@ -2,6 +2,7 @@
 # Scheduled backup: dump databases, sync logs, archive to remote storage.
 #
 # Trigger: cron (daily at 2:00 AM)
+# Bind backup credentials via secrets: or step secrets: (Team share OFF by default).
 
 name: Nightly Backup
 description: Automated daily backup of databases, logs, and configs to remote storage.
@@ -13,7 +14,7 @@ on:
     schedule: "0 2 * * *"
 
 runner:
-  labels: [linux-x64, backup]
+  labels: [linux-x64]
   timeout: 30m
 
 env:

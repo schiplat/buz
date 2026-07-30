@@ -39,6 +39,7 @@ const { sorted, toggleSort, sortIndicator } = useClientSort(filteredSecrets, {
         const t = teams.value.find(x => x.id === row.team_id)
         return t ? t.name : (row.team_id || '')
       }
+      case 'team_shared': return row.team_shared ? 1 : 0
       case 'updated_at': return row.updated_at || ''
       default: return ''
     }
@@ -53,6 +54,7 @@ const editing = ref<Secret | null>(null)
 const formName = ref('')
 const formValue = ref('')
 const formTeamId = ref('')
+const formTeamShared = ref(false)
 const saving = ref(false)
 const showValue = ref(false)
 
@@ -83,6 +85,7 @@ function openCreate() {
   formName.value = ''
   formValue.value = ''
   formTeamId.value = auth.preferredTeamId || teams.value[0]?.id || ''
+  formTeamShared.value = false
   showValue.value = false
   showDialog.value = true
 }
@@ -92,6 +95,7 @@ function openEdit(s: Secret) {
   formName.value = s.name
   formValue.value = ''
   formTeamId.value = s.team_id || ''
+  formTeamShared.value = !!s.team_shared
   showValue.value = false
   showDialog.value = true
 }
@@ -115,12 +119,14 @@ async function handleSave() {
       await secretsApi.update(editing.value.id, {
         value: formValue.value,
         team_id: formTeamId.value,
+        team_shared: formTeamShared.value,
       })
     } else {
       await secretsApi.create({
         name: formName.value.trim(),
         value: formValue.value,
         team_id: formTeamId.value,
+        team_shared: formTeamShared.value,
       })
     }
     showDialog.value = false
@@ -155,7 +161,7 @@ onMounted(loadSecrets)
   <div class="space-y-6">
     <PageHeader
       title="Secrets"
-      description="Encrypted credentials. Bind to pipelines via matching Team (auto) or Authorized Secrets (explicit). Values are masked in logs."
+      description="Encrypted credentials. Default: not auto-injected. Enable Team share for same-team auto-inject, or bind via Authorized Secrets / YAML / registry_secret. Values are masked in logs."
     >
       <template #actions>
         <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> Add Secret</UiButton>
@@ -204,6 +210,12 @@ onMounted(loadSecrets)
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('team_shared')">
+                    Share
+                    <span class="font-mono text-xs">{{ sortIndicator('team_shared') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('updated_at')">
                     Updated
                     <span class="font-mono text-xs">{{ sortIndicator('updated_at') || '↕' }}</span>
@@ -227,6 +239,14 @@ onMounted(loadSecrets)
                   </div>
                 </td>
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.owner_group || s.team_id || '—' }}</td>
+                <td class="px-5 py-3 text-xs whitespace-nowrap">
+                  <span
+                    v-if="s.team_shared"
+                    class="inline-flex items-center rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400"
+                    title="Same-team pipelines auto-receive this secret"
+                  >Team share</span>
+                  <span v-else class="text-muted-foreground/70" title="Requires explicit bind or step reference">Explicit</span>
+                </td>
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.updated_at?.slice(0, 10) || '—' }}</td>
                 <td class="px-5 py-3 text-right whitespace-nowrap">
                   <div class="flex items-center justify-end gap-1">
@@ -245,7 +265,9 @@ onMounted(loadSecrets)
         <p class="text-sm">{{ secrets.length === 0 ? 'No secrets configured yet' : 'No secrets in the selected team' }}</p>
         <p class="text-xs mt-1 text-muted-foreground/60">
           Create secrets here, then bind them in Pipeline → Advanced → Authorized Secrets,
-          or assign the same <code class="mono-chip text-[10px]">Team</code> for auto-access.
+          reference via YAML <code class="mono-chip text-[10px]">secrets:</code> /
+          <code class="mono-chip text-[10px]">registry_secret</code>,
+          or enable <span class="font-medium text-foreground">Team share</span> for same-team auto-inject.
         </p>
       </div>
     </div>
@@ -275,7 +297,26 @@ onMounted(loadSecrets)
                 <option disabled value="">Select a team</option>
                 <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }} ({{ t.slug }})</option>
               </select>
-              <p class="text-[10px] text-muted-foreground mt-1">Pipelines in the same team auto-receive this secret.</p>
+              <p class="text-[10px] text-muted-foreground mt-1">Ownership and CRUD boundary. Does not auto-inject unless Team share is enabled.</p>
+            </div>
+            <div>
+              <label class="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  v-model="formTeamShared"
+                  type="checkbox"
+                  class="mt-0.5 h-3.5 w-3.5 rounded border-border accent-primary cursor-pointer"
+                />
+                <span>
+                  <span class="block text-[12px] font-medium text-foreground">Team share</span>
+                  <span class="block text-[10px] text-muted-foreground mt-0.5 leading-relaxed">
+                    When enabled, every pipeline in this team auto-receives this secret as an env var at job claim.
+                    Leave off for sensitive credentials — use Authorized Secrets, YAML
+                    <code class="mono-chip text-[10px]">secrets:</code>, step
+                    <code class="mono-chip text-[10px]">secrets:</code>, or
+                    <code class="mono-chip text-[10px]">registry_secret</code> instead.
+                  </span>
+                </span>
+              </label>
             </div>
             <div class="pb-1">
               <label class="block text-[12px] font-medium text-foreground mb-1">

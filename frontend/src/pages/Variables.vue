@@ -178,7 +178,7 @@ onMounted(loadVars)
           <h3 class="text-[15px] font-semibold mb-5">{{ editing ? 'Edit Variable' : 'New Variable' }}</h3>
           <div class="space-y-4">
             <div>
-              <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-red-400">*</span></label>
+              <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-red-500">*</span></label>
               <input
                 v-model="formName"
                 :disabled="!!editing"
@@ -188,13 +188,15 @@ onMounted(loadVars)
             </div>
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">
-                Value <span class="text-red-400">*</span>
+                Value <span class="text-red-500">*</span>
                 <span v-if="editing" class="text-muted-foreground font-normal ml-1">(leave empty to keep current)</span>
               </label>
-              <input
+              <textarea
                 v-model="formValue"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
-                :placeholder="editing ? '(keep current value)' : 'registry.example.com'"
+                rows="6"
+                spellcheck="false"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 resize-y min-h-[7.5rem]"
+                :placeholder="editing ? '(keep current value)' : 'e.g. registry.example.com'"
               />
             </div>
           </div>

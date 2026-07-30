@@ -28,6 +28,7 @@ fn login_echo_stream_do_not_collide() {
 fn build_step_echo_uses_consistent_banner_and_fields() {
     let mut env = HashMap::new();
     env.insert("DEBIAN_FRONTEND".into(), "noninteractive".into());
+    env.insert("SMOKE_ENV".into(), "from-pipeline".into());
     env.insert("acr_personal".into(), "secret-json".into());
     let mut secrets = HashSet::new();
     secrets.insert("acr_personal".into());
@@ -43,7 +44,9 @@ fn build_step_echo_uses_consistent_banner_and_fields() {
     assert!(echo.starts_with("==> RUN [docker]\n"), "{echo}");
     assert!(echo.contains("  note  GIT_TERMINAL_PROMPT=0"), "{echo}");
     assert!(echo.contains("  cwd   /tmp/ws\n"), "{echo}");
+    assert!(echo.contains("SMOKE_ENV=from-pipeline"), "{echo}");
     assert!(echo.contains("acr_personal=***"), "{echo}");
+    assert!(!echo.contains("secret-json"), "{echo}");
     assert!(echo.contains("  cmd   echo hi\n"), "{echo}");
     assert!(echo.contains("        uname -a || true\n"), "{echo}");
 }

@@ -1,20 +1,19 @@
 # Build and push to Alibaba Cloud ACR Personal Edition via registry_secret.
 #
 # Prerequisites:
-#   1) Infrastructure → Secrets named `acr-personal` (AES-256-GCM at rest):
+#   1) Infrastructure → Secrets named `acr_personal` (AES-256-GCM at rest).
+#      Leave **Team share OFF** (default); this pipeline uses registry_secret only.
 #      {
 #        "provider": "acr_personal",
-#        "registry": "crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com",
+#        "registry": "registry.cn-hongkong.aliyuncs.com",
 #        "username": "<ACR login name>",
 #        "password": "<fixed password from ACR console>"
 #      }
 #      `registry` is required for shell push (no step `image` to infer from).
-#   2) Runner with Docker CLI/daemon and labels including `docker`.
+#   2) Runner with Docker CLI/daemon and labels: [linux-x64].
 #
 # Flow: prepare context → docker build → docker push (login via registry_secret)
 #       → optional verify pull with uses: docker + registry_secret.
-#
-# Replace REGISTRY / NAMESPACE placeholders to match your ACR instance.
 
 name: acr-personal-build-push
 description: Orchestrated docker build + push to ACR Personal Edition (registry_secret)
@@ -29,12 +28,12 @@ on:
         default: "1.0"
 
 runner:
-  labels: [docker]
+  labels: [linux-x64]
   timeout: 30m
 
 env:
-  REGISTRY: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com
-  NAMESPACE: namespace
+  REGISTRY: registry.cn-hongkong.aliyuncs.com
+  NAMESPACE: dadou
   IMAGE_NAME: hello
 
 steps:
@@ -62,7 +61,7 @@ steps:
   # ── 3. Push — Manager resolves registry_secret → Runner docker login/logout ──
   - name: Push image
     uses: shell
-    registry_secret: acr-personal
+    registry_secret: acr_personal
     run: |
       IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
       echo "Pushing $IMAGE"
@@ -72,7 +71,7 @@ steps:
   # ── 4. Verify — pull + run the image just pushed ──
   - name: Verify pull
     uses: shell
-    registry_secret: acr-personal
+    registry_secret: acr_personal
     run: |
       IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
       docker pull "$IMAGE"

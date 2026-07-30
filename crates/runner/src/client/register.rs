@@ -48,10 +48,9 @@ pub async fn register_with_center(client: &Client, config: &Config) -> anyhow::R
     policy.max_concurrent_jobs = policy.max_concurrent_jobs.max(1);
 
     tracing::info!(
-        "Runner registered: id={} max_concurrent={} ephemeral={} engines=[shell={},ssh={},docker={},wasm={}]",
+        "Runner registered: id={} max_concurrent={} engines=[shell={},ssh={},docker={},wasm={}]",
         register_resp.runner_id,
         policy.max_concurrent_jobs,
-        policy.ephemeral,
         policy.shell_enabled,
         policy.ssh_enabled,
         policy.docker_enabled,

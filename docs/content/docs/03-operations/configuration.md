@@ -60,7 +60,7 @@ Machine-local only. Strategy is **not** configured here — see [Runner Policy](
 | Managed in UI | Kept in TOML |
 |---------------|--------------|
 | `labels` | `manager.url`, `register_token`, `tls_skip_verify` |
-| `max_concurrent_jobs`, cleanup, ephemeral | `runner.name`, `workspace_dir` |
+| `max_concurrent_jobs`, cleanup (`clean_workspace_after_job`) | `runner.name`, `workspace_dir` |
 | engine enable flags + `ssh_host_key_policy` | `prefer_interfaces`, `ssh_known_hosts_path` |
 
 ```toml

@@ -39,10 +39,6 @@ pub struct RunnerIdentity {
     /// Kept for deserialize compatibility; overwritten by register/heartbeat policy.
     #[serde(default)]
     pub clean_workspace_after_job: bool,
-    /// Deprecated in runner.toml — controlled from Manager UI.
-    /// Kept for deserialize compatibility; overwritten by register/heartbeat policy.
-    #[serde(default)]
-    pub ephemeral: bool,
     /// Interface names whose IPs are advertised first in Manager UI (multi-NIC VMs).
     /// Example: `["enp26s0"]`. When empty, IPs on the same subnet as `manager.url` are preferred.
     #[serde(default)]
@@ -66,7 +62,6 @@ impl Default for RunnerIdentity {
             labels: Vec::new(),
             workspace_dir: default_workspace_dir(),
             clean_workspace_after_job: false,
-            ephemeral: false,
             prefer_interfaces: Vec::new(),
         }
     }

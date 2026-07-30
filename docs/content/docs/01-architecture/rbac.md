@@ -166,13 +166,15 @@ Credentials remain encrypted server-side; UI never receives plaintext (unchanged
 
 ---
 
-## Secret Resolution (unchanged tiers, Team-backed)
+## Secret Resolution (Team-backed + `team_shared`)
 
-1. **Group auto-access**: `secret.team_id == pipeline.team_id`
-2. **Explicit binding**: `pipeline_secrets` (bind requires Maintainer+)
-3. **YAML name reference**: still resolved at dispatch, but only among secrets the pipeline’s team may access (auto + bound)
+1. **Team auto-access (opt-in)**: `secret.team_id == pipeline.team_id` **and** `secret.team_shared == true`
+2. **Explicit binding**: `pipeline_secrets` / YAML `secrets:` (bind requires Maintainer+; same team only)
+3. **Step / registry name reference**: step `secrets:` or `registry_secret:` resolved at dispatch only if `secret.team_id == pipeline.team_id`
 
-Cross-team secret use: only via explicit binding **and** the binder must be allowed to read that secret (typically platform admin, or future Phase 3 grant). Phase 2 default: binding UI only lists secrets from the **same team** (+ admin override).
+New secrets default to `team_shared = false` (no auto-inject). See [Secrets Access Control](/docs/01-architecture/secrets-access-control/).
+
+Cross-team secret use: forbidden in Phase 2 (future Phase 3 grant). Binding UI lists secrets from the **same team** (+ admin override).
 
 ---
 

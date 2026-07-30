@@ -193,7 +193,7 @@ async function openEditDialog() {
         image: t.image || undefined,
         volumes: parseVolumesToRows(t.volumes) as any,
         secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
-        host: t.host_id || undefined,
+        host: (t.host_names || t.host_id || '').toString().trim() || undefined,
       host_labels: t.host_labels || undefined,
       dir: t.work_dir || undefined,
       timeout: t.timeout_seconds ? `${t.timeout_seconds}s` : undefined,
@@ -364,6 +364,13 @@ function getStepStatus(stepIndex: number, stepStatuses: any[] | null): string {
   if (!stepStatuses) return 'pending'
   const found = stepStatuses.find((s: any) => Number(s.step_order) === stepIndex)
   return found?.status || 'pending'
+}
+
+/** Prefer YAML host names for SSH display; fall back to resolved host_id. */
+function sshHostDisplay(step: { host_names?: string | null; host_id?: string | null }): string {
+  const names = (step.host_names || '').toString().trim()
+  if (names) return names
+  return (step.host_id || '').toString().trim()
 }
 
 function fmtDuration(start: string | null, end: string | null) {
@@ -812,7 +819,8 @@ async function handleTrigger() {
                 </option>
               </select>
               <p class="mt-1 text-xs text-muted-foreground">
-                Same-team secrets from Infrastructure → Secrets are auto-injected. Use Authorized Secrets for cross-team bindings.
+                Only secrets with <span class="font-medium text-foreground">Team share</span> enabled are auto-injected.
+                Otherwise bind via Authorized Secrets or YAML / step / registry_secret references (same team only).
               </p>
             </div>
 
@@ -1185,7 +1193,8 @@ async function handleTrigger() {
                     placeholder="Select secrets..."
                   />
                   <p class="mt-1 text-xs text-muted-foreground">
-                    Explicit binding via <code class="font-mono">pipeline_secrets</code>. Use for cross-group or empty-group secrets.
+                    Explicit binding via <code class="font-mono">pipeline_secrets</code>.
+                    Required for secrets without Team share (same team only).
                   </p>
                 </div>
               </div>
@@ -1348,7 +1357,7 @@ async function handleTrigger() {
               Definition
             </button>
           </div>
-          <div class="mt-5 px-3">
+          <div class="mt-10 pt-5 border-t border-border/40 px-3">
             <!-- Section heading + summary strip -->
             <div class="flex items-center justify-between mb-3">
               <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Recent Builds</div>
@@ -1820,15 +1829,18 @@ async function handleTrigger() {
                       </span>
                     </div>
 
-                    <!-- Other step metadata: host, dir -->
-                    <div v-if="step.host_id || step.host_labels || step.work_dir" class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-xs">
+                    <!-- Other step metadata: SSH hosts, host labels, dir -->
+                    <div
+                      v-if="sshHostDisplay(step) || step.host_labels || step.work_dir"
+                      class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-xs"
+                    >
                       <span v-if="step.work_dir" class="inline-flex items-center gap-1">
                         <span class="text-muted-foreground/60 text-xs w-8">dir</span>
                         <code class="mono-chip text-xs">{{ step.work_dir }}</code>
                       </span>
-                      <span v-if="step.host_id" class="inline-flex items-center gap-1">
+                      <span v-if="sshHostDisplay(step)" class="inline-flex items-center gap-1">
                         <span class="text-muted-foreground/60 text-xs w-14">host</span>
-                        <code class="mono-chip text-xs">{{ step.host_id }}</code>
+                        <code class="mono-chip text-xs">{{ sshHostDisplay(step) }}</code>
                       </span>
                       <span v-if="step.host_labels" class="inline-flex items-center gap-1">
                         <span class="text-muted-foreground/60 text-xs w-14">labels</span>
@@ -1842,11 +1854,9 @@ async function handleTrigger() {
                       <code class="mono-chip text-xs">{{ step.step_secrets }}</code>
                     </div>
 
-                    <!-- Command block -->
-                    <div class="relative font-mono text-sm leading-relaxed text-foreground/80 bg-muted/30 rounded-lg px-3.5 py-3 whitespace-pre-wrap break-all border border-border/25">
-                      <div class="absolute left-0 top-1 bottom-1 w-0.5 rounded-full bg-border/30"></div>
-                      {{ step.command_template }}
-                    </div>
+                    <!-- Command block — keep text node flush against tags so
+                         whitespace-pre-wrap does not indent the first line -->
+                    <div class="relative font-mono text-sm leading-relaxed text-foreground/80 bg-muted/30 rounded-lg px-3.5 py-3 whitespace-pre-wrap break-all border border-border/25"><div class="absolute left-0 top-1 bottom-1 w-0.5 rounded-full bg-border/30" aria-hidden="true" />{{ step.command_template }}</div>
                   </div>
                 </div>
               </div>

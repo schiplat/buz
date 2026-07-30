@@ -168,9 +168,8 @@ pub async fn check_job_cancelled(
 
 /// Poll loop with concurrent job slots and exponential backoff on failures.
 ///
-/// Capacity and strategy (engines, cleanup, ephemeral) come from Manager UI
-/// via `shared_policy` (refreshed by heartbeat). Ephemeral runners always run
-/// at most one job then exit.
+/// Capacity and strategy (engines, cleanup) come from Manager UI via
+/// `shared_policy` (refreshed by heartbeat).
 pub async fn run_poll_loop(
     client: &Client,
     config: &Config,
@@ -181,7 +180,6 @@ pub async fn run_poll_loop(
 
     let mut consecutive_failures: u32 = 0;
     let mut jobs: JoinSet<anyhow::Result<()>> = JoinSet::new();
-    let mut ephemeral_exit = false;
 
     loop {
         // Reap finished jobs
@@ -191,22 +189,9 @@ pub async fn run_poll_loop(
                 Ok(Err(e)) => tracing::error!("Job task error: {e}"),
                 Err(e) => tracing::error!("Job task panicked: {e}"),
             }
-            if policy::ephemeral(&shared_policy) {
-                ephemeral_exit = true;
-            }
         }
 
-        if ephemeral_exit && jobs.is_empty() {
-            tracing::info!("Ephemeral runner exiting after job — container/VM will be destroyed");
-            return Ok(());
-        }
-
-        let is_ephemeral = policy::ephemeral(&shared_policy);
-        let local_max = if is_ephemeral {
-            1
-        } else {
-            policy::max_concurrent(&shared_policy)
-        };
+        let local_max = policy::max_concurrent(&shared_policy);
         let active = jobs.len() as u32;
 
         if active >= local_max {
@@ -242,7 +227,7 @@ pub async fn run_poll_loop(
                 }
                 job_config.runner.workspace_dir = job_ws.clone();
                 let t = token.to_string();
-                let clean = snap.clean_workspace_after_job || snap.ephemeral;
+                let clean = snap.clean_workspace_after_job;
 
                 jobs.spawn(async move {
                     let result = run_one_job(&c, &job_config, &t, &task).await;
@@ -252,11 +237,6 @@ pub async fn run_poll_loop(
                     }
                     result
                 });
-
-                // If ephemeral, don't claim more — wait for the one job to finish
-                if is_ephemeral {
-                    // Fall through; next loop iteration will see active>=1 and wait
-                }
             }
             Ok(None) => {
                 if consecutive_failures > 0 {
@@ -382,8 +362,8 @@ async fn execute_job(
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("missing tasks array"))?;
 
-    // Build base env from trigger inputs + pipeline-level secrets.
-    // Step-level secrets are merged per-step below.
+    // Build base env from trigger inputs + pipeline env + pipeline secrets.
+    // Only Infrastructure Secrets (and step secrets) are tracked for log redaction.
     let mut base_env: std::collections::HashMap<String, String> = task
         .get("inputs")
         .and_then(|v| v.as_object())
@@ -394,7 +374,16 @@ async fn execute_job(
         })
         .unwrap_or_default();
 
-    // Merge pipeline-level resolved secrets from manager (e.g. env vars, platform vars, pipeline secrets)
+    // Non-secret pipeline env (inline `env:`, platform Variables) — show in clear in logs
+    if let Some(env_obj) = task.get("env").and_then(|v| v.as_object()) {
+        for (k, v) in env_obj {
+            if let Some(s) = v.as_str() {
+                base_env.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+
+    // Pipeline-level secrets from Manager — values redacted in RUN echo + stream logs
     let mut pipeline_secret_keys: HashSet<String> = HashSet::new();
     if let Some(secrets_obj) = task.get("secrets").and_then(|v| v.as_object()) {
         for (k, v) in secrets_obj {
@@ -453,8 +442,10 @@ async fn execute_job(
             }
         }
 
-        // Collect all secret values for log masking (GitHub Actions-style redaction)
-        let mut secret_values = crate::masker::collect_secret_values(&step_env);
+        // Collect secret values for log masking (GitHub Actions-style) — secrets only,
+        // not pipeline/step env, inputs, or runner-injected noninteractive flags.
+        let mut secret_values =
+            crate::masker::collect_secret_values_for_keys(&step_env, &step_secret_keys);
         if let Some(pw) = step
             .get("registry_auth")
             .and_then(|a| a.get("password"))

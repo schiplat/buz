@@ -30,7 +30,6 @@ export interface SystemInfo {
 export interface RunnerPolicy {
   max_concurrent_jobs: number
   clean_workspace_after_job: boolean
-  ephemeral: boolean
   shell_enabled: boolean
   ssh_enabled: boolean
   docker_enabled: boolean
@@ -50,7 +49,6 @@ export interface Runner {
   /** Max parallel jobs (1–32). */
   max_concurrent_jobs: number
   clean_workspace_after_job?: boolean
-  ephemeral?: boolean
   shell_enabled?: boolean
   ssh_enabled?: boolean
   docker_enabled?: boolean
@@ -68,7 +66,6 @@ export interface CreateRunnerPayload {
   labels: string[]
   max_concurrent_jobs?: number
   clean_workspace_after_job?: boolean
-  ephemeral?: boolean
   shell_enabled?: boolean
   ssh_enabled?: boolean
   docker_enabled?: boolean

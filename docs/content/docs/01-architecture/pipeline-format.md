@@ -274,6 +274,8 @@ variables:
 
 Sensitive values (passwords, tokens, SSH keys) defined in the Manager UI under Infrastructure → Secrets. Pipelines bind to them by name.
 
+Secrets default to **`team_shared: false`**: they are **not** auto-injected to every same-team pipeline. Reference them via pipeline `secrets:`, step `secrets:`, or `registry_secret`, or enable **Team share** on the secret for opt-in auto-inject. Same-team only; see [Secrets Access Control](/docs/01-architecture/secrets-access-control/).
+
 **Pipeline-level secrets** are injected into **every step**. Their values are **never logged** and are masked in terminal output.
 
 ```yaml

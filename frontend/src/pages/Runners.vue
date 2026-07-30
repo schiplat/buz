@@ -61,7 +61,6 @@ const newName = ref('')
 const newLabels = ref('linux-x64')
 const newMaxConcurrent = ref(1)
 const newCleanWorkspace = ref(false)
-const newEphemeral = ref(false)
 const newShellEnabled = ref(true)
 const newSshEnabled = ref(true)
 const newDockerEnabled = ref(false)
@@ -84,7 +83,6 @@ const detailTab = ref<'overview' | 'network' | 'logs'>('overview')
 const editMaxConcurrent = ref(1)
 const editLabels = ref('')
 const editCleanWorkspace = ref(false)
-const editEphemeral = ref(false)
 const editShellEnabled = ref(true)
 const editSshEnabled = ref(true)
 const editDockerEnabled = ref(false)
@@ -106,7 +104,6 @@ function openDetail(r: Runner) {
   editMaxConcurrent.value = r.max_concurrent_jobs || 1
   editLabels.value = (r.labels || []).join(', ')
   editCleanWorkspace.value = !!r.clean_workspace_after_job
-  editEphemeral.value = !!r.ephemeral
   editShellEnabled.value = r.shell_enabled !== false
   editSshEnabled.value = r.ssh_enabled !== false
   editDockerEnabled.value = !!r.docker_enabled
@@ -152,7 +149,6 @@ function openCreate() {
   newLabels.value = 'linux-x64'
   newMaxConcurrent.value = 1
   newCleanWorkspace.value = false
-  newEphemeral.value = false
   newShellEnabled.value = true
   newSshEnabled.value = true
   newDockerEnabled.value = false
@@ -174,7 +170,6 @@ async function handleCreate() {
       labels,
       max_concurrent_jobs: max,
       clean_workspace_after_job: newCleanWorkspace.value,
-      ephemeral: newEphemeral.value,
       shell_enabled: newShellEnabled.value,
       ssh_enabled: newSshEnabled.value,
       docker_enabled: newDockerEnabled.value,
@@ -199,7 +194,6 @@ function policyDirty(): boolean {
     labelsChanged ||
     editMaxConcurrent.value !== (r.max_concurrent_jobs ?? 1) ||
     editCleanWorkspace.value !== !!r.clean_workspace_after_job ||
-    editEphemeral.value !== !!r.ephemeral ||
     editShellEnabled.value !== (r.shell_enabled !== false) ||
     editSshEnabled.value !== (r.ssh_enabled !== false) ||
     editDockerEnabled.value !== !!r.docker_enabled ||
@@ -218,7 +212,6 @@ async function savePolicy() {
       labels,
       max_concurrent_jobs: max,
       clean_workspace_after_job: editCleanWorkspace.value,
-      ephemeral: editEphemeral.value,
       shell_enabled: editShellEnabled.value,
       ssh_enabled: editSshEnabled.value,
       docker_enabled: editDockerEnabled.value,
@@ -478,13 +471,17 @@ const eventBadge = (t: string) => {
                   running {{ activeRunner.running_jobs ?? 0 }} / max {{ activeRunner.max_concurrent_jobs ?? 1 }}
                 </span>
               </div>
-              <label class="flex items-center gap-2 text-xs cursor-pointer">
-                <input v-model="editCleanWorkspace" type="checkbox" class="rounded border-border" />
-                Clean workspace after each job
-              </label>
-              <label class="flex items-center gap-2 text-xs cursor-pointer">
-                <input v-model="editEphemeral" type="checkbox" class="rounded border-border" />
-                Ephemeral (exit after one job)
+              <label class="flex items-start gap-2 text-xs cursor-pointer">
+                <input v-model="editCleanWorkspace" type="checkbox" class="rounded border-border mt-0.5" />
+                <span>
+                  <span class="font-medium">Clean workspace after each job</span>
+                  <span class="block text-muted-foreground mt-0.5 leading-relaxed">
+                    Deletes the runner job directory (<code class="font-mono text-[10px]">workspace/&#123;job_id&#125;</code>).
+                    Does <span class="font-medium text-foreground">not</span> control Docker containers —
+                    <code class="font-mono text-[10px]">uses: docker</code> steps already use <code class="font-mono text-[10px]">--rm</code>
+                    and remove the container when the step ends.
+                  </span>
+                </span>
               </label>
               <div class="pt-1 border-t border-border/40 space-y-2">
                 <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Engines</div>
@@ -495,8 +492,15 @@ const eventBadge = (t: string) => {
                   <label class="flex items-center gap-2 text-xs cursor-pointer">
                     <input v-model="editSshEnabled" type="checkbox" class="rounded border-border" /> SSH
                   </label>
-                  <label class="flex items-center gap-2 text-xs cursor-pointer">
-                    <input v-model="editDockerEnabled" type="checkbox" class="rounded border-border" /> Docker
+                  <label class="flex items-start gap-2 text-xs cursor-pointer col-span-2">
+                    <input v-model="editDockerEnabled" type="checkbox" class="rounded border-border mt-0.5" />
+                    <span>
+                      Docker
+                      <span class="block text-muted-foreground mt-0.5 leading-relaxed">
+                        Allow <code class="font-mono text-[10px]">uses: docker</code>. Each step runs
+                        <code class="font-mono text-[10px]">docker run --rm</code> — the container is removed automatically after the step.
+                      </span>
+                    </span>
                   </label>
                   <label class="flex items-center gap-2 text-xs cursor-pointer">
                     <input v-model="editWasmEnabled" type="checkbox" class="rounded border-border" /> WASM
@@ -748,13 +752,16 @@ const eventBadge = (t: string) => {
               </div>
               <div class="space-y-2 rounded-xl border border-border/50 bg-muted/20 px-3 py-3">
                 <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Policy</div>
-                <label class="flex items-center gap-2 text-xs cursor-pointer">
-                  <input v-model="newCleanWorkspace" type="checkbox" class="rounded border-border" />
-                  Clean workspace after each job
-                </label>
-                <label class="flex items-center gap-2 text-xs cursor-pointer">
-                  <input v-model="newEphemeral" type="checkbox" class="rounded border-border" />
-                  Ephemeral (exit after one job)
+                <label class="flex items-start gap-2 text-xs cursor-pointer">
+                  <input v-model="newCleanWorkspace" type="checkbox" class="rounded border-border mt-0.5" />
+                  <span>
+                    <span class="font-medium">Clean workspace after each job</span>
+                    <span class="block text-muted-foreground mt-0.5 leading-relaxed">
+                      Wipes the job workspace directory. Docker containers from
+                      <code class="font-mono text-[10px]">uses: docker</code> already use
+                      <code class="font-mono text-[10px]">--rm</code> and are removed after each step.
+                    </span>
+                  </span>
                 </label>
                 <div class="grid grid-cols-2 gap-2 pt-1">
                   <label class="flex items-center gap-2 text-xs cursor-pointer">
@@ -763,8 +770,14 @@ const eventBadge = (t: string) => {
                   <label class="flex items-center gap-2 text-xs cursor-pointer">
                     <input v-model="newSshEnabled" type="checkbox" class="rounded border-border" /> SSH
                   </label>
-                  <label class="flex items-center gap-2 text-xs cursor-pointer">
-                    <input v-model="newDockerEnabled" type="checkbox" class="rounded border-border" /> Docker
+                  <label class="flex items-start gap-2 text-xs cursor-pointer col-span-2">
+                    <input v-model="newDockerEnabled" type="checkbox" class="rounded border-border mt-0.5" />
+                    <span>
+                      Docker
+                      <span class="block text-muted-foreground mt-0.5">
+                        <code class="font-mono text-[10px]">docker run --rm</code> — container removed when the step ends.
+                      </span>
+                    </span>
                   </label>
                   <label class="flex items-center gap-2 text-xs cursor-pointer">
                     <input v-model="newWasmEnabled" type="checkbox" class="rounded border-border" /> WASM

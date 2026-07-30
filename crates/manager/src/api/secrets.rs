@@ -23,18 +23,25 @@ fn value_fields_for_api(stored: &str, jwt_secret: &str) -> (String, bool) {
     }
 }
 
+fn team_shared_from_row(v: i64) -> bool {
+    v != 0
+}
+
 pub async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let team_filter = team_in_clause(&auth, "team_id");
     let sql = match &team_filter {
-        None => "SELECT id, name, value, owner_group, team_id, updated_at FROM secrets ORDER BY name ASC".to_string(),
+        None => {
+            "SELECT id, name, value, owner_group, team_id, team_shared, updated_at FROM secrets ORDER BY name ASC"
+                .to_string()
+        }
         Some((clause, _)) if clause == "AND 1=0" => {
             return Ok(Json(ApiResponse::success(vec![])));
         }
         Some((clause, _)) => format!(
-            "SELECT id, name, value, owner_group, team_id, updated_at FROM secrets WHERE 1=1 {clause} ORDER BY name ASC"
+            "SELECT id, name, value, owner_group, team_id, team_shared, updated_at FROM secrets WHERE 1=1 {clause} ORDER BY name ASC"
         ),
     };
 
@@ -59,7 +66,8 @@ pub async fn list(
                 "reencrypt_required": reencrypt_required,
                 "owner_group": r.get::<String, _>(3),
                 "team_id": r.get::<String, _>(4),
-                "updated_at": r.get::<Option<String>, _>(5),
+                "team_shared": team_shared_from_row(r.get::<i64, _>(5)),
+                "updated_at": r.get::<Option<String>, _>(6),
             })
         })
         .collect();
@@ -101,25 +109,32 @@ pub async fn create(
     let encrypted = crypto::encrypt(&req.value, &state.config.auth.jwt_secret)
         .map_err(|e| AppError::Internal(format!("secret encryption failed: {e}")))?;
 
+    let team_shared = req.team_shared.unwrap_or(false);
+    let team_shared_i: i64 = if team_shared { 1 } else { 0 };
+
     let id = Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO secrets (id, name, value, owner_group, team_id) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO secrets (id, name, value, owner_group, team_id, team_shared) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&name)
     .bind(&encrypted)
     .bind(&slug)
     .bind(&team_id)
+    .bind(team_shared_i)
     .execute(&state.pool)
     .await?;
 
-    tracing::info!("Secret created: {name} ({id}) team={slug}");
+    tracing::info!(
+        "Secret created: {name} ({id}) team={slug} team_shared={team_shared}"
+    );
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
         "name": name,
         "owner_group": slug,
         "team_id": team_id,
+        "team_shared": team_shared,
     }))))
 }
 
@@ -132,7 +147,7 @@ pub async fn get_one(
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let r = sqlx::query(
-        "SELECT id, name, value, owner_group, team_id, updated_at FROM secrets WHERE id = ?",
+        "SELECT id, name, value, owner_group, team_id, team_shared, updated_at FROM secrets WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.pool)
@@ -150,7 +165,8 @@ pub async fn get_one(
         "reencrypt_required": reencrypt_required,
         "owner_group": r.get::<String, _>(3),
         "team_id": r.get::<String, _>(4),
-        "updated_at": r.get::<Option<String>, _>(5),
+        "team_shared": team_shared_from_row(r.get::<i64, _>(5)),
+        "updated_at": r.get::<Option<String>, _>(6),
     }))))
 }
 
@@ -180,34 +196,69 @@ pub async fn update(
         (team_id, slug)
     };
 
+    let team_shared_i: Option<i64> = req.team_shared.map(|v| if v { 1 } else { 0 });
+
     // Empty value = keep existing ciphertext (UI: leave blank to keep current).
     if req.value.is_empty() {
-        sqlx::query(
-            "UPDATE secrets SET owner_group = ?, team_id = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(&slug)
-        .bind(&new_team_id)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        if let Some(shared) = team_shared_i {
+            sqlx::query(
+                "UPDATE secrets SET owner_group = ?, team_id = ?, team_shared = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(&slug)
+            .bind(&new_team_id)
+            .bind(shared)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+        } else {
+            sqlx::query(
+                "UPDATE secrets SET owner_group = ?, team_id = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(&slug)
+            .bind(&new_team_id)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+        }
     } else {
         let encrypted = crypto::encrypt(&req.value, &state.config.auth.jwt_secret)
             .map_err(|e| AppError::Internal(format!("secret encryption failed: {e}")))?;
-        sqlx::query(
-            "UPDATE secrets SET value = ?, owner_group = ?, team_id = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(&encrypted)
-        .bind(&slug)
-        .bind(&new_team_id)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        if let Some(shared) = team_shared_i {
+            sqlx::query(
+                "UPDATE secrets SET value = ?, owner_group = ?, team_id = ?, team_shared = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(&encrypted)
+            .bind(&slug)
+            .bind(&new_team_id)
+            .bind(shared)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+        } else {
+            sqlx::query(
+                "UPDATE secrets SET value = ?, owner_group = ?, team_id = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(&encrypted)
+            .bind(&slug)
+            .bind(&new_team_id)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+        }
     }
+
+    let team_shared: bool = sqlx::query_scalar("SELECT team_shared FROM secrets WHERE id = ?")
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await
+        .map(|v: i64| v != 0)
+        .unwrap_or(false);
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
         "updated": true,
         "team_id": new_team_id,
+        "team_shared": team_shared,
     }))))
 }
 

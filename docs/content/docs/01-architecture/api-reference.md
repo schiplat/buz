@@ -107,7 +107,7 @@ Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`
 
 ## Runners
 
-> Policy fields (`max_concurrent_jobs`, engines, cleanup, ephemeral, `ssh_host_key_policy`) are UI-managed. See [Runner Policy](/docs/01-architecture/runner-concurrent-jobs/).
+> Policy fields (`max_concurrent_jobs`, engines, cleanup, `ssh_host_key_policy`) are UI-managed. See [Runner Policy](/docs/01-architecture/runner-concurrent-jobs/).
 
 | Method | Path | Auth |
 |--------|------|------|
@@ -132,7 +132,6 @@ Request:
   "version": "0.1.0",
   "max_concurrent_jobs": 3,
   "clean_workspace_after_job": true,
-  "ephemeral": false,
   "shell_enabled": true,
   "ssh_enabled": true,
   "docker_enabled": true,
@@ -141,7 +140,7 @@ Request:
 }
 ```
 
-Policy fields are optional. Defaults: `max_concurrent_jobs=1`, cleanup/ephemeral off, shell+ssh on, docker+wasm off, `ssh_host_key_policy=insecure`.
+Policy fields are optional. Defaults: `max_concurrent_jobs=1`, cleanup off, shell+ssh on, docker+wasm off, `ssh_host_key_policy=insecure`.
 
 Response:
 ```json
@@ -171,7 +170,7 @@ Request (any field optional):
 
 Returns the updated runner object (includes `running_jobs` and all policy fields).
 
-List/get responses include policy columns (`max_concurrent_jobs`, `clean_workspace_after_job`, `ephemeral`, engine flags, `ssh_host_key_policy`) and `running_jobs`.
+List/get responses include policy columns (`max_concurrent_jobs`, `clean_workspace_after_job`, engine flags, `ssh_host_key_policy`) and `running_jobs`.
 
 ### POST /runners/register — Runner Registration
 
@@ -195,7 +194,6 @@ Response:
     "policy": {
       "max_concurrent_jobs": 1,
       "clean_workspace_after_job": false,
-      "ephemeral": false,
       "shell_enabled": true,
       "ssh_enabled": true,
       "docker_enabled": false,
@@ -221,7 +219,6 @@ Response includes the current UI policy snapshot (Runner refreshes concurrency, 
     "policy": {
       "max_concurrent_jobs": 3,
       "clean_workspace_after_job": true,
-      "ephemeral": false,
       "shell_enabled": true,
       "ssh_enabled": true,
       "docker_enabled": true,
@@ -381,7 +378,8 @@ Response:
 - List/get return a **partially redacted** preview (`ab****yz`, or JSON with `password`/`token` fields masked) — never full plaintext.
 - When ciphertext cannot be decrypted: `value` is `****` and `reencrypt_required: true`.
 - Empty `value` on PUT keeps the existing ciphertext.
-- For private registries, store JSON credentials and reference the secret **name** via step field `registry_secret` (see [Docker Engine](/docs/01-architecture/docker-engine/)).
+- `team_shared` (boolean, default `false` on create): when `true`, same-team pipelines auto-receive the secret at job claim; when `false`, use Authorized Secrets / YAML `secrets:` / step `secrets:` / `registry_secret`. See [Secrets Access Control](/docs/01-architecture/secrets-access-control/).
+- For private registries, store JSON credentials and reference the secret **name** via step field `registry_secret` (see [Docker Engine](/docs/01-architecture/docker-engine/)). Prefer `team_shared: false` for registry JSON.
 
 ## Variables
 

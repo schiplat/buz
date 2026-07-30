@@ -11,6 +11,7 @@
 #        Secrets → New Secret
 #        Name:  GIT_SSH_KEY
 #        Value: <paste entire contents of /tmp/buz_deploy_key>
+#        Team share: OFF (default) — this pipeline uses step secrets: only
 
 name: Git Clone & Build
 description: Clone private repo via SSH key, run tests, and build.

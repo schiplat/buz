@@ -43,3 +43,14 @@ fn collect_secret_values_skips_empty() {
     let values = collect_secret_values(&env);
     assert_eq!(values, vec!["value".to_string()]);
 }
+
+#[test]
+fn collect_secret_values_for_keys_ignores_non_secret_env() {
+    let mut env = std::collections::HashMap::new();
+    env.insert("SMOKE_ENV".into(), "from-pipeline".into());
+    env.insert("DOCKER_PASS".into(), "hunter2".into());
+    let mut keys = std::collections::HashSet::new();
+    keys.insert("DOCKER_PASS".into());
+    let values = collect_secret_values_for_keys(&env, &keys);
+    assert_eq!(values, vec!["hunter2".to_string()]);
+}

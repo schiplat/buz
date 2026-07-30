@@ -9,6 +9,11 @@ export interface Secret {
   reencrypt_required?: boolean
   owner_group: string
   team_id: string
+  /**
+   * When true, same-team pipelines auto-receive this secret at job claim.
+   * Default false — use Authorized Secrets / YAML secrets / step secrets / registry_secret.
+   */
+  team_shared: boolean
   updated_at: string
 }
 
@@ -23,7 +28,14 @@ export const secretsApi = {
     value: string
     team_id: string
     owner_group?: string
-  }): Promise<{ id: string; name: string; team_id: string; owner_group: string }> {
+    team_shared?: boolean
+  }): Promise<{
+    id: string
+    name: string
+    team_id: string
+    owner_group: string
+    team_shared: boolean
+  }> {
     const resp = await apiClient.post('/secrets', data)
     return resp.data
   },
@@ -35,7 +47,12 @@ export const secretsApi = {
 
   async update(
     id: string,
-    data: { value: string; team_id?: string; owner_group?: string },
+    data: {
+      value: string
+      team_id?: string
+      owner_group?: string
+      team_shared?: boolean
+    },
   ): Promise<void> {
     await apiClient.put(`/secrets/${id}`, data)
   },

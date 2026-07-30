@@ -92,7 +92,7 @@ async fn load_runner_policy(
     runner_id: &str,
 ) -> Result<RunnerPolicyConfig, AppError> {
     let row = sqlx::query(
-        "SELECT max_concurrent_jobs, clean_workspace_after_job, ephemeral,
+        "SELECT max_concurrent_jobs, clean_workspace_after_job,
                 shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy
          FROM runners WHERE id = ?",
     )
@@ -104,13 +104,12 @@ async fn load_runner_policy(
     Ok(RunnerPolicyConfig {
         max_concurrent_jobs: row.get::<i64, _>(0).max(1) as u32,
         clean_workspace_after_job: i64_bool(row.get(1)),
-        ephemeral: i64_bool(row.get(2)),
-        shell_enabled: i64_bool(row.get(3)),
-        ssh_enabled: i64_bool(row.get(4)),
-        docker_enabled: i64_bool(row.get(5)),
-        wasm_enabled: i64_bool(row.get(6)),
+        shell_enabled: i64_bool(row.get(2)),
+        ssh_enabled: i64_bool(row.get(3)),
+        docker_enabled: i64_bool(row.get(4)),
+        wasm_enabled: i64_bool(row.get(5)),
         ssh_host_key_policy: {
-            let p: String = row.get(7);
+            let p: String = row.get(6);
             if p == "known_hosts" {
                 p
             } else {
@@ -124,7 +123,6 @@ fn policy_json(p: &RunnerPolicyConfig) -> serde_json::Value {
     serde_json::json!({
         "max_concurrent_jobs": p.max_concurrent_jobs,
         "clean_workspace_after_job": p.clean_workspace_after_job,
-        "ephemeral": p.ephemeral,
         "shell_enabled": p.shell_enabled,
         "ssh_enabled": p.ssh_enabled,
         "docker_enabled": p.docker_enabled,
@@ -145,7 +143,6 @@ pub async fn create_runner(
     let max_concurrent = normalize_max_concurrent(req.max_concurrent_jobs)?;
     let ssh_policy = normalize_ssh_host_key_policy(req.ssh_host_key_policy.clone())?;
     let clean = bool_i64(req.clean_workspace_after_job, false);
-    let ephemeral = bool_i64(req.ephemeral, false);
     let shell = bool_i64(req.shell_enabled, true);
     let ssh = bool_i64(req.ssh_enabled, true);
     let docker = bool_i64(req.docker_enabled, false);
@@ -153,9 +150,9 @@ pub async fn create_runner(
 
     sqlx::query(
         "INSERT INTO runners (id, name, register_token, labels, status, version,
-         max_concurrent_jobs, clean_workspace_after_job, ephemeral,
+         max_concurrent_jobs, clean_workspace_after_job,
          shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy)
-         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&req.name)
@@ -164,7 +161,6 @@ pub async fn create_runner(
     .bind(&req.version)
     .bind(max_concurrent as i64)
     .bind(clean)
-    .bind(ephemeral)
     .bind(shell)
     .bind(ssh)
     .bind(docker)
@@ -455,8 +451,11 @@ pub async fn poll(
     .fetch_all(&state.pool)
     .await?;
 
-    // Resolve pipeline secrets from explicit bindings
+    // Resolve pipeline secrets from explicit bindings + team_shared (sensitive).
+    // Non-secret env (platform vars, inline env:) goes in a separate map so the
+    // Runner does not redact those values in logs.
     let mut secrets: serde_json::Value = serde_json::json!({});
+    let mut env: serde_json::Value = serde_json::json!({});
 
     // ── Explicit secret bindings (pipeline_secrets table) ──
     let explicit_rows = sqlx::query(
@@ -483,12 +482,12 @@ pub async fn poll(
         }
     }
 
-    // ── Team auto-access: secrets sharing the pipeline's team_id ──
+    // ── Team auto-access: same team_id AND team_shared opt-in ──
     let team_secret_rows = sqlx::query(
         "SELECT s.name, s.value
          FROM secrets s
          JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
-         WHERE p.id = ?",
+         WHERE p.id = ? AND s.team_shared = 1",
     )
     .bind(&pipeline_id)
     .fetch_all(&state.pool)
@@ -509,7 +508,7 @@ pub async fn poll(
         }
     }
 
-    // ── Explicit variable bindings (pipeline_vars table) ──
+    // ── Explicit variable bindings (pipeline_vars table) — not secrets ──
     let var_rows = sqlx::query(
         "SELECT pv.name, pv.value
          FROM pipeline_vars pvars
@@ -522,7 +521,7 @@ pub async fn poll(
     for vr in &var_rows {
         let name: String = vr.get(0);
         let value: String = vr.get(1);
-        if let Some(obj) = secrets.as_object_mut() {
+        if let Some(obj) = env.as_object_mut() {
             obj.insert(name, serde_json::Value::String(value));
         }
     }
@@ -538,7 +537,7 @@ pub async fn poll(
     for er in &env_rows {
         let name: String = er.get(0);
         let value: String = er.get(1);
-        if let Some(obj) = secrets.as_object_mut() {
+        if let Some(obj) = env.as_object_mut() {
             obj.insert(name, serde_json::Value::String(value));
         }
     }
@@ -581,17 +580,15 @@ pub async fn poll(
                 .filter(|s| !s.is_empty())
                 .collect();
             if !step_names.is_empty() {
-                // Query the secrets table directly for step-level secrets
-                let placeholders: Vec<String> = step_names
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| format!("?{}", i + 1))
-                    .collect();
+                // Same-team name resolve only (explicit step reference; not auto-inject)
+                let placeholders = vec!["?"; step_names.len()].join(",");
                 let query = format!(
-                    "SELECT name, value FROM secrets WHERE name IN ({})",
-                    placeholders.join(",")
+                    "SELECT s.name, s.value FROM secrets s
+                     JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
+                     WHERE p.id = ? AND s.name IN ({placeholders})"
                 );
                 let mut q = sqlx::query_as::<_, (String, String)>(&query);
+                q = q.bind(&pipeline_id);
                 for name in &step_names {
                     q = q.bind(*name);
                 }
@@ -623,8 +620,13 @@ pub async fn poll(
                 .collect();
 
             // ── Dynamic host resolution: resolve variable references ──
-            // Merge trigger_params + secrets into a unified lookup (inputs take priority)
+            // Merge env + secrets + trigger_params into a unified lookup (inputs take priority)
             let mut unified_vars = serde_json::json!({});
+            if let Some(obj) = env.as_object() {
+                for (k, v) in obj {
+                    unified_vars[k] = v.clone();
+                }
+            }
             if let Some(obj) = secrets.as_object() {
                 for (k, v) in obj {
                     unified_vars[k] = v.clone();
@@ -735,10 +737,14 @@ pub async fn poll(
         task_json["step_secrets"] = step_secrets_map;
 
         // Resolve registry_secret → registry_auth (not injected as env).
+        // Same-team name resolve only — does not require team_shared.
         if !registry_secret_name.trim().is_empty() {
             match sqlx::query_as::<_, (String,)>(
-                "SELECT value FROM secrets WHERE name = ?",
+                "SELECT s.value FROM secrets s
+                 JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
+                 WHERE p.id = ? AND s.name = ?",
             )
+            .bind(&pipeline_id)
             .bind(registry_secret_name.trim())
             .fetch_optional(&state.pool)
             .await
@@ -785,7 +791,7 @@ pub async fn poll(
                 }
                 Ok(None) => {
                     task_json["registry_auth_error"] = serde_json::Value::String(format!(
-                        "registry_secret '{}' not found in Manager Secrets",
+                        "registry_secret '{}' not found for this pipeline's team (create it under the same team, or check the name)",
                         registry_secret_name.trim()
                     ));
                 }
@@ -819,6 +825,7 @@ pub async fn poll(
         "pipeline_id": pipeline_id,
         "tasks": tasks,
         "inputs": trigger_params,
+        "env": env,
         "secrets": secrets,
     })))))
 }
@@ -930,7 +937,7 @@ pub async fn list_runners(
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let rows = sqlx::query(
         "SELECT r.id, r.name, r.labels, r.status, r.version, r.system_info, r.last_seen, r.is_frozen,
-                r.max_concurrent_jobs, r.clean_workspace_after_job, r.ephemeral,
+                r.max_concurrent_jobs, r.clean_workspace_after_job,
                 r.shell_enabled, r.ssh_enabled, r.docker_enabled, r.wasm_enabled, r.ssh_host_key_policy,
                 r.created_at, r.updated_at,
                 (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs
@@ -948,13 +955,12 @@ pub async fn list_runners(
             let policy = RunnerPolicyConfig {
                 max_concurrent_jobs: r.get::<i64, _>(8).max(1) as u32,
                 clean_workspace_after_job: i64_bool(r.get(9)),
-                ephemeral: i64_bool(r.get(10)),
-                shell_enabled: i64_bool(r.get(11)),
-                ssh_enabled: i64_bool(r.get(12)),
-                docker_enabled: i64_bool(r.get(13)),
-                wasm_enabled: i64_bool(r.get(14)),
+                shell_enabled: i64_bool(r.get(10)),
+                ssh_enabled: i64_bool(r.get(11)),
+                docker_enabled: i64_bool(r.get(12)),
+                wasm_enabled: i64_bool(r.get(13)),
                 ssh_host_key_policy: {
-                    let p: String = r.get(15);
+                    let p: String = r.get(14);
                     if p == "known_hosts" { p } else { "insecure".into() }
                 },
             };
@@ -969,15 +975,14 @@ pub async fn list_runners(
                 "is_frozen": r.get::<i64, _>(7) != 0,
                 "max_concurrent_jobs": policy.max_concurrent_jobs,
                 "clean_workspace_after_job": policy.clean_workspace_after_job,
-                "ephemeral": policy.ephemeral,
                 "shell_enabled": policy.shell_enabled,
                 "ssh_enabled": policy.ssh_enabled,
                 "docker_enabled": policy.docker_enabled,
                 "wasm_enabled": policy.wasm_enabled,
                 "ssh_host_key_policy": policy.ssh_host_key_policy,
-                "created_at": r.get::<Option<String>, _>(16),
-                "updated_at": r.get::<Option<String>, _>(17),
-                "running_jobs": r.get::<i64, _>(18),
+                "created_at": r.get::<Option<String>, _>(15),
+                "updated_at": r.get::<Option<String>, _>(16),
+                "running_jobs": r.get::<i64, _>(17),
             })
         })
         .collect();
@@ -1025,7 +1030,6 @@ pub async fn get_runner(
         "running_jobs": running_jobs,
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,
-        "ephemeral": policy.ephemeral,
         "shell_enabled": policy.shell_enabled,
         "ssh_enabled": policy.ssh_enabled,
         "docker_enabled": policy.docker_enabled,
@@ -1076,13 +1080,6 @@ pub async fn update_runner(
         .bind(&id)
         .execute(&state.pool)
         .await?;
-    }
-    if let Some(v) = req.ephemeral {
-        sqlx::query("UPDATE runners SET ephemeral = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(if v { 1i64 } else { 0 })
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
     }
     if let Some(v) = req.shell_enabled {
         sqlx::query(
@@ -1169,7 +1166,6 @@ pub async fn update_runner(
         "running_jobs": running_jobs,
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,
-        "ephemeral": policy.ephemeral,
         "shell_enabled": policy.shell_enabled,
         "ssh_enabled": policy.ssh_enabled,
         "docker_enabled": policy.docker_enabled,

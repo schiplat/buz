@@ -6,7 +6,7 @@ description: "Step-level Docker execution on the runner — design target aligne
 
 ## Status
 
-**Implemented (MVP).** Step-level `uses: docker` with required `image`, ephemeral `docker run --rm`, workspace mount at `/buz/workspace`, gated by UI `docker_enabled` on the Runner. See acceptance criteria below.
+**Implemented (MVP).** Step-level `uses: docker` with required `image`, always `docker run --rm` (container removed when the step ends — not controlled by Runner Policy), workspace mount at `/buz/workspace`, gated by UI `docker_enabled` on the Runner. See acceptance criteria below.
 
 Related: [Pipeline Format](/docs/01-architecture/pipeline-format/) (`uses` / execution engines), [Configuration](/docs/03-operations/configuration/).
 
@@ -209,7 +209,7 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 | # | Decision |
 |---|----------|
 | 1 | **Granularity**: step-level `uses: docker` (not pipeline-level `container:` in MVP) |
-| 2 | **Lifecycle**: one ephemeral container per docker step (`--rm`); no reuse across steps |
+| 2 | **Lifecycle**: one container per docker step with `docker run --rm` (auto-removed when the step ends) |
 | 3 | **Required field**: `image` when `uses: docker` |
 | 4 | **Command model**: same as local/SSH — multi-line `run:` executed via container shell (`sh -lc` unless overridden later) |
 | 5 | **Workspace**: bind-mount runner step work directory into a fixed container path (default `/buz/workspace`); container cwd = that path |
@@ -477,7 +477,7 @@ Registry hosts:
 
 ### Buz wiring (password never in YAML)
 
-1. Create Infrastructure → Secrets with name e.g. `acr-personal`. Value is **AES-256-GCM encrypted at rest**:
+1. Create Infrastructure → Secrets with name e.g. `acr-personal`. Leave **Team share OFF** (default) so unrelated pipelines never receive the JSON as env. Value is **AES-256-GCM encrypted at rest**:
 
 ```json
 {

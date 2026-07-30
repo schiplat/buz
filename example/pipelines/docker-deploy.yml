@@ -2,6 +2,7 @@
 # Deploy a Docker container to staging / production
 #
 # Trigger: manual (with inputs) or webhook
+# Add secrets: / registry_secret when credentials are needed (Team share OFF by default).
 
 name: Docker Deploy
 description: Build, push, and deploy a Docker container to target environment.
@@ -24,7 +25,7 @@ on:
         default: staging
 
 runner:
-  labels: [linux-x64, docker]
+  labels: [linux-x64]
   timeout: 15m
 
 env:

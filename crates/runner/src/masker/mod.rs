@@ -1,14 +1,29 @@
 //! Secret masker — replaces sensitive values in log output with `***`.
 //!
 //! Modeled after GitHub Actions' automatic secret redaction.
-//! Any value present in the job's environment (secrets, trigger inputs) is
-//! automatically masked when it appears in log output.
+//! Only Infrastructure Secrets (and registry passwords) are redacted — not
+//! pipeline `env:`, platform Variables, or trigger inputs.
 
-/// Collect all secret values from an env map (ignore empty values).
-pub fn collect_secret_values(env: &std::collections::HashMap<String, String>) -> Vec<String> {
+use std::collections::{HashMap, HashSet};
+
+/// Collect values for keys marked as secrets (ignore empty values).
+pub fn collect_secret_values_for_keys(
+    env: &HashMap<String, String>,
+    secret_keys: &HashSet<String>,
+) -> Vec<String> {
+    secret_keys
+        .iter()
+        .filter_map(|k| env.get(k))
+        .filter(|v| !v.is_empty())
+        .cloned()
+        .collect()
+}
+
+/// Collect all values from an env map (legacy helper — prefer [`collect_secret_values_for_keys`]).
+pub fn collect_secret_values(env: &HashMap<String, String>) -> Vec<String> {
     env.values()
         .filter(|v| !v.is_empty())
-        .map(|v| v.clone())
+        .cloned()
         .collect()
 }
 

@@ -25,7 +25,6 @@ pub async fn run_heartbeat_loop(
             Ok(next) => {
                 let prev = policy::store(&shared_policy, next.clone());
                 if prev.max_concurrent_jobs != next.max_concurrent_jobs
-                    || prev.ephemeral != next.ephemeral
                     || prev.clean_workspace_after_job != next.clean_workspace_after_job
                     || prev.shell_enabled != next.shell_enabled
                     || prev.ssh_enabled != next.ssh_enabled
@@ -34,12 +33,10 @@ pub async fn run_heartbeat_loop(
                     || prev.ssh_host_key_policy != next.ssh_host_key_policy
                 {
                     tracing::info!(
-                        "Runner policy updated from Manager: max_concurrent={}→{} ephemeral={}→{} \
+                        "Runner policy updated from Manager: max_concurrent={}→{} \
                          clean={}→{} engines=[shell={},ssh={},docker={},wasm={}] ssh_host_key={}",
                         prev.max_concurrent_jobs,
                         next.max_concurrent_jobs,
-                        prev.ephemeral,
-                        next.ephemeral,
                         prev.clean_workspace_after_job,
                         next.clean_workspace_after_job,
                         next.shell_enabled,

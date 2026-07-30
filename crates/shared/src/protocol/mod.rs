@@ -159,8 +159,6 @@ pub struct RunnerPolicyConfig {
     pub max_concurrent_jobs: u32,
     #[serde(default)]
     pub clean_workspace_after_job: bool,
-    #[serde(default)]
-    pub ephemeral: bool,
     #[serde(default = "default_true")]
     pub shell_enabled: bool,
     #[serde(default = "default_true")]
@@ -179,7 +177,6 @@ impl Default for RunnerPolicyConfig {
         Self {
             max_concurrent_jobs: 1,
             clean_workspace_after_job: false,
-            ephemeral: false,
             shell_enabled: true,
             ssh_enabled: true,
             docker_enabled: false,
@@ -243,8 +240,6 @@ pub struct CreateRunnerRequest {
     #[serde(default)]
     pub clean_workspace_after_job: Option<bool>,
     #[serde(default)]
-    pub ephemeral: Option<bool>,
-    #[serde(default)]
     pub shell_enabled: Option<bool>,
     #[serde(default)]
     pub ssh_enabled: Option<bool>,
@@ -269,7 +264,6 @@ pub struct UpdateRunnerRequest {
     pub labels: Option<Vec<String>>,
     pub max_concurrent_jobs: Option<u32>,
     pub clean_workspace_after_job: Option<bool>,
-    pub ephemeral: Option<bool>,
     pub shell_enabled: Option<bool>,
     pub ssh_enabled: Option<bool>,
     pub docker_enabled: Option<bool>,
@@ -473,6 +467,10 @@ pub struct CreateSecretRequest {
     pub owner_group: Option<String>,
     #[serde(default)]
     pub team_id: Option<String>,
+    /// When true, same-team pipelines auto-receive this secret at job claim.
+    /// Defaults to false (explicit bind / step reference / registry_secret only).
+    #[serde(default)]
+    pub team_shared: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -482,6 +480,9 @@ pub struct UpdateSecretRequest {
     pub owner_group: Option<String>,
     #[serde(default)]
     pub team_id: Option<String>,
+    /// When set, updates the opt-in team auto-inject flag.
+    #[serde(default)]
+    pub team_shared: Option<bool>,
 }
 
 // --- Variables ---

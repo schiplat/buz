@@ -1,5 +1,6 @@
 # ── Sleep Test Pipeline ───────────────────────────────────────────
 # Test pipeline for verifying cancel, live logs, and step execution.
+# No secret bindings — unrelated team secrets are not auto-injected.
 #
 # Trigger: manual (no params)
 

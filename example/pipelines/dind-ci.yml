@@ -8,8 +8,7 @@
 # Security: privileged containers can escape to the host via nsenter
 # or kernel exploits. Only use this pipeline on disposable runner VMs.
 #
-# Requires: runner with `engine.docker_enabled = true` and
-# labels that include "docker" and "dind".
+# Requires: runner with `engine.docker_enabled = true` and labels: [linux-x64].
 
 name: CI Build and Push
 description: Build a Docker image with DinD, push to registry, then deploy via SSH.
@@ -28,7 +27,7 @@ on:
         default: staging
 
 runner:
-  labels: [linux-x64, docker, dind]
+  labels: [linux-x64]
   timeout: 30m
 
 env:
@@ -36,6 +35,7 @@ env:
   NAMESPACE: apps
   IMAGE_NAME: my-service
 
+# Explicit bind — Team share not required. Secrets must exist in the same team.
 secrets:
   - DOCKER_REGISTRY_USER
   - DOCKER_REGISTRY_PASS

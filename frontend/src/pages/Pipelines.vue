@@ -347,7 +347,7 @@ async function openEdit(p: Pipeline) {
         image: t.image || undefined,
         volumes: parseVolumesToRows(t.volumes) as any,
         secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
-        host: t.host_id ? t.host_id : undefined,
+        host: (t.host_names || t.host_id || '').toString().trim() || undefined,
         host_labels: t.host_labels || undefined,
         dir: t.work_dir || undefined,
         timeout: t.timeout_seconds ? `${t.timeout_seconds}s` : undefined,
@@ -1264,7 +1264,8 @@ async function handleToggleActive(p: Pipeline) {
                   </option>
                 </select>
                 <p class="mt-1 text-xs text-muted-foreground">
-                  Same-team secrets from Infrastructure → Secrets are auto-injected. Use Authorized Secrets for cross-team bindings.
+                  Only secrets with <span class="font-medium text-foreground">Team share</span> enabled are auto-injected.
+                  Otherwise bind via Authorized Secrets or YAML / step / registry_secret references (same team only).
                 </p>
               </div>
 
@@ -1649,7 +1650,8 @@ async function handleToggleActive(p: Pipeline) {
                       placeholder="Select secrets..."
                     />
                     <p class="mt-1 text-xs text-muted-foreground">
-                      Explicit binding via <code class="font-mono">pipeline_secrets</code>. Use for cross-group or empty-group secrets.
+                      Explicit binding via <code class="font-mono">pipeline_secrets</code>.
+                      Required for secrets without Team share (same team only).
                     </p>
                   </div>
                 </div>
@@ -1959,6 +1961,8 @@ variables:
   - NOTIFY_EMAIL
 
 # ── Pipeline-level secrets (must exist in Manager → Secrets first) ──
+# Explicit bind — required unless the secret has Team share enabled.
+# Same team only. Prefer step secrets: / registry_secret for scoping.
 secrets:
   - DOCKER_REGISTRY_PASS
   - SLACK_WEBHOOK_URL
