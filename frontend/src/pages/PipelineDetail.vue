@@ -10,7 +10,7 @@ import { secretsApi } from '@/api/secrets'
 import { variablesApi } from '@/api/variables'
 import { teamsApi, type Team } from '@/api/teams'
 import { jobsApi, type Job, type LogChunk } from '@/api/jobs'
-import { parseUtc } from '@/utils/time'
+import { parseUtc, formatLocalShort } from '@/utils/time'
 import { type StepDef } from '@/api/pipelines'
 import PipelineTopologyGraph from '@/components/flow/PipelineTopologyGraph.vue'
 import BuildHistoryCard from '@/components/flow/BuildHistoryCard.vue'
@@ -390,8 +390,7 @@ function fmtStepDuration(stepIndex: number, stepStatuses: any[] | null): string 
 }
 
 function fmtTime(ts: string | null | undefined) {
-  if (!ts) return '—'
-  return ts.slice(5, 19)
+  return formatLocalShort(ts, '—')
 }
 
 function timeAgo(ts: string | null | undefined) {

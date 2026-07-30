@@ -2,7 +2,7 @@
 import { ref, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ChevronDown, ChevronRight, ArrowRight } from '@lucide/vue'
-import { parseUtc } from '@/utils/time'
+import { parseUtc, formatLocalDateTime } from '@/utils/time'
 import type { Job, LogChunk } from '@/api/jobs'
 import StepLogPanel from '@/components/flow/StepLogPanel.vue'
 
@@ -46,8 +46,7 @@ function fmtDuration(start: string | null, end: string | null) {
 }
 
 function fmtTime(ts: string | null | undefined) {
-  if (!ts) return ''
-  return ts.trim().replace('T', ' ').slice(0, 19)
+  return formatLocalDateTime(ts, '')
 }
 
 const emit = defineEmits<{

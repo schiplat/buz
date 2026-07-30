@@ -106,7 +106,7 @@ pub fn spawn_monitor(pool: SqlitePool, runner_config: RunnerConfig) {
                     .bind(&log_id)
                     .bind(job_id)
                     .bind(format!(
-                        "==> RUNNER LOST <==\nRunner '{name}' went offline while executing this job. The job has been marked as failed.\n"
+                        "==> RUNNER LOST\nRunner '{name}' went offline while executing this job. The job has been marked as failed.\n"
                     ))
                     .execute(&pool)
                     .await;

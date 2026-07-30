@@ -24,27 +24,115 @@ pub(crate) const LOG_STEP_ERROR: i32 = 9997;
 const LOG_STEP_META_A: i32 = 9998;
 const LOG_STEP_META_B: i32 = 9999;
 
-/// Build a `bash -x` style echo line showing the command with its environment.
-/// Secret values (from pipeline/key-level secrets) are masked as `***`.
-fn build_step_echo(exec_type: &str, command: &str, env: &HashMap<String, String>, secret_keys: &HashSet<String>, work_dir: Option<&str>) -> String {
-    let mut parts = vec![format!("==> RUN [{}]", exec_type)];
-    parts.push("note: GIT_TERMINAL_PROMPT=0 (noninteractive) — interactive prompts will cause failure".to_string());
-    if let Some(wd) = work_dir {
-        parts.push(format!("cwd: {wd}"));
+/// Build a structured step header (shown before command output).
+///
+/// Format (aligned with LOGIN / ERROR / CANCELLED banners):
+/// ```text
+/// ==> RUN [docker]
+///   note  GIT_TERMINAL_PROMPT=0 (noninteractive)
+///   cwd   /path
+///   env   KEY=val  SECRET=***
+///   cmd   echo hi
+///         more…
+/// ```
+pub(crate) fn build_step_echo(
+    exec_type: &str,
+    command: &str,
+    env: &HashMap<String, String>,
+    secret_keys: &HashSet<String>,
+    work_dir: Option<&str>,
+) -> String {
+    let mut out = format!("==> RUN [{exec_type}]\n");
+    out.push_str("  note  GIT_TERMINAL_PROMPT=0 (noninteractive)\n");
+    if let Some(wd) = work_dir.filter(|s| !s.is_empty()) {
+        out.push_str(&format!("  cwd   {wd}\n"));
     }
     if !env.is_empty() {
-        let mut items: Vec<String> = Vec::new();
-        for (k, v) in env {
-            if secret_keys.contains(k) {
-                items.push(format!("{k}=***"));
-            } else {
-                items.push(format!("{k}={v}"));
-            }
-        }
-        parts.push(format!("env: [{}]", items.join(", ")));
+        let mut keys: Vec<&String> = env.keys().collect();
+        keys.sort();
+        let items: Vec<String> = keys
+            .into_iter()
+            .map(|k| {
+                if secret_keys.contains(k) {
+                    format!("{k}=***")
+                } else {
+                    format!("{k}={}", env.get(k).map(String::as_str).unwrap_or(""))
+                }
+            })
+            .collect();
+        out.push_str(&format!("  env   {}\n", items.join("  ")));
     }
-    parts.push(format!("cmd: {command}"));
-    parts.join("\n") + "\n"
+    let cmd = command.trim_end();
+    let mut cmd_lines = cmd.lines();
+    if let Some(first) = cmd_lines.next() {
+        out.push_str(&format!("  cmd   {first}\n"));
+        for line in cmd_lines {
+            out.push_str(&format!("        {line}\n"));
+        }
+    } else {
+        out.push_str("  cmd   \n");
+    }
+    out
+}
+
+/// Banner for a successful local `docker login` before pull/run.
+pub(crate) fn build_login_banner(registry: &str) -> String {
+    format!("==> LOGIN [{registry}]\n")
+}
+
+/// Human hint when a step exits non-zero (avoid always blaming interactive input).
+pub(crate) fn step_failure_hint(stderr: &str, exit_code: i32) -> String {
+    let s = stderr.to_ascii_lowercase();
+    if s.contains("timeout") {
+        return "the step exceeded its timeout.".into();
+    }
+    if s.contains("no matching manifest") || s.contains("no match for platform") {
+        return "image has no manifest for this runner's CPU architecture \
+                (e.g. arm64 host vs amd64-only image). Use a multi-arch image \
+                or rebuild for this platform."
+            .into();
+    }
+    if s.contains("pull access denied")
+        || s.contains("unauthorized")
+        || s.contains("authentication required")
+        || s.contains("denied: requested access")
+    {
+        return "registry pull denied — check registry_secret credentials and image name/permissions."
+            .into();
+    }
+    if s.contains("docker login") && s.contains("failed") {
+        return "docker login failed — check registry_secret username/password and registry host."
+            .into();
+    }
+    if exit_code == 125 {
+        return "docker could not start the container (image/platform/daemon). See output above."
+            .into();
+    }
+    if exit_code == 127 {
+        return "command not found in the execution environment.".into();
+    }
+    "see step output above for details.".into()
+}
+
+/// Structured failure body under `==> ERROR`.
+pub(crate) fn build_step_failure_message(
+    step_name: &str,
+    exit_code: i32,
+    command: &str,
+    hint: &str,
+) -> String {
+    let cmd = command.trim().lines().next().unwrap_or("").trim();
+    let cmd_more = command.trim().lines().count() > 1;
+    let cmd_display = if cmd_more {
+        format!("{cmd} …")
+    } else {
+        cmd.to_string()
+    };
+    format!(
+        "step '{step_name}' failed (exit {exit_code})\n  \
+         command  {cmd_display}\n  \
+         hint     {hint}"
+    )
 }
 
 /// Poll the manager to check if this job has been cancelled.
@@ -228,7 +316,7 @@ async fn run_one_job(
                 LogChunk {
                     chunk_index: -1,
                     step_order: -1,
-                    content: format!("==> ERROR <==\n{e}\n"),
+                    content: format!("==> ERROR\n{e}\n"),
                 },
             )
             .await
@@ -388,7 +476,7 @@ async fn execute_job(
                 LogChunk {
                     chunk_index: log_base + LOG_STEP_ERROR,
                     step_order: idx as i32,
-                    content: format!("==> ERROR <==\n{msg}\n"),
+                    content: format!("==> ERROR\n{msg}\n"),
                 },
             )
             .await;
@@ -423,7 +511,7 @@ async fn execute_job(
                 LogChunk {
                     chunk_index: log_base + LOG_STEP_ERROR,
                     step_order: idx as i32,
-                    content: format!("==> ERROR <==\n{msg}\n"),
+                    content: format!("==> ERROR\n{msg}\n"),
                 },
             )
             .await;
@@ -473,7 +561,7 @@ async fn execute_job(
                 LogChunk {
                     chunk_index: log_base + LOG_STEP_ERROR,
                     step_order: idx as i32,
-                    content: format!("==> ERROR <==\n{msg}\n"),
+                    content: format!("==> ERROR\n{msg}\n"),
                 },
             )
             .await;
@@ -498,7 +586,7 @@ async fn execute_job(
                             LogChunk {
                                 chunk_index: log_base + LOG_STEP_ERROR,
                                 step_order: idx as i32,
-                                content: format!("==> ERROR <==\n{masked}\n"),
+                                content: format!("==> ERROR\n{masked}\n"),
                             },
                         )
                         .await;
@@ -514,7 +602,7 @@ async fn execute_job(
                         LogChunk {
                             chunk_index: log_base + LOG_LOGIN,
                             step_order: idx as i32,
-                            content: format!("==> docker login {registry} <==\n"),
+                            content: build_login_banner(registry),
                         },
                     )
                     .await;
@@ -623,9 +711,9 @@ async fn execute_job(
                     engine::shell::ShellOutput {
                         stdout: String::new(),
                         stderr: if was_cancelled_local {
-                            "==> CANCELLED <==\n".into()
+                            "==> CANCELLED\n".into()
                         } else if was_timeout {
-                            format!("==> TIMEOUT after {step_timeout_secs}s <==\n")
+                            format!("==> TIMEOUT [{step_timeout_secs}s]\n")
                         } else {
                             String::new()
                         },
@@ -664,7 +752,7 @@ async fn execute_job(
                         LogChunk {
                             chunk_index: log_base + LOG_STEP_ERROR,
                             step_order: idx as i32,
-                            content: format!("==> ERROR <==\n{msg}\n"),
+                            content: format!("==> ERROR\n{msg}\n"),
                         },
                     )
                     .await;
@@ -723,7 +811,7 @@ async fn execute_job(
                         abort_handle.abort();
                         (engine::shell::ShellOutput {
                             stdout: String::new(),
-                            stderr: format!("==> CANCELLED <==\n"),
+                            stderr: format!("==> CANCELLED\n"),
                             exit_code: -1,
                         }, true)
                     }
@@ -741,7 +829,7 @@ async fn execute_job(
                         LogChunk {
                             chunk_index: log_base + LOG_STEP_ERROR,
                             step_order: idx as i32,
-                            content: format!("==> ERROR <==\n{msg}\n"),
+                            content: format!("==> ERROR\n{msg}\n"),
                         },
                     )
                     .await;
@@ -767,7 +855,7 @@ async fn execute_job(
                             LogChunk {
                                 chunk_index: log_base + LOG_STEP_ERROR,
                                 step_order: idx as i32,
-                                content: format!("==> ERROR <==\n{masked}\n"),
+                                content: format!("==> ERROR\n{masked}\n"),
                             },
                         )
                         .await;
@@ -783,7 +871,7 @@ async fn execute_job(
                         LogChunk {
                             chunk_index: log_base + LOG_LOGIN,
                             step_order: idx as i32,
-                            content: format!("==> docker login {registry} <==\n"),
+                            content: build_login_banner(registry),
                         },
                     )
                     .await;
@@ -909,9 +997,9 @@ async fn execute_job(
                     engine::shell::ShellOutput {
                         stdout: String::new(),
                         stderr: if was_cancelled_docker {
-                            "==> CANCELLED <==\n".into()
+                            "==> CANCELLED\n".into()
                         } else if was_timeout_docker {
-                            format!("==> TIMEOUT after {step_timeout_secs}s <==\n")
+                            format!("==> TIMEOUT [{step_timeout_secs}s]\n")
                         } else {
                             String::new()
                         },
@@ -933,7 +1021,7 @@ async fn execute_job(
                 LogChunk {
                     chunk_index: log_base + LOG_STEP_META_A,
                     step_order: idx as i32,
-                    content: "==> CANCELLED <==\nJob was cancelled by user.\n".into(),
+                    content: "==> CANCELLED\nJob was cancelled by user.\n".into(),
                 },
             )
             .await;
@@ -944,7 +1032,7 @@ async fn execute_job(
         // For SSH steps, upload the accumulated output as a summary chunk.
         // Local steps are fully streamed so we skip this redundant upload.
         if exec_type == "ssh" {
-            let combined = format!("==> {step_name} <==\n{}\n{}", output.stdout, output.stderr);
+            let combined = format!("==> {step_name}\n{}\n{}", output.stdout, output.stderr);
             let masked = crate::masker::mask_secrets(&combined, &secret_values);
             super::logs::upload_chunk(
                 client,
@@ -962,20 +1050,8 @@ async fn execute_job(
 
         if output.exit_code != 0 && fail_strategy == "stop" {
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            let trimmed_cmd = command.trim();
-            let hint = if output.stderr.contains("TIMEOUT") {
-                "the step exceeded its timeout.".to_string()
-            } else {
-                "the command may have tried to read interactive input. \
-                 GIT_TERMINAL_PROMPT=0 is enabled — check that credentials are \
-                 provided via secrets, or add the missing environment variables.".to_string()
-            };
-            anyhow::bail!(
-                "step '{}' failed with exit code {}\n\
-                 \x20  command: {}\n\
-                 \x20  hint: {}",
-                step_name, output.exit_code, trimmed_cmd, hint,
-            );
+            let hint = step_failure_hint(&output.stderr, output.exit_code);
+            anyhow::bail!("{}", build_step_failure_message(step_name, output.exit_code, command, &hint));
         } else if output.exit_code != 0 && fail_strategy == "continue" {
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
         } else {

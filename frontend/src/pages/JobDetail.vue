@@ -6,7 +6,8 @@ import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, XCircle, Trash2, CheckCircle2, Loader2, MinusCircle } from '@lucide/vue'
 import { jobsApi, type Job, type LogChunk } from '@/api/jobs'
-import { parseUtc, formatLogClock } from '@/utils/time'
+import { parseUtc, formatLogClock, formatLocalDateTime } from '@/utils/time'
+import { formatLogChunkForTerminal } from '@/utils/logFormat'
 import { createManagedWebSocket, type ManagedWebSocket } from '@/utils/ws'
 import { navLog } from '@/utils/navigation'
 import { Terminal } from '@xterm/xterm'
@@ -192,7 +193,7 @@ function startRefreshTimer() {
             if (c.step_order === activeIdx && !st.seenContent.has(c.content)) {
               st.seenContent.add(c.content)
               const ts = formatLogClock(c.created_at, nowTimeStr())
-              st.term.write(`\x1b[2m[${ts}]\x1b[0m ${c.content.replace(/\n/g, '\r\n')}`)
+              st.term.write(formatLogChunkForTerminal(ts, c.content))
             }
           }
           fitTerminalHeight(activeIdx!)
@@ -252,24 +253,29 @@ function initSingleTerminal(stepOrder: number) {
     const task = job.value.snapshot.tasks.find(t => Number(t.step_order) === stepOrder)
     if (task) {
       const parts = [`==> RUN [${task.exec_type}]`]
-      parts.push('note: GIT_TERMINAL_PROMPT=0 (noninteractive) — interactive prompts will cause failure')
-      if (task.work_dir) parts.push(`cwd: ${task.work_dir}`)
+      parts.push('  note  GIT_TERMINAL_PROMPT=0 (noninteractive)')
+      if (task.work_dir) parts.push(`  cwd   ${task.work_dir}`)
       const envVars = job.value.snapshot.env || []
       if (envVars.length > 0) {
         const items = envVars.map(e => e.is_secret ? `${e.name}=***` : `${e.name}`)
-        parts.push(`env: [${items.join(', ')}]`)
+        parts.push(`  env   ${items.join('  ')}`)
       }
-      parts.push(`cmd: ${task.command_template}`)
+      const cmdLines = String(task.command_template || '').trimEnd().split('\n')
+      if (cmdLines.length > 0) {
+        parts.push(`  cmd   ${cmdLines[0]}`)
+        for (let i = 1; i < cmdLines.length; i++) {
+          parts.push(`        ${cmdLines[i]}`)
+        }
+      }
       const fallbackEcho = parts.join('\n') + '\n'
-      const ts = '--:--:--'
-      term.write(`\x1b[2m[${ts}]\x1b[0m ${fallbackEcho.replace(/\n/g, '\r\n')}`)
+      term.write(formatLogChunkForTerminal('--:--:--', fallbackEcho))
       seen.add(fallbackEcho)
     }
   }
 
   for (const chunk of chunks) {
     const ts = formatLogClock(chunk.created_at, nowTimeStr())
-    term.write(`\x1b[2m[${ts}]\x1b[0m ${chunk.content.replace(/\n/g, '\r\n')}`)
+    term.write(formatLogChunkForTerminal(ts, chunk.content))
     seen.add(chunk.content)
   }
   stepTerminals.value.push({ stepOrder, term, fitAddon, seenContent: seen })
@@ -339,7 +345,7 @@ function handleWsMessage(raw: string) {
     if (st && !st.seenContent.has(chunk.content)) {
       st.seenContent.add(chunk.content)
       const ts = formatLogClock(chunk.created_at, nowTimeStr())
-      st.term.write(`\x1b[2m[${ts}]\x1b[0m ${chunk.content.replace(/\n/g, '\r\n')}`)
+      st.term.write(formatLogChunkForTerminal(ts, chunk.content))
       fitTerminalHeight(chunk.step_order)
     }
   } catch {
@@ -348,7 +354,7 @@ function handleWsMessage(raw: string) {
     const running = stepTerminals.value.find(t => getStepStatus(t.stepOrder) === 'running')
     if (running && !running.seenContent.has(raw)) {
       running.seenContent.add(raw)
-      running.term.write(`\x1b[2m[${nowTimeStr()}]\x1b[0m ${raw.replace(/\n/g, '\r\n')}`)
+      running.term.write(formatLogChunkForTerminal(nowTimeStr(), raw))
       fitTerminalHeight(running.stepOrder)
     }
   }
@@ -495,15 +501,15 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
           </div>
           <div>
             <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Started</div>
-            <div class="text-xs text-muted-foreground">{{ job.start_time || '\u2014' }}</div>
+            <div class="text-xs text-muted-foreground">{{ formatLocalDateTime(job.start_time) }}</div>
           </div>
           <div>
             <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Ended</div>
-            <div class="text-xs text-muted-foreground">{{ job.end_time || '\u2014' }}</div>
+            <div class="text-xs text-muted-foreground">{{ formatLocalDateTime(job.end_time) }}</div>
           </div>
           <div>
             <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Created</div>
-            <div class="text-xs text-muted-foreground">{{ job.created_at }}</div>
+            <div class="text-xs text-muted-foreground">{{ formatLocalDateTime(job.created_at) }}</div>
           </div>
         </div>
       </div>

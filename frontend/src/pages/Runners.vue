@@ -6,6 +6,7 @@ import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText } from '@lucide/vue'
 import { runnersApi, type Runner } from '@/api/runners'
+import { formatLocalDateTime } from '@/utils/time'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
 
@@ -680,7 +681,7 @@ const eventBadge = (t: string) => {
                     >{{ ev.event_type }}</span>
                     <div class="min-w-0 flex-1">
                       <p class="text-xs text-foreground leading-snug">{{ ev.message }}</p>
-                      <p class="text-[10px] text-muted-foreground mt-1 font-mono">{{ ev.created_at }}</p>
+                      <p class="text-[10px] text-muted-foreground mt-1 font-mono">{{ formatLocalDateTime(ev.created_at) }}</p>
                     </div>
                   </div>
                   <!-- Pagination -->
