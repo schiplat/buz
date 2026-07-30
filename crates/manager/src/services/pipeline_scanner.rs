@@ -240,22 +240,26 @@ async fn upsert_from_yaml(
             insert_env_vars(pool, &id, &pairs).await?;
         }
         if !pipeline_secrets.is_empty() {
-            // Look up secret IDs by name and create explicit bindings
-            let placeholders: Vec<String> = pipeline_secrets
-                .iter()
-                .enumerate()
-                .map(|(i, _)| format!("?{}", i + 1))
-                .collect();
+            // Same-team name resolve only (never bind another team's secret)
+            let placeholders = vec!["?"; pipeline_secrets.len()].join(",");
             let query = format!(
-                "SELECT id FROM secrets WHERE name IN ({})",
-                placeholders.join(",")
+                "SELECT id FROM secrets WHERE team_id = ? AND name IN ({placeholders})"
             );
-            let mut q = sqlx::query_as::<_, (String,)>(&query);
+            let mut q = sqlx::query_as::<_, (String,)>(&query).bind(&team_id);
             for name in &pipeline_secrets {
                 q = q.bind(name);
             }
             let secret_ids: Vec<String> =
                 q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+            if secret_ids.len() != pipeline_secrets.len() {
+                tracing::warn!(
+                    pipeline = %pipeline_name,
+                    team = %resolved_slug,
+                    requested = ?pipeline_secrets,
+                    bound = secret_ids.len(),
+                    "YAML secrets: some names missing or not in this pipeline's team — skipped"
+                );
+            }
             insert_pipeline_secret_bindings(pool, &id, &secret_ids).await?;
         }
         if let Some(ref var_names) = parsed.variables {
@@ -320,22 +324,26 @@ async fn upsert_from_yaml(
             insert_env_vars(pool, &id, &pairs).await?;
         }
         if !pipeline_secrets.is_empty() {
-            // Look up secret IDs by name and create explicit bindings
-            let placeholders: Vec<String> = pipeline_secrets
-                .iter()
-                .enumerate()
-                .map(|(i, _)| format!("?{}", i + 1))
-                .collect();
+            // Same-team name resolve only (never bind another team's secret)
+            let placeholders = vec!["?"; pipeline_secrets.len()].join(",");
             let query = format!(
-                "SELECT id FROM secrets WHERE name IN ({})",
-                placeholders.join(",")
+                "SELECT id FROM secrets WHERE team_id = ? AND name IN ({placeholders})"
             );
-            let mut q = sqlx::query_as::<_, (String,)>(&query);
+            let mut q = sqlx::query_as::<_, (String,)>(&query).bind(&team_id);
             for name in &pipeline_secrets {
                 q = q.bind(name);
             }
             let secret_ids: Vec<String> =
                 q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+            if secret_ids.len() != pipeline_secrets.len() {
+                tracing::warn!(
+                    pipeline = %pipeline_name,
+                    team = %resolved_slug,
+                    requested = ?pipeline_secrets,
+                    bound = secret_ids.len(),
+                    "YAML secrets: some names missing or not in this pipeline's team — skipped"
+                );
+            }
             insert_pipeline_secret_bindings(pool, &id, &secret_ids).await?;
         }
         if let Some(ref var_names) = parsed.variables {

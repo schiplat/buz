@@ -22,7 +22,7 @@ Runner registry.
 | status | TEXT | `online`, `offline`, `busy` |
 | max_concurrent_jobs | INTEGER | Max parallel jobs (1–32). Default `1`. Configured in Manager UI |
 | clean_workspace_after_job | INTEGER | Wipe job workspace after each job (`0`/`1`). UI-managed |
-| shell_enabled | INTEGER | Allow shell/`local` steps (`0`/`1`, default `1`). UI-managed |
+| shell_enabled | INTEGER | Allow shell steps (`0`/`1`, default `1`). UI-managed |
 | ssh_enabled | INTEGER | Allow SSH steps (`0`/`1`, default `1`). UI-managed |
 | docker_enabled | INTEGER | Allow Docker steps (`0`/`1`, default `0`). UI-managed |
 | wasm_enabled | INTEGER | Allow WASM steps (`0`/`1`, default `0`). UI-managed |

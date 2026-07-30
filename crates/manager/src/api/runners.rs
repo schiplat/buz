@@ -458,10 +458,12 @@ pub async fn poll(
     let mut env: serde_json::Value = serde_json::json!({});
 
     // ── Explicit secret bindings (pipeline_secrets table) ──
+    // Same-team only: ignore stale/cross-team rows if any slipped into the table.
     let explicit_rows = sqlx::query(
         "SELECT s.name, s.value
          FROM pipeline_secrets ps
          JOIN secrets s ON s.id = ps.secret_id
+         JOIN pipelines p ON p.id = ps.pipeline_id AND s.team_id = p.team_id AND p.team_id != ''
          WHERE ps.pipeline_id = ?",
     )
     .bind(&pipeline_id)

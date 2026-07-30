@@ -34,7 +34,7 @@ Zero-trust security and architectural minimalism combined.
 {{< cards >}}
   {{< card link="runner-concurrent-jobs/" title="Runner Policy" subtitle="UI-managed concurrency, engines, cleanup" >}}
   {{< card link="docker-engine/" title="Docker Engine" subtitle="uses: docker + registry_secret" >}}
-  {{< card link="secrets-access-control/" title="Secrets Access Control" subtitle="Teams, bindings, registry_secret" >}}
+  {{< card link="secrets-access-control/" title="Secrets Access Control" subtitle="team_shared, bindings, registry_secret" >}}
   {{< card link="pipeline-format/" title="Pipeline Format" subtitle="YAML fields including registry_secret" >}}
   {{< card link="job-concurrency-queue/" title="Job Concurrency Queue" subtitle="Pipeline-level queue / discard" >}}
   {{< card link="api-reference/" title="API Reference" subtitle="HTTP endpoints including Runners" >}}

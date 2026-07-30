@@ -82,7 +82,7 @@ JOIN pipeline_secrets ps ON ps.secret_id = s.id
 WHERE ps.pipeline_id = ?
 ```
 
-Bind-time auth: binder needs `SecretManage` on the pipeline’s team; secret must belong to the **same** team (cross-team forbidden).
+Bind-time auth: binder needs `SecretManage` on the pipeline’s team; secret must belong to the **same** team (cross-team forbidden). YAML scanner resolves `secrets:` names with `AND team_id = pipeline.team_id`. Job claim Tier 2 also requires `s.team_id = p.team_id` so stale cross-team rows never inject.
 
 **Use case:** Pipeline needs a non-shared secret for all steps as env vars.
 
@@ -99,17 +99,27 @@ Resolution requires the secret to exist and `secret.team_id == pipeline.team_id`
 
 ### Resolution Order
 
-Tiers are merged and de-duplicated by name. Explicit bindings / step maps win over auto-access when names collide. The poll payload includes job-level `secrets` plus per-step `step_secrets` / `registry_auth` as applicable.
+Tiers are merged and de-duplicated by name. Explicit bindings / step maps win over auto-access when names collide.
+
+Claim payload (Manager → Runner):
 
 ```json
 {
-  "task": { ... },
+  "job_id": "…",
+  "pipeline_id": "…",
+  "tasks": [ { "step_secrets": {}, "registry_auth": null } ],
+  "inputs": { "tag": "1.0" },
+  "env": {
+    "SMOKE_ENV": "from-pipeline",
+    "REGISTRY": "registry.example.com"
+  },
   "secrets": {
     "DOCKER_PASS": "hunter2"
   }
 }
 ```
 
+Only `secrets` (and registry passwords / step secrets) are redacted in logs. See [Resource Binding Map](#resource-binding-map).
 ---
 
 ## Resource Binding Map

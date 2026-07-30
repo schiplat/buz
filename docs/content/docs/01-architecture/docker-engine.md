@@ -213,7 +213,7 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 | 3 | **Required field**: `image` when `uses: docker` |
 | 4 | **Command model**: same as local/SSH — multi-line `run:` executed via container shell (`sh -lc` unless overridden later) |
 | 5 | **Workspace**: bind-mount runner step work directory into a fixed container path (default `/buz/workspace`); container cwd = that path |
-| 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution order as local; masking unchanged |
+| 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution as shell/SSH. **Log masking**: only Infrastructure Secrets (and registry passwords) are redacted — pipeline `env:`, Variables, and trigger `inputs` stay readable. Claim payload splits `env` vs `secrets` — see [Secrets Access Control](/docs/01-architecture/secrets-access-control/) |
 | 7 | **Gate**: Runner UI `docker_enabled` must be `true`; otherwise step fails with a clear error (do not fall back to shell) |
 | 8 | **Scheduling**: pipelines that need Docker should set `runner.labels` to include `docker`; Manager dispatches only to runners that have **all** required labels |
 | 9 | **Private registry auth**: YAML/form stores only a **Secret name** (`registry_secret`) — never the password. Encrypted at rest; Manager sends `registry_auth` to the Runner. **Docker**: login before pull/run. **Shell / SSH**: login before `run` (SSH login happens on the remote host) so `docker push` works; then logout. Target: ACR Personal Edition; optional JSON `provider`. |
@@ -238,13 +238,13 @@ steps:
   - name: Private ACR image
     uses: docker
     image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
-    registry_secret: acr-personal  # Secret *name* only — password lives in Infrastructure → Secrets
+    registry_secret: acr_personal  # Secret *name* only — password lives in Infrastructure → Secrets
     run: echo ok
 
   # Shell / SSH also support registry_secret (e.g. docker push):
   # - name: Push
   #   uses: shell
-  #   registry_secret: acr-personal
+  #   registry_secret: acr_personal
   #   run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
 ```
 
@@ -271,7 +271,7 @@ entrypoint: /bin/bash
 # Supported ✅
 volumes: ["/host/path:/container/path"]
 privileged: true              # opt-in DinD only
-registry_secret: acr-personal # docker / shell / SSH
+registry_secret: acr_personal # docker / shell / SSH
 ```
 
 ---
@@ -392,7 +392,7 @@ MVP is **done** only when all items below pass. Criteria are testable (automated
 | C2 | Each docker step uses a fresh ephemeral container (`--rm`); no leftover for that step | argv unit + `docker_e2e_rm_does_not_grow_container_list` | ✅ |
 | C3 | Runner workspace at `/buz/workspace`; file written in container appears on host | `docker_e2e_workspace_mount_and_cwd` | ✅ |
 | C4 | Pipeline env / variables / secrets / inputs available as env inside the container | `docker_e2e_env_injection` (+ `INPUT_*`) | ✅ |
-| C5 | Secret values are masked in streamed Job logs (same masker as local) | `masker` unit tests | ✅ |
+| C5 | Secret values are masked in streamed Job logs; pipeline `env:` / Variables / inputs are not | `masker` unit tests (`collect_secret_values_for_keys`) | ✅ |
 | C6 | Container non-zero exit → step failed; zero → success | `docker_e2e_nonzero_exit_fails` | ✅ |
 | C7 | Step `timeout` kills/stops the container | Runner timeout path + `docker_e2e_kill_stops_container` (kill child) | ✅ |
 | C8 | Job cancel while docker step is running stops the container | Same kill path as C7 (Manager cancel → runner kills child) | ✅ |
@@ -477,7 +477,7 @@ Registry hosts:
 
 ### Buz wiring (password never in YAML)
 
-1. Create Infrastructure → Secrets with name e.g. `acr-personal`. Leave **Team share OFF** (default) so unrelated pipelines never receive the JSON as env. Value is **AES-256-GCM encrypted at rest**:
+1. Create Infrastructure → Secrets with name e.g. `acr_personal`. Leave **Team share OFF** (default) so unrelated pipelines never receive the JSON as env. Value is **AES-256-GCM encrypted at rest**:
 
 ```json
 {

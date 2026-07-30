@@ -100,7 +100,7 @@ Rules: both fields required; `new_password` ≥ 6 characters and must differ fro
 Returns liveness plus package version (no separate `/version` endpoint).
 
 ```json
-{ "status": "ok", "name": "Buz", "version": "0.1.0", "component": "manager" }
+{ "status": "ok", "name": "Buz", "version": "0.2.0", "component": "manager" }
 ```
 
 Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`) and mirrored in `frontend/package.json`. CLI: `buz-manager --version` / `buz-runner --version`.
@@ -129,7 +129,7 @@ Request:
 {
   "name": "prod-runner-01",
   "labels": ["linux-x64", "prod"],
-  "version": "0.1.0",
+  "version": "0.2.0",
   "max_concurrent_jobs": 3,
   "clean_workspace_after_job": true,
   "shell_enabled": true,
@@ -180,7 +180,7 @@ Request:
   "name": "prod-runner-01",
   "register_token": "one-time-token",
   "labels": ["linux-x64"],
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
 ```
 
@@ -243,11 +243,34 @@ Response (with task):
     "job_id": "uuid",
     "pipeline_id": "uuid",
     "tasks": [
-      { "id": "uuid", "step_order": 0, "name": "build", "exec_type": "shell", "command_template": "npm run build", "work_dir": "" }
-    ]
+      {
+        "id": "uuid",
+        "step_order": 0,
+        "name": "build",
+        "exec_type": "shell",
+        "command_template": "npm run build",
+        "work_dir": "",
+        "step_secrets": {},
+        "registry_secret": "",
+        "registry_auth": null
+      }
+    ],
+    "inputs": { "tag": "1.0" },
+    "env": {
+      "REGISTRY": "registry.example.com",
+      "APP_NAME": "myapp"
+    },
+    "secrets": {
+      "DOCKER_PASS": "hunter2"
+    }
   }
 }
 ```
+
+- `env` — platform Variables + pipeline inline `env:` (shown in clear in Job logs)
+- `secrets` — Infrastructure Secrets only (redacted as `***` in RUN banners and stream logs)
+- `inputs` — trigger params (also not redacted; Runner also exports `INPUT_<KEY>` uppercased)
+- Per-step `registry_auth` — resolved from `registry_secret` for `docker login` only (not injected as `$NAME`)
 
 Empty response: `204 No Content`
 

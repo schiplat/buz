@@ -249,7 +249,7 @@ env:
 
 ### `variables`
 
-Platform-level **non-sensitive** key-value pairs defined in the Manager UI under Infrastructure → Variables. Pipelines **bind** to them by name — via YAML or the form's multi-select dropdown. Injected as env vars into **every step**.
+Platform-level **non-sensitive** key-value pairs defined in the Manager UI under Infrastructure → Variables. Pipelines **bind** to them by name — via YAML or the form's multi-select dropdown. Injected as env vars into **every step**. Values are **not** masked in Job logs (unlike Infrastructure Secrets).
 
 ```yaml
 # YAML (scanned pipelines) — names must exist in the platform_vars table
@@ -350,7 +350,7 @@ steps:
 
   - name: Push image
     uses: shell
-    registry_secret: acr-personal
+    registry_secret: acr_personal
     run: |
       docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:$INPUT_VERSION
 ```
@@ -465,12 +465,12 @@ Name of a Manager Secret (not a password) for `docker login`. Valid on **shell**
 # Docker pull
 uses: docker
 image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
-registry_secret: acr-personal
+registry_secret: acr_personal
 run: echo ok
 
 # Shell push
 uses: shell
-registry_secret: acr-personal
+registry_secret: acr_personal
 run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
 ```
 
@@ -478,7 +478,7 @@ Full orchestration (prepare → build → push → verify): `example/pipelines/a
 
 | | |
 |---|---|
-| YAML | `registry_secret: acr-personal` |
+| YAML | `registry_secret: acr_personal` |
 | Form | Registry Secret |
 | See | [Docker Engine — ACR Personal Edition](/docs/01-architecture/docker-engine/) |
 
