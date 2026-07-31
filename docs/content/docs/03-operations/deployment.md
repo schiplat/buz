@@ -36,8 +36,8 @@ CI workflow `.github/workflows/release.yml` builds **Linux + macOS** archives (U
 |---------|--------|
 | `buz-<ver>-linux-x86_64.tar.gz` | ubuntu-latest |
 | `buz-<ver>-linux-aarch64.tar.gz` | ubuntu-24.04-arm |
-| `buz-<ver>-macos-x86_64.tar.gz` | macos-13 |
 | `buz-<ver>-macos-aarch64.tar.gz` | macos-14 (Apple Silicon) |
+| ~~`buz-<ver>-macos-x86_64.tar.gz`~~ | temporarily disabled (macos-13 / Intel) |
 
 ```text
 buz-<version>-linux-x86_64.tar.gz
@@ -60,7 +60,7 @@ tar -xzf buz-*-linux-x86_64.tar.gz && cd buz-*
 ./bin/buz-manager -c conf/manager.toml
 ```
 
-Apple Silicon Mac: use `macos-aarch64`; Intel Mac: `macos-x86_64`.
+Apple Silicon Mac: use `macos-aarch64`. Intel Mac (`macos-x86_64`) builds are temporarily disabled in CI.
 ## Docker (Aliyun ACR)
 
 Images:

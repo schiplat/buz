@@ -45,7 +45,8 @@ Logs default to **container stdout** (`docker logs`). Set `logging.file` only if
 
 ```bash
 make package   # builds for the current host (macOS or Linux)
-# CI Release workflow also publishes linux-x86_64/aarch64 + macos-x86_64/aarch64
+# CI Release workflow publishes linux-x86_64/aarch64 + macos-aarch64
+# (macos-x86_64 / Intel temporarily disabled)
 ```
 Packaged `conf/manager.toml` ships with an **empty** `jwt_secret`. Before start:
 
