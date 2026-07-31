@@ -220,29 +220,64 @@ curl -sS https://buz.example.com/api/v1/health
 
 ### B3. Nginx example
 
+A complete HTTPS site config is provided at **`deploy/nginx/buz-manager-ssl.conf`** — copy it, replace `server_name` (and cert paths), reload, and you are live.
+
+```bash
+# 1) Manager already bound to loopback (B1 above)
+# 2) Issue certs once
+sudo certbot certonly --nginx -d buz.example.com
+# 3) Install the site
+sudo cp deploy/nginx/buz-manager-ssl.conf /etc/nginx/sites-available/buz-manager-ssl.conf
+sudo ln -s ../sites-available/buz-manager-ssl.conf /etc/nginx/sites-enabled/buz-manager-ssl.conf
+# 4) Edit server_name + cert paths, then test & reload
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Equivalent inline config:
+
 ```nginx
+# HTTP → HTTPS redirect
+server {
+  listen 80;
+  server_name buz.example.com;
+  return 301 https://$host$request_uri;
+}
+
 server {
   listen 443 ssl http2;
   server_name buz.example.com;
 
   ssl_certificate     /etc/letsencrypt/live/buz.example.com/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/buz.example.com/privkey.pem;
+  ssl_protocols       TLSv1.2 TLSv1.3;
+
+  client_max_body_size 20m;
+
+  gzip on;
+  gzip_min_length 1024;
+  gzip_types text/plain text/css application/javascript application/json
+             image/svg+xml application/xml;
 
   location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
     # WebSocket (job logs) — keep Upgrade headers
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
+    # Runner long-poll is up to 50s; WS idle keepalive must survive.
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 3600s;
+    proxy_read_timeout 3600s;
   }
 }
 ```
 
 ```bash
-sudo nginx -t && sudo systemctl reload nginx
+curl -sS https://buz.example.com/api/v1/health
 ```
 
 ### B4. Runner behind reverse proxy

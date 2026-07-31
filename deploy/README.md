@@ -4,6 +4,8 @@
 |------|---------|
 | `conf/manager.toml` | Docker / Compose / release tarball |
 | `conf/runner.toml` | Same |
+| `nginx/buz-manager.conf` | Optional system Nginx reverse proxy (HTTP-only) |
+| `nginx/buz-manager-ssl.conf` | Same, HTTPS (Let's Encrypt + HTTP→HTTPS redirect) |
 
 ## Container layout
 

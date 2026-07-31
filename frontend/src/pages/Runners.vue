@@ -7,6 +7,7 @@ import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText } from '@lucide/vue'
 import { runnersApi, type Runner } from '@/api/runners'
 import { formatLocalDateTime } from '@/utils/time'
+import { copyText } from '@/utils/copyText'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
 
@@ -228,22 +229,24 @@ async function savePolicy() {
 
 async function copyToken() {
   if (!createdToken.value) return
-  try {
-    await navigator.clipboard.writeText(registerTokenTomlLine.value || createdToken.value)
+  const ok = await copyText(registerTokenTomlLine.value || createdToken.value)
+  if (ok) {
     copied.value = true
     setTimeout(() => (copied.value = false), 2000)
-  } catch { /* fallback */ }
+  } else {
+    alert('Copy failed — your browser blocks clipboard access on plain HTTP. Use HTTPS or copy manually.')
+  }
 }
 
 async function copyRunnerName(r: Runner, e?: Event) {
   e?.stopPropagation()
-  try {
-    await navigator.clipboard.writeText(r.name)
+  const ok = await copyText(r.name)
+  if (ok) {
     copiedNameId.value = r.id
     setTimeout(() => {
       if (copiedNameId.value === r.id) copiedNameId.value = null
     }, 1500)
-  } catch { /* fallback */ }
+  }
 }
 
 async function handleToggleFreeze(r: Runner) {

@@ -129,6 +129,42 @@ docker pull registry.cn-hangzhou.aliyuncs.com/<ns>/buz-manager:latest
 docker pull registry.cn-hangzhou.aliyuncs.com/<ns>/buz-runner:latest
 ```
 
+## Reverse Proxy (Nginx, HTTP-only)
+
+`buz-manager` serves both the API and the embedded Web UI on a single port. Put Nginx in front so only the proxy is exposed publicly.
+
+Template: `deploy/nginx/buz-manager.conf` (HTTP-only) or `deploy/nginx/buz-manager-ssl.conf` (HTTPS + redirect)
+
+```bash
+# 1) Bind Manager to loopback only
+sudo tee -a conf/manager.toml >/dev/null <<'EOF'
+[server]
+host = "127.0.0.1"
+port = 8080
+EOF
+
+# 2) Install the Nginx site config (replace server_name first)
+sudo cp deploy/nginx/buz-manager.conf /etc/nginx/sites-available/buz-manager.conf
+sudo ln -s ../sites-available/buz-manager.conf /etc/nginx/sites-enabled/buz-manager.conf
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+The config covers:
+
+- WebSocket upgrade for live job logs (`/api/v1/jobs/{id}/logs/stream`) and pipeline stream
+- Runner long-poll (50s) + WS keepalive timeouts
+- `client_max_body_size` for pipeline YAML import and log uploads
+- gzip for embedded UI assets and JSON
+
+Runners behind the proxy:
+
+```toml
+[runner]
+manager_url = "http://buz.example.com"   # no :8080; proxy forwards to Manager
+```
+
+For HTTPS, add `listen 443 ssl` + certificate lines to the site config (see [HTTPS Communication](/docs/03-operations/tls/)).
+
 ## Center Deployment
 
 The Center binary includes the frontend static assets and SQLite database. No external dependencies required.

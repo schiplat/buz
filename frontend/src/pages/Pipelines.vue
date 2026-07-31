@@ -17,6 +17,7 @@ import { teamsApi, type Team } from '@/api/teams'
 import { jobsApi, type Job } from '@/api/jobs'
 import { cn } from '@/lib/utils'
 import { parseUtc } from '@/utils/time'
+import { copyText } from '@/utils/copyText'
 import { resolveNamesToIds } from '@/utils/yamlImportResolve'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import MultiSelect from '@/components/ui/MultiSelect.vue'
@@ -139,12 +140,14 @@ function genRandomPath(): string {
 }
 
 const copiedPath = ref(false)
-function copyWebhookUrl(path: string) {
+async function copyWebhookUrl(path: string) {
   if (!path) return
   const fullUrl = `${window.location.origin}/api/v1/hooks/${path}`
-  navigator.clipboard.writeText(fullUrl)
-  copiedPath.value = true
-  setTimeout(() => { copiedPath.value = false }, 2000)
+  const ok = await copyText(fullUrl)
+  if (ok) {
+    copiedPath.value = true
+    setTimeout(() => { copiedPath.value = false }, 2000)
+  }
 }
 
 // Trigger dialog

@@ -21,6 +21,7 @@ import { variablesApi } from '@/api/variables'
 import { teamsApi, type Team } from '@/api/teams'
 import { jobsApi, type Job, type LogChunk } from '@/api/jobs'
 import { parseUtc, formatLocalShort } from '@/utils/time'
+import { copyText } from '@/utils/copyText'
 import { type StepDef } from '@/api/pipelines'
 import PipelineTopologyGraph from '@/components/flow/PipelineTopologyGraph.vue'
 import BuildHistoryCard from '@/components/flow/BuildHistoryCard.vue'
@@ -156,9 +157,11 @@ function copyGitHookField(hook: GitHookConfig, kind: 'url' | 'secret') {
       ? `${windowOrigin.value}${hook.url_path || ''}`
       : (gitHookSecretsOnce.value[hook.id] || '')
   if (!text) return
-  navigator.clipboard.writeText(text)
-  gitHookCopied.value = { id: hook.id, kind }
-  setTimeout(() => { gitHookCopied.value = null }, 2000)
+  void copyText(text).then((ok) => {
+    if (!ok) return
+    gitHookCopied.value = { id: hook.id, kind }
+    setTimeout(() => { gitHookCopied.value = null }, 2000)
+  })
 }
 
 function shortSha(sha: string) {
@@ -269,12 +272,14 @@ function removeEditEnv(idx: number) {
 }
 
 const editCopiedPath = ref(false)
-function copyWebhookUrl(path: string) {
+async function copyWebhookUrl(path: string) {
   if (!path) return
   const fullUrl = `${window.location.origin}/api/v1/hooks/${path}`
-  navigator.clipboard.writeText(fullUrl)
-  editCopiedPath.value = true
-  setTimeout(() => { editCopiedPath.value = false }, 2000)
+  const ok = await copyText(fullUrl)
+  if (ok) {
+    editCopiedPath.value = true
+    setTimeout(() => { editCopiedPath.value = false }, 2000)
+  }
 }
 
 async function openEditDialog() {
