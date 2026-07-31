@@ -17,6 +17,118 @@ make build          # build frontend + backend
 cd example && ../target/release/buz-manager
 ```
 
+## Embedded Web UI
+
+`buz-manager` embeds `frontend/dist` at compile time (`rust-embed`). Production binaries and Docker images need **no** separate `frontend/` directory.
+
+```bash
+make build-frontend   # required before release cargo build
+make build-backend
+./target/release/buz-manager -c conf/manager.toml
+# Optional disk override for UI iteration: -f frontend/dist
+```
+
+## GitHub Release packages
+
+CI workflow `.github/workflows/release.yml` builds **Linux + macOS** archives (UI embedded in `buz-manager`) on tag `v*`:
+
+| Archive | Runner |
+|---------|--------|
+| `buz-<ver>-linux-x86_64.tar.gz` | ubuntu-latest |
+| `buz-<ver>-linux-aarch64.tar.gz` | ubuntu-24.04-arm |
+| `buz-<ver>-macos-x86_64.tar.gz` | macos-13 |
+| `buz-<ver>-macos-aarch64.tar.gz` | macos-14 (Apple Silicon) |
+
+```text
+buz-<version>-linux-x86_64.tar.gz
+  bin/buz-manager   # UI embedded
+  bin/buz-runner
+  conf/manager.toml
+  conf/runner.toml
+  data/  pipelines/
+  README.md
+```
+
+```bash
+git tag v0.3.0 && git push origin v0.3.0
+make package   # local host only → dist/release/buz-*.tar.gz
+```
+
+```bash
+tar -xzf buz-*-linux-x86_64.tar.gz && cd buz-*
+# edit conf/*.toml
+./bin/buz-manager -c conf/manager.toml
+```
+
+Apple Silicon Mac: use `macos-aarch64`; Intel Mac: `macos-x86_64`.
+## Docker (Aliyun ACR)
+
+Images:
+
+| Image | Dockerfile |
+|-------|------------|
+| `buz-manager` | `Dockerfile` |
+| `buz-runner` | `Dockerfile.runner` |
+
+### GitHub Actions → personal ACR
+
+Workflow: `.github/workflows/docker.yml` (on `v*` tag or manual).
+
+Configure the GitHub repository:
+
+| Kind | Name | Example |
+|------|------|---------|
+| Variable | `ACR_REGISTRY` | `registry.cn-hangzhou.aliyuncs.com` |
+| Variable | `ACR_NAMESPACE` | your ACR namespace |
+| Secret | `ACR_USERNAME` | ACR login user |
+| Secret | `ACR_PASSWORD` | ACR password / token |
+
+Pushed tags: `<registry>/<namespace>/buz-manager:v0.3.0` (and `:0.3.0`, `:latest`), same for `buz-runner`.
+
+### Container layout
+
+Each image contains **only** the binary + a default config (UI is embedded in `buz-manager`):
+
+```text
+/app/buz/
+  buz-manager | buz-runner
+  conf/manager.toml | conf/runner.toml
+  data/  pipelines/          # Manager volumes
+  workspace/                 # Runner volume
+```
+
+Host templates for Compose **and** tar.gz releases live in **`deploy/conf/`**. Compose mounts them into `/app/buz/conf/…` (`BUZ_MANAGER_CONF` / `BUZ_RUNNER_CONF`).
+
+### Deploy modes
+
+| Mode | How |
+|------|-----|
+| Same host | Manager → UI create Runner → edit `deploy/conf/runner.toml` → start Runner |
+| Manager only | `docker compose up -d manager` |
+| Runner elsewhere | `BUZ_RUNNER_CONF=/etc/buz/runner.toml docker compose up -d runner` |
+
+```bash
+docker build -t buz-manager:local -f Dockerfile .
+docker build -t buz-runner:local -f Dockerfile.runner .
+
+export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
+docker compose up -d manager
+# UI → Runners → New Runner → paste token into deploy/conf/runner.toml
+docker compose up -d runner
+
+# Other machine:
+export BUZ_RUNNER_CONF=/etc/buz/runner.toml   # manager_url = Center URL
+docker compose up -d runner
+```
+
+Pull from ACR:
+
+```bash
+docker login registry.cn-hangzhou.aliyuncs.com
+docker pull registry.cn-hangzhou.aliyuncs.com/<ns>/buz-manager:latest
+docker pull registry.cn-hangzhou.aliyuncs.com/<ns>/buz-runner:latest
+```
+
 ## Center Deployment
 
 The Center binary includes the frontend static assets and SQLite database. No external dependencies required.
@@ -37,7 +149,8 @@ port = 8080
 path = "./data/buz.db"
 
 [auth]
-jwt_secret = "changeme-demo-only"
+# Prefer env: export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
+jwt_secret = ""
 
 [runner]
 heartbeat_timeout_seconds = 90
@@ -53,7 +166,7 @@ export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
 # Open https://… or http://… → /setup to create the first admin
 ```
 
-For HTTPS (including self-signed), see [TLS](/docs/03-operations/tls/).
+For HTTPS (Manager native TLS, Runner client, reverse proxy, full commands), see **[HTTPS Communication](/docs/03-operations/tls/)**.
 
 ## Runner Deployment
 
@@ -63,18 +176,17 @@ Runners can be deployed on any machine with outbound HTTPS access to the Center.
 # Create config
 mkdir -p conf
 cat > conf/runner.toml <<EOF
-[manager]
-url = "https://buz-api.example.com"
-register_token = "your-register-token"
-
 [runner]
 name = "prod-runner-01"
-# labels → Manager UI → Runners
+manager_url = "https://buz-api.example.com"
+register_token = "your-register-token"
 workspace_dir = "/tmp/buz-runner"
 
-# Engine flags / concurrency / cleanup → Manager UI → Runners
 [engine]
 # ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"
+
+[logging]
+level = "info"
 EOF
 
 export BUZ_REGISTER_TOKEN="your-token"

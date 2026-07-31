@@ -5,9 +5,7 @@
 //! ./scripts/docker-engine-e2e.sh
 //! ```
 
-use super::{
-    build_docker_run_args, execute_streaming, preflight, CONTAINER_WORKSPACE,
-};
+use super::{build_docker_run_args, execute_streaming, preflight, CONTAINER_WORKSPACE};
 use std::collections::HashMap;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -45,8 +43,16 @@ async fn run_and_collect(
     container_work_dir: Option<&str>,
     privileged: bool,
 ) -> anyhow::Result<(i32, String)> {
-    let (mut child, rx, guard) =
-        execute_streaming(image, runner_workspace_dir, command, env, &[], container_work_dir, privileged).await?;
+    let (mut child, rx, guard) = execute_streaming(
+        image,
+        runner_workspace_dir,
+        command,
+        env,
+        &[],
+        container_work_dir,
+        privileged,
+    )
+    .await?;
     let status = child.wait().await?;
     drop(guard);
     let logs = drain_logs(rx).await;
@@ -65,7 +71,10 @@ fn require_e2e() {
 #[ignore = "requires Docker; set BUZ_DOCKER_E2E=1"]
 async fn docker_e2e_preflight_and_daemon() {
     require_e2e();
-    assert!(docker_available().await, "docker info failed — is the daemon running?");
+    assert!(
+        docker_available().await,
+        "docker info failed — is the daemon running?"
+    );
     preflight(true, "alpine:3.20").unwrap();
 }
 
@@ -158,9 +167,16 @@ async fn docker_e2e_nonzero_exit_fails() {
     assert!(docker_available().await);
 
     let dir = tempdir().unwrap();
-    let (code, logs) = run_and_collect("alpine:3.20", dir.path(), "exit 42", &HashMap::new(), None, false)
-        .await
-        .expect("docker run");
+    let (code, logs) = run_and_collect(
+        "alpine:3.20",
+        dir.path(),
+        "exit 42",
+        &HashMap::new(),
+        None,
+        false,
+    )
+    .await
+    .expect("docker run");
 
     assert_eq!(code, 42, "logs:\n{logs}");
 }
@@ -193,9 +209,16 @@ async fn docker_e2e_rm_does_not_grow_container_list() {
         .filter(|l| !l.is_empty())
         .count();
 
-    let (code, logs) = run_and_collect("alpine:3.20", dir.path(), "echo done", &HashMap::new(), None, false)
-        .await
-        .expect("docker run");
+    let (code, logs) = run_and_collect(
+        "alpine:3.20",
+        dir.path(),
+        "echo done",
+        &HashMap::new(),
+        None,
+        false,
+    )
+    .await
+    .expect("docker run");
     assert_eq!(code, 0, "logs:\n{logs}");
 
     tokio::time::sleep(Duration::from_millis(400)).await;

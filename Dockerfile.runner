@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1
+# Runtime layout (binary + config only):
+#   /app/buz/buz-runner
+#   /app/buz/conf/runner.toml
+#   /app/buz/workspace
+
+FROM rust:bookworm AS builder
+WORKDIR /src
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN mkdir -p frontend/dist \
+ && printf '%s\n' '<!doctype html><title>stub</title>' > frontend/dist/index.html
+
+RUN cargo build --locked --release -p runner \
+ && strip target/release/buz-runner
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10001 --home /app/buz --shell /usr/sbin/nologin buz \
+ && mkdir -p /app/buz/conf /app/buz/workspace /app/buz/logs \
+ && chown -R buz:buz /app/buz
+
+COPY --from=builder /src/target/release/buz-runner /app/buz/buz-runner
+COPY deploy/conf/runner.toml /app/buz/conf/runner.toml
+
+USER buz
+WORKDIR /app/buz
+VOLUME ["/app/buz/workspace", "/app/buz/logs"]
+
+ENTRYPOINT ["/app/buz/buz-runner"]
+CMD ["-c", "/app/buz/conf/runner.toml"]

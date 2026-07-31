@@ -33,7 +33,12 @@ buzproject/
 │           ├── client/     # HTTP communication
 │           ├── engine/     # Execution engines (shell, ssh, docker)
 │           └── masker/     # Log masking (Aho-Corasick)
-├── frontend/               # Vue 3 + TypeScript
+├── frontend/               # Vue 3 + TypeScript (built into buz-manager via rust-embed)
+├── Dockerfile              # Manager image → /app/buz/
+├── Dockerfile.runner       # Runner image → /app/buz/
+├── docker-compose.yml      # Mounts deploy/conf → /app/buz/conf
+├── deploy/                 # Config templates (Docker + tar.gz) + README
+│   └── conf/
 │   └── src/
 │       ├── router/         # History-mode routes (vue-router)
 │       ├── stores/         # Pinia stores (auth, ui)

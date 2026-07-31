@@ -1,6 +1,5 @@
 use anyhow::Context;
 use clap::Parser;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod client;
 mod config;
@@ -27,21 +26,15 @@ struct Cli {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "buz_runner=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
     let config = config::load(Some(&cli.config)).context("failed to load config")?;
+    let _log_guard = shared::logging::init("buz_runner", &config.logging);
+
     tracing::info!(
-        "{} starting: {} ({})",
+        target: "buz_runner",
+        runner = %config.runner.name,
+        manager = %config.runner.manager_url,
+        "{} starting",
         shared::version::long_version("runner"),
-        config.runner.name,
-        config.runner.version()
     );
 
     run_loop(config).await
@@ -50,9 +43,9 @@ async fn main() -> anyhow::Result<()> {
 async fn run_loop(config: config::Config) -> anyhow::Result<()> {
     let mut client_builder = reqwest::Client::builder();
 
-    if config.manager.tls_skip_verify {
+    if config.runner.tls_skip_verify {
         client_builder = client_builder.danger_accept_invalid_certs(true);
-        tracing::warn!("TLS certificate verification is DISABLED — do not use this in production");
+        tracing::warn!("TLS certificate verification is DISABLED — do not use in production");
     }
 
     let http_client = client_builder.build()?;
@@ -62,27 +55,26 @@ async fn run_loop(config: config::Config) -> anyhow::Result<()> {
     let runner_token = register.token;
     let shared_policy = policy::new_shared(register.policy);
     tracing::info!(
-        "Registered with Manager, got token (max_concurrent={})",
-        policy::max_concurrent(&shared_policy)
+        max_concurrent = policy::max_concurrent(&shared_policy),
+        "registered with Manager"
     );
 
-    // Log initial system info once for visibility
     {
         let info = sysinfo::collect_system_info(
             started_at,
             &sysinfo::SysInfoOpts {
-                manager_url: config.manager.url.clone(),
+                manager_url: config.runner.manager_url.clone(),
                 prefer_interfaces: config.runner.prefer_interfaces.clone(),
             },
         );
         tracing::info!(
-            "System: v{} | {} ({}) | {} cores | {} MB RAM | {} GB disk",
-            info.runner_version,
-            info.hostname,
-            info.cpu_arch,
-            info.cpu_cores,
-            info.memory_total_mb,
-            info.disk_total_gb,
+            version = %info.runner_version,
+            host = %info.hostname,
+            arch = %info.cpu_arch,
+            cores = info.cpu_cores,
+            ram_mb = info.memory_total_mb,
+            disk_gb = info.disk_total_gb,
+            "host inventory"
         );
     }
 
@@ -92,11 +84,7 @@ async fn run_loop(config: config::Config) -> anyhow::Result<()> {
     let hb_policy = shared_policy.clone();
     let heartbeat_handle = tokio::spawn(async move {
         client::heartbeat::run_heartbeat_loop(
-            &hb_client,
-            &hb_config,
-            &hb_token,
-            started_at,
-            hb_policy,
+            &hb_client, &hb_config, &hb_token, started_at, hb_policy,
         )
         .await
     });

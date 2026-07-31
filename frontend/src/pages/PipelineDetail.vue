@@ -5,7 +5,17 @@ import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, GripVertical, Code, FileText, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye } from '@lucide/vue'
 import { cn } from '@/lib/utils'
-import { pipelinesApi, type PipelineInputDef } from '@/api/pipelines'
+import {
+  pipelinesApi,
+  type PipelineInputDef,
+  type TriggerEvent,
+  type GitHookConfig,
+} from '@/api/pipelines'
+import {
+  emptyInputDef,
+  normalizeInputDefsForForm,
+  normalizeInputDefsForSave,
+} from '@/utils/pipelineInputs'
 import { secretsApi } from '@/api/secrets'
 import { variablesApi } from '@/api/variables'
 import { teamsApi, type Team } from '@/api/teams'
@@ -47,14 +57,120 @@ let pipelineWs: ManagedWebSocket | null = null
 let alive = true
 
 const showTriggerDialog = ref(false)
-const inputPairs = ref<{ key: string; value: string; required?: boolean }[]>([])
-const editAvailableSecrets = ref<{ id: string; name: string; owner_group: string }[]>([])
+const inputPairs = ref<{ key: string; value: string; required?: boolean; masking?: boolean }[]>([])
+const editAvailableSecrets = ref<{ id: string; name: string; owner_group: string; kind?: string }[]>([])
 const editAvailableVariables = ref<{ id: string; name: string; value: string }[]>([])
 const editAvailableTeams = ref<Team[]>([])
 
 // Pagination
 const historyPage = ref(1)
 const historyPageSize = 10
+
+// ── Trigger events + Git hook ──
+const triggerEvents = ref<TriggerEvent[]>([])
+const triggerEventsTotal = ref(0)
+const triggerEventsPage = ref(1)
+const triggerEventsPageSize = 20
+const triggerEventsLoading = ref(false)
+const triggerFilterSource = ref('')
+const triggerFilterDecision = ref('')
+const gitHooks = ref<GitHookConfig[]>([])
+const gitHookSaving = ref(false)
+/** Plaintext secrets shown once after create/rotate, keyed by hook id. */
+const gitHookSecretsOnce = ref<Record<string, string>>({})
+const gitHookCopied = ref<{ id: string; kind: 'url' | 'secret' } | null>(null)
+const newHookProvider = ref<'github' | 'gitee'>('gitee')
+const newHookLabel = ref('')
+const newHookBranchFilter = ref('')
+
+async function loadTriggerEvents() {
+  if (!pipelineId.value) return
+  triggerEventsLoading.value = true
+  try {
+    const page = await pipelinesApi.listTriggerEvents(pipelineId.value, {
+      source: triggerFilterSource.value || undefined,
+      decision: triggerFilterDecision.value || undefined,
+      page: triggerEventsPage.value,
+      page_size: triggerEventsPageSize,
+    })
+    triggerEvents.value = page.items || []
+    triggerEventsTotal.value = page.total || 0
+  } catch (e) {
+    console.error(e)
+  } finally {
+    triggerEventsLoading.value = false
+  }
+}
+
+async function loadGitHooks() {
+  if (!pipelineId.value) return
+  try {
+    gitHooks.value = await pipelinesApi.listGitHooks(pipelineId.value)
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+async function addGitHook() {
+  if (!pipelineId.value) return
+  gitHookSaving.value = true
+  try {
+    const h = await pipelinesApi.createGitHook(pipelineId.value, {
+      provider: newHookProvider.value,
+      label: newHookLabel.value.trim(),
+      branch_filter: newHookBranchFilter.value,
+      enabled: true,
+    })
+    if (h.secret) {
+      gitHookSecretsOnce.value = { ...gitHookSecretsOnce.value, [h.id]: h.secret }
+    }
+    newHookLabel.value = ''
+    newHookBranchFilter.value = ''
+    await loadGitHooks()
+  } catch (e: any) {
+    alert(e?.response?.data?.message || e?.message || 'Failed to create git hook')
+  } finally {
+    gitHookSaving.value = false
+  }
+}
+
+async function removeGitHook(hook: GitHookConfig) {
+  if (!pipelineId.value) return
+  if (!confirm(`Delete this Git webhook${hook.label ? ` (“${hook.label}”)` : ''}? Create a new one to change settings.`)) return
+  try {
+    await pipelinesApi.deleteGitHook(pipelineId.value, hook.id)
+    const next = { ...gitHookSecretsOnce.value }
+    delete next[hook.id]
+    gitHookSecretsOnce.value = next
+    await loadGitHooks()
+  } catch (e: any) {
+    alert(e?.response?.data?.message || e?.message || 'Failed to delete git hook')
+  }
+}
+
+const windowOrigin = computed(() => (typeof window !== 'undefined' ? window.location.origin : ''))
+
+function copyGitHookField(hook: GitHookConfig, kind: 'url' | 'secret') {
+  const text =
+    kind === 'url'
+      ? `${windowOrigin.value}${hook.url_path || ''}`
+      : (gitHookSecretsOnce.value[hook.id] || '')
+  if (!text) return
+  navigator.clipboard.writeText(text)
+  gitHookCopied.value = { id: hook.id, kind }
+  setTimeout(() => { gitHookCopied.value = null }, 2000)
+}
+
+function shortSha(sha: string) {
+  return sha ? sha.slice(0, 7) : '—'
+}
+
+function decisionClass(d: string) {
+  if (d === 'triggered') return 'text-emerald-600'
+  if (d === 'skipped') return 'text-amber-600'
+  if (d === 'rejected' || d === 'failed') return 'text-red-500'
+  return 'text-muted-foreground'
+}
 
 // ── Edit Dialog ──
 const showEditDialog = ref(false)
@@ -137,7 +253,7 @@ function removeEditStep(idx: number) {
 }
 
 function addEditInputDef() {
-  editForm.value.input_defs.push({ name: '', description: '', required: false, default: '' })
+  editForm.value.input_defs.push(emptyInputDef())
 }
 
 function removeEditInputDef(idx: number) {
@@ -202,11 +318,12 @@ async function openEditDialog() {
         privileged: (t as any).privileged === true ? true : undefined,
         registry_secret: (t.registry_secret || '').trim() || undefined,
     })),
-    input_defs: (p.input_defs || []).slice(),
+    input_defs: normalizeInputDefsForForm(p.input_defs),
   }
   expandedEditSteps.clear()
   for (let i = 0; i < editForm.value.steps.length; i++) expandedEditSteps.add(i)
   showEditDialog.value = true
+  void loadEditInfrastructureOptions()
 }
 
 async function handleEditSave() {
@@ -298,8 +415,8 @@ async function handleEditSave() {
               : undefined,
         }
       }),
-      input_defs: editForm.value.trigger_type === 'manual' && editForm.value.input_defs.length > 0
-        ? editForm.value.input_defs
+      input_defs: editForm.value.trigger_type === 'manual'
+        ? normalizeInputDefsForSave(editForm.value.input_defs)
         : undefined,
     }
     await pipelinesApi.update(pipelineId.value, payload)
@@ -478,16 +595,34 @@ function handleSidebarClick(e: MouseEvent) {
 onMounted(async () => {
   await loadData()
   startPipelineWebSocket()
-  try {
-    editAvailableSecrets.value = await secretsApi.list()
-  } catch { /* ignore */ }
-  try {
-    editAvailableVariables.value = await variablesApi.list()
-  } catch { /* ignore */ }
-  try {
-    editAvailableTeams.value = await teamsApi.list()
-  } catch { /* ignore */ }
+  await loadEditInfrastructureOptions()
+  if (activeTab.value === 'trigger-events') {
+    await Promise.all([loadTriggerEvents(), loadGitHooks()])
+  }
 })
+
+watch(activeTab, async (tab) => {
+  if (tab === 'trigger-events') {
+    await Promise.all([loadTriggerEvents(), loadGitHooks()])
+  }
+})
+
+watch([triggerFilterSource, triggerFilterDecision], () => {
+  triggerEventsPage.value = 1
+  if (activeTab.value === 'trigger-events') void loadTriggerEvents()
+})
+
+/** Refresh Secrets / Variables / Teams for the edit form (avoid stale lists after Infra edits). */
+async function loadEditInfrastructureOptions() {
+  const [secrets, variables, teams] = await Promise.allSettled([
+    secretsApi.list(),
+    variablesApi.list(),
+    teamsApi.list(),
+  ])
+  if (secrets.status === 'fulfilled') editAvailableSecrets.value = secrets.value
+  if (variables.status === 'fulfilled') editAvailableVariables.value = variables.value
+  if (teams.status === 'fulfilled') editAvailableTeams.value = teams.value
+}
 
 const editVariableOptions = computed(() =>
   editAvailableVariables.value.map(v => ({ id: v.id, label: v.name }))
@@ -505,6 +640,16 @@ const editStepSecretOptions = computed(() =>
     id: s.name,
     label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
   }))
+)
+
+/** Registry Secret dropdown — only kind=registry. */
+const editRegistrySecretOptions = computed(() =>
+  editAvailableSecrets.value
+    .filter((s) => s.kind === 'registry')
+    .map(s => ({
+      id: s.name,
+      label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
+    }))
 )
 
 function teamLabel(teamId: string | null | undefined): string {
@@ -602,7 +747,12 @@ function openTriggerDialog() {
     doDirectTrigger()
     return
   }
-  inputPairs.value = defs.map(d => ({ key: d.name, value: d.default || '', required: d.required }))
+  inputPairs.value = normalizeInputDefsForForm(defs).map((d) => ({
+    key: d.name,
+    value: d.default || '',
+    required: d.required,
+    masking: !!d.masking,
+  }))
   showTriggerDialog.value = true
 }
 
@@ -678,17 +828,29 @@ async function handleTrigger() {
           <h2 class="text-base font-semibold mb-1">Trigger Pipeline</h2>
           <p class="text-sm text-muted-foreground mb-4">
             Keys available as <code class="mono-chip">$INPUT_&lt;KEY&gt;</code> in step commands.
+            Masked fields use a password input and are redacted in logs / encrypted at rest.
           </p>
           <div class="space-y-2 mb-4">
             <p v-if="!hasInputDefs" class="text-xs text-muted-foreground mb-2">Ad-hoc mode — no params defined in the pipeline.</p>
             <div v-for="(pair, idx) in inputPairs" :key="idx" class="flex items-center gap-2">
-              <div v-if="hasInputDefs" class="flex-1 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground select-none flex items-center gap-1">
+              <div v-if="hasInputDefs" class="flex-1 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground select-none flex items-center gap-1.5 flex-wrap">
                 {{ pair.key }}
                 <span v-if="pair.required" class="text-red-500 text-sm font-sans leading-none">*</span>
                 <span v-else class="text-xs text-muted-foreground/50 font-sans">(optional)</span>
+                <span
+                  v-if="pair.masking"
+                  class="text-[10px] font-medium uppercase tracking-wide rounded px-1.5 py-0.5 bg-violet-500/10 text-violet-600 border border-violet-500/20 font-sans"
+                >masking</span>
               </div>
               <input v-else v-model="pair.key" placeholder="key" class="flex-1 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm" :disabled="triggering" />
-              <input v-model="pair.value" :placeholder="pair.required ? 'required' : 'enter value (leave empty for default)'" class="flex-[2] rounded-md border border-border bg-muted/50 px-3 py-2 text-sm" :disabled="triggering" />
+              <input
+                v-model="pair.value"
+                :type="pair.masking ? 'password' : 'text'"
+                :placeholder="pair.required ? 'required' : 'enter value (leave empty for default)'"
+                class="flex-[2] rounded-md border border-border bg-muted/50 px-3 py-2 text-sm"
+                :disabled="triggering"
+                :autocomplete="pair.masking ? 'new-password' : 'off'"
+              />
               <button v-if="!hasInputDefs" @click="removeInputPair(idx)" class="shrink-0 rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors" :disabled="triggering || inputPairs.length <= 1"><Trash2 class="h-4 w-4" /></button>
             </div>
           </div>
@@ -923,12 +1085,12 @@ async function handleTrigger() {
                         class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                       >
                         <option value="">None</option>
-                        <option v-for="opt in editStepSecretOptions" :key="opt.id" :value="opt.id">
+                        <option v-for="opt in editRegistrySecretOptions" :key="opt.id" :value="opt.id">
                           {{ opt.label }}
                         </option>
                       </select>
                       <p class="text-xs text-muted-foreground/70 mt-0.5">
-                        Secret <strong>name</strong> for <code class="font-mono">docker login</code> (pull or push).
+                        Only Secrets with Kind = Registry. Used for <code class="font-mono">docker login</code> (pull or push).
                         JSON value (encrypted):
                         <code class="font-mono">{ "provider", "registry", "username", "password" }</code>.
                         Shell/SSH: login before step; Docker: login before pull. Not injected as env.
@@ -1256,6 +1418,11 @@ async function handleTrigger() {
                   </button>
                 </div>
 
+                <p class="text-xs text-muted-foreground leading-relaxed">
+                  Each param is available as <code class="mono-chip">$INPUT_&lt;NAME&gt;</code>.
+                  Enable <span class="font-medium text-foreground/80">Masking</span> to redact logs/audit and encrypt the value in the job DB.
+                </p>
+
                 <div v-if="editForm.input_defs.length === 0" class="text-xs text-muted-foreground">
                   No input parameters defined.
                 </div>
@@ -1263,39 +1430,58 @@ async function handleTrigger() {
                 <div
                   v-for="(inp, idx) in editForm.input_defs"
                   :key="idx"
-                  class="rounded-lg border border-border/50 bg-background px-3 py-2.5"
+                  class="rounded-lg border border-border/50 bg-background px-3 py-2.5 space-y-2"
                 >
-                  <div class="flex items-start gap-2 mb-2">
-                    <input
-                      v-model="inp.name"
-                      type="text"
-                      placeholder="param name (e.g. version)"
-                      class="flex-1 rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40"
-                    />
+                  <div class="flex items-start gap-2">
+                    <div class="flex-1 min-w-0 space-y-1">
+                      <label class="type-label block text-[11px]">
+                        Name <span class="text-red-500">*</span>
+                      </label>
+                      <input
+                        v-model="inp.name"
+                        type="text"
+                        placeholder="e.g. version"
+                        class="w-full rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40"
+                      />
+                    </div>
                     <button
                       type="button"
-                      class="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                      class="inline-flex h-7 w-7 mt-5 items-center justify-center rounded-md text-muted-foreground hover:text-destructive transition-colors shrink-0"
                       @click="removeEditInputDef(idx)"
                     >
                       <Trash2 class="h-3.5 w-3.5" />
                     </button>
                   </div>
-                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <input
-                      v-model="inp.description"
-                      type="text"
-                      placeholder="Description"
-                      class="rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs outline-none transition-colors focus:border-ring/40"
-                    />
-                    <input
-                      v-model="inp.default"
-                      type="text"
-                      placeholder="Default value"
-                      class="rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40"
-                    />
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div class="space-y-1">
+                      <label class="type-label block text-[11px]">Description</label>
+                      <input
+                        v-model="inp.description"
+                        type="text"
+                        placeholder="Shown in trigger dialog"
+                        class="w-full rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs outline-none transition-colors focus:border-ring/40"
+                      />
+                    </div>
+                    <div class="space-y-1">
+                      <label class="type-label block text-[11px]">Default</label>
+                      <input
+                        v-model="inp.default"
+                        :type="inp.masking ? 'password' : 'text'"
+                        placeholder="Optional default"
+                        class="w-full rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40"
+                        :autocomplete="inp.masking ? 'new-password' : 'off'"
+                      />
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-4 pt-0.5">
                     <label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
                       <input v-model="inp.required" type="checkbox" class="rounded border-border" />
                       Required
+                    </label>
+                    <label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+                      <input v-model="inp.masking" type="checkbox" class="rounded border-border" />
+                      <span>Masking</span>
+                      <span class="text-muted-foreground/60">(logs + DB encrypt)</span>
                     </label>
                   </div>
                 </div>
@@ -1355,6 +1541,14 @@ async function handleTrigger() {
               @click="navigateTab('definition')"
             >
               Definition
+            </button>
+            <button
+              class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center justify-between"
+              :class="activeTab === 'trigger-events' ? 'bg-card shadow-sm font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
+              @click="navigateTab('trigger-events')"
+            >
+              <span>Trigger events</span>
+              <span v-if="triggerEventsTotal > 0" class="text-xs tabular-nums">{{ triggerEventsTotal }}</span>
             </button>
           </div>
           <div class="mt-10 pt-5 border-t border-border/40 px-3">
@@ -1760,7 +1954,13 @@ async function handleTrigger() {
                       class="text-xs font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0"
                       :class="inp.required ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20' : 'bg-slate-500/10 text-slate-500 border border-slate-500/20'"
                     >{{ inp.required ? 'required' : 'optional' }}</span>
-                    <span v-if="inp.default" class="text-xs text-muted-foreground font-mono shrink-0">= {{ inp.default }}</span>
+                    <span
+                      v-if="inp.masking"
+                      class="text-xs font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0 bg-violet-500/10 text-violet-600 border border-violet-500/20"
+                      title="Redacted in logs, audit, and job snapshots"
+                    >masking</span>
+                    <span v-if="inp.default && !inp.masking" class="text-xs text-muted-foreground font-mono shrink-0">= {{ inp.default }}</span>
+                    <span v-else-if="inp.default && inp.masking" class="text-xs text-muted-foreground font-mono shrink-0">= ***</span>
                     <span v-else class="text-xs text-muted-foreground/35 italic font-mono shrink-0 select-none">= ?</span>
                   </div>
                 </div>
@@ -1859,6 +2059,184 @@ async function handleTrigger() {
                     <div class="relative font-mono text-sm leading-relaxed text-foreground/80 bg-muted/30 rounded-lg px-3.5 py-3 whitespace-pre-wrap break-all border border-border/25"><div class="absolute left-0 top-1 bottom-1 w-0.5 rounded-full bg-border/30" aria-hidden="true" />{{ step.command_template }}</div>
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ======== TRIGGER EVENTS ======== -->
+          <div v-if="activeTab === 'trigger-events'" class="space-y-4">
+            <div class="rounded-xl border border-border/40 bg-card p-5 space-y-4">
+              <div class="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h2 class="text-base font-semibold tracking-tight flex items-center gap-2">
+                    <Webhook class="h-4 w-4 text-muted-foreground" />
+                    Git webhooks
+                  </h2>
+                  <p class="text-xs text-muted-foreground mt-1 max-w-xl leading-relaxed">
+                    Multiple hooks per pipeline (e.g. GitHub + Gitee). After create, settings are immutable —
+                    delete and add a new hook to change them. Secret is shown once at create time.
+                  </p>
+                </div>
+              </div>
+
+              <div
+                v-for="hook in gitHooks"
+                :key="hook.id"
+                class="rounded-lg border border-border/50 bg-muted/15 p-3 space-y-2"
+              >
+                <div class="flex items-center justify-between gap-2 flex-wrap">
+                  <div class="flex items-center gap-2 min-w-0 flex-wrap">
+                    <span class="mono-chip text-xs font-semibold uppercase">{{ hook.provider }}</span>
+                    <span v-if="hook.label" class="text-sm font-medium truncate">{{ hook.label }}</span>
+                    <span v-if="hook.branch_filter" class="text-xs font-mono text-muted-foreground">{{ hook.branch_filter }}</span>
+                    <span v-else class="text-xs text-muted-foreground/60">all branches</span>
+                  </div>
+                  <UiButton size="sm" variant="ghost" @click="removeGitHook(hook)">Delete</UiButton>
+                </div>
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="text-xs text-muted-foreground shrink-0 w-14">URL</span>
+                  <code class="text-xs font-mono truncate flex-1">{{ windowOrigin }}{{ hook.url_path }}</code>
+                  <button type="button" class="text-muted-foreground hover:text-foreground" title="Copy URL" @click="copyGitHookField(hook, 'url')">
+                    <Check v-if="gitHookCopied?.id === hook.id && gitHookCopied.kind === 'url'" class="h-3.5 w-3.5 text-emerald-500" />
+                    <Copy v-else class="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div v-if="gitHookSecretsOnce[hook.id]" class="flex items-center gap-2 min-w-0">
+                  <span class="text-xs text-muted-foreground shrink-0 w-14">Secret</span>
+                  <code class="text-xs font-mono truncate flex-1">{{ gitHookSecretsOnce[hook.id] }}</code>
+                  <button type="button" class="text-muted-foreground hover:text-foreground" title="Copy secret" @click="copyGitHookField(hook, 'secret')">
+                    <Check v-if="gitHookCopied?.id === hook.id && gitHookCopied.kind === 'secret'" class="h-3.5 w-3.5 text-emerald-500" />
+                    <Copy v-else class="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <p v-else class="text-[11px] text-muted-foreground pl-[3.5rem]">
+                  Secret was shown once at create. To get a new secret, delete this hook and create again.
+                </p>
+              </div>
+
+              <div class="rounded-lg border border-dashed border-border/60 p-3 space-y-3">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Add webhook</div>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div>
+                    <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Label</label>
+                    <input v-model="newHookLabel" type="text" placeholder="e.g. github-main" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-none" />
+                  </div>
+                  <div>
+                    <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Provider</label>
+                    <select v-model="newHookProvider" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-none">
+                      <option value="gitee">Gitee</option>
+                      <option value="github">GitHub</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Branch filter</label>
+                    <input v-model="newHookBranchFilter" type="text" placeholder="optional" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm font-mono outline-none" />
+                  </div>
+                </div>
+                <UiButton size="sm" :disabled="gitHookSaving" @click="addGitHook">
+                  {{ gitHookSaving ? 'Creating…' : 'Add Git webhook' }}
+                </UiButton>
+              </div>
+            </div>
+
+            <div class="rounded-xl border border-border/40 bg-card overflow-hidden">
+              <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
+                <h2 class="text-sm font-semibold">Trigger events</h2>
+                <select v-model="triggerFilterSource" class="rounded-lg border border-border/60 bg-background px-2 py-1 text-xs">
+                  <option value="">All sources</option>
+                  <option value="git">git</option>
+                  <option value="webhook">webhook</option>
+                  <option value="manual">manual</option>
+                  <option value="cron">cron</option>
+                </select>
+                <select v-model="triggerFilterDecision" class="rounded-lg border border-border/60 bg-background px-2 py-1 text-xs">
+                  <option value="">All decisions</option>
+                  <option value="triggered">triggered</option>
+                  <option value="skipped">skipped</option>
+                  <option value="rejected">rejected</option>
+                  <option value="failed">failed</option>
+                </select>
+                <button
+                  type="button"
+                  class="ml-auto text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                  @click="loadTriggerEvents"
+                >
+                  <RotateCw class="h-3 w-3" /> Refresh
+                </button>
+              </div>
+
+              <div v-if="triggerEventsLoading" class="px-5 py-10 text-sm text-muted-foreground text-center">Loading…</div>
+              <div v-else-if="triggerEvents.length === 0" class="px-5 py-12 text-center text-sm text-muted-foreground">
+                No trigger events yet. Manual builds, webhooks, cron, and Git pushes appear here.
+              </div>
+              <div v-else class="overflow-x-auto">
+                <table class="w-full text-[13px]">
+                  <thead>
+                    <tr class="border-b border-border/30 bg-muted/10 text-[11px] uppercase text-muted-foreground">
+                      <th class="text-left px-4 py-2.5 font-medium">Time</th>
+                      <th class="text-left px-4 py-2.5 font-medium">Source</th>
+                      <th class="text-left px-4 py-2.5 font-medium">Ref</th>
+                      <th class="text-left px-4 py-2.5 font-medium">Commit</th>
+                      <th class="text-left px-4 py-2.5 font-medium">Decision</th>
+                      <th class="text-left px-4 py-2.5 font-medium">Job</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-border/20">
+                    <tr v-for="ev in triggerEvents" :key="ev.id" class="hover:bg-muted/5">
+                      <td class="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap font-mono">
+                        {{ formatLocalShort(ev.received_at) }}
+                      </td>
+                      <td class="px-4 py-2.5 text-xs whitespace-nowrap">
+                        <span class="font-medium">{{ ev.source }}</span>
+                        <span v-if="ev.provider" class="text-muted-foreground"> · {{ ev.provider }}</span>
+                      </td>
+                      <td class="px-4 py-2.5 text-xs font-mono">
+                        <span class="inline-flex items-center gap-1.5 flex-wrap">
+                          <span v-if="ev.branch || ev.tag">{{ ev.branch || ev.tag }}</span>
+                          <span v-else class="text-muted-foreground">—</span>
+                          <span v-if="ev.commit_sha" class="mono-chip text-xs text-muted-foreground">{{ shortSha(ev.commit_sha) }}</span>
+                        </span>
+                      </td>
+                      <td class="px-4 py-2.5 text-xs max-w-[220px]">
+                        <div class="truncate" :title="ev.commit_message">{{ ev.commit_message || '—' }}</div>
+                        <div v-if="ev.sender" class="text-[10px] text-muted-foreground">{{ ev.sender }}</div>
+                      </td>
+                      <td class="px-4 py-2.5 text-xs whitespace-nowrap">
+                        <span :class="decisionClass(ev.decision)" class="font-medium">{{ ev.decision }}</span>
+                        <span v-if="ev.skip_reason" class="text-muted-foreground ml-1">{{ ev.skip_reason }}</span>
+                      </td>
+                      <td class="px-4 py-2.5 text-xs whitespace-nowrap">
+                        <button
+                          v-if="ev.job_id"
+                          type="button"
+                          class="text-primary hover:underline font-mono"
+                          @click="router.push(`/jobs/${ev.job_id}`)"
+                        >
+                          {{ ev.job_status || 'job' }}
+                        </button>
+                        <span v-else class="text-muted-foreground">—</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div
+                v-if="triggerEventsTotal > triggerEventsPageSize"
+                class="px-4 py-3 border-t border-border/30 flex items-center justify-end gap-2 text-xs"
+              >
+                <button
+                  type="button"
+                  class="px-2 py-1 rounded hover:bg-muted disabled:opacity-40"
+                  :disabled="triggerEventsPage <= 1"
+                  @click="triggerEventsPage -= 1; loadTriggerEvents()"
+                >Prev</button>
+                <span class="tabular-nums text-muted-foreground">{{ triggerEventsPage }} / {{ Math.max(1, Math.ceil(triggerEventsTotal / triggerEventsPageSize)) }}</span>
+                <button
+                  type="button"
+                  class="px-2 py-1 rounded hover:bg-muted disabled:opacity-40"
+                  :disabled="triggerEventsPage * triggerEventsPageSize >= triggerEventsTotal"
+                  @click="triggerEventsPage += 1; loadTriggerEvents()"
+                >Next</button>
               </div>
             </div>
           </div>

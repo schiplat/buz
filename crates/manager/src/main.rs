@@ -2,14 +2,14 @@ use clap::Parser;
 
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod api;
+mod audit;
 mod config;
 mod crypto;
 mod db;
+mod frontend;
 mod middleware;
 mod password;
 mod rbac;
@@ -30,44 +30,30 @@ struct Cli {
     #[arg(short, long, default_value = "conf/manager.toml")]
     config: String,
 
-    /// Path to frontend static files
-    #[arg(
-        short = 'f',
-        long,
-        env = "BUZ_FRONTEND_DIR",
-        default_value = "../frontend/dist"
-    )]
-    frontend: String,
+    /// Optional disk UI override (default: assets embedded in this binary).
+    #[arg(short = 'f', long, env = "BUZ_FRONTEND_DIR")]
+    frontend: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "buz_manager=info,tower_http=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
     let config = config::load(Some(&cli.config))?;
+    let _log_guard = shared::logging::init("buz_manager", &config.logging);
+
     let db_pool = db::init(&config).await?;
-    db::run_migrations(&db_pool).await?;
+    db::run_migrations(&db_pool, &config.auth.jwt_secret).await?;
     rbac::bootstrap(&db_pool).await?;
 
     tracing::info!(
-        "{} starting on {}:{}",
+        host = %config.server.host,
+        port = config.server.port,
+        "{} starting",
         shared::version::long_version("manager"),
-        config.server.host,
-        config.server.port
     );
 
-    // Start background runner-health monitor
     services::runner_monitor::spawn_monitor(db_pool.clone(), config.runner.clone());
 
-    // Start pipeline YAML scanner
     services::pipeline_scanner::spawn_scanner(
         db_pool.clone(),
         config.pipeline.yaml_scan_dir.clone(),
@@ -79,29 +65,41 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let frontend_dir = &cli.frontend;
-    let index_html = format!("{frontend_dir}/index.html");
-
     let app_state = crate::state::AppState {
         pool: db_pool.clone(),
         config: config.clone(),
         log_broadcast: crate::services::log_broadcast::LogBroadcaster::new(),
     };
 
-    // Start cron scheduler for cron-triggered pipelines
-    services::cron_scheduler::spawn_scheduler(
-        app_state.clone(),
-        30, // check every 30 seconds
-    );
-
-    // Start concurrency queue scheduler (leader election + dispatch loop)
+    services::cron_scheduler::spawn_scheduler(app_state.clone(), 30);
     services::scheduler::start_scheduler(db_pool.clone());
 
-    let app = Router::new()
-        .nest("/api/v1", api::router(app_state.clone()))
-        .fallback_service(ServeDir::new(frontend_dir).fallback(ServeFile::new(&index_html)))
-        .layer(TraceLayer::new_for_http())
-        .layer(cors);
+    let app = match cli
+        .frontend
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(dir) => {
+            tracing::info!(path = %dir, "serving UI from disk");
+            Router::new()
+                .nest("/api/v1", api::router(app_state.clone()))
+                .fallback_service(frontend::disk_fallback(dir))
+                .layer(TraceLayer::new_for_http())
+                .layer(cors)
+        }
+        None => {
+            tracing::info!(
+                files = frontend::embedded_file_count(),
+                "serving UI from embedded assets"
+            );
+            Router::new()
+                .nest("/api/v1", api::router(app_state.clone()))
+                .fallback(frontend::embedded_handler)
+                .layer(TraceLayer::new_for_http())
+                .layer(cors)
+        }
+    };
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
 
@@ -115,16 +113,13 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("failed to load TLS certificate: {e}"))?;
 
-        tracing::info!(
-            "Web UI: https://localhost:{port}",
-            port = config.server.port
-        );
+        tracing::info!(port = config.server.port, "Web UI https ready");
         axum_server::bind_rustls(addr.parse().unwrap(), tls_config)
             .serve(app.into_make_service())
             .await?;
     } else {
         let listener = tokio::net::TcpListener::bind(&addr).await?;
-        tracing::info!("Web UI: http://localhost:{port}", port = config.server.port);
+        tracing::info!(port = config.server.port, "Web UI http ready");
         axum::serve(listener, app).await?;
     }
 

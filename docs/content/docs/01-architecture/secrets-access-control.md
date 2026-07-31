@@ -1,7 +1,7 @@
 ---
 title: Secrets Access Control
 weight: 4
-description: "How Buz controls which pipelines can access secrets — team_shared opt-in, explicit binding, and three-tier resolution"
+description: "How Buz controls which pipelines can access secrets — kind, team_shared opt-in, explicit binding, and three-tier resolution"
 ---
 
 ## Overview
@@ -40,9 +40,26 @@ This is **Scheme B** — chosen over “any pipeline can use any secret” to pr
 
 | Secret type | Suggested setting | How pipelines use it |
 |-------------|-------------------|----------------------|
-| Shared CI / registry user+pass used by many pipelines as `$NAME` | `team_shared: true` | Auto env inject |
-| Personal ACR JSON, prod DB password, deploy key | `team_shared: false` | Explicit bind / step `secrets:` / `registry_secret` |
-| Registry login only (JSON) | `team_shared: false` | `registry_secret:` only (not as `$NAME` env) |
+| Shared CI token used by many pipelines as `$NAME` | `kind: generic`, `team_shared: true` | Auto env inject |
+| Prod DB password, deploy key | `kind: generic`, `team_shared: false` | Explicit bind / step `secrets:` |
+| Registry login JSON (ACR, etc.) | `kind: registry`, `team_shared: false` | `registry_secret:` only (not as `$NAME` env) |
+
+---
+
+## `kind` (`generic` | `registry`)
+
+| | |
+|---|---|
+| Column | `secrets.kind` (`TEXT`, API string) |
+| Values | `generic` (default) · `registry` |
+| Who may set | Team role with `SecretManage` (Maintainer+) |
+
+| `kind` | Meaning |
+|--------|---------|
+| `generic` | Env inject / Authorized Secrets / step `secrets:`. **Not** listed in Pipeline **Registry Secret** dropdown. |
+| `registry` | JSON credentials (`username` + `password`, optional `registry` / `provider`). Required for `registry_secret` at claim; validated on create/update. |
+
+Migration backfill: decryptable values that parse as registry JSON are set to `kind=registry`. Claim rejects `registry_secret` pointing at a non-registry secret.
 
 ---
 
@@ -108,7 +125,8 @@ Claim payload (Manager → Runner):
   "job_id": "…",
   "pipeline_id": "…",
   "tasks": [ { "step_secrets": {}, "registry_auth": null } ],
-  "inputs": { "tag": "1.0" },
+  "inputs": { "tag": "1.0", "deploy_token": "…" },
+  "masking_input_keys": ["deploy_token"],
   "env": {
     "SMOKE_ENV": "from-pipeline",
     "REGISTRY": "registry.example.com"
@@ -119,7 +137,7 @@ Claim payload (Manager → Runner):
 }
 ```
 
-Only `secrets` (and registry passwords / step secrets) are redacted in logs. See [Resource Binding Map](#resource-binding-map).
+`secrets`, registry passwords / step secrets, and keys listed in `masking_input_keys` are redacted in logs. Plaintext `inputs` are still injected as env for execution. See [Resource Binding Map](#resource-binding-map).
 ---
 
 ## Resource Binding Map
@@ -131,13 +149,16 @@ Only `secrets` (and registry passwords / step secrets) are redacted in logs. See
 | **Variables** | Infrastructure → Variables | Advanced → Variables / YAML `variables:` | Env `$NAME` (**not masked**) |
 | **Hosts** | Infrastructure → Hosts | Step `host` / `host_labels` when `uses: ssh` | SSH params on runner |
 | **Inline Env** | Pipeline `env:` | Always scoped to that pipeline | Env for every step (**not masked**) |
+| **Trigger inputs** | `on.manual.inputs` / trigger dialog | Per job | Env `$NAME` / `$INPUT_NAME`; **`masking: true` → masked in logs** |
 
-At job claim the Manager sends **two** maps to the Runner:
+At job claim the Manager sends:
 
 - `secrets` — Infrastructure Secrets only (redacted in `==> RUN` env lines and stream logs)
 - `env` — platform Variables + pipeline inline `env:` (shown in clear)
+- `inputs` — trigger params (masking values decrypted at claim for execution)
+- `masking_input_keys` — subset of input names to redact like secrets in logs / job UI snapshot
 
-Trigger `inputs` are separate and are also not treated as secrets for redaction.
+`masking: true` values are stored encrypted in `jobs.trigger_params` (`buzenc:v1:` + AES-GCM). Job GET never returns ciphertext or plaintext for those keys (`***` only).
 
 ---
 
@@ -186,7 +207,8 @@ Help text: only secrets with **Team share** enabled are auto-injected; otherwise
 |------|------|----------|
 | `secrets: [GIT_SSH_KEY, DOCKER_PASS]` | Authorized Secrets | Explicit binding → job env |
 | `steps[].secrets: [GIT_SSH_KEY]` | Step secrets | Step env only; same-team name resolve |
-| `steps[].registry_secret` | Registry Secret | Login only; same-team name resolve |
+| `steps[].registry_secret` | Registry Secret | Login only; same-team + **`kind=registry`** |
+| _(no YAML field)_ | Secret → Kind | `generic` vs `registry` (UI filter + claim check) |
 | _(no YAML field)_ | Secret → Team share | Tier‑1 auto-access when enabled |
 
 ---
@@ -201,8 +223,10 @@ registry_secret: acr-personal
 {"provider":"acr_personal","registry":"…","username":"…","password":"…"}
 ```
 
-- Prefer **`team_shared: false`** so unrelated pipelines (e.g. SSH smoke tests) never receive the JSON as env.
+- Secret must have **`kind: registry`** (Infrastructure → Secrets → Kind = Registry).
+- Prefer **`team_shared: false`** so unrelated pipelines never receive the JSON as env.
 - Password encrypted at rest; API returns partial redaction only.
+- Pipeline form **Registry Secret** dropdown lists only `kind=registry` secrets.
 - See [Docker Engine — ACR Personal Edition](/docs/01-architecture/docker-engine/).
 
 ---
@@ -212,7 +236,7 @@ registry_secret: acr-personal
 1. **Default deny auto-inject** — leave Team share off unless many pipelines truly need the same `$NAME`
 2. **Use Authorized Secrets / YAML `secrets:`** for pipeline-wide non-shared secrets
 3. **Use step `secrets:`** for keys needed in one step (e.g. checkout)
-4. **Use `registry_secret`** for private registry JSON — do not enable Team share for ACR personal credentials
+4. **Set Kind = Registry** for private registry JSON, then use `registry_secret` — do not enable Team share for ACR personal credentials
 5. **Keep team slugs consistent** — `team:` in YAML must match Infrastructure Teams
 6. **Create Secrets in Infrastructure first**, then bind or reference by name
 
@@ -223,8 +247,8 @@ registry_secret: acr-personal
 | Phase | Capability |
 |-------|-----------|
 | Phase 1 | `owner_group` plain text, three-tier resolution, single admin |
-| Phase 2 (**current**) | Teams + roles; required `team_id`; **`team_shared` opt-in auto-access** |
-| Phase 3 | SSO, API tokens, audit UI, cross-team grants |
+| Phase 2 (**current**) | Teams + roles; required `team_id`; **`team_shared` opt-in**; **`kind` (generic \| registry)** |
+| Phase 3 | SSO, API tokens, cross-team grants |
 
 ---
 

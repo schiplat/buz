@@ -4,7 +4,9 @@ use std::time::Duration;
 use tokio::time;
 use uuid::Uuid;
 
-use shared::pipeline_yaml::{parse_and_validate, ConcurrencyDef, PipelineYaml, TriggerYaml, default_concurrency_mode};
+use shared::pipeline_yaml::{
+    default_concurrency_mode, parse_and_validate, ConcurrencyDef, PipelineYaml, TriggerYaml,
+};
 use shared::protocol::{EnvPair, PipelineInputDef, StepDef};
 
 use crate::api::{
@@ -108,10 +110,10 @@ async fn upsert_from_yaml(
         .as_ref()
         .and_then(|r| r.timeout.as_deref())
         .and_then(|s| {
-            if s.ends_with('m') {
-                s[..s.len() - 1].parse::<i64>().ok().map(|v| v * 60)
-            } else if s.ends_with('h') {
-                s[..s.len() - 1].parse::<i64>().ok().map(|v| v * 3600)
+            if let Some(stripped) = s.strip_suffix('m') {
+                stripped.parse::<i64>().ok().map(|v| v * 60)
+            } else if let Some(stripped) = s.strip_suffix('h') {
+                stripped.parse::<i64>().ok().map(|v| v * 3600)
             } else {
                 s.parse::<i64>().ok()
             }
@@ -200,7 +202,9 @@ async fn upsert_from_yaml(
         .bind(&concurrency_group)
         .bind(concurrency_mode.as_deref().unwrap_or(""))
         .bind(concurrency_max_queue.map(|v| v as i64).unwrap_or(3))
-        .bind(parse_concurrency_timeout_seconds(concurrency_queue_timeout.as_deref()))
+        .bind(parse_concurrency_timeout_seconds(
+            concurrency_queue_timeout.as_deref(),
+        ))
         .bind(&resolved_slug)
         .bind(&team_id)
         .bind(&input_defs_json)
@@ -242,9 +246,8 @@ async fn upsert_from_yaml(
         if !pipeline_secrets.is_empty() {
             // Same-team name resolve only (never bind another team's secret)
             let placeholders = vec!["?"; pipeline_secrets.len()].join(",");
-            let query = format!(
-                "SELECT id FROM secrets WHERE team_id = ? AND name IN ({placeholders})"
-            );
+            let query =
+                format!("SELECT id FROM secrets WHERE team_id = ? AND name IN ({placeholders})");
             let mut q = sqlx::query_as::<_, (String,)>(&query).bind(&team_id);
             for name in &pipeline_secrets {
                 q = q.bind(name);
@@ -303,7 +306,9 @@ async fn upsert_from_yaml(
         .bind(&concurrency_group)
         .bind(concurrency_mode.as_deref().unwrap_or(""))
         .bind(concurrency_max_queue.map(|v| v as i64).unwrap_or(3))
-        .bind(parse_concurrency_timeout_seconds(concurrency_queue_timeout.as_deref()))
+        .bind(parse_concurrency_timeout_seconds(
+            concurrency_queue_timeout.as_deref(),
+        ))
         .bind(&resolved_slug)
         .bind(&team_id)
         .bind(file_path)
@@ -326,9 +331,8 @@ async fn upsert_from_yaml(
         if !pipeline_secrets.is_empty() {
             // Same-team name resolve only (never bind another team's secret)
             let placeholders = vec!["?"; pipeline_secrets.len()].join(",");
-            let query = format!(
-                "SELECT id FROM secrets WHERE team_id = ? AND name IN ({placeholders})"
-            );
+            let query =
+                format!("SELECT id FROM secrets WHERE team_id = ? AND name IN ({placeholders})");
             let mut q = sqlx::query_as::<_, (String,)>(&query).bind(&team_id);
             for name in &pipeline_secrets {
                 q = q.bind(name);
@@ -455,6 +459,7 @@ fn extract_trigger(
                         description: def.description.clone(),
                         required: def.required,
                         default: def.default.clone(),
+                        masking: def.masking.filter(|m| *m),
                     })
                     .collect()
             })
@@ -476,10 +481,10 @@ fn extract_trigger(
 fn parse_concurrency_timeout_seconds(raw: Option<&str>) -> i64 {
     raw.and_then(|s| {
         let s = s.trim();
-        if s.ends_with('m') {
-            s[..s.len() - 1].parse::<i64>().ok().map(|v| v * 60)
-        } else if s.ends_with('h') {
-            s[..s.len() - 1].parse::<i64>().ok().map(|v| v * 3600)
+        if let Some(stripped) = s.strip_suffix('m') {
+            stripped.parse::<i64>().ok().map(|v| v * 60)
+        } else if let Some(stripped) = s.strip_suffix('h') {
+            stripped.parse::<i64>().ok().map(|v| v * 3600)
         } else {
             s.parse::<i64>().ok()
         }

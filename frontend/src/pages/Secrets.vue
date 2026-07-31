@@ -4,7 +4,7 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, Pencil, Trash2, Shield } from '@lucide/vue'
-import { secretsApi, type Secret } from '@/api/secrets'
+import { secretsApi, type Secret, type SecretKind } from '@/api/secrets'
 import { teamsApi, type Team } from '@/api/teams'
 import { useAuthStore } from '@/stores/auth'
 import { useClientSort } from '@/composables/useClientSort'
@@ -24,7 +24,7 @@ const filteredSecrets = computed(() => {
   if (!q) return source
   return source.filter((s) => {
     const teamName = teams.value.find(t => t.id === s.team_id)?.name || s.team_id || ''
-    return [s.name, s.value, s.owner_group, teamName].filter(Boolean).join(' ').toLowerCase().includes(q)
+    return [s.name, s.value, s.owner_group, s.kind, teamName].filter(Boolean).join(' ').toLowerCase().includes(q)
   })
 })
 
@@ -40,6 +40,7 @@ const { sorted, toggleSort, sortIndicator } = useClientSort(filteredSecrets, {
         return t ? t.name : (row.team_id || '')
       }
       case 'team_shared': return row.team_shared ? 1 : 0
+      case 'kind': return row.kind || 'generic'
       case 'updated_at': return row.updated_at || ''
       default: return ''
     }
@@ -55,6 +56,7 @@ const formName = ref('')
 const formValue = ref('')
 const formTeamId = ref('')
 const formTeamShared = ref(false)
+const formKind = ref<SecretKind>('generic')
 const saving = ref(false)
 const showValue = ref(false)
 
@@ -77,6 +79,7 @@ function insertRegistrySample() {
     return
   }
   formValue.value = ACR_REGISTRY_SAMPLE
+  formKind.value = 'registry'
   showValue.value = true
 }
 
@@ -86,6 +89,7 @@ function openCreate() {
   formValue.value = ''
   formTeamId.value = auth.preferredTeamId || teams.value[0]?.id || ''
   formTeamShared.value = false
+  formKind.value = 'generic'
   showValue.value = false
   showDialog.value = true
 }
@@ -96,6 +100,7 @@ function openEdit(s: Secret) {
   formValue.value = ''
   formTeamId.value = s.team_id || ''
   formTeamShared.value = !!s.team_shared
+  formKind.value = s.kind === 'registry' ? 'registry' : 'generic'
   showValue.value = false
   showDialog.value = true
 }
@@ -120,6 +125,7 @@ async function handleSave() {
         value: formValue.value,
         team_id: formTeamId.value,
         team_shared: formTeamShared.value,
+        kind: formKind.value,
       })
     } else {
       await secretsApi.create({
@@ -127,6 +133,7 @@ async function handleSave() {
         value: formValue.value,
         team_id: formTeamId.value,
         team_shared: formTeamShared.value,
+        kind: formKind.value,
       })
     }
     showDialog.value = false
@@ -210,6 +217,12 @@ onMounted(loadSecrets)
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('kind')">
+                    Kind
+                    <span class="font-mono text-xs">{{ sortIndicator('kind') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('team_shared')">
                     Share
                     <span class="font-mono text-xs">{{ sortIndicator('team_shared') || '↕' }}</span>
@@ -239,6 +252,14 @@ onMounted(loadSecrets)
                   </div>
                 </td>
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.owner_group || s.team_id || '—' }}</td>
+                <td class="px-5 py-3 text-xs whitespace-nowrap">
+                  <span
+                    v-if="s.kind === 'registry'"
+                    class="inline-flex items-center rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
+                    title="Registry credentials for registry_secret / docker login"
+                  >Registry</span>
+                  <span v-else class="text-muted-foreground/70" title="Generic secret (env inject)">Generic</span>
+                </td>
                 <td class="px-5 py-3 text-xs whitespace-nowrap">
                   <span
                     v-if="s.team_shared"
@@ -298,6 +319,21 @@ onMounted(loadSecrets)
                 <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }} ({{ t.slug }})</option>
               </select>
               <p class="text-[10px] text-muted-foreground mt-1">Ownership and CRUD boundary. Does not auto-inject unless Team share is enabled.</p>
+            </div>
+            <div>
+              <label class="block text-[12px] font-medium text-foreground mb-1">Kind <span class="text-red-500">*</span></label>
+              <select
+                v-model="formKind"
+                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
+              >
+                <option value="generic">Generic — env inject / Authorized Secrets</option>
+                <option value="registry">Registry — docker login / registry_secret</option>
+              </select>
+              <p class="text-[10px] text-muted-foreground mt-1 leading-relaxed">
+                Pipeline <strong>Registry Secret</strong> dropdown only lists Kind = Registry.
+                Registry values must be JSON with <code class="mono-chip text-[10px]">username</code> and
+                <code class="mono-chip text-[10px]">password</code>.
+              </p>
             </div>
             <div>
               <label class="flex items-start gap-2.5 cursor-pointer">

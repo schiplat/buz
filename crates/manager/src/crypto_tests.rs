@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 #[test]
 fn round_trip() {
@@ -81,4 +82,39 @@ fn mask_for_display_redacts_json_password() {
 fn mask_for_display_plain_string() {
     let masked = mask_for_display("SuperSecret99");
     assert_eq!(masked, "Su****99");
+}
+
+#[test]
+fn seal_open_trigger_params_round_trip() {
+    let secret = "jwt-secret-for-trigger-param-tests-32b";
+    let mut inputs = HashMap::new();
+    inputs.insert("version".into(), "1.2.3".into());
+    inputs.insert("token".into(), "super-secret-token".into());
+    let sealed = seal_trigger_params(&inputs, &["token".into()], secret).unwrap();
+    assert_eq!(sealed.get("version").map(String::as_str), Some("1.2.3"));
+    let stored_token = sealed.get("token").unwrap();
+    assert!(
+        stored_token.starts_with(TRIGGER_PARAM_ENC_PREFIX),
+        "{stored_token}"
+    );
+    assert!(!stored_token.contains("super-secret-token"));
+
+    let opened = open_trigger_params(&sealed, secret).unwrap();
+    assert_eq!(opened.get("version").map(String::as_str), Some("1.2.3"));
+    assert_eq!(
+        opened.get("token").map(String::as_str),
+        Some("super-secret-token")
+    );
+}
+
+#[test]
+fn open_trigger_params_accepts_legacy_plaintext() {
+    let secret = "jwt-secret-for-trigger-param-tests-32b";
+    let mut stored = HashMap::new();
+    stored.insert("token".into(), "legacy-plaintext".into());
+    let opened = open_trigger_params(&stored, secret).unwrap();
+    assert_eq!(
+        opened.get("token").map(String::as_str),
+        Some("legacy-plaintext")
+    );
 }

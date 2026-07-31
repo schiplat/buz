@@ -37,6 +37,19 @@ struct RegistrySecretJson {
     password: String,
 }
 
+/// Heuristic: value looks like registry credential JSON (username + password).
+/// Used for migrate backfill and create-time hints — does not require `registry`.
+pub fn looks_like_registry_secret_value(raw: &str) -> bool {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return false;
+    }
+    let Ok(parsed) = serde_json::from_str::<RegistrySecretJson>(raw) else {
+        return false;
+    };
+    !parsed.username.trim().is_empty() && !parsed.password.trim().is_empty()
+}
+
 /// Extract the registry host (and optional port) from a container image reference.
 ///
 /// Returns `None` for Docker Hub short names (`alpine:3.20`, `user/repo:tag`).
@@ -66,10 +79,7 @@ pub fn normalize_provider(raw: Option<&str>) -> Option<String> {
 ///
 /// When `registry` is omitted in JSON, it is inferred from `image` (docker steps).
 /// Shell/SSH push steps typically omit `image` and must set `registry` in JSON.
-pub fn parse_registry_secret_value(
-    raw: &str,
-    image: Option<&str>,
-) -> Result<RegistryAuth, String> {
+pub fn parse_registry_secret_value(raw: &str, image: Option<&str>) -> Result<RegistryAuth, String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err("registry secret value is empty".into());

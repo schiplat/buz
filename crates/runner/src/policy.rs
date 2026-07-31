@@ -27,10 +27,7 @@ pub fn apply_to_config(config: &mut Config, policy: &RunnerPolicyConfig) {
 }
 
 pub fn snapshot(policy: &SharedPolicy) -> RunnerPolicyConfig {
-    policy
-        .read()
-        .map(|g| g.clone())
-        .unwrap_or_default()
+    policy.read().map(|g| g.clone()).unwrap_or_default()
 }
 
 pub fn store(policy: &SharedPolicy, next: RunnerPolicyConfig) -> RunnerPolicyConfig {

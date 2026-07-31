@@ -92,6 +92,17 @@ function getStepStatus(stepOrder: number): string {
   return found?.status || 'pending'
 }
 
+function isMaskedInput(key: string): boolean {
+  const keys = job.value?.snapshot?.masking_input_keys
+  return Array.isArray(keys) && keys.includes(key)
+}
+
+function displayInputValue(key: string, val: unknown): string {
+  if (isMaskedInput(key)) return '***'
+  if (val == null) return ''
+  return String(val)
+}
+
 function fmtStepDuration(stepOrder: number): string {
   if (!job.value?.step_statuses) return '\u2014'
   const found = job.value.step_statuses.find((s: any) => Number(s.step_order) === stepOrder)
@@ -635,10 +646,17 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
             <div class="flex flex-wrap gap-1.5 mt-2">
               <span
                 v-for="(val, key) in job.snapshot.inputs" :key="key"
-                class="inline-flex items-center gap-1.5 rounded-md border border-primary/15 bg-primary/[0.03] px-2.5 py-1 text-[11px] font-mono"
+                class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-mono"
+                :class="isMaskedInput(String(key))
+                  ? 'border-violet-500/20 bg-violet-500/[0.04] text-violet-700/90'
+                  : 'border-primary/15 bg-primary/[0.03]'"
               >
                 <span class="text-muted-foreground/70">{{ key }}</span>
-                <span class="text-foreground/70 font-medium">{{ val }}</span>
+                <span
+                  v-if="isMaskedInput(String(key))"
+                  class="text-[9px] uppercase tracking-wide font-sans font-medium text-violet-600/80"
+                >masking</span>
+                <span class="text-foreground/70 font-medium">{{ displayInputValue(String(key), val) }}</span>
               </span>
             </div>
           </div>

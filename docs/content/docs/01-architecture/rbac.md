@@ -20,7 +20,9 @@ Related: [Secrets Access Control](/docs/01-architecture/secrets-access-control/)
 - Four team roles with a clear permission matrix
 - List APIs filter by membership from day one (no “login = see everything” interim)
 
-Out of scope for Phase 2 (defer to Phase 3): SSO/OIDC, user API tokens, approval flows, audit UI, per-step secret ACL, cross-team grant tables.
+Out of scope for Phase 2 (defer to Phase 3): SSO/OIDC, user API tokens, approval flows, per-step secret ACL, cross-team grant tables.
+
+Platform-admin **Audit logs** UI/API (mutation before/after with redaction) is available — see [Admin Audit Logs](/docs/01-architecture/admin-audit-logs/).
 
 ---
 

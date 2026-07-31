@@ -1,0 +1,53 @@
+# Demo: trigger input masking
+#
+# How to verify:
+# 1) Pipelines → New Pipeline → YAML tab → paste this → Import to Form
+#    Expect: Params has version + deploy_token; deploy_token has Masking checked
+# 2) Save (pick your team), then Trigger
+#    Expect: deploy_token is a password field with "masking" badge
+# 3) Enter version=1.0.0 and deploy_token=tok-demo-secret-xyz → Run
+# 4) Job Detail → Trigger Inputs: deploy_token shows *** (and masking badge)
+# 5) Job logs ==> RUN env line: deploy_token=*** (never tok-demo-secret-xyz)
+# 6) Step still prints "token_len=…" (value injected; only observability is masked)
+#
+# Optional DB check (Manager host):
+#   sqlite3 data/buz.db "SELECT trigger_params FROM jobs ORDER BY created_at DESC LIMIT 1;"
+#   deploy_token should look like "buzenc:v1:…" not plaintext.
+
+name: masking-input-demo
+description: Demo for masking:true trigger inputs (logs + audit + DB encrypt)
+team: default
+
+on:
+  manual:
+    inputs:
+      version:
+        description: Release version (visible in logs)
+        required: true
+        default: "1.0.0"
+      deploy_token:
+        description: One-time deploy token (masked)
+        required: true
+        masking: true
+      target:
+        description: Deploy target label
+        required: false
+        default: staging
+
+runner:
+  labels: [linux-x64]
+  timeout: 5m
+
+steps:
+  - name: Show non-secret inputs
+    run: |
+      echo "version=$INPUT_VERSION"
+      echo "target=$INPUT_TARGET"
+      # Length only — do not echo the token value (masking is for logs/audit, not for silent steps)
+      echo "deploy_token_len=${#INPUT_DEPLOY_TOKEN}"
+
+  - name: Prove token is injected
+    run: |
+      test -n "$INPUT_DEPLOY_TOKEN"
+      test "$INPUT_DEPLOY_TOKEN" != "***"
+      echo "token present and not the redaction placeholder"

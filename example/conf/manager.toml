@@ -14,7 +14,8 @@ path = "./data/buz.db"
 max_connections = 8
 
 [auth]
-# Demo default only — change before any shared deploy.
+# Local demo only. Manager refuses this unless BUZ_ALLOW_INSECURE_JWT=1
+# (Makefile `run` / `dev-manager` set that). Prefer: export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
 jwt_secret = "changeme-demo-only"
 # JWT lifetime for UI/API users and runner session tokens after register
 jwt_ttl_hours = 24
@@ -29,3 +30,7 @@ heartbeat_timeout_seconds = 90
 # Watch this directory for .yml / .yaml and sync into the DB
 yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30
+
+[logging]
+level = "info"
+# file = "./logs/manager.log"

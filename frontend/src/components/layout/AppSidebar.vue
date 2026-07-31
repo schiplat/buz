@@ -5,6 +5,7 @@ import {
   Globe,
   PanelLeft,
   Puzzle,
+  ScrollText,
   Server,
   Users,
   UserRound,
@@ -51,6 +52,7 @@ const allEntries: NavEntry[] = [
   { kind: 'section', label: 'Access' },
   { kind: 'link', name: 'teams', label: 'Teams', icon: Users, to: '/teams' },
   { kind: 'link', name: 'users', label: 'Users', icon: UserRound, to: '/users', adminOnly: true },
+  { kind: 'link', name: 'audit-logs', label: 'Audit logs', icon: ScrollText, to: '/audit-logs', adminOnly: true },
 ]
 
 const entries = computed(() =>
@@ -61,7 +63,6 @@ const entries = computed(() =>
   }),
 )
 
-const copyrightYear = new Date().getFullYear()
 const uiVersion = __APP_VERSION__
 const managerVersion = ref<string | null>(null)
 
@@ -197,7 +198,7 @@ function onLogoClick(e: MouseEvent) {
     <!-- Footer -->
     <div v-if="!ui.isCollapsed" class="px-4 pb-4">
       <p class="px-1 text-xs leading-relaxed text-muted-foreground/80">
-        &copy; {{ copyrightYear }} Buz
+        © 2026 Buzproject
       </p>
       <p class="px-1 font-mono text-xs text-muted-foreground/60" :title="versionLabel">
         {{ versionLabel }}

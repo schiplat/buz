@@ -100,7 +100,7 @@ Rules: both fields required; `new_password` ≥ 6 characters and must differ fro
 Returns liveness plus package version (no separate `/version` endpoint).
 
 ```json
-{ "status": "ok", "name": "Buz", "version": "0.2.0", "component": "manager" }
+{ "status": "ok", "name": "Buz", "version": "0.3.0", "component": "manager" }
 ```
 
 Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`) and mirrored in `frontend/package.json`. CLI: `buz-manager --version` / `buz-runner --version`.
@@ -129,7 +129,7 @@ Request:
 {
   "name": "prod-runner-01",
   "labels": ["linux-x64", "prod"],
-  "version": "0.2.0",
+  "version": "0.3.0",
   "max_concurrent_jobs": 3,
   "clean_workspace_after_job": true,
   "shell_enabled": true,
@@ -180,7 +180,7 @@ Request:
   "name": "prod-runner-01",
   "register_token": "one-time-token",
   "labels": ["linux-x64"],
-  "version": "0.2.0"
+  "version": "0.3.0"
 }
 ```
 
@@ -402,7 +402,8 @@ Response:
 - When ciphertext cannot be decrypted: `value` is `****` and `reencrypt_required: true`.
 - Empty `value` on PUT keeps the existing ciphertext.
 - `team_shared` (boolean, default `false` on create): when `true`, same-team pipelines auto-receive the secret at job claim; when `false`, use Authorized Secrets / YAML `secrets:` / step `secrets:` / `registry_secret`. See [Secrets Access Control](/docs/01-architecture/secrets-access-control/).
-- For private registries, store JSON credentials and reference the secret **name** via step field `registry_secret` (see [Docker Engine](/docs/01-architecture/docker-engine/)). Prefer `team_shared: false` for registry JSON.
+- `kind` (`generic` \| `registry`, default `generic`): `registry` requires parseable JSON with `username`/`password` and is required for step `registry_secret` at claim. List/get return `kind`. Pipeline UI **Registry Secret** dropdown filters to `kind=registry`.
+- For private registries, set `kind: registry`, store JSON credentials, and reference the secret **name** via `registry_secret` (see [Docker Engine](/docs/01-architecture/docker-engine/)). Prefer `team_shared: false`.
 
 ## Variables
 
@@ -417,7 +418,10 @@ Response:
 
 | Method | Path | Auth |
 |--------|------|------|
-| POST | `/api/v1/hooks/:path` | None (public) |
+| POST | `/api/v1/hooks/:path` | None (public) — generic HTTP trigger |
+| POST | `/api/v1/hooks/git/:provider/:hook_key` | Platform Secret/Token (planned) — GitHub/Gitee |
+
+Generic hooks use query / flat JSON / `inputs` (below). Git platform push events use a **separate** adapter with URL + independent Secret (not in the URL). Design: [Git Webhook Triggers](/docs/01-architecture/git-webhook-triggers/).
 
 ### POST /hooks/:path — External Webhook Trigger
 
@@ -452,6 +456,37 @@ Response:
 Errors:
 - `2001 NotFound` — no webhook pipeline registered for that path
 - `2002 Conflict` — pipeline is deactivated or concurrency group is occupied
+
+### POST /hooks/git/:provider/:hook_key — Git platform adapter
+
+- `{provider}`: `github` | `gitee`
+- URL has **no** secret query param; verify via GitHub `X-Hub-Signature-256` or Gitee `X-Gitee-Token` against the secret stored (encrypted) on `pipeline_git_hooks` — user pastes the same secret into the platform Webhook UI.
+- On success, triggers a job with normalized `INPUT_GIT_*` (see [Git Webhook Triggers](/docs/01-architecture/git-webhook-triggers/)).
+- Skipped deliveries return HTTP 202; bad signature → 401 (`AuthFailed`).
+
+### Git hook config (JWT) — multiple per pipeline
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/api/v1/pipelines/:id/git-hooks` | `{ items: [...] }` public fields (no secret) |
+| POST | `/api/v1/pipelines/:id/git-hooks` | Create; returns plaintext `secret` once. Immutable afterward. |
+| DELETE | `/api/v1/pipelines/:id/git-hooks/:hook_id` | Remove one hook (recreate to change settings) |
+
+### GET /pipelines/:id/trigger-events
+
+JWT. Paginated **Trigger events** (`source`, `decision` filters) for Pipeline detail → Trigger events.
+
+## Audit logs
+
+Platform-admin only. See [Admin Audit Logs](/docs/01-architecture/admin-audit-logs/).
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/api/v1/audit-logs` | JWT + PlatformAdmin |
+
+Query: `page`, `page_size` (1–100), `action`, `actor` (username substring), `resource_type`, `q` (search), `from`, `to` (created_at bounds).
+
+Response `data`: `{ items, total, page, page_size }`. Items include summary fields plus redacted `before` / `after` / `meta` JSON.
 
 ## Cron Scheduler
 

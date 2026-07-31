@@ -79,7 +79,11 @@ pub(crate) fn normalize_ssh_host_key_policy(v: Option<String>) -> Result<String,
 }
 
 fn bool_i64(v: Option<bool>, default: bool) -> i64 {
-    if v.unwrap_or(default) { 1 } else { 0 }
+    if v.unwrap_or(default) {
+        1
+    } else {
+        0
+    }
 }
 
 fn i64_bool(v: i64) -> bool {
@@ -170,8 +174,10 @@ pub async fn create_runner(
     .await?;
 
     tracing::info!(
-        "Runner created: {} ({id}) register_token={register_token} max_concurrent={max_concurrent}",
-        req.name
+        name = %req.name,
+        id = %id,
+        max_concurrent = max_concurrent,
+        "runner created (register_token returned once in API response, not logged)"
     );
 
     log_runner_event(
@@ -210,7 +216,7 @@ pub async fn register(
     if let Some(ref row) = existing {
         let existing_token: Option<String> = row.get(2);
 
-        if existing_token.as_ref().map_or(true, |t| t.is_empty()) {
+        if existing_token.as_ref().is_none_or(|t| t.is_empty()) {
             // First-time registration — must match the one-shot register_token.
             let stored_rt: String = row.get(1);
             if stored_rt != register_token {
@@ -265,12 +271,11 @@ pub async fn register(
     tracing::info!("Runner registered: {} ({runner_id})", name);
 
     let policy = load_runner_policy(&state.pool, &runner_id).await?;
-    let labels_db: String =
-        sqlx::query_scalar("SELECT labels FROM runners WHERE id = ?")
-            .bind(&runner_id)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or_else(|_| "[]".into());
+    let labels_db: String = sqlx::query_scalar("SELECT labels FROM runners WHERE id = ?")
+        .bind(&runner_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or_else(|_| "[]".into());
 
     log_runner_event(
         &state.pool,
@@ -344,22 +349,20 @@ pub async fn poll(
     }
 
     // Capacity gate: do not claim when this runner is already at max concurrent jobs.
-    let max_concurrent: i64 = sqlx::query_scalar(
-        "SELECT max_concurrent_jobs FROM runners WHERE id = ?",
-    )
-    .bind(&auth.runner_id)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(1)
-    .max(1);
+    let max_concurrent: i64 =
+        sqlx::query_scalar("SELECT max_concurrent_jobs FROM runners WHERE id = ?")
+            .bind(&auth.runner_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(1)
+            .max(1);
 
-    let running_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
-    )
-    .bind(&auth.runner_id)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
+    let running_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
+            .bind(&auth.runner_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
 
     if running_count >= max_concurrent {
         tracing::debug!(
@@ -422,13 +425,13 @@ pub async fn poll(
                 required_labels = ?required,
                 "Runner claimed job"
             );
-            claimed = Some(r);
+            claimed = Some((r, snapshot_raw));
             break;
         }
         // Lost the race — try next matching candidate
     }
 
-    let Some(row) = claimed else {
+    let Some((row, snapshot_raw)) = claimed else {
         // No matching pending job
         return Ok(Json(ApiResponse::success(None)));
     };
@@ -436,10 +439,53 @@ pub async fn poll(
     let job_id: String = row.get(0);
     let pipeline_id: String = row.get(1);
     let trigger_params_raw: Option<String> = row.get(2);
-    let trigger_params: serde_json::Value = trigger_params_raw
+    let trigger_params_stored: serde_json::Value = trigger_params_raw
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::json!({}));
 
+    let job_snapshot: serde_json::Value =
+        serde_json::from_str(&snapshot_raw).unwrap_or(serde_json::json!({}));
+    let mut masking_input_keys: Vec<String> = job_snapshot
+        .get("masking_input_keys")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let trigger_params_map = crypto::trigger_params_to_map(&trigger_params_stored);
+
+    // Keys sealed at trigger time (buzenc:v1:) are authoritative even if snapshot list is stale.
+    for (k, v) in &trigger_params_map {
+        if v.starts_with(crypto::TRIGGER_PARAM_ENC_PREFIX) && !masking_input_keys.contains(k) {
+            masking_input_keys.push(k.clone());
+        }
+    }
+
+    // Fallback for jobs created before masking_input_keys existed: use live pipeline defs.
+    if masking_input_keys.is_empty() {
+        let defs_raw: String =
+            sqlx::query_scalar("SELECT input_defs FROM pipelines WHERE id = ?")
+                .bind(&pipeline_id)
+                .fetch_optional(&state.pool)
+                .await?
+                .unwrap_or_else(|| "[]".into());
+        let defs: Vec<shared::protocol::PipelineInputDef> =
+            serde_json::from_str(&defs_raw).unwrap_or_default();
+        masking_input_keys = shared::protocol::masking_input_names(&defs);
+    }
+
+    let trigger_params_plain = crypto::open_trigger_params(
+        &trigger_params_map,
+        &state.config.auth.jwt_secret,
+    )
+    .map_err(|e| {
+        tracing::error!(job = %job_id, error = %e, "Failed to decrypt trigger_params");
+        AppError::Internal(e)
+    })?;
+    let trigger_params = serde_json::to_value(&trigger_params_plain).unwrap_or_default();
     // Fetch tasks for this pipeline
     let task_rows = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template,
@@ -500,8 +546,7 @@ pub async fn poll(
         match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
             Ok(value) => {
                 if let Some(obj) = secrets.as_object_mut() {
-                    obj.entry(name)
-                        .or_insert(serde_json::Value::String(value));
+                    obj.entry(name).or_insert(serde_json::Value::String(value));
                 }
             }
             Err(e) => {
@@ -603,9 +648,7 @@ pub async fn poll(
                                 }
                             }
                             Err(e) => {
-                                tracing::error!(
-                                    "Failed to decrypt step secret '{name}': {e}"
-                                );
+                                tracing::error!("Failed to decrypt step secret '{name}': {e}");
                             }
                         }
                     }
@@ -647,15 +690,13 @@ pub async fn poll(
                 let resolved_names: Vec<String> = host_names_raw
                     .split(',')
                     .filter(|s| !s.trim().is_empty())
-                    .map(|s| resolve_var_ref(s.trim(), &unified_vars))
-                    .flat_map(|resolved| resolved)
+                    .flat_map(|s| resolve_var_ref(s.trim(), &unified_vars))
                     .collect();
 
                 let resolved_labels: Vec<String> = host_labels_raw
                     .split(',')
                     .filter(|s| !s.trim().is_empty())
-                    .map(|s| resolve_var_ref(s.trim(), &unified_vars))
-                    .flat_map(|resolved| resolved)
+                    .flat_map(|s| resolve_var_ref(s.trim(), &unified_vars))
                     .collect();
 
                 // Look up resolved names in hosts table
@@ -739,10 +780,10 @@ pub async fn poll(
         task_json["step_secrets"] = step_secrets_map;
 
         // Resolve registry_secret → registry_auth (not injected as env).
-        // Same-team name resolve only — does not require team_shared.
+        // Same-team + kind=registry only (does not require team_shared).
         if !registry_secret_name.trim().is_empty() {
-            match sqlx::query_as::<_, (String,)>(
-                "SELECT s.value FROM secrets s
+            match sqlx::query_as::<_, (String, String)>(
+                "SELECT s.value, s.kind FROM secrets s
                  JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
                  WHERE p.id = ? AND s.name = ?",
             )
@@ -751,43 +792,52 @@ pub async fn poll(
             .fetch_optional(&state.pool)
             .await
             {
-                Ok(Some((stored,))) => {
-                    match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
-                        Ok(value) => {
-                            let image_opt = if image.trim().is_empty() {
-                                None
-                            } else {
-                                Some(image.as_str())
-                            };
-                            match shared::registry_auth::parse_registry_secret_value(
-                                &value, image_opt,
-                            ) {
-                                Ok(auth) => {
-                                    tracing::info!(
-                                        secret = %registry_secret_name.trim(),
-                                        registry = %auth.registry,
-                                        "Resolved registry_secret → registry_auth for job dispatch"
-                                    );
-                                    let mut auth_json = serde_json::json!({
-                                        "registry": auth.registry,
-                                        "username": auth.username,
-                                        "password": auth.password,
-                                    });
-                                    if let Some(p) = auth.provider {
-                                        auth_json["provider"] = serde_json::Value::String(p);
+                Ok(Some((stored, kind))) => {
+                    if !shared::secret_kind::is_registry_kind(&kind) {
+                        task_json["registry_auth_error"] = serde_json::Value::String(format!(
+                            "secret '{}' has kind='{}' — set Kind to Registry credentials \
+                             in Infrastructure → Secrets (or create a registry secret)",
+                            registry_secret_name.trim(),
+                            shared::secret_kind::normalize_secret_kind(Some(&kind))
+                        ));
+                    } else {
+                        match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
+                            Ok(value) => {
+                                let image_opt = if image.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(image.as_str())
+                                };
+                                match shared::registry_auth::parse_registry_secret_value(
+                                    &value, image_opt,
+                                ) {
+                                    Ok(auth) => {
+                                        tracing::info!(
+                                            secret = %registry_secret_name.trim(),
+                                            registry = %auth.registry,
+                                            "Resolved registry_secret → registry_auth for job dispatch"
+                                        );
+                                        let mut auth_json = serde_json::json!({
+                                            "registry": auth.registry,
+                                            "username": auth.username,
+                                            "password": auth.password,
+                                        });
+                                        if let Some(p) = auth.provider {
+                                            auth_json["provider"] = serde_json::Value::String(p);
+                                        }
+                                        task_json["registry_auth"] = auth_json;
                                     }
-                                    task_json["registry_auth"] = auth_json;
-                                }
-                                Err(e) => {
-                                    task_json["registry_auth_error"] =
-                                        serde_json::Value::String(e);
+                                    Err(e) => {
+                                        task_json["registry_auth_error"] =
+                                            serde_json::Value::String(e);
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            task_json["registry_auth_error"] = serde_json::Value::String(
-                                format!("failed to decrypt registry_secret: {e}"),
-                            );
+                            Err(e) => {
+                                task_json["registry_auth_error"] = serde_json::Value::String(
+                                    format!("failed to decrypt registry_secret: {e}"),
+                                );
+                            }
                         }
                     }
                 }
@@ -822,11 +872,23 @@ pub async fn poll(
     )
     .await;
 
+    // Also place masking inputs into `secrets` so Runner log redaction (by secret key)
+    // always covers them — same path as Infrastructure Secrets.
+    if let Some(obj) = secrets.as_object_mut() {
+        for key in &masking_input_keys {
+            if let Some(val) = trigger_params_plain.get(key) {
+                obj.entry(key.clone())
+                    .or_insert_with(|| serde_json::Value::String(val.clone()));
+            }
+        }
+    }
+
     Ok(Json(ApiResponse::success(Some(serde_json::json!({
         "job_id": job_id,
         "pipeline_id": pipeline_id,
         "tasks": tasks,
         "inputs": trigger_params,
+        "masking_input_keys": masking_input_keys,
         "env": env,
         "secrets": secrets,
     })))))
@@ -963,7 +1025,11 @@ pub async fn list_runners(
                 wasm_enabled: i64_bool(r.get(13)),
                 ssh_host_key_policy: {
                     let p: String = r.get(14);
-                    if p == "known_hosts" { p } else { "insecure".into() }
+                    if p == "known_hosts" {
+                        p
+                    } else {
+                        "insecure".into()
+                    }
                 },
             };
             serde_json::json!({
@@ -1009,13 +1075,12 @@ pub async fn get_runner(
     let labels: String = r.get(2);
     let system_info_raw: String = r.get(5);
     let system_info = serde_json::from_str::<serde_json::Value>(&system_info_raw).ok();
-    let running_jobs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
-    )
-    .bind(&id)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
+    let running_jobs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
+            .bind(&id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
     let policy = load_runner_policy(&state.pool, &id).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
@@ -1093,11 +1158,13 @@ pub async fn update_runner(
         .await?;
     }
     if let Some(v) = req.ssh_enabled {
-        sqlx::query("UPDATE runners SET ssh_enabled = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(if v { 1i64 } else { 0 })
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE runners SET ssh_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(if v { 1i64 } else { 0 })
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
     }
     if let Some(v) = req.docker_enabled {
         sqlx::query(
@@ -1109,11 +1176,13 @@ pub async fn update_runner(
         .await?;
     }
     if let Some(v) = req.wasm_enabled {
-        sqlx::query("UPDATE runners SET wasm_enabled = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(if v { 1i64 } else { 0 })
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE runners SET wasm_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(if v { 1i64 } else { 0 })
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
     }
     if req.ssh_host_key_policy.is_some() {
         let p = normalize_ssh_host_key_policy(req.ssh_host_key_policy.clone())?;
@@ -1126,13 +1195,7 @@ pub async fn update_runner(
         .await?;
     }
 
-    log_runner_event(
-        &state.pool,
-        &id,
-        "updated",
-        "Runner policy updated from UI",
-    )
-    .await;
+    log_runner_event(&state.pool, &id, "updated", "Runner policy updated from UI").await;
 
     let r = sqlx::query(
         "SELECT id, name, labels, status, version, system_info, last_seen, register_token,
@@ -1145,13 +1208,12 @@ pub async fn update_runner(
     let labels: String = r.get(2);
     let system_info_raw: String = r.get(5);
     let system_info = serde_json::from_str::<serde_json::Value>(&system_info_raw).ok();
-    let running_jobs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
-    )
-    .bind(&id)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
+    let running_jobs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
+            .bind(&id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
     let policy = load_runner_policy(&state.pool, &id).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({

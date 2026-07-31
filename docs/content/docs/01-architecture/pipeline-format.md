@@ -125,6 +125,24 @@ on:
   - `description` — Optional description shown in the trigger dialog
   - `required` — If `true`, the trigger dialog marks this field with a red `*` and the user should fill it before triggering
   - `default` — Fallback value when the user leaves the field blank
+  - `masking` — If `true`, the value is still injected as env for execution, but:
+    - Redacted (`***`) in Runner `==> RUN` env echo / step logs, job snapshot, API `trigger_params`, and `pipeline.trigger` audit
+    - **Encrypted at rest** in `jobs.trigger_params` (AES-256-GCM, same key as Secrets; `buzenc:v1:` prefix). Claim decrypts for the Runner.
+
+```yaml
+on:
+  manual:
+    inputs:
+      version:
+        description: Version to deploy
+        required: true
+      deploy_token:
+        description: One-time token
+        required: true
+        masking: true
+```
+
+> **`masking` vs Secrets:** Infrastructure Secrets are encrypted at rest with ACL and reused across jobs. `masking: true` inputs are also encrypted in `trigger_params`, but are one-shot per job — prefer Secrets for long-lived credentials. Changing `jwt_secret` makes old sealed masking values undecryptable (same as Secrets).
 
 > **Form behavior:** If a pipeline has `manual.inputs` defined, clicking "Build Now" opens the trigger dialog. If no inputs are defined, the pipeline is triggered immediately without a dialog.
 
@@ -142,6 +160,8 @@ on:
 |---|---|
 | YAML | `webhook.path: my-pipeline` |
 | Form | Webhook Config → URL Path |
+
+> **GitHub / Gitee push triggers** do **not** add YAML fields. Configure URL + Secret in the Pipeline UI; the adapter injects `INPUT_GIT_*` at job creation. See [Git Webhook Triggers](/docs/01-architecture/git-webhook-triggers/).
 
 #### `on.cron` (Scheduled)
 
@@ -320,7 +340,7 @@ Every placeholder in a pipeline command falls into one of four categories, each 
 | `variables` | Top-level `variables:` / Manager UI | **Pipeline** | All steps | No | `$VAR_NAME` |
 | `secrets` (pipeline) | Top-level `secrets:` / Manager UI | **Pipeline** | All steps | **Yes** | `$SECRET_NAME` |
 | `secrets` (step) | Step-level `secrets:` | **Step** | That step only | **Yes** | `$SECRET_NAME` |
-| `inputs` (dynamic params) | `on.manual.inputs:` | **Trigger** | All steps | No | `$INPUT_NAME` (uppercased) |
+| `inputs` (dynamic params) | `on.manual.inputs:` | **Trigger** | All steps | Optional (`masking: true`) | `$INPUT_NAME` (uppercased) |
 
 ### Resolution Precedence
 

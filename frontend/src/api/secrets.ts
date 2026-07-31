@@ -1,5 +1,8 @@
 import apiClient from './client'
 
+/** Secret purpose: env injection vs registry login JSON. */
+export type SecretKind = 'generic' | 'registry'
+
 export interface Secret {
   id: string
   name: string
@@ -14,13 +17,19 @@ export interface Secret {
    * Default false — use Authorized Secrets / YAML secrets / step secrets / registry_secret.
    */
   team_shared: boolean
+  /** `generic` (default) or `registry` (JSON for registry_secret / docker login). */
+  kind: SecretKind
   updated_at: string
 }
 
 export const secretsApi = {
   async list(): Promise<Secret[]> {
     const resp = await apiClient.get('/secrets')
-    return resp.data as Secret[]
+    const rows = resp.data as Secret[]
+    return rows.map((s) => ({
+      ...s,
+      kind: s.kind === 'registry' ? 'registry' : 'generic',
+    }))
   },
 
   async create(data: {
@@ -29,12 +38,14 @@ export const secretsApi = {
     team_id: string
     owner_group?: string
     team_shared?: boolean
+    kind?: SecretKind
   }): Promise<{
     id: string
     name: string
     team_id: string
     owner_group: string
     team_shared: boolean
+    kind: SecretKind
   }> {
     const resp = await apiClient.post('/secrets', data)
     return resp.data
@@ -42,7 +53,8 @@ export const secretsApi = {
 
   async get(id: string): Promise<Secret> {
     const resp = await apiClient.get(`/secrets/${id}`)
-    return resp.data as Secret
+    const s = resp.data as Secret
+    return { ...s, kind: s.kind === 'registry' ? 'registry' : 'generic' }
   },
 
   async update(
@@ -52,6 +64,7 @@ export const secretsApi = {
       team_id?: string
       owner_group?: string
       team_shared?: boolean
+      kind?: SecretKind
     },
   ): Promise<void> {
     await apiClient.put(`/secrets/${id}`, data)

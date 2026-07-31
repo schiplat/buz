@@ -1,20 +1,19 @@
 # Buz Runner — machine-local config only
 #
-# Strategy (labels, concurrency, engines, cleanup, ssh_host_key_policy)
-# is configured in Manager UI → Runners and applied via register / heartbeat.
-# See docs: Runner Policy (UI-managed).
-
-[manager]
-url = "http://127.0.0.1:8080"
-# From Manager UI → Runners → New Runner (do not commit real tokens)
-register_token = "b5c8fb3a-c231-40b6-bd2a-4f475490ef8a"
-# tls_skip_verify = true   # only for self-signed Manager HTTPS in labs
+# Strategy (labels, concurrency, engines, cleanup) → Manager UI → Runners.
 
 [runner]
-# Must match the Runner name created in the UI
 name = "macos-kit-01"
+manager_url = "http://127.0.0.1:8080"
+# From Manager UI → Runners → New Runner (do not commit real tokens)
+register_token = "REPLACE_WITH_UI_REGISTER_TOKEN"
+# tls_skip_verify = true
 workspace_dir = "/tmp/buz-runner"
-# prefer_interfaces = ["enp26s0"]   # multi-NIC: prefer these IPs in UI
+# prefer_interfaces = ["enp26s0"]
 
 [engine]
-# ssh_known_hosts_path = "~/.ssh/known_hosts"   # when UI policy is known_hosts
+# ssh_known_hosts_path = "~/.ssh/known_hosts"
+
+[logging]
+level = "info"
+file = "./logs/runner.log"

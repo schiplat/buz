@@ -15,27 +15,29 @@ This matches the same pattern as `max_concurrent_jobs`: one place to control all
 
 | Setting | Section | Purpose |
 |---------|---------|---------|
-| `manager.url` | `[manager]` | Manager base URL |
-| `manager.register_token` | `[manager]` | One-time / bootstrap registration token |
-| `manager.tls_skip_verify` | `[manager]` | Dev-only TLS skip |
-| `runner.name` | `[runner]` | Must match the Runner name created in UI |
-| `runner.workspace_dir` | `[runner]` | Local workspace root (`{workspace_dir}/{job_id}`) |
-| `runner.prefer_interfaces` | `[runner]` | Multi-NIC IP ordering for UI |
-| `engine.ssh_known_hosts_path` | `[engine]` | Path to `known_hosts` when UI policy is `known_hosts` |
+| `manager_url` | `[runner]` | Manager base URL |
+| `register_token` | `[runner]` | One-time / bootstrap registration token |
+| `tls_skip_verify` | `[runner]` | Dev-only TLS skip |
+| `name` | `[runner]` | Must match the Runner name created in UI |
+| `workspace_dir` | `[runner]` | Local workspace root (`{workspace_dir}/{job_id}`) |
+| `prefer_interfaces` | `[runner]` | Multi-NIC IP ordering for UI |
+| `ssh_known_hosts_path` | `[engine]` | Path to `known_hosts` when UI policy is `known_hosts` |
+| `level` / `file` | `[logging]` | Log verbosity and optional file path |
 
 Example:
 
 ```toml
-[manager]
-url = "https://buz-api.example.com"
-register_token = "your-register-token"
-
 [runner]
 name = "prod-runner-01"
+manager_url = "https://buz-api.example.com"
+register_token = "your-register-token"
 workspace_dir = "/tmp/buz-runner"
 
 [engine]
 # ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"
+
+[logging]
+level = "info"
 ```
 
 ## What is managed in Manager UI

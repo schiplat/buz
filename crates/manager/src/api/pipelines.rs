@@ -4,11 +4,15 @@ use axum::{
 };
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
-use shared::protocol::{CreatePipelineRequest, StepDef};
+use shared::protocol::{
+    masking_input_names, redact_input_map, CreatePipelineRequest, PipelineInputDef, StepDef,
+};
 use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::audit::{self, AuditEvent};
+use crate::crypto;
 use crate::middleware::AuthUser;
 use crate::rbac::{pipeline_team_id, resolve_required_team_id, secret_team_id, team_in_clause};
 use crate::state::AppState;
@@ -170,6 +174,22 @@ pub async fn create(
 
     tracing::info!("Pipeline created: {} ({pipeline_id})", req.name);
 
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "pipeline.create")
+            .resource("pipeline", &pipeline_id, &req.name)
+            .team(Some(team_id.clone()))
+            .after(Some(serde_json::json!({
+                "id": pipeline_id,
+                "name": req.name,
+                "trigger_type": req.trigger_type,
+                "team_id": team_id,
+                "owner_group": owner_group,
+                "step_count": steps.len(),
+            }))),
+    )
+    .await;
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": pipeline_id,
         "name": req.name,
@@ -293,6 +313,23 @@ pub async fn update(
     let current_team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&current_team_id, Perm::PipelineWrite)?;
 
+    let before_row = sqlx::query(
+        "SELECT name, trigger_type, team_id, owner_group, is_active FROM pipelines WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let before = before_row.as_ref().map(|r| {
+        serde_json::json!({
+            "id": id,
+            "name": r.get::<String, _>(0),
+            "trigger_type": r.get::<String, _>(1),
+            "team_id": r.get::<String, _>(2),
+            "owner_group": r.get::<String, _>(3),
+            "is_active": r.get::<i64, _>(4) != 0,
+        })
+    });
+
     let (team_id, owner_group) = if req.team_id.is_some() || req.owner_group.is_some() {
         let resolved = resolve_required_team_id(
             &state.pool,
@@ -383,6 +420,23 @@ pub async fn update(
 
     tracing::info!("Pipeline updated: {id}");
 
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "pipeline.update")
+            .resource("pipeline", &id, &req.name)
+            .team(Some(team_id.clone()))
+            .before(before)
+            .after(Some(serde_json::json!({
+                "id": id,
+                "name": req.name,
+                "trigger_type": req.trigger_type,
+                "team_id": team_id,
+                "owner_group": owner_group,
+                "step_count": steps.len(),
+            }))),
+    )
+    .await;
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
         "name": req.name,
@@ -398,6 +452,28 @@ pub async fn delete(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::PipelineDelete)?;
 
+    let before_row =
+        sqlx::query("SELECT name, trigger_type, team_id, owner_group FROM pipelines WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let (name, before) = match before_row {
+        Some(r) => {
+            let name: String = r.get(0);
+            (
+                name.clone(),
+                Some(serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "trigger_type": r.get::<String, _>(1),
+                    "team_id": r.get::<String, _>(2),
+                    "owner_group": r.get::<String, _>(3),
+                })),
+            )
+        }
+        None => (id.clone(), None),
+    };
+
     let result = sqlx::query("DELETE FROM pipelines WHERE id = ?")
         .bind(&id)
         .execute(&state.pool)
@@ -406,6 +482,15 @@ pub async fn delete(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("pipeline not found".into()));
     }
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "pipeline.delete")
+            .resource("pipeline", &id, &name)
+            .team(Some(team_id))
+            .before(before),
+    )
+    .await;
 
     tracing::info!("Pipeline deleted: {id}");
     Ok(Json(ApiResponse::success(())))
@@ -442,6 +527,18 @@ pub async fn toggle_active(
     let name: String = row.get(0);
     tracing::info!("Pipeline {name} ({id}) {action}");
 
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "pipeline.toggle_active")
+            .resource("pipeline", &id, &name)
+            .team(Some(team_id))
+            .before(Some(
+                serde_json::json!({ "is_active": current_active != 0 }),
+            ))
+            .after(Some(serde_json::json!({ "is_active": new_active != 0 }))),
+    )
+    .await;
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "is_active": new_active != 0
     }))))
@@ -455,7 +552,41 @@ pub async fn trigger(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::PipelineTrigger)?;
-    do_trigger(&state, &id, &auth.username, &body.inputs).await
+    let result = do_trigger(&state, &id, &auth.username, &body.inputs).await?;
+    let name: String = sqlx::query_scalar("SELECT name FROM pipelines WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?
+        .unwrap_or_else(|| id.clone());
+    let job_id = result
+        .0
+        .data
+        .as_ref()
+        .and_then(|d| d.get("job_id"))
+        .cloned();
+
+    let input_defs_raw: String =
+        sqlx::query_scalar("SELECT input_defs FROM pipelines WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&state.pool)
+            .await?
+            .unwrap_or_else(|| "[]".into());
+    let defs: Vec<PipelineInputDef> =
+        serde_json::from_str(&input_defs_raw).unwrap_or_default();
+    let masking_keys = masking_input_names(&defs);
+    let audit_inputs = redact_input_map(&body.inputs, &masking_keys);
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "pipeline.trigger")
+            .resource("pipeline", &id, &name)
+            .team(Some(team_id))
+            .after(Some(
+                serde_json::json!({ "job_id": job_id, "inputs": audit_inputs }),
+            )),
+    )
+    .await;
+    Ok(result)
 }
 
 /// Shared trigger logic — used by admin trigger, webhooks, and cron scheduler.
@@ -467,7 +598,7 @@ pub(crate) async fn do_trigger(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let pipeline = sqlx::query(
         "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
-                concurrency_max_queue, concurrency_queue_timeout_seconds
+                concurrency_max_queue, concurrency_queue_timeout_seconds, input_defs
          FROM pipelines WHERE id = ? AND is_active = 1",
     )
     .bind(pipeline_id)
@@ -479,6 +610,11 @@ pub(crate) async fn do_trigger(
     let concurrency_mode: String = pipeline.get(4);
     let concurrency_max_queue: i64 = pipeline.get(5);
     let _concurrency_queue_timeout: i64 = pipeline.get(6);
+    let input_defs_raw: String = pipeline.get(7);
+    let input_defs: Vec<PipelineInputDef> =
+        serde_json::from_str(&input_defs_raw).unwrap_or_default();
+    let masking_keys = masking_input_names(&input_defs);
+    let inputs_for_snapshot = redact_input_map(inputs, &masking_keys);
 
     // ── Concurrency logic ──
     let job_status: &str = if let Some(ref group) = concurrency_group {
@@ -642,12 +778,16 @@ pub(crate) async fn do_trigger(
         "concurrency_group": concurrency_group,
         "tasks": tasks_snapshot,
         "env": env_snapshot,
-        "inputs": inputs,
+        "inputs": inputs_for_snapshot,
+        "masking_input_keys": masking_keys,
         "triggered_by": triggered_by,
         "triggered_at": chrono::Utc::now().to_rfc3339(),
     });
 
-    let trigger_params_json = serde_json::to_string(&inputs).unwrap_or_else(|_| "{}".into());
+    // Masking input values encrypted at rest (buzenc:v1:…); claim decrypts for Runner.
+    let sealed = crypto::seal_trigger_params(inputs, &masking_keys, &state.config.auth.jwt_secret)
+        .map_err(AppError::Internal)?;
+    let trigger_params_json = serde_json::to_string(&sealed).unwrap_or_else(|_| "{}".into());
 
     sqlx::query(
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot, created_at, updated_at)
@@ -663,6 +803,23 @@ pub(crate) async fn do_trigger(
     .await?;
 
     tracing::info!("Pipeline triggered: {pipeline_name} → job {job_id} (by: {triggered_by})");
+
+    // Git adapter records a richer TriggerEvent itself; skip duplicate here.
+    if triggered_by != "git" {
+        let source = match triggered_by {
+            "webhook" => "webhook",
+            "cron" => "cron",
+            _ => "manual",
+        };
+        super::trigger_events::record_simple_trigger(
+            &state.pool,
+            pipeline_id,
+            source,
+            triggered_by,
+            &job_id,
+        )
+        .await;
+    }
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "job_id": job_id,
@@ -830,7 +987,11 @@ pub(crate) async fn insert_steps(
             .map(|v| serde_json::to_string(v).unwrap_or_default())
             .unwrap_or_default();
 
-        let privileged_val = if step.privileged.unwrap_or(false) { 1i64 } else { 0i64 };
+        let privileged_val = if step.privileged.unwrap_or(false) {
+            1i64
+        } else {
+            0i64
+        };
 
         let registry_secret_stored = step
             .registry_secret
@@ -859,7 +1020,7 @@ pub(crate) async fn insert_steps(
         .bind(step.dir.as_deref().unwrap_or(""))
         .bind(step.retry.unwrap_or(0))
         .bind(parse_timeout_seconds(step.timeout.as_deref()))
-        .bind(&fail_strategy)
+        .bind(fail_strategy)
         .bind(&step_secrets_stored)
         .bind(&volumes_stored)
         .bind(privileged_val)
@@ -882,10 +1043,10 @@ pub(crate) async fn insert_steps(
 fn parse_timeout_seconds(raw: Option<&str>) -> i64 {
     raw.and_then(|s| {
         let s = s.trim();
-        if s.ends_with('m') {
-            s[..s.len() - 1].parse::<i64>().ok().map(|v| v * 60)
-        } else if s.ends_with('h') {
-            s[..s.len() - 1].parse::<i64>().ok().map(|v| v * 3600)
+        if let Some(stripped) = s.strip_suffix('m') {
+            stripped.parse::<i64>().ok().map(|v| v * 60)
+        } else if let Some(stripped) = s.strip_suffix('h') {
+            stripped.parse::<i64>().ok().map(|v| v * 3600)
         } else {
             s.parse::<i64>().ok()
         }

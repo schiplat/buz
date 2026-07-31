@@ -18,7 +18,8 @@ path = "./data/buz.db"
 max_connections = 8
 
 [auth]
-jwt_secret = "changeme-demo-only"   # or env BUZ_JWT_SECRET
+jwt_secret = ""                     # required — or set BUZ_JWT_SECRET (openssl rand -hex 32)
+# Local/demo with a weak template secret only: BUZ_ALLOW_INSECURE_JWT=1
 jwt_ttl_hours = 24
 runner_register_token_ttl_hours = 24
 
@@ -28,6 +29,10 @@ heartbeat_timeout_seconds = 90
 [pipeline]
 yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30
+
+[logging]
+level = "info"                 # error | warn | info | debug | trace
+# file = "./logs/manager.log"  # optional; when set → stdout + file
 ```
 
 | Section | Key | Notes |
@@ -35,11 +40,13 @@ yaml_scan_interval_seconds = 30
 | `server` | `host` / `port` | Listen address |
 | `server` | `tls_cert` + `tls_key` | Optional HTTPS (both required). See [TLS](/docs/03-operations/tls/) |
 | `database` | `path` | SQLite file |
-| `auth` | `jwt_secret` | Signs JWTs + encrypts host credentials |
+| `auth` | `jwt_secret` | Signs JWTs + encrypts secrets/hosts. **Required** (≥ 32 chars). Empty / `CHANGE_ME` / `changeme` / `demo-only` placeholders are **refused at startup** unless `BUZ_ALLOW_INSECURE_JWT=1` (local only) |
 | `auth` | `jwt_ttl_hours` | UI/API JWT lifetime |
 | `auth` | `runner_register_token_ttl_hours` | Runner JWT lifetime after register |
 | `runner` | `heartbeat_timeout_seconds` | Offline threshold for runners |
 | `pipeline` | `yaml_scan_*` | Directory sync of pipeline YAML |
+| `logging` | `level` | Default `info`. Overridden by `RUST_LOG` if set |
+| `logging` | `file` | Optional append path; empty = stdout only |
 
 **First admin:** not in config. On a fresh database, open the UI — you are redirected to `/setup` to create the platform admin (password ≥ 8 chars, complexity rules apply). After that, use `/login`.
 
@@ -57,34 +64,65 @@ Then restart Manager and sign in. Prefer changing the password again from the UI
 
 Machine-local only. Strategy is **not** configured here — see [Runner Policy](/docs/01-architecture/runner-concurrent-jobs/).
 
-| Managed in UI | Kept in TOML |
-|---------------|--------------|
-| `labels` | `manager.url`, `register_token`, `tls_skip_verify` |
-| `max_concurrent_jobs`, cleanup (`clean_workspace_after_job`) | `runner.name`, `workspace_dir` |
+| Managed in UI | Kept in TOML (`[runner]` / `[engine]` / `[logging]`) |
+|---------------|-----------------------------------------------------|
+| `labels` | `manager_url`, `register_token`, `tls_skip_verify` |
+| `max_concurrent_jobs`, cleanup | `name`, `workspace_dir` |
 | engine enable flags + `ssh_host_key_policy` | `prefer_interfaces`, `ssh_known_hosts_path` |
 
 ```toml
-[manager]
-url = "https://buz-api.example.com"
-register_token = "paste-from-ui"   # or env BUZ_REGISTER_TOKEN
-# tls_skip_verify = false
-
 [runner]
-name = "prod-runner-01"            # must match UI Runner name
+name = "prod-runner-01"              # must match UI Runner name
+manager_url = "https://buz-api.example.com"
+register_token = "paste-from-ui"     # or env BUZ_REGISTER_TOKEN
+# tls_skip_verify = false
 workspace_dir = "/tmp/buz-runner"
 # prefer_interfaces = ["enp26s0"]
 
 [engine]
 # ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"
+
+[logging]
+level = "info"
+# file = "./logs/runner.log"   # Runner default if omitted: ./logs/runner.log
 ```
+
+> Obsolete `[manager]` section is **rejected** at startup with a migration hint.
+
+## Logging
+
+| Destination | Behavior |
+|-------------|----------|
+| stdout | Always on (Docker: `docker logs`) |
+| Runner file | **Default** `./logs/runner.log` (Docker WORKDIR → `/app/buz/logs/runner.log`) |
+| Manager file | Optional via `logging.file` (no default file) |
+| Level | `logging.level` (default `info`); `RUST_LOG` overrides |
+
+Set `logging.file = ""` (or `"-"` / `"none"`) on Runner for **stdout-only**.
+
+Examples:
+
+```bash
+# Config file
+# [logging]
+# level = "debug"
+# file = "/app/buz/logs/manager.log"
+
+# One-shot override
+RUST_LOG=buz_manager=debug,sqlx=warn ./buz-manager -c conf/manager.toml
+```
+
+Do **not** log secrets (`register_token`, JWT, passwords). Create-runner API returns the token once in the JSON body; process logs only record name/id.
 
 ## Environment overrides
 
 | Variable | Effect |
 |----------|--------|
-| `BUZ_JWT_SECRET` | Overrides `auth.jwt_secret` |
-| `BUZ_MANAGER_URL` | Overrides `manager.url` |
-| `BUZ_REGISTER_TOKEN` | Overrides `manager.register_token` |
+| `BUZ_JWT_SECRET` | Overrides `auth.jwt_secret` (required for packaged/Docker deploys) |
+| `BUZ_ALLOW_INSECURE_JWT` | `1` / `true` — allow empty or placeholder JWT secrets (**local/demo only**) |
+| `BUZ_MANAGER_URL` | Overrides `runner.manager_url` |
+| `BUZ_REGISTER_TOKEN` | Overrides `runner.register_token` |
+| `RUST_LOG` | Overrides `logging.level` filter |
 | `BUZ__…` | Nested TOML via `config` crate (`BUZ__SERVER__PORT=8081`) |
 
 Priority: CLI args > environment > config file > defaults.

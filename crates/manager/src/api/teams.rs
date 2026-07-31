@@ -9,6 +9,7 @@ use shared::rbac::{Perm, TeamRole};
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::audit::{self, AuditEvent};
 use crate::middleware::AuthUser;
 use crate::state::AppState;
 
@@ -108,6 +109,20 @@ pub async fn create(
     .execute(&state.pool)
     .await?;
 
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "team.create")
+            .resource("team", &id, name)
+            .team(Some(id.clone()))
+            .after(Some(serde_json::json!({
+                "id": id,
+                "name": name,
+                "slug": slug,
+                "description": req.description.as_deref().unwrap_or(""),
+            }))),
+    )
+    .await;
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
         "name": name,
@@ -152,6 +167,23 @@ pub async fn update(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     auth.check_team(&id, Perm::TeamManageMembers)?;
 
+    let before_row = sqlx::query("SELECT name, slug, description FROM teams WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?;
+    let before = before_row.as_ref().map(|r| {
+        serde_json::json!({
+            "id": id,
+            "name": r.get::<String, _>(0),
+            "slug": r.get::<String, _>(1),
+            "description": r.get::<String, _>(2),
+        })
+    });
+    let team_name = before_row
+        .as_ref()
+        .map(|r| r.get::<String, _>(0))
+        .unwrap_or_else(|| id.clone());
+
     if let Some(ref name) = req.name {
         sqlx::query("UPDATE teams SET name = ?, updated_at = datetime('now') WHERE id = ?")
             .bind(name.trim())
@@ -166,6 +198,28 @@ pub async fn update(
             .execute(&state.pool)
             .await?;
     }
+
+    let after_row = sqlx::query("SELECT name, slug, description FROM teams WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?;
+    let after = after_row.as_ref().map(|r| {
+        serde_json::json!({
+            "id": id,
+            "name": r.get::<String, _>(0),
+            "slug": r.get::<String, _>(1),
+            "description": r.get::<String, _>(2),
+        })
+    });
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "team.update")
+            .resource("team", &id, &team_name)
+            .team(Some(id.clone()))
+            .before(before)
+            .after(after),
+    )
+    .await;
 
     Ok(Json(ApiResponse::success(serde_json::json!({ "id": id }))))
 }
@@ -191,6 +245,26 @@ pub async fn delete(
         )));
     }
 
+    let before_row = sqlx::query("SELECT name, slug, description FROM teams WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?;
+    let (team_name, before) = match before_row {
+        Some(r) => {
+            let name: String = r.get(0);
+            (
+                name.clone(),
+                Some(serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "slug": r.get::<String, _>(1),
+                    "description": r.get::<String, _>(2),
+                })),
+            )
+        }
+        None => (id.clone(), None),
+    };
+
     let result = sqlx::query("DELETE FROM teams WHERE id = ?")
         .bind(&id)
         .execute(&state.pool)
@@ -198,6 +272,14 @@ pub async fn delete(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("team not found".into()));
     }
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "team.delete")
+            .resource("team", &id, &team_name)
+            .team(Some(id.clone()))
+            .before(before),
+    )
+    .await;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -262,6 +344,13 @@ pub async fn upsert_member(
         return Err(AppError::NotFound("user not found".into()));
     }
 
+    let prev: Option<String> =
+        sqlx::query_scalar("SELECT role FROM team_members WHERE team_id = ? AND user_id = ?")
+            .bind(&id)
+            .bind(&req.user_id)
+            .fetch_optional(&state.pool)
+            .await?;
+
     sqlx::query(
         "INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, ?)
          ON CONFLICT(team_id, user_id) DO UPDATE SET role = excluded.role",
@@ -271,6 +360,20 @@ pub async fn upsert_member(
     .bind(role.as_str())
     .execute(&state.pool)
     .await?;
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "team.member_upsert")
+            .resource("team_member", &req.user_id, &req.user_id)
+            .team(Some(id.clone()))
+            .before(prev.map(|r| serde_json::json!({ "role": r })))
+            .after(Some(serde_json::json!({
+                "team_id": id,
+                "user_id": req.user_id,
+                "role": role.as_str(),
+            }))),
+    )
+    .await;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "team_id": id,
@@ -316,5 +419,13 @@ pub async fn remove_member(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("membership not found".into()));
     }
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "team.member_remove")
+            .resource("team_member", &user_id, &user_id)
+            .team(Some(id.clone()))
+            .before(current_role.map(|r| serde_json::json!({ "role": r, "user_id": user_id }))),
+    )
+    .await;
     Ok(Json(ApiResponse::success(())))
 }

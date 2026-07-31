@@ -74,10 +74,7 @@ fn max_concurrent_rejects_out_of_range() {
 
 #[test]
 fn ssh_host_key_policy_defaults_to_insecure() {
-    assert_eq!(
-        normalize_ssh_host_key_policy(None).unwrap(),
-        "insecure"
-    );
+    assert_eq!(normalize_ssh_host_key_policy(None).unwrap(), "insecure");
 }
 
 #[test]

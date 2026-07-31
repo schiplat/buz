@@ -1,16 +1,12 @@
 //! Tests for registry_auth helpers.
 
-use shared::registry_auth::{
-    parse_registry_secret_value, registry_host_from_image, RegistryAuth,
-};
+use shared::registry_auth::{parse_registry_secret_value, registry_host_from_image, RegistryAuth};
 
 #[test]
 fn registry_from_acr_personal_image() {
     assert_eq!(
-        registry_host_from_image(
-            "crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0"
-        )
-        .as_deref(),
+        registry_host_from_image("crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0")
+            .as_deref(),
         Some("crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com")
     );
 }

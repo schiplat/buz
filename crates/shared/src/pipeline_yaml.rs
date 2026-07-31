@@ -45,15 +45,19 @@ pub enum ConcurrencyDef {
 pub struct ConcurrencyYaml {
     pub group: String,
     #[serde(default = "default_concurrency_mode")]
-    pub mode: String,   // "discard-old" (default) | "queue" | "discard-new"
+    pub mode: String, // "discard-old" (default) | "queue" | "discard-new"
     #[serde(default = "default_max_queue")]
     pub max_queue: u32,
     #[serde(default)]
     pub queue_timeout: Option<String>,
 }
 
-pub fn default_concurrency_mode() -> String { "discard-old".into() }
-fn default_max_queue() -> u32 { 3 }
+pub fn default_concurrency_mode() -> String {
+    "discard-old".into()
+}
+fn default_max_queue() -> u32 {
+    3
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerYaml {
@@ -77,6 +81,9 @@ pub struct InputDef {
     pub required: Option<bool>,
     #[serde(default)]
     pub default: Option<String>,
+    /// When true, values are redacted in logs, audit, and job snapshots (still injected as env at runtime).
+    #[serde(default)]
+    pub masking: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +225,8 @@ pub struct InputData {
     pub required: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub masking: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -481,6 +490,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                             description: v.description.clone(),
                             required: v.required,
                             default: v.default.clone(),
+                            masking: v.masking.filter(|m| *m),
                         })
                         .collect()
                 })

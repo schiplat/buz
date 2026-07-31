@@ -16,9 +16,12 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 tokio.workspace = true
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 futures-util = "0.3"
+rust-embed = "8"
+mime_guess = "2"
 
-# Database
+# Database (bundled SQLite — no system libsqlite3 required in Docker)
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 
 # Serialization
 serde.workspace = true
@@ -43,8 +46,11 @@ password-hash = "0.5"
 # Crypto (AES-256-GCM for credential_data encryption at rest)
 aes-gcm = "0.10"
 sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
 base64 = "0.22"
 rand = "0.8"
+bytes = "1"
 
 # Error handling
 thiserror.workspace = true

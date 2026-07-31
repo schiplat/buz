@@ -1,6 +1,6 @@
 use super::{
     build_login_banner, build_step_echo, build_step_failure_message, step_failure_hint,
-    step_log_base, LOG_ECHO, LOG_LOGIN, LOG_STREAM_START, LOG_STEP_ERROR,
+    step_log_base, LOG_ECHO, LOG_LOGIN, LOG_STEP_ERROR, LOG_STREAM_START,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -22,6 +22,26 @@ fn login_echo_stream_do_not_collide() {
     assert_ne!(echo, stream0);
     assert_ne!(login, stream0);
     assert!(err > stream0);
+}
+
+#[test]
+fn build_step_echo_masks_secret_and_masking_input_keys() {
+    let mut env = HashMap::new();
+    env.insert("DEBIAN_FRONTEND".into(), "noninteractive".into());
+    env.insert("version".into(), "1.0".into());
+    env.insert("deploy_token".into(), "tok-secret-value".into());
+    env.insert("acr_personal".into(), "secret-json".into());
+    let mut secrets = HashSet::new();
+    secrets.insert("acr_personal".into());
+    secrets.insert("deploy_token".into());
+    secrets.insert("INPUT_DEPLOY_TOKEN".into());
+
+    let echo = build_step_echo("shell", "echo hi\n", &env, &secrets, None);
+    assert!(echo.contains("version=1.0"), "{echo}");
+    assert!(echo.contains("deploy_token=***"), "{echo}");
+    assert!(echo.contains("acr_personal=***"), "{echo}");
+    assert!(!echo.contains("tok-secret-value"), "{echo}");
+    assert!(!echo.contains("secret-json"), "{echo}");
 }
 
 #[test]
@@ -65,7 +85,10 @@ fn step_failure_hint_detects_platform_mismatch() {
         "no matching manifest for linux/arm64/v8 in the manifest list",
         125,
     );
-    assert!(hint.contains("architecture") || hint.contains("arm64"), "{hint}");
+    assert!(
+        hint.contains("architecture") || hint.contains("arm64"),
+        "{hint}"
+    );
 }
 
 #[test]

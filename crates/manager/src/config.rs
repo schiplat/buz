@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use shared::logging::LoggingConfig;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -12,6 +14,8 @@ pub struct Config {
     pub runner: RunnerConfig,
     #[serde(default)]
     pub pipeline: PipelineConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,6 +147,55 @@ fn default_yaml_scan_interval() -> u64 {
     30
 }
 
+/// Minimum accepted length for a production JWT secret (bytes as chars).
+pub const MIN_JWT_SECRET_LEN: usize = 32;
+
+/// Returns `true` when the secret is empty, too short, or a known template/demo value.
+pub fn is_insecure_jwt_secret(secret: &str) -> bool {
+    let s = secret.trim();
+    if s.is_empty() || s.len() < MIN_JWT_SECRET_LEN {
+        return true;
+    }
+    let lower = s.to_ascii_lowercase();
+    lower.contains("changeme")
+        || lower.contains("change_me")
+        || lower.contains("change-me")
+        || lower.contains("demo-only")
+        || lower.contains("replace_with")
+        || lower.contains("replace-with")
+        || lower == "buz-dev-secret-change-in-production"
+}
+
+fn allow_insecure_jwt_from_env() -> bool {
+    match std::env::var("BUZ_ALLOW_INSECURE_JWT") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Refuse weak / placeholder JWT secrets unless `BUZ_ALLOW_INSECURE_JWT` is set.
+pub fn validate_jwt_secret(secret: &str) -> anyhow::Result<()> {
+    if !is_insecure_jwt_secret(secret) {
+        return Ok(());
+    }
+    if allow_insecure_jwt_from_env() {
+        eprintln!(
+            "warning: JWT secret is empty, shorter than {MIN_JWT_SECRET_LEN} chars, or looks like a \
+             template/demo value. Continuing because BUZ_ALLOW_INSECURE_JWT is set — never use this in production."
+        );
+        return Ok(());
+    }
+    anyhow::bail!(
+        "refusing to start: auth.jwt_secret is missing, shorter than {MIN_JWT_SECRET_LEN} characters, \
+         or a known placeholder (CHANGE_ME / changeme / demo-only / …). \
+         Set a strong secret, e.g. `openssl rand -hex 32`, via auth.jwt_secret or BUZ_JWT_SECRET. \
+         Local/demo only: export BUZ_ALLOW_INSECURE_JWT=1"
+    )
+}
+
 // -- loader --
 
 pub fn load(config_path: Option<&str>) -> anyhow::Result<Config> {
@@ -160,19 +213,11 @@ pub fn load(config_path: Option<&str>) -> anyhow::Result<Config> {
         cfg.auth.jwt_secret = secret;
     }
 
-    // Ensure JWT secret is not a placeholder in production
-    if cfg.auth.jwt_secret.is_empty()
-        || cfg.auth.jwt_secret == "changeme"
-        || cfg.auth.jwt_secret.contains("changeme")
-        || cfg.auth.jwt_secret.contains("demo-only")
-    {
-        tracing::warn!(
-            "JWT secret looks like a demo placeholder. Set auth.jwt_secret or BUZ_JWT_SECRET before production."
-        );
-        if cfg.auth.jwt_secret.is_empty() || cfg.auth.jwt_secret == "changeme" {
-            cfg.auth.jwt_secret = "buz-dev-secret-change-in-production".into();
-        }
-    }
+    validate_jwt_secret(&cfg.auth.jwt_secret)?;
 
     Ok(cfg)
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;

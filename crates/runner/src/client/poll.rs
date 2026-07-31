@@ -144,16 +144,16 @@ pub async fn check_job_cancelled(
     job_id: &str,
 ) -> anyhow::Result<bool> {
     let resp = client
-        .get(&format!(
+        .get(format!(
             "{}/api/v1/jobs/{job_id}/status-check",
-            config.manager.url
+            config.runner.manager_url
         ))
         .header("Authorization", format!("Bearer {token}"))
         .timeout(Duration::from_secs(10))
         .send()
         .await
         .map_err(|e| {
-            super::friendly_reqwest_error(e, &config.manager.url, "Status check failed")
+            super::friendly_reqwest_error(e, &config.runner.manager_url, "Status check failed")
         })?;
 
     if !resp.status().is_success() {
@@ -205,11 +205,7 @@ pub async fn run_poll_loop(
                 consecutive_failures = 0;
 
                 let job_id = task["job_id"].as_str().unwrap_or("unknown").to_string();
-                tracing::info!(
-                    "Claimed job {job_id} (active {}/{})",
-                    active + 1,
-                    local_max
-                );
+                tracing::info!("Claimed job {job_id} (active {}/{})", active + 1, local_max);
 
                 let c = client.clone();
                 let mut job_config = config.clone();
@@ -318,12 +314,15 @@ async fn poll_for_task(
     token: &str,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     let resp = client
-        .get(&format!("{}/api/v1/runners/poll", config.manager.url))
+        .get(format!(
+            "{}/api/v1/runners/poll",
+            config.runner.manager_url
+        ))
         .header("Authorization", format!("Bearer {token}"))
         .timeout(Duration::from_secs(50))
         .send()
         .await
-        .map_err(|e| super::friendly_reqwest_error(e, &config.manager.url, "Poll failed"))?;
+        .map_err(|e| super::friendly_reqwest_error(e, &config.runner.manager_url, "Poll failed"))?;
 
     if resp.status() == 204 {
         return Ok(None);
@@ -363,7 +362,7 @@ async fn execute_job(
         .ok_or_else(|| anyhow::anyhow!("missing tasks array"))?;
 
     // Build base env from trigger inputs + pipeline env + pipeline secrets.
-    // Only Infrastructure Secrets (and step secrets) are tracked for log redaction.
+    // Infrastructure Secrets and masking inputs are tracked for log redaction.
     let mut base_env: std::collections::HashMap<String, String> = task
         .get("inputs")
         .and_then(|v| v.as_object())
@@ -394,11 +393,27 @@ async fn execute_job(
         }
     }
 
+    // Trigger inputs marked masking: true — same redaction as secrets in logs/echo.
+    if let Some(keys) = task.get("masking_input_keys").and_then(|v| v.as_array()) {
+        for key in keys.iter().filter_map(|v| v.as_str()) {
+            if key.is_empty() {
+                continue;
+            }
+            pipeline_secret_keys.insert(key.to_string());
+            // Engines also export INPUT_<NAME>; cover both key forms in env echo.
+            pipeline_secret_keys.insert(format!("INPUT_{}", key.to_uppercase()));
+        }
+    }
+
     // Force non-interactive mode for common tools. When a step tries to read
     // from stdin (e.g. `git clone` prompting for credentials), these env vars
     // make the tool fail immediately with a clear error instead of hanging.
-    base_env.entry("GIT_TERMINAL_PROMPT".to_string()).or_insert_with(|| "0".to_string());
-    base_env.entry("DEBIAN_FRONTEND".to_string()).or_insert_with(|| "noninteractive".to_string());
+    base_env
+        .entry("GIT_TERMINAL_PROMPT".to_string())
+        .or_insert_with(|| "0".to_string());
+    base_env
+        .entry("DEBIAN_FRONTEND".to_string())
+        .or_insert_with(|| "noninteractive".to_string());
 
     // ---- Cancel watcher helper -------------------------------------------------
     /// Returns `true` when the job has been cancelled.
@@ -442,8 +457,7 @@ async fn execute_job(
             }
         }
 
-        // Collect secret values for log masking (GitHub Actions-style) — secrets only,
-        // not pipeline/step env, inputs, or runner-injected noninteractive flags.
+        // Collect values for log masking — secrets, registry passwords, masking inputs.
         let mut secret_values =
             crate::masker::collect_secret_values_for_keys(&step_env, &step_secret_keys);
         if let Some(pw) = step
@@ -581,8 +595,15 @@ async fn execute_job(
                             },
                         )
                         .await;
-                        update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
-                            .await?;
+                        update_job_status(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            "failed",
+                            Some(idx as i32),
+                        )
+                        .await?;
                         anyhow::bail!(masked);
                     }
                     let _ = super::logs::upload_chunk(
@@ -605,15 +626,20 @@ async fn execute_job(
 
                 // Debug echo — show the command before execution (like bash -x)
                 {
-                    let echo_line = build_step_echo(exec_type, &cmd, &env, &step_secret_keys, work_dir);
+                    let echo_line =
+                        build_step_echo(exec_type, &cmd, &env, &step_secret_keys, work_dir);
                     let _ = super::logs::upload_chunk(
-                        client, config, token, job_id,
+                        client,
+                        config,
+                        token,
+                        job_id,
                         LogChunk {
                             chunk_index: log_base + LOG_ECHO,
                             step_order: idx as i32,
                             content: echo_line,
                         },
-                    ).await;
+                    )
+                    .await;
                 }
 
                 let c = client.clone();
@@ -708,15 +734,18 @@ async fn execute_job(
                         } else {
                             String::new()
                         },
-                        exit_code: if was_cancelled_local || was_timeout { -1 } else { exit_code },
+                        exit_code: if was_cancelled_local || was_timeout {
+                            -1
+                        } else {
+                            exit_code
+                        },
                     },
                     was_cancelled_local,
                 )
             }
             "ssh" => {
                 let host_values = step["host"]
-                    .as_array()
-                    .map(|a| a.clone())
+                    .as_array().cloned()
                     .or_else(|| {
                         step["host"]
                             .as_object()
@@ -768,15 +797,20 @@ async fn execute_job(
 
                 // Debug echo — show the command before execution (like bash -x)
                 {
-                    let echo_line = build_step_echo(exec_type, &cmd, &ssh_env, &ssh_secret_keys, work_dir);
+                    let echo_line =
+                        build_step_echo(exec_type, &cmd, &ssh_env, &ssh_secret_keys, work_dir);
                     let _ = super::logs::upload_chunk(
-                        client, config, token, job_id,
+                        client,
+                        config,
+                        token,
+                        job_id,
                         LogChunk {
                             chunk_index: log_base + LOG_ECHO,
                             step_order: idx as i32,
                             content: echo_line,
                         },
-                    ).await;
+                    )
+                    .await;
                 }
 
                 let cfg = config.clone();
@@ -789,7 +823,15 @@ async fn execute_job(
                 let step_env_ssh = ssh_env;
 
                 let step_task = tokio::spawn(async move {
-                    execute_ssh_step(&cfg_ssh, &cmd, &hosts_json, step_timeout, &sname, &step_env_ssh).await
+                    execute_ssh_step(
+                        &cfg_ssh,
+                        &cmd,
+                        &hosts_json,
+                        step_timeout,
+                        &sname,
+                        &step_env_ssh,
+                    )
+                    .await
                 });
                 let abort_handle = step_task.abort_handle();
 
@@ -802,7 +844,7 @@ async fn execute_job(
                         abort_handle.abort();
                         (engine::shell::ShellOutput {
                             stdout: String::new(),
-                            stderr: format!("==> CANCELLED\n"),
+                            stderr: "==> CANCELLED\n".to_string(),
                             exit_code: -1,
                         }, true)
                     }
@@ -829,9 +871,7 @@ async fn execute_job(
                     anyhow::bail!(msg);
                 }
 
-                let pull_registry = registry_login
-                    .as_ref()
-                    .map(|(r, _, _)| r.clone());
+                let pull_registry = registry_login.as_ref().map(|(r, _, _)| r.clone());
                 if let Some((ref registry, ref username, ref password)) = registry_login {
                     if let Err(e) =
                         engine::docker::registry_login(registry, username, password).await
@@ -850,8 +890,15 @@ async fn execute_job(
                             },
                         )
                         .await;
-                        update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
-                            .await?;
+                        update_job_status(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            "failed",
+                            Some(idx as i32),
+                        )
+                        .await?;
                         anyhow::bail!(masked);
                     }
                     let _ = super::logs::upload_chunk(
@@ -885,15 +932,20 @@ async fn execute_job(
 
                 // Debug echo — show the command before execution (like bash -x)
                 {
-                    let echo_line = build_step_echo(exec_type, &cmd, &step_env, &step_secret_keys, work_dir);
+                    let echo_line =
+                        build_step_echo(exec_type, &cmd, &step_env, &step_secret_keys, work_dir);
                     let _ = super::logs::upload_chunk(
-                        client, config, token, job_id,
+                        client,
+                        config,
+                        token,
+                        job_id,
                         LogChunk {
                             chunk_index: log_base + LOG_ECHO,
                             step_order: idx as i32,
                             content: echo_line,
                         },
-                    ).await;
+                    )
+                    .await;
                 }
 
                 let img = image.to_string();
@@ -994,7 +1046,11 @@ async fn execute_job(
                         } else {
                             String::new()
                         },
-                        exit_code: if was_cancelled_docker || was_timeout_docker { -1 } else { exit_code },
+                        exit_code: if was_cancelled_docker || was_timeout_docker {
+                            -1
+                        } else {
+                            exit_code
+                        },
                     },
                     was_cancelled_docker,
                 )
@@ -1042,7 +1098,10 @@ async fn execute_job(
         if output.exit_code != 0 && fail_strategy == "stop" {
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
             let hint = step_failure_hint(&output.stderr, output.exit_code);
-            anyhow::bail!("{}", build_step_failure_message(step_name, output.exit_code, command, &hint));
+            anyhow::bail!(
+                "{}",
+                build_step_failure_message(step_name, output.exit_code, command, &hint)
+            );
         } else if output.exit_code != 0 && fail_strategy == "continue" {
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
         } else {
@@ -1060,10 +1119,7 @@ async fn execute_job(
 /// Build an SSH command string with environment variable exports prepended.
 /// Follows the same INPUT_* convention as the shell and docker engines,
 /// and also exports step-level secret values.
-fn build_ssh_env_command(
-    command: &str,
-    env: &std::collections::HashMap<String, String>,
-) -> String {
+fn build_ssh_env_command(command: &str, env: &std::collections::HashMap<String, String>) -> String {
     let mut prefix = String::from("set -e; ");
     if env.is_empty() {
         return format!("{prefix}{command}");
@@ -1211,9 +1267,9 @@ async fn update_job_status(
     let mut last_err = None;
     for attempt in 1..=3 {
         let resp = client
-            .patch(&format!(
+            .patch(format!(
                 "{}/api/v1/jobs/{job_id}/status",
-                config.manager.url
+                config.runner.manager_url
             ))
             .header("Authorization", format!("Bearer {token}"))
             .json(&UpdateJobStatusRequest {
@@ -1234,7 +1290,7 @@ async fn update_job_status(
             Err(e) => {
                 last_err = Some(super::friendly_reqwest_error(
                     e,
-                    &config.manager.url,
+                    &config.runner.manager_url,
                     "Job status update failed",
                 ));
             }

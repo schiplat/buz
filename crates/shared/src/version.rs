@@ -6,7 +6,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Product name shown in CLI and API payloads.
 pub const PRODUCT_NAME: &str = "Buz";
 
-/// Build a clap-style version line: `0.2.0`.
+/// Build a clap-style version line: `0.3.0`.
 pub fn version_string() -> &'static str {
     VERSION
 }

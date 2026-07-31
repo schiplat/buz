@@ -1,0 +1,29 @@
+# Manager config — Docker + binary package
+
+[server]
+host = "0.0.0.0"
+port = 8080
+# tls_cert = "certs/cert.pem"
+# tls_key  = "certs/key.pem"
+
+[database]
+path = "./data/buz.db"
+max_connections = 8
+
+[auth]
+# Required: set via BUZ_JWT_SECRET or a strong value here (e.g. openssl rand -hex 32).
+# Empty / known template secrets are refused at Manager startup.
+jwt_secret = ""
+jwt_ttl_hours = 24
+runner_register_token_ttl_hours = 24
+
+[runner]
+heartbeat_timeout_seconds = 90
+
+[pipeline]
+yaml_scan_dir = "./pipelines"
+yaml_scan_interval_seconds = 30
+
+[logging]
+level = "info"
+# file = "./logs/manager.log"

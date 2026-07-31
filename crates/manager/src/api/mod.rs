@@ -13,11 +13,15 @@ pub(crate) use pipelines::{
     do_trigger, insert_env_vars, insert_pipeline_secret_bindings, insert_pipeline_var_bindings,
     insert_steps,
 };
+mod audit_logs;
+mod git_hooks;
+mod git_webhook;
 mod hosts;
 mod jobs;
 mod logs;
 mod secrets;
 mod teams;
+mod trigger_events;
 mod users;
 mod variables;
 mod version;
@@ -69,6 +73,15 @@ pub fn router(state: AppState) -> Router {
             patch(pipelines::toggle_active),
         )
         .route("/pipelines/{id}/trigger", post(pipelines::trigger))
+        .route("/pipelines/{id}/trigger-events", get(trigger_events::list))
+        .route(
+            "/pipelines/{id}/git-hooks",
+            get(git_hooks::list_hooks).post(git_hooks::create_hook),
+        )
+        .route(
+            "/pipelines/{id}/git-hooks/{hook_id}",
+            delete(git_hooks::delete_hook),
+        )
         .route("/jobs", get(jobs::list))
         .route("/jobs/{id}", get(jobs::get_one).delete(jobs::delete))
         .route("/jobs/{id}/cancel", post(jobs::cancel))
@@ -99,6 +112,8 @@ pub fn router(state: AppState) -> Router {
                 .put(variables::update)
                 .delete(variables::delete),
         )
+        // Audit logs (platform admin)
+        .route("/audit-logs", get(audit_logs::list))
         // Runner management (platform admin)
         .route(
             "/runners",
@@ -112,6 +127,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/runners/{id}/freeze", patch(runners::toggle_freeze))
         .route("/runners/{id}/events", get(runners::get_events))
+        .route(
+            "/hooks/git/{provider}/{hook_key}",
+            post(git_webhook::handle),
+        )
         .route("/hooks/{path}", post(webhook::handle))
         .with_state(state)
 }

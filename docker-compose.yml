@@ -1,0 +1,50 @@
+# Host templates: deploy/conf/ → mounted to /app/buz/conf/
+#
+# Same-host:
+#   1. export BUZ_JWT_SECRET=$(openssl rand -hex 32)
+#   2. docker compose up -d manager
+#   3. UI → Runners → New Runner → edit deploy/conf/runner.toml
+#   4. docker compose up -d runner
+#
+# Other host runner:
+#   BUZ_RUNNER_CONF=/etc/buz/runner.toml docker compose up -d runner
+
+services:
+  manager:
+    image: ${BUZ_IMAGE_MANAGER:-buz-manager:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${BUZ_PORT:-8080}:8080"
+    environment:
+      BUZ_JWT_SECRET: ${BUZ_JWT_SECRET:-}
+    volumes:
+      - ${BUZ_MANAGER_CONF:-./deploy/conf/manager.toml}:/app/buz/conf/manager.toml:ro
+      - ${BUZ_MANAGER_DATA:-buz-data}:/app/buz/data
+      - ${BUZ_MANAGER_PIPELINES:-buz-pipelines}:/app/buz/pipelines
+    restart: unless-stopped
+
+  runner:
+    image: ${BUZ_IMAGE_RUNNER:-buz-runner:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.runner
+    volumes:
+      - ${BUZ_RUNNER_CONF:-./deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
+      - ${BUZ_RUNNER_WS:-buz-runner-ws}:/app/buz/workspace
+      - ${BUZ_RUNNER_LOGS:-buz-runner-logs}:/app/buz/logs
+    restart: unless-stopped
+    # Optional host Docker for uses:docker steps:
+    # user: root
+    # volumes:
+    #   - /var/run/docker.sock:/var/run/docker.sock
+    #   - ${BUZ_RUNNER_CONF:-./deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
+    #   - ${BUZ_RUNNER_WS:-buz-runner-ws}:/app/buz/workspace
+    #   - ${BUZ_RUNNER_LOGS:-buz-runner-logs}:/app/buz/logs
+
+volumes:
+  buz-data:
+  buz-pipelines:
+  buz-runner-ws:
+  buz-runner-logs:

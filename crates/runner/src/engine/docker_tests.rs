@@ -35,7 +35,10 @@ fn build_args_mounts_workspace_and_default_cwd() {
 
     assert_eq!(args[0], "run");
     assert!(args.iter().any(|a| a == "--rm"));
-    assert!(!args.iter().any(|a| a == "-i"), "-i (interactive) should not be used in CI");
+    assert!(
+        !args.iter().any(|a| a == "-i"),
+        "-i (interactive) should not be used in CI"
+    );
     let vol = format!("/tmp/runner/wd:{CONTAINER_WORKSPACE}");
     assert!(args.iter().any(|a| a == &vol));
     assert!(args
@@ -54,7 +57,10 @@ fn build_args_privileged_flag() {
         None,
         true,
     );
-    assert!(args.iter().any(|a| a == "--privileged"), "privileged flag present");
+    assert!(
+        args.iter().any(|a| a == "--privileged"),
+        "privileged flag present"
+    );
 }
 
 #[test]
@@ -70,9 +76,7 @@ fn build_args_custom_container_work_dir() {
     );
 
     let expected_wd = format!("{CONTAINER_WORKSPACE}/frontend");
-    assert!(args
-        .windows(2)
-        .any(|w| w[0] == "-w" && w[1] == expected_wd));
+    assert!(args.windows(2).any(|w| w[0] == "-w" && w[1] == expected_wd));
 }
 
 #[test]
@@ -97,19 +101,14 @@ fn build_args_empty_container_work_dir_ignored() {
 fn build_args_includes_volumes() {
     let mut env = HashMap::new();
     env.insert("FOO".into(), "bar".into());
-    let args = build_docker_run_args(
-        "alpine:3.20",
-        "/tmp/ws",
-        "echo hi",
-        &env,
-        &[],
-        None,
-        false,
-    );
+    let args = build_docker_run_args("alpine:3.20", "/tmp/ws", "echo hi", &env, &[], None, false);
 
     assert_eq!(args[0], "run");
     assert!(args.iter().any(|a| a == "--rm"));
-    assert!(!args.iter().any(|a| a == "-i"), "-i (interactive) should not be used in CI");
+    assert!(
+        !args.iter().any(|a| a == "-i"),
+        "-i (interactive) should not be used in CI"
+    );
     let vol = format!("/tmp/ws:{CONTAINER_WORKSPACE}");
     assert!(args.iter().any(|a| a == &vol));
     assert!(args
@@ -140,8 +139,14 @@ fn build_args_extra_volumes() {
 
     // Search for the -v pairs — must appear before the image
     let img_pos = args.iter().position(|a| a == "alpine:3.20").expect("image");
-    let vol_data_pos = args.iter().position(|a| a == "/data/app:/mnt/data").expect("vol1");
-    let vol_cfg_pos = args.iter().position(|a| a == "/cfg:/etc/app").expect("vol2");
+    let vol_data_pos = args
+        .iter()
+        .position(|a| a == "/data/app:/mnt/data")
+        .expect("vol1");
+    let vol_cfg_pos = args
+        .iter()
+        .position(|a| a == "/cfg:/etc/app")
+        .expect("vol2");
     assert!(vol_data_pos < img_pos, "vol1 before image");
     assert!(vol_cfg_pos < img_pos, "vol2 before image");
     // preceding arg must be -v
@@ -167,7 +172,10 @@ fn build_args_empty_volumes_ignored() {
 
 #[tokio::test]
 async fn registry_login_rejects_empty_fields() {
-    let err = super::registry_login("", "u", "p").await.unwrap_err().to_string();
+    let err = super::registry_login("", "u", "p")
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("registry_auth"), "{err}");
     let err = super::registry_login("reg.example", "", "p")
         .await

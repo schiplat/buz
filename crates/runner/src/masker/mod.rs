@@ -1,8 +1,8 @@
 //! Secret masker — replaces sensitive values in log output with `***`.
 //!
 //! Modeled after GitHub Actions' automatic secret redaction.
-//! Only Infrastructure Secrets (and registry passwords) are redacted — not
-//! pipeline `env:`, platform Variables, or trigger inputs.
+//! Redacts Infrastructure Secrets, registry passwords, and trigger inputs marked
+//! `masking: true`. Pipeline `env:` and platform Variables stay readable.
 
 use std::collections::{HashMap, HashSet};
 
@@ -20,11 +20,9 @@ pub fn collect_secret_values_for_keys(
 }
 
 /// Collect all values from an env map (legacy helper — prefer [`collect_secret_values_for_keys`]).
+#[cfg(test)]
 pub fn collect_secret_values(env: &HashMap<String, String>) -> Vec<String> {
-    env.values()
-        .filter(|v| !v.is_empty())
-        .cloned()
-        .collect()
+    env.values().filter(|v| !v.is_empty()).cloned().collect()
 }
 
 /// Mask all secret values in `text`, replacing them with `***`.

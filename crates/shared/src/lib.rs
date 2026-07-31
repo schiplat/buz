@@ -1,8 +1,11 @@
 pub mod auth;
 pub mod error;
+pub mod git_webhook;
+pub mod logging;
 pub mod models;
 pub mod pipeline_yaml;
 pub mod protocol;
 pub mod rbac;
 pub mod registry_auth;
+pub mod secret_kind;
 pub mod version;

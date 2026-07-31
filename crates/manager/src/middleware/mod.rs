@@ -95,6 +95,7 @@ impl FromRequestParts<AppState> for RunnerClaims {
     }
 }
 
+#[allow(clippy::result_large_err)] // Axum extractors commonly use Response as Err
 fn extract_bearer(parts: &Parts) -> Result<&str, Response> {
     let header = parts
         .headers

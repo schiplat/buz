@@ -30,8 +30,7 @@ pub fn validate_password_complexity(password: &str) -> Result<(), String> {
     }
     if !(has_lower && has_upper && has_digit && has_symbol) {
         return Err(
-            "password must include uppercase, lowercase, a digit, and a symbol (e.g. !@#$%)"
-                .into(),
+            "password must include uppercase, lowercase, a digit, and a symbol (e.g. !@#$%)".into(),
         );
     }
     if password.chars().any(|c| c.is_whitespace()) {

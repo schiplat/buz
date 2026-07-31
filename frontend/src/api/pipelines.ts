@@ -56,6 +56,8 @@ export interface PipelineInputDef {
   description?: string
   required?: boolean
   default?: string
+  /** When true, values are redacted in logs, audit, and job snapshots (still injected as env). */
+  masking?: boolean
 }
 
 export interface StepDef {
@@ -111,6 +113,7 @@ export interface YamlInputData {
   description?: string | null
   required?: boolean | null
   default?: string | null
+  masking?: boolean | null
 }
 
 export interface YamlRunnerConfig {
@@ -189,4 +192,75 @@ export const pipelinesApi = {
     const resp = await apiClient.post('/pipelines/validate', { yaml })
     return resp.data
   },
+
+  async listTriggerEvents(
+    id: string,
+    params?: { source?: string; decision?: string; page?: number; page_size?: number },
+  ): Promise<TriggerEventsPage> {
+    const resp = await apiClient.get(`/pipelines/${id}/trigger-events`, { params })
+    return resp.data
+  },
+
+  async listGitHooks(id: string): Promise<GitHookConfig[]> {
+    const resp = await apiClient.get(`/pipelines/${id}/git-hooks`)
+    return resp.data?.items || []
+  },
+
+  async createGitHook(
+    id: string,
+    payload: {
+      provider: 'github' | 'gitee'
+      label?: string
+      branch_filter?: string
+      enabled?: boolean
+    },
+  ): Promise<GitHookConfig> {
+    const resp = await apiClient.post(`/pipelines/${id}/git-hooks`, payload)
+    return resp.data
+  },
+
+  async deleteGitHook(id: string, hookId: string): Promise<void> {
+    await apiClient.delete(`/pipelines/${id}/git-hooks/${hookId}`)
+  },
+}
+
+export interface TriggerEvent {
+  id: string
+  source: string
+  provider: string | null
+  event_type: string
+  delivery_id: string | null
+  repo_full_name: string
+  ref: string
+  branch: string
+  tag: string
+  commit_sha: string
+  commit_message: string
+  sender: string
+  compare_url: string
+  received_at: string
+  decision: string
+  skip_reason: string
+  job_id: string | null
+  job_status: string | null
+}
+
+export interface TriggerEventsPage {
+  items: TriggerEvent[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface GitHookConfig {
+  id: string
+  label: string
+  provider: 'github' | 'gitee' | string
+  hook_key: string
+  url_path: string
+  branch_filter: string
+  enabled: boolean
+  has_secret: boolean
+  secret?: string
+  secret_shown_once?: boolean
 }

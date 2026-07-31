@@ -1,5 +1,5 @@
 //! AES-256-GCM encryption for sensitive data at rest
-//! (host credentials, Manager Secrets values).
+//! (host credentials, Manager Secrets values, masking trigger inputs).
 //!
 //! The encryption key is derived from the Manager's `jwt_secret` via SHA-256,
 //! ensuring that if the database file is leaked, the encrypted values remain
@@ -7,6 +7,11 @@
 //!
 //! Plaintext rows are **not** accepted by [`decrypt`] — re-save via the UI/API
 //! so values are stored as ciphertext.
+//!
+//! Trigger-param masking values use [`seal_trigger_params`] / [`open_trigger_params`]
+//! with an explicit `buzenc:v1:` prefix so mixed plaintext maps stay unambiguous.
+
+use std::collections::{HashMap, HashSet};
 
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
@@ -14,6 +19,9 @@ use aes_gcm::{
 };
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+
+/// Prefix for AES-GCM blobs stored inside `jobs.trigger_params` JSON string values.
+pub const TRIGGER_PARAM_ENC_PREFIX: &str = "buzenc:v1:";
 
 /// Derive a 32-byte AES-256 key from the JWT secret.
 fn derive_key(jwt_secret: &str) -> [u8; 32] {
@@ -92,6 +100,61 @@ pub fn decrypt(encoded: &str, jwt_secret: &str) -> Result<String, String> {
     })?;
 
     String::from_utf8(plaintext).map_err(|e| format!("UTF-8 decode failed: {e}"))
+}
+
+/// Encrypt masking input values for storage in `jobs.trigger_params`.
+///
+/// Non-masking keys stay plaintext. Masking keys become `buzenc:v1:<ciphertext>`.
+pub fn seal_trigger_params(
+    inputs: &HashMap<String, String>,
+    masking_keys: &[String],
+    jwt_secret: &str,
+) -> Result<HashMap<String, String>, String> {
+    let masking: HashSet<&str> = masking_keys.iter().map(String::as_str).collect();
+    let mut out = HashMap::with_capacity(inputs.len());
+    for (k, v) in inputs {
+        if masking.contains(k.as_str()) && !v.is_empty() {
+            let ct = encrypt(v, jwt_secret)?;
+            out.insert(k.clone(), format!("{TRIGGER_PARAM_ENC_PREFIX}{ct}"));
+        } else {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Decrypt sealed trigger params for runner claim / execution.
+///
+/// - Values with [`TRIGGER_PARAM_ENC_PREFIX`] are decrypted.
+/// - Legacy plaintext masking values (pre-encryption jobs) pass through unchanged.
+pub fn open_trigger_params(
+    stored: &HashMap<String, String>,
+    jwt_secret: &str,
+) -> Result<HashMap<String, String>, String> {
+    let mut out = HashMap::with_capacity(stored.len());
+    for (k, v) in stored {
+        if let Some(ct) = v.strip_prefix(TRIGGER_PARAM_ENC_PREFIX) {
+            let plain = decrypt(ct, jwt_secret).map_err(|e| {
+                format!("failed to decrypt masking trigger input '{k}': {e}")
+            })?;
+            out.insert(k.clone(), plain);
+        } else {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Parse `trigger_params` JSON object → string map (non-string values ignored).
+pub fn trigger_params_to_map(value: &serde_json::Value) -> HashMap<String, String> {
+    value
+        .as_object()
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Keys whose string values are partially redacted when masking JSON secrets.

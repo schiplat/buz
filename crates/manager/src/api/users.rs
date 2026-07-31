@@ -8,6 +8,7 @@ use shared::protocol::{CreateUserRequest, UpdateUserRequest};
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::audit::{self, AuditEvent};
 use crate::middleware::PlatformAdmin;
 use crate::password::hash_password;
 use crate::state::AppState;
@@ -42,7 +43,7 @@ pub async fn list(
 }
 
 pub async fn create(
-    _auth: PlatformAdmin,
+    auth: PlatformAdmin,
     State(state): State<AppState>,
     Json(req): Json<CreateUserRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -77,6 +78,20 @@ pub async fn create(
         }
     })?;
 
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "user.create")
+            .resource("user", &id, username)
+            .after(Some(serde_json::json!({
+                "id": id,
+                "username": username,
+                "display_name": display,
+                "is_platform_admin": is_admin,
+                "is_active": true,
+            }))),
+    )
+    .await;
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
         "username": username,
@@ -90,13 +105,23 @@ pub async fn update(
     State(state): State<AppState>,
     Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let exists: Option<String> = sqlx::query_scalar("SELECT id FROM users WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?;
-    if exists.is_none() {
+    let before_row = sqlx::query(
+        "SELECT id, username, display_name, is_platform_admin, is_active FROM users WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(before_row) = before_row else {
         return Err(AppError::NotFound("user not found".into()));
-    }
+    };
+    let username: String = before_row.get(1);
+    let before = serde_json::json!({
+        "id": before_row.get::<String, _>(0),
+        "username": username,
+        "display_name": before_row.get::<String, _>(2),
+        "is_platform_admin": before_row.get::<i64, _>(3) != 0,
+        "is_active": before_row.get::<i64, _>(4) != 0,
+    });
 
     if let Some(ref pw) = req.password {
         if pw.is_empty() {
@@ -158,6 +183,40 @@ pub async fn update(
             .await?;
     }
 
+    let after_row = sqlx::query(
+        "SELECT id, username, display_name, is_platform_admin, is_active FROM users WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_one(&state.pool)
+    .await?;
+    let after = serde_json::json!({
+        "id": after_row.get::<String, _>(0),
+        "username": after_row.get::<String, _>(1),
+        "display_name": after_row.get::<String, _>(2),
+        "is_platform_admin": after_row.get::<i64, _>(3) != 0,
+        "is_active": after_row.get::<i64, _>(4) != 0,
+    });
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "user.update")
+            .resource("user", &id, &username)
+            .before(Some(before))
+            .after(Some(after))
+            .meta(
+                if req
+                    .password
+                    .as_ref()
+                    .map(|p| !p.is_empty())
+                    .unwrap_or(false)
+                {
+                    Some(serde_json::json!({ "password_changed": true }))
+                } else {
+                    None
+                },
+            ),
+    )
+    .await;
+
     Ok(Json(ApiResponse::success(serde_json::json!({ "id": id }))))
 }
 
@@ -169,6 +228,28 @@ pub async fn delete(
     if id == auth.id {
         return Err(AppError::ValidationFailed("cannot delete yourself".into()));
     }
+    let before_row = sqlx::query(
+        "SELECT username, display_name, is_platform_admin, is_active FROM users WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (username, before) = match before_row {
+        Some(r) => {
+            let username: String = r.get(0);
+            (
+                username.clone(),
+                Some(serde_json::json!({
+                    "id": id,
+                    "username": username,
+                    "display_name": r.get::<String, _>(1),
+                    "is_platform_admin": r.get::<i64, _>(2) != 0,
+                    "is_active": r.get::<i64, _>(3) != 0,
+                })),
+            )
+        }
+        None => (id.clone(), None),
+    };
     let result = sqlx::query("DELETE FROM users WHERE id = ?")
         .bind(&id)
         .execute(&state.pool)
@@ -176,5 +257,12 @@ pub async fn delete(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("user not found".into()));
     }
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "user.delete")
+            .resource("user", &id, &username)
+            .before(before),
+    )
+    .await;
     Ok(Json(ApiResponse::success(())))
 }

@@ -9,6 +9,7 @@ use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::audit::{self, AuditEvent};
 use crate::crypto;
 use crate::middleware::AuthUser;
 use crate::rbac::{host_team_id, resolve_optional_team_id};
@@ -145,6 +146,24 @@ pub async fn create(
 
     tracing::info!("Host created: {} ({id})", req.name);
 
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "host.create")
+            .resource("host", &id, &req.name)
+            .team(team_id_opt.clone())
+            .after(Some(serde_json::json!({
+                "id": id,
+                "name": req.name,
+                "host": req.host,
+                "port": req.port,
+                "username": req.username,
+                "credential_type": cred_type,
+                "team_id": team_id_opt,
+                "credential_data": if credential_data.is_empty() { "" } else { "***" },
+            }))),
+    )
+    .await;
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
         "name": req.name,
@@ -181,6 +200,28 @@ pub async fn update(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let current_team = host_team_id(&state.pool, &id).await?;
     assert_host_manage(&auth, &current_team).await?;
+
+    let before_row = sqlx::query(
+        "SELECT name, host, port, username, credential_type, team_id FROM hosts WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let before = before_row.as_ref().map(|r| {
+        serde_json::json!({
+            "id": id,
+            "name": r.get::<String, _>(0),
+            "host": r.get::<String, _>(1),
+            "port": r.get::<i64, _>(2),
+            "username": r.get::<String, _>(3),
+            "credential_type": r.get::<String, _>(4),
+            "team_id": r.get::<Option<String>, _>(5),
+        })
+    });
+    let before_name = before_row
+        .as_ref()
+        .map(|r| r.get::<String, _>(0))
+        .unwrap_or_default();
 
     if let Some(ref tid) = req.team_id {
         let new_team = if tid.is_empty() {
@@ -283,6 +324,53 @@ pub async fn update(
 
     tracing::info!("Host updated: {id}");
 
+    let after_row = sqlx::query(
+        "SELECT name, host, port, username, credential_type, team_id FROM hosts WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let after = after_row.as_ref().map(|r| {
+        serde_json::json!({
+            "id": id,
+            "name": r.get::<String, _>(0),
+            "host": r.get::<String, _>(1),
+            "port": r.get::<i64, _>(2),
+            "username": r.get::<String, _>(3),
+            "credential_type": r.get::<String, _>(4),
+            "team_id": r.get::<Option<String>, _>(5),
+        })
+    });
+    let name = after_row
+        .as_ref()
+        .map(|r| r.get::<String, _>(0))
+        .unwrap_or(before_name);
+    let team_after = after_row
+        .as_ref()
+        .and_then(|r| r.get::<Option<String>, _>(5));
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "host.update")
+            .resource("host", &id, &name)
+            .team(team_after)
+            .before(before)
+            .after(after)
+            .meta(
+                if req
+                    .credential_data
+                    .as_ref()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false)
+                {
+                    Some(serde_json::json!({ "credential_rotated": true }))
+                } else {
+                    None
+                },
+            ),
+    )
+    .await;
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
         "updated": true,
@@ -297,6 +385,29 @@ pub async fn delete(
     let team_id = host_team_id(&state.pool, &id).await?;
     assert_host_manage(&auth, &team_id).await?;
 
+    let before_row = sqlx::query(
+        "SELECT name, host, port, username, credential_type, team_id FROM hosts WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (name, before) = match before_row {
+        Some(r) => {
+            let name: String = r.get(0);
+            let before = serde_json::json!({
+                "id": id,
+                "name": name,
+                "host": r.get::<String, _>(1),
+                "port": r.get::<i64, _>(2),
+                "username": r.get::<String, _>(3),
+                "credential_type": r.get::<String, _>(4),
+                "team_id": r.get::<Option<String>, _>(5),
+            });
+            (name, Some(before))
+        }
+        None => (id.clone(), None),
+    };
+
     let result = sqlx::query("DELETE FROM hosts WHERE id = ?")
         .bind(&id)
         .execute(&state.pool)
@@ -305,6 +416,15 @@ pub async fn delete(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("host not found".into()));
     }
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "host.delete")
+            .resource("host", &id, &name)
+            .team(team_id)
+            .before(before),
+    )
+    .await;
 
     tracing::info!("Host deleted: {id}");
     Ok(Json(ApiResponse::success(())))
@@ -327,7 +447,12 @@ pub async fn test_connection(
     let mut cred_data = req.credential_data.unwrap_or_default();
     let mut passphrase = req.credential_passphrase.unwrap_or_default();
 
-    if let Some(host_id) = req.host_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(host_id) = req
+        .host_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let team_id = host_team_id(&state.pool, host_id).await?;
         assert_host_visible(&auth, &team_id).await?;
 

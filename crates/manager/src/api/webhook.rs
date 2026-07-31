@@ -54,7 +54,10 @@ pub async fn handle(
             let mut missing: Vec<String> = Vec::new();
             for def in &defs {
                 let name = def.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let required = def.get("required").and_then(|v| v.as_bool()).unwrap_or(false);
+                let required = def
+                    .get("required")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 if required && !inputs.contains_key(name) {
                     missing.push(name.to_string());
                 }

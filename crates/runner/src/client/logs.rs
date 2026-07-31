@@ -13,7 +13,10 @@ pub async fn upload_chunk(
 ) -> anyhow::Result<()> {
     let resp = tokio::time::timeout(Duration::from_secs(30), async {
         client
-            .post(&format!("{}/api/v1/jobs/{job_id}/logs", config.manager.url))
+            .post(format!(
+                "{}/api/v1/jobs/{job_id}/logs",
+                config.runner.manager_url
+            ))
             .header("Authorization", format!("Bearer {token}"))
             .json(&chunk)
             .send()
@@ -21,7 +24,9 @@ pub async fn upload_chunk(
     })
     .await
     .map_err(|_| anyhow::anyhow!("log upload timed out after 30s"))?
-    .map_err(|e| super::friendly_reqwest_error(e, &config.manager.url, "Log upload failed"))?;
+    .map_err(|e| {
+        super::friendly_reqwest_error(e, &config.runner.manager_url, "Log upload failed")
+    })?;
 
     if !resp.status().is_success() {
         anyhow::bail!(

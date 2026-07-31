@@ -1,66 +1,53 @@
 use serde::Deserialize;
 
+use shared::logging::LoggingConfig;
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Config {
+    /// Local runner identity + Manager connection (`[runner]`).
     #[serde(default)]
-    pub manager: ManagerConfig,
-    /// Local runner identity (name, labels, workspace). TOML section: `[runner]`.
-    #[serde(default)]
-    pub runner: RunnerIdentity,
+    pub runner: RunnerSection,
     #[serde(default)]
     pub engine: EngineConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
+/// `[runner]` — name, Manager URL/token, workspace.
 #[derive(Debug, Clone, Deserialize)]
-pub struct ManagerConfig {
-    #[serde(default = "default_manager_url")]
-    pub url: String,
-    #[serde(default)]
-    pub register_token: String,
-    /// Allow invalid TLS certificates (self-signed / internal CA).
-    /// Set to true only for development or when using a self-signed cert.
-    #[serde(default)]
-    pub tls_skip_verify: bool,
-}
-
-/// Identity and workspace settings for this runner process (`[runner]` in runner.toml).
-#[derive(Debug, Clone, Deserialize)]
-pub struct RunnerIdentity {
+pub struct RunnerSection {
     #[serde(default = "default_runner_name")]
     pub name: String,
-    /// Deprecated in runner.toml — labels are UI-managed (create/edit in Manager).
-    /// Kept for deserialize compatibility only; not sent on register.
+    #[serde(default = "default_manager_url")]
+    pub manager_url: String,
+    #[serde(default)]
+    pub register_token: String,
+    /// Allow invalid TLS certificates (self-signed / internal CA). Labs only.
+    #[serde(default)]
+    pub tls_skip_verify: bool,
+    #[serde(default = "default_workspace_dir")]
+    pub workspace_dir: String,
+    /// Deprecated — labels are UI-managed. Kept for deserialize compatibility.
     #[serde(default)]
     #[allow(dead_code)]
     pub labels: Vec<String>,
-    #[serde(default = "default_workspace_dir")]
-    pub workspace_dir: String,
-    /// Deprecated in runner.toml — controlled from Manager UI.
-    /// Kept for deserialize compatibility; overwritten by register/heartbeat policy.
+    /// Deprecated — controlled from Manager UI.
     #[serde(default)]
     pub clean_workspace_after_job: bool,
-    /// Interface names whose IPs are advertised first in Manager UI (multi-NIC VMs).
-    /// Example: `["enp26s0"]`. When empty, IPs on the same subnet as `manager.url` are preferred.
+    /// Interface names preferred when advertising IPs (multi-NIC).
     #[serde(default)]
     pub prefer_interfaces: Vec<String>,
 }
 
-impl Default for ManagerConfig {
-    fn default() -> Self {
-        Self {
-            url: default_manager_url(),
-            register_token: String::new(),
-            tls_skip_verify: false,
-        }
-    }
-}
-
-impl Default for RunnerIdentity {
+impl Default for RunnerSection {
     fn default() -> Self {
         Self {
             name: default_runner_name(),
-            labels: Vec::new(),
+            manager_url: default_manager_url(),
+            register_token: String::new(),
+            tls_skip_verify: false,
             workspace_dir: default_workspace_dir(),
+            labels: Vec::new(),
             clean_workspace_after_job: false,
             prefer_interfaces: Vec::new(),
         }
@@ -69,35 +56,26 @@ impl Default for RunnerIdentity {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EngineConfig {
-    /// Deprecated in runner.toml — controlled from Manager UI (overwritten by policy).
+    /// Deprecated — controlled from Manager UI.
     #[serde(default = "default_true")]
     pub shell_enabled: bool,
-    /// Deprecated in runner.toml — controlled from Manager UI (overwritten by policy).
     #[serde(default = "default_true")]
     pub ssh_enabled: bool,
-    /// Deprecated in runner.toml — controlled from Manager UI (overwritten by policy).
     #[serde(default = "default_false")]
     pub docker_enabled: bool,
-    /// Deprecated in runner.toml — controlled from Manager UI (overwritten by policy).
     #[serde(default = "default_false")]
     pub wasm_enabled: bool,
-    /// Deprecated in runner.toml — controlled from Manager UI (overwritten by policy).
     #[serde(default)]
     pub ssh_host_key_policy: SshHostKeyPolicy,
-    /// Path to OpenSSH `known_hosts` when policy is `known_hosts`.
-    /// Empty → `~/.ssh/known_hosts`.
     #[serde(default)]
     pub ssh_known_hosts_path: Option<String>,
 }
 
-/// How the runner verifies the remote SSH server host key.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SshHostKeyPolicy {
-    /// Accept any server key (convenient for labs; MITM-vulnerable).
     #[default]
     Insecure,
-    /// Require the server key to match an entry in `known_hosts`.
     KnownHosts,
 }
 
@@ -115,7 +93,6 @@ impl Default for EngineConfig {
 }
 
 impl EngineConfig {
-    /// Reject steps whose engine is disabled in `runner.toml`.
     pub fn ensure_enabled(&self, exec_type: &str) -> anyhow::Result<()> {
         let (enabled, flag) = match exec_type {
             "local" | "shell" => (self.shell_enabled, "shell_enabled"),
@@ -150,7 +127,7 @@ fn default_false() -> bool {
     false
 }
 
-impl RunnerIdentity {
+impl RunnerSection {
     pub fn version(&self) -> &str {
         env!("CARGO_PKG_VERSION")
     }
@@ -158,6 +135,27 @@ impl RunnerIdentity {
 
 pub fn load(config_path: Option<&str>) -> anyhow::Result<Config> {
     let config_path = config_path.unwrap_or("conf/runner.toml");
+
+    let raw = std::fs::read_to_string(config_path).unwrap_or_default();
+    if raw.contains("[manager]") {
+        anyhow::bail!(
+            "obsolete [manager] section in {config_path}. Move fields under [runner]:\n\
+             \n\
+             [runner]\n\
+             name = \"...\"\n\
+             manager_url = \"...\"\n\
+             register_token = \"...\"\n\
+             workspace_dir = \"...\"\n\
+             # tls_skip_verify = false\n\
+             \n\
+             [engine]\n\
+             # ssh_known_hosts_path = \"...\"\n\
+             \n\
+             [logging]\n\
+             level = \"info\"\n\
+             # file = \"./logs/runner.log\""
+        );
+    }
 
     let config = config::Config::builder()
         .add_source(config::File::with_name(config_path).required(false))
@@ -167,18 +165,24 @@ pub fn load(config_path: Option<&str>) -> anyhow::Result<Config> {
     let mut cfg: Config = config.try_deserialize()?;
 
     if let Ok(url) = std::env::var("BUZ_MANAGER_URL") {
-        cfg.manager.url = url;
+        cfg.runner.manager_url = url;
     }
     if let Ok(token) = std::env::var("BUZ_REGISTER_TOKEN") {
-        cfg.manager.register_token = token;
+        cfg.runner.register_token = token;
     }
 
-    if cfg.manager.register_token.is_empty() {
+    if cfg.runner.register_token.is_empty() {
         anyhow::bail!(
-            "register_token is required. Set it in conf/runner.toml [manager] section \
-             or via BUZ_REGISTER_TOKEN env var.\n  \
-             Get your token from Buz Manager → Runners → New Runner."
+            "register_token is required under [runner] (or BUZ_REGISTER_TOKEN).\n  \
+             Get the token from Buz Manager → Runners → New Runner."
         );
+    }
+
+    // Log file: omit → ./logs/runner.log; set "" / "-" / "none" → stdout only.
+    match cfg.logging.file.as_deref().map(str::trim) {
+        None => cfg.logging.file = Some("./logs/runner.log".into()),
+        Some("") | Some("-") | Some("none") => cfg.logging.file = None,
+        Some(_) => {}
     }
 
     Ok(cfg)

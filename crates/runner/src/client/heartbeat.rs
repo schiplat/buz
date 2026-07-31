@@ -16,7 +16,7 @@ pub async fn run_heartbeat_loop(
         let system_info = crate::sysinfo::collect_system_info(
             started_at,
             &crate::sysinfo::SysInfoOpts {
-                manager_url: config.manager.url.clone(),
+                manager_url: config.runner.manager_url.clone(),
                 prefer_interfaces: config.runner.prefer_interfaces.clone(),
             },
         );
@@ -65,7 +65,7 @@ async fn send_heartbeat(
     token: &str,
     system_info: &shared::protocol::SystemInfo,
 ) -> anyhow::Result<RunnerPolicyConfig> {
-    let url = format!("{}/api/v1/runners/heartbeat", config.manager.url);
+    let url = format!("{}/api/v1/runners/heartbeat", config.runner.manager_url);
     let resp = client
         .post(&url)
         .header("Authorization", format!("Bearer {token}"))
@@ -75,7 +75,9 @@ async fn send_heartbeat(
         })
         .send()
         .await
-        .map_err(|e| super::friendly_reqwest_error(e, &config.manager.url, "Heartbeat failed"))?;
+        .map_err(|e| {
+            super::friendly_reqwest_error(e, &config.runner.manager_url, "Heartbeat failed")
+        })?;
 
     if !resp.status().is_success() {
         anyhow::bail!("heartbeat returned {}", resp.status());

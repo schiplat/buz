@@ -88,7 +88,7 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                 // check-interval window.
                 let window_start = now - chrono::Duration::seconds(check_interval_seconds as i64);
                 let mut upcoming = schedule.upcoming(chrono::Utc);
-                let should_fire = upcoming.next().map_or(false, |next_fire| {
+                let should_fire = upcoming.next().is_some_and(|next_fire| {
                     next_fire <= now && next_fire > window_start
                 });
 

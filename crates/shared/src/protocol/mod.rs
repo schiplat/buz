@@ -339,6 +339,44 @@ pub struct PipelineInputDef {
     pub required: Option<bool>,
     #[serde(default)]
     pub default: Option<String>,
+    /// When true, values are redacted in logs, audit, and job snapshots (still injected as env at runtime).
+    #[serde(default)]
+    pub masking: Option<bool>,
+}
+
+impl PipelineInputDef {
+    pub fn is_masking(&self) -> bool {
+        self.masking.unwrap_or(false)
+    }
+}
+
+/// Names of input params marked `masking: true`.
+pub fn masking_input_names(defs: &[PipelineInputDef]) -> Vec<String> {
+    defs.iter()
+        .filter(|d| d.is_masking())
+        .map(|d| d.name.clone())
+        .collect()
+}
+
+/// Copy `inputs`, replacing values whose keys are in `masking_keys` with `***`.
+/// Keys present in `inputs` but absent from any definition list are left as-is unless
+/// listed in `masking_keys` (callers may also treat unknown keys as masked).
+pub fn redact_input_map(
+    inputs: &std::collections::HashMap<String, String>,
+    masking_keys: &[String],
+) -> std::collections::HashMap<String, String> {
+    let set: std::collections::HashSet<&str> =
+        masking_keys.iter().map(String::as_str).collect();
+    inputs
+        .iter()
+        .map(|(k, v)| {
+            if set.contains(k.as_str()) {
+                (k.clone(), "***".to_string())
+            } else {
+                (k.clone(), v.clone())
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -471,6 +509,9 @@ pub struct CreateSecretRequest {
     /// Defaults to false (explicit bind / step reference / registry_secret only).
     #[serde(default)]
     pub team_shared: Option<bool>,
+    /// `generic` (default) or `registry` (JSON credentials for `registry_secret`).
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -483,6 +524,9 @@ pub struct UpdateSecretRequest {
     /// When set, updates the opt-in team auto-inject flag.
     #[serde(default)]
     pub team_shared: Option<bool>,
+    /// When set, updates secret kind (`generic` | `registry`).
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 // --- Variables ---

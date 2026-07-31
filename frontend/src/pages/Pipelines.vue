@@ -6,12 +6,18 @@ import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { Plus, X, Play, Trash2, GripVertical, Code, FileText, CheckCircle, AlertTriangle, AlertCircle, ChevronDown, ChevronRight, Loader2, Puzzle, Pencil, Minus, Snowflake, Copy, Check, Clock } from '@lucide/vue'
 import { pipelinesApi, type Pipeline, type StepDef, type YamlValidationResult, type PipelineInputDef, type YamlParsedData } from '@/api/pipelines'
+import {
+  emptyInputDef,
+  normalizeInputDefsForForm,
+  normalizeInputDefsForSave,
+} from '@/utils/pipelineInputs'
 import { secretsApi } from '@/api/secrets'
 import { variablesApi } from '@/api/variables'
 import { teamsApi, type Team } from '@/api/teams'
 import { jobsApi, type Job } from '@/api/jobs'
 import { cn } from '@/lib/utils'
 import { parseUtc } from '@/utils/time'
+import { resolveNamesToIds } from '@/utils/yamlImportResolve'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import MultiSelect from '@/components/ui/MultiSelect.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -23,7 +29,7 @@ const auth = useAuthStore()
 
 const pipelines = ref<Pipeline[]>([])
 const loading = ref(true)
-const availableSecrets = ref<{ id: string; name: string; owner_group: string }[]>([])
+const availableSecrets = ref<{ id: string; name: string; owner_group: string; kind?: string }[]>([])
 const availableVariables = ref<{ id: string; name: string; value: string }[]>([])
 const availableTeams = ref<Team[]>([])
 
@@ -143,7 +149,7 @@ function copyWebhookUrl(path: string) {
 
 // Trigger dialog
 const triggerTarget = ref<Pipeline | null>(null)
-const triggerInputPairs = ref<{ key: string; value: string; required?: boolean }[]>([])
+const triggerInputPairs = ref<{ key: string; value: string; required?: boolean; masking?: boolean }[]>([])
 
 // YAML editor
 const yamlContent = ref('')
@@ -251,20 +257,24 @@ onMounted(async () => {
   await loadPipelines()
   fetchJobs()
   startStatsTimer()
-  try {
-    availableSecrets.value = await secretsApi.list()
-  } catch { /* ignore */ }
-  try {
-    availableVariables.value = await variablesApi.list()
-  } catch { /* ignore */ }
-  try {
-    availableTeams.value = await teamsApi.list()
-  } catch { /* ignore */ }
+  await loadInfrastructureOptions()
 })
 
 onUnmounted(() => {
   stopStatsTimer()
 })
+
+/** Refresh Secrets / Variables / Teams used by form + YAML import (not cached across Infra edits). */
+async function loadInfrastructureOptions() {
+  const [secrets, variables, teams] = await Promise.allSettled([
+    secretsApi.list(),
+    variablesApi.list(),
+    teamsApi.list(),
+  ])
+  if (secrets.status === 'fulfilled') availableSecrets.value = secrets.value
+  if (variables.status === 'fulfilled') availableVariables.value = variables.value
+  if (teams.status === 'fulfilled') availableTeams.value = teams.value
+}
 
 const variableOptions = computed(() =>
   availableVariables.value.map(v => ({ id: v.id, label: v.name }))
@@ -276,12 +286,22 @@ const secretOptions = computed(() =>
   }))
 )
 
-/** Step-level secrets are stored by name (not id). */
+/** Step-level secrets (env injection) — all kinds. */
 const stepSecretOptions = computed(() =>
   availableSecrets.value.map(s => ({
     id: s.name,
     label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
   }))
+)
+
+/** Registry Secret dropdown — only kind=registry credentials. */
+const registrySecretOptions = computed(() =>
+  availableSecrets.value
+    .filter((s) => s.kind === 'registry')
+    .map(s => ({
+      id: s.name,
+      label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
+    }))
 )
 
 async function loadPipelines() {
@@ -306,6 +326,7 @@ function openCreate() {
   yamlImportSuccess.value = false
   expandedSteps.clear()
   showDialog.value = true
+  void loadInfrastructureOptions()
 }
 
 async function openEdit(p: Pipeline) {
@@ -319,6 +340,7 @@ async function openEdit(p: Pipeline) {
   yamlContent.value = ''
   yamlResult.value = null
   showDialog.value = true
+  void loadInfrastructureOptions()
 
   try {
     // Load full pipeline with steps
@@ -356,7 +378,7 @@ async function openEdit(p: Pipeline) {
         privileged: (t as any).privileged === true ? true : undefined,
         registry_secret: (t.registry_secret || '').trim() || undefined,
       })),
-      input_defs: detail.input_defs || [],
+      input_defs: normalizeInputDefsForForm(detail.input_defs),
     }
     // Expand all steps
     for (let i = 0; i < form.value.steps.length; i++) expandedSteps.add(i)
@@ -432,7 +454,7 @@ function syncYamlScroll() {
 }
 
 function addInputDef() {
-  form.value.input_defs.push({ name: '', description: '', required: false, default: '' })
+  form.value.input_defs.push(emptyInputDef())
 }
 
 function removeInputDef(idx: number) {
@@ -463,8 +485,11 @@ async function handleValidate() {
   }
 }
 
-function importYamlToForm() {
+async function importYamlToForm() {
   try {
+    // Re-fetch Infra lists so secrets/variables created after page load resolve correctly
+    await loadInfrastructureOptions()
+
     const parsed: YamlParsedData | null | undefined = yamlResult.value?.parsed
     if (!parsed) {
       alert('No parsed data available. Validate the YAML first.')
@@ -477,31 +502,21 @@ function importYamlToForm() {
     // Pipeline-level variables: look up by name → resolve to IDs
     let resolvedVarIds: string[] = []
     if (parsed.variables && parsed.variables.length > 0) {
-      const resolved: string[] = []
-      for (const name of parsed.variables) {
-        const found = availableVariables.value.find(v => v.name === name)
-        if (found) {
-          resolved.push(found.id)
-        } else {
-          warnings.push(`Variable "${name}" not found in Manager. Create it in Infrastructure → Variables first.`)
-        }
+      const { ids, missing } = resolveNamesToIds(parsed.variables, availableVariables.value)
+      resolvedVarIds = ids
+      for (const name of missing) {
+        warnings.push(`Variable "${name}" not found in Manager. Create it in Infrastructure → Variables first.`)
       }
-      resolvedVarIds = resolved
     }
 
     // Pipeline-level secrets: look up by name → resolve to IDs
     let resolvedSecretIds: string[] = []
     if (parsed.secrets && parsed.secrets.length > 0) {
-      const resolved: string[] = []
-      for (const name of parsed.secrets) {
-        const found = availableSecrets.value.find(s => s.name === name)
-        if (found) {
-          resolved.push(found.id)
-        } else {
-          warnings.push(`Secret "${name}" not found in Manager. Create it in Infrastructure → Secrets first.`)
-        }
+      const { ids, missing } = resolveNamesToIds(parsed.secrets, availableSecrets.value)
+      resolvedSecretIds = ids
+      for (const name of missing) {
+        warnings.push(`Secret "${name}" not found in Manager. Create it in Infrastructure → Secrets first.`)
       }
-      resolvedSecretIds = resolved
     }
 
     // Normalize host: if coming from YAML array joined with ",", keep as comma-separated for editing
@@ -547,12 +562,15 @@ function importYamlToForm() {
         privileged: s.privileged || undefined,
         registry_secret: s.registry_secret || undefined,
       })),
-      input_defs: (parsed.trigger_config?.inputs || []).map(inp => ({
-        name: inp.name || '',
-        description: inp.description || '',
-        required: inp.required || false,
-        default: inp.default || '',
-      })),
+      input_defs: normalizeInputDefsForForm(
+        (parsed.trigger_config?.inputs || []).map((inp) => ({
+          name: inp.name || '',
+          description: inp.description || '',
+          required: !!inp.required,
+          default: inp.default || '',
+          masking: !!inp.masking,
+        })),
+      ),
     }
 
     // Expand all steps
@@ -650,8 +668,8 @@ async function handleSave() {
               : undefined,
         }
       }),
-      input_defs: form.value.trigger_type === 'manual' && form.value.input_defs.length > 0
-        ? form.value.input_defs
+      input_defs: form.value.trigger_type === 'manual'
+        ? normalizeInputDefsForSave(form.value.input_defs)
         : undefined,
     }
 
@@ -675,11 +693,23 @@ async function handleSave() {
 async function handleTrigger(p: Pipeline) {
   if (triggeringId.value) return
 
-  const defs: PipelineInputDef[] = (p as any).input_defs
-  if (Array.isArray(defs) && defs.length > 0) {
-    // Pipeline has defined input parameters — show dialog
+  // Prefer fresh defs (incl. masking) from detail; fall back to list payload.
+  let defs: PipelineInputDef[] = Array.isArray(p.input_defs) ? p.input_defs : []
+  try {
+    const detail = await pipelinesApi.get(p.id)
+    if (Array.isArray(detail.input_defs)) defs = detail.input_defs
+  } catch {
+    /* use list payload */
+  }
+
+  if (defs.length > 0) {
     triggerTarget.value = p
-    triggerInputPairs.value = defs.map(d => ({ key: d.name, value: d.default || '', required: d.required }))
+    triggerInputPairs.value = normalizeInputDefsForForm(defs).map((d) => ({
+      key: d.name,
+      value: d.default || '',
+      required: d.required,
+      masking: !!d.masking,
+    }))
     return
   }
 
@@ -971,10 +1001,14 @@ async function handleToggleActive(p: Pipeline) {
                   <span
                     v-if="Array.isArray(p.input_defs) && p.input_defs.length > 0"
                     class="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground"
-                    title="Params"
+                    :title="(p.input_defs || []).some((d) => d.masking) ? 'Params (some masking)' : 'Params'"
                   >
                     <Puzzle class="h-3 w-3" />
                     Params
+                    <span
+                      v-if="(p.input_defs || []).some((d) => d.masking)"
+                      class="text-[9px] uppercase tracking-wide text-violet-600/90"
+                    >mask</span>
                   </span>
                 </div>
                 <div v-if="p.description" class="text-xs text-muted-foreground mt-0.5">{{ p.description }}</div>
@@ -1074,6 +1108,7 @@ async function handleToggleActive(p: Pipeline) {
           <h2 class="text-base font-semibold mb-1">Trigger Pipeline</h2>
           <p class="text-sm text-muted-foreground mb-4">
             Pass dynamic parameters. Each key is available as <code class="mono-chip">$INPUT_&lt;KEY&gt;</code> in step commands.
+            Masked fields use a password input and are redacted in logs / encrypted at rest.
           </p>
 
           <div class="space-y-2 mb-6">
@@ -1083,17 +1118,23 @@ async function handleToggleActive(p: Pipeline) {
               class="flex items-center gap-2"
             >
               <div
-                class="flex-1 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground select-none flex items-center gap-1"
+                class="flex-1 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground select-none flex items-center gap-1.5 flex-wrap"
               >
                 {{ pair.key }}
                 <span v-if="pair.required" class="text-red-500 text-sm font-sans leading-none">*</span>
                 <span v-else class="text-xs text-muted-foreground/50 font-sans">(optional)</span>
+                <span
+                  v-if="pair.masking"
+                  class="text-[10px] font-medium uppercase tracking-wide rounded px-1.5 py-0.5 bg-violet-500/10 text-violet-600 border border-violet-500/20 font-sans"
+                >masking</span>
               </div>
               <input
                 v-model="pair.value"
+                :type="pair.masking ? 'password' : 'text'"
                 :placeholder="pair.required ? 'required' : 'enter value (leave empty for default)'"
                 class="flex-[2] rounded-md border border-border bg-muted/50 px-3 py-2 text-sm"
                 :disabled="triggeringId !== null"
+                :autocomplete="pair.masking ? 'new-password' : 'off'"
               />
             </div>
           </div>
@@ -1379,12 +1420,12 @@ async function handleToggleActive(p: Pipeline) {
                           class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                         >
                           <option value="">None</option>
-                          <option v-for="opt in stepSecretOptions" :key="opt.id" :value="opt.id">
+                          <option v-for="opt in registrySecretOptions" :key="opt.id" :value="opt.id">
                             {{ opt.label }}
                           </option>
                         </select>
                         <p class="text-xs text-muted-foreground/70 mt-0.5">
-                          Secret <strong>name</strong> for <code class="font-mono">docker login</code> (pull or push).
+                          Only Secrets with Kind = Registry. Used for <code class="font-mono">docker login</code> (pull or push).
                           JSON value (encrypted):
                           <code class="font-mono">{ "provider", "registry", "username", "password" }</code>.
                           Shell/SSH: login before step; Docker: login before pull. Not injected as env.
@@ -1713,6 +1754,11 @@ async function handleToggleActive(p: Pipeline) {
                     </button>
                   </div>
 
+                  <p class="text-xs text-muted-foreground leading-relaxed">
+                    Each param is available as <code class="mono-chip">$INPUT_&lt;NAME&gt;</code>.
+                    Enable <span class="font-medium text-foreground/80">Masking</span> to redact logs/audit and encrypt the value in the job DB.
+                  </p>
+
                   <div v-if="form.input_defs.length === 0" class="text-xs text-muted-foreground">
                     No input parameters defined. Pipelines without inputs run with fixed configuration.
                   </div>
@@ -1720,39 +1766,58 @@ async function handleToggleActive(p: Pipeline) {
                   <div
                     v-for="(inp, idx) in form.input_defs"
                     :key="idx"
-                    class="rounded-lg border border-border/50 bg-background px-3 py-2.5"
+                    class="rounded-lg border border-border/50 bg-background px-3 py-2.5 space-y-2"
                   >
-                    <div class="flex items-start gap-2 mb-2">
-                      <input
-                        v-model="inp.name"
-                        type="text"
-                        placeholder="param name (e.g. version)"
-                        class="flex-1 rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40"
-                      />
+                    <div class="flex items-start gap-2">
+                      <div class="flex-1 min-w-0 space-y-1">
+                        <label class="type-label block text-[11px]">
+                          Name <span class="text-red-500">*</span>
+                        </label>
+                        <input
+                          v-model="inp.name"
+                          type="text"
+                          placeholder="e.g. version"
+                          class="w-full rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40"
+                        />
+                      </div>
                       <button
                         type="button"
-                        class="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                        class="inline-flex h-7 w-7 mt-5 items-center justify-center rounded-md text-muted-foreground hover:text-destructive transition-colors shrink-0"
                         @click="removeInputDef(idx)"
                       >
                         <Trash2 class="h-3.5 w-3.5" />
                       </button>
                     </div>
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <input
-                        v-model="inp.description"
-                        type="text"
-                        placeholder="Description"
-                        class="rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs outline-none transition-colors focus:border-ring/40"
-                      />
-                      <input
-                        v-model="inp.default"
-                        type="text"
-                        placeholder="Default value"
-                        class="rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40"
-                      />
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div class="space-y-1">
+                        <label class="type-label block text-[11px]">Description</label>
+                        <input
+                          v-model="inp.description"
+                          type="text"
+                          placeholder="Shown in trigger dialog"
+                          class="w-full rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs outline-none transition-colors focus:border-ring/40"
+                        />
+                      </div>
+                      <div class="space-y-1">
+                        <label class="type-label block text-[11px]">Default</label>
+                        <input
+                          v-model="inp.default"
+                          :type="inp.masking ? 'password' : 'text'"
+                          placeholder="Optional default"
+                          class="w-full rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40"
+                          :autocomplete="inp.masking ? 'new-password' : 'off'"
+                        />
+                      </div>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-4 pt-0.5">
                       <label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
                         <input v-model="inp.required" type="checkbox" class="rounded border-border" />
                         Required
+                      </label>
+                      <label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+                        <input v-model="inp.masking" type="checkbox" class="rounded border-border" />
+                        <span>Masking</span>
+                        <span class="text-muted-foreground/60">(logs + DB encrypt)</span>
                       </label>
                     </div>
                   </div>
@@ -1918,6 +1983,10 @@ on:
       version:
         description: Version to deploy
         required: true
+      deploy_token:
+        description: One-time deploy token
+        required: true
+        masking: true             # redact logs/audit; encrypt in job DB
       env_name:
         description: Target environment
         default: staging

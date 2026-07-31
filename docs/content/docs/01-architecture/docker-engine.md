@@ -213,7 +213,7 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 | 3 | **Required field**: `image` when `uses: docker` |
 | 4 | **Command model**: same as local/SSH — multi-line `run:` executed via container shell (`sh -lc` unless overridden later) |
 | 5 | **Workspace**: bind-mount runner step work directory into a fixed container path (default `/buz/workspace`); container cwd = that path |
-| 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution as shell/SSH. **Log masking**: only Infrastructure Secrets (and registry passwords) are redacted — pipeline `env:`, Variables, and trigger `inputs` stay readable. Claim payload splits `env` vs `secrets` — see [Secrets Access Control](/docs/01-architecture/secrets-access-control/) |
+| 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution as shell/SSH. **Log masking**: Infrastructure Secrets, registry passwords, and trigger inputs with `masking: true` are redacted — pipeline `env:` and Variables stay readable. Claim payload splits `env` vs `secrets` and includes `masking_input_keys` — see [Secrets Access Control](/docs/01-architecture/secrets-access-control/) |
 | 7 | **Gate**: Runner UI `docker_enabled` must be `true`; otherwise step fails with a clear error (do not fall back to shell) |
 | 8 | **Scheduling**: pipelines that need Docker should set `runner.labels` to include `docker`; Manager dispatches only to runners that have **all** required labels |
 | 9 | **Private registry auth**: YAML/form stores only a **Secret name** (`registry_secret`) — never the password. Encrypted at rest; Manager sends `registry_auth` to the Runner. **Docker**: login before pull/run. **Shell / SSH**: login before `run` (SSH login happens on the remote host) so `docker push` works; then logout. Target: ACR Personal Edition; optional JSON `provider`. |
@@ -252,7 +252,7 @@ steps:
 |-------|:--------:|-------------|
 | `uses: docker` | ✓ | Selects Docker engine |
 | `image` | ✓ | Image reference (`name:tag` or digest). Pulled if missing (`docker pull` / run pull behavior TBD in impl) |
-| `registry_secret` | | **Name** of a Manager Secret (not the password). JSON credentials, encrypted at rest. Also valid on **shell** / **SSH** for push. |
+| `registry_secret` | | **Name** of a Manager Secret with **`kind=registry`** (not the password). JSON credentials, encrypted at rest. Also valid on **shell** / **SSH** for push. |
 | `run` | ✓ | Command(s) inside the container |
 | `work_dir` / `dir` | | Container-side subdirectory under `/buz/workspace` (runner workspace always mounted at root) |
 | `timeout` / `retry` / `continue-on-error` | | Same semantics as other engines |
@@ -491,7 +491,7 @@ Registry hosts:
 - `provider` (optional): `acr_personal` | `generic`
 - `registry`: required for **shell / SSH** (no step `image` to infer from); optional on **docker** when `image` already includes the host
 
-2. Reference **only the secret name** with `registry_secret:` (there is no `image_pull_secret` field).
+2. Set the Secret **Kind** to **Registry** in Infrastructure → Secrets, then reference **only the secret name** with `registry_secret:` (there is no `image_pull_secret` field).
 
 | Engine | Behavior |
 |--------|----------|

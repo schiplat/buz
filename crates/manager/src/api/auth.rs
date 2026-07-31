@@ -8,6 +8,7 @@ use shared::protocol::{
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::audit::{self, AuditEvent};
 use crate::middleware::AuthUser;
 use crate::password::{hash_password, validate_password_complexity, verify_password};
 use crate::state::AppState;
@@ -81,10 +82,9 @@ pub async fn setup(
     .await?;
 
     // Attach to default team (created by bootstrap)
-    let team_id: Option<String> =
-        sqlx::query_scalar("SELECT id FROM teams WHERE slug = 'default'")
-            .fetch_optional(&mut *tx)
-            .await?;
+    let team_id: Option<String> = sqlx::query_scalar("SELECT id FROM teams WHERE slug = 'default'")
+        .fetch_optional(&mut *tx)
+        .await?;
     if let Some(tid) = team_id {
         sqlx::query(
             "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')",
@@ -167,6 +167,27 @@ pub async fn login(
     let token = token_mgr
         .create_token(&user_id, role, state.config.auth.jwt_ttl_hours)
         .map_err(|e| AppError::Internal(format!("token generation failed: {e}")))?;
+
+    audit::record(
+        &state.pool,
+        AuditEvent {
+            actor_user_id: user_id.clone(),
+            actor_username: username.clone(),
+            action: "auth.login".into(),
+            resource_type: "user".into(),
+            resource_id: user_id.clone(),
+            resource_name: username.clone(),
+            team_id: None,
+            before: None,
+            after: Some(serde_json::json!({
+                "username": username.clone(),
+                "is_platform_admin": is_platform_admin != 0,
+            })),
+            meta: None,
+            ip: String::new(),
+        },
+    )
+    .await;
 
     Ok(Json(ApiResponse::success(LoginResponse {
         token,

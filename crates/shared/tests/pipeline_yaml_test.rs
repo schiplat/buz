@@ -109,6 +109,10 @@ on:
         description: Version to deploy
         required: true
         default: latest
+      deploy_token:
+        description: One-time token
+        required: true
+        masking: true
 concurrency:
   group: deploy-prod
 runner:
@@ -141,6 +145,13 @@ steps:
     // Verify env and secrets
     assert!(parsed.env.is_some());
     assert!(parsed.secrets.is_some());
+    let inputs = parsed
+        .trigger_config
+        .as_ref()
+        .and_then(|c| c.inputs.as_ref())
+        .expect("inputs");
+    let token = inputs.iter().find(|i| i.name == "deploy_token").unwrap();
+    assert_eq!(token.masking, Some(true));
 }
 
 #[test]
@@ -332,9 +343,7 @@ steps:
     let r = parse_and_validate(yaml);
     assert!(!r.valid);
     assert!(
-        r.errors
-            .iter()
-            .any(|e| e.message.contains("privileged")),
+        r.errors.iter().any(|e| e.message.contains("privileged")),
         "Errors: {:?}",
         r.errors
     );
@@ -502,4 +511,25 @@ steps:
     assert_eq!(parsed.concurrency.as_deref(), Some("ci-linux"));
     assert!(parsed.concurrency_config.is_some());
     assert_eq!(parsed.concurrency_config.unwrap().group, "ci-linux");
+}
+
+#[test]
+fn masking_input_demo_example_file() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../example/pipelines/masking-input-demo.yml");
+    let yaml = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!("read {}: {e}", path.display());
+    });
+    let r = parse_and_validate(&yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    let inputs = r
+        .parsed
+        .as_ref()
+        .and_then(|p| p.trigger_config.as_ref())
+        .and_then(|c| c.inputs.as_ref())
+        .expect("inputs");
+    let token = inputs.iter().find(|i| i.name == "deploy_token").unwrap();
+    assert_eq!(token.masking, Some(true));
+    let version = inputs.iter().find(|i| i.name == "version").unwrap();
+    assert!(version.masking.is_none() || version.masking == Some(false));
 }

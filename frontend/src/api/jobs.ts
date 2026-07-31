@@ -37,6 +37,8 @@ export interface JobSnapshot {
   tasks: SnapshotTask[]
   env: SnapshotEnv[]
   inputs: Record<string, string> | null
+  /** Input names stored encrypted / shown as *** */
+  masking_input_keys?: string[] | null
   triggered_by: string
   triggered_at: string
 }

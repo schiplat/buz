@@ -32,10 +32,7 @@ pub fn build_docker_run_args(
     container_work_dir: Option<&str>,
     privileged: bool,
 ) -> Vec<String> {
-    let mut args = vec![
-        "run".into(),
-        "--rm".into(),
-    ];
+    let mut args = vec!["run".into(), "--rm".into()];
 
     if privileged {
         args.push("--privileged".into());
@@ -103,7 +100,13 @@ pub async fn registry_login(registry: &str, username: &str, password: &str) -> a
     }
 
     let mut child = Command::new("docker")
-        .args(["login", "--username", username, "--password-stdin", registry])
+        .args([
+            "login",
+            "--username",
+            username,
+            "--password-stdin",
+            registry,
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

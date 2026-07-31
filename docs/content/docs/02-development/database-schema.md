@@ -121,6 +121,7 @@ Secret storage. Values are stored in the database and injected as environment va
 | owner_group | TEXT | Team slug mirror; Phase 2 ownership via `team_id` (required). See [RBAC](/docs/01-architecture/rbac/) |
 | team_id | TEXT | Owning team (required after bootstrap) |
 | team_shared | INTEGER NOT NULL DEFAULT 0 | `1` = same-team pipelines auto-receive this secret at job claim; `0` = explicit bind/reference only. See [Secrets Access Control](/docs/01-architecture/secrets-access-control/) |
+| kind | TEXT NOT NULL DEFAULT `'generic'` | `generic` = env inject; `registry` = JSON credentials for `registry_secret` / docker login. Backfill marks decryptable registry JSON as `registry`. |
 | created_at, updated_at | TEXT | Auto-managed |
 
 ### pipeline_secrets
@@ -134,6 +135,67 @@ Many-to-many binding between pipelines and secrets. Pipelines receive secrets se
 | UNIQUE(pipeline_id, secret_id) | | Prevents duplicate bindings |
 
 Index: `idx_pipeline_secrets_pipeline` on `pipeline_id`.
+
+### pipeline_git_hooks
+
+GitHub/Gitee webhook adapter config per pipeline. See [Git Webhook Triggers](/docs/01-architecture/git-webhook-triggers/).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | TEXT PK | UUID |
+| pipeline_id | TEXT FK → pipelines.id | Many hooks per pipeline |
+| label | TEXT | Optional display name |
+| provider | TEXT | `github` \| `gitee` |
+| hook_key | TEXT UNIQUE | Opaque URL path segment |
+| secret_ciphertext | TEXT | AES-256-GCM; plaintext shown once in UI; pasted into platform Webhook Secret |
+| branch_filter | TEXT | Optional; empty = all branches |
+| enabled | INTEGER | 0/1 |
+| created_at, updated_at | TEXT | |
+
+### pipeline_trigger_events
+
+Unified trigger timeline for Pipeline detail → **Trigger events**.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | TEXT PK | UUID |
+| pipeline_id | TEXT FK | |
+| source | TEXT | `git` \| `webhook` \| `manual` \| `cron` |
+| provider | TEXT | nullable (`github` / `gitee`) |
+| event_type | TEXT | `push`, `ping`, … |
+| delivery_id | TEXT | Platform delivery id (idempotency) |
+| repo_full_name, git_ref, branch, tag | TEXT | |
+| commit_sha, commit_message, sender | TEXT | |
+| compare_url | TEXT | |
+| received_at | TEXT | |
+| decision | TEXT | `triggered` \| `skipped` \| `rejected` \| `failed` |
+| skip_reason | TEXT | |
+| job_id | TEXT | nullable FK → jobs |
+| created_at | TEXT | |
+
+Partial unique index on `(pipeline_id, delivery_id)` when delivery_id is set.
+
+### audit_logs
+
+Platform-admin operation audit. Written best-effort after successful JWT mutations (and `auth.login`). JSON columns are **already redacted** before insert.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | TEXT PK | UUID |
+| created_at | TEXT | |
+| actor_user_id | TEXT | |
+| actor_username | TEXT | |
+| action | TEXT | e.g. `secret.create`, `pipeline.trigger` |
+| resource_type | TEXT | e.g. `secret`, `pipeline` |
+| resource_id | TEXT | |
+| resource_name | TEXT | Display name at write time |
+| team_id | TEXT NULL | |
+| before_json | TEXT NULL | Redacted JSON snapshot |
+| after_json | TEXT NULL | Redacted JSON snapshot |
+| meta_json | TEXT NULL | Optional extras |
+| ip | TEXT | Optional; often empty |
+
+Indexes: `(created_at DESC)`, `(action)`, `(actor_username)`, `(resource_type, resource_id)`.
 
 ### runner_events
 

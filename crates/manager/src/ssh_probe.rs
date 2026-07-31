@@ -126,14 +126,13 @@ async fn probe_inner(params: &ProbeParams) -> anyhow::Result<()> {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 let _ = std::fs::remove_file(cleanup);
             });
-            let key = load_secret_key(&path, params.credential_passphrase.as_deref()).map_err(
-                |e| {
+            let key =
+                load_secret_key(&path, params.credential_passphrase.as_deref()).map_err(|e| {
                     anyhow::anyhow!(
                         "failed to parse SSH private key: {e}\n\
                          → Check the key format and passphrase."
                     )
-                },
-            )?;
+                })?;
             authenticate_with_private_key(&mut handle, params.username.trim(), &key, &addr).await?
         }
         "vault" | "password" => handle
@@ -238,11 +237,7 @@ async fn authenticate_with_private_key(
 }
 
 fn rsa_fallback_chain(preferred: Option<HashAlg>) -> Vec<Option<HashAlg>> {
-    let all = [
-        Some(HashAlg::Sha512),
-        Some(HashAlg::Sha256),
-        None,
-    ];
+    let all = [Some(HashAlg::Sha512), Some(HashAlg::Sha256), None];
     let mut chain = Vec::with_capacity(4);
     if let Some(pref) = preferred {
         chain.push(Some(pref));

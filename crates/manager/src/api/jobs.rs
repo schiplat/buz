@@ -4,8 +4,10 @@ use axum::{
 };
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
+use shared::protocol::redact_input_map;
 use shared::rbac::Perm;
 use sqlx::Row;
+use std::collections::HashMap;
 
 use crate::middleware::{AuthUser, RunnerClaims};
 use crate::rbac::{pipeline_team_id, team_in_clause};
@@ -14,6 +16,32 @@ use crate::state::AppState;
 /// Return current UTC timestamp in SQLite format ("2026-07-27 10:30:00")
 fn now_utc() -> String {
     chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// Redact masking input values in API-facing trigger_params using snapshot.masking_input_keys.
+/// Does not decrypt — sealed (`buzenc:v1:…`) or legacy plaintext values are replaced with `***`.
+fn redact_trigger_params_for_api(
+    trigger_params_raw: Option<&str>,
+    snapshot: &serde_json::Value,
+) -> Option<String> {
+    let raw = trigger_params_raw?;
+    let Ok(map) = serde_json::from_str::<HashMap<String, String>>(raw) else {
+        return Some(raw.to_string());
+    };
+    let masking_keys: Vec<String> = snapshot
+        .get("masking_input_keys")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if masking_keys.is_empty() {
+        return Some(raw.to_string());
+    }
+    let redacted = redact_input_map(&map, &masking_keys);
+    Some(serde_json::to_string(&redacted).unwrap_or_else(|_| raw.to_string()))
 }
 
 // Admin-protected management handlers
@@ -112,6 +140,9 @@ pub async fn get_one(
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
+    let trigger_params_safe =
+        redact_trigger_params_for_api(trigger_params.as_deref(), &snapshot);
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": r.get::<String, _>(0),
         "pipeline_id": r.get::<String, _>(1),
@@ -119,7 +150,7 @@ pub async fn get_one(
         "runner_id": r.get::<Option<String>, _>(3),
         "status": r.get::<String, _>(4),
         "trigger_by": r.get::<String, _>(5),
-        "trigger_params": trigger_params,
+        "trigger_params": trigger_params_safe,
         "snapshot": snapshot,
         "step_statuses": step_statuses,
         "retry_times": r.get::<i64, _>(9),
