@@ -365,8 +365,7 @@ pub fn redact_input_map(
     inputs: &std::collections::HashMap<String, String>,
     masking_keys: &[String],
 ) -> std::collections::HashMap<String, String> {
-    let set: std::collections::HashSet<&str> =
-        masking_keys.iter().map(String::as_str).collect();
+    let set: std::collections::HashSet<&str> = masking_keys.iter().map(String::as_str).collect();
     inputs
         .iter()
         .map(|(k, v)| {

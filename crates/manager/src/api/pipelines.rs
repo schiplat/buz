@@ -571,8 +571,7 @@ pub async fn trigger(
             .fetch_optional(&state.pool)
             .await?
             .unwrap_or_else(|| "[]".into());
-    let defs: Vec<PipelineInputDef> =
-        serde_json::from_str(&input_defs_raw).unwrap_or_default();
+    let defs: Vec<PipelineInputDef> = serde_json::from_str(&input_defs_raw).unwrap_or_default();
     let masking_keys = masking_input_names(&defs);
     let audit_inputs = redact_input_map(&body.inputs, &masking_keys);
 

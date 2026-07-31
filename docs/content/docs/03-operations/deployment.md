@@ -50,7 +50,7 @@ buz-<version>-linux-x86_64.tar.gz
 ```
 
 ```bash
-git tag v0.3.0 && git push origin v0.3.0
+git tag v1.0.1 && git push origin v1.0.1
 make package   # local host only → dist/release/buz-*.tar.gz
 ```
 
@@ -83,7 +83,7 @@ Configure the GitHub repository:
 | Secret | `ACR_USERNAME` | ACR login user |
 | Secret | `ACR_PASSWORD` | ACR password / token |
 
-Pushed tags: `<registry>/<namespace>/buz-manager:v0.3.0` (and `:0.3.0`, `:latest`), same for `buz-runner`.
+Pushed tags: `<registry>/<namespace>/buz-manager:v1.0.1` (and `:1.0.1`, `:latest`), same for `buz-runner`.
 
 ### Container layout
 

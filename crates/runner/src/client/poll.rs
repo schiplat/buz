@@ -314,10 +314,7 @@ async fn poll_for_task(
     token: &str,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     let resp = client
-        .get(format!(
-            "{}/api/v1/runners/poll",
-            config.runner.manager_url
-        ))
+        .get(format!("{}/api/v1/runners/poll", config.runner.manager_url))
         .header("Authorization", format!("Bearer {token}"))
         .timeout(Duration::from_secs(50))
         .send()
@@ -745,7 +742,8 @@ async fn execute_job(
             }
             "ssh" => {
                 let host_values = step["host"]
-                    .as_array().cloned()
+                    .as_array()
+                    .cloned()
                     .or_else(|| {
                         step["host"]
                             .as_object()

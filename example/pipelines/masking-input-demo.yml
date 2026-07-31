@@ -6,9 +6,10 @@
 # 2) Save (pick your team), then Trigger
 #    Expect: deploy_token is a password field with "masking" badge
 # 3) Enter version=1.0.0 and deploy_token=tok-demo-secret-xyz → Run
-# 4) Job Detail → Trigger Inputs: deploy_token shows *** (and masking badge)
-# 5) Job logs ==> RUN env line: deploy_token=*** (never tok-demo-secret-xyz)
-# 6) Step still prints "token_len=…" (value injected; only observability is masked)
+# 4) Job Detail → Trigger Inputs: deploy_token shows ***
+# 5) Job logs ==> RUN env: deploy_token=*** (log masking — expected)
+# 6) Step "Prove token is usable" succeeds → process read $INPUT_DEPLOY_TOKEN OK
+# 7) On the Runner host: cat /tmp/res.txt  → must equal the token you typed
 #
 # Optional DB check (Manager host):
 #   sqlite3 data/buz.db "SELECT trigger_params FROM jobs ORDER BY created_at DESC LIMIT 1;"
@@ -43,11 +44,12 @@ steps:
     run: |
       echo "version=$INPUT_VERSION"
       echo "target=$INPUT_TARGET"
-      # Length only — do not echo the token value (masking is for logs/audit, not for silent steps)
-      echo "deploy_token_len=${#INPUT_DEPLOY_TOKEN}"
 
-  - name: Prove token is injected
+  - name: Prove token is usable
     run: |
+      # Simulates app reading the env: must be non-empty plaintext (not log placeholder)
       test -n "$INPUT_DEPLOY_TOKEN"
       test "$INPUT_DEPLOY_TOKEN" != "***"
-      echo "token present and not the redaction placeholder"
+      # Write plaintext to runner host for local verify (not uploaded as job logs)
+      echo "$INPUT_DEPLOY_TOKEN" > /tmp/res.txt
+      echo "INPUT_DEPLOY_TOKEN usable (len=${#INPUT_DEPLOY_TOKEN}); wrote /tmp/res.txt on runner"

@@ -41,10 +41,7 @@ pub async fn register_with_center(
         .and_then(|d| serde_json::from_value::<RegisterResponse>(d.clone()).ok());
 
     let register_resp = data.ok_or_else(|| {
-        anyhow::anyhow!(
-            "empty or invalid data in registration response: {}",
-            json
-        )
+        anyhow::anyhow!("empty or invalid data in registration response: {}", json)
     })?;
 
     let mut policy = register_resp.policy;

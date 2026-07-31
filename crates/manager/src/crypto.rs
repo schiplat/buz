@@ -134,9 +134,8 @@ pub fn open_trigger_params(
     let mut out = HashMap::with_capacity(stored.len());
     for (k, v) in stored {
         if let Some(ct) = v.strip_prefix(TRIGGER_PARAM_ENC_PREFIX) {
-            let plain = decrypt(ct, jwt_secret).map_err(|e| {
-                format!("failed to decrypt masking trigger input '{k}': {e}")
-            })?;
+            let plain = decrypt(ct, jwt_secret)
+                .map_err(|e| format!("failed to decrypt masking trigger input '{k}': {e}"))?;
             out.insert(k.clone(), plain);
         } else {
             out.insert(k.clone(), v.clone());

@@ -466,25 +466,23 @@ pub async fn poll(
 
     // Fallback for jobs created before masking_input_keys existed: use live pipeline defs.
     if masking_input_keys.is_empty() {
-        let defs_raw: String =
-            sqlx::query_scalar("SELECT input_defs FROM pipelines WHERE id = ?")
-                .bind(&pipeline_id)
-                .fetch_optional(&state.pool)
-                .await?
-                .unwrap_or_else(|| "[]".into());
+        let defs_raw: String = sqlx::query_scalar("SELECT input_defs FROM pipelines WHERE id = ?")
+            .bind(&pipeline_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .unwrap_or_else(|| "[]".into());
         let defs: Vec<shared::protocol::PipelineInputDef> =
             serde_json::from_str(&defs_raw).unwrap_or_default();
         masking_input_keys = shared::protocol::masking_input_names(&defs);
     }
 
-    let trigger_params_plain = crypto::open_trigger_params(
-        &trigger_params_map,
-        &state.config.auth.jwt_secret,
-    )
-    .map_err(|e| {
-        tracing::error!(job = %job_id, error = %e, "Failed to decrypt trigger_params");
-        AppError::Internal(e)
-    })?;
+    let trigger_params_plain =
+        crypto::open_trigger_params(&trigger_params_map, &state.config.auth.jwt_secret).map_err(
+            |e| {
+                tracing::error!(job = %job_id, error = %e, "Failed to decrypt trigger_params");
+                AppError::Internal(e)
+            },
+        )?;
     let trigger_params = serde_json::to_value(&trigger_params_plain).unwrap_or_default();
     // Fetch tasks for this pipeline
     let task_rows = sqlx::query(

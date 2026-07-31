@@ -3,8 +3,8 @@ use axum::{
     Json,
 };
 use shared::error::AppError;
-use shared::protocol::response::ApiResponse;
 use shared::protocol::redact_input_map;
+use shared::protocol::response::ApiResponse;
 use shared::rbac::Perm;
 use sqlx::Row;
 use std::collections::HashMap;
@@ -140,8 +140,7 @@ pub async fn get_one(
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    let trigger_params_safe =
-        redact_trigger_params_for_api(trigger_params.as_deref(), &snapshot);
+    let trigger_params_safe = redact_trigger_params_for_api(trigger_params.as_deref(), &snapshot);
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": r.get::<String, _>(0),
