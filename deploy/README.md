@@ -5,7 +5,8 @@
 | `conf/manager.toml` | Docker / Compose / release tarball |
 | `conf/runner.toml` | Same |
 | `dev-deploy.sh` | One-shot deploy of Manager + Runner on a Linux VM (pull from ACR + compose) |
-| `nginx/buz-manager.conf` | Optional system Nginx reverse proxy (HTTP-only) |
+| `nginx/buz-manager.conf` | Optional system Nginx reverse proxy (HTTP-only, non-Docker) |
+| `nginx/buz-manager-docker.conf` | Same, for `dev-deploy.sh` Docker deployments (HTTP-only) |
 | `nginx/buz-manager-ssl.conf` | Same, HTTPS (Let's Encrypt + HTTP→HTTPS redirect) |
 
 ## Container layout

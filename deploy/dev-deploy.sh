@@ -303,7 +303,11 @@ cmd_runner() {
   $DOCKER pull "${RUNNER_IMAGE}"
 
   say "Starting Runner (${RUNNER_NAME})"
-  dc up -d runner
+  # --force-recreate: docker compose `up` may reuse a running container whose
+  # embedded-DNS alias cache (manager -> buz-manager) went stale, leaving the
+  # runner stuck in a restart loop ("Cannot reach Buz Manager"). Recreating the
+  # container re-registers the aliases and reliably fixes it.
+  dc up -d --force-recreate runner
   say "Runner started — check Manager UI → Runners for status 'online'"
 }
 

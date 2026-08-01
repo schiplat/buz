@@ -171,6 +171,16 @@ that uid — this keeps them writable by the containers even though the host use
 is not root. `conf/` stays owned by the deploying user so `runner.toml` can be
 (re)written by the script.
 
+**Troubleshooting: Runner stuck in a restart loop with `Cannot reach Buz Manager`.**
+If `docker logs buz-runner` shows `error sending request for url (http://manager:8080/...)`
+while `docker ps` shows `buz-manager` is `Up (healthy)`, the runner container's
+embedded-DNS alias for `manager` is stale. Verify with
+`docker exec buz-runner getent hosts manager` (should return the manager IP) and
+compare against `docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' buz-manager`.
+Fix by recreating the runner container so the compose network aliases are
+re-registered: `docker compose -f $DEPLOY_DIR/docker-compose.yml up -d --force-recreate runner`.
+(`dev-deploy.sh runner` already passes `--force-recreate`.)
+
 **Runner provisioning requires a platform admin.** `runner` auto-creates the
 runner by calling `buz-manager gen-runner-token` inside the Manager container.
 That CLI subcommand verifies the caller holds a platform-admin credential —
@@ -202,18 +212,23 @@ BUZ_ADMIN_TOKEN='buz_...' docker exec buz-manager \
 
 `buz-manager` serves both the API and the embedded Web UI on a single port. Put Nginx in front so only the proxy is exposed publicly.
 
-Template: `deploy/nginx/buz-manager.conf` (HTTP-only) or `deploy/nginx/buz-manager-ssl.conf` (HTTPS + redirect)
+Templates:
+- `deploy/nginx/buz-manager.conf` — manager running directly on the host (HTTP)
+- `deploy/nginx/buz-manager-docker.conf` — manager started via `deploy/dev-deploy.sh` (Docker, HTTP)
+- `deploy/nginx/buz-manager-ssl.conf` — HTTPS + redirect
+
+### Docker deployment (`dev-deploy.sh`)
 
 ```bash
-# 1) Bind Manager to loopback only
-sudo tee -a conf/manager.toml >/dev/null <<'EOF'
-[server]
-host = "127.0.0.1"
-port = 8080
-EOF
+# 1) Tighten the published port so only Nginx is reachable from outside:
+#    in /opt/buz/docker-compose.yml change
+#        - "${MANAGER_PORT}:8080"
+#    to
+#        - "127.0.0.1:${MANAGER_PORT}:8080"
+#    then `./dev-deploy.sh down && ./dev-deploy.sh up` (JWT secret + volumes kept).
 
-# 2) Install the Nginx site config (replace server_name first)
-sudo cp deploy/nginx/buz-manager.conf /etc/nginx/sites-available/buz-manager.conf
+# 2) Install the Nginx site config (non-root user with sudo)
+sudo cp deploy/nginx/buz-manager-docker.conf /etc/nginx/sites-available/buz-manager.conf
 sudo ln -s ../sites-available/buz-manager.conf /etc/nginx/sites-enabled/buz-manager.conf
 sudo nginx -t && sudo systemctl reload nginx
 ```
