@@ -50,7 +50,7 @@ buz-<version>-linux-x86_64.tar.gz
 ```
 
 ```bash
-git tag v1.2.0 && git push origin v1.2.0
+git tag v1.3.0 && git push origin v1.3.0
 make package   # local host only → dist/release/buz-*.tar.gz
 ```
 
@@ -70,7 +70,7 @@ Images:
 | `buz-manager` | `Dockerfile` |
 | `buz-runner` | `Dockerfile.runner` |
 
-Both images are built for `linux/amd64` **and** `linux/arm64` (native matrix builds: `ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64, no QEMU emulation).
+Both images are built for `linux/amd64` **and** `linux/arm64` (native matrix builds: `ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64, no QEMU emulation). The matrix jobs push platform-specific tags (`v1.3.0-amd64` / `v1.3.0-arm64`), and a final `merge` job assembles the shared multi-arch tags (`v1.3.0` / `1.3.0` / `latest`) with `docker buildx imagetools create`. Pushing the same tag concurrently from both jobs would make ACR produce a broken index (arm64 as `unknown/unknown`), so the two tags are never pushed in parallel.
 
 ### GitHub Actions → personal ACR
 
@@ -85,7 +85,7 @@ Configure the GitHub repository:
 | Secret | `ACR_USERNAME` | ACR login user |
 | Secret | `ACR_PASSWORD` | ACR password / token |
 
-Pushed tags: `<registry>/<namespace>/buz-manager:v1.2.0` (and `:1.2.0`, `:latest`), same for `buz-runner`.
+Pushed tags: `<registry>/<namespace>/buz-manager:v1.3.0` (and `:1.3.0`, `:latest`), same for `buz-runner`.
 
 ### Container layout
 
