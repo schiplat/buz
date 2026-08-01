@@ -34,3 +34,6 @@ frontend/dist/
 docs/public/
 docs/.hugo_build.lock
 docs/logs/
+
+# Local runner logs (may contain hostnames / runtime noise)
+example/logs/

@@ -100,7 +100,7 @@ Rules: both fields required; `new_password` ≥ 6 characters and must differ fro
 Returns liveness plus package version (no separate `/version` endpoint).
 
 ```json
-{ "status": "ok", "name": "Buz", "version": "1.0.1", "component": "manager" }
+{ "status": "ok", "name": "Buz", "version": "1.1.0", "component": "manager" }
 ```
 
 Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`) and mirrored in `frontend/package.json`. CLI: `buz-manager --version` / `buz-runner --version`.
@@ -129,7 +129,7 @@ Request:
 {
   "name": "prod-runner-01",
   "labels": ["linux-x64", "prod"],
-  "version": "1.0.1",
+  "version": "1.1.0",
   "max_concurrent_jobs": 3,
   "clean_workspace_after_job": true,
   "shell_enabled": true,
@@ -180,7 +180,7 @@ Request:
   "name": "prod-runner-01",
   "register_token": "one-time-token",
   "labels": ["linux-x64"],
-  "version": "1.0.1"
+  "version": "1.1.0"
 }
 ```
 

@@ -50,7 +50,7 @@ buz-<version>-linux-x86_64.tar.gz
 ```
 
 ```bash
-git tag v1.0.1 && git push origin v1.0.1
+git tag v1.1.0 && git push origin v1.1.0
 make package   # local host only → dist/release/buz-*.tar.gz
 ```
 
@@ -70,6 +70,8 @@ Images:
 | `buz-manager` | `Dockerfile` |
 | `buz-runner` | `Dockerfile.runner` |
 
+Both images are built for `linux/amd64` **and** `linux/arm64` (native matrix builds: `ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64, no QEMU emulation).
+
 ### GitHub Actions → personal ACR
 
 Workflow: `.github/workflows/docker.yml` (on `v*` tag or manual).
@@ -83,7 +85,7 @@ Configure the GitHub repository:
 | Secret | `ACR_USERNAME` | ACR login user |
 | Secret | `ACR_PASSWORD` | ACR password / token |
 
-Pushed tags: `<registry>/<namespace>/buz-manager:v1.0.1` (and `:1.0.1`, `:latest`), same for `buz-runner`.
+Pushed tags: `<registry>/<namespace>/buz-manager:v1.1.0` (and `:1.1.0`, `:latest`), same for `buz-runner`.
 
 ### Container layout
 
