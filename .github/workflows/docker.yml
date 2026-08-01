@@ -1,6 +1,8 @@
 name: Docker / ACR
 
 # Build and push Manager + Runner images to Alibaba Cloud Container Registry (personal).
+# Supports linux/amd64 + linux/arm64 (native builds on GitHub-hosted runners,
+# no QEMU emulation).
 #
 # Required repository configuration:
 #   Secrets:
@@ -11,8 +13,8 @@ name: Docker / ACR
 #     ACR_NAMESPACE         — personal namespace
 #
 # Images:
-#   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-manager:<tag>
-#   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-runner:<tag>
+#   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-manager:<tag>  (linux/amd64, linux/arm64)
+#   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-runner:<tag>   (linux/amd64, linux/arm64)
 
 on:
   push:
@@ -29,10 +31,20 @@ env:
 
 jobs:
   push:
-    name: Build & push
-    runs-on: ubuntu-latest
+    name: Build & push (${{ matrix.name }})
+    runs-on: ${{ matrix.runs-on }}
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: amd64
+            runs-on: ubuntu-latest
+            platform: linux/amd64
+          - name: arm64
+            runs-on: ubuntu-24.04-arm
+            platform: linux/arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -102,17 +114,19 @@ jobs:
         with:
           context: .
           file: Dockerfile
+          platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ steps.meta.outputs.manager_tags }}
-          cache-from: type=gha,scope=buz-manager
-          cache-to: type=gha,mode=max,scope=buz-manager
+          cache-from: type=gha,scope=buz-manager-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=buz-manager-${{ matrix.name }}
 
       - name: Build & push buz-runner
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.runner
+          platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ steps.meta.outputs.runner_tags }}
-          cache-from: type=gha,scope=buz-runner
-          cache-to: type=gha,mode=max,scope=buz-runner
+          cache-from: type=gha,scope=buz-runner-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=buz-runner-${{ matrix.name }}
