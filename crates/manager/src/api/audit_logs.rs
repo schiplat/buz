@@ -39,8 +39,13 @@ fn default_page_size() -> u32 {
 }
 
 /// GET /audit-logs
+///
+/// Access tiers:
+/// - Super admin: sees every audit record.
+/// - Regular platform admin: only records where they are the actor
+///   (`actor_user_id = own id`). Non-admins are rejected by the extractor.
 pub async fn list(
-    _admin: PlatformAdmin,
+    auth: PlatformAdmin,
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -48,15 +53,21 @@ pub async fn list(
     let page_size = q.page_size.clamp(1, 100);
     let offset = (page - 1) * page_size;
 
-    let mut where_parts: Vec<&str> = Vec::new();
+    let mut where_parts: Vec<String> = Vec::new();
     let mut binds: Vec<String> = Vec::new();
 
+    // Tiered visibility — regular admins only see their own actions.
+    if !auth.is_super_admin {
+        where_parts.push("actor_user_id = ?".to_string());
+        binds.push(auth.id.clone());
+    }
+
     if let Some(a) = q.action.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        where_parts.push("action = ?");
+        where_parts.push("action = ?".to_string());
         binds.push(a.to_string());
     }
     if let Some(a) = q.actor.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        where_parts.push("actor_username LIKE ?");
+        where_parts.push("actor_username LIKE ?".to_string());
         binds.push(format!("%{a}%"));
     }
     if let Some(rt) = q
@@ -65,20 +76,21 @@ pub async fn list(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        where_parts.push("resource_type = ?");
+        where_parts.push("resource_type = ?".to_string());
         binds.push(rt.to_string());
     }
     if let Some(from) = q.from.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        where_parts.push("created_at >= ?");
+        where_parts.push("created_at >= ?".to_string());
         binds.push(from.to_string());
     }
     if let Some(to) = q.to.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        where_parts.push("created_at <= ?");
+        where_parts.push("created_at <= ?".to_string());
         binds.push(to.to_string());
     }
     if let Some(search) = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         where_parts.push(
-            "(resource_name LIKE ? OR resource_id LIKE ? OR action LIKE ? OR actor_username LIKE ?)",
+            "(resource_name LIKE ? OR resource_id LIKE ? OR action LIKE ? OR actor_username LIKE ?)"
+                .to_string(),
         );
         let pat = format!("%{search}%");
         binds.push(pat.clone());

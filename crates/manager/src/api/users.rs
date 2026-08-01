@@ -18,7 +18,7 @@ pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let rows = sqlx::query(
-        "SELECT id, username, display_name, is_platform_admin, is_active, created_at, updated_at
+        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active, created_at, updated_at
          FROM users ORDER BY username ASC",
     )
     .fetch_all(&state.pool)
@@ -32,9 +32,10 @@ pub async fn list(
                 "username": r.get::<String, _>(1),
                 "display_name": r.get::<String, _>(2),
                 "is_platform_admin": r.get::<i64, _>(3) != 0,
-                "is_active": r.get::<i64, _>(4) != 0,
-                "created_at": r.get::<Option<String>, _>(5),
-                "updated_at": r.get::<Option<String>, _>(6),
+                "is_super_admin": r.get::<i64, _>(4) != 0,
+                "is_active": r.get::<i64, _>(5) != 0,
+                "created_at": r.get::<Option<String>, _>(6),
+                "updated_at": r.get::<Option<String>, _>(7),
             })
         })
         .collect();
@@ -57,17 +58,19 @@ pub async fn create(
     let id = Uuid::new_v4().to_string();
     let hash = hash_password(&req.password).map_err(AppError::Internal)?;
     let is_admin = req.is_platform_admin.unwrap_or(false);
+    let is_super = req.is_super_admin.unwrap_or(false) && auth.is_super_admin;
     let display = req.display_name.unwrap_or_else(|| username.to_string());
 
     sqlx::query(
-        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_active)
-         VALUES (?, ?, ?, ?, ?, 1)",
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(&id)
     .bind(username)
     .bind(&hash)
     .bind(&display)
     .bind(if is_admin { 1 } else { 0 })
+    .bind(if is_super { 1 } else { 0 })
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -87,6 +90,7 @@ pub async fn create(
                 "username": username,
                 "display_name": display,
                 "is_platform_admin": is_admin,
+                "is_super_admin": is_super,
                 "is_active": true,
             }))),
     )
@@ -96,6 +100,7 @@ pub async fn create(
         "id": id,
         "username": username,
         "is_platform_admin": is_admin,
+        "is_super_admin": is_super,
     }))))
 }
 
@@ -106,7 +111,7 @@ pub async fn update(
     Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let before_row = sqlx::query(
-        "SELECT id, username, display_name, is_platform_admin, is_active FROM users WHERE id = ?",
+        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active FROM users WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.pool)
@@ -120,7 +125,8 @@ pub async fn update(
         "username": username,
         "display_name": before_row.get::<String, _>(2),
         "is_platform_admin": before_row.get::<i64, _>(3) != 0,
-        "is_active": before_row.get::<i64, _>(4) != 0,
+        "is_super_admin": before_row.get::<i64, _>(4) != 0,
+        "is_active": before_row.get::<i64, _>(5) != 0,
     });
 
     if let Some(ref pw) = req.password {
@@ -170,6 +176,34 @@ pub async fn update(
         .await?;
     }
 
+    // Super admin tier may only be granted/revoked by another super admin.
+    if let Some(is_super) = req.is_super_admin {
+        if !auth.is_super_admin {
+            return Err(AppError::Unauthorized(
+                "only super admins can change super admin status".into(),
+            ));
+        }
+        if !is_super && id == auth.id {
+            let super_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM users WHERE is_super_admin = 1 AND is_active = 1",
+            )
+            .fetch_one(&state.pool)
+            .await?;
+            if super_count <= 1 {
+                return Err(AppError::ValidationFailed(
+                    "cannot remove the last super admin".into(),
+                ));
+            }
+        }
+        sqlx::query(
+            "UPDATE users SET is_super_admin = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(if is_super { 1 } else { 0 })
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    }
+
     if let Some(active) = req.is_active {
         if !active && id == auth.id {
             return Err(AppError::ValidationFailed(
@@ -184,7 +218,7 @@ pub async fn update(
     }
 
     let after_row = sqlx::query(
-        "SELECT id, username, display_name, is_platform_admin, is_active FROM users WHERE id = ?",
+        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active FROM users WHERE id = ?",
     )
     .bind(&id)
     .fetch_one(&state.pool)
@@ -194,7 +228,8 @@ pub async fn update(
         "username": after_row.get::<String, _>(1),
         "display_name": after_row.get::<String, _>(2),
         "is_platform_admin": after_row.get::<i64, _>(3) != 0,
-        "is_active": after_row.get::<i64, _>(4) != 0,
+        "is_super_admin": after_row.get::<i64, _>(4) != 0,
+        "is_active": after_row.get::<i64, _>(5) != 0,
     });
     audit::record(
         &state.pool,
@@ -229,7 +264,7 @@ pub async fn delete(
         return Err(AppError::ValidationFailed("cannot delete yourself".into()));
     }
     let before_row = sqlx::query(
-        "SELECT username, display_name, is_platform_admin, is_active FROM users WHERE id = ?",
+        "SELECT username, display_name, is_platform_admin, is_super_admin, is_active FROM users WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.pool)
@@ -244,7 +279,8 @@ pub async fn delete(
                     "username": username,
                     "display_name": r.get::<String, _>(1),
                     "is_platform_admin": r.get::<i64, _>(2) != 0,
-                    "is_active": r.get::<i64, _>(3) != 0,
+                    "is_super_admin": r.get::<i64, _>(3) != 0,
+                    "is_active": r.get::<i64, _>(4) != 0,
                 })),
             )
         }

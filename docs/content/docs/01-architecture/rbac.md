@@ -6,7 +6,7 @@ description: "Phase 2 authorization model — platform admins, teams, four team 
 
 ## Status
 
-**Implemented (Phase 2).** Multi-user login, teams, four team roles, required `team_id` on pipelines/secrets, optional host team, and membership-filtered list APIs.
+**Implemented (Phase 2 + Phase 3 auth items).** Multi-user login, teams, four team roles, required `team_id` on pipelines/secrets, optional host team, membership-filtered list APIs, platform-admin API tokens, and tiered audit-log visibility (super admin vs regular admin).
 
 Related: [Secrets Access Control](/docs/01-architecture/secrets-access-control/) (`owner_group` synced from team slug; runtime prefers `team_id`).
 
@@ -65,8 +65,11 @@ Runners and Manager config remain **global infrastructure** — Platform Admin o
 
 | Role | Capability |
 |------|------------|
-| `platform_admin` | Full access: all teams, runners, user/team admin, unscoped hosts |
+| `super_admin` | Everything a platform admin can do, plus: view **all** audit logs and list/revoke **any** admin's API tokens; grant/revoke the super-admin flag |
+| `platform_admin` | Full access: all teams, runners, user/team admin, unscoped hosts, own API tokens |
 | `member` | Only resources in teams they belong to, constrained by team role |
+
+`is_super_admin` is a separate boolean on `users`. The first admin created via `/setup` is a super admin. Regular platform admins see a filtered audit log (only their own actions) and only their own API tokens. See [Admin Audit Logs](/docs/01-architecture/admin-audit-logs/).
 
 ### Team role matrix
 
@@ -99,8 +102,17 @@ users
   password_hash TEXT NOT NULL
   display_name TEXT
   is_platform_admin INTEGER NOT NULL DEFAULT 0
+  is_super_admin INTEGER NOT NULL DEFAULT 0
   is_active INTEGER NOT NULL DEFAULT 1
   created_at, updated_at
+
+api_tokens
+  id TEXT PK
+  user_id TEXT NOT NULL → users(id) ON DELETE CASCADE
+  name TEXT NOT NULL
+  token_hash TEXT NOT NULL          -- SHA-256, plaintext never stored
+  token_prefix TEXT NOT NULL        -- display e.g. "buz_a1b2c3…"
+  created_at, last_used_at, revoked_at
 
 teams
   id TEXT PK
@@ -146,6 +158,7 @@ Empty `owner_group` rows from Phase 1 must be assigned a team during upgrade (op
 | JWT `role` | Extend shared enum: `admin` (platform_admin) \| `user` \| `runner` |
 | Team list in JWT? | **No** — load `team_members` per request (short TTL cache optional) so membership changes apply immediately |
 | Runner tokens | Unchanged (`Role::Runner`) |
+| **API tokens** | `Authorization: Bearer buz_…` → SHA-256 lookup in `api_tokens`, then load the owning user. Full API-equivalent of a user JWT. Stored hashed; plaintext shown once at creation |
 
 Config: first platform admin is **not** created from toml. On empty `users`, open the Web UI `/setup` (or `POST /auth/setup`).
 
@@ -187,6 +200,8 @@ Cross-team secret use: forbidden in Phase 2 (future Phase 3 grant). Binding UI l
 | GET | `/api/v1/auth/me` | JWT |
 | GET/POST | `/api/v1/users` | Platform admin |
 | PUT/DELETE | `/api/v1/users/:id` | Platform admin |
+| GET/POST | `/api/v1/api-tokens` | Platform admin (list: super admin sees all) |
+| DELETE | `/api/v1/api-tokens/:id` | Platform admin (super admin: any; else own) |
 | GET/POST | `/api/v1/teams` | JWT (create: platform admin) |
 | GET/PUT/DELETE | `/api/v1/teams/:id` | Team role / owner |
 | GET/PUT | `/api/v1/teams/:id/members` | Team view / owner |
@@ -243,8 +258,10 @@ There is **no** production interim where multiple users share one flat admin vie
 ## Phase 3 (explicitly later)
 
 - OIDC / SSO
-- Personal / CI API tokens
-- Audit log UI
+- Approval gates on trigger
 - Per-step secret ACL
 - Cross-team secret grants
-- Approval gates on trigger
+
+**Completed during Phase 3 iteration:**
+- Personal / CI API tokens (UI + hashed storage + audit) — see [API Reference](/docs/01-architecture/api-reference/)
+- Audit log UI with tiered visibility (super admin vs regular admin) — see [Admin Audit Logs](/docs/01-architecture/admin-audit-logs/)

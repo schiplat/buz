@@ -62,3 +62,7 @@ cron = "0.15"
 # SSH connectivity probe (Hosts → Test)
 russh = "0.61"
 async-trait = "0.1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

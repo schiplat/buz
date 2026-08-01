@@ -510,6 +510,33 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .execute(pool)
     .await?;
 
+    // ── Phase 3: platform-admin tiers + API tokens ──
+    // Super admin sees all audit logs and all API tokens; regular platform
+    // admins see only their own. Safe to fail when the column already exists.
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN is_super_admin INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS api_tokens (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            token_hash TEXT NOT NULL,
+            token_prefix TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_used_at TEXT,
+            revoked_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id)")
+        .execute(pool)
+        .await?;
+
     backfill_registry_secret_kind(pool, jwt_secret).await?;
 
     tracing::info!("Database migrations applied successfully");

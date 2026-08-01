@@ -13,6 +13,7 @@ pub(crate) use pipelines::{
     do_trigger, insert_env_vars, insert_pipeline_secret_bindings, insert_pipeline_var_bindings,
     insert_steps,
 };
+mod api_tokens;
 mod audit_logs;
 mod git_hooks;
 mod git_webhook;
@@ -112,8 +113,14 @@ pub fn router(state: AppState) -> Router {
                 .put(variables::update)
                 .delete(variables::delete),
         )
-        // Audit logs (platform admin)
+        // Audit logs (platform admin; super admin sees all, others only their own)
         .route("/audit-logs", get(audit_logs::list))
+        // API tokens (platform admin; super admin sees all)
+        .route(
+            "/api-tokens",
+            get(api_tokens::list).post(api_tokens::create),
+        )
+        .route("/api-tokens/{id}", delete(api_tokens::revoke))
         // Runner management (platform admin)
         .route(
             "/runners",
@@ -134,3 +141,7 @@ pub fn router(state: AppState) -> Router {
         .route("/hooks/{path}", post(webhook::handle))
         .with_state(state)
 }
+
+#[cfg(test)]
+#[path = "tests/api_token_tests.rs"]
+mod api_token_integration_tests;

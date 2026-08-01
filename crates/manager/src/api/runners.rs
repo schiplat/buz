@@ -140,10 +140,29 @@ pub async fn create_runner(
     State(state): State<AppState>,
     Json(req): Json<CreateRunnerRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let created = create_runner_record(&state.pool, &req).await?;
+
+    let policy = load_runner_policy(&state.pool, &created.id).await?;
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "id": created.id,
+        "name": created.name,
+        "register_token": created.register_token,
+        "max_concurrent_jobs": created.max_concurrent_jobs,
+        "policy": policy_json(&policy),
+    }))))
+}
+
+/// Core runner creation used by both the HTTP handler and the
+/// `gen-runner-token` CLI subcommand. Persists the runner and returns its
+/// one-shot register token.
+pub(crate) async fn create_runner_record(
+    pool: &sqlx::SqlitePool,
+    req: &CreateRunnerRequest,
+) -> Result<CreatedRunner, AppError> {
     let id = Uuid::new_v4().to_string();
     let register_token = Uuid::new_v4().to_string();
-    let labels_json =
-        serde_json::to_string(&req.labels.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+    let labels_json = serde_json::to_string(req.labels.as_deref().unwrap_or_default())
+        .unwrap_or_else(|_| "[]".into());
     let max_concurrent = normalize_max_concurrent(req.max_concurrent_jobs)?;
     let ssh_policy = normalize_ssh_host_key_policy(req.ssh_host_key_policy.clone())?;
     let clean = bool_i64(req.clean_workspace_after_job, false);
@@ -170,7 +189,7 @@ pub async fn create_runner(
     .bind(docker)
     .bind(wasm)
     .bind(&ssh_policy)
-    .execute(&state.pool)
+    .execute(pool)
     .await?;
 
     tracing::info!(
@@ -181,21 +200,27 @@ pub async fn create_runner(
     );
 
     log_runner_event(
-        &state.pool,
+        pool,
         &id,
         "created",
         &format!("Runner created, awaiting registration (max_concurrent={max_concurrent})"),
     )
     .await;
 
-    let policy = load_runner_policy(&state.pool, &id).await?;
-    Ok(Json(ApiResponse::success(serde_json::json!({
-        "id": id,
-        "name": req.name,
-        "register_token": register_token,
-        "max_concurrent_jobs": max_concurrent,
-        "policy": policy_json(&policy),
-    }))))
+    Ok(CreatedRunner {
+        id,
+        name: req.name.clone(),
+        register_token,
+        max_concurrent_jobs: max_concurrent,
+    })
+}
+
+/// Result of `create_runner_record` — identifier, name, and one-shot token.
+pub(crate) struct CreatedRunner {
+    pub id: String,
+    pub name: String,
+    pub register_token: String,
+    pub max_concurrent_jobs: u32,
 }
 
 pub async fn register(
@@ -1360,3 +1385,7 @@ pub async fn get_events(
 #[cfg(test)]
 #[path = "tests/runner_label_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/runner_create_tests.rs"]
+mod create_tests;

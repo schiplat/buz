@@ -35,6 +35,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'variables', name: 'variables', component: () => import('@/pages/Variables.vue'), meta: { title: 'Variables' } },
       { path: 'teams', name: 'teams', component: () => import('@/pages/Teams.vue'), meta: { title: 'Teams' } },
       { path: 'users', name: 'users', component: () => import('@/pages/Users.vue'), meta: { title: 'Users', adminOnly: true } },
+      { path: 'api-tokens', name: 'api-tokens', component: () => import('@/pages/ApiTokens.vue'), meta: { title: 'API tokens', adminOnly: true } },
       { path: 'audit-logs', name: 'audit-logs', component: () => import('@/pages/AuditLogs.vue'), meta: { title: 'Audit logs', adminOnly: true } },
     ],
   },

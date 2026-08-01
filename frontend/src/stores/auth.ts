@@ -10,6 +10,7 @@ export const useAuthStore = defineStore('auth', () => {
   const username = ref<string | null>(localStorage.getItem('buz_username'))
   const userId = ref<string | null>(localStorage.getItem('buz_user_id'))
   const isPlatformAdmin = ref(localStorage.getItem('buz_is_admin') === '1')
+  const isSuperAdmin = ref(localStorage.getItem('buz_is_super_admin') === '1')
   const teams = ref<TeamMembership[]>([])
 
   /** Empty string = All my teams. Persisted across reloads. */
@@ -98,10 +99,12 @@ export const useAuthStore = defineStore('auth', () => {
       userId.value = me.id
       username.value = me.username
       isPlatformAdmin.value = me.is_platform_admin
+      isSuperAdmin.value = !!me.is_super_admin
       teams.value = me.teams || []
       localStorage.setItem('buz_user_id', me.id)
       localStorage.setItem('buz_username', me.username)
       localStorage.setItem('buz_is_admin', me.is_platform_admin ? '1' : '0')
+      localStorage.setItem('buz_is_super_admin', me.is_super_admin ? '1' : '0')
       sanitizeActiveTeam()
     } catch {
       // ignore — 401 interceptor handles logout
@@ -113,11 +116,13 @@ export const useAuthStore = defineStore('auth', () => {
     username.value = null
     userId.value = null
     isPlatformAdmin.value = false
+    isSuperAdmin.value = false
     teams.value = []
     localStorage.removeItem('buz_token')
     localStorage.removeItem('buz_username')
     localStorage.removeItem('buz_user_id')
     localStorage.removeItem('buz_is_admin')
+    localStorage.removeItem('buz_is_super_admin')
     // Keep activeTeamId preference across sessions of the same browser user
   }
 
@@ -128,6 +133,7 @@ export const useAuthStore = defineStore('auth', () => {
     username,
     userId,
     isPlatformAdmin,
+    isSuperAdmin,
     teams,
     activeTeamId,
     isAuthenticated,

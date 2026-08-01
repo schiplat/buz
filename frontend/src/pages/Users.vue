@@ -20,7 +20,7 @@ const filteredUsers = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
   if (!q) return users.value
   return users.value.filter((u) => {
-    return [u.username, u.display_name, u.is_platform_admin ? 'admin' : 'member', u.is_active ? 'active' : 'disabled']
+    return [u.username, u.display_name, u.is_platform_admin ? 'admin' : 'member', u.is_super_admin ? 'super' : '', u.is_active ? 'active' : 'disabled']
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
@@ -34,7 +34,7 @@ const { sorted, toggleSort, sortIndicator } = useClientSort(filteredUsers, {
   getValue: (row, key) => {
     switch (key) {
       case 'username': return row.username
-      case 'role': return row.is_platform_admin ? 1 : 0
+      case 'role': return row.is_super_admin ? 2 : row.is_platform_admin ? 1 : 0
       case 'status': return row.is_active ? 1 : 0
       default: return ''
     }
@@ -48,6 +48,7 @@ const formUsername = ref('')
 const formPassword = ref('')
 const formDisplay = ref('')
 const formAdmin = ref(false)
+const formSuper = ref(false)
 const saving = ref(false)
 
 async function load() {
@@ -76,12 +77,14 @@ async function createUser() {
       password: formPassword.value,
       display_name: formDisplay.value.trim() || undefined,
       is_platform_admin: formAdmin.value,
+      is_super_admin: auth.isSuperAdmin ? formSuper.value : undefined,
     })
     showCreate.value = false
     formUsername.value = ''
     formPassword.value = ''
     formDisplay.value = ''
     formAdmin.value = false
+    formSuper.value = false
     await load()
   } finally {
     saving.value = false
@@ -90,6 +93,13 @@ async function createUser() {
 
 async function toggleActive(u: User) {
   await usersApi.update(u.id, { is_active: !u.is_active })
+  await load()
+}
+
+async function toggleSuper(u: User) {
+  const action = u.is_super_admin ? 'demote from super admin' : 'promote to super admin'
+  if (!confirm(`${action[0].toUpperCase() + action.slice(1)} "${u.username}"?`)) return
+  await usersApi.update(u.id, { is_super_admin: !u.is_super_admin })
   await load()
 }
 
@@ -154,9 +164,16 @@ onMounted(load)
             <tbody class="divide-y divide-border/20">
               <tr v-for="u in pageItems" :key="u.id" class="hover:bg-muted/5">
                 <td class="px-5 py-3 font-semibold">{{ u.username }}</td>
-                <td class="px-5 py-3 text-xs">{{ u.is_platform_admin ? 'platform admin' : 'member' }}</td>
+                <td class="px-5 py-3 text-xs">
+                  <span v-if="u.is_super_admin" class="font-semibold text-amber-500">super admin</span>
+                  <span v-else-if="u.is_platform_admin">platform admin</span>
+                  <span v-else>member</span>
+                </td>
                 <td class="px-5 py-3 text-xs">{{ u.is_active ? 'active' : 'disabled' }}</td>
                 <td class="px-5 py-3 text-right space-x-1">
+                  <UiButton v-if="auth.isSuperAdmin && u.id !== auth.userId" variant="ghost" size="sm" @click="toggleSuper(u)">
+                    {{ u.is_super_admin ? 'Demote' : 'Promote' }}
+                  </UiButton>
                   <UiButton variant="ghost" size="sm" @click="toggleActive(u)">
                     {{ u.is_active ? 'Disable' : 'Enable' }}
                   </UiButton>
@@ -193,6 +210,10 @@ onMounted(load)
             <label class="flex items-center gap-2 text-sm">
               <input v-model="formAdmin" type="checkbox" class="rounded" />
               Platform admin
+            </label>
+            <label v-if="auth.isSuperAdmin" class="flex items-center gap-2 text-sm">
+              <input v-model="formSuper" type="checkbox" class="rounded" />
+              Super admin (sees all API tokens &amp; audit logs)
             </label>
           </div>
           <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/30">

@@ -11,6 +11,7 @@ export interface MeResponse {
   id: string
   username: string
   is_platform_admin: boolean
+  is_super_admin: boolean
   teams: TeamMembership[]
 }
 

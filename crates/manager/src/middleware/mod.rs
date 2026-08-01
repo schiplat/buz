@@ -6,7 +6,6 @@ use axum::{
 };
 use shared::auth::{Role, TokenManager};
 
-use crate::rbac::load_auth_user;
 use crate::state::AppState;
 
 pub use crate::rbac::AuthUser;
@@ -19,21 +18,12 @@ impl FromRequestParts<AppState> for AuthUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let token = extract_bearer(parts)?;
-        let tm = TokenManager::new(&state.config.auth.jwt_secret);
-        let claims = tm
-            .verify(token)
-            .map_err(|_| auth_err("invalid or expired token"))?;
-
-        if !matches!(claims.role, Role::Admin | Role::User) {
-            return Err(forbidden_err("user role required"));
-        }
-
-        load_auth_user(&state.pool, &claims.sub)
+        crate::rbac::authenticate_user_token(&state.pool, &state.config.auth.jwt_secret, token)
             .await
             .map_err(|e| match e {
                 shared::error::AppError::AuthFailed(msg) => auth_err(&msg),
                 other => {
-                    tracing::error!("load_auth_user failed: {other}");
+                    tracing::error!("authenticate_user_token failed: {other}");
                     auth_err("invalid or expired token")
                 }
             })

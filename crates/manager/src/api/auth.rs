@@ -71,8 +71,8 @@ pub async fn setup(
     let user_id = Uuid::new_v4().to_string();
     let hash = hash_password(&req.password).map_err(AppError::Internal)?;
     sqlx::query(
-        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_active)
-         VALUES (?, ?, ?, ?, 1, 1)",
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
+         VALUES (?, ?, ?, ?, 1, 1, 1)",
     )
     .bind(&user_id)
     .bind(&username)
@@ -220,6 +220,7 @@ pub async fn me(auth: AuthUser) -> Result<Json<ApiResponse<serde_json::Value>>, 
         "id": auth.id,
         "username": auth.username,
         "is_platform_admin": auth.is_platform_admin,
+        "is_super_admin": auth.is_super_admin,
         "teams": teams,
     }))))
 }

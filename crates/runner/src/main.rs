@@ -1,5 +1,5 @@
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 mod client;
 mod config;
@@ -14,18 +14,32 @@ mod sysinfo;
 #[command(
     name = "buz-runner",
     version = shared::version::VERSION,
-    about = "Buz Runner — task execution agent",
-    long_version = shared::version::VERSION
+    about = "Buz Runner — task execution agent"
 )]
 struct Cli {
     /// Path to TOML configuration file
-    #[arg(short, long, default_value = "conf/runner.toml")]
+    #[arg(short, long, global = true, default_value = "conf/runner.toml")]
     config: String,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Print version information and exit
+    Version,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    if matches!(cli.command, Some(Command::Version)) {
+        println!("{}", shared::version::RUNNER_LONG_VERSION);
+        return Ok(());
+    }
+
     let config = config::load(Some(&cli.config)).context("failed to load config")?;
     let _log_guard = shared::logging::init("buz_runner", &config.logging);
 

@@ -5,6 +5,7 @@ export interface User {
   username: string
   display_name: string
   is_platform_admin: boolean
+  is_super_admin: boolean
   is_active: boolean
   created_at?: string
   updated_at?: string
@@ -20,6 +21,7 @@ export const usersApi = {
     password: string
     display_name?: string
     is_platform_admin?: boolean
+    is_super_admin?: boolean
   }): Promise<User> {
     const resp = await apiClient.post('/users', data)
     return resp.data as User
@@ -30,6 +32,7 @@ export const usersApi = {
       password?: string
       display_name?: string
       is_platform_admin?: boolean
+      is_super_admin?: boolean
       is_active?: boolean
     },
   ): Promise<void> {

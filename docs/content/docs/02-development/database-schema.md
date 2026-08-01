@@ -46,7 +46,7 @@ See [Users, Teams & RBAC](/docs/01-architecture/rbac/) for the full model.
 
 | Table | Purpose |
 |-------|---------|
-| `users` | Login accounts (`password_hash` Argon2id, `is_platform_admin`) |
+| `users` | Login accounts (`password_hash` Argon2id, `is_platform_admin`, `is_super_admin`) |
 | `teams` | `name` + unique `slug` (replaces free-form `owner_group`) |
 | `team_members` | `(team_id, user_id)` + role `owner\|maintainer\|developer\|viewer` |
 
@@ -196,6 +196,23 @@ Platform-admin operation audit. Written best-effort after successful JWT mutatio
 | ip | TEXT | Optional; often empty |
 
 Indexes: `(created_at DESC)`, `(action)`, `(actor_username)`, `(resource_type, resource_id)`.
+
+### api_tokens
+
+Long-lived bearer credentials that authenticate like a user JWT. Created by platform admins in **Access → API tokens** (`/api-tokens`).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | TEXT PK | UUID |
+| user_id | TEXT FK → users.id | Owning admin (ON DELETE CASCADE) |
+| name | TEXT | Display label, `[A-Za-z0-9._-]`, ≤ 64 chars |
+| token_hash | TEXT | **SHA-256** of the token — plaintext is never stored |
+| token_prefix | TEXT | Display prefix e.g. `buz_a1b2c3…` |
+| created_at | TEXT | |
+| last_used_at | TEXT NULL | Touched on successful auth |
+| revoked_at | TEXT NULL | Set on revoke; revoked tokens no longer authenticate |
+
+Indexes: `(user_id)`.
 
 ### runner_events
 

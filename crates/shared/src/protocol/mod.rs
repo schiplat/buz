@@ -80,6 +80,9 @@ pub struct CreateUserRequest {
     pub display_name: Option<String>,
     #[serde(default)]
     pub is_platform_admin: Option<bool>,
+    /// Super admin can view all audit logs and all API tokens.
+    #[serde(default)]
+    pub is_super_admin: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -92,6 +95,27 @@ pub struct UpdateUserRequest {
     pub is_platform_admin: Option<bool>,
     #[serde(default)]
     pub is_active: Option<bool>,
+    #[serde(default)]
+    pub is_super_admin: Option<bool>,
+}
+
+// --- API tokens ---
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateApiTokenRequest {
+    /// Human-friendly label, e.g. "ci-script".
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateApiTokenResponse {
+    pub id: String,
+    pub name: String,
+    /// Full token value. Returned **once** at creation and never again.
+    pub token: String,
+    /// Display prefix (e.g. `buz_ab12…`) shown in list views.
+    pub prefix: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

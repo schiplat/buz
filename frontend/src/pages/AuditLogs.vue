@@ -63,6 +63,8 @@ const ACTION_OPTIONS = [
   'pipeline.trigger',
   'git_hook.create',
   'git_hook.delete',
+  'api_token.create',
+  'api_token.revoke',
 ]
 
 const RESOURCE_TYPE_OPTIONS = [
@@ -74,6 +76,7 @@ const RESOURCE_TYPE_OPTIONS = [
   'host',
   'pipeline',
   'git_hook',
+  'api_token',
 ]
 
 function openDetail(row: AuditLogItem) {
@@ -138,7 +141,7 @@ onMounted(load)
   <div class="space-y-6">
     <PageHeader
       title="Audit logs"
-      description="Platform-admin view of successful mutations. Sensitive fields are redacted."
+      :description="auth.isSuperAdmin ? 'Super-admin view of all operation audit records. Sensitive fields are redacted.' : 'Platform-admin view of your own operation audit records. Sensitive fields are redacted.'"
     />
 
     <div v-if="loading && items.length === 0" class="surface-card p-8 text-center type-meta">

@@ -1,5 +1,6 @@
 //! RBAC helpers: AuthUser loading and permission checks.
 
+use shared::auth::{Role, TokenManager};
 use shared::error::AppError;
 use shared::rbac::{Perm, TeamRole};
 use sqlx::{Row, SqlitePool};
@@ -17,6 +18,8 @@ pub struct AuthUser {
     pub id: String,
     pub username: String,
     pub is_platform_admin: bool,
+    /// Super admins see all audit logs and all API tokens.
+    pub is_super_admin: bool,
     pub memberships: Vec<TeamMembership>,
 }
 
@@ -68,27 +71,71 @@ impl AuthUser {
 }
 
 pub async fn load_auth_user(pool: &SqlitePool, user_id: &str) -> Result<AuthUser, AppError> {
-    let row =
-        sqlx::query("SELECT id, username, is_platform_admin, is_active FROM users WHERE id = ?")
-            .bind(user_id)
-            .fetch_optional(pool)
-            .await?
-            .ok_or_else(|| AppError::AuthFailed("user not found".into()))?;
+    let row = sqlx::query(
+        "SELECT id, username, is_platform_admin, is_super_admin, is_active FROM users WHERE id = ?",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::AuthFailed("user not found".into()))?;
 
-    let is_active: i64 = row.get(3);
+    let is_active: i64 = row.get(4);
     if is_active == 0 {
         return Err(AppError::AuthFailed("user is disabled".into()));
     }
 
     let is_platform_admin: i64 = row.get(2);
+    let is_super_admin: i64 = row.get(3);
     let memberships = load_memberships(pool, user_id).await?;
 
     Ok(AuthUser {
         id: row.get(0),
         username: row.get(1),
         is_platform_admin: is_platform_admin != 0,
+        is_super_admin: is_super_admin != 0,
         memberships,
     })
+}
+
+/// Authenticate a bearer credential as a human user.
+///
+/// Accepts either a user JWT (preferred) or a stored API token (`buz_…`).
+/// Returns `AppError::AuthFailed` when neither verifies.
+pub async fn authenticate_user_token(
+    pool: &SqlitePool,
+    jwt_secret: &str,
+    token: &str,
+) -> Result<AuthUser, AppError> {
+    let tm = TokenManager::new(jwt_secret);
+    if let Ok(claims) = tm.verify(token) {
+        if !matches!(claims.role, Role::Admin | Role::User) {
+            return Err(AppError::AuthFailed("user role required".into()));
+        }
+        return load_auth_user(pool, &claims.sub).await;
+    }
+
+    // API token authentication: SHA-256 lookup, then load the owning user.
+    let token_hash = shared::api_token::hash_token(token);
+    let user_id = sqlx::query_scalar::<_, String>(
+        "SELECT user_id FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL",
+    )
+    .bind(&token_hash)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("api_token lookup failed: {e}");
+        AppError::AuthFailed("invalid or expired token".into())
+    })?
+    .ok_or_else(|| AppError::AuthFailed("invalid or expired token".into()))?;
+
+    // Touch last_used_at (best-effort, non-fatal).
+    let _ =
+        sqlx::query("UPDATE api_tokens SET last_used_at = datetime('now') WHERE token_hash = ?")
+            .bind(&token_hash)
+            .execute(pool)
+            .await;
+
+    load_auth_user(pool, &user_id).await
 }
 
 pub async fn load_memberships(
@@ -120,6 +167,24 @@ pub async fn load_memberships(
         });
     }
     Ok(out)
+}
+
+/// Verify a platform-admin credential for CLI subcommands (e.g. `gen-runner-token`).
+///
+/// Mirrors the HTTP `PlatformAdmin` middleware: the credential must be a valid
+/// user JWT signed with the configured secret **or** a stored API token, belong
+/// to a human user who is still active, and that user must hold
+/// `is_platform_admin`. Returns the caller's identity on success.
+pub async fn verify_cli_admin_token(
+    pool: &SqlitePool,
+    jwt_secret: &str,
+    token: &str,
+) -> Result<AuthUser, AppError> {
+    let user = authenticate_user_token(pool, jwt_secret, token).await?;
+    if !user.is_platform_admin {
+        return Err(AppError::Unauthorized("platform admin required".into()));
+    }
+    Ok(user)
 }
 
 /// Resolve team_id from request: prefer `team_id`, else look up slug from `owner_group`.
@@ -324,3 +389,7 @@ async fn backfill_team_id(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "rbac_tests.rs"]
+mod tests;

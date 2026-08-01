@@ -198,7 +198,19 @@ pub fn validate_jwt_secret(secret: &str) -> anyhow::Result<()> {
 
 // -- loader --
 
+/// Load configuration for the server: JWT secret validation is enforced.
 pub fn load(config_path: Option<&str>) -> anyhow::Result<Config> {
+    let cfg = load_unchecked(config_path)?;
+    validate_jwt_secret(&cfg.auth.jwt_secret)?;
+    Ok(cfg)
+}
+
+/// Load configuration **without** JWT secret validation.
+///
+/// Used by CLI subcommands (`gen-runner-token`) that only need to reach the
+/// local database. The JWT secret is required to decrypt stored secrets, but
+/// runner registration itself does not need it.
+pub fn load_unchecked(config_path: Option<&str>) -> anyhow::Result<Config> {
     let config_path = config_path.unwrap_or("conf/manager.toml");
 
     let config = config::Config::builder()
@@ -212,8 +224,6 @@ pub fn load(config_path: Option<&str>) -> anyhow::Result<Config> {
     if let Ok(secret) = std::env::var("BUZ_JWT_SECRET") {
         cfg.auth.jwt_secret = secret;
     }
-
-    validate_jwt_secret(&cfg.auth.jwt_secret)?;
 
     Ok(cfg)
 }

@@ -50,7 +50,7 @@ buz-<version>-linux-x86_64.tar.gz
 ```
 
 ```bash
-git tag v1.1.0 && git push origin v1.1.0
+git tag v1.2.0 && git push origin v1.2.0
 make package   # local host only → dist/release/buz-*.tar.gz
 ```
 
@@ -85,7 +85,7 @@ Configure the GitHub repository:
 | Secret | `ACR_USERNAME` | ACR login user |
 | Secret | `ACR_PASSWORD` | ACR password / token |
 
-Pushed tags: `<registry>/<namespace>/buz-manager:v1.1.0` (and `:1.1.0`, `:latest`), same for `buz-runner`.
+Pushed tags: `<registry>/<namespace>/buz-manager:v1.2.0` (and `:1.2.0`, `:latest`), same for `buz-runner`.
 
 ### Container layout
 
@@ -129,6 +129,53 @@ Pull from ACR:
 docker login registry.cn-hangzhou.aliyuncs.com
 docker pull registry.cn-hangzhou.aliyuncs.com/<ns>/buz-manager:latest
 docker pull registry.cn-hangzhou.aliyuncs.com/<ns>/buz-runner:latest
+```
+
+### One-shot VM deploy (`deploy/dev-deploy.sh`)
+
+For a fresh Linux VM (e.g. a Linux VM on macOS, arm64 or x86_64) that only has Docker:
+
+```bash
+./deploy/dev-deploy.sh login   # docker login to ACR (or set ACR_USERNAME/ACR_PASSWORD)
+./deploy/dev-deploy.sh up      # pull images + start Manager on :8080
+# 1st: open the web UI (http://<vm>:8080) and complete /setup to create the platform admin
+# Then bootstrap the Runner on the same VM:
+ADMIN_USERNAME='<admin>' ADMIN_PASSWORD='<password>' ./deploy/dev-deploy.sh runner
+./deploy/dev-deploy.sh status  # container + health
+./deploy/dev-deploy.sh logs    # follow logs
+./deploy/dev-deploy.sh down    # stop (volumes kept)
+```
+
+All knobs are env-overridable: `ACR_REGISTRY`, `ACR_NAMESPACE`, `IMAGE_TAG`,
+`MANAGER_PORT`, `DEPLOY_DIR` (default `/opt/buz`), `RUNNER_NAME`, `RUNNER_TOKEN`.
+A `BUZ_JWT_SECRET` is generated on first `up` and persisted in `$DEPLOY_DIR/.env`
+so stored secrets stay decryptable across restarts. `render` writes the compose
+file + runner config without touching Docker (useful to preview before deploying).
+
+**Runner provisioning requires a platform admin.** `runner` auto-creates the
+runner by calling `buz-manager gen-runner-token` inside the Manager container.
+That CLI subcommand verifies the caller holds a platform-admin credential —
+either a login JWT or an **API token** (created in Manager UI → Access → API
+tokens; recommended for automation since it is revocable and audited via
+`api_token.*` events) — before touching the `runners` table. It logs in via
+`POST /api/v1/auth/login` using `ADMIN_USERNAME`/`ADMIN_PASSWORD`, or accepts a
+pre-obtained `BUZ_ADMIN_TOKEN`. To provision from elsewhere, export the token
+yourself:
+
+```bash
+# Option A: login JWT
+ADMIN_TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"<admin>","password":"<password>"}' | jq -r .data.token)
+docker exec buz-manager /app/buz/buz-manager -c /app/buz/conf/manager.toml \
+  gen-runner-token linux-vm-runner --labels linux-x64 --token "$ADMIN_TOKEN"
+# name: linux-vm-runner
+# register_token: <one-shot token>   → paste into conf/runner.toml
+
+# Option B (preferred for scripts): API token from Access → API tokens
+BUZ_ADMIN_TOKEN='buz_...' docker exec buz-manager \
+  /app/buz/buz-manager -c /app/buz/conf/manager.toml \
+  gen-runner-token linux-vm-runner --labels linux-x64
 ```
 
 ## Reverse Proxy (Nginx, HTTP-only)
