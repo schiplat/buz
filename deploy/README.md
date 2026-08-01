@@ -61,6 +61,13 @@ configs land in `$DEPLOY_DIR` (default `/opt/buz`); `BUZ_JWT_SECRET` is generate
 on first `up` and persisted there. `render` previews generated files without
 touching Docker.
 
+The default `latest` is the merged multi-arch manifest, so Docker auto-selects
+the image for the VM's architecture (arm64 or amd64). To pin one platform —
+e.g. while the CI merge job is still running, or to bypass a broken index —
+set `IMAGE_TAG=latest-arm64` / `latest-amd64` (or `1.3.0-arm64`). Verify a
+platform tag with `docker manifest inspect
+<registry>/<namespace>/buz-manager:1.3.0-arm64`.
+
 **Non-root user with sudo is supported.** The script auto-detects whether the
 current user can reach the docker daemon directly; if not it falls back to
 `sudo docker` for every invocation (override with `DOCKER='sudo docker'`, or add

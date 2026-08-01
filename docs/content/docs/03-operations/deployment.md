@@ -153,6 +153,14 @@ A `BUZ_JWT_SECRET` is generated on first `up` and persisted in `$DEPLOY_DIR/.env
 so stored secrets stay decryptable across restarts. `render` writes the compose
 file + runner config without touching Docker (useful to preview before deploying).
 
+**Works on both arm64 and amd64 VMs.** The default `IMAGE_TAG=latest` points to
+the merged multi-arch manifest, so Docker pulls the image matching the VM's
+architecture automatically. To pin a single platform — for example while the CI
+`merge` job has not finished yet, or to bypass a broken index — set a
+platform-specific tag instead: `IMAGE_TAG=latest-arm64` (or `latest-amd64` /
+`1.3.0-arm64`). Verify the platform tags with
+`docker manifest inspect <registry>/<namespace>/buz-manager:1.3.0-arm64`.
+
 **Runs as a non-root user with sudo.** Every `docker` invocation is prefixed with
 `sudo` when the current user cannot reach the daemon directly (auto-detected;
 override with `DOCKER='sudo docker'`, or add your user to the docker group).

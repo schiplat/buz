@@ -23,7 +23,11 @@
 # Environment overrides (all optional):
 #   ACR_REGISTRY    registry.cn-hongkong.aliyuncs.com
 #   ACR_NAMESPACE   example
-#   IMAGE_TAG       latest
+#   IMAGE_TAG       latest  — multi-arch tag: Docker auto-selects the manifest
+#                   for the VM's architecture (arm64 or amd64). To pin a single
+#                   platform instead (e.g. while the merge job is still running,
+#                   or to bypass a broken index) use a platform tag such as
+#                   `latest-arm64` / `latest-amd64` or `1.3.0-arm64`.
 #   MANAGER_PORT    8080              (host bind port -> container 8080)
 #   DEPLOY_DIR      /opt/buz
 #   DOCKER          docker invocation (auto-detected: `docker` when the user is
@@ -254,7 +258,9 @@ cmd_up() {
   ensure_jwt_secret
   write_compose
 
-  say "Pulling images (${IMAGE_TAG})…"
+  say "Pulling images…"
+  say "  ${MANAGER_IMAGE}"
+  say "  ${RUNNER_IMAGE}"
   # shellcheck disable=SC2086
   $DOCKER pull "${MANAGER_IMAGE}"
   # shellcheck disable=SC2086
