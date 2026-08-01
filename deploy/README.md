@@ -61,6 +61,16 @@ configs land in `$DEPLOY_DIR` (default `/opt/buz`); `BUZ_JWT_SECRET` is generate
 on first `up` and persisted there. `render` previews generated files without
 touching Docker.
 
+**Non-root user with sudo is supported.** The script auto-detects whether the
+current user can reach the docker daemon directly; if not it falls back to
+`sudo docker` for every invocation (override with `DOCKER='sudo docker'`, or add
+your user to the docker group). `$DEPLOY_DIR` is created with sudo when needed
+and owned by the caller. Because the buz containers run as `USER buz`
+(uid `BUZ_CONTAINER_UID`, default 10001), the bind-mounted data dirs
+(`data`, `pipelines`, `workspace`, `logs`) are chown'ed to that uid so the
+containers can write even though the host user is not root. `conf/` stays with
+the deploying user (the script writes `runner.toml` there).
+
 `./dev-deploy.sh runner` calls `buz-manager gen-runner-token` **inside the Manager
 container** to create the runner and capture its register_token, so no web UI
 Runners page is required. Provisioning a runner is restricted to platform

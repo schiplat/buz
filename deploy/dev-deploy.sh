@@ -6,6 +6,12 @@
 # runs them with docker compose. Designed for a Linux VM on macOS (arm64 or
 # x86_64 — the images are multi-arch, the platform is picked up automatically).
 #
+# Runs as a non-root user with sudo: every docker invocation is auto-prefixed
+# with `sudo` when the current user cannot reach the docker daemon directly
+# (set DOCKER to override). DEPLOY_DIR is created with sudo when needed, and
+# the bind-mounted data dirs are chown'ed to the in-container uid (10001) so
+# the buz-manager / buz-runner containers (which run as USER buz) can write.
+#
 # Quick start:
 #   ./dev-deploy.sh login               # docker login to ACR (interactive)
 #   ./dev-deploy.sh up                  # pull + start Manager (prints Runner bootstrap steps)
@@ -20,6 +26,10 @@
 #   IMAGE_TAG       latest
 #   MANAGER_PORT    8080              (host bind port -> container 8080)
 #   DEPLOY_DIR      /opt/buz
+#   DOCKER          docker invocation (auto-detected: `docker` when the user is
+#                   in the docker group, else `sudo docker`).
+#   BUZ_CONTAINER_UID  10001  in-container uid for the buz images; bind-mounted
+#                   data dirs are chown'ed to it so the containers can write.
 #   BUZ_JWT_SECRET  auto-generated on first `up` and persisted in $DEPLOY_DIR/.env
 #   RUNNER_NAME     linux-vm-runner   (must match the Runner name in Manager UI)
 #   RUNNER_TOKEN    optional; when unset, `runner` auto-creates the runner.
@@ -47,6 +57,8 @@ MANAGER_PORT="${MANAGER_PORT:-8080}"
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/buz}"
 RUNNER_NAME="${RUNNER_NAME:-linux-vm-runner}"
 RUNNER_TOKEN="${RUNNER_TOKEN:-}"
+DOCKER="${DOCKER:-}"
+BUZ_CONTAINER_UID="${BUZ_CONTAINER_UID:-10001}"
 
 MANAGER_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-manager:${IMAGE_TAG}"
 RUNNER_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-runner:${IMAGE_TAG}"
@@ -58,14 +70,53 @@ say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+# Detect a working `docker` invocation: plain docker when the current user can
+# reach the daemon, otherwise fall back to `sudo docker`. Override with DOCKER.
 require_docker() {
   command -v docker >/dev/null 2>&1 || die "docker is not installed on this VM"
-  docker compose version >/dev/null 2>&1 || die "docker compose v2 is required"
+  if [[ -z "${DOCKER}" ]]; then
+    if docker info >/dev/null 2>&1; then
+      DOCKER="docker"
+    elif sudo docker info >/dev/null 2>&1; then
+      DOCKER="sudo docker"
+    else
+      die "docker daemon is not reachable as 'docker' or 'sudo docker' — add your user to the docker group, or set DOCKER='sudo docker'"
+    fi
+    say "Using: ${DOCKER}"
+  fi
+  # shellcheck disable=SC2086
+  $DOCKER compose version >/dev/null 2>&1 || die "docker compose v2 is required"
 }
 
+# docker compose wrapper (word-splits on purpose so DOCKER='sudo docker' works).
+dc() {
+  # shellcheck disable=SC2086
+  $DOCKER compose -f "${COMPOSE_FILE}" "$@"
+}
+
+# mkdir that transparently falls back to sudo for root-owned parent dirs.
+sudomkdir() { mkdir -p "$@" 2>/dev/null || sudo mkdir -p "$@"; }
+
 ensure_dir() {
-  mkdir -p "${DEPLOY_DIR}/conf" "${DEPLOY_DIR}/data" "${DEPLOY_DIR}/pipelines" \
-           "${DEPLOY_DIR}/workspace" "${DEPLOY_DIR}/logs"
+  if [[ ! -d "${DEPLOY_DIR}" ]]; then
+    sudomkdir "${DEPLOY_DIR}"
+  fi
+  if [[ "$(id -u)" != "$(stat -c %u "${DEPLOY_DIR}")" ]]; then
+    sudo chown "$(id -u):$(id -g)" "${DEPLOY_DIR}"
+  fi
+  local dirs=(conf data pipelines workspace logs)
+  for d in "${dirs[@]}"; do
+    local dir="${DEPLOY_DIR}/${d}"
+    [[ -d "${dir}" ]] || sudomkdir "${dir}"
+    if [[ "${d}" == "conf" ]]; then
+      # conf stays with the deploying user so runner.toml can be (re)written.
+      [[ "$(id -u)" == "$(stat -c %u "${dir}")" ]] || sudo chown "$(id -u):$(id -g)" "${dir}"
+    else
+      # Containers run as USER buz (uid ${BUZ_CONTAINER_UID}) — data dirs must
+      # be writable by that uid even though the host user is not root.
+      [[ "$(stat -c %u "${dir}")" == "${BUZ_CONTAINER_UID}" ]] || sudo chown "${BUZ_CONTAINER_UID}:${BUZ_CONTAINER_UID}" "${dir}"
+    fi
+  done
 }
 
 # Persist JWT secret across runs so stored credentials stay decryptable.
@@ -176,7 +227,8 @@ ensure_runner_token() {
   local admin_token
   admin_token="$(admin_login)"
   local out
-  out="$(docker exec -e BUZ_ADMIN_TOKEN="${admin_token}" buz-manager \
+  # shellcheck disable=SC2086
+  out="$($DOCKER exec -e BUZ_ADMIN_TOKEN="${admin_token}" buz-manager \
     /app/buz/buz-manager \
     -c /app/buz/conf/manager.toml \
     gen-runner-token "${RUNNER_NAME}" 2>&1)" || die "failed to create runner in Manager: ${out}"
@@ -188,9 +240,11 @@ ensure_runner_token() {
 cmd_login() {
   require_docker
   if [[ -n "${ACR_USERNAME:-}" && -n "${ACR_PASSWORD:-}" ]]; then
-    echo "${ACR_PASSWORD}" | docker login "${ACR_REGISTRY}" -u "${ACR_USERNAME}" --password-stdin
+    # shellcheck disable=SC2086
+    echo "${ACR_PASSWORD}" | $DOCKER login "${ACR_REGISTRY}" -u "${ACR_USERNAME}" --password-stdin
   else
-    docker login "${ACR_REGISTRY}"
+    # shellcheck disable=SC2086
+    $DOCKER login "${ACR_REGISTRY}"
   fi
 }
 
@@ -201,11 +255,13 @@ cmd_up() {
   write_compose
 
   say "Pulling images (${IMAGE_TAG})…"
-  docker pull "${MANAGER_IMAGE}"
-  docker pull "${RUNNER_IMAGE}"
+  # shellcheck disable=SC2086
+  $DOCKER pull "${MANAGER_IMAGE}"
+  # shellcheck disable=SC2086
+  $DOCKER pull "${RUNNER_IMAGE}"
 
   say "Starting Manager on :${MANAGER_PORT}"
-  docker compose -f "${COMPOSE_FILE}" up -d manager
+  dc up -d manager
 
   say "Waiting for /health…"
   local ok=0
@@ -220,7 +276,7 @@ cmd_up() {
   if [[ ${ok} -eq 1 ]]; then
     say "Manager is healthy → http://127.0.0.1:${MANAGER_PORT}"
   else
-    say "Manager did not respond yet — check \`docker compose -f ${COMPOSE_FILE} logs manager\`"
+    say "Manager did not respond yet — check \`${DOCKER} compose -f ${COMPOSE_FILE} logs manager\`"
   fi
 
   echo
@@ -237,10 +293,11 @@ cmd_runner() {
   write_runner_conf
 
   say "Pulling ${RUNNER_IMAGE}…"
-  docker pull "${RUNNER_IMAGE}"
+  # shellcheck disable=SC2086
+  $DOCKER pull "${RUNNER_IMAGE}"
 
   say "Starting Runner (${RUNNER_NAME})"
-  docker compose -f "${COMPOSE_FILE}" up -d runner
+  dc up -d runner
   say "Runner started — check Manager UI → Runners for status 'online'"
 }
 
@@ -260,7 +317,7 @@ cmd_render() {
 cmd_status() {
   require_docker
   [[ -f "${COMPOSE_FILE}" ]] || die "not deployed yet (${COMPOSE_FILE} missing)"
-  docker compose -f "${COMPOSE_FILE}" ps
+  dc ps
   echo
   if command -v curl >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:${MANAGER_PORT}/health" >/dev/null 2>&1; then
     say "Manager health: OK (http://127.0.0.1:${MANAGER_PORT})"
@@ -269,8 +326,14 @@ cmd_status() {
   fi
 }
 
-cmd_logs() { docker compose -f "${COMPOSE_FILE}" logs -f --tail=100; }
-cmd_down() { docker compose -f "${COMPOSE_FILE}" down; }
+cmd_logs() {
+  require_docker
+  dc logs -f --tail=100
+}
+cmd_down() {
+  require_docker
+  dc down
+}
 
 usage() {
   sed -n '2,26p' "${BASH_SOURCE[0]}"

@@ -147,10 +147,21 @@ ADMIN_USERNAME='<admin>' ADMIN_PASSWORD='<password>' ./deploy/dev-deploy.sh runn
 ```
 
 All knobs are env-overridable: `ACR_REGISTRY`, `ACR_NAMESPACE`, `IMAGE_TAG`,
-`MANAGER_PORT`, `DEPLOY_DIR` (default `/opt/buz`), `RUNNER_NAME`, `RUNNER_TOKEN`.
+`MANAGER_PORT`, `DEPLOY_DIR` (default `/opt/buz`), `RUNNER_NAME`, `RUNNER_TOKEN`,
+`DOCKER`, `BUZ_CONTAINER_UID`.
 A `BUZ_JWT_SECRET` is generated on first `up` and persisted in `$DEPLOY_DIR/.env`
 so stored secrets stay decryptable across restarts. `render` writes the compose
 file + runner config without touching Docker (useful to preview before deploying).
+
+**Runs as a non-root user with sudo.** Every `docker` invocation is prefixed with
+`sudo` when the current user cannot reach the daemon directly (auto-detected;
+override with `DOCKER='sudo docker'`, or add your user to the docker group).
+`$DEPLOY_DIR` is created with sudo when needed and owned by the caller. The buz
+containers run as `USER buz` (uid `BUZ_CONTAINER_UID`, default 10001), so the
+bind-mounted data dirs (`data`, `pipelines`, `workspace`, `logs`) are chown'ed to
+that uid — this keeps them writable by the containers even though the host user
+is not root. `conf/` stays owned by the deploying user so `runner.toml` can be
+(re)written by the script.
 
 **Runner provisioning requires a platform admin.** `runner` auto-creates the
 runner by calling `buz-manager gen-runner-token` inside the Manager container.
@@ -167,6 +178,7 @@ yourself:
 ADMIN_TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"<admin>","password":"<password>"}' | jq -r .data.token)
+# Non-root user: use `sudo docker` (or whatever DOCKER resolves to)
 docker exec buz-manager /app/buz/buz-manager -c /app/buz/conf/manager.toml \
   gen-runner-token linux-vm-runner --labels linux-x64 --token "$ADMIN_TOKEN"
 # name: linux-vm-runner
