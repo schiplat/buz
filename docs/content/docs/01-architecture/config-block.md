@@ -185,6 +185,8 @@ steps:
       echo "==> env changed: ${BUZ_ENV_CHANGED:-0} (${BUZ_ENV_CHANGED_KEYS:-none})"
     timeout: 2m
 
+  # Dedicated Compose step (preferred over render on_change).
+  # --force-recreate so .env rotations apply; $BUZ_ENV_CHANGED is step-local.
   - name: Compose up
     uses: ssh
     host: $deploy_host
@@ -192,7 +194,7 @@ steps:
     run: |
       cd "$CONFIG_DIR"
       docker compose pull
-      docker compose up -d --remove-orphans
+      docker compose up -d --force-recreate --remove-orphans
       docker compose ps
     timeout: 15m
 

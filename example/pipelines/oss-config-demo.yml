@@ -1,44 +1,40 @@
-# ── OSS Config Delivery Demo ──────────────────────────────────────────
-# Verifies the nested config: deliver chain end-to-end:
+# ── OSS Config Block Demo (deliver + render-only) ─────────────────────
+# Verifies nested `config:` end-to-end on a shell/local runner:
 #
-#   1. YAML parser accepts nested `config: { source, key_path, dest }`.
-#   2. Manager stores config_source / config_key_path / config_dest on tasks.
-#   3. At job dispatch the Manager resolves the referenced secret
-#      (kind = Aliyun OSS auth), signs a 1-hour GET URL for
-#      `key_path + /configs.tar.gz`, and injects it as $BUZ_CONFIG_URL
-#      (redacted in logs).
-#   4. The Runner **downloads and unpacks the bundle itself** before the run
-#      block into `config.dest` → $BUZ_CONFIG_DIR. The run block never needs
-#      to curl — it just reads the unpacked files. No AK/SK on the target.
+#   1. YAML: nested `config: { source, key_path, dest }` and render-only.
+#   2. Manager stores config_source / config_key_path / config_dest /
+#      config_render on tasks (no flat config_path / env_render).
+#   3. Deliver step: Manager signs a 1-hour GET for
+#      `key_path + /configs.tar.gz` → Runner unpacks to dest ($BUZ_CONFIG_DIR).
+#   4. Render-only step: templates already at dest → write outputs
+#      (no second OSS download). Prefer a separate Compose/app step after
+#      this in real deploy pipelines — do not use on_change here.
 #
-# ── IMPORTANT: this demo requires a REAL OSS object ──────────────────────
-# Because the Runner downloads the bundle during the prepare stage, a failed
-# download (HTTP 404 / 403) FAILS THE JOB immediately — the run block never
-# executes. Fake AK/SK will NOT pass: the signed URL must resolve to an object
-# that actually exists in the bucket.
+# Bundle layout expected under the OSS object (example):
+#   env.example          → rendered to .env
+#   (optional) more *.tpl files → add more `render:` entries
 #
-# To run this end-to-end you must:
-#   1. Upload a tar.gz to your OSS bucket at:
-#        config_tpl/demo/<tag>/configs.tar.gz     (e.g. .../v1.3.2/configs.tar.gz)
-#   2. Create the secret with REAL credentials (read-only RAM user):
-#        Buz UI → Secrets & Variables → Secrets → Add Secret
-#          Name  : OSS_DEMO
-#          Team  : default
-#          Kind  : Aliyun OSS auth
-#          Value : {"provider":"aliyun_oss","endpoint":"oss-cn-hongkong.aliyuncs.com",
-#                   "bucket":"<your-bucket>","region":"cn-hongkong",
-#                   "access_key_id":"LTAI...","access_key_secret":"..."}
-#        (secret names are UPPER_SNAKE_CASE — auto-uppercased in the UI form)
+# ── IMPORTANT: requires a REAL OSS object ───────────────────────────────
+# A failed download (HTTP 404 / 403) FAILS THE JOB before the run block.
+# Fake AK/SK will NOT pass.
 #
-# Failure modes (all fast-fail before the run block):
-#   - secret missing / wrong team      → `config_source 'OSS_DEMO' not found ...`
-#   - secret kind is not OSS auth      → `set Kind to Aliyun OSS auth`
-#   - secret JSON incomplete            → `requires JSON with endpoint/bucket/...`
-#   - object missing in bucket          → `config bundle download returned HTTP 404`
-#   - credentials invalid / no permission → `config bundle download returned HTTP 403`
+# To run end-to-end:
+#   1. Upload configs.tar.gz to:
+#        config_tpl/demo/<tag>/configs.tar.gz
+#      Include at least `env.example` if you want the Render step to succeed.
+#   2. Create secret (Kind = Aliyun OSS auth), name OSS_DEMO, same team:
+#        {"provider":"aliyun_oss","endpoint":"oss-cn-hongkong.aliyuncs.com",
+#         "bucket":"<bucket>","region":"cn-hongkong",
+#         "access_key_id":"LTAI...","access_key_secret":"..."}
+#
+# Failure modes (prepare-stage, before run):
+#   - secret missing / wrong team      → config_source 'OSS_DEMO' not found
+#   - wrong kind                       → set Kind to Aliyun OSS auth
+#   - object missing                   → config bundle download HTTP 404
+#   - render template missing at dest  → config_render: template '…' not found
 
 name: OSS Config Delivery Demo
-description: "Verifies config_source → signed OSS URL → runner-side unpack into $BUZ_CONFIG_DIR."
+description: "Nested config: OSS deliver → render-only into $BUZ_CONFIG_DIR."
 
 team: default
 
@@ -55,11 +51,8 @@ runner:
   timeout: 5m
 
 steps:
-  # ── 1. Fetch config bundle from OSS (shell engine, local runner) ──
-  # The Runner downloads + unpacks config_tpl/demo/$tag/configs.tar.gz during
-  # the prepare stage (before the run block). $BUZ_CONFIG_DIR points at the
-  # unpacked bundle; config.render output (if any) is written there too.
-  - name: Fetch config bundle
+  # ── 1. OSS deliver (unpack only) ───────────────────────────────────
+  - name: Deliver config
     uses: shell
     config:
       source: OSS_DEMO
@@ -68,16 +61,35 @@ steps:
     run: |
       echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
       if [ ! -d "${BUZ_CONFIG_DIR:-}" ]; then
-        echo "!! BUZ_CONFIG_DIR is empty — config deliver was not resolved" >&2
+        echo "!! BUZ_CONFIG_DIR is empty — OSS deliver did not run" >&2
         exit 1
       fi
       echo "==> bundle contents:"
       ls -la "$BUZ_CONFIG_DIR"
-      echo "==> config deliver verified: signed URL dispatched + bundle unpacked"
+      echo "==> deliver OK"
 
-  # ── 2. Echo sanity (no config) ──
+  # ── 2. Render-only (no OSS; templates already under dest) ──────────
+  # List form shows multi-file shape; add more entries as the bundle grows.
+  # $BUZ_ENV_CHANGED(_KEYS) are set on THIS step only — a later Compose step
+  # should own `docker compose up` (preferred over render on_change).
+  - name: Render env
+    uses: shell
+    config:
+      dest: /tmp/buz-config-demo
+      render:
+        - template: env.example
+          output: .env
+          mode: "0600"
+          on_missing: fail
+    run: |
+      echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
+      ls -l "$BUZ_CONFIG_DIR/.env"
+      echo "==> env changed: ${BUZ_ENV_CHANGED:-0} (${BUZ_ENV_CHANGED_KEYS:-none})"
+      echo "==> render-only OK"
+
+  # ── 3. Sanity (no config prepare) ──────────────────────────────────
   - name: Echo sanity
     uses: shell
     run: |
-      echo "==> config_source absent on this step: ${BUZ_CONFIG_URL:-unset}"
+      echo "==> BUZ_CONFIG_URL absent on this step: ${BUZ_CONFIG_URL:-unset}"
       echo "==> BUZ_CONFIG_DIR absent on this step: ${BUZ_CONFIG_DIR:-unset}"
