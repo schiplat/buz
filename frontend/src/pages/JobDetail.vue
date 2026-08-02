@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, XCircle, Trash2, CheckCircle2, Loader2, MinusCircle, AlertTriangle, Info, Lock } from '@lucide/vue'
+import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, XCircle, Trash2, CheckCircle2, Loader2, MinusCircle, AlertTriangle, Info, Lock, CircleHelp, Clock } from '@lucide/vue'
 import { jobsApi, type Job, type LogChunk } from '@/api/jobs'
 import { parseUtc, formatLogClock, formatLocalDateTime } from '@/utils/time'
 import { formatLogChunkForTerminal } from '@/utils/logFormat'
@@ -43,9 +43,19 @@ const targetStep = ref<number | null>(null)
 
 /** xterm container grows with log lines (capped so extreme jobs still scroll inside). */
 const TERM_FONT_SIZE = 12
-const TERM_LINE_HEIGHT = 18
 const TERM_MIN_ROWS = 3
 const TERM_MAX_ROWS = 40
+/** While a job is still running keep the window compact; only grow past this
+ *  once the run is finished and the full output is final. */
+const TERM_STREAM_ROWS = 12
+/**
+ * Fallback cell height when the terminal hasn't measured fonts yet.
+ * Must be ≥ real xterm cell height for fontSize 12 (often 19–22px on macOS
+ * with JetBrains Mono). Using 18 previously made FitAddon's
+ * `Math.floor(height / cellHeight)` return N-1 rows — 3 lines of content
+ * only showed 2, forcing a scrollbar.
+ */
+const TERM_FALLBACK_CELL_HEIGHT = Math.ceil(TERM_FONT_SIZE * 1.75)
 
 function countStepLogLines(stepOrder: number): number {
   const chunks = stepLogs.value.get(stepOrder) || []
@@ -60,30 +70,197 @@ function countStepLogLines(stepOrder: number): number {
   return lines
 }
 
-function fitTerminalHeight(stepOrder: number) {
+function isJobLive(): boolean {
+  const s = job.value?.status
+  return s === 'running' || s === 'pending'
+}
+
+const showConcurrencyHelp = ref(false)
+
+/**
+ * Concurrency panel — always shown when a job is loaded.
+ * Without a group: "not configured" + defaults / how to enable.
+ * With a group: frozen snapshot policy from trigger time.
+ */
+const concurrencyInfo = computed(() => {
+  const snap = job.value?.snapshot
+  if (!job.value) return null
+  const group = (snap?.concurrency_group || '').trim()
+  if (!group) {
+    return {
+      configured: false as const,
+      group: null as string | null,
+      mode: null as string | null,
+      maxQueue: null as number | null,
+      queueTimeoutSec: null as number | null,
+    }
+  }
+  const mode = (snap?.concurrency_mode || '').trim() || null
+  return {
+    configured: true as const,
+    group,
+    mode,
+    maxQueue: snap?.concurrency_max_queue ?? null,
+    queueTimeoutSec: snap?.concurrency_queue_timeout_seconds ?? null,
+  }
+})
+
+function concurrencyModeLabel(mode: string | null): string {
+  if (!mode) return 'unknown (not frozen in snapshot)'
+  switch (mode) {
+    case 'queue': return 'queue'
+    case 'discard-old': return 'discard-old'
+    case 'discard-new': return 'discard-new'
+    default: return mode
+  }
+}
+
+function concurrencyModeHint(configured: boolean, mode: string | null): string {
+  if (!configured) {
+    return 'No concurrency group on this run — triggers are not serialized. Multiple jobs for this pipeline may run in parallel.'
+  }
+  switch (mode) {
+    case 'queue':
+      return 'FIFO: this job waits until earlier pending/running jobs in the group finish. New triggers may still enqueue up to max-queue.'
+    case 'discard-old':
+      return 'Keep the newest waiting job; older queued jobs are cancelled. A job that is already running is never cancelled.'
+    case 'discard-new':
+      return 'Reject new triggers with HTTP 409 while any job in the group is pending, running, or queued.'
+    default:
+      return 'Concurrency group was set; mode was not recorded on this older snapshot. Check the pipeline edit form for the current policy.'
+  }
+}
+
+function formatQueueTimeout(sec: number | null): string {
+  if (sec == null || sec <= 0) return '—'
+  if (sec % 3600 === 0) return `${sec / 3600}h`
+  if (sec % 60 === 0) return `${sec / 60}m`
+  return `${sec}s`
+}
+
+/** Actual CSS cell height from xterm's renderer, or a safe fallback. */
+function getCellHeight(term: Terminal): number {
+  const h = (term as any)._core?._renderService?.dimensions?.css?.cell?.height
+  return typeof h === 'number' && h > 0 ? h : TERM_FALLBACK_CELL_HEIGHT
+}
+
+/**
+ * How many terminal rows the step actually needs.
+ *
+ * Prefer `baseY + cursorY + 1` (lines written, including soft-wrap) over
+ * `buffer.length`, which counts empty viewport filler and oversizes the
+ * window after a live stream has grown the terminal.
+ */
+function neededTerminalRows(stepOrder: number, term?: Terminal): number {
+  const logical = countStepLogLines(stepOrder)
+  if (!term) return logical
+  try {
+    const buf = term.buffer.active
+    const used = buf.baseY + buf.cursorY + 1
+    return Math.max(logical, used)
+  } catch {
+    return logical
+  }
+}
+
+/**
+ * Size the terminal to its content. While the job is live the height only
+ * grows (never shrinks) up to `TERM_STREAM_ROWS` — re-fitting on every streamed
+ * chunk would make the window jump around — and the view follows the newest
+ * lines. With `force` (job finished) the height snaps to the final line count.
+ *
+ * Height is derived from the *measured* xterm cell height (not a hard-coded
+ * 18px). FitAddon uses `Math.floor(parentHeight / cellHeight)`, so we add a
+ * few pixels of slack; otherwise sub-pixel / taller-than-assumed cells clip
+ * the last line and force an internal scrollbar.
+ */
+function fitTerminalHeight(stepOrder: number, opts?: { force?: boolean }) {
   const el = document.getElementById('terminal-el-' + stepOrder) as HTMLDivElement | null
   if (!el) return
-  const lines = countStepLogLines(stepOrder)
-  const rows = lines === 0
-    ? 4 // room for empty-state message
-    : Math.min(TERM_MAX_ROWS, Math.max(TERM_MIN_ROWS, lines))
-  // Height = text rows only; equal inset comes from the wrapper's py-* (xterm ignores parent padding)
-  el.style.padding = '0'
-  el.style.height = `${rows * TERM_LINE_HEIGHT}px`
   const st = stepTerminals.value.find(t => t.stepOrder === stepOrder)
+  const scrollToBottom = () => {
+    if (st) {
+      requestAnimationFrame(() => {
+        try { st.term.scrollToBottom() } catch { /* disposed */ }
+      })
+    }
+  }
+
+  const needed = neededTerminalRows(stepOrder, st?.term)
+  const cap = isJobLive() ? TERM_STREAM_ROWS : TERM_MAX_ROWS
+  const rows = needed === 0
+    ? 4 // room for empty-state message
+    : Math.min(cap, Math.max(TERM_MIN_ROWS, needed))
+
+  const cellH = st ? getCellHeight(st.term) : TERM_FALLBACK_CELL_HEIGHT
+  // +2px so Math.floor(height / cellH) never underflows by 1 due to subpixels
+  const newHeight = Math.ceil(rows * cellH) + 2
+  const currentHeight = parseFloat(el.style.height) || 0
+  if (!opts?.force && newHeight <= currentHeight) {
+    // Height unchanged — just keep following the newest output.
+    scrollToBottom()
+    return
+  }
+
+  el.style.padding = '0'
+  el.style.height = `${newHeight}px`
   if (st) {
     requestAnimationFrame(() => {
-      try { st.fitAddon.fit() } catch { /* disposed */ }
+      try {
+        st.fitAddon.fit()
+        // If FitAddon still gave fewer rows than needed (padding / rounding),
+        // grow once more using the now-fresh cell metrics.
+        if (st.term.rows < rows && rows <= cap) {
+          const cellH2 = getCellHeight(st.term)
+          el.style.height = `${Math.ceil(rows * cellH2) + 4}px`
+          st.fitAddon.fit()
+        }
+        st.term.scrollToBottom()
+      } catch { /* disposed */ }
     })
   }
 }
 
+/** Smallest failed step order, or null when nothing has failed yet. */
+function firstFailedStep(): number | null {
+  const failed = (job.value?.step_statuses || [])
+    .filter((s: any) => s.status === 'failed')
+    .map((s: any) => Number(s.step_order))
+    .sort((a: number, b: number) => a - b)
+  return failed.length > 0 ? failed[0] : null
+}
+
+/**
+ * Where a global (step_order=-1) chunk — e.g. a prepare-stage failure like a
+ * config bundle 404 — should be surfaced. Prefers the first failed step so the
+ * real error is visible next to it; falls back to the smallest known step, or 0.
+ */
+function resolveGlobalChunkStep(): number {
+  const failed = firstFailedStep()
+  if (failed != null) return failed
+  const smallest = Math.min(...logs.value.filter(c => c.step_order >= 0).map(c => c.step_order), 0)
+  return Number.isFinite(smallest) ? smallest : 0
+}
+
 const stepLogs = computed(() => {
   const groups: Map<number, LogChunk[]> = new Map()
+  const globalChunks: LogChunk[] = []
   for (const chunk of logs.value) {
-    const so = chunk.step_order
-    if (!groups.has(so)) groups.set(so, [])
-    groups.get(so)!.push(chunk)
+    if (chunk.step_order === -1) {
+      globalChunks.push(chunk)
+      continue
+    }
+    if (!groups.has(chunk.step_order)) groups.set(chunk.step_order, [])
+    groups.get(chunk.step_order)!.push(chunk)
+  }
+  // Runner-side prepare errors (e.g. config bundle download failed) are uploaded
+  // with step_order=-1 before any step output exists. Attach them to the step
+  // that failed — otherwise the real error stays invisible behind a generic
+  // "No output recorded" placeholder.
+  if (globalChunks.length > 0) {
+    const target = resolveGlobalChunkStep()
+    if (!groups.has(target)) groups.set(target, [])
+    groups.get(target)!.push(...globalChunks)
   }
   return groups
 })
@@ -206,18 +383,37 @@ function startRefreshTimer() {
       if (l.length > oldLen) {
         logs.value = l
         const activeIdx = findActiveStep(job.value?.step_statuses)
-        const st = stepTerminals.value.find(t => t.stepOrder === activeIdx)
-        if (st && l.length > oldLen) {
+        // Match WS path: global (-1) prepare errors surface on the failed /
+        // active step so poll fallback still shows the real ERROR.
+        const writeTargets = new Set<number>()
+        if (activeIdx != null) writeTargets.add(activeIdx)
+        for (const so of expandedSteps.value) writeTargets.add(so)
+        writeTargets.add(resolveGlobalChunkStep())
+
+        const globalStep = resolveGlobalChunkStep()
+        let pending = 0
+        const finishFits = () => {
+          for (const so of writeTargets) fitTerminalHeight(so)
+        }
+        for (const displayStep of writeTargets) {
+          const st = stepTerminals.value.find(t => t.stepOrder === displayStep)
+          if (!st) continue
           for (let i = oldLen; i < l.length; i++) {
             const c = l[i]
-            if (c.step_order === activeIdx && !st.seenContent.has(c.content)) {
-              st.seenContent.add(c.content)
-              const ts = formatLogClock(c.created_at, nowTimeStr())
-              st.term.write(formatLogChunkForTerminal(ts, c.content))
-            }
+            const belongs =
+              c.step_order === displayStep ||
+              (c.step_order === -1 && displayStep === globalStep)
+            if (!belongs || st.seenContent.has(c.content)) continue
+            st.seenContent.add(c.content)
+            const ts = formatLogClock(c.created_at, nowTimeStr())
+            pending += 1
+            st.term.write(formatLogChunkForTerminal(ts, c.content), () => {
+              pending -= 1
+              if (pending === 0) finishFits()
+            })
           }
-          fitTerminalHeight(activeIdx!)
         }
+        if (pending === 0) finishFits()
       }
     } catch {
       // Silent for network blips — but a logs 403 on a debug job for a
@@ -266,42 +462,30 @@ function initSingleTerminal(stepOrder: number) {
   fitAddon.fit()
 
   const chunks = stepLogs.value.get(stepOrder) || []
-  const hasEcho = chunks.some(c => c.content.startsWith('==> RUN'))
-
   const seen = new Set<string>()
+  stepTerminals.value.push({ stepOrder, term, fitAddon, seenContent: seen })
 
-  // Fallback: synthesize echo header from snapshot if the DB echo chunk is missing
-  if (!hasEcho && job.value?.snapshot) {
-    const task = job.value.snapshot.tasks.find(t => Number(t.step_order) === stepOrder)
-    if (task) {
-      const parts = [`==> RUN [${task.exec_type}]`]
-      parts.push('  note  GIT_TERMINAL_PROMPT=0 (noninteractive)')
-      if (task.work_dir) parts.push(`  cwd   ${task.work_dir}`)
-      const envVars = job.value.snapshot.env || []
-      if (envVars.length > 0) {
-        const items = envVars.map(e => e.is_secret ? `${e.name}=***` : `${e.name}`)
-        parts.push(`  env   ${items.join('  ')}`)
-      }
-      const cmdLines = String(task.command_template || '').trimEnd().split('\n')
-      if (cmdLines.length > 0) {
-        parts.push(`  cmd   ${cmdLines[0]}`)
-        for (let i = 1; i < cmdLines.length; i++) {
-          parts.push(`        ${cmdLines[i]}`)
-        }
-      }
-      const fallbackEcho = parts.join('\n') + '\n'
-      term.write(formatLogChunkForTerminal('--:--:--', fallbackEcho))
-      seen.add(fallbackEcho)
-    }
+  const force = !isJobLive()
+  const finishFit = () => fitTerminalHeight(stepOrder, { force })
+
+  if (chunks.length === 0) {
+    finishFit()
+    return
   }
 
+  // Wait for xterm to finish parsing every chunk before measuring buffer
+  // length — otherwise neededTerminalRows() under-counts and the viewport
+  // stays one row short.
+  let remaining = chunks.length
   for (const chunk of chunks) {
     const ts = formatLogClock(chunk.created_at, nowTimeStr())
-    term.write(formatLogChunkForTerminal(ts, chunk.content))
+    const text = formatLogChunkForTerminal(ts, chunk.content)
     seen.add(chunk.content)
+    term.write(text, () => {
+      remaining -= 1
+      if (remaining === 0) finishFit()
+    })
   }
-  stepTerminals.value.push({ stepOrder, term, fitAddon, seenContent: seen })
-  fitTerminalHeight(stepOrder)
 }
 
 function handleWsMessage(raw: string) {
@@ -324,7 +508,14 @@ function handleWsMessage(raw: string) {
           clearRefreshTimer()
           // Prefer DB timestamps (created_at) over live WS chunks that lacked them
           void jobsApi.logs(jobId).then((l) => {
-            if (alive) logs.value = l
+            if (alive) {
+              logs.value = l
+              // The output is final now — snap every expanded terminal to its
+              // real height (live mode caps it to keep the window stable).
+              nextTick(() => {
+                for (const so of expandedSteps.value) fitTerminalHeight(so, { force: true })
+              })
+            }
           }).catch(() => { /* ignore */ })
         }
         // Auto-expand / auto-collapse steps
@@ -363,12 +554,14 @@ function handleWsMessage(raw: string) {
       return
     }
     logs.value.push(chunk)
-    const st = stepTerminals.value.find(t => t.stepOrder === chunk.step_order)
+    const displayStep = chunk.step_order === -1 ? resolveGlobalChunkStep() : chunk.step_order
+    const st = stepTerminals.value.find(t => t.stepOrder === displayStep)
     if (st && !st.seenContent.has(chunk.content)) {
       st.seenContent.add(chunk.content)
       const ts = formatLogClock(chunk.created_at, nowTimeStr())
-      st.term.write(formatLogChunkForTerminal(ts, chunk.content))
-      fitTerminalHeight(chunk.step_order)
+      st.term.write(formatLogChunkForTerminal(ts, chunk.content), () => {
+        fitTerminalHeight(displayStep)
+      })
     }
   } catch {
     // Old plaintext fallback
@@ -376,8 +569,9 @@ function handleWsMessage(raw: string) {
     const running = stepTerminals.value.find(t => getStepStatus(t.stepOrder) === 'running')
     if (running && !running.seenContent.has(raw)) {
       running.seenContent.add(raw)
-      running.term.write(formatLogChunkForTerminal(nowTimeStr(), raw))
-      fitTerminalHeight(running.stepOrder)
+      running.term.write(formatLogChunkForTerminal(nowTimeStr(), raw), () => {
+        fitTerminalHeight(running.stepOrder)
+      })
     }
   }
 }
@@ -522,6 +716,23 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
         </span>
       </div>
 
+      <!-- Queued: waiting for an earlier job in the concurrency group -->
+      <div
+        v-if="job.status === 'queued'"
+        class="mb-4 flex items-start gap-2 rounded-xl border border-purple-500/30 bg-purple-500/10 px-4 py-3 text-sm"
+      >
+        <Clock class="mt-0.5 h-4 w-4 shrink-0 text-purple-600" />
+        <span class="text-purple-900 dark:text-purple-200">
+          <span class="font-semibold">Queued</span> — waiting for an earlier job of this pipeline
+          to finish. Only one job in the concurrency group runs at a time; this run starts when
+          the active job completes
+          <template v-if="concurrencyInfo?.configured">
+            (group <code class="font-mono text-xs">{{ concurrencyInfo.group }}</code><template v-if="concurrencyInfo.mode">, mode <code class="font-mono text-xs">{{ concurrencyInfo.mode }}</code></template>).
+          </template>
+          <template v-else>.</template>
+        </span>
+      </div>
+
       <!-- Job Info -->
       <div class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-sm p-6">
         <h3 class="text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground/70 mb-5">Job Info</h3>
@@ -557,6 +768,88 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
           <div>
             <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Created</div>
             <div class="text-xs text-muted-foreground">{{ formatLocalDateTime(job.created_at) }}</div>
+          </div>
+        </div>
+
+        <!-- Concurrency: always show — configured policy or "not set" + knobs -->
+        <div v-if="concurrencyInfo" class="mt-5 pt-5 border-t border-border/30">
+          <div class="flex items-center gap-2 mb-3">
+            <h4 class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 font-medium">Concurrency</h4>
+            <button
+              type="button"
+              class="inline-flex items-center text-muted-foreground/50 hover:text-foreground transition-colors"
+              :aria-expanded="showConcurrencyHelp"
+              aria-label="Concurrency policy help"
+              @click="showConcurrencyHelp = !showConcurrencyHelp"
+            >
+              <CircleHelp class="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          <template v-if="concurrencyInfo.configured">
+            <div class="flex flex-wrap items-center gap-2 text-sm">
+              <span class="text-xs text-muted-foreground">Group</span>
+              <code class="text-[11px] font-mono bg-muted rounded-md px-2 py-0.5 text-foreground/80">{{ concurrencyInfo.group }}</code>
+              <span class="text-xs text-muted-foreground ml-1">Mode</span>
+              <span
+                class="text-[11px] font-semibold rounded-md px-2 py-0.5 border"
+                :class="{
+                  'bg-amber-500/10 text-amber-700 border-amber-500/20': concurrencyInfo.mode === 'queue',
+                  'bg-blue-500/10 text-blue-700 border-blue-500/20': concurrencyInfo.mode === 'discard-new',
+                  'bg-emerald-500/10 text-emerald-700 border-emerald-500/20': concurrencyInfo.mode === 'discard-old',
+                  'bg-muted text-muted-foreground border-border/50': !concurrencyInfo.mode,
+                }"
+              >{{ concurrencyModeLabel(concurrencyInfo.mode) }}</span>
+              <template v-if="concurrencyInfo.mode === 'queue'">
+                <span class="text-xs text-muted-foreground ml-1">Max queue</span>
+                <span class="text-[11px] font-mono tabular-nums text-foreground/80">{{ concurrencyInfo.maxQueue ?? '—' }}</span>
+                <span class="text-xs text-muted-foreground ml-1">Queue timeout</span>
+                <span class="text-[11px] font-mono tabular-nums text-foreground/80">{{ formatQueueTimeout(concurrencyInfo.queueTimeoutSec) }}</span>
+              </template>
+            </div>
+          </template>
+          <template v-else>
+            <div class="flex flex-wrap items-center gap-2 text-sm">
+              <span class="text-xs text-muted-foreground">Status</span>
+              <span class="text-[11px] font-semibold rounded-md px-2 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
+              <span class="text-xs text-muted-foreground ml-1">Default mode if enabled</span>
+              <span class="text-[11px] font-mono rounded-md px-2 py-0.5 border bg-emerald-500/10 text-emerald-700 border-emerald-500/20">discard-old</span>
+              <span class="text-xs text-muted-foreground ml-1">Max queue</span>
+              <span class="text-[11px] font-mono tabular-nums text-foreground/80">3</span>
+              <span class="text-xs text-muted-foreground ml-1">Queue timeout</span>
+              <span class="text-[11px] font-mono tabular-nums text-foreground/80">30m</span>
+            </div>
+          </template>
+
+          <p class="mt-2 text-xs text-muted-foreground leading-relaxed">
+            {{ concurrencyModeHint(concurrencyInfo.configured, concurrencyInfo.mode) }}
+          </p>
+          <div
+            v-if="showConcurrencyHelp"
+            class="mt-3 rounded-lg border border-border/50 bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground leading-relaxed space-y-2"
+          >
+            <p class="font-medium text-foreground/80">
+              {{ concurrencyInfo.configured ? 'What you can adjust (future triggers only)' : 'How to enable concurrency' }}
+            </p>
+            <ul class="list-disc pl-4 space-y-1">
+              <li><code class="font-mono text-[10px]">concurrency.group</code> — required to enable; shared lock name for this pipeline</li>
+              <li><code class="font-mono text-[10px]">mode</code> — <code class="font-mono text-[10px]">discard-old</code> (YAML default), <code class="font-mono text-[10px]">queue</code>, or <code class="font-mono text-[10px]">discard-new</code></li>
+              <li><code class="font-mono text-[10px]">max-queue</code> (1–100, default 3) — only when mode is <code class="font-mono text-[10px]">queue</code></li>
+              <li><code class="font-mono text-[10px]">queue-timeout</code> (default 30m) — auto-cancel queued jobs after this; only for <code class="font-mono text-[10px]">queue</code></li>
+            </ul>
+            <p>
+              Set these on the pipeline
+              <router-link
+                :to="'/pipelines/' + job.pipeline_id + '/definition'"
+                class="text-primary underline underline-offset-2 hover:text-primary/80"
+              >Definition → Edit (Concurrency)</router-link>
+              <template v-if="concurrencyInfo.configured">
+                . This job keeps the policy frozen above; edits apply to new runs only.
+              </template>
+              <template v-else>
+                , or in YAML under <code class="font-mono text-[10px]">concurrency:</code>. Applies to new runs only.
+              </template>
+            </p>
           </div>
         </div>
       </div>

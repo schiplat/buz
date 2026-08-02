@@ -149,35 +149,30 @@ async fn upsert_from_yaml(
     let steps: Vec<StepDef> = parsed
         .steps
         .iter()
-        .map(|s| StepDef {
-            name: s.name.clone().unwrap_or_else(|| "unnamed".into()),
-            run: s.run.clone().unwrap_or_default(),
-            uses: s.uses.clone(),
-            image: s.image.clone(),
-            volumes: s.volumes.clone(),
-            host: s.host.clone(),
-            host_labels: s.host_labels.clone(),
-            dir: s.dir.clone(),
-            timeout: s.timeout.clone(),
-            retry: s.retry,
-            continue_on_error: s.continue_on_error,
-            secrets: s.secrets.clone(),
-            privileged: s.privileged,
-            registry_secret: s.registry_secret.clone(),
-            config_source: s.config_source.clone(),
-            config_path: s.config_path.clone(),
-            config_dir: s.config_dir.clone(),
-            env_render: s
-                .env_render
-                .clone()
-                .map(|er| shared::protocol::EnvRenderDef {
-                    template: er.template,
-                    output: er.output,
-                    mode: er.mode,
-                    on_missing: er.on_missing,
-                    on_change: er.on_change,
-                    services: er.services,
-                }),
+        .map(|s| {
+            let (config_source, config_key_path, config_dest, config_render) =
+                shared::pipeline_yaml::flatten_config(s.config.as_ref());
+            StepDef {
+                name: s.name.clone().unwrap_or_else(|| "unnamed".into()),
+                run: s.run.clone().unwrap_or_default(),
+                uses: s.uses.clone(),
+                image: s.image.clone(),
+                volumes: s.volumes.clone(),
+                host: s.host.clone(),
+                host_labels: s.host_labels.clone(),
+                dir: s.dir.clone(),
+                timeout: s.timeout.clone(),
+                retry: s.retry,
+                continue_on_error: s.continue_on_error,
+                secrets: s.secrets.clone(),
+                privileged: s.privileged,
+                registry_secret: s.registry_secret.clone(),
+                config: s.config.clone(),
+                config_source,
+                config_key_path,
+                config_dest,
+                config_render,
+            }
         })
         .collect();
 

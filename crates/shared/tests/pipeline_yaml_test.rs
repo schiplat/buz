@@ -533,3 +533,262 @@ fn masking_input_demo_example_file() {
     let version = inputs.iter().find(|i| i.name == "version").unwrap();
     assert!(version.masking.is_none() || version.masking == Some(false));
 }
+
+// ── Config block DSL v2 (Phase 2b / D1) ───────────────────────────────
+
+#[test]
+fn config_oss_deliver_accepted() {
+    let yaml = r#"
+name: oss-deliver
+steps:
+  - name: deliver
+    uses: shell
+    config:
+      source: OSS_DEMO
+      key_path: config_tpl/demo/v1
+      dest: /tmp/cfg
+    run: ls "$BUZ_CONFIG_DIR"
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    let step = &r.parsed.unwrap().steps[0];
+    assert_eq!(step.config_source.as_deref(), Some("OSS_DEMO"));
+    assert_eq!(step.config_key_path.as_deref(), Some("config_tpl/demo/v1"));
+    assert_eq!(step.config_dest.as_deref(), Some("/tmp/cfg"));
+    assert!(step.config_render.is_none());
+    assert!(step.config.is_some());
+}
+
+#[test]
+fn config_render_only_accepted() {
+    let yaml = r#"
+name: render-only
+steps:
+  - name: render
+    uses: ssh
+    host: host-b
+    config:
+      dest: /opt/manager
+      render:
+        template: env.example
+        output: .env
+        mode: "0600"
+        on_missing: fail
+    run: cat "$BUZ_CONFIG_DIR/.env"
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    let step = &r.parsed.unwrap().steps[0];
+    assert!(step.config_source.is_none());
+    assert_eq!(step.config_dest.as_deref(), Some("/opt/manager"));
+    let render = step.config_render.as_ref().unwrap();
+    assert_eq!(render.len(), 1);
+    assert_eq!(render[0].template.as_deref(), Some("env.example"));
+    assert_eq!(render[0].output.as_deref(), Some(".env"));
+    assert_eq!(render[0].mode.as_deref(), Some("0600"));
+    assert_eq!(render[0].on_missing.as_deref(), Some("fail"));
+}
+
+#[test]
+fn config_render_list_normalizes_to_vec() {
+    let yaml = r#"
+name: multi-render
+steps:
+  - name: render
+    uses: shell
+    config:
+      dest: /opt/manager
+      render:
+        - template: env.example
+          output: .env
+          mode: "0600"
+          on_missing: fail
+        - template: nginx.conf.tpl
+          output: conf/nginx.conf
+          mode: "0644"
+          on_missing: warn
+    run: echo ok
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    let parsed = r.parsed.unwrap();
+    let render = parsed.steps[0].config_render.as_ref().unwrap();
+    assert_eq!(render.len(), 2);
+    assert_eq!(render[1].template.as_deref(), Some("nginx.conf.tpl"));
+    assert_eq!(render[1].on_missing.as_deref(), Some("warn"));
+}
+
+#[test]
+fn config_sugar_deliver_plus_render_allowed() {
+    let yaml = r#"
+name: sugar
+steps:
+  - name: all-in-one
+    uses: shell
+    config:
+      source: OSS_CONFIG
+      key_path: config_tpl/x/v1
+      dest: /opt/manager
+      render:
+        - template: env.example
+          output: .env
+          mode: "0600"
+          on_missing: fail
+    run: echo ok
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    let step = &r.parsed.unwrap().steps[0];
+    assert_eq!(step.config_source.as_deref(), Some("OSS_CONFIG"));
+    assert_eq!(step.config_render.as_ref().unwrap().len(), 1);
+}
+
+#[test]
+fn config_rejects_legacy_flat_fields() {
+    let yaml = r#"
+name: legacy
+steps:
+  - name: old
+    uses: shell
+    config_source: OSS_DEMO
+    config_path: config_tpl/demo/v1
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.message.contains("config:")),
+        "Errors: {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn config_rejects_source_without_key_path() {
+    let yaml = r#"
+name: bad-deliver
+steps:
+  - name: x
+    uses: shell
+    config:
+      source: OSS_DEMO
+      dest: /tmp/x
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.message.contains("source") && e.message.contains("key_path")),
+        "Errors: {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn config_rejects_render_without_dest() {
+    let yaml = r#"
+name: bad-render
+steps:
+  - name: x
+    uses: shell
+    config:
+      render:
+        template: env.example
+        output: .env
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.message.contains("dest")),
+        "Errors: {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn config_rejects_dest_alone() {
+    let yaml = r#"
+name: dest-only
+steps:
+  - name: x
+    uses: shell
+    config:
+      dest: /opt/manager
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+}
+
+#[test]
+fn config_rejects_render_missing_template() {
+    let yaml = r#"
+name: no-template
+steps:
+  - name: x
+    uses: shell
+    config:
+      dest: /opt/manager
+      render:
+        output: .env
+        on_missing: fail
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.message.contains("template")),
+        "Errors: {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn config_rejects_bad_on_missing() {
+    let yaml = r#"
+name: bad-om
+steps:
+  - name: x
+    uses: shell
+    config:
+      dest: /opt/manager
+      render:
+        template: env.example
+        on_missing: ignore
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.message.contains("on_missing")),
+        "Errors: {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn config_render_not_allowed_on_docker() {
+    let yaml = r#"
+name: docker-render
+steps:
+  - name: x
+    uses: docker
+    image: alpine:3
+    config:
+      dest: /opt/manager
+      render:
+        template: env.example
+        output: .env
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.message.contains("render")),
+        "Errors: {:?}",
+        r.errors
+    );
+}

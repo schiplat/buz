@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, GripVertical, Code, FileText, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, Lock, Info } from '@lucide/vue'
+import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, GripVertical, Code, FileText, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, Lock, Info, CircleHelp } from '@lucide/vue'
 import { cn } from '@/lib/utils'
 import {
   pipelinesApi,
@@ -16,6 +16,13 @@ import {
   normalizeInputDefsForForm,
   normalizeInputDefsForSave,
 } from '@/utils/pipelineInputs'
+import {
+  formatConfigRenderSummary,
+  normalizeConfigRender,
+  serializeConfigForApi,
+  validateStepConfig,
+} from '@/utils/configForm'
+import StepConfigBlock from '@/components/pipeline/StepConfigBlock.vue'
 import { secretsApi } from '@/api/secrets'
 import { variablesApi } from '@/api/variables'
 import { teamsApi, type Team } from '@/api/teams'
@@ -241,7 +248,17 @@ function rowsToVolumesArray(rows: VolumeRow[]): string[] | undefined {
 
 function addEditStep() {
   const idx = editForm.value.steps.length
-  editForm.value.steps.push({ name: '', run: '', uses: 'shell', volumes: [] as any, secrets: [] })
+  editForm.value.steps.push({
+    name: '',
+    run: '',
+    uses: 'shell',
+    volumes: [] as any,
+    secrets: [],
+    config_source: '',
+    config_key_path: '',
+    config_dest: '',
+    config_render: [],
+  })
   expandedEditSteps.add(idx)
 }
 
@@ -324,8 +341,10 @@ async function openEditDialog() {
       continue_on_error: t.fail_strategy === 'continue' ? true : undefined,
         privileged: (t as any).privileged === true ? true : undefined,
         registry_secret: (t.registry_secret || '').trim() || undefined,
-        config_source: ((t as any).config_source || '').trim() || undefined,
-        config_path: ((t as any).config_path || '').trim() || undefined,
+        config_source: ((t as any).config_source || '').trim() || '',
+        config_key_path: ((t as any).config_key_path || '').trim() || '',
+        config_dest: ((t as any).config_dest || '').trim() || '',
+        config_render: normalizeConfigRender((t as any).config_render),
     })),
     input_defs: normalizeInputDefsForForm(p.input_defs),
   }
@@ -359,6 +378,11 @@ async function handleEditSave() {
         alert(`Step "${s.name || 'unnamed'}": SSH requires SSH Host and/or Host Labels`)
         return
       }
+    }
+    const configErr = validateStepConfig(s as any)
+    if (configErr) {
+      alert(`Step "${s.name || 'unnamed'}": ${configErr}`)
+      return
     }
   }
 
@@ -404,8 +428,7 @@ async function handleEditSave() {
           volumes: volumesArray,
           privileged: isDocker ? (s as any).privileged === true || undefined : undefined,
           registry_secret: ((s as any).registry_secret || '').trim() || undefined,
-          config_source: ((s as any).config_source || '').trim() || undefined,
-          config_path: ((s as any).config_path || '').trim() || undefined,
+          ...serializeConfigForApi(s as any),
           host: isDocker
             ? undefined
             : rawHost
@@ -453,6 +476,51 @@ const hasRunningJobs = computed(() => runningCount.value > 0 || jobs.value.some(
 const stageViewRuns = computed(() => jobs.value.slice(0, Math.min(jobs.value.length, 8)))
 const latestRun = computed(() => jobs.value[0] ?? null)
 const hasYamlSource = computed(() => Boolean(pipeline.value?.yaml_source))
+
+const showConcurrencyHelp = ref(false)
+
+/** Live pipeline concurrency settings for Definition tab (always shown). */
+const pipelineConcurrency = computed(() => {
+  const p = pipeline.value
+  if (!p) return null
+  const group = (p.concurrency_group || '').trim()
+  if (!group) {
+    return { configured: false as const, group: null as string | null, mode: null as string | null, maxQueue: null as number | null, queueTimeoutSec: null as number | null }
+  }
+  const rawMode = (p.concurrency_mode || '').trim()
+  // Empty mode + group: Manager trigger treats as discard-new (legacy). Show that effective mode.
+  const mode = rawMode || 'discard-new'
+  return {
+    configured: true as const,
+    group,
+    mode,
+    maxQueue: p.concurrency_max_queue ?? 3,
+    queueTimeoutSec: p.concurrency_queue_timeout_seconds ?? 1800,
+  }
+})
+
+function formatConcurrencyTimeout(sec: number | null): string {
+  if (sec == null || sec <= 0) return '—'
+  if (sec % 3600 === 0) return `${sec / 3600}h`
+  if (sec % 60 === 0) return `${sec / 60}m`
+  return `${sec}s`
+}
+
+function pipelineConcurrencyHint(configured: boolean, mode: string | null): string {
+  if (!configured) {
+    return 'No concurrency group — triggers are not serialized. Multiple jobs may run in parallel.'
+  }
+  switch (mode) {
+    case 'queue':
+      return 'FIFO: new triggers wait while a job is pending/running, up to max-queue depth.'
+    case 'discard-old':
+      return 'Keep the newest waiting job; older queued jobs are cancelled. Running jobs are never cancelled.'
+    case 'discard-new':
+      return 'Reject new triggers with HTTP 409 while any job is pending, running, or queued.'
+    default:
+      return ''
+  }
+}
 const historyTotalPages = computed(() => Math.ceil(jobs.value.length / historyPageSize))
 const historyPagedJobs = computed(() => {
   const start = (historyPage.value - 1) * historyPageSize
@@ -875,7 +943,7 @@ async function handleTrigger() {
             <span class="text-sm leading-snug">
               <span class="font-medium">Verbose mode — extra execution detail</span>
               <span class="block text-xs text-muted-foreground">
-                Logs per step: duration, exit code, full step config and stage progress. Secrets stay redacted.
+                Logs per step: STAGE markers, STEP CONFIG (incl. config_source / config_render), CONFIG PREP object key, duration and exit code. Secrets stay redacted (signed URLs show as ***).
               </span>
             </span>
           </label>
@@ -887,7 +955,7 @@ async function handleTrigger() {
             <span class="text-sm leading-snug">
               <span class="font-medium text-amber-700">Debug mode — do not redact secrets</span>
               <span class="block text-xs text-muted-foreground">
-                Logs will contain plaintext secret values, are visible to platform admins only, and are automatically purged 24h after this run. Use for troubleshooting only.
+                Logs show plaintext secrets and signed config URLs (CONFIG PREP). Admin-only, purged after 24h. Pair with Verbose for stage markers. Use for troubleshooting only.
               </span>
             </span>
           </label>
@@ -1133,34 +1201,10 @@ async function handleTrigger() {
                       </p>
                     </div>
 
-                    <div v-if="step.uses === 'shell' || step.uses === 'ssh'">
-                      <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
-                        Config Source <span v-if="(step as any).config_path" class="text-red-500">*</span>
-                      </label>
-                      <div class="grid grid-cols-2 gap-3">
-                        <select
-                          v-model="(step as any).config_source"
-                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                        >
-                          <option value="">None</option>
-                          <option v-for="opt in editConfigSourceOptions" :key="opt.id" :value="opt.id">
-                            {{ opt.label }}
-                          </option>
-                        </select>
-                        <input
-                          v-model="(step as any).config_path"
-                          type="text"
-                          placeholder="e.g. config_tpl/super-manager/v1.4.0"
-                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                        />
-                      </div>
-                      <p class="text-xs text-muted-foreground/70 mt-0.5">
-                        Only Secrets with Kind = Aliyun OSS auth. At dispatch the Manager signs a 1-hour GET URL for
-                        <code class="font-mono">config_path + /configs.tar.gz</code>. The Runner downloads + unpacks the
-                        bundle before the run block; <code class="font-mono">$BUZ_CONFIG_DIR</code> points at the unpacked
-                        files. A failed download fails the step. Leave both empty to skip.
-                      </p>
-                    </div>
+                    <StepConfigBlock
+                      :step="step as any"
+                      :source-options="editConfigSourceOptions"
+                    />
 
                                           <div v-if="step.uses === 'docker'">
                         <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
@@ -1992,24 +2036,93 @@ async function handleTrigger() {
                       <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">source</span>
                       <span class="mono-chip text-xs">{{ pipeline.source || 'form' }}</span>
                     </div>
-                    <div v-if="pipeline.concurrency_group" class="flex items-center gap-1.5">
-                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">conc.</span>
-                      <div class="flex items-center gap-1.5 min-w-0">
-                        <code class="mono-chip text-xs truncate">{{ pipeline.concurrency_group }}</code>
-                        <span
-                          v-if="(pipeline as any).concurrency_mode"
-                          class="text-xs font-semibold rounded px-1.5 py-0.5 border shrink-0"
-                          :class="{
-                            'bg-amber-500/10 text-amber-600 border-amber-500/20': (pipeline as any).concurrency_mode === 'queue',
-                            'bg-blue-500/10 text-blue-600 border-blue-500/20': (pipeline as any).concurrency_mode === 'discard-new',
-                            'bg-emerald-500/10 text-emerald-600 border-emerald-500/20': (pipeline as any).concurrency_mode === 'discard-old',
-                          }"
-                        >
-                          {{ (pipeline as any).concurrency_mode }}
-                        </span>
-                      </div>
-                    </div>
                   </div>
+                </div>
+              </div>
+
+              <!-- ── Concurrency (always shown) ── -->
+              <div v-if="pipelineConcurrency" class="border-t border-border/20 px-5 py-4">
+                <div class="flex items-center gap-2 mb-3">
+                  <List class="h-3.5 w-3.5 text-purple-500" />
+                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Concurrency</span>
+                  <button
+                    type="button"
+                    class="inline-flex items-center text-muted-foreground/50 hover:text-foreground transition-colors"
+                    :aria-expanded="showConcurrencyHelp"
+                    aria-label="Concurrency help"
+                    @click="showConcurrencyHelp = !showConcurrencyHelp"
+                  >
+                    <CircleHelp class="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    v-if="!hasYamlSource"
+                    type="button"
+                    class="ml-auto inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+                    @click="openEditDialog"
+                  >
+                    <Pencil class="h-3 w-3" />
+                    Edit
+                  </button>
+                  <span v-else class="ml-auto text-xs text-muted-foreground/50">edit via YAML</span>
+                </div>
+
+                <template v-if="pipelineConcurrency.configured">
+                  <div class="flex flex-wrap items-center gap-2 text-sm">
+                    <span class="text-xs text-muted-foreground">Group</span>
+                    <code class="mono-chip text-xs">{{ pipelineConcurrency.group }}</code>
+                    <span class="text-xs text-muted-foreground ml-1">Mode</span>
+                    <span
+                      class="text-xs font-semibold rounded px-1.5 py-0.5 border"
+                      :class="{
+                        'bg-amber-500/10 text-amber-600 border-amber-500/20': pipelineConcurrency.mode === 'queue',
+                        'bg-blue-500/10 text-blue-600 border-blue-500/20': pipelineConcurrency.mode === 'discard-new',
+                        'bg-emerald-500/10 text-emerald-600 border-emerald-500/20': pipelineConcurrency.mode === 'discard-old',
+                      }"
+                    >{{ pipelineConcurrency.mode }}</span>
+                    <template v-if="pipelineConcurrency.mode === 'queue'">
+                      <span class="text-xs text-muted-foreground ml-1">Max queue</span>
+                      <span class="text-xs font-mono tabular-nums text-foreground/80">{{ pipelineConcurrency.maxQueue ?? '—' }}</span>
+                      <span class="text-xs text-muted-foreground ml-1">Queue timeout</span>
+                      <span class="text-xs font-mono tabular-nums text-foreground/80">{{ formatConcurrencyTimeout(pipelineConcurrency.queueTimeoutSec) }}</span>
+                    </template>
+                  </div>
+                </template>
+                <template v-else>
+                  <div class="flex flex-wrap items-center gap-2 text-sm">
+                    <span class="text-xs text-muted-foreground">Status</span>
+                    <span class="text-xs font-semibold rounded px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
+                    <span class="text-xs text-muted-foreground ml-1">Default mode if enabled</span>
+                    <span class="text-xs font-mono rounded px-1.5 py-0.5 border bg-emerald-500/10 text-emerald-700 border-emerald-500/20">discard-old</span>
+                    <span class="text-xs text-muted-foreground ml-1">Max queue</span>
+                    <span class="text-xs font-mono tabular-nums text-foreground/80">3</span>
+                    <span class="text-xs text-muted-foreground ml-1">Queue timeout</span>
+                    <span class="text-xs font-mono tabular-nums text-foreground/80">30m</span>
+                  </div>
+                </template>
+
+                <p class="mt-2 text-xs text-muted-foreground leading-relaxed">
+                  {{ pipelineConcurrencyHint(pipelineConcurrency.configured, pipelineConcurrency.mode) }}
+                </p>
+                <div
+                  v-if="showConcurrencyHelp"
+                  class="mt-3 rounded-lg border border-border/50 bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground leading-relaxed space-y-2"
+                >
+                  <p class="font-medium text-foreground/80">Adjustable fields</p>
+                  <ul class="list-disc pl-4 space-y-1">
+                    <li><code class="font-mono text-[10px]">concurrency.group</code> — required to enable; shared lock name</li>
+                    <li><code class="font-mono text-[10px]">mode</code> — <code class="font-mono text-[10px]">discard-old</code> (YAML default), <code class="font-mono text-[10px]">queue</code>, or <code class="font-mono text-[10px]">discard-new</code></li>
+                    <li><code class="font-mono text-[10px]">max-queue</code> (1–100, default 3) — only when mode is <code class="font-mono text-[10px]">queue</code></li>
+                    <li><code class="font-mono text-[10px]">queue-timeout</code> (default 30m) — only when mode is <code class="font-mono text-[10px]">queue</code></li>
+                  </ul>
+                  <p>
+                    <template v-if="hasYamlSource">
+                      Change via pipeline YAML <code class="font-mono text-[10px]">concurrency:</code> and re-import / sync.
+                    </template>
+                    <template v-else>
+                      Change via <button type="button" class="text-primary underline underline-offset-2" @click="openEditDialog">Edit → Advanced / Concurrency</button>.
+                    </template>
+                    Applies to new jobs; already-created job snapshots stay frozen.
+                  </p>
                 </div>
               </div>
 
@@ -2109,18 +2222,29 @@ async function handleTrigger() {
                       </span>
                     </div>
 
-                    <!-- OSS config delivery: config_source + config_path -->
+                    <!-- Nested config: deliver / render -->
                     <div
-                      v-if="(step as any).config_source || (step as any).config_path"
+                      v-if="(step as any).config_source || (step as any).config_key_path || (step as any).config_dest || formatConfigRenderSummary((step as any).config_render)"
                       class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-xs"
                     >
                       <span v-if="(step as any).config_source" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs">config source</span>
+                        <span class="text-muted-foreground/60 text-xs">config.source</span>
                         <code class="mono-chip text-xs">{{ (step as any).config_source }}</code>
                       </span>
-                      <span v-if="(step as any).config_path" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs">config path</span>
-                        <code class="mono-chip text-xs">{{ (step as any).config_path }}</code>
+                      <span v-if="(step as any).config_key_path" class="inline-flex items-center gap-1">
+                        <span class="text-muted-foreground/60 text-xs">key_path</span>
+                        <code class="mono-chip text-xs">{{ (step as any).config_key_path }}</code>
+                      </span>
+                      <span v-if="(step as any).config_dest" class="inline-flex items-center gap-1">
+                        <span class="text-muted-foreground/60 text-xs">dest</span>
+                        <code class="mono-chip text-xs">{{ (step as any).config_dest }}</code>
+                      </span>
+                      <span
+                        v-if="formatConfigRenderSummary((step as any).config_render)"
+                        class="inline-flex items-center gap-1"
+                      >
+                        <span class="text-muted-foreground/60 text-xs">render</span>
+                        <code class="mono-chip text-xs">{{ formatConfigRenderSummary((step as any).config_render) }}</code>
                       </span>
                     </div>
 

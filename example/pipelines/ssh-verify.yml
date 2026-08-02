@@ -6,14 +6,14 @@
 # are NOT auto-injected into these steps.
 #
 # Prerequisites:
-#   1. Register a Host named "r1-agent" in Manager UI (Infrastructure → Hosts)
+#   1. Register a Host named "r1-agent" in Manager UI (Hosts)
 #      - host: actual IP or hostname of your test server
 #      - port: 22
 #      - username: SSH user
-#      - credential_type:
-#          "key_path" — paste private key in the Host form (stored encrypted)
-#          "vault"    — paste password in the Host form (stored encrypted)
-#          "agent"    — no secret in Manager; runner uses SSH_AUTH_SOCK + ssh-add
+#      - credential: SSH Key / Password / Agent
+#          SSH Key  — paste private key in the Host form (stored encrypted)
+#          Password — paste password in the Host form (stored encrypted)
+#          Agent    — no secret in Manager; runner uses SSH_AUTH_SOCK + ssh-add
 #   2. Runner labels must include "linux-x64"
 #   3. Place this file in the Manager's yaml_scan_dir (default: ./pipelines/)
 #   4. Team: scanned pipelines default to team slug "default" (created at Manager bootstrap).

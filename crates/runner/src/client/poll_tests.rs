@@ -1,9 +1,9 @@
 use super::{
-    build_login_banner, build_ssh_env_command, build_step_echo, build_step_failure_message,
-    build_verbose_step_config, build_verbose_step_result, step_failure_hint, step_log_base,
-    wrap_remote_cmd_with_registry_login, LOG_ECHO, LOG_LOGIN, LOG_STEP_ERROR,
-    LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE,
-    LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
+    build_config_prep_banner, build_login_banner, build_ssh_env_command, build_step_echo,
+    build_step_failure_message, build_verbose_step_config, build_verbose_step_result,
+    step_failure_hint, step_log_base, wrap_remote_cmd_with_registry_login, LOG_ECHO, LOG_LOGIN,
+    LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP,
+    LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
 };
 use crate::masker::SecretCatalog;
 use std::collections::HashMap;
@@ -26,6 +26,20 @@ fn login_echo_stream_do_not_collide() {
     assert_ne!(echo, stream0);
     assert_ne!(login, stream0);
     assert!(err > stream0);
+}
+
+#[test]
+fn verbose_chunk_order_matches_display_sequence() {
+    // ORDER BY chunk_index must yield prepare → config → prep → login →
+    // exec → run → stream → result → error.
+    assert!(LOG_STEP_VERBOSE_PREPARE < LOG_STEP_VERBOSE_CONFIG);
+    assert!(LOG_STEP_VERBOSE_CONFIG < LOG_STEP_VERBOSE_CONFIG_PREP);
+    assert!(LOG_STEP_VERBOSE_CONFIG_PREP < LOG_LOGIN);
+    assert!(LOG_LOGIN < LOG_STEP_VERBOSE_EXEC);
+    assert!(LOG_STEP_VERBOSE_EXEC < LOG_ECHO);
+    assert!(LOG_ECHO < LOG_STREAM_START);
+    assert!(LOG_STREAM_START < LOG_STEP_VERBOSE_RESULT);
+    assert!(LOG_STEP_VERBOSE_RESULT < LOG_STEP_ERROR);
 }
 
 #[test]
@@ -135,7 +149,11 @@ fn verbose_chunks_do_not_collide_with_meta_region() {
     for c in [
         base + LOG_STEP_VERBOSE_PREPARE,
         base + LOG_STEP_VERBOSE_CONFIG,
+        base + LOG_STEP_VERBOSE_CONFIG_PREP,
+        base + LOG_LOGIN,
         base + LOG_STEP_VERBOSE_EXEC,
+        base + LOG_ECHO,
+        base + LOG_STREAM_START,
         base + LOG_STEP_VERBOSE_RESULT,
         base + LOG_STEP_ERROR,
         base + 9998,
@@ -155,7 +173,9 @@ fn verbose_step_config_renders_shape_without_secrets() {
         "work_dir": "/tmp/ws",
         "registry_secret": "acr_hk",
         "config_source": "super-manager",
-        "config_path": "v1.2.3",
+        "config_key_path": "v1.2.3",
+        "config_dest": "/opt/manager",
+        "config_render": [{ "template": "env.example", "output": ".env" }],
         "hosts": ["h1", "h2"],
         "image": "",
     });
@@ -167,10 +187,61 @@ fn verbose_step_config_renders_shape_without_secrets() {
     assert!(cfg.contains("  work_dir         /tmp/ws"), "{cfg}");
     assert!(cfg.contains("  registry_secret  acr_hk"), "{cfg}");
     assert!(
-        cfg.contains("  config           super-manager (path: v1.2.3)"),
+        cfg.contains("  config           super-manager (key: v1.2.3)"),
+        "{cfg}"
+    );
+    assert!(cfg.contains("  config_dest      /opt/manager"), "{cfg}");
+    assert!(
+        cfg.contains("  config_render    env.example → .env"),
         "{cfg}"
     );
     assert!(cfg.contains("  hosts            h1, h2"), "{cfg}");
+}
+
+#[test]
+fn config_prep_banner_redacts_url_unless_debug() {
+    let step = serde_json::json!({
+        "config_source": "OSS_DEMO",
+        "config_dest": "/opt/manager",
+        "config_auth": {
+            "url": "https://bucket.oss.aliyuncs.com/config_tpl/demo/v1/configs.tar.gz?Signature=secret",
+            "object_key": "config_tpl/demo/v1/configs.tar.gz",
+            "expires_in_secs": 3600,
+        },
+    });
+    let redacted = build_config_prep_banner(&step, false);
+    assert!(redacted.starts_with("==> CONFIG PREP\n"), "{redacted}");
+    assert!(redacted.contains("  source           OSS_DEMO"), "{redacted}");
+    assert!(redacted.contains("  dest             /opt/manager"), "{redacted}");
+    assert!(
+        redacted.contains("  object_key       config_tpl/demo/v1/configs.tar.gz"),
+        "{redacted}"
+    );
+    assert!(redacted.contains("  expires_in       3600s"), "{redacted}");
+    assert!(redacted.contains("  url              ***"), "{redacted}");
+    assert!(
+        !redacted.contains("Signature=secret"),
+        "verbose must not leak signed URL: {redacted}"
+    );
+
+    let debug = build_config_prep_banner(&step, true);
+    assert!(
+        debug.contains("Signature=secret"),
+        "debug must show signed URL: {debug}"
+    );
+}
+
+#[test]
+fn config_prep_banner_render_only_mode() {
+    let step = serde_json::json!({
+        "config_dest": "/opt/manager",
+        "config_render": [{ "template": "env.example", "output": ".env" }],
+    });
+    let banner = build_config_prep_banner(&step, false);
+    assert!(banner.contains("  dest             /opt/manager"), "{banner}");
+    assert!(banner.contains("  mode             render-only"), "{banner}");
+    assert!(!banner.contains("object_key"), "{banner}");
+    assert!(!banner.contains("url"), "{banner}");
 }
 
 #[test]

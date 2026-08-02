@@ -256,32 +256,75 @@ For every user (member or admin), the trigger dialog offers **Verbose mode**: th
 
 ### How it works
 
-|| Layer | Behavior |
-||-------|----------|
-|| Trigger UI | Rendered for everyone in the trigger dialog; sends `verbose: true` in the trigger request |
-|| `POST /pipelines/{id}/trigger` | No admin check — `verbose` is honored for any caller; audit event records `verbose` |
-|| `jobs.verbose_logs` | Persisted on the job (DB column, default `0`); distinct from `debug_unredact` |
-|| Runner dispatch | `poll` returns `verbose` on the task payload |
-|| Runner logs | Per step: `==> STAGE prepare / exec` markers, `==> STEP CONFIG` (exec type, timeout, fail strategy, work dir, image, `registry_secret` by name, `config_source`/`config_path`, ssh hosts — **names/keys only, never values**), `==> STEP RESULT` (duration + exit code) |
+| Layer | Behavior |
+|-------|----------|
+| Trigger UI | Rendered for everyone in the trigger dialog; sends `verbose: true` in the trigger request |
+| `POST /pipelines/{id}/trigger` | No admin check — `verbose` is honored for any caller; audit event records `verbose` |
+| `jobs.verbose_logs` | Persisted on the job (DB column, default `0`); distinct from `debug_unredact` |
+| Runner dispatch | `poll` returns `verbose` on the task payload |
+| Runner logs | Per step: `==> STAGE prepare / exec` markers, `==> STEP CONFIG` (exec type, timeout, fail strategy, work dir, image, `registry_secret` by name, `config_source`/`config_key_path`/`config_dest`/`config_render`, ssh hosts — **names/keys only, never values**), `==> CONFIG PREP` when the step has `config_auth` (object_key / expires_in; signed URL as `***`), `==> STEP RESULT` (duration + exit code, including prepare-stage failures) |
 
 ### What verbose adds
 
-- **Per-step duration** and **exit code** — `==> STEP RESULT` reports `duration` + `exit code` even on failure (when execution completed).
-- **Stage progress** — `==> STAGE prepare` / `==> STAGE exec` markers around each step.
+- **Per-step duration** and **exit code** — `==> STEP RESULT` reports `duration` + `exit code` even on failure (including `config_source` prepare failures such as OSS 404).
+- **Stage progress** — `==> STAGE prepare` / `==> STAGE exec` markers around each step. `STEP CONFIG` is emitted **before** prepare so a download failure still shows the step shape.
 - **Command shape** — `==> RUN` already shows the multi-line expanded command; verbose additionally renders `==> STEP CONFIG` with the full step shape (metadata only).
+- **Config prepare** — `==> CONFIG PREP` shows `object_key` / `expires_in` before the OSS download; the signed URL stays `***` unless Debug is also on.
 - **`BUZ_CONFIG_URL` "injected" hint** — the signed OSS URL is registered via `catalog.add_injected_key`, so the `==> RUN` env line shows `BUZ_CONFIG_URL=<injected>` instead of `BUZ_CONFIG_URL=***`. This applies to all jobs (not only verbose), since it reveals nothing: the URL value still participates in value-based redaction.
+
+### Log display order (`chunk_index`)
+
+Job Detail and `GET /jobs/{id}/logs` render chunks with `ORDER BY step_order, chunk_index` (see `job_logs`). Live WebSocket delivery follows upload time, but after the job finishes the UI reloads from the DB — so **`chunk_index` must match the intended on-screen sequence**, not merely “whatever was free in the meta region.”
+
+Each step owns a window `step_idx * 10_000` (`step_log_base` in `crates/runner/src/client/poll.rs`). Offsets inside that window:
+
+| Offset | Banner | When |
+|-------:|--------|------|
+| 0 | `==> STAGE prepare` | Verbose |
+| 1 | `==> STEP CONFIG` | Verbose (before prepare work) |
+| 2 | `==> CONFIG PREP` | Verbose **or** Debug, when `config_auth` is present |
+| 3 | `==> LOGIN […]` | Registry login succeeded |
+| 4 | `==> STAGE exec` | Verbose |
+| 5 | `==> RUN […]` | Always (command echo) |
+| 6… | Streamed stdout/stderr | Always |
+| 9993 | `==> STEP RESULT` | Verbose (after stream / prepare failure) |
+| 9997 | `==> ERROR` | Failure |
+| 9998–9999 | Reserved meta | Internal |
+
+Expected terminal order for a successful Verbose shell step:
+
+```text
+==> STAGE prepare
+==> STEP CONFIG
+  …
+==> STAGE exec
+==> RUN [shell]
+  …
+<command output>
+==> STEP RESULT
+  duration   …
+  exit code  0
+```
+
+#### Historical bugs (fixed)
+
+1. **Verbose markers sorted after RUN** — Prep/config/exec used offsets `9990–9994` while `RUN` was `1` and stream started at `2`. Upload order was correct (prepare → RUN → result), but DB reload showed `RUN` + output first, then `STAGE prepare` / `STEP CONFIG` / `STAGE exec` at the bottom. Fix: assign prep/config/exec offsets **before** `LOG_ECHO` / `LOG_STREAM_START` as in the table above. Old jobs keep their stored indexes; only new runs (with an updated Runner) show the corrected order.
+
+2. **Prepare-only failures looked identical with/without Verbose** — For `config_source` steps that fail during download (e.g. OSS HTTP 404), there is no `==> RUN`. Previously `STEP CONFIG` / `STAGE exec` were uploaded only after a successful unpack, so Verbose added almost nothing. Fix: emit `STAGE prepare` + `STEP CONFIG` before prepare; emit `CONFIG PREP` before the download; on prepare failure upload `ERROR` + verbose `STEP RESULT` with `exit code -1`, all with that step’s `step_order` (not job-level `-1`).
+
+Constants and ordering tests live in `poll.rs` / `poll_tests.rs` (`verbose_chunk_order_matches_display_sequence`).
 
 ### Safety properties
 
 - **Redaction is untouched** — `verbose` only adds meta chunks produced by the Runner from keys/metadata; `SecretCatalog` value masking still applies to all streamed output. `debug_unredact` remains the only way to ever see plaintext, and it stays admin-only.
-- **Never conflicts with Debug mode** — the two flags are independent and may combine (a verbose debug run shows detail with plaintext, admin-only, 24h retention).
+- **Never conflicts with Debug mode** — the two flags are independent and may combine (a verbose debug run shows detail with plaintext, admin-only, 24h retention). Prefer Verbose alone for day-to-day troubleshooting; use Debug only when plaintext values or a full signed `CONFIG PREP` URL are required.
 - **No new data stored** — verbose detail is derived at log time in the Runner; no extra columns beyond the `verbose_logs` job flag.
 
 ---
 
 ## Debug Mode (admin-only unredacted logs)
 
-For troubleshooting, a **platform admin** can trigger a pipeline with **Debug mode** enabled: secret values are **not redacted** in the job logs (`==> RUN` env lines and streamed output). This is a deliberate, high-risk escape hatch.
+For troubleshooting, a **platform admin** can trigger a pipeline with **Debug mode** enabled: secret values are **not redacted** in the job logs (`==> RUN` env lines and streamed output). For `config_source` steps, Debug also prints the full signed URL in `==> CONFIG PREP` (even when Verbose is off) — that is often the only visible difference when prepare fails before any RUN echo. Pair with Verbose for stage markers. This is a deliberate, high-risk escape hatch.
 
 ### How it works
 

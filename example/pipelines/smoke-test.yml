@@ -7,6 +7,9 @@
 #
 # Place this file under the Manager's yaml_scan_dir (default: ./pipelines/).
 # Team: defaults to "default" if omitted; set `team: <slug>` to assign another team.
+#
+# Trigger inputs: use $INPUT_<KEY> in run blocks. The host: field expands
+# trigger input names as $key (not $INPUT_KEY) — e.g. host: $target_env.
 
 name: Integration Smoke Test
 description: Validates all Phase 1 pipeline features across local and SSH engines.
@@ -38,8 +41,8 @@ steps:
     run: |
       echo "Runner: $(hostname)"
       echo "Arch:   $(uname -m)"
-      echo "Env:    ${target_env}"
-      echo "Ver:    ${version}"
+      echo "Env:    $INPUT_TARGET_ENV"
+      echo "Ver:    $INPUT_VERSION"
 
   # ── Step 2: Local — disk space (non-fatal) ───────────────────────
   - name: Disk Health
@@ -71,4 +74,4 @@ steps:
 
   # ── Step 5: Local — final confirmation ───────────────────────────
   - name: Done
-    run: echo "Smoke test completed for ${target_env} @ ${version}"
+    run: echo "Smoke test completed for $INPUT_TARGET_ENV @ $INPUT_VERSION"

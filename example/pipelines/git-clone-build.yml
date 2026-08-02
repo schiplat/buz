@@ -8,10 +8,13 @@
 #   2. Add the PUBLIC key as a Deploy Key in your Git host
 #      (GitHub: Repo → Settings → Deploy Keys)
 #   3. Store the PRIVATE key in Buz Manager UI:
-#        Secrets → New Secret
+#        Secrets & Variables → Secrets → Add Secret
 #        Name:  GIT_SSH_KEY
 #        Value: <paste entire contents of /tmp/buz_deploy_key>
 #        Team share: OFF (default) — this pipeline uses step secrets: only
+#
+# Trigger inputs are a map (not a list). Each key is available in run blocks
+# as $INPUT_<KEY> (and also as $<KEY>).
 
 name: Git Clone & Build
 description: Clone private repo via SSH key, run tests, and build.
@@ -21,11 +24,11 @@ team: default
 on:
   manual:
     inputs:
-      - name: REPO_URL
+      REPO_URL:
         description: Git SSH URL (e.g. git@github.com:org/private-repo.git)
         default: git@github.com:example/hello-world.git
         required: true
-      - name: BUILD_CMD
+      BUILD_CMD:
         description: Build command after clone
         default: make
         required: false
@@ -42,10 +45,11 @@ steps:
       echo "==> Writing SSH deploy key"
       echo "$GIT_SSH_KEY" > /tmp/buz_ssh_key
       chmod 600 /tmp/buz_ssh_key
+      mkdir -p ~/.ssh
       ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null || true
-      echo "==> Cloning $REPO_URL"
+      echo "==> Cloning $INPUT_REPO_URL"
       GIT_SSH_COMMAND="ssh -i /tmp/buz_ssh_key -o StrictHostKeyChecking=no" \
-        git clone --depth 1 "$REPO_URL" /tmp/buz-build
+        git clone --depth 1 "$INPUT_REPO_URL" /tmp/buz-build
       echo "Clone complete — $(ls /tmp/buz-build | wc -l) files"
       # Cleanup key immediately after clone
       rm -f /tmp/buz_ssh_key
@@ -61,14 +65,14 @@ steps:
   - name: Test
     run: |
       echo "==> Running tests..."
-      $BUILD_CMD test 2>&1 || echo "Tests completed (check output above)"
+      $INPUT_BUILD_CMD test 2>&1 || echo "Tests completed (check output above)"
     work_dir: /tmp/buz-build
     timeout: 10m
     continue-on-error: true
 
   - name: Build
     run: |
-      echo "==> Building with: $BUILD_CMD"
-      $BUILD_CMD
+      echo "==> Building with: $INPUT_BUILD_CMD"
+      $INPUT_BUILD_CMD
     work_dir: /tmp/buz-build
     timeout: 10m

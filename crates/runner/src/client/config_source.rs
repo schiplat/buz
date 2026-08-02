@@ -1,17 +1,12 @@
-//! `config_source` internal unpack + `env_render` for one step.
+//! Config prepare for one step: OSS deliver (+ optional render sugar) and
+//! render-only (templates already at `config_dest`).
 //!
-//! Step machinery sequencing (design: docs/content/docs/01-architecture/env-render.md):
-//! `download → unpack → render → run block`.
+//! Sequencing (design: docs/content/docs/01-architecture/config-block.md):
 //!
-//! - **Local / shell steps** — the bundle is downloaded from the Manager-signed
-//!   OSS GET URL and unpacked into `$BUZ_CONFIG_DIR` on the runner. When
-//!   `env_render` is present the template inside the bundle is rendered against
-//!   the job's `ValueMap` and the output is written atomically (temp file +
-//!   rename under `flock`).
-//! - **SSH steps** — download + unpack + render happen on the runner (it holds
-//!   the dispatched secrets), then the bundle and the rendered output are
-//!   transferred to the target over the existing SSH channel. The signed URL
-//!   never leaves the runner.
+//! - **OSS deliver:** `download → unpack → [render] → run block`
+//! - **render-only (shell/local):** read templates under `dest` in place → write
+//! - **render-only (ssh):** fetch templates (+ old outputs) → render on Runner
+//!   (secrets never leave) → upload outputs
 //!
 //! The rendered `.env` values are returned for forced value redaction: any
 //! plaintext `.env` content echoed by the run block must stay masked even for
@@ -40,6 +35,7 @@ const DEFAULT_ENV_MODE: u32 = 0o600;
 const SSH_CHUNK_BASE64: usize = 40 * 1024;
 
 /// Result of preparing the config bundle for one step.
+#[derive(Debug)]
 pub struct ConfigPrep {
     /// Env overrides for the step env (`BUZ_CONFIG_DIR`, `BUZ_ENV_CHANGED`, …).
     pub env: HashMap<String, String>,
@@ -55,6 +51,29 @@ struct EnvRenderSpec {
     on_missing: MissingPolicy,
 }
 
+/// True when the step needs prepare (OSS deliver and/or `config_render`).
+pub fn needs_prepare(step: &serde_json::Value) -> bool {
+    has_config_auth(step) || has_config_render(step)
+}
+
+fn has_config_auth(step: &serde_json::Value) -> bool {
+    step.get("config_auth")
+        .and_then(|a| a.get("url"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+}
+
+fn has_config_render(step: &serde_json::Value) -> bool {
+    match config_render_specs(step) {
+        Ok(specs) => !specs.is_empty(),
+        Err(_) => {
+            // Malformed render still needs prepare so errors surface in-step.
+            step.get("config_render")
+                .is_some_and(|v| !v.is_null() && v != &serde_json::Value::Null)
+        }
+    }
+}
+
 /// Extract the signed OSS GET URL from the dispatched step.
 fn config_url(step: &serde_json::Value) -> anyhow::Result<String> {
     step.get("config_auth")
@@ -63,7 +82,7 @@ fn config_url(step: &serde_json::Value) -> anyhow::Result<String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .ok_or_else(|| {
-            anyhow::anyhow!("config_source: Manager did not attach a signed OSS URL for this step")
+            anyhow::anyhow!("config: Manager did not attach a signed OSS URL for this step")
         })
 }
 
@@ -76,19 +95,17 @@ fn archive_label(step: &serde_json::Value) -> String {
         .to_string()
 }
 
-/// Parse the step's `env_render` block into a spec (defaults applied).
-fn env_render_spec(step: &serde_json::Value) -> Result<Option<EnvRenderSpec>, String> {
-    let er = match step.get("env_render") {
-        Some(v) if !v.is_null() => v,
-        _ => return Ok(None),
-    };
+fn parse_one_render_entry(er: &serde_json::Value, idx: Option<usize>) -> Result<EnvRenderSpec, String> {
+    let label = idx
+        .map(|i| format!("config_render[{i}]"))
+        .unwrap_or_else(|| "config_render".into());
     let template = er
         .get("template")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim();
     if template.is_empty() {
-        return Err("env_render.template is required (relative to $BUZ_CONFIG_DIR)".into());
+        return Err(format!("{label}.template is required (relative to $BUZ_CONFIG_DIR)"));
     }
     let output = er
         .get("output")
@@ -103,7 +120,7 @@ fn env_render_spec(step: &serde_json::Value) -> Result<Option<EnvRenderSpec>, St
         .filter(|s| !s.is_empty())
     {
         Some(m) => u32::from_str_radix(m.trim(), 8)
-            .map_err(|_| format!("env_render.mode '{}' is not a valid octal mode", m))?,
+            .map_err(|_| format!("{label}.mode '{m}' is not a valid octal mode"))?,
         None => DEFAULT_ENV_MODE,
     };
     let on_missing = match er
@@ -114,19 +131,41 @@ fn env_render_spec(step: &serde_json::Value) -> Result<Option<EnvRenderSpec>, St
         "warn" => MissingPolicy::Warn,
         _ => MissingPolicy::Fail,
     };
-    Ok(Some(EnvRenderSpec {
+    Ok(EnvRenderSpec {
         template: template.to_string(),
         output,
         mode,
         on_missing,
-    }))
+    })
 }
 
-/// Local unpack dir: absolute `config_dir` as-is, relative joined to the job
-/// workspace, unset → a per-step dir inside the workspace.
+/// Parse `config_render` (JSON array or single object) into specs.
+fn config_render_specs(step: &serde_json::Value) -> Result<Vec<EnvRenderSpec>, String> {
+    let er = match step.get("config_render") {
+        Some(v) if !v.is_null() => v,
+        _ => return Ok(vec![]),
+    };
+    if let Some(arr) = er.as_array() {
+        if arr.is_empty() {
+            return Ok(vec![]);
+        }
+        return arr
+            .iter()
+            .enumerate()
+            .map(|(i, e)| parse_one_render_entry(e, Some(i)))
+            .collect();
+    }
+    if er.is_object() {
+        return Ok(vec![parse_one_render_entry(er, None)?]);
+    }
+    Err("config_render must be an object or array of objects".into())
+}
+
+/// Local unpack / render dir: absolute `config_dest` as-is, relative joined to
+/// the job workspace, unset → a per-step dir inside the workspace.
 fn resolve_local_dir(step: &serde_json::Value, local_root: &Path, step_idx: usize) -> PathBuf {
     match step
-        .get("config_dir")
+        .get("config_dest")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -137,11 +176,11 @@ fn resolve_local_dir(step: &serde_json::Value, local_root: &Path, step_idx: usiz
     }
 }
 
-/// Remote (SSH) unpack dir: absolute `config_dir` as-is, relative or unset → a
+/// Remote (SSH) dest: absolute `config_dest` as-is, relative or unset → a
 /// deterministic per-job temp dir on the target.
 fn resolve_remote_dir(step: &serde_json::Value, job_id: &str, step_idx: usize) -> String {
     match step
-        .get("config_dir")
+        .get("config_dest")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -166,8 +205,7 @@ async fn download(client: &Client, url: &str) -> anyhow::Result<Vec<u8>> {
     Ok(resp.bytes().await?.to_vec())
 }
 
-/// Extract a tar.gz byte blob into `dest` via the system `tar` (same tool the
-/// run blocks have historically used; present on runner and target hosts).
+/// Extract a tar.gz byte blob into `dest` via the system `tar`.
 fn unpack(tarball: &[u8], dest: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dest)
         .with_context(|| format!("cannot create config dir '{}'", dest.display()))?;
@@ -209,21 +247,54 @@ fn render_env_with_old(
     let template_path = config_dir.join(&spec.template);
     let template = std::fs::read_to_string(&template_path).with_context(|| {
         format!(
-            "env_render: template '{}' not found in config bundle (archive '{}', unpacked to '{}')",
+            "config_render: template '{}' not found under '{}' (source '{}')",
             spec.template,
-            archive,
-            config_dir.display()
+            config_dir.display(),
+            archive
         )
     })?;
     let expanded = value_source::expand(&template, values, ExpandMode::Strict, spec.on_missing)
-        .map_err(|e| anyhow::anyhow!("env_render: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("config_render: {e}"))?;
     let (merged, changed) = env_render::merge_env(old, &expanded.content);
-    env_render::round_trip_check(&merged).map_err(|e| anyhow::anyhow!("env_render: {e}"))?;
-    // Forced value registration (Review R2 #9): every secret dispatched for
-    // this job is force-redacted so the plaintext `.env` never echoes
-    // unredacted, regardless of value length.
+    env_render::round_trip_check(&merged).map_err(|e| anyhow::anyhow!("config_render: {e}"))?;
+    // Forced value registration: every secret dispatched for this job is
+    // force-redacted so the plaintext `.env` never echoes unredacted.
     let forced_redact: Vec<String> = values.secrets.values().cloned().collect();
     Ok((merged, changed, forced_redact))
+}
+
+/// Apply all render specs under `config_dir`, returning union of changed keys
+/// and forced-redact values from the last render (secret set is job-wide).
+fn apply_renders_local(
+    config_dir: &Path,
+    specs: &[EnvRenderSpec],
+    values: &ValueMap,
+    archive: &str,
+) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    let mut changed_all: Vec<String> = Vec::new();
+    let mut forced_redact = Vec::new();
+    for spec in specs {
+        let output_path = config_dir.join(&spec.output);
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "config_render: cannot create output dir '{}'",
+                    parent.display()
+                )
+            })?;
+        }
+        let old = std::fs::read_to_string(&output_path).unwrap_or_default();
+        let (content, changed, forced) =
+            render_env_with_old(config_dir, spec, values, archive, &old)?;
+        write_atomic(&output_path, &content, spec.mode)?;
+        forced_redact = forced;
+        for k in changed {
+            if !changed_all.contains(&k) {
+                changed_all.push(k);
+            }
+        }
+    }
+    Ok((changed_all, forced_redact))
 }
 
 /// `flock(LOCK_EX)` on a lock file so concurrent renders of the same output
@@ -255,7 +326,7 @@ fn write_atomic(path: &Path, content: &str, mode: u32) -> anyhow::Result<()> {
         .open(&lock_path)
         .with_context(|| {
             format!(
-                "env_render: cannot open lock file '{}'",
+                "config_render: cannot open lock file '{}'",
                 lock_path.display()
             )
         })?;
@@ -267,8 +338,12 @@ fn write_atomic(path: &Path, content: &str, mode: u32) -> anyhow::Result<()> {
         uuid::Uuid::new_v4().simple()
     ));
     let result = (|| -> anyhow::Result<()> {
-        let mut f = std::fs::File::create(&tmp)
-            .with_context(|| format!("env_render: cannot create temp file '{}'", tmp.display()))?;
+        let mut f = std::fs::File::create(&tmp).with_context(|| {
+            format!(
+                "config_render: cannot create temp file '{}'",
+                tmp.display()
+            )
+        })?;
         f.write_all(content.as_bytes())?;
         f.sync_all()?;
         #[cfg(unix)]
@@ -279,7 +354,10 @@ fn write_atomic(path: &Path, content: &str, mode: u32) -> anyhow::Result<()> {
             std::fs::set_permissions(&tmp, perms)?;
         }
         std::fs::rename(&tmp, path).with_context(|| {
-            format!("env_render: cannot atomically replace '{}'", path.display())
+            format!(
+                "config_render: cannot atomically replace '{}'",
+                path.display()
+            )
         })?;
         Ok(())
     })();
@@ -318,7 +396,7 @@ async fn run_ssh(
     Ok(())
 }
 
-/// Read a file on the target if it exists.
+/// Read a file on the target if it exists and is non-empty.
 async fn fetch_remote_text(
     conn: &SshConnectionParams,
     remote_path: &str,
@@ -375,7 +453,27 @@ async fn ssh_upload_bytes(
     Ok(())
 }
 
-/// Prepare a config source step on the runner itself (shell / local engines).
+async fn ensure_remote_parent(
+    conn: &SshConnectionParams,
+    remote_dir: &str,
+    relative: &str,
+    step_timeout: Option<Duration>,
+) -> anyhow::Result<()> {
+    if let Some(parent) = Path::new(relative).parent() {
+        let p = parent.to_string_lossy();
+        if !p.is_empty() && p != "." {
+            run_ssh(
+                conn,
+                &format!("mkdir -p {remote_dir}/{p}"),
+                step_timeout,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Prepare on the runner itself (shell / local engines).
 pub async fn prepare_local(
     client: &Client,
     step: &serde_json::Value,
@@ -383,22 +481,34 @@ pub async fn prepare_local(
     step_idx: usize,
     values: &ValueMap,
 ) -> anyhow::Result<ConfigPrep> {
-    let url = config_url(step)?;
-    let archive = archive_label(step);
-    let tarball = download(client, &url).await?;
+    let specs = config_render_specs(step).map_err(anyhow::Error::msg)?;
     let local_dir = resolve_local_dir(step, local_root, step_idx);
-    unpack(&tarball, &local_dir)?;
+
+    let archive = if has_config_auth(step) {
+        let url = config_url(step)?;
+        let label = archive_label(step);
+        let tarball = download(client, &url).await?;
+        unpack(&tarball, &local_dir)?;
+        label
+    } else if !specs.is_empty() {
+        if !local_dir.is_dir() {
+            bail!(
+                "config_render: dest '{}' does not exist — deliver config first \
+                 (OSS unpack) or create the directory with templates",
+                local_dir.display()
+            );
+        }
+        "render-only".to_string()
+    } else {
+        bail!("config prepare: step has neither config_auth nor config_render");
+    };
 
     let mut env = HashMap::new();
     let mut forced_redact = Vec::new();
-    if let Some(spec) = env_render_spec(step).map_err(anyhow::Error::msg)? {
-        let output_path = local_dir.join(&spec.output);
-        let old = std::fs::read_to_string(&output_path).unwrap_or_default();
-        let (content, changed, forced) =
-            render_env_with_old(&local_dir, &spec, values, &archive, &old)?;
-        write_atomic(&output_path, &content, spec.mode)?;
+    if !specs.is_empty() {
+        let (changed_all, forced) = apply_renders_local(&local_dir, &specs, values, &archive)?;
         forced_redact = forced;
-        set_changed_env(&mut env, &changed);
+        set_changed_env(&mut env, &changed_all);
     }
     env.insert(
         "BUZ_CONFIG_DIR".to_string(),
@@ -407,8 +517,8 @@ pub async fn prepare_local(
     Ok(ConfigPrep { env, forced_redact })
 }
 
-/// Prepare a config source step for SSH: render locally, then transfer the
-/// bundle + rendered output to every target host.
+/// Prepare for SSH: OSS deliver uploads the bundle; render-only fetches
+/// templates from the remote, renders on the Runner, uploads outputs.
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare_ssh(
     client: &Client,
@@ -420,14 +530,61 @@ pub async fn prepare_ssh(
     values: &ValueMap,
     step_timeout: Option<Duration>,
 ) -> anyhow::Result<ConfigPrep> {
+    let specs = config_render_specs(step).map_err(anyhow::Error::msg)?;
+    let remote_dir = resolve_remote_dir(step, job_id, step_idx);
+
+    if has_config_auth(step) {
+        return prepare_ssh_deliver(
+            client,
+            step,
+            conns,
+            local_root,
+            job_id,
+            step_idx,
+            values,
+            step_timeout,
+            &specs,
+            &remote_dir,
+        )
+        .await;
+    }
+
+    if specs.is_empty() {
+        bail!("config prepare: step has neither config_auth nor config_render");
+    }
+
+    prepare_ssh_render_only(
+        step,
+        conns,
+        local_root,
+        job_id,
+        step_idx,
+        values,
+        step_timeout,
+        &specs,
+        &remote_dir,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_ssh_deliver(
+    client: &Client,
+    step: &serde_json::Value,
+    conns: &[SshConnectionParams],
+    local_root: &Path,
+    job_id: &str,
+    step_idx: usize,
+    values: &ValueMap,
+    step_timeout: Option<Duration>,
+    specs: &[EnvRenderSpec],
+    remote_dir: &str,
+) -> anyhow::Result<ConfigPrep> {
     let url = config_url(step)?;
     let archive = archive_label(step);
     let tarball = download(client, &url).await?;
     let local_dir = local_root.join(format!("config-{job_id}-{step_idx}"));
     unpack(&tarball, &local_dir)?;
-    let remote_dir = resolve_remote_dir(step, job_id, step_idx);
-
-    let spec_opt = env_render_spec(step).map_err(anyhow::Error::msg)?;
     let tar_remote = format!("/tmp/buz_config_{job_id}_{step_idx}.tar.gz");
 
     let mut forced_redact = Vec::new();
@@ -438,7 +595,9 @@ pub async fn prepare_ssh(
             "mkdir -p {remote_dir} && tar xzf {tar_remote} -C {remote_dir} && rm -f {tar_remote}"
         );
         run_ssh(conn, &unpack_cmd, step_timeout).await?;
-        if let Some(spec) = &spec_opt {
+        let mut host_changed: Vec<String> = Vec::new();
+        for spec in specs {
+            ensure_remote_parent(conn, remote_dir, &spec.output, step_timeout).await?;
             let remote_out = format!("{remote_dir}/{}", spec.output);
             let old = fetch_remote_text(conn, &remote_out, step_timeout).await?;
             let (content, changed, forced) = render_env_with_old(
@@ -457,15 +616,120 @@ pub async fn prepare_ssh(
             )
             .await?;
             forced_redact = forced;
-            changed_agg = changed;
+            for k in changed {
+                if !host_changed.contains(&k) {
+                    host_changed.push(k);
+                }
+            }
+        }
+        for k in host_changed {
+            if !changed_agg.contains(&k) {
+                changed_agg.push(k);
+            }
         }
     }
 
     let mut env = HashMap::new();
-    if spec_opt.is_some() {
+    if !specs.is_empty() {
         set_changed_env(&mut env, &changed_agg);
     }
-    env.insert("BUZ_CONFIG_DIR".to_string(), remote_dir);
+    env.insert("BUZ_CONFIG_DIR".to_string(), remote_dir.to_string());
+    Ok(ConfigPrep { env, forced_redact })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_ssh_render_only(
+    _step: &serde_json::Value,
+    conns: &[SshConnectionParams],
+    local_root: &Path,
+    job_id: &str,
+    step_idx: usize,
+    values: &ValueMap,
+    step_timeout: Option<Duration>,
+    specs: &[EnvRenderSpec],
+    remote_dir: &str,
+) -> anyhow::Result<ConfigPrep> {
+    let staging = local_root.join(format!("config-render-{job_id}-{step_idx}"));
+    std::fs::create_dir_all(&staging).with_context(|| {
+        format!(
+            "config_render: cannot create staging dir '{}'",
+            staging.display()
+        )
+    })?;
+
+    let mut forced_redact = Vec::new();
+    let mut changed_agg: Vec<String> = Vec::new();
+
+    for conn in conns {
+        // Templates must already exist under dest (prior deliver / git / manual).
+        run_ssh(
+            conn,
+            &format!(
+                "test -d {remote_dir} || {{ echo \"config_render: dest '{remote_dir}' does not exist on remote\" >&2; exit 1; }}"
+            ),
+            step_timeout,
+        )
+        .await?;
+
+        let mut host_changed: Vec<String> = Vec::new();
+        for spec in specs {
+            let remote_tmpl = format!("{remote_dir}/{}", spec.template);
+            let tmpl = fetch_remote_text(conn, &remote_tmpl, step_timeout)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "config_render: template '{}' not found on remote at '{}'",
+                        spec.template,
+                        remote_tmpl
+                    )
+                })?;
+
+            let local_tmpl = staging.join(&spec.template);
+            if let Some(parent) = local_tmpl.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&local_tmpl, &tmpl).with_context(|| {
+                format!(
+                    "config_render: cannot stage template '{}'",
+                    local_tmpl.display()
+                )
+            })?;
+
+            ensure_remote_parent(conn, remote_dir, &spec.output, step_timeout).await?;
+            let remote_out = format!("{remote_dir}/{}", spec.output);
+            let old = fetch_remote_text(conn, &remote_out, step_timeout).await?;
+            let (content, changed, forced) = render_env_with_old(
+                &staging,
+                spec,
+                values,
+                "render-only",
+                old.as_deref().unwrap_or(""),
+            )?;
+            ssh_upload_bytes(
+                conn,
+                &remote_out,
+                content.as_bytes(),
+                Some(spec.mode),
+                step_timeout,
+            )
+            .await?;
+            forced_redact = forced;
+            for k in changed {
+                if !host_changed.contains(&k) {
+                    host_changed.push(k);
+                }
+            }
+        }
+        for k in host_changed {
+            if !changed_agg.contains(&k) {
+                changed_agg.push(k);
+            }
+        }
+    }
+
+    let mut env = HashMap::new();
+    set_changed_env(&mut env, &changed_agg);
+    env.insert("BUZ_CONFIG_DIR".to_string(), remote_dir.to_string());
     Ok(ConfigPrep { env, forced_redact })
 }
 

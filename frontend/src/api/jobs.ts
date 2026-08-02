@@ -37,7 +37,12 @@ export interface JobSnapshot {
     source: string
   }
   runner_labels: string[]
+  /** Frozen at trigger — concurrency group name (null/empty = no concurrency). */
   concurrency_group: string | null
+  /** Effective mode at trigger: queue | discard-old | discard-new. */
+  concurrency_mode?: string | null
+  concurrency_max_queue?: number | null
+  concurrency_queue_timeout_seconds?: number | null
   tasks: SnapshotTask[]
   env: SnapshotEnv[]
   inputs: Record<string, string> | null

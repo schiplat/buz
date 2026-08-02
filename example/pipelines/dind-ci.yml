@@ -9,6 +9,7 @@
 # or kernel exploits. Only use this pipeline on disposable runner VMs.
 #
 # Requires: runner with `engine.docker_enabled = true` and labels: [linux-x64].
+# Secrets (UPPER_SNAKE_CASE): create under Secrets & Variables → Secrets.
 
 name: CI Build and Push
 description: Build a Docker image with DinD, push to registry, then deploy via SSH.
@@ -22,7 +23,7 @@ on:
         description: Version tag for the image
         required: true
       target:
-        description: Target host label for deployment
+        description: Target host name for deployment (must exist in Hosts)
         required: false
         default: staging
 
@@ -61,26 +62,27 @@ steps:
       sleep 3
       echo "Logging in to registry..."
       docker login -u "$DOCKER_REGISTRY_USER" -p "$DOCKER_REGISTRY_PASS" "$REGISTRY"
-      echo "Building $REGISTRY/$NAMESPACE/$IMAGE_NAME:$version"
-      docker build -t "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$version" .
+      echo "Building $REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_VERSION"
+      docker build -t "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_VERSION" .
       echo "Pushing to registry..."
-      docker push "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$version"
+      docker push "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_VERSION"
       docker logout "$REGISTRY"
       echo "Done."
     timeout: 20m
 
   # ── Step 2: Deploy via SSH to target host ───────────────────────
+  # host: expands trigger input `$target` (not $INPUT_TARGET).
   - name: Deploy
     uses: ssh
     host: $target
     run: |
-      docker pull "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$version"
+      docker pull "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_VERSION"
       docker stop my-service || true
       docker rm my-service || true
       docker run -d --name my-service \
         --restart always \
         -p 3000:3000 \
-        "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$version"
+        "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_VERSION"
     timeout: 5m
 
   # ── Step 3: Health check ────────────────────────────────────────

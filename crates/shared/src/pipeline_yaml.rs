@@ -106,35 +106,83 @@ pub struct RunnerYaml {
     pub timeout: Option<String>,
 }
 
-/// Declarative `.env` generation for `config_source` steps.
+/// One `config.render` entry (template → output file).
 ///
-/// Runs after the config bundle is unpacked (into `$BUZ_CONFIG_DIR`) and before
-/// the run block. The template is resolved against the job's dispatched
-/// secrets (`${secrets.X}`, by logical name) and vars (`${vars.X}`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Runs after delivery (OSS unpack / prior clone) places files under
+/// `$BUZ_CONFIG_DIR`, and before the run block. References resolve against
+/// job secrets (`${secrets.X}`) and vars (`${vars.X}`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub struct EnvRender {
+pub struct ConfigRenderEntry {
     /// Template file relative to `$BUZ_CONFIG_DIR` (e.g. `env.example`).
     #[serde(default)]
     pub template: Option<String>,
     /// Output file relative to `$BUZ_CONFIG_DIR`. Defaults to
-    /// `<template>.rendered` when unset.
+    /// `<template>.rendered` when unset at runtime.
     #[serde(default)]
     pub output: Option<String>,
     /// Output file mode (e.g. `0600`).
     #[serde(default)]
     pub mode: Option<String>,
-    /// `fail` (default) aborts the render on any unresolved reference;
-    /// `warn` writes `KEY=` with a `# WARNING` comment (rollback deploys).
+    /// `fail` (default) aborts on unresolved refs; `warn` writes empty `KEY=`.
     #[serde(default)]
     pub on_missing: Option<String>,
-    /// `recreate` force-recreates the listed `services` when a template-defined
-    /// key changed (Phase 2; parsed but not yet enforced).
+    /// `recreate` (Phase 2d — parsed, not enforced).
     #[serde(default)]
     pub on_change: Option<String>,
-    /// Compose services affected by this `.env` (Phase 2).
+    /// Compose services for `on_change` (Phase 2d — parsed, not enforced).
     #[serde(default)]
     pub services: Option<Vec<String>>,
+}
+
+/// Legacy alias — prefer [`ConfigRenderEntry`].
+pub type EnvRender = ConfigRenderEntry;
+
+/// `config.render`: a single object or a list of objects.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ConfigRender {
+    One(ConfigRenderEntry),
+    Many(Vec<ConfigRenderEntry>),
+}
+
+impl ConfigRender {
+    pub fn entries(&self) -> &[ConfigRenderEntry] {
+        match self {
+            Self::One(e) => std::slice::from_ref(e),
+            Self::Many(v) => v.as_slice(),
+        }
+    }
+
+    pub fn into_vec(self) -> Vec<ConfigRenderEntry> {
+        match self {
+            Self::One(e) => vec![e],
+            Self::Many(v) => v,
+        }
+    }
+}
+
+/// Nested step `config:` block (Phase 2b).
+///
+/// Modes (see docs/01-architecture/config-block.md):
+/// - **OSS deliver:** `source` + `key_path` + `dest`
+/// - **render-only:** `dest` + `render`
+/// - **sugar:** deliver fields + `render` in one step (allowed, not preferred)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct ConfigBlock {
+    /// OSS auth secret name (`kind = aliyun_oss_auth`).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// OSS object-key prefix; Manager appends `/configs.tar.gz`.
+    #[serde(default)]
+    pub key_path: Option<String>,
+    /// Unpack / working directory → `$BUZ_CONFIG_DIR`.
+    #[serde(default)]
+    pub dest: Option<String>,
+    /// One or more render entries (relative to `dest`).
+    #[serde(default)]
+    pub render: Option<ConfigRender>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,23 +209,18 @@ pub struct StepYaml {
     /// Used for `docker login` on docker / shell / SSH steps.
     #[serde(default)]
     pub registry_secret: Option<String>,
-    /// Name of a Manager Secret (kind=`oss`) holding Aliyun OSS read-only AK/SK.
-    /// Manager signs a short-lived GET URL for `config_path` and injects it
-    /// into the step env as `$BUZ_CONFIG_URL` (shell / ssh steps).
+    /// Nested config delivery + render (Phase 2b). Required shape for YAML.
+    #[serde(default)]
+    pub config: Option<ConfigBlock>,
+    /// Legacy flat fields — if present, validation fails (use `config:` instead).
     #[serde(default)]
     pub config_source: Option<String>,
-    /// OSS object key (directory) to download, e.g. `config_tpl/<project>/<tag>`.
-    /// Manager appends `configs.tar.gz` when signing the URL.
     #[serde(default)]
     pub config_path: Option<String>,
-    /// Target directory where Buz unpacks the config bundle (exposed to the run
-    /// block as `$BUZ_CONFIG_DIR`). SSH steps: on the target host; shell steps:
-    /// on the runner. Defaults to a per-job temp dir when unset.
     #[serde(default)]
     pub config_dir: Option<String>,
-    /// Declarative `.env` rendering after unpack, before the run block.
     #[serde(default)]
-    pub env_render: Option<EnvRender>,
+    pub env_render: Option<serde_yaml::Value>,
     #[serde(default)]
     pub host: Option<OneOrMany>,
     #[serde(default, alias = "work_dir")]
@@ -311,24 +354,166 @@ pub struct StepData {
     /// Manager Secret name for private registry login (docker / shell / SSH).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registry_secret: Option<String>,
-    /// Manager Secret name (kind=`oss`) for signed OSS config downloads.
+    /// Nested `config:` block (authoring / import shape).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ConfigBlock>,
+    /// Flattened from `config` for Manager task columns / API.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_source: Option<String>,
-    /// OSS object key (directory) — Manager appends `configs.tar.gz`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_path: Option<String>,
-    /// Target unpack directory for `config_source`.
+    pub config_key_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_dir: Option<String>,
-    /// Declarative `.env` rendering after unpack.
+    pub config_dest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub env_render: Option<EnvRender>,
+    pub config_render: Option<Vec<ConfigRenderEntry>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct YamlValidationError {
     pub field: String,
     pub message: String,
+}
+
+fn non_empty(s: Option<&str>) -> Option<&str> {
+    s.map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// Validate a nested `config:` block (deliver / render-only / sugar).
+fn validate_config_block(
+    cfg: &ConfigBlock,
+    uses: &str,
+    field: &str,
+    errors: &mut Vec<YamlValidationError>,
+    warnings: &mut Vec<String>,
+) {
+    let source = non_empty(cfg.source.as_deref());
+    let key_path = non_empty(cfg.key_path.as_deref());
+    let dest = non_empty(cfg.dest.as_deref());
+    let render_entries = cfg.render.as_ref().map(|r| r.entries()).unwrap_or(&[]);
+    let has_render = !render_entries.is_empty();
+
+    if source.is_none() && key_path.is_none() && dest.is_none() && !has_render {
+        errors.push(YamlValidationError {
+            field: field.into(),
+            message: "'config:' is empty — set deliver (source+key_path+dest) and/or render-only (dest+render)".into(),
+        });
+        return;
+    }
+
+    if source.is_some() != key_path.is_some() {
+        errors.push(YamlValidationError {
+            field: field.into(),
+            message: "'config.source' and 'config.key_path' must be set together (OSS deliver)".into(),
+        });
+    }
+
+    let is_deliver = source.is_some() && key_path.is_some();
+    let is_render_only = !is_deliver && has_render;
+    let is_sugar = is_deliver && has_render;
+
+    if is_deliver || is_sugar {
+        let engine = if uses.is_empty() { "shell" } else { uses };
+        if !matches!(engine, "shell" | "local" | "ssh" | "docker") {
+            errors.push(YamlValidationError {
+                field: field.into(),
+                message: "'config' OSS deliver is only valid for shell, local, ssh, or docker steps"
+                    .into(),
+            });
+        }
+        if dest.is_none() {
+            errors.push(YamlValidationError {
+                field: field.into(),
+                message: "'config.dest' is required for OSS deliver".into(),
+            });
+        }
+        if let Some(p) = key_path {
+            if !p.ends_with('/') && !p.ends_with("configs.tar.gz") {
+                warnings.push(format!(
+                    "{field}: 'config.key_path' should be a directory prefix (Manager appends 'configs.tar.gz')"
+                ));
+            }
+        }
+    }
+
+    if is_render_only || is_sugar {
+        let engine = if uses.is_empty() { "shell" } else { uses };
+        if !matches!(engine, "shell" | "local" | "ssh") {
+            errors.push(YamlValidationError {
+                field: field.into(),
+                message: "'config.render' is only valid for shell, local, or ssh steps".into(),
+            });
+        }
+        if dest.is_none() {
+            errors.push(YamlValidationError {
+                field: field.into(),
+                message: "'config.dest' is required when 'config.render' is set".into(),
+            });
+        }
+    }
+
+    // Partial junk: render without deliver source but also missing dest already handled;
+    // key_path/source alone handled; dest-only without render/deliver is useless.
+    if !is_deliver && !has_render {
+        if dest.is_some() {
+            errors.push(YamlValidationError {
+                field: field.into(),
+                message: "'config.dest' alone is not enough — add OSS deliver (source+key_path) or render".into(),
+            });
+        }
+    }
+
+    for (i, er) in render_entries.iter().enumerate() {
+        let entry_field = if render_entries.len() == 1 {
+            format!("{field}.config.render")
+        } else {
+            format!("{field}.config.render[{i}]")
+        };
+        let template = non_empty(er.template.as_deref()).unwrap_or("");
+        if template.is_empty() {
+            errors.push(YamlValidationError {
+                field: entry_field.clone(),
+                message: "'template' is required (relative to $BUZ_CONFIG_DIR, e.g. env.example)"
+                    .into(),
+            });
+        }
+        if let Some(om) = non_empty(er.on_missing.as_deref()) {
+            if !matches!(om, "fail" | "warn") {
+                errors.push(YamlValidationError {
+                    field: entry_field.clone(),
+                    message: "'on_missing' must be 'fail' or 'warn'".into(),
+                });
+            }
+        }
+        if let Some(oc) = non_empty(er.on_change.as_deref()) {
+            if !matches!(oc, "recreate") {
+                errors.push(YamlValidationError {
+                    field: entry_field,
+                    message: "'on_change' must be 'recreate'".into(),
+                });
+            }
+        }
+    }
+}
+
+/// Flatten nested `config:` into task/API column fields.
+pub fn flatten_config(cfg: Option<&ConfigBlock>) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<Vec<ConfigRenderEntry>>,
+) {
+    let Some(cfg) = cfg else {
+        return (None, None, None, None);
+    };
+    let source = non_empty(cfg.source.as_deref()).map(|s| s.to_string());
+    let key_path = non_empty(cfg.key_path.as_deref()).map(|s| s.to_string());
+    let dest = non_empty(cfg.dest.as_deref()).map(|s| s.to_string());
+    let render = cfg
+        .render
+        .as_ref()
+        .map(|r| r.entries().to_vec())
+        .filter(|v| !v.is_empty());
+    (source, key_path, dest, render)
 }
 
 /// Parse a pipeline YAML string and run validation checks.
@@ -461,95 +646,20 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             }
         }
 
-        let cfg_source = step
-            .config_source
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let cfg_path = step
-            .config_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        if cfg_source.is_some() || cfg_path.is_some() {
-            let engine = if uses.is_empty() { "shell" } else { uses };
-            if !matches!(engine, "shell" | "local" | "ssh" | "docker") {
-                errors.push(YamlValidationError {
-                    field: field.clone(),
-                    message: "'config_source'/'config_path' are only valid for shell, ssh, or docker steps"
-                        .into(),
-                });
-            }
-            if cfg_source.is_some() != cfg_path.is_some() {
-                errors.push(YamlValidationError {
-                    field: field.clone(),
-                    message: "'config_source' and 'config_path' must be set together".into(),
-                });
-            }
-            if let Some(p) = cfg_path {
-                if !p.ends_with('/') && !p.ends_with("configs.tar.gz") {
-                    warnings.push(format!(
-                        "{field}: 'config_path' should be a directory (Manager appends 'configs.tar.gz')"
-                    ));
-                }
-            }
+        // Reject legacy flat config fields — nested `config:` only.
+        let legacy_flat = step.config_source.as_deref().is_some_and(|s| !s.trim().is_empty())
+            || step.config_path.as_deref().is_some_and(|s| !s.trim().is_empty())
+            || step.config_dir.as_deref().is_some_and(|s| !s.trim().is_empty())
+            || step.env_render.as_ref().is_some_and(|v| !v.is_null());
+        if legacy_flat {
+            errors.push(YamlValidationError {
+                field: field.clone(),
+                message: "flat 'config_source'/'config_path'/'config_dir'/'env_render' are no longer supported — use nested 'config:' (see docs: Config Block DSL v2)".into(),
+            });
         }
 
-        // env_render / config_dir build on config_source: the template lives in
-        // the unpacked bundle, so both require the OSS delivery to be present.
-        if step.env_render.is_some() || step.config_dir.is_some() {
-            let engine = if uses.is_empty() { "shell" } else { uses };
-            if !matches!(engine, "shell" | "local" | "ssh") {
-                errors.push(YamlValidationError {
-                    field: field.clone(),
-                    message:
-                        "'env_render'/'config_dir' are only valid for shell, local, or ssh steps"
-                            .into(),
-                });
-            }
-            if cfg_source.is_none() {
-                errors.push(YamlValidationError {
-                    field: field.clone(),
-                    message: "'env_render'/'config_dir' require 'config_source' (the template lives in the unpacked config bundle)"
-                        .into(),
-                });
-            }
-        }
-        if let Some(er) = &step.env_render {
-            let template = er.template.as_deref().map(str::trim).unwrap_or("");
-            if template.is_empty() {
-                errors.push(YamlValidationError {
-                    field: field.clone(),
-                    message: "'env_render.template' is required (relative to $BUZ_CONFIG_DIR, e.g. env.example)"
-                        .into(),
-                });
-            }
-            if let Some(om) = er
-                .on_missing
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                if !matches!(om, "fail" | "warn") {
-                    errors.push(YamlValidationError {
-                        field: field.clone(),
-                        message: "'env_render.on_missing' must be 'fail' or 'warn'".into(),
-                    });
-                }
-            }
-            if let Some(oc) = er
-                .on_change
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                if !matches!(oc, "recreate") {
-                    errors.push(YamlValidationError {
-                        field: field.clone(),
-                        message: "'env_render.on_change' must be 'recreate'".into(),
-                    });
-                }
-            }
+        if let Some(cfg) = &step.config {
+            validate_config_block(cfg, uses, &field, &mut errors, &mut warnings);
         }
 
         if uses != "docker" {
@@ -650,51 +760,41 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         steps: parsed
             .steps
             .iter()
-            .map(|s| StepData {
-                name: s.name.clone(),
-                run: s.run.clone(),
-                uses: s.uses.clone(),
-                image: s.image.clone(),
-                volumes: s.volumes.as_ref().map(|v| v.join(",")),
-                host: s.host.as_ref().map(|h| match h {
-                    OneOrMany::One(s) => s.clone(),
-                    OneOrMany::Many(v) => v.join(","),
-                }),
-                host_labels: s.host_labels.as_ref().map(|h| match h {
-                    OneOrMany::One(s) => s.clone(),
-                    OneOrMany::Many(v) => v.join(","),
-                }),
-                dir: s.dir.clone(),
-                timeout: s.timeout.clone(),
-                retry: s.retry,
-                continue_on_error: s.continue_on_error,
-                secrets: s.secrets.clone(),
-                privileged: s.privileged,
-                registry_secret: s
-                    .registry_secret
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(str::to_string),
-                config_source: s
-                    .config_source
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(str::to_string),
-                config_path: s
-                    .config_path
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(str::to_string),
-                config_dir: s
-                    .config_dir
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(str::to_string),
-                env_render: s.env_render.clone(),
+            .map(|s| {
+                let (config_source, config_key_path, config_dest, config_render) =
+                    flatten_config(s.config.as_ref());
+                StepData {
+                    name: s.name.clone(),
+                    run: s.run.clone(),
+                    uses: s.uses.clone(),
+                    image: s.image.clone(),
+                    volumes: s.volumes.as_ref().map(|v| v.join(",")),
+                    host: s.host.as_ref().map(|h| match h {
+                        OneOrMany::One(s) => s.clone(),
+                        OneOrMany::Many(v) => v.join(","),
+                    }),
+                    host_labels: s.host_labels.as_ref().map(|h| match h {
+                        OneOrMany::One(s) => s.clone(),
+                        OneOrMany::Many(v) => v.join(","),
+                    }),
+                    dir: s.dir.clone(),
+                    timeout: s.timeout.clone(),
+                    retry: s.retry,
+                    continue_on_error: s.continue_on_error,
+                    secrets: s.secrets.clone(),
+                    privileged: s.privileged,
+                    registry_secret: s
+                        .registry_secret
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_string),
+                    config: s.config.clone(),
+                    config_source,
+                    config_key_path,
+                    config_dest,
+                    config_render,
+                }
             })
             .collect(),
     };

@@ -235,3 +235,5 @@ Job execution records. Includes `trigger_params` (JSON) for manual trigger input
 ### job_logs
 
 Chunked log storage. Unique constraint on `(job_id, chunk_index)` for idempotent uploads.
+
+Reads use `ORDER BY step_order, chunk_index`. Per-step index layout is defined by the Runner (`step_log_base` + offsets in `crates/runner/src/client/poll.rs`) so display order matches execution: prepare → config → config prep → login → exec → RUN → stream → result. See [Secrets Access Control — Log display order](../../01-architecture/secrets-access-control.md#log-display-order-chunk_index).

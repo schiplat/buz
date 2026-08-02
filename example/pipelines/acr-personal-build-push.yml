@@ -1,7 +1,7 @@
 # Build and push to Alibaba Cloud ACR Personal Edition via registry_secret.
 #
 # Prerequisites:
-#   1) Infrastructure → Secrets named `ACR_PERSONAL` (AES-256-GCM at rest).
+#   1) Secrets & Variables → Secrets named `ACR_PERSONAL` (AES-256-GCM at rest).
 #      Leave **Team share OFF** (default); this pipeline uses registry_secret only.
 #      {
 #        "provider": "acr_personal",

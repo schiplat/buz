@@ -518,7 +518,7 @@ pub async fn poll(
     let task_rows = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, image, volumes,
-                registry_secret, config_source, config_path, env_render, config_dir
+                registry_secret, config_source, config_key_path, config_render, config_dest
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&pipeline_id)
@@ -531,7 +531,7 @@ pub async fn poll(
     //
     // The secret `name` is BOTH the injected env key and the `${secrets.NAME}`
     // template reference (UPPER_SNAKE_CASE enforced at create). `secrets_by_name`
-    // is kept for `env_render` templates (${secrets.X}).
+    // is kept for `config_render` templates (${secrets.X}).
     let mut secrets: serde_json::Value = serde_json::json!({});
     let mut secrets_by_name: serde_json::Value = serde_json::json!({});
     let mut env: serde_json::Value = serde_json::json!({});
@@ -641,9 +641,9 @@ pub async fn poll(
         let volumes_raw: String = t.get(14);
         let registry_secret_name: String = t.get(15);
         let config_source_name: String = t.get(16);
-        let config_path_raw: String = t.get(17);
-        let env_render_raw: String = t.get(18);
-        let config_dir: String = t.get(19);
+        let config_key_path_raw: String = t.get(17);
+        let config_render_raw: String = t.get(18);
+        let config_dest: String = t.get(19);
 
         let mut task_json = serde_json::json!({
             "id": t.get::<String, _>(0),
@@ -660,10 +660,10 @@ pub async fn poll(
                 .unwrap_or(serde_json::Value::Array(vec![])),
             "registry_secret": &registry_secret_name,
             "config_source": &config_source_name,
-            "config_path": &config_path_raw,
-            "env_render": serde_json::from_str::<serde_json::Value>(&env_render_raw)
+            "config_key_path": &config_key_path_raw,
+            "config_render": serde_json::from_str::<serde_json::Value>(&config_render_raw)
                 .unwrap_or(serde_json::Value::Null),
-            "config_dir": &config_dir,
+            "config_dest": &config_dest,
         });
 
         // Values that must be redacted in the Runner's logs. Registered here — the
@@ -936,10 +936,7 @@ pub async fn poll(
                             shared::secret_kind::normalize_secret_kind(Some(&kind))
                         ));
                     } else {
-                        // Expand `$VAR` / `${VAR}` in config_path against env + secrets + trigger inputs.
-                        // Migrated to the unified `shared::value_source` expander (Lenient mode =
-                        // legacy `expand_var_refs` semantics: unresolved → empty string). Secrets
-                        // resolve by `name` — the same key they are injected as.
+                        // Expand `$VAR` / `${VAR}` in config_key_path (Lenient).
                         let mut config_vars = serde_json::json!({});
                         if let Some(obj) = env.as_object() {
                             for (k, v) in obj {
@@ -970,13 +967,13 @@ pub async fn poll(
                             secrets: std::collections::HashMap::new(),
                         };
                         let expanded_path = shared::value_source::expand(
-                            &config_path_raw,
+                            &config_key_path_raw,
                             &config_map,
                             shared::value_source::ExpandMode::Lenient,
                             shared::value_source::MissingPolicy::Blank,
                         )
                         .map(|e| e.content)
-                        .unwrap_or_else(|_| config_path_raw.clone());
+                        .unwrap_or_else(|_| config_key_path_raw.clone());
                         let object_key = {
                             let dir = expanded_path.trim().trim_matches('/');
                             if dir.is_empty() {
@@ -988,14 +985,14 @@ pub async fn poll(
                         match object_key {
                             None => {
                                 task_json["config_auth_error"] = serde_json::Value::String(
-                                    "config_source requires a non-empty 'config_path' (e.g. config_tpl/super-manager/v1.4.0)"
+                                    "config_source requires a non-empty 'config_key_path' (e.g. config_tpl/super-manager/v1.4.0)"
                                         .into(),
                                 );
                             }
                             Some(key) if key.contains('$') => {
                                 task_json["config_auth_error"] = serde_json::Value::String(
                                     format!(
-                                        "config_path '{config_path_raw}' left unresolved variable(s) '${}' — inputs are: {}",
+                                        "config_key_path '{config_key_path_raw}' left unresolved variable(s) '${}' — inputs are: {}",
                                         key.split('$').nth(1).unwrap_or(""),
                                         trigger_params
                                             .as_object()
@@ -1028,14 +1025,6 @@ pub async fn poll(
                                                         });
                                                         // SecretClass::ConfigUrl
                                                         log_mask_values.push(url.clone());
-
-                                                        // env_render resolves ${secrets.X} by secret
-                                                        // `name` — the same key secrets are injected as.
-                                                        // Only attached when a step opts in.
-                                                        if !env_render_raw.is_empty() {
-                                                            task_json["render_env_secrets"] =
-                                                                secrets_by_name.clone();
-                                                        }
                                                     }
                                                     Err(e) => {
                                                         task_json["config_auth_error"] =
@@ -1072,6 +1061,12 @@ pub async fn poll(
                     ));
                 }
             }
+        }
+
+        // `config_render` resolves `${secrets.X}` by secret name — attach for
+        // any step that opts into render (OSS sugar or render-only).
+        if !config_render_raw.is_empty() {
+            task_json["render_env_secrets"] = secrets_by_name.clone();
         }
 
         task_json["log_mask_values"] = serde_json::Value::Array(

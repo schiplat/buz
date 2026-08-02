@@ -10,7 +10,7 @@ description: Simple sleep-based pipeline for testing cancel and log streaming.
 team: default
 
 runner:
-  labels: [linux-x64]
+  labels: [macos]
   timeout: 5m
 
 concurrency:

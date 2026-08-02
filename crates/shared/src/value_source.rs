@@ -3,9 +3,9 @@
 //! Sits next to `log_masking` with the same producer/consumer shape — one
 //! expander, one `ValueMap`, callers choose strictness. Consumers:
 //!
-//! - **Manager**: `config_path` templating (`Lenient` mode, legacy `$tag`
+//! - **Manager**: `config_key_path` templating (`Lenient` mode, legacy `$tag`
 //!   syntax, unresolved → empty string).
-//! - **Runner**: `env_render` `.env` generation (`Strict` mode, fail-fast on
+//! - **Runner**: `config_render` `.env` generation (`Strict` mode, fail-fast on
 //!   unresolved references, residual detection against compose interpolation).
 
 use std::collections::HashMap;
@@ -23,10 +23,10 @@ pub enum ValueDomain {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpandMode {
     /// Legacy lenient behavior: unresolved refs expand to empty, non-reference
-    /// `$` kept as-is, no residual check. Used for `config_path` / host names.
+    /// `$` kept as-is, no residual check. Used for `config_key_path` / host names.
     Lenient,
     /// Fail-fast: unresolved references and leftover `${...}` are errors.
-    /// Used for `env_render`.
+    /// Used for `config_render`.
     Strict,
 }
 

@@ -20,16 +20,17 @@
 #   1) The image already exists in ACR HK:
 #        registry.cn-hongkong.aliyuncs.com/dadou/super-manager:<tag>
 #      (produced by hzbd/super-pro .github/workflows/release-manager.yml)
-#   2) Infrastructure → Secrets → New Secret `ACR_PERSONAL` (AES-256-GCM at rest):
+#   2) Secrets & Variables → Secrets → Add Secret `ACR_PERSONAL` (AES-256-GCM at rest):
 #        {
 #          "provider": "acr_personal",
 #          "registry": "registry.cn-hongkong.aliyuncs.com",
 #          "username": "<ACR login name>",
 #          "password": "<fixed password from ACR console>"
 #        }
-#      registry_secret lets the runner docker-login the TARGET server to ACR.
-#   3) Infrastructure → Hosts → register the target device (SSH key/vault/agent);
-#      set input `deploy_host` to that Host name.
+#      Secret names are UPPER_SNAKE_CASE. registry_secret lets the runner
+#      docker-login the TARGET server to ACR.
+#   3) Hosts → register the target device (SSH key/password/agent);
+#      set input `deploy_host` to that Host name (host: $deploy_host).
 #   4) First deploy only (one-time): create /opt/manager/.env on the server:
 #        DATABASE_URL=postgres://<user>:<pass>@host.docker.internal:5432/super_manager
 #        MANAGER_REDIS_URL=redis://host.docker.internal:6379/0

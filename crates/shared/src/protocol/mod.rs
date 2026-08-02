@@ -525,43 +525,25 @@ pub struct StepDef {
     /// Manager Secret name whose JSON value holds registry credentials for `docker login`.
     #[serde(default)]
     pub registry_secret: Option<String>,
-    /// Manager Secret name (kind=`oss`) for signed OSS config downloads.
+    /// Nested `config:` block (Phase 2b authoring shape).
+    #[serde(default)]
+    pub config: Option<crate::pipeline_yaml::ConfigBlock>,
+    /// OSS auth secret name (`config.source` / column `config_source`).
     #[serde(default)]
     pub config_source: Option<String>,
-    /// OSS object key (directory) — Manager appends `configs.tar.gz` when signing.
+    /// OSS object-key prefix (`config.key_path` / column `config_key_path`).
     #[serde(default)]
-    pub config_path: Option<String>,
-    /// Target directory where Buz unpacks the config bundle (`$BUZ_CONFIG_DIR`).
+    pub config_key_path: Option<String>,
+    /// Unpack directory (`config.dest` / column `config_dest`).
     #[serde(default)]
-    pub config_dir: Option<String>,
-    /// Declarative `.env` rendering after unpack, before the run block.
+    pub config_dest: Option<String>,
+    /// Render entries (`config.render` / column `config_render` JSON array).
     #[serde(default)]
-    pub env_render: Option<EnvRenderDef>,
+    pub config_render: Option<Vec<crate::pipeline_yaml::ConfigRenderEntry>>,
 }
 
-/// Declarative `.env` rendering for `config_source` steps (serialized shape).
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct EnvRenderDef {
-    /// Template file relative to `$BUZ_CONFIG_DIR` (e.g. `env.example`).
-    #[serde(default)]
-    pub template: Option<String>,
-    /// Output file relative to `$BUZ_CONFIG_DIR`; default `<template>.rendered`.
-    #[serde(default)]
-    pub output: Option<String>,
-    /// Output file mode (e.g. `0600`).
-    #[serde(default)]
-    pub mode: Option<String>,
-    /// `fail` (default) | `warn`.
-    #[serde(default)]
-    pub on_missing: Option<String>,
-    /// `recreate` (Phase 2; parsed but not yet enforced).
-    #[serde(default)]
-    pub on_change: Option<String>,
-    /// Compose services affected by this `.env` (Phase 2).
-    #[serde(default)]
-    pub services: Option<Vec<String>>,
-}
+/// Legacy name — prefer [`crate::pipeline_yaml::ConfigRenderEntry`].
+pub type EnvRenderDef = crate::pipeline_yaml::ConfigRenderEntry;
 
 // --- Secrets ---
 

@@ -83,8 +83,19 @@ export interface StepDef {
   registry_secret?: string
   /** Manager Secret name (kind=aliyun_oss_auth) for signed OSS config downloads. */
   config_source?: string
-  /** OSS object key (directory); Manager appends configs.tar.gz when signing. */
-  config_path?: string
+  /** OSS object-key prefix; Manager appends configs.tar.gz when signing. */
+  config_key_path?: string
+  /** Unpack / working directory → $BUZ_CONFIG_DIR. */
+  config_dest?: string
+  /** Render entries (`config.render` → column `config_render` JSON array). */
+  config_render?: Array<{
+    template?: string
+    output?: string
+    mode?: string
+    on_missing?: string
+    on_change?: string
+    services?: string[]
+  }>
 }
 
 export interface YamlValidationResult {
@@ -154,8 +165,19 @@ export interface YamlStepData {
   registry_secret?: string | null
   /** Manager Secret name (kind=aliyun_oss_auth) for signed OSS config downloads. */
   config_source?: string | null
-  /** OSS object key (directory); Manager appends configs.tar.gz when signing. */
-  config_path?: string | null
+  /** OSS object-key prefix; Manager appends configs.tar.gz when signing. */
+  config_key_path?: string | null
+  /** Unpack / working directory → $BUZ_CONFIG_DIR. */
+  config_dest?: string | null
+  /** Render entries flattened from nested `config.render`. */
+  config_render?: Array<{
+    template?: string | null
+    output?: string | null
+    mode?: string | null
+    on_missing?: string | null
+    on_change?: string | null
+    services?: string[] | null
+  }> | null
 }
 
 export interface YamlValidationError {

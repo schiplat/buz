@@ -1,6 +1,6 @@
 # Private registry login (ACR Personal Edition) for docker pull / push.
 #
-# 1) Create Infrastructure → Secrets named e.g. ACR_PERSONAL (encrypted at rest).
+# 1) Create Secrets & Variables → Secrets named e.g. ACR_PERSONAL (encrypted at rest).
 #    Leave **Team share OFF** (default) so unrelated pipelines never get this JSON as env.
 #    Value JSON (password never goes in this YAML file):
 #   {

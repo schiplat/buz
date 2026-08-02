@@ -375,7 +375,7 @@ onMounted(loadSecrets)
               <p class="text-[10px] text-muted-foreground mt-1 leading-relaxed">
                 UPPER_SNAKE_CASE — this name IS the injected env var (<code class="mono-chip text-[10px]">$NAME</code>),
                 the YAML binding (<code class="mono-chip text-[10px]">secrets: [NAME]</code>) and the
-                <code class="mono-chip text-[10px]">env_render</code> template key
+                <code class="mono-chip text-[10px]">config.render</code> template key
                 (<code class="mono-chip text-[10px]">{{ '${secrets.' + 'NAME' + '}' }}</code>). Auto-uppercased on save.
               </p>
             </div>
@@ -512,7 +512,7 @@ onMounted(loadSecrets)
                   <p class="text-[10px] text-muted-foreground leading-relaxed">
                     Create a <strong>read-only</strong> RAM user (AliyunReadOnlyAccess scoped to the bucket) and
                     paste its AK/SK. At job dispatch the Manager signs a short-lived GET URL for
-                    <code class="mono-chip text-[10px]">config_path</code>. The Runner downloads + unpacks the
+                    <code class="mono-chip text-[10px]">config.key_path</code>. The Runner downloads + unpacks the
                     bundle into <code class="mono-chip text-[10px]">$BUZ_CONFIG_DIR</code> before the run block.
                     The target never holds the AK/SK.
                   </p>

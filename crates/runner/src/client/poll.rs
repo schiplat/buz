@@ -13,24 +13,39 @@ use std::collections::{HashMap, HashSet};
 
 /// Per-step log chunk layout (`UNIQUE(job_id, chunk_index)`).
 ///
-/// Using a hard `0` for the RUN echo previously overwrote the docker-login
-/// banner on step 0 (`INSERT OR REPLACE`), so private-registry failures looked
-/// like "login never ran".
+/// Manager / Job Detail display logs with `ORDER BY step_order, chunk_index`,
+/// so these offsets must match **semantic** order (not merely upload time):
+///
+/// ```text
+///   0     ==> STAGE prepare     (verbose)
+///   1     ==> STEP CONFIG       (verbose)
+///   2     ==> CONFIG PREP       (verbose / debug)
+///   3     ==> LOGIN […]         (registry)
+///   4     ==> STAGE exec        (verbose)
+///   5     ==> RUN […]
+///   6…    streamed stdout/stderr
+///   9993  ==> STEP RESULT       (verbose; after stream)
+///   9997  ==> ERROR
+///   9998–9999  reserved meta
+/// ```
+///
+/// Verbose prep/config used to live at 9990+, which sorted **after** RUN +
+/// stream and made Verbose look "out of order" once the job reloaded from DB.
 pub(crate) fn step_log_base(step_idx: usize) -> i32 {
     (step_idx * 10_000) as i32
 }
 
-pub(crate) const LOG_LOGIN: i32 = 0;
-pub(crate) const LOG_ECHO: i32 = 1;
-pub(crate) const LOG_STREAM_START: i32 = 2;
+pub(crate) const LOG_STEP_VERBOSE_PREPARE: i32 = 0;
+pub(crate) const LOG_STEP_VERBOSE_CONFIG: i32 = 1;
+pub(crate) const LOG_STEP_VERBOSE_CONFIG_PREP: i32 = 2;
+pub(crate) const LOG_LOGIN: i32 = 3;
+pub(crate) const LOG_STEP_VERBOSE_EXEC: i32 = 4;
+pub(crate) const LOG_ECHO: i32 = 5;
+pub(crate) const LOG_STREAM_START: i32 = 6;
+pub(crate) const LOG_STEP_VERBOSE_RESULT: i32 = 9993;
 pub(crate) const LOG_STEP_ERROR: i32 = 9997;
 const LOG_STEP_META_A: i32 = 9998;
 const LOG_STEP_META_B: i32 = 9999;
-// Verbose-mode meta region (9990-9996, free below LOG_STEP_ERROR).
-const LOG_STEP_VERBOSE_PREPARE: i32 = 9990;
-const LOG_STEP_VERBOSE_CONFIG: i32 = 9991;
-const LOG_STEP_VERBOSE_EXEC: i32 = 9992;
-const LOG_STEP_VERBOSE_RESULT: i32 = 9993;
 
 /// Build a structured step header (shown before command output).
 ///
@@ -98,7 +113,11 @@ fn build_verbose_stage(stage: &str) -> String {
 /// Verbose-mode full step config — the execution shape the runner received.
 /// Renders only keys/metadata, never secret values (registry password, signed
 /// config URL, …), so it is safe for every user.
-fn build_verbose_step_config(
+///
+/// Uploaded **before** `config_source` prepare so a prepare-stage failure
+/// (e.g. OSS 404) still shows the step shape — previously STEP CONFIG only
+/// ran after a successful unpack, so Verbose looked identical to a normal run.
+pub(crate) fn build_verbose_step_config(
     step: &serde_json::Value,
     exec_type: &str,
     registry_secret_ref: &str,
@@ -124,8 +143,38 @@ fn build_verbose_step_config(
     push_field("image", step["image"].as_str().unwrap_or("").to_string());
     push_field("registry_secret", registry_secret_ref.to_string());
     if let Some(cs) = step["config_source"].as_str().filter(|s| !s.is_empty()) {
-        let cp = step["config_path"].as_str().unwrap_or("");
-        push_field("config", format!("{cs} (path: {cp})"));
+        let cp = step["config_key_path"].as_str().unwrap_or("");
+        push_field("config", format!("{cs} (key: {cp})"));
+    }
+    if let Some(cd) = step["config_dest"].as_str().filter(|s| !s.is_empty()) {
+        push_field("config_dest", cd.to_string());
+    }
+    if let Some(er) = step.get("config_render").filter(|v| !v.is_null()) {
+        let pairs: Vec<String> = if let Some(arr) = er.as_array() {
+            arr.iter()
+                .filter_map(|e| {
+                    let t = e.get("template")?.as_str()?;
+                    let o = e
+                        .get("output")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(".env");
+                    Some(format!("{t} → {o}"))
+                })
+                .collect()
+        } else {
+            let t = er
+                .get("template")
+                .and_then(|v| v.as_str())
+                .unwrap_or("env.example");
+            let o = er
+                .get("output")
+                .and_then(|v| v.as_str())
+                .unwrap_or(".env");
+            vec![format!("{t} → {o}")]
+        };
+        if !pairs.is_empty() {
+            push_field("config_render", pairs.join(", "));
+        }
     }
     if let Some(hosts) = step["hosts"].as_array() {
         let joined: Vec<&str> = hosts.iter().filter_map(|h| h.as_str()).collect();
@@ -136,8 +185,49 @@ fn build_verbose_step_config(
     out
 }
 
+/// Banner for the config prepare stage (OSS deliver and/or `config_render`).
+///
+/// Always safe for Verbose (URL redacted). In Debug mode the signed URL is
+/// printed in full — that is the main visible difference for prepare-only
+/// failures like OSS 404, where no RUN echo ever happens.
+pub(crate) fn build_config_prep_banner(step: &serde_json::Value, debug_unredact: bool) -> String {
+    let mut out = String::from("==> CONFIG PREP\n");
+    let mut push_field = |label: &str, value: String| {
+        if !value.is_empty() {
+            out.push_str(&format!("  {label:<16} {value}\n"));
+        }
+    };
+    if let Some(cs) = step["config_source"].as_str().filter(|s| !s.is_empty()) {
+        push_field("source", cs.to_string());
+    }
+    if let Some(dest) = step["config_dest"].as_str().filter(|s| !s.is_empty()) {
+        push_field("dest", dest.to_string());
+    }
+    if let Some(auth) = step.get("config_auth") {
+        if let Some(key) = auth.get("object_key").and_then(|v| v.as_str()) {
+            push_field("object_key", key.to_string());
+        }
+        if let Some(ttl) = auth.get("expires_in_secs").and_then(|v| v.as_u64()) {
+            push_field("expires_in", format!("{ttl}s"));
+        }
+        if let Some(url) = auth.get("url").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            if debug_unredact {
+                push_field("url", url.to_string());
+            } else {
+                push_field("url", "***".into());
+            }
+        }
+    } else if step
+        .get("config_render")
+        .is_some_and(|v| !v.is_null())
+    {
+        push_field("mode", "render-only".into());
+    }
+    out
+}
+
 /// Verbose-mode step result summary (duration + exit code).
-fn build_verbose_step_result(duration: Duration, exit_code: i32) -> String {
+pub(crate) fn build_verbose_step_result(duration: Duration, exit_code: i32) -> String {
     let dur = if duration.as_secs_f64() >= 1.0 {
         format!("{:.2}s", duration.as_secs_f64())
     } else {
@@ -484,18 +574,28 @@ async fn execute_job(
         }
     }
 
-    // Build the `env_render` ValueMap once per job:
-    // - `secrets` domain resolves `${secrets.X}` by logical name from
-    //   `render_env_secrets` (attached by the Manager when a step opts in);
+    // Build the `config_render` ValueMap once per job:
+    // - `secrets` domain resolves `${secrets.X}` by logical name from job
+    //   `secrets` plus per-step `render_env_secrets` (Manager attaches the
+    //   latter when a step has `config_render`);
     // - `vars` domain is pipeline env + trigger inputs (both `NAME` /
-    //   `INPUT_NAME` forms), with `masking: true` inputs excluded (Review R2
-    //   #3) so a sensitive trigger value can never route into `.env` via the
+    //   `INPUT_NAME` forms), with `masking: true` inputs excluded so a
+    //   sensitive trigger value can never route into `.env` via the
     //   non-sensitive namespace.
     let mut render_values = ValueMap::new();
-    if let Some(obj) = task.get("render_env_secrets").and_then(|v| v.as_object()) {
+    if let Some(obj) = task.get("secrets").and_then(|v| v.as_object()) {
         for (k, v) in obj {
             if let Some(s) = v.as_str() {
                 render_values.secrets.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    for step in tasks {
+        if let Some(obj) = step.get("render_env_secrets").and_then(|v| v.as_object()) {
+            for (k, v) in obj {
+                if let Some(s) = v.as_str() {
+                    render_values.secrets.insert(k.clone(), s.to_string());
+                }
             }
         }
     }
@@ -600,10 +700,9 @@ async fn execute_job(
             catalog.add_injected_key("BUZ_CONFIG_URL".to_string());
         }
 
-        // Sensitive values are registered once by the Manager in `log_mask_values`
-        // (registry password, OSS signed URL, …). The Runner no longer needs to know
-        // which step fields carry secrets — adding one is a Manager-only change.
-        if let Some(values) = task.get("log_mask_values").and_then(|v| v.as_array()) {
+        // Sensitive values are registered by the Manager per step in
+        // `log_mask_values` (registry password, OSS signed URL, …).
+        if let Some(values) = step.get("log_mask_values").and_then(|v| v.as_array()) {
             for v in values.iter().filter_map(|x| x.as_str()) {
                 catalog.add_value(v.to_string());
             }
@@ -623,8 +722,15 @@ async fn execute_job(
 
         let log_base = step_log_base(idx);
 
-        // Verbose mode: record when the step started and mark the prepare stage.
+        // Verbose mode: stage marker + STEP CONFIG up front (before prepare /
+        // registry fail-fast) so a prepare-stage failure still shows the step
+        // shape. Debug alone does not emit these — it only unmasks values.
         let step_started = std::time::Instant::now();
+        let registry_secret_ref_early = step
+            .get("registry_secret")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
         if verbose {
             let _ = super::logs::upload_chunk(
                 client,
@@ -635,6 +741,19 @@ async fn execute_job(
                     chunk_index: log_base + LOG_STEP_VERBOSE_PREPARE,
                     step_order: idx as i32,
                     content: build_verbose_stage("prepare"),
+                },
+            )
+            .await;
+            let cfg = build_verbose_step_config(step, exec_type, registry_secret_ref_early);
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_VERBOSE_CONFIG,
+                    step_order: idx as i32,
+                    content: cfg,
                 },
             )
             .await;
@@ -712,51 +831,118 @@ async fn execute_job(
                 },
             )
             .await;
+            if verbose {
+                let result = build_verbose_step_result(step_started.elapsed(), -1);
+                let _ = super::logs::upload_chunk(
+                    client,
+                    config,
+                    token,
+                    job_id,
+                    LogChunk {
+                        chunk_index: log_base + LOG_STEP_VERBOSE_RESULT,
+                        step_order: idx as i32,
+                        content: result,
+                    },
+                )
+                .await;
+            }
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
             anyhow::bail!(msg);
         }
 
-        // ── config_source internal unpack + env_render ───────────────────────
-        // Sequencing (design env-render.md): download → unpack → render →
-        // run block. Only runs when the Manager attached `config_auth` (i.e.
-        // the step's config_source resolved to a signed OSS URL). The run
-        // block then starts with `$BUZ_CONFIG_DIR` pointing at the unpacked
-        // bundle and (when env_render is set) the output file already written.
+        // ── config prepare: OSS deliver and/or config_render ─────────────────
+        // OSS: download → unpack → [render] → run.
+        // Render-only: templates already at dest (shell in place / SSH fetch→
+        // render on Runner → upload). See config-block.md.
+        //
+        // Prepare failures MUST be reported with this step's `step_order` (not
+        // the job-level -1 catch in `run_one_job`) so Job Detail attaches the
+        // ERROR to the correct terminal without frontend guessing.
         let mut config_prep: Option<super::config_source::ConfigPrep> = None;
-        if step.get("config_auth").is_some() {
-            let prep = if exec_type == "ssh" {
+        if super::config_source::needs_prepare(step) {
+            // Verbose / Debug: show dest / object_key (+ URL when debug) before
+            // prepare so prepare-only failures still differ from a normal run.
+            if verbose || debug_unredact {
+                let _ = super::logs::upload_chunk(
+                    client,
+                    config,
+                    token,
+                    job_id,
+                    LogChunk {
+                        chunk_index: log_base + LOG_STEP_VERBOSE_CONFIG_PREP,
+                        step_order: idx as i32,
+                        content: build_config_prep_banner(step, debug_unredact),
+                    },
+                )
+                .await;
+            }
+            let prep_result = if exec_type == "ssh" {
                 let conns = resolve_ssh_conns(step, config);
                 if conns.is_empty() {
                     // The SSH branch below reports the missing-host error.
-                    None
+                    Ok(None)
                 } else {
-                    Some(
-                        super::config_source::prepare_ssh(
-                            client,
-                            step,
-                            &conns,
-                            Path::new(&config.runner.workspace_dir),
-                            job_id,
-                            idx,
-                            &render_values,
-                            step_timeout,
-                        )
-                        .await?,
-                    )
-                }
-            } else {
-                Some(
-                    super::config_source::prepare_local(
+                    super::config_source::prepare_ssh(
                         client,
                         step,
+                        &conns,
                         Path::new(&config.runner.workspace_dir),
+                        job_id,
                         idx,
                         &render_values,
+                        step_timeout,
                     )
-                    .await?,
+                    .await
+                    .map(Some)
+                }
+            } else {
+                super::config_source::prepare_local(
+                    client,
+                    step,
+                    Path::new(&config.runner.workspace_dir),
+                    idx,
+                    &render_values,
                 )
+                .await
+                .map(Some)
             };
-            config_prep = prep;
+            match prep_result {
+                Ok(prep) => config_prep = prep,
+                Err(e) => {
+                    let msg = e.to_string();
+                    let _ = super::logs::upload_chunk(
+                        client,
+                        config,
+                        token,
+                        job_id,
+                        LogChunk {
+                            chunk_index: log_base + LOG_STEP_ERROR,
+                            step_order: idx as i32,
+                            content: format!("==> ERROR\n{msg}\n"),
+                        },
+                    )
+                    .await;
+                    if verbose {
+                        let result =
+                            build_verbose_step_result(step_started.elapsed(), -1);
+                        let _ = super::logs::upload_chunk(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            LogChunk {
+                                chunk_index: log_base + LOG_STEP_VERBOSE_RESULT,
+                                step_order: idx as i32,
+                                content: result,
+                            },
+                        )
+                        .await;
+                    }
+                    update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
+                        .await?;
+                    anyhow::bail!(msg);
+                }
+            }
         }
 
         // Inject BUZ_CONFIG_DIR / BUZ_ENV_CHANGED(_KEYS) into the step env and
@@ -773,11 +959,7 @@ async fn execute_job(
             }
         }
 
-        let registry_secret_ref = step
-            .get("registry_secret")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
+        let registry_secret_ref = registry_secret_ref_early;
 
         let registry_login = step.get("registry_auth").and_then(|a| {
             let registry = a.get("registry")?.as_str()?.trim();
@@ -823,22 +1005,8 @@ async fn execute_job(
             anyhow::bail!(msg);
         }
 
-        // Verbose mode: full step config + exec-stage marker, uploaded right
-        // before execution so they appear in the correct order.
+        // Verbose: exec-stage marker only (STEP CONFIG already uploaded above).
         if verbose {
-            let cfg = build_verbose_step_config(step, exec_type, registry_secret_ref);
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_VERBOSE_CONFIG,
-                    step_order: idx as i32,
-                    content: cfg,
-                },
-            )
-            .await;
             let _ = super::logs::upload_chunk(
                 client,
                 config,
@@ -1419,8 +1587,8 @@ async fn execute_job(
             let hint = step_failure_hint(&output.stderr, output.exit_code);
             let msg = build_step_failure_message(step_name, output.exit_code, command, &hint);
             // Upload the failure into this step's terminal so it is visible in the
-            // UI. run_one_job's global error chunk uses step_order=-1 which the
-            // frontend does not render into any step terminal.
+            // UI. Prefer step_order=idx over run_one_job's global -1 catch — the
+            // frontend maps -1 as a fallback, but per-step errors must not rely on it.
             let _ = super::logs::upload_chunk(
                 client,
                 config,

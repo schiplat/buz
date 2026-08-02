@@ -277,22 +277,23 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
 
-    // OSS config delivery (config_source / config_path) for `config_source` steps.
+    // OSS config delivery + render (Config Block DSL v2 column names).
     let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_source TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await;
+    // Legacy columns (pre-2b) — may still exist on upgraded DBs until cut-over below.
     let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_path TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await;
-
-    // env_render config for config_source steps (template/output/mode/... JSON).
     let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN env_render TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await;
-    // config_source unpack target directory (empty → runner picks a temp dir).
     let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_dir TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await;
+
+    // Phase 2b D2: rename to config_key_path / config_dest / config_render (one-shot).
+    migrate_tasks_config_block_columns(pool).await?;
 
     // ── Secret name/env_name merge ──
     // Design decision: the secret `name` IS the injected env key and the
@@ -300,20 +301,75 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // New secrets must be UPPER_SNAKE_CASE (enforced at create). For legacy
     // rows that had a distinct env_name, backfill it into `name` (only when it
     // does not collide with another secret's name), then drop the column.
-    let _ = sqlx::query(
-        "UPDATE secrets
-         SET name = env_name
-         WHERE env_name != '' AND env_name != name
-           AND NOT EXISTS (
-               SELECT 1 FROM secrets s2
-               WHERE s2.name = secrets.env_name AND s2.id != secrets.id
-           )",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query("ALTER TABLE secrets DROP COLUMN env_name")
-        .execute(pool)
-        .await;
+    //
+    // Colliding rows keep their old `name` and permanently lose `env_name`
+    // when the column is dropped — warn so operators can rename manually.
+    {
+        let has_env_name: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('secrets') WHERE name = 'env_name'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(false);
+
+        if has_env_name {
+            let collisions = sqlx::query_as::<_, (String, String, String)>(
+                "SELECT secrets.id, secrets.name, secrets.env_name
+                 FROM secrets
+                 WHERE env_name != '' AND env_name != name
+                   AND EXISTS (
+                       SELECT 1 FROM secrets s2
+                       WHERE s2.name = secrets.env_name AND s2.id != secrets.id
+                   )",
+            )
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+
+            for (id, name, env_name) in &collisions {
+                tracing::warn!(
+                    secret_id = %id,
+                    old_name = %name,
+                    env_name = %env_name,
+                    "secret env_name→name merge skipped: env_name already used by another secret; \
+                     rename manually (Update API cannot change name — delete + recreate), \
+                     then update pipeline refs to the UPPER_SNAKE_CASE name"
+                );
+            }
+
+            match sqlx::query(
+                "UPDATE secrets
+                 SET name = env_name
+                 WHERE env_name != '' AND env_name != name
+                   AND NOT EXISTS (
+                       SELECT 1 FROM secrets s2
+                       WHERE s2.name = secrets.env_name AND s2.id != secrets.id
+                   )",
+            )
+            .execute(pool)
+            .await
+            {
+                Ok(r) => {
+                    if r.rows_affected() > 0 {
+                        tracing::info!(
+                            rows = r.rows_affected(),
+                            "secret env_name→name merge: backfilled name from env_name"
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!("secret env_name→name merge UPDATE failed: {e}"),
+            }
+
+            if let Err(e) = sqlx::query("ALTER TABLE secrets DROP COLUMN env_name")
+                .execute(pool)
+                .await
+            {
+                tracing::warn!("secret env_name DROP COLUMN failed (may already be gone): {e}");
+            } else {
+                tracing::info!("secret env_name column dropped");
+            }
+        }
+    }
 
     // Add credential_data column to hosts — stores key content or password in DB
     let _ = sqlx::query("ALTER TABLE hosts ADD COLUMN credential_data TEXT NOT NULL DEFAULT ''")
@@ -591,6 +647,93 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     backfill_registry_secret_kind(pool, jwt_secret).await?;
 
     tracing::info!("Database migrations applied successfully");
+    Ok(())
+}
+
+/// Cut over `tasks` config columns to Config Block DSL v2 names (one-shot, no dual-read).
+///
+/// `config_path` → `config_key_path`, `config_dir` → `config_dest`,
+/// `env_render` → `config_render` (JSON array; wrap legacy single object).
+async fn tasks_has_column(pool: &SqlitePool, name: &str) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('tasks') WHERE name = ?",
+    )
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false)
+}
+
+async fn migrate_tasks_config_block_columns(pool: &SqlitePool) -> anyhow::Result<()> {
+    use sqlx::Row;
+
+    let _ = sqlx::query(
+        "ALTER TABLE tasks ADD COLUMN config_key_path TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_dest TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query(
+        "ALTER TABLE tasks ADD COLUMN config_render TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+
+    if tasks_has_column(pool, "config_path").await {
+        sqlx::query(
+            "UPDATE tasks SET config_key_path = config_path \
+             WHERE config_key_path = '' AND config_path != ''",
+        )
+        .execute(pool)
+        .await?;
+    }
+    if tasks_has_column(pool, "config_dir").await {
+        sqlx::query(
+            "UPDATE tasks SET config_dest = config_dir \
+             WHERE config_dest = '' AND config_dir != ''",
+        )
+        .execute(pool)
+        .await?;
+    }
+    if tasks_has_column(pool, "env_render").await {
+        let rows = sqlx::query(
+            "SELECT id, env_render FROM tasks \
+             WHERE env_render != '' AND (config_render = '' OR config_render IS NULL)",
+        )
+        .fetch_all(pool)
+        .await?;
+        for row in rows {
+            let id: String = row.get(0);
+            let raw: String = row.get(1);
+            let normalized = match serde_json::from_str::<serde_json::Value>(&raw) {
+                Ok(serde_json::Value::Array(_)) => raw,
+                Ok(serde_json::Value::Object(_)) => format!("[{raw}]"),
+                Ok(other) if !other.is_null() => {
+                    serde_json::to_string(&serde_json::json!([other])).unwrap_or_default()
+                }
+                _ => String::new(),
+            };
+            if !normalized.is_empty() {
+                sqlx::query("UPDATE tasks SET config_render = ? WHERE id = ?")
+                    .bind(&normalized)
+                    .bind(&id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+    }
+
+    for legacy in ["config_path", "config_dir", "env_render"] {
+        if tasks_has_column(pool, legacy).await {
+            let q = format!("ALTER TABLE tasks DROP COLUMN {legacy}");
+            match sqlx::query(&q).execute(pool).await {
+                Ok(_) => tracing::info!("Dropped tasks.{legacy} (config-block v2 cut-over)"),
+                Err(e) => tracing::warn!("Could not DROP tasks.{legacy}: {e}"),
+            }
+        }
+    }
     Ok(())
 }
 

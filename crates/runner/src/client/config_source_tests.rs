@@ -11,6 +11,18 @@ fn step_with(value: serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
+fn needs_prepare_detects_auth_and_render() {
+    assert!(!needs_prepare(&serde_json::json!({})));
+    assert!(!needs_prepare(&serde_json::json!({ "config_dest": "/opt/x" })));
+    assert!(needs_prepare(&serde_json::json!({
+        "config_auth": { "url": "https://example.com/a" }
+    })));
+    assert!(needs_prepare(&serde_json::json!({
+        "config_render": { "template": "env.example", "output": ".env" }
+    })));
+}
+
+#[test]
 fn config_url_missing_is_error() {
     let step = serde_json::json!({});
     assert!(config_url(&step).is_err());
@@ -28,53 +40,55 @@ fn config_url_extracts_signed_url() {
 }
 
 #[test]
-fn env_render_spec_defaults() {
+fn config_render_specs_defaults() {
     let step = serde_json::json!({
-        "env_render": { "template": "env.example" }
+        "config_render": { "template": "env.example" }
     });
-    let spec = env_render_spec(&step).unwrap().unwrap();
-    assert_eq!(spec.template, "env.example");
-    assert_eq!(spec.output, "env.example.rendered");
-    assert_eq!(spec.mode, 0o600);
-    assert!(matches!(spec.on_missing, MissingPolicy::Fail));
+    let specs = config_render_specs(&step).unwrap();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].template, "env.example");
+    assert_eq!(specs[0].output, "env.example.rendered");
+    assert_eq!(specs[0].mode, 0o600);
+    assert!(matches!(specs[0].on_missing, MissingPolicy::Fail));
 }
 
 #[test]
-fn env_render_spec_full() {
+fn config_render_specs_full_array() {
     let step = serde_json::json!({
-        "env_render": {
+        "config_render": [{
             "template": "env.example",
             "output": ".env",
             "mode": "0640",
             "on_missing": "warn",
-        }
+        }]
     });
-    let spec = env_render_spec(&step).unwrap().unwrap();
-    assert_eq!(spec.output, ".env");
-    assert_eq!(spec.mode, 0o640);
-    assert!(matches!(spec.on_missing, MissingPolicy::Warn));
+    let specs = config_render_specs(&step).unwrap();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].output, ".env");
+    assert_eq!(specs[0].mode, 0o640);
+    assert!(matches!(specs[0].on_missing, MissingPolicy::Warn));
 }
 
 #[test]
-fn env_render_spec_rejects_missing_template() {
-    let step = serde_json::json!({ "env_render": { "output": ".env" } });
-    assert!(env_render_spec(&step).unwrap_err().contains("template"));
+fn config_render_specs_rejects_missing_template() {
+    let step = serde_json::json!({ "config_render": { "output": ".env" } });
+    assert!(config_render_specs(&step).unwrap_err().contains("template"));
 }
 
 #[test]
-fn env_render_spec_rejects_bad_mode() {
-    let step = serde_json::json!({ "env_render": { "template": "t", "mode": "notoctal" } });
-    assert!(env_render_spec(&step).unwrap_err().contains("octal"));
+fn config_render_specs_rejects_bad_mode() {
+    let step = serde_json::json!({ "config_render": { "template": "t", "mode": "notoctal" } });
+    assert!(config_render_specs(&step).unwrap_err().contains("octal"));
 }
 
 #[test]
 fn resolve_dirs() {
     let root = Path::new("/ws");
-    let abs = step_with(serde_json::json!({ "config_dir": "/opt/manager" }));
+    let abs = step_with(serde_json::json!({ "config_dest": "/opt/manager" }));
     assert_eq!(resolve_local_dir(&abs, root, 3), Path::new("/opt/manager"));
     assert_eq!(resolve_remote_dir(&abs, "j1", 3), "/opt/manager");
 
-    let rel = step_with(serde_json::json!({ "config_dir": "stack" }));
+    let rel = step_with(serde_json::json!({ "config_dest": "stack" }));
     assert_eq!(resolve_local_dir(&rel, root, 3), Path::new("/ws/stack"));
     assert_eq!(resolve_remote_dir(&rel, "j1", 3), "/tmp/buz-config/stack");
 
@@ -232,5 +246,119 @@ fn write_atomic_writes_mode_and_replaces() {
     assert!(
         leftovers.is_empty(),
         "temp files left behind: {leftovers:?}"
+    );
+}
+
+#[tokio::test]
+async fn prepare_local_render_only_writes_env() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("cfg");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(
+        dest.join("env.example"),
+        "MANAGER_IMAGE=${vars.IMAGE}\nMANAGER_TOKEN=${secrets.TOKEN}\n",
+    )
+    .unwrap();
+
+    let step = serde_json::json!({
+        "config_dest": dest.to_string_lossy(),
+        "config_render": [{
+            "template": "env.example",
+            "output": ".env",
+            "mode": "0600",
+            "on_missing": "fail",
+        }]
+    });
+    let client = reqwest::Client::new();
+    let prep = prepare_local(&client, &step, tmp.path(), 0, &value_map())
+        .await
+        .unwrap();
+    assert_eq!(
+        prep.env.get("BUZ_CONFIG_DIR").map(String::as_str),
+        Some(dest.to_string_lossy().as_ref())
+    );
+    assert_eq!(prep.env.get("BUZ_ENV_CHANGED").map(String::as_str), Some("1"));
+    let env = std::fs::read_to_string(dest.join(".env")).unwrap();
+    assert!(env.contains("MANAGER_TOKEN=tok_secret_value"));
+    assert!(prep.forced_redact.contains(&"tok_secret_value".to_string()));
+}
+
+#[tokio::test]
+async fn prepare_local_render_only_missing_dest_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = tmp.path().join("no-such-dir");
+    let step = serde_json::json!({
+        "config_dest": missing.to_string_lossy(),
+        "config_render": { "template": "env.example", "output": ".env" }
+    });
+    let client = reqwest::Client::new();
+    let err = prepare_local(&client, &step, tmp.path(), 0, &value_map())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("does not exist"), "got: {err}");
+}
+
+#[tokio::test]
+async fn prepare_local_render_only_missing_template_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("cfg");
+    std::fs::create_dir_all(&dest).unwrap();
+    let step = serde_json::json!({
+        "config_dest": dest.to_string_lossy(),
+        "config_render": { "template": "missing.tpl", "output": ".env" }
+    });
+    let client = reqwest::Client::new();
+    let err = prepare_local(&client, &step, tmp.path(), 0, &value_map())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("template"), "got: {err}");
+}
+
+#[test]
+fn apply_renders_unions_changed_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("cfg");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(dest.join("a.tpl"), "A=${vars.IMAGE}\n").unwrap();
+    std::fs::write(dest.join("b.tpl"), "B=${secrets.TOKEN}\n").unwrap();
+    let specs = vec![
+        EnvRenderSpec {
+            template: "a.tpl".into(),
+            output: "a.env".into(),
+            mode: 0o600,
+            on_missing: MissingPolicy::Fail,
+        },
+        EnvRenderSpec {
+            template: "b.tpl".into(),
+            output: "b.env".into(),
+            mode: 0o600,
+            on_missing: MissingPolicy::Fail,
+        },
+    ];
+    let (changed, _) = apply_renders_local(&dest, &specs, &value_map(), "render-only").unwrap();
+    assert_eq!(changed, vec!["A".to_string(), "B".to_string()]);
+}
+
+#[test]
+fn apply_renders_on_missing_warn_does_not_fail() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("cfg");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(dest.join("env.example"), "X=${secrets.MISSING}\nY=ok\n")
+        .unwrap();
+    let specs = vec![EnvRenderSpec {
+        template: "env.example".into(),
+        output: ".env".into(),
+        mode: 0o600,
+        on_missing: MissingPolicy::Warn,
+    }];
+    apply_renders_local(&dest, &specs, &value_map(), "render-only").unwrap();
+    let env = std::fs::read_to_string(dest.join(".env")).unwrap();
+    assert!(env.contains("Y=ok"), "got: {env}");
+    assert!(
+        env.contains("WARNING") || env.contains("X="),
+        "warn mode should keep the line or emit a warning: {env}"
     );
 }

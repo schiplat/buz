@@ -504,6 +504,40 @@ Full orchestration (prepare → build → push → verify): `example/pipelines/a
 
 ---
 
+#### `config`
+
+Nested **config block** for OSS delivery and/or declarative render (shell / local / ssh;
+render not allowed on docker). Prefer **two steps**: deliver, then render-only.
+
+```yaml
+# OSS deliver — unpack only
+config:
+  source: OSS_CONFIG          # Secret kind = Aliyun OSS auth
+  key_path: config_tpl/app/$tag
+  dest: /opt/app              # → $BUZ_CONFIG_DIR
+
+# Render-only — templates already at dest
+config:
+  dest: /opt/app
+  render:
+    - template: env.example
+      output: .env
+      mode: "0600"
+      on_missing: fail
+```
+
+Flat `config_source` / `config_path` / `config_dir` / `env_render` are **rejected**.
+Full rules, DB columns, and engines: [Config Block DSL v2](/docs/01-architecture/config-block/).
+Render engine details: [Env Render](/docs/01-architecture/env-render/).
+
+| | |
+|---|---|
+| YAML | nested `config:` |
+| Form | Config (mode: None / OSS deliver / Render only / Deliver+render) |
+| Runtime | `$BUZ_CONFIG_DIR`, `$BUZ_ENV_CHANGED`, `$BUZ_ENV_CHANGED_KEYS` |
+
+---
+
 #### `host` / `host_labels` (SSH)
 
 **SSH only.** Provide **at least one** of `host` or `host_labels` (validator: requires `host` **or** `host_labels`). Neither field alone is mandatory. When both are set they form a **union** (deduplicated).
@@ -625,6 +659,7 @@ When using the "Import to Form" feature after validating YAML, all fields are au
 | `steps[].uses` | Engine | Step | Local/SSH/Docker |
 | `steps[].image` | Image | Step | Required when Engine is Docker |
 | `steps[].registry_secret` | Registry Secret | Step | Shell / SSH / Docker; Secret JSON for registry login |
+| `steps[].config` | Config | Step | Nested deliver / render; import flattens to `config_source` / `config_key_path` / `config_dest` / `config_render` |
 | `steps[].host` | SSH Host | Step | Optional alone; **at least one** of host / host_labels required for SSH |
 | `steps[].host_labels` | Host Labels | Step | Optional alone; union (OR) with `host` |
 | `steps[].work_dir` / `steps[].dir` | Work Dir | Step | Both YAML keys accepted |

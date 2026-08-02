@@ -9,7 +9,7 @@ description: "Verify uses: docker executes run: inside alpine on the runner."
 team: default
 
 on:
-  manual: 
+  manual:
     inputs:
       version:
         description: Version to deploy
@@ -23,7 +23,8 @@ env:
   SMOKE_ENV: from-pipeline
 
 # Explicit pipeline secrets bind (Team share not required).
-# Create DOCKER_REGISTRY_PASS under the same team, or enable Team share for auto-inject.
+# Create DOCKER_REGISTRY_PASS under Secrets & Variables → Secrets (same team),
+# or enable Team share for auto-inject. Secret names are UPPER_SNAKE_CASE.
 secrets:
   - DOCKER_REGISTRY_PASS
 

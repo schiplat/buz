@@ -31,7 +31,7 @@ export function normalizeSecretKind(raw: string | null | undefined): SecretKind 
 }
 
 /** Secret names must be UPPER_SNAKE_CASE — they are injected as env vars and
- * referenced as `${secrets.NAME}` in env_render templates. */
+ * referenced as `${secrets.NAME}` in config.render templates. */
 export function validateSecretName(raw: string): string | null {
   const name = raw.trim()
   if (!name) return 'Name is required'

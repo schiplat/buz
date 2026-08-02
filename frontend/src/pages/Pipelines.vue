@@ -11,6 +11,12 @@ import {
   normalizeInputDefsForForm,
   normalizeInputDefsForSave,
 } from '@/utils/pipelineInputs'
+import {
+  normalizeConfigRender,
+  serializeConfigForApi,
+  validateStepConfig,
+} from '@/utils/configForm'
+import StepConfigBlock from '@/components/pipeline/StepConfigBlock.vue'
 import { secretsApi } from '@/api/secrets'
 import { variablesApi } from '@/api/variables'
 import { teamsApi, type Team } from '@/api/teams'
@@ -392,8 +398,10 @@ async function openEdit(p: Pipeline) {
         continue_on_error: t.fail_strategy === 'continue' ? true : undefined,
         privileged: (t as any).privileged === true ? true : undefined,
         registry_secret: (t.registry_secret || '').trim() || undefined,
-        config_source: ((t as any).config_source || '').trim() || undefined,
-        config_path: ((t as any).config_path || '').trim() || undefined,
+        config_source: ((t as any).config_source || '').trim() || '',
+        config_key_path: ((t as any).config_key_path || '').trim() || '',
+        config_dest: ((t as any).config_dest || '').trim() || '',
+        config_render: normalizeConfigRender((t as any).config_render),
       })),
       input_defs: normalizeInputDefsForForm(detail.input_defs),
     }
@@ -431,7 +439,17 @@ function rowsToVolumesArray(rows: VolumeRow[]): string[] | undefined {
 
 function addStep() {
   const idx = form.value.steps.length
-  form.value.steps.push({ name: '', run: '', uses: 'shell', volumes: [] as any, secrets: [] })
+  form.value.steps.push({
+    name: '',
+    run: '',
+    uses: 'shell',
+    volumes: [] as any,
+    secrets: [],
+    config_source: '',
+    config_key_path: '',
+    config_dest: '',
+    config_render: [],
+  })
   expandedSteps.add(idx)
 }
 
@@ -578,8 +596,10 @@ async function importYamlToForm() {
         continue_on_error: s.continue_on_error || undefined,
         privileged: s.privileged || undefined,
         registry_secret: s.registry_secret || undefined,
-        config_source: (s as any).config_source || undefined,
-        config_path: (s as any).config_path || undefined,
+        config_source: (s as any).config_source || '',
+        config_key_path: (s as any).config_key_path || '',
+        config_dest: (s as any).config_dest || '',
+        config_render: normalizeConfigRender((s as any).config_render),
       })),
       input_defs: normalizeInputDefsForForm(
         (parsed.trigger_config?.inputs || []).map((inp) => ({
@@ -622,6 +642,11 @@ async function handleSave() {
         alert(`Step "${s.name || 'unnamed'}": SSH requires SSH Host and/or Host Labels`)
         return
       }
+    }
+    const configErr = validateStepConfig(s as any)
+    if (configErr) {
+      alert(`Step "${s.name || 'unnamed'}": ${configErr}`)
+      return
     }
   }
 
@@ -667,8 +692,7 @@ async function handleSave() {
           volumes: volumesArray,
           privileged: isDocker ? (s as any).privileged === true || undefined : undefined,
           registry_secret: ((s as any).registry_secret || '').trim() || undefined,
-          config_source: ((s as any).config_source || '').trim() || undefined,
-          config_path: ((s as any).config_path || '').trim() || undefined,
+          ...serializeConfigForApi(s as any),
           host: isDocker
             ? undefined
             : rawHost
@@ -1169,7 +1193,7 @@ async function handleToggleActive(p: Pipeline) {
             <span class="text-sm leading-snug">
               <span class="font-medium">Verbose mode — extra execution detail</span>
               <span class="block text-xs text-muted-foreground">
-                Logs per step: duration, exit code, full step config and stage progress. Secrets stay redacted.
+                Logs per step: STAGE markers, STEP CONFIG (incl. config_source / config_render), CONFIG PREP object key, duration and exit code. Secrets stay redacted (signed URLs show as ***).
               </span>
             </span>
           </label>
@@ -1182,7 +1206,7 @@ async function handleToggleActive(p: Pipeline) {
             <span class="text-sm leading-snug">
               <span class="font-medium text-amber-700">Debug mode — do not redact secrets</span>
               <span class="block text-xs text-muted-foreground">
-                Logs will contain plaintext secret values, are visible to platform admins only, and are automatically purged 24h after this run. Use for troubleshooting only.
+                Logs show plaintext secrets and signed config URLs (CONFIG PREP). Admin-only, purged after 24h. Pair with Verbose for stage markers. Use for troubleshooting only.
               </span>
             </span>
           </label>
@@ -1480,34 +1504,10 @@ async function handleToggleActive(p: Pipeline) {
                         </p>
                       </div>
 
-                      <div v-if="step.uses === 'shell' || step.uses === 'ssh'">
-                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
-                          Config Source <span v-if="(step as any).config_path" class="text-red-500">*</span>
-                        </label>
-                        <div class="grid grid-cols-2 gap-3">
-                          <select
-                            v-model="(step as any).config_source"
-                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                          >
-                            <option value="">None</option>
-                            <option v-for="opt in configSourceOptions" :key="opt.id" :value="opt.id">
-                              {{ opt.label }}
-                            </option>
-                          </select>
-                          <input
-                            v-model="(step as any).config_path"
-                            type="text"
-                            placeholder="e.g. config_tpl/super-manager/v1.4.0"
-                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                          />
-                        </div>
-                        <p class="text-xs text-muted-foreground/70 mt-0.5">
-                          Only Secrets with Kind = Aliyun OSS auth. At dispatch the Manager signs a 1-hour GET URL for
-                          <code class="font-mono">config_path + /configs.tar.gz</code>. The Runner downloads + unpacks the
-                          bundle before the run block; <code class="font-mono">$BUZ_CONFIG_DIR</code> points at the unpacked
-                          files. A failed download fails the step. Leave both empty to skip.
-                        </p>
-                      </div>
+                      <StepConfigBlock
+                        :step="step as any"
+                        :source-options="configSourceOptions"
+                      />
 
                                             <div v-if="step.uses === 'docker'">
                         <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
@@ -2188,43 +2188,32 @@ steps:
       curl -X POST -d '{"text":"deploy complete"}' "$SLACK_WEBHOOK_URL"
     continue-on-error: true
 
-  # ── OSS config delivery (config_source + config_path) ──
-  # Secret "OSS_CONFIG" is created with Kind = Aliyun OSS auth (endpoint/bucket/AK/SK JSON).
-  # At dispatch the Manager signs a 1-hour GET URL for config_path + /configs.tar.gz.
-  # Buz downloads + unpacks the bundle into $BUZ_CONFIG_DIR (config_dir, default /tmp/buz-config)
-  # before the step runs; the target holds no AK/SK and no $BUZ_CONFIG_URL is needed.
-  - name: Deploy Stack
+  # ── OSS deliver (nested config:) then render-only ──
+  # Secret "OSS_CONFIG" is Kind = Aliyun OSS auth. Prefer two steps (not one-step sugar).
+  - name: Deliver Config
     uses: ssh
     host: $deploy_host
-    config_source: OSS_CONFIG
-    config_path: config_tpl/super-manager/v1.4.0
-    config_dir: /opt/manager
+    config:
+      source: OSS_CONFIG
+      key_path: config_tpl/super-manager/v1.4.0
+      dest: /opt/manager
     run: |
       cd "$BUZ_CONFIG_DIR"
-      ls -l docker-compose.yml env.example .env   # .env already rendered (see env_render below)
-      docker compose pull
-      docker compose up -d --remove-orphans
+      ls -l docker-compose.yml env.example
 
-  # ── env_render: render env.example → .env from secrets/vars (optional) ──
-  # Template must live inside the bundle (unpacked at $BUZ_CONFIG_DIR), e.g. env.example:
+  # Template lives under dest, e.g. env.example:
   #   MANAGER_IMAGE=${vars.MANAGER_IMAGE_TAG:-latest}
-  #   AFDIAN_API_TOKEN=${secrets.AFDIAN_API_TOKEN}
   #   POSTGRES_PASSWORD=${secrets.POSTGRES_PASSWORD}
-  # Secret references use the secret NAME (UPPER_SNAKE_CASE) — same name injected as $NAME.
-  # Missing ${secrets.X}/${vars.X} sources fail the step (on_missing: fail); env.example's
-  # own defaults like ${VAR:-default} still apply. Existing .env lines are kept unless the
-  # rendered value changes; $BUZ_ENV_CHANGED=1 and $BUZ_ENV_CHANGED_KEYS are injected when it does.
   - name: Render Env
     uses: ssh
     host: $deploy_host
-    config_source: OSS_CONFIG
-    config_path: config_tpl/super-manager/v1.4.0
-    config_dir: /opt/manager
-    env_render:
-      template: env.example
-      output: .env
-      mode: "0600"
-      on_missing: fail
+    config:
+      dest: /opt/manager
+      render:
+        - template: env.example
+          output: .env
+          mode: "0600"
+          on_missing: fail
     run: |
       cd "$BUZ_CONFIG_DIR"
       test -f .env
@@ -2247,8 +2236,8 @@ steps:
 #   $BUILD_CACHE_DIR → platform Variables (bound via UI or YAML)
 #   $DOCKER_REGISTRY_PASS → pipeline-level Secrets
 #   $GIT_SSH_KEY  → step-level Secret (only for Clone Private Repo)
-#   $BUZ_CONFIG_DIR → unpacked config bundle dir (config_dir)
-#   $BUZ_ENV_CHANGED / $BUZ_ENV_CHANGED_KEYS → set when env_render changed .env
+#   $BUZ_CONFIG_DIR → config.dest (unpacked / render working dir)
+#   $BUZ_ENV_CHANGED / $BUZ_ENV_CHANGED_KEYS → set when config.render changed outputs
 #
 # Secrets & Variables must first exist in Manager UI:
 #   Infrastructure → Secrets   (add DOCKER_REGISTRY_PASS, etc.)

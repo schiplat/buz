@@ -35,6 +35,8 @@ Zero-trust security and architectural minimalism combined.
   {{< card link="runner-concurrent-jobs/" title="Runner Policy" subtitle="UI-managed concurrency, engines, cleanup" >}}
   {{< card link="docker-engine/" title="Docker Engine" subtitle="uses: docker + registry_secret" >}}
   {{< card link="secrets-access-control/" title="Secrets Access Control" subtitle="kind, team_shared, bindings, registry_secret" >}}
+  {{< card link="env-render/" title="Env Render" subtitle="ValueMap, ${secrets.X}, BUZ_ENV_CHANGED" >}}
+  {{< card link="config-block/" title="Config Block DSL v2" subtitle="Agreed: nested config, OSS + render-only" >}}
   {{< card link="pipeline-format/" title="Pipeline Format" subtitle="YAML fields including registry_secret" >}}
   {{< card link="job-concurrency-queue/" title="Job Concurrency Queue" subtitle="Pipeline-level queue / discard" >}}
   {{< card link="git-webhook-triggers/" title="Git Webhook Triggers" subtitle="GitHub/Gitee push, secret verify, Trigger events" >}}

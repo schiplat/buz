@@ -1,16 +1,15 @@
 # ── OSS Config Delivery Demo ──────────────────────────────────────────
-# Verifies the config_source / config_path chain end-to-end:
+# Verifies the nested config: deliver chain end-to-end:
 #
-#   1. YAML parser accepts `config_source` + `config_path` on a step.
-#   2. Manager syncs both fields into tasks (visible in Edit Pipeline).
+#   1. YAML parser accepts nested `config: { source, key_path, dest }`.
+#   2. Manager stores config_source / config_key_path / config_dest on tasks.
 #   3. At job dispatch the Manager resolves the referenced secret
 #      (kind = Aliyun OSS auth), signs a 1-hour GET URL for
-#      `config_path + /configs.tar.gz`, and injects it as $BUZ_CONFIG_URL
+#      `key_path + /configs.tar.gz`, and injects it as $BUZ_CONFIG_URL
 #      (redacted in logs).
 #   4. The Runner **downloads and unpacks the bundle itself** before the run
-#      block (config_source internal unpack), exposing the directory as
-#      $BUZ_CONFIG_DIR. The run block never needs to curl — it just reads
-#      the unpacked files. No AK/SK ever reaches the target.
+#      block into `config.dest` → $BUZ_CONFIG_DIR. The run block never needs
+#      to curl — it just reads the unpacked files. No AK/SK on the target.
 #
 # ── IMPORTANT: this demo requires a REAL OSS object ──────────────────────
 # Because the Runner downloads the bundle during the prepare stage, a failed
@@ -59,20 +58,22 @@ steps:
   # ── 1. Fetch config bundle from OSS (shell engine, local runner) ──
   # The Runner downloads + unpacks config_tpl/demo/$tag/configs.tar.gz during
   # the prepare stage (before the run block). $BUZ_CONFIG_DIR points at the
-  # unpacked bundle; env_render output is written there too.
+  # unpacked bundle; config.render output (if any) is written there too.
   - name: Fetch config bundle
     uses: shell
-    config_source: OSS_DEMO
-    config_path: config_tpl/demo/$tag
+    config:
+      source: OSS_DEMO
+      key_path: config_tpl/demo/$tag
+      dest: /tmp/buz-config-demo
     run: |
       echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
       if [ ! -d "${BUZ_CONFIG_DIR:-}" ]; then
-        echo "!! BUZ_CONFIG_DIR is empty — config_source was not resolved" >&2
+        echo "!! BUZ_CONFIG_DIR is empty — config deliver was not resolved" >&2
         exit 1
       fi
       echo "==> bundle contents:"
       ls -la "$BUZ_CONFIG_DIR"
-      echo "==> config_source verified: signed URL dispatched + bundle unpacked"
+      echo "==> config deliver verified: signed URL dispatched + bundle unpacked"
 
   # ── 2. Echo sanity (no config) ──
   - name: Echo sanity

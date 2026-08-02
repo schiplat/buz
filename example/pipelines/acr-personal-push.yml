@@ -1,6 +1,7 @@
 # Push-only demo. For full build → push → verify, see acr-personal-build-push.yml.
 # Secret JSON must include `registry` (no step image to infer from).
-# Create secret with Team share OFF; reference via registry_secret (same team).
+# Create secret (Secrets & Variables → Secrets) with Team share OFF;
+# reference via registry_secret (same team). Secret names are UPPER_SNAKE_CASE.
 
 name: acr-personal-push
 description: docker login + push via registry_secret (shell engine)

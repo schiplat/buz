@@ -4,24 +4,12 @@ weight: 5
 description: "Render env.example into .env on the target host with explicit ${secrets.X} / ${vars.X} namespaces, GH-Actions-style references, fail-fast on missing sources"
 ---
 
-> **Status: IMPLEMENTED — Phase 1 shipped, Phase 2 partially pulled in.**
-> This page records the agreed design. The target use case is the super-manager
-> deploy pipeline (`configs.tar.gz` → `/opt/manager/.env`), but the feature is
-> generic to any compose-style stack delivered via `config_source`.
->
-> **Shipped in Phase 1:** unified secret naming (`name` is both the injected
-> env key and the `${secrets.NAME}` template reference, enforced UPPER_SNAKE_CASE
-> at create); `config_source` in-built unpack (`$BUZ_CONFIG_DIR`); `ValueMap` +
-> `expand` (Lenient/Strict) migrating `expand_var_refs` / `resolve_var_ref`;
-> `env_render` for generic secrets + vars; fail-fast; `on_missing: warn`
-> (rollback path); `BUZ_ENV_CHANGED` / `BUZ_ENV_CHANGED_KEYS`; atomic replace +
-> flock; round-trip + residual + compose-interpolation checks; forced value
-> registration + no-value logging; tests.
->
-> **Not yet shipped (parsed, not enforced):** `on_change: recreate` auto-action
-> and `services:` (Phase 2) — pipelines branch on `$BUZ_ENV_CHANGED` instead.
-> **Phase 3** (secrets UX: usage tracking, env/scope, rename warnings)
-> is out of scope for this iteration.
+> **Status: IMPLEMENTED — Phase 1 engine + Phase 2b authoring shipped.**  
+> This page is the **render engine** design: template syntax, `ValueMap`,
+> security gates, change detection, flock.  
+> Nested step YAML / OSS deliver / render-only / multi-file →
+> [Config Block DSL v2](/docs/01-architecture/config-block/) (**2b complete**).
+> Auto `on_change`/`services` still deferred (**2d**).
 
 ## Problem
 
@@ -59,13 +47,21 @@ from the job's visible secrets / pipeline vars and writes the file idempotently.
    (`secrets: [POSTGRES_PASSWORD]`) and the `${secrets.POSTGRES_PASSWORD}`
    template reference. Matching is **case-sensitive**; a legacy `env_name`
    column from an earlier draft was merged back into `name` at migration.
-7. **`config_source` unpacks the archive itself; the renderer runs immediately
-   after unpack and before the run block.** (Review R2 #1 — chosen route A.)
-   The template is delivered and unpacked by Buz, so the render time point is
-   well-defined: `config_source` download → unpack → `env_render` → run block.
-   The pipeline author no longer writes `curl | tar xz` in the run block; the
-   unpacked directory is exposed to the run block as an env var (e.g.
-   `$BUZ_CONFIG_DIR`) and is the renderer's base directory.
+
+   **Upgrade note (`env_name` → `name`):** on Manager start the migration
+   backfills `name = env_name` when they differ and the new name does not
+   collide with another secret. Colliding rows keep the old `name`, emit a
+   `tracing::warn!`, and then lose `env_name` when the column is dropped —
+   operators must **delete + recreate** the secret under the intended
+   UPPER_SNAKE_CASE name (the Update API cannot rename) and update pipeline
+   refs. Legacy non-UPPER names that never had a distinct `env_name` also
+   keep working for lookups but cannot be created anew.
+7. **OSS deliver unpacks the archive itself; render runs in prepare before the
+   run block.** (Review R2 #1 — chosen route A.) Preferred authoring splits
+   deliver and render-only steps under nested `config:`. Sequencing:
+   download → unpack → [`config.render`] → run block. Prefer a separate
+   render-only step after deliver. `$BUZ_CONFIG_DIR` is the working directory
+   (`config.dest`).
 
 ---
 
@@ -149,52 +145,15 @@ MANAGER_SESSION_TTL_SECS=43200
 
 ---
 
-## Step DSL (target shape)
+## Step wiring (see Config Block for YAML)
 
-With `config_source` route A, unpacking and rendering happen inside the step
-machinery **before** the run block executes. The run block starts with the
-config bundle already unpacked and `.env` already rendered:
+Prepare runs **before** the run block: delivery (if any) → render → `run`.
+`$BUZ_ENV_CHANGED` / `_KEYS` are injected only into the step that rendered.
+`on_missing: fail` (default) aborts on unresolved `${secrets.X}` / `${vars.X}`;
+`warn` writes empty `KEY=` plus a warning comment (rollback deploys).
 
-```yaml
-- name: Deploy full stack
-  uses: ssh
-  host: $deploy_host
-  config_source: OSS_CONFIG            # Buz: signed OSS GET → unpack archive
-  config_path: config_tpl/super-manager/$tag   # → $BUZ_CONFIG_DIR on target
-  env_render:
-    template: env.example        # relative to $BUZ_CONFIG_DIR (unpacked config dir)
-    output: .env                 # relative to $BUZ_CONFIG_DIR (default: <template>.rendered)
-    mode: "0600"
-    on_missing: fail             # fail | warn  (warn is for rollback deploys)
-    on_change: recreate          # recreate the listed services when managed keys changed
-    services: [manager-server]   # which compose services are affected by this .env
-  run: |
-    # $BUZ_CONFIG_DIR points at the unpacked bundle; .env already exists here.
-    cd "$BUZ_CONFIG_DIR"
-    # $BUZ_ENV_CHANGED=1 and $BUZ_ENV_CHANGED_KEYS="A,B" when any managed key differed
-    docker compose pull
-    docker compose up -d
-```
-
-The run block no longer downloads or unpacks the bundle. Sequencing enforced by
-the step machinery: **download → unpack → render → run block → (optional)
-`on_change` recreate**. If a step uses `config_source` without `env_render`,
-behavior is unchanged (unpack only, `$BUZ_CONFIG_DIR` still exported).
-
-`on_missing: fail` (default) aborts the render when a `${secrets.X}` /
-`${vars.X}` reference cannot be resolved. `on_missing: warn` writes the key as
-`KEY=` empty with a `# WARNING: ... missing` comment above it and a job-log
-warning — intended for rollback deploys that reference secrets deleted since
-the old release. `services:` is explicit because one `.env` can feed several
-services (postgres `POSTGRES_*` + manager-server); the renderer recreates only
-the listed ones.
-
-`on_change: recreate` — when the renderer detects a template-defined key diff it
-runs `docker compose up -d --force-recreate <services>` after the run block (or
-the pipeline author may branch on `$BUZ_ENV_CHANGED` instead). Recreate is
-required because compose only restarts on service-config hash changes, and
-`.env` edits don't alter that hash. Change detection covers template-defined
-keys only, so operator-added extras never trigger a recreate.
+Authoring shape, DB columns, and samples →
+[Config Block DSL v2](/docs/01-architecture/config-block/).
 
 ### Security gate on template references
 
@@ -221,7 +180,7 @@ masking — not as another one-off value mechanism.
 | Path | Location | Shape |
 |------|----------|-------|
 | Log masking | `shared::log_masking` + Runner `SecretCatalog` | **Two-sided**: Manager (producer) registers sensitive values with `SecretClass` into `log_mask_values`; Runner (consumer) collects them into `SecretCatalog` and calls `mask_secrets` — zero field knowledge. |
-| `config_path` templating | `manager::api::runners` `expand_var_refs` | Free function; `$tag` / `${tag}` → value; unresolved → empty string. |
+| `config_key_path` templating | `manager::api::runners` + `ValueMap` Lenient | `$tag` / `${tag}` → value; unresolved → empty string. |
 | Dynamic host resolution | `manager::api::runners` `resolve_var_ref` | Free function; looks up trigger inputs only. |
 | env/secret injection | Dispatch builds `env` + `secrets` maps | Merged at claim; Runner re-merges. |
 
@@ -281,18 +240,18 @@ configs.tar.gz (release)        Buz Secrets DB (live)
          │                               │
          │  signed OSS GET (1h)          │ decrypt @ job claim, dispatched as
          ▼                               ▼   secrets{ name: value }
-  target: config_source unpack    ──►  Runner builds ValueMap (RBAC-filtered;
-  (download → tar xz)                    masking inputs excluded from vars)
+  prepare: OSS unpack to dest     ──►  Runner builds ValueMap (RBAC-filtered;
+  (or templates already at dest)         masking inputs excluded from vars)
          │
-         ▼  env_render (immediately after unpack, before run block)
-   .env (mode 0600, atomic+flock) ──►  diff old ──► changed?
-                                          │           └─ on_change
-                                          └─ key semantics  recreate <services>
+         ▼  config.render (before run block; multi-file in order)
+   outputs (mode 0600, atomic+flock) ──►  diff old ──► $BUZ_ENV_CHANGED(_KEYS)
+                                          │           └─ optional on_change (2d)
+                                          └─ key semantics
                                           (values registered for redaction)
 ```
 
-Step machinery order: **download → unpack → render → run block → (optional)
-`on_change` recreate**.
+Step machinery order: **[download → unpack] → render → run block → (optional)
+`on_change` recreate (2d, not enforced)**.
 
 ---
 
@@ -331,7 +290,7 @@ already reflected in the DSL / render-rules / ValueMap sections above.
 | 4 | **`${...}` inside a secret value is re-interpolated by compose** — single-pass rendering leaves it verbatim, but compose's env_file interpolation expands it against host env | **Compose-interpolation guard**: values containing `${` are rejected at write; the round-trip check simulates compose's interpolation layer so the *post-compose* value is validated, not just the render output. |
 | 5 | **Free/managed section contradiction** — "template lines above `# buz-managed` are preserved verbatim" would freeze template updates (e.g. a new `MANAGER_SMTP_PORT` never reaches `.env`) | **Key semantics**: the template is the source of truth for every key it defines, anywhere in the file; the marker only preserves keys the template does **not** define (operator-added extras). |
 | 6 | **Env-key collisions undetected** — two secrets resolving to one env var bound to one job silently overwrite in the secrets map | Secret names are globally UNIQUE and enforced UPPER_SNAKE_CASE at create, so the inject key and the template key are the same name — a collision is structurally impossible. (The former `env_name` alias column and its per-team uniqueness check were removed.) |
-| 7 | **Unified expander would break config_path** — `expand_var_refs` is lenient (unresolved → empty), `env_render` must be strict (fail-fast); one expander can't serve both without a mode | `ExpandMode { Lenient, Strict }` — caller chooses. config_path / host resolution stay lenient (backward compatible); `env_render` uses strict. |
+| 7 | **Unified expander would break `config.key_path`** — path expansion is lenient (unresolved → empty), `config.render` must be strict (fail-fast); one expander can't serve both without a mode | `ExpandMode { Lenient, Strict }` — caller chooses. `config_key_path` / host resolution stay lenient; `config.render` uses strict. |
 | 8 | **Two-name cognitive load** — template key (left of `=`) and reference (right) could diverge | Resolved by the **single-name merge**: the secret `name` IS the env key, the YAML binding and the template reference — one UPPER_SNAKE_CASE name everywhere, so there is nothing to map. |
 | 9 | **Render logs / short values** — renderer logging values leaks secrets; `mask_secrets` skips <3-char values so a short secret in `.env` would echo unredacted | Renderer logs **key names and status only** (`resolved` / `missing` / `changed`), never values. Every secret value written to `.env` is **registered for value-redaction individually** (bypassing the 3-char minimum). |
 
@@ -340,35 +299,36 @@ already reflected in the DSL / render-rules / ValueMap sections above.
 ## Compatibility
 
 - Existing secret delivery (`secrets:` list, `team_shared` auto-inject, step
-  `secrets:`, `registry_secret`, `config_source`) is unchanged. Rendering is an
+  `secrets:`, `registry_secret`, `config.source`) is unchanged. Rendering is an
   **additive** capability; the same secret can be injected as env **and**
   referenced by a template.
-- `config_source` gains unpack + `$BUZ_CONFIG_DIR` export; without `env_render`
-  its behavior is unchanged (download → unpack only). Existing pipelines that
-  manually `curl | tar xz` continue to work, but may migrate to the built-in
-  unpack.
+- OSS deliver (`config.source` + `key_path` + `dest`) unpacks to
+  `$BUZ_CONFIG_DIR`; without `config.render` it is download → unpack only.
+  Render-only steps reuse `dest` without a second OSS download.
 - Secret names are UPPER_SNAKE_CASE (enforced at create, exact/case-sensitive
   matching). A legacy `env_name` column from the draft design was **merged back
   into `name`** via migration (backfill env_name → name when non-empty and
   collision-free), then dropped; existing pipelines that referenced the old
   env_name key must re-point at the merged name.
 - `registry` / `aliyun_oss_auth` secrets never participate in env rendering
-  (they are JSON handled by `registry_secret` / `config_source`).
-- The unified `ValueMap::expand` keeps `ExpandMode::Lenient` as the default
-  matching today's `expand_var_refs` semantics; existing config_path / host
-  resolution calls migrate without behavior change.
+  (they are JSON handled by `registry_secret` / `config.source`).
+- The unified `ValueMap::expand` keeps `ExpandMode::Lenient` for
+  `config_key_path` / host resolution; `config.render` uses `Strict`.
 
 ---
 
-## Phasing
+## Phasing (engine)
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| 1 | Unified secret naming (`name` = env key = template key, UPPER_SNAKE_CASE enforced; legacy `env_name` merged + dropped); `config_source` unpack (`$BUZ_CONFIG_DIR`); `ValueMap` + `ValueMap::expand` (Lenient/Strict) migrating `expand_var_refs` / `resolve_var_ref`; `env_render` for generic secrets + vars; fail-fast (`on_missing`); atomic replace + flock; round-trip + residual + compose-interpolation checks; forced value registration + no-value logging; tests | **Shipped** |
-| 2 | `on_change: recreate` + `$BUZ_ENV_CHANGED(_KEYS)`; key-semantics marker split (operator extras preserved); `on_missing: warn` (rollback path) | **Partly shipped** — `BUZ_ENV_CHANGED(_KEYS)` + `on_missing: warn` + key semantics shipped; `on_change` / `services` parsed in YAML but not yet enforced (pipelines branch on `$BUZ_ENV_CHANGED`) |
-| 3 | Secrets management UX (GH-Actions-style): usage tracking, environment/scope, alias editing with reference warnings, last-used & orphan hints | Not started |
+| 1 | Secret naming; unpack + render; `ValueMap`; fail-fast; `BUZ_ENV_CHANGED`; flock; tests | **Shipped** |
+| 2 | `on_missing: warn`; key semantics; **`on_change` / `services` auto-recreate** | **Partly shipped** — warn + change env done; auto-recreate **not** enforced (branch in `run` on `$BUZ_ENV_CHANGED`) |
+| 2b | Nested `config:`; multi-file render; OSS deliver + render-only; DB cut-over; UI | **Shipped** — see [Config Block](/docs/01-architecture/config-block/) |
+| 2c | `config.git` | Planned |
+| 2d | Enforce `on_change` / `services` | Planned |
 
 ## Related
 
+- [Config Block DSL v2](/docs/01-architecture/config-block/) — step `config:` (shipped)
 - [Secrets Access Control](/docs/01-architecture/secrets-access-control/)
 - [Pipeline Format](/docs/01-architecture/pipeline-format/)

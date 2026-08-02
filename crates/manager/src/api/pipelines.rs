@@ -273,7 +273,7 @@ pub async fn get_one(
     let tasks = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
                 work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
-                privileged, registry_secret, config_source, config_path, env_render, config_dir
+                privileged, registry_secret, config_source, config_key_path, config_render, config_dest
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&id)
@@ -302,11 +302,11 @@ pub async fn get_one(
             "privileged": t.get::<i64, _>(15) != 0,
             "registry_secret": t.get::<String, _>(16),
             "config_source": t.get::<String, _>(17),
-            "config_path": t.get::<String, _>(18),
-            "env_render": serde_json::from_str::<serde_json::Value>(
+            "config_key_path": t.get::<String, _>(18),
+            "config_render": serde_json::from_str::<serde_json::Value>(
                 &t.get::<String, _>(19),
             ).ok().filter(|v| !v.is_null()),
-            "config_dir": t.get::<String, _>(20),
+            "config_dest": t.get::<String, _>(20),
         })
     })
     .collect::<Vec<_>>();
@@ -669,24 +669,32 @@ pub(crate) async fn do_trigger(
     let concurrency_group: Option<String> = pipeline.get(3);
     let concurrency_mode: String = pipeline.get(4);
     let concurrency_max_queue: i64 = pipeline.get(5);
-    let _concurrency_queue_timeout: i64 = pipeline.get(6);
+    let concurrency_queue_timeout: i64 = pipeline.get(6);
     let input_defs_raw: String = pipeline.get(7);
     let input_defs: Vec<PipelineInputDef> =
         serde_json::from_str(&input_defs_raw).unwrap_or_default();
     let masking_keys = masking_input_names(&input_defs);
     let inputs_for_snapshot = redact_input_map(inputs, &masking_keys);
 
+    // Effective mode frozen into the job snapshot (Job Detail). Empty mode with
+    // a non-empty group matches legacy trigger behavior → discard-new.
+    let effective_concurrency_mode: Option<String> = concurrency_group
+        .as_ref()
+        .filter(|g| !g.is_empty())
+        .map(|_| {
+            if concurrency_mode.is_empty() {
+                "discard-new".to_string()
+            } else {
+                concurrency_mode.clone()
+            }
+        });
+
     // ── Concurrency logic ──
     let job_status: &str = if let Some(ref group) = concurrency_group {
         if group.is_empty() {
             "pending"
         } else {
-            let mode = if concurrency_mode.is_empty() {
-                // Old pipeline: concurrency_group string without mode → discard-new
-                "discard-new"
-            } else {
-                &concurrency_mode
-            };
+            let mode = effective_concurrency_mode.as_deref().unwrap_or("discard-new");
 
             match mode {
                 "discard-new" => {
@@ -771,7 +779,7 @@ pub(crate) async fn do_trigger(
     let tasks_snapshot = sqlx::query(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes,
-                privileged, registry_secret, config_source, config_path, env_render, config_dir
+                privileged, registry_secret, config_source, config_key_path, config_render, config_dest
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(pipeline_id)
@@ -799,11 +807,11 @@ pub(crate) async fn do_trigger(
             "privileged": t.get::<i64, _>(14) != 0,
             "registry_secret": t.get::<String, _>(15),
             "config_source": t.get::<String, _>(16),
-            "config_path": t.get::<String, _>(17),
-            "env_render": serde_json::from_str::<serde_json::Value>(
+            "config_key_path": t.get::<String, _>(17),
+            "config_render": serde_json::from_str::<serde_json::Value>(
                 &t.get::<String, _>(18),
             ).ok().filter(|v| !v.is_null()),
-            "config_dir": t.get::<String, _>(19),
+            "config_dest": t.get::<String, _>(19),
         })
     })
     .collect::<Vec<_>>();
@@ -842,6 +850,15 @@ pub(crate) async fn do_trigger(
         "pipeline": pipeline_snapshot,
         "runner_labels": serde_json::from_str::<Vec<String>>(&runner_labels).unwrap_or_default(),
         "concurrency_group": concurrency_group,
+        "concurrency_mode": effective_concurrency_mode,
+        "concurrency_max_queue": concurrency_group
+            .as_ref()
+            .filter(|g| !g.is_empty())
+            .map(|_| concurrency_max_queue),
+        "concurrency_queue_timeout_seconds": concurrency_group
+            .as_ref()
+            .filter(|g| !g.is_empty())
+            .map(|_| concurrency_queue_timeout),
         "tasks": tasks_snapshot,
         "env": env_snapshot,
         "inputs": inputs_for_snapshot,
@@ -1069,31 +1086,38 @@ pub(crate) async fn insert_steps(
             .unwrap_or("")
             .to_string();
 
-        let config_source_stored = step
-            .config_source
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("")
-            .to_string();
-        let config_path_stored = step
-            .config_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("")
-            .to_string();
-
-        let config_dir_stored = step
-            .config_dir
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("")
-            .to_string();
-
-        let env_render_stored = step
-            .env_render
+        // Prefer nested `config:`; else use flattened API fields.
+        let (flat_source, flat_key, flat_dest, flat_render) =
+            shared::pipeline_yaml::flatten_config(step.config.as_ref());
+        let config_source_stored = flat_source
+            .or_else(|| {
+                step.config_source
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+        let config_key_path_stored = flat_key
+            .or_else(|| {
+                step.config_key_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+        let config_dest_stored = flat_dest
+            .or_else(|| {
+                step.config_dest
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+        let config_render_stored = flat_render
+            .or_else(|| step.config_render.clone())
             .as_ref()
             .map(|e| serde_json::to_string(e).unwrap_or_default())
             .unwrap_or_default();
@@ -1101,7 +1125,7 @@ pub(crate) async fn insert_steps(
         sqlx::query(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
              command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
-             volumes, privileged, registry_secret, config_source, config_path, env_render, config_dir)
+             volumes, privileged, registry_secret, config_source, config_key_path, config_render, config_dest)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
@@ -1123,9 +1147,9 @@ pub(crate) async fn insert_steps(
         .bind(privileged_val)
         .bind(&registry_secret_stored)
         .bind(&config_source_stored)
-        .bind(&config_path_stored)
-        .bind(&env_render_stored)
-        .bind(&config_dir_stored)
+        .bind(&config_key_path_stored)
+        .bind(&config_render_stored)
+        .bind(&config_dest_stored)
         .execute(pool)
         .await?;
 

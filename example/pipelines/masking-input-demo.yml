@@ -11,6 +11,8 @@
 # 6) Step "Prove token is usable" succeeds → process read $INPUT_DEPLOY_TOKEN OK
 # 7) On the Runner host: cat /tmp/res.txt  → must equal the token you typed
 #
+# Inputs are a map; each key is available as $INPUT_<KEY> in run blocks.
+#
 # Optional DB check (Manager host):
 #   sqlite3 data/buz.db "SELECT trigger_params FROM jobs ORDER BY created_at DESC LIMIT 1;"
 #   deploy_token should look like "buzenc:v1:…" not plaintext.

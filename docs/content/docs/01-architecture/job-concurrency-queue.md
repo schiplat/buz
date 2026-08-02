@@ -6,11 +6,47 @@ description: "Design for pipeline-level concurrency control with queue, discard-
 
 ## Status
 
-**Design phase.** Not yet implemented.
+**Implemented** in Manager trigger (`crates/manager/src/api/pipelines.rs`) and
+surfaced on **Job Detail**.
 
-Related: YAML schema in [Pipeline Format](/docs/01-architecture/pipeline-format/), dispatch logic in Manager `crates/manager/src/api/pipelines.rs`.
+Related: YAML schema in [Pipeline Format](/docs/01-architecture/pipeline-format/).
+
+### Job Detail UX
+
+When a job is created, the snapshot freezes:
+
+- `concurrency_group`
+- `concurrency_mode` (effective mode used at trigger)
+- `concurrency_max_queue` / `concurrency_queue_timeout_seconds` (when a group is set)
+
+Job Detail shows:
+
+1. **Queued banner** (`status === queued`) — this run is waiting for an earlier
+   job in the group; only one runs at a time (not “you cannot trigger again”).
+2. **Concurrency panel** — **always visible**:
+   - **Configured:** frozen group + mode (+ max-queue / timeout for `queue`),
+     mode hint, help disclosure linking to
+     `/pipelines/{id}/definition` (**Definition → Edit**). Snapshot is immutable
+     for this job; edits apply to **future** triggers only.
+   - **Not configured** (no `concurrency` in YAML / empty group): status
+     `not configured`, shows platform defaults if enabled later
+     (`discard-old`, max-queue `3`, queue-timeout `30m`), explains parallel
+     triggers are allowed, and lists the same adjustable fields + definition link.
+
+Older jobs may lack `concurrency_mode` in the snapshot; the UI still shows the
+group and notes that the mode was not frozen.
+
+### Pipeline Detail (Definition)
+
+The Definition tab always shows a **Concurrency** strip (below Trigger / Runner /
+Bindings / Config):
+
+- **Configured:** live `group` / `mode` / (for `queue`) max-queue + timeout, hint, help.
+- **Not configured:** same defaults preview as Job Detail + how to enable.
+- Form pipelines: **Edit** opens the edit dialog; YAML pipelines: “edit via YAML”.
 
 ---
+
 
 ## Problem
 
