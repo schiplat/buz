@@ -141,6 +141,16 @@ pub async fn get_one(
     let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
+    // Debug (unredacted) jobs are admin-only records — non-admins must not
+    // even see the metadata, matching the `list` endpoint.
+    let debug_unredact: i64 = r.get(14);
+    if debug_unredact != 0 && !auth.is_platform_admin {
+        return Err(AppError::Unauthorized(
+            "this job was run in debug mode (unredacted logs) — only platform admins can view it"
+                .into(),
+        ));
+    }
+
     let trigger_params: Option<String> = r.get(6);
     let snapshot_raw: Option<String> = r.get(7);
     let snapshot: serde_json::Value = snapshot_raw

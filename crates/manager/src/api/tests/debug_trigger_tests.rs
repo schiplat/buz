@@ -254,3 +254,63 @@ async fn admin_normal_trigger_leaves_flag_off() {
     let job_id = body["data"]["job_id"].as_str().expect("job id");
     assert!(!job_debug_flag(&pool, job_id).await, "debug flag stays off");
 }
+
+async fn get_job(app: &Router, jwt: &str, job_id: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/jobs/{job_id}"))
+                .header(AUTHORIZATION, bearer(jwt))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn member_get_one_on_debug_job_is_403() {
+    let (app, pool) = test_app().await;
+    let pipeline_id = create_pipeline(&app).await;
+
+    let resp = trigger(&app, &admin_jwt(), &pipeline_id, true).await;
+    let job_id = read_body(resp).await["data"]["job_id"]
+        .as_str()
+        .expect("job id")
+        .to_string();
+    assert!(job_debug_flag(&pool, &job_id).await, "debug job seeded");
+
+    let member_resp = get_job(&app, &member_jwt(), &job_id).await;
+    assert_eq!(
+        member_resp.status(),
+        StatusCode::FORBIDDEN,
+        "non-admin cannot read debug job metadata"
+    );
+
+    let admin_resp = get_job(&app, &admin_jwt(), &job_id).await;
+    assert_eq!(
+        admin_resp.status(),
+        StatusCode::OK,
+        "admin can read debug job metadata"
+    );
+}
+
+#[tokio::test]
+async fn member_get_one_on_normal_job_is_ok() {
+    let (app, _pool) = test_app().await;
+    let pipeline_id = create_pipeline(&app).await;
+
+    let resp = trigger(&app, &member_jwt(), &pipeline_id, false).await;
+    let job_id = read_body(resp).await["data"]["job_id"]
+        .as_str()
+        .expect("job id")
+        .to_string();
+
+    let member_resp = get_job(&app, &member_jwt(), &job_id).await;
+    assert_eq!(
+        member_resp.status(),
+        StatusCode::OK,
+        "member can read normal job metadata"
+    );
+}

@@ -94,7 +94,10 @@ async fn main() -> anyhow::Result<()> {
 
     services::runner_monitor::spawn_monitor(db_pool.clone(), config.runner.clone());
 
-    services::debug_log_cleanup::spawn_debug_log_cleanup(db_pool.clone());
+    // Shared log broadcaster: cleanup needs the same instance the log upload
+    // path writes into so expired debug chunks are dropped from memory too.
+    let log_broadcast = crate::services::log_broadcast::LogBroadcaster::new();
+    services::debug_log_cleanup::spawn_debug_log_cleanup(db_pool.clone(), log_broadcast.clone());
 
     services::pipeline_scanner::spawn_scanner(
         db_pool.clone(),
@@ -110,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
     let app_state = crate::state::AppState {
         pool: db_pool.clone(),
         config: config.clone(),
-        log_broadcast: crate::services::log_broadcast::LogBroadcaster::new(),
+        log_broadcast,
     };
 
     services::cron_scheduler::spawn_scheduler(app_state.clone(), 30);

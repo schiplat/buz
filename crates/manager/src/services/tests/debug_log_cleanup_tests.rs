@@ -7,6 +7,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 
 use crate::db::run_migrations;
 use crate::services::debug_log_cleanup::purge_expired_debug_logs;
+use crate::services::log_broadcast::LogBroadcaster;
 
 const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
 
@@ -84,11 +85,18 @@ async fn debug_flag(pool: &sqlx::SqlitePool, job_id: &str) -> i64 {
 #[tokio::test]
 async fn purges_only_expired_debug_jobs() {
     let pool = setup().await;
+    let broadcaster = LogBroadcaster::new();
     seed_expired_debug_job(&pool, "old-debug").await;
     seed_job(&pool, "fresh-debug", true).await;
     seed_job(&pool, "old-normal", false).await;
 
-    let purged = purge_expired_debug_logs(&pool).await.expect("purge runs");
+    // Simulate a debug job whose unredacted chunks were broadcast before any
+    // WS client connected (the sink retains them in memory).
+    broadcaster.broadcast("old-debug", 0, "plaintext-secret");
+
+    let purged = purge_expired_debug_logs(&pool, &broadcaster)
+        .await
+        .expect("purge runs");
     assert_eq!(purged, 1, "only the expired debug job is purged");
 
     assert_eq!(
@@ -100,6 +108,10 @@ async fn purges_only_expired_debug_jobs() {
         debug_flag(&pool, "old-debug").await,
         0,
         "expired debug flag reset"
+    );
+    assert!(
+        broadcaster.replay_history("old-debug").is_empty(),
+        "in-memory replay sink for the expired debug job is dropped"
     );
 
     assert_eq!(
@@ -124,16 +136,22 @@ async fn purges_only_expired_debug_jobs() {
 #[tokio::test]
 async fn noop_when_no_expired_debug_jobs() {
     let pool = setup().await;
+    let broadcaster = LogBroadcaster::new();
     seed_job(&pool, "fresh-debug", true).await;
 
-    let purged = purge_expired_debug_logs(&pool).await.expect("purge runs");
+    let purged = purge_expired_debug_logs(&pool, &broadcaster)
+        .await
+        .expect("purge runs");
     assert_eq!(purged, 0);
     assert_eq!(debug_flag(&pool, "fresh-debug").await, 1);
+    // Fresh debug job keeps its in-memory sink (admin may still stream it live).
+    assert!(broadcaster.replay_history("fresh-debug").is_empty());
 }
 
 #[tokio::test]
 async fn expired_non_debug_jobs_are_not_touched() {
     let pool = setup().await;
+    let broadcaster = LogBroadcaster::new();
     sqlx::query(
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by, snapshot, debug_unredact, created_at, updated_at)
          VALUES ('old-normal', 'p1', 'failed', 'test', '{}', 0, datetime('now', '-25 hours'), datetime('now', '-25 hours'))",
@@ -146,7 +164,9 @@ async fn expired_non_debug_jobs_are_not_touched() {
         .await
         .expect("seed log");
 
-    let purged = purge_expired_debug_logs(&pool).await.expect("purge runs");
+    let purged = purge_expired_debug_logs(&pool, &broadcaster)
+        .await
+        .expect("purge runs");
     assert_eq!(purged, 0);
     assert_eq!(
         log_count(&pool, "old-normal").await,
