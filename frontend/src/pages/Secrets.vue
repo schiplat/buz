@@ -4,7 +4,7 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, Pencil, Trash2, Shield } from '@lucide/vue'
-import { secretsApi, type Secret, type SecretKind } from '@/api/secrets'
+import { secretsApi, normalizeSecretKind, type Secret, type SecretKind } from '@/api/secrets'
 import { teamsApi, type Team } from '@/api/teams'
 import { useAuthStore } from '@/stores/auth'
 import { useClientSort } from '@/composables/useClientSort'
@@ -68,11 +68,24 @@ const ACR_REGISTRY_SAMPLE = `{
   "password": "<fixed password from ACR console>"
 }`
 
-const valuePlaceholder = computed(() =>
-  editing.value && !editing.value.reencrypt_required
-    ? 'Leave empty to keep current value'
-    : 'Paste secret value or registry JSON…',
-)
+/** Placeholder / sample for Aliyun OSS read-only credentials (config_source). */
+const OSS_AUTH_SAMPLE = `{
+  "provider": "aliyun_oss",
+  "endpoint": "oss-cn-hongkong.aliyuncs.com",
+  "bucket": "example-bucket",
+  "region": "cn-hongkong",
+  "access_key_id": "LTAIxxxxxxxxxxxx",
+  "access_key_secret": "<access key secret>"
+}`
+
+const valuePlaceholder = computed(() => {
+  if (editing.value && !editing.value.reencrypt_required) {
+    return 'Leave empty to keep current value'
+  }
+  if (formKind.value === 'registry') return 'Paste registry credentials JSON…'
+  if (formKind.value === 'aliyun_oss_auth') return 'Paste Aliyun OSS credentials JSON…'
+  return 'Paste secret value…'
+})
 
 function insertRegistrySample() {
   if (formValue.value.trim() && !confirm('Replace the current Value with the ACR sample JSON?')) {
@@ -80,6 +93,15 @@ function insertRegistrySample() {
   }
   formValue.value = ACR_REGISTRY_SAMPLE
   formKind.value = 'registry'
+  showValue.value = true
+}
+
+function insertOssSample() {
+  if (formValue.value.trim() && !confirm('Replace the current Value with the OSS sample JSON?')) {
+    return
+  }
+  formValue.value = OSS_AUTH_SAMPLE
+  formKind.value = 'aliyun_oss_auth'
   showValue.value = true
 }
 
@@ -100,7 +122,7 @@ function openEdit(s: Secret) {
   formValue.value = ''
   formTeamId.value = s.team_id || ''
   formTeamShared.value = !!s.team_shared
-  formKind.value = s.kind === 'registry' ? 'registry' : 'generic'
+  formKind.value = normalizeSecretKind(s.kind)
   showValue.value = false
   showDialog.value = true
 }
@@ -258,6 +280,11 @@ onMounted(loadSecrets)
                     class="inline-flex items-center rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
                     title="Registry credentials for registry_secret / docker login"
                   >Registry</span>
+                  <span
+                    v-else-if="s.kind === 'aliyun_oss_auth'"
+                    class="inline-flex items-center rounded-md bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-medium text-orange-700 dark:text-orange-400"
+                    title="Aliyun OSS read-only credentials for config_source / signed-URL downloads"
+                  >Aliyun OSS</span>
                   <span v-else class="text-muted-foreground/70" title="Generic secret (env inject)">Generic</span>
                 </td>
                 <td class="px-5 py-3 text-xs whitespace-nowrap">
@@ -328,11 +355,16 @@ onMounted(loadSecrets)
               >
                 <option value="generic">Generic — env inject / Authorized Secrets</option>
                 <option value="registry">Registry — docker login / registry_secret</option>
+                <option value="aliyun_oss_auth">Aliyun OSS auth — config_source signed downloads</option>
               </select>
               <p class="text-[10px] text-muted-foreground mt-1 leading-relaxed">
-                Pipeline <strong>Registry Secret</strong> dropdown only lists Kind = Registry.
+                Pipeline <strong>Registry Secret</strong> dropdown only lists Kind = Registry;
+                <strong>Config Source</strong> only lists Kind = Aliyun OSS auth.
                 Registry values must be JSON with <code class="mono-chip text-[10px]">username</code> and
-                <code class="mono-chip text-[10px]">password</code>.
+                <code class="mono-chip text-[10px]">password</code>; OSS values must be JSON with
+                <code class="mono-chip text-[10px]">endpoint</code>, <code class="mono-chip text-[10px]">bucket</code>,
+                <code class="mono-chip text-[10px]">access_key_id</code> and
+                <code class="mono-chip text-[10px]">access_key_secret</code>.
               </p>
             </div>
             <div>
@@ -415,6 +447,30 @@ onMounted(loadSecrets)
                     . Pipeline wiring:
                     <span class="font-medium text-foreground">Docker Engine → Appendix: ACR Personal Edition</span>
                     in project docs (<code class="mono-chip text-[10px]">registry_secret</code>).
+                  </p>
+                </div>
+              </details>
+              <details class="mt-2 rounded-lg border border-border/50 bg-muted/30 group">
+                <summary class="cursor-pointer select-none px-3 py-2.5 text-[11px] font-medium text-foreground flex items-center gap-2 list-none [&::-webkit-details-marker]:hidden">
+                  <span class="text-muted-foreground/70 font-mono text-[10px] group-open:rotate-90 transition-transform">▸</span>
+                  Aliyun OSS auth sample (config_source)
+                </summary>
+                <div class="px-3 pb-2.5 space-y-2 border-t border-border/40 pt-2">
+                  <div class="flex justify-end">
+                    <button
+                      type="button"
+                      class="text-[11px] text-primary hover:underline cursor-pointer"
+                      @click="insertOssSample"
+                    >
+                      Insert sample
+                    </button>
+                  </div>
+                  <pre class="text-[10px] font-mono text-muted-foreground whitespace-pre-wrap break-all leading-relaxed">{{ OSS_AUTH_SAMPLE }}</pre>
+                  <p class="text-[10px] text-muted-foreground leading-relaxed">
+                    Create a <strong>read-only</strong> RAM user (AliyunReadOnlyAccess scoped to the bucket) and
+                    paste its AK/SK. At job dispatch the Manager signs a short-lived GET URL for
+                    <code class="mono-chip text-[10px]">config_path</code> and injects it as
+                    <code class="mono-chip text-[10px]">$BUZ_CONFIG_URL</code>. The target never holds the AK/SK.
                   </p>
                 </div>
               </details>

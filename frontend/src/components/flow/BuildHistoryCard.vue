@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { ChevronDown, ChevronRight, ArrowRight } from '@lucide/vue'
+import { ChevronDown, ChevronRight, ArrowRight, Lock, Info } from '@lucide/vue'
 import { parseUtc, formatLocalDateTime } from '@/utils/time'
 import type { Job, LogChunk } from '@/api/jobs'
 import StepLogPanel from '@/components/flow/StepLogPanel.vue'
@@ -10,6 +10,8 @@ const props = defineProps<{
   job: Job
   runNumber: number
   logs: LogChunk[] // per-job logs, passed from parent
+  /** Whether the viewer is a platform admin (the only role that may read debug-job logs). */
+  canViewDebugLogs: boolean
 }>()
 
 const router = useRouter()
@@ -18,6 +20,11 @@ const expandedStep = ref<number | null>(null)
 
 const tasks = computed(() => props.job.snapshot?.tasks || [])
 const stepStatuses = computed(() => (props.job.step_statuses || []) as any[])
+
+/** Debug-job logs are admin-only; for non-admins the log panel is locked. */
+const debugLogsRestricted = computed(
+  () => props.job.debug_unredact && !props.canViewDebugLogs,
+)
 
 function getStepStatus(stepOrder: number): string {
   const found = stepStatuses.value.find((s: any) => Number(s.step_order) === stepOrder)
@@ -56,7 +63,11 @@ const emit = defineEmits<{
 function toggle() {
   expanded.value = !expanded.value
   if (expanded.value) {
-    emit('expand', props.job.id)
+    // Non-admins may expand a debug job to see the restriction notice, but the
+    // log fetch is never attempted (the Manager would reject it with 403).
+    if (!debugLogsRestricted.value) {
+      emit('expand', props.job.id)
+    }
     expandedStep.value = null
   } else {
     expandedStep.value = null
@@ -113,6 +124,23 @@ function goToStep(stepOrder: number) {
         {{ job.status }}
       </span>
 
+      <!-- Verbose / Debug mode badges -->
+      <span
+        v-if="job.verbose_logs"
+        class="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-600 shrink-0"
+        title="Verbose mode: extra per-step detail in logs; secrets stay redacted."
+      >
+        <Info class="h-3 w-3" /> Verbose
+      </span>
+      <span
+        v-if="job.debug_unredact"
+        class="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 shrink-0"
+        title="Debug mode: logs are unredacted, platform-admin-only, and purged after 24h."
+      >
+        <Lock v-if="debugLogsRestricted" class="h-3 w-3" />
+        Debug
+      </span>
+
       <span class="font-mono text-xs tabular-nums text-muted-foreground shrink-0">{{ fmtDuration(job.start_time, job.end_time) }}</span>
 
       <span class="flex-1" />
@@ -151,8 +179,17 @@ function goToStep(stepOrder: number) {
 
     <!-- Expanded detail: per-step log terminals -->
     <div v-if="expanded" class="border-t border-border/40 bg-muted/10">
-      <!-- Step selector tabs -->
-      <div class="flex items-center gap-1 px-4 pt-3 pb-2 overflow-x-auto">
+      <!-- Restricted: debug-job logs are platform-admin only -->
+      <div v-if="debugLogsRestricted" class="flex items-start gap-2 px-4 py-3 text-xs text-muted-foreground">
+        <Lock class="mt-0.5 h-3.5 w-3.5 text-amber-600 shrink-0" />
+        <span>
+          This run used <span class="font-medium text-amber-700">Debug mode</span> — its logs are unredacted and
+          visible to <span class="font-medium">platform admins only</span>. Request access from an admin if you need to inspect it.
+        </span>
+      </div>
+      <template v-else>
+        <!-- Step selector tabs -->
+        <div class="flex items-center gap-1 px-4 pt-3 pb-2 overflow-x-auto">
         <button
           v-for="task in tasks"
           :key="task.step_order"
@@ -191,6 +228,7 @@ function goToStep(stepOrder: number) {
       <div v-else class="px-4 pb-3 text-xs text-muted-foreground">
         Select a step above to view its logs
       </div>
+      </template>
     </div>
   </div>
 </template>

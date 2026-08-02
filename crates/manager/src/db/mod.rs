@@ -152,6 +152,19 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
 
+    // Admin-only debug flag: when set, the Runner skips log redaction for this job.
+    // Dispatched to the Runner and used to gate debug-job log reads to admins.
+    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN debug_unredact INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+
+    // Verbose execution mode: any user can trigger with extra detail in the
+    // Runner's logs (per-step duration, exit code, stage markers). Redaction
+    // stays fully intact — distinct from the admin-only debug_unredact flag.
+    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN verbose_logs INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+
     // Add owner_group column to secrets table (safe to fail if already present)
     let _ = sqlx::query("ALTER TABLE secrets ADD COLUMN owner_group TEXT NOT NULL DEFAULT ''")
         .execute(pool)
@@ -261,6 +274,14 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
 
     // Private registry credentials secret name (docker / shell / SSH)
     let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN registry_secret TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
+
+    // OSS config delivery (config_source / config_path) for `config_source` steps.
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_source TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_path TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await;
 

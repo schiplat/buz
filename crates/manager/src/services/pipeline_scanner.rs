@@ -164,6 +164,8 @@ async fn upsert_from_yaml(
             secrets: s.secrets.clone(),
             privileged: s.privileged,
             registry_secret: s.registry_secret.clone(),
+            config_source: s.config_source.clone(),
+            config_path: s.config_path.clone(),
         })
         .collect();
 

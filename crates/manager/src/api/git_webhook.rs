@@ -235,7 +235,8 @@ async fn finish_claimed(
     }
 
     let inputs = event.to_inputs(provider);
-    let trigger_result = super::pipelines::do_trigger(state, pipeline_id, "git", &inputs).await;
+    let trigger_result =
+        super::pipelines::do_trigger(state, pipeline_id, "git", &inputs, false, false).await;
 
     match trigger_result {
         Ok(Json(resp)) => {

@@ -153,6 +153,8 @@ async function copyWebhookUrl(path: string) {
 // Trigger dialog
 const triggerTarget = ref<Pipeline | null>(null)
 const triggerInputPairs = ref<{ key: string; value: string; required?: boolean; masking?: boolean }[]>([])
+const triggerDebug = ref(false)
+const triggerVerbose = ref(false)
 
 // YAML editor
 const yamlContent = ref('')
@@ -307,6 +309,16 @@ const registrySecretOptions = computed(() =>
     }))
 )
 
+/** Config Source dropdown — only kind=aliyun_oss_auth credentials. */
+const configSourceOptions = computed(() =>
+  availableSecrets.value
+    .filter((s) => s.kind === 'aliyun_oss_auth')
+    .map(s => ({
+      id: s.name,
+      label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
+    }))
+)
+
 async function loadPipelines() {
   loading.value = true
   try {
@@ -364,7 +376,7 @@ async function openEdit(p: Pipeline) {
       team_id: detail.team_id || '',
       var_ids: detail.var_ids || [],
       secret_ids: detail.secret_ids || [],
-      env: [],
+      env: (detail.env || []).map((e: any) => ({ name: e.name, value: e.value })),
       steps: (detail.tasks || []).map((t: any) => ({
         name: t.name || '',
         run: t.command_template || '',
@@ -380,6 +392,8 @@ async function openEdit(p: Pipeline) {
         continue_on_error: t.fail_strategy === 'continue' ? true : undefined,
         privileged: (t as any).privileged === true ? true : undefined,
         registry_secret: (t.registry_secret || '').trim() || undefined,
+        config_source: ((t as any).config_source || '').trim() || undefined,
+        config_path: ((t as any).config_path || '').trim() || undefined,
       })),
       input_defs: normalizeInputDefsForForm(detail.input_defs),
     }
@@ -564,6 +578,8 @@ async function importYamlToForm() {
         continue_on_error: s.continue_on_error || undefined,
         privileged: s.privileged || undefined,
         registry_secret: s.registry_secret || undefined,
+        config_source: (s as any).config_source || undefined,
+        config_path: (s as any).config_path || undefined,
       })),
       input_defs: normalizeInputDefsForForm(
         (parsed.trigger_config?.inputs || []).map((inp) => ({
@@ -639,9 +655,7 @@ async function handleSave() {
       team_id: form.value.team_id,
       var_ids: form.value.var_ids.length > 0 ? form.value.var_ids : undefined,
       secret_ids: form.value.secret_ids.length > 0 ? form.value.secret_ids : undefined,
-      env: form.value.env.filter(e => e.name.trim() && e.value.trim()).length > 0
-        ? form.value.env.filter(e => e.name.trim() && e.value.trim()).map(e => ({ name: e.name.trim(), value: e.value }))
-        : undefined,
+      env: form.value.env.filter(e => e.name.trim() && e.value.trim()).map(e => ({ name: e.name.trim(), value: e.value })),
       steps: form.value.steps.map(s => {
         const rawHost = s.host as string | undefined
         const rawHostLabels = s.host_labels as string | undefined
@@ -653,6 +667,8 @@ async function handleSave() {
           volumes: volumesArray,
           privileged: isDocker ? (s as any).privileged === true || undefined : undefined,
           registry_secret: ((s as any).registry_secret || '').trim() || undefined,
+          config_source: ((s as any).config_source || '').trim() || undefined,
+          config_path: ((s as any).config_path || '').trim() || undefined,
           host: isDocker
             ? undefined
             : rawHost
@@ -696,6 +712,9 @@ async function handleSave() {
 async function handleTrigger(p: Pipeline) {
   if (triggeringId.value) return
 
+  triggerDebug.value = false
+  triggerVerbose.value = false
+
   // Prefer fresh defs (incl. masking) from detail; fall back to list payload.
   let defs: PipelineInputDef[] = Array.isArray(p.input_defs) ? p.input_defs : []
   try {
@@ -705,19 +724,17 @@ async function handleTrigger(p: Pipeline) {
     /* use list payload */
   }
 
-  if (defs.length > 0) {
-    triggerTarget.value = p
-    triggerInputPairs.value = normalizeInputDefsForForm(defs).map((d) => ({
-      key: d.name,
-      value: d.default || '',
-      required: d.required,
-      masking: !!d.masking,
-    }))
-    return
-  }
-
-  // No input_defs — trigger directly
-  await doTrigger(p)
+  // The dialog is always shown so any user can opt into verbose mode (and
+  // admins can additionally enable the no-redaction debug mode).
+  triggerTarget.value = p
+  triggerInputPairs.value = defs.length > 0
+    ? normalizeInputDefsForForm(defs).map((d) => ({
+        key: d.name,
+        value: d.default || '',
+        required: d.required,
+        masking: !!d.masking,
+      }))
+    : []
 }
 
 async function doTrigger(p: Pipeline) {
@@ -728,9 +745,11 @@ async function doTrigger(p: Pipeline) {
     for (const pair of triggerInputPairs.value) {
       if (pair.key.trim()) inputs[pair.key.trim()] = pair.value
     }
-    const result = await pipelinesApi.trigger(p.id, inputs)
+    const result = await pipelinesApi.trigger(p.id, inputs, triggerDebug.value, triggerVerbose.value)
     triggerTarget.value = null
     triggerInputPairs.value = []
+    triggerDebug.value = false
+    triggerVerbose.value = false
     router.push(`/jobs/${result.job_id}`)
   } catch (e) {
     console.error(e)
@@ -742,6 +761,8 @@ async function doTrigger(p: Pipeline) {
 function cancelTriggerDialog() {
   triggerTarget.value = null
   triggerInputPairs.value = []
+  triggerDebug.value = false
+  triggerVerbose.value = false
   triggeringId.value = null
 }
 
@@ -1119,8 +1140,7 @@ async function handleToggleActive(p: Pipeline) {
               v-for="(pair, idx) in triggerInputPairs"
               :key="idx"
               class="flex items-center gap-2"
-            >
-              <div
+            >              <div
                 class="flex-1 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground select-none flex items-center gap-1.5 flex-wrap"
               >
                 {{ pair.key }}
@@ -1141,6 +1161,31 @@ async function handleToggleActive(p: Pipeline) {
               />
             </div>
           </div>
+
+          <label
+            class="mb-4 flex cursor-pointer items-start gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2.5"
+          >
+            <input v-model="triggerVerbose" type="checkbox" class="mt-0.5" :disabled="triggeringId !== null" />
+            <span class="text-sm leading-snug">
+              <span class="font-medium">Verbose mode — extra execution detail</span>
+              <span class="block text-xs text-muted-foreground">
+                Logs per step: duration, exit code, full step config and stage progress. Secrets stay redacted.
+              </span>
+            </span>
+          </label>
+
+          <label
+            v-if="auth.isPlatformAdmin"
+            class="mb-6 flex cursor-pointer items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2.5"
+          >
+            <input v-model="triggerDebug" type="checkbox" class="mt-0.5" :disabled="triggeringId !== null" />
+            <span class="text-sm leading-snug">
+              <span class="font-medium text-amber-700">Debug mode — do not redact secrets</span>
+              <span class="block text-xs text-muted-foreground">
+                Logs will contain plaintext secret values, are visible to platform admins only, and are automatically purged 24h after this run. Use for troubleshooting only.
+              </span>
+            </span>
+          </label>
 
           <div class="flex items-center justify-end gap-3">
             <UiButton variant="outline" size="sm" @click="cancelTriggerDialog()">Cancel</UiButton>
@@ -1432,6 +1477,35 @@ async function handleToggleActive(p: Pipeline) {
                           JSON value (encrypted):
                           <code class="font-mono">{ "provider", "registry", "username", "password" }</code>.
                           Shell/SSH: login before step; Docker: login before pull. Not injected as env.
+                        </p>
+                      </div>
+
+                      <div v-if="step.uses === 'shell' || step.uses === 'ssh'">
+                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
+                          Config Source <span v-if="(step as any).config_path" class="text-red-500">*</span>
+                        </label>
+                        <div class="grid grid-cols-2 gap-3">
+                          <select
+                            v-model="(step as any).config_source"
+                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                          >
+                            <option value="">None</option>
+                            <option v-for="opt in configSourceOptions" :key="opt.id" :value="opt.id">
+                              {{ opt.label }}
+                            </option>
+                          </select>
+                          <input
+                            v-model="(step as any).config_path"
+                            type="text"
+                            placeholder="e.g. config_tpl/super-manager/v1.4.0"
+                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                          />
+                        </div>
+                        <p class="text-xs text-muted-foreground/70 mt-0.5">
+                          Only Secrets with Kind = Aliyun OSS auth. At dispatch the Manager signs a 1-hour GET URL for
+                          <code class="font-mono">config_path + /configs.tar.gz</code> and injects
+                          <code class="font-mono">$BUZ_CONFIG_URL</code> (redacted in logs). Shell/SSH:
+                          <code class="font-mono">curl -fsSL "$BUZ_CONFIG_URL" | tar xz -C /dir</code>. Leave both empty to skip.
                         </p>
                       </div>
 
@@ -2113,6 +2187,20 @@ steps:
       docker-compose up -d
       curl -X POST -d '{"text":"deploy complete"}' "$SLACK_WEBHOOK_URL"
     continue-on-error: true
+
+  # ── OSS config delivery (config_source + config_path) ──
+  # Secret "oss-cfg" is created with Kind = Aliyun OSS auth (endpoint/bucket/AK/SK JSON).
+  # At dispatch the Manager signs a 1-hour GET URL for config_path + /configs.tar.gz
+  # and injects $BUZ_CONFIG_URL (redacted in logs). The target holds no AK/SK.
+  - name: Fetch Config
+    uses: ssh
+    host: $deploy_host
+    config_source: oss-cfg
+    config_path: config_tpl/super-manager/v1.4.0
+    run: |
+      mkdir -p /opt/manager
+      curl -fsSL "$BUZ_CONFIG_URL" | tar xz -C /opt/manager
+      cd /opt/manager && docker compose up -d
 
   # ── Step-level secret (only this step sees GIT_SSH_KEY) ──
   - name: Clone Private Repo

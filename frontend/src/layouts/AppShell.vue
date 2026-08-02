@@ -4,6 +4,7 @@ import { RouterView, useRoute } from 'vue-router'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import TopNav from '@/components/layout/TopNav.vue'
 import ErrorBoundary from '@/components/ErrorBoundary.vue'
+import BackToTop from '@/components/BackToTop.vue'
 import { useUiStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth'
 
@@ -38,5 +39,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         </div>
       </main>
     </div>
+    <BackToTop />
   </div>
 </template>

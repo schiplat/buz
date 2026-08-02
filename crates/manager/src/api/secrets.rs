@@ -6,8 +6,11 @@ use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::protocol::{CreateSecretRequest, UpdateSecretRequest};
 use shared::rbac::Perm;
+use shared::config_auth::parse_oss_secret_value;
 use shared::registry_auth::{looks_like_registry_secret_value, parse_registry_secret_value};
-use shared::secret_kind::{is_registry_kind, normalize_secret_kind, SECRET_KIND_REGISTRY};
+use shared::secret_kind::{
+    is_aliyun_oss_auth_kind, is_registry_kind, normalize_secret_kind, SECRET_KIND_REGISTRY,
+};
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -36,6 +39,17 @@ fn validate_registry_value(value: &str) -> Result<(), AppError> {
         AppError::ValidationFailed(format!(
             "kind=registry requires JSON with username/password \
              (optional registry, provider): {e}"
+        ))
+    })?;
+    Ok(())
+}
+
+/// OSS kind must contain parseable OSS read-only credential JSON.
+fn validate_oss_value(value: &str) -> Result<(), AppError> {
+    parse_oss_secret_value(value).map_err(|e| {
+        AppError::ValidationFailed(format!(
+            "kind=aliyun_oss_auth requires JSON with endpoint/bucket/access_key_id/access_key_secret \
+             (optional region, provider): {e}"
         ))
     })?;
     Ok(())
@@ -125,6 +139,8 @@ pub async fn create(
     let kind = normalize_secret_kind(req.kind.as_deref());
     if is_registry_kind(kind) {
         validate_registry_value(&req.value)?;
+    } else if is_aliyun_oss_auth_kind(kind) {
+        validate_oss_value(&req.value)?;
     }
 
     let encrypted = crypto::encrypt(&req.value, &state.config.auth.jwt_secret)
@@ -273,6 +289,16 @@ pub async fn update(
                     ));
                 }
             }
+        } else if is_aliyun_oss_auth_kind(&kind) {
+            match crypto::decrypt(&current_value, &state.config.auth.jwt_secret) {
+                Ok(plain) => validate_oss_value(&plain)?,
+                Err(_) => {
+                    return Err(AppError::ValidationFailed(
+                        "kind=aliyun_oss_auth requires a valid OSS JSON value — re-enter Value"
+                            .into(),
+                    ));
+                }
+            }
         }
         sqlx::query(
             "UPDATE secrets SET owner_group = ?, team_id = ?, team_shared = ?, kind = ?, \
@@ -288,6 +314,8 @@ pub async fn update(
     } else {
         if is_registry_kind(&kind) {
             validate_registry_value(&req.value)?;
+        } else if is_aliyun_oss_auth_kind(&kind) {
+            validate_oss_value(&req.value)?;
         } else if looks_like_registry_secret_value(&req.value) && kind != SECRET_KIND_REGISTRY {
             // Allow generic secrets that happen to be JSON; no hard fail.
         }

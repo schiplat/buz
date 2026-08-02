@@ -138,6 +138,14 @@ Claim payload (Manager → Runner):
 ```
 
 `secrets`, registry passwords / step secrets, and keys listed in `masking_input_keys` are redacted in logs. Plaintext `inputs` are still injected as env for execution. See [Resource Binding Map](#resource-binding-map).
+
+### Unified log-masking entry point
+
+"Which values / keys are sensitive" is decided in **one** place (`shared::log_masking`), so adding a new sensitive field can't be missed:
+
+- **Manager (producer)** pushes every sensitive value into the step payload's `log_mask_values` (`SecretClass::RegistryPassword` for `registry_auth.password`, `SecretClass::ConfigUrl` for the signed OSS URL, …). Adding a new sensitive field = registering it here; the Runner needs no changes.
+- **Runner (consumer)** builds a per-step `SecretCatalog` from `secrets` keys + `masking_input_keys` + step `secrets:` + `log_mask_values`, then calls the shared `mask_secrets` primitive. `==> RUN` echo masks by key (`catalog.is_secret_key`); streamed output is masked by value.
+- **`SecretClass`** is the category registry (`Secret` / `MaskingInput` / `RegistryPassword` / `ConfigUrl` / `SshKey`) — extend it and the producer registration when introducing a new secret kind.
 ---
 
 ## Resource Binding Map
@@ -239,6 +247,63 @@ registry_secret: acr-personal
 4. **Set Kind = Registry** for private registry JSON, then use `registry_secret` — do not enable Team share for ACR personal credentials
 5. **Keep team slugs consistent** — `team:` in YAML must match Infrastructure Teams
 6. **Create Secrets in Infrastructure first**, then bind or reference by name
+
+---
+
+## Verbose Mode (any user, extra detail, redaction intact)
+
+For every user (member or admin), the trigger dialog offers **Verbose mode**: the Runner logs extra per-step execution detail while **secret redaction stays fully intact** — no plaintext values ever appear. It is the safe alternative to Debug mode for day-to-day troubleshooting.
+
+### How it works
+
+|| Layer | Behavior |
+||-------|----------|
+|| Trigger UI | Rendered for everyone in the trigger dialog; sends `verbose: true` in the trigger request |
+|| `POST /pipelines/{id}/trigger` | No admin check — `verbose` is honored for any caller; audit event records `verbose` |
+|| `jobs.verbose_logs` | Persisted on the job (DB column, default `0`); distinct from `debug_unredact` |
+|| Runner dispatch | `poll` returns `verbose` on the task payload |
+|| Runner logs | Per step: `==> STAGE prepare / exec` markers, `==> STEP CONFIG` (exec type, timeout, fail strategy, work dir, image, `registry_secret` by name, `config_source`/`config_path`, ssh hosts — **names/keys only, never values**), `==> STEP RESULT` (duration + exit code) |
+
+### What verbose adds
+
+- **Per-step duration** and **exit code** — `==> STEP RESULT` reports `duration` + `exit code` even on failure (when execution completed).
+- **Stage progress** — `==> STAGE prepare` / `==> STAGE exec` markers around each step.
+- **Command shape** — `==> RUN` already shows the multi-line expanded command; verbose additionally renders `==> STEP CONFIG` with the full step shape (metadata only).
+- **`BUZ_CONFIG_URL` "injected" hint** — the signed OSS URL is registered via `catalog.add_injected_key`, so the `==> RUN` env line shows `BUZ_CONFIG_URL=<injected>` instead of `BUZ_CONFIG_URL=***`. This applies to all jobs (not only verbose), since it reveals nothing: the URL value still participates in value-based redaction.
+
+### Safety properties
+
+- **Redaction is untouched** — `verbose` only adds meta chunks produced by the Runner from keys/metadata; `SecretCatalog` value masking still applies to all streamed output. `debug_unredact` remains the only way to ever see plaintext, and it stays admin-only.
+- **Never conflicts with Debug mode** — the two flags are independent and may combine (a verbose debug run shows detail with plaintext, admin-only, 24h retention).
+- **No new data stored** — verbose detail is derived at log time in the Runner; no extra columns beyond the `verbose_logs` job flag.
+
+---
+
+## Debug Mode (admin-only unredacted logs)
+
+For troubleshooting, a **platform admin** can trigger a pipeline with **Debug mode** enabled: secret values are **not redacted** in the job logs (`==> RUN` env lines and streamed output). This is a deliberate, high-risk escape hatch.
+
+### How it works
+
+| Layer | Behavior |
+|-------|----------|
+| Trigger UI | Only rendered when `auth.isPlatformAdmin`; sends `debug: true` in the trigger request |
+| `POST /pipelines/{id}/trigger` | Rejects non-admins with **403** when `debug: true`; audit event records `debug_unredact` |
+| `jobs.debug_unredact` | Persisted on the job (DB column, default `0`); stored in the frozen snapshot-adjacent fields |
+| Runner dispatch | `poll` returns `debug_unredact` on the task payload; the Runner then tracks **no** secret values and clears all secret keys → `mask_secrets` is a no-op and `==> RUN` shows real values |
+| Log read gate | `GET /jobs/{id}/logs` and the WS stream reject non-admins with **403** — debug jobs are only readable by platform admins, regardless of team membership |
+| Retention | A background task (`services::debug_log_cleanup`) runs every 5 minutes and **purges `job_logs` for debug jobs older than 24 hours**, resetting `debug_unredact` so the gate + UI banner stop applying. The job row itself is kept for history/audit. The trigger dialog and the job detail page both surface the 24h retention |
+
+### Safety properties
+
+- **Job-scoped, one-shot** — the flag lives on the job, never as a global setting. The next normal trigger is fully redacted again.
+- **Not silently downgraded** — a non-admin sending `debug: true` gets an explicit 403; the flag is never ignored.
+- **Audited** — the `pipeline.trigger` audit event records `debug_unredact: true` with the triggering admin's identity.
+- **Read gate** — even a team member with `TeamView` cannot open a debug job's logs.
+
+### Risk note
+
+Registry passwords, SSH keys, and other long-lived secrets become plaintext in `job_logs` permanently until the 24h purge. Prefer short-lived values (e.g. a throwaway OSS signed URL via `config_source`) when using Debug mode. After 24h the logs are deleted automatically and the job's `debug_unredact` flag is reset; the job record itself remains for audit.
 
 ---
 

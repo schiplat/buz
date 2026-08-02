@@ -17,6 +17,10 @@ export interface Job {
   updated_at: string
   /** Pipeline team — used by the top-bar team filter. */
   team_id?: string
+  /** Admin-only debug run: logs are unredacted, kept 24h, admin-readable only. */
+  debug_unredact?: boolean
+  /** Verbose execution mode: extra per-step detail in logs, redaction intact. */
+  verbose_logs?: boolean
 }
 
 export interface StepStatus {

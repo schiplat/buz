@@ -94,6 +94,8 @@ async fn main() -> anyhow::Result<()> {
 
     services::runner_monitor::spawn_monitor(db_pool.clone(), config.runner.clone());
 
+    services::debug_log_cleanup::spawn_debug_log_cleanup(db_pool.clone());
+
     services::pipeline_scanner::spawn_scanner(
         db_pool.clone(),
         config.pipeline.yaml_scan_dir.clone(),

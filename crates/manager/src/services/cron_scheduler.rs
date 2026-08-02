@@ -119,7 +119,9 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                     expr
                 );
 
-                match crate::api::do_trigger(&state, pipeline_id, "cron", &HashMap::new()).await {
+                match crate::api::do_trigger(&state, pipeline_id, "cron", &HashMap::new(), false, false)
+                    .await
+                {
                     Ok(resp) => {
                         let body = resp.0;
                         if let Some(job_id) = body

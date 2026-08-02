@@ -130,6 +130,15 @@ pub struct StepYaml {
     /// Used for `docker login` on docker / shell / SSH steps.
     #[serde(default)]
     pub registry_secret: Option<String>,
+    /// Name of a Manager Secret (kind=`oss`) holding Aliyun OSS read-only AK/SK.
+    /// Manager signs a short-lived GET URL for `config_path` and injects it
+    /// into the step env as `$BUZ_CONFIG_URL` (shell / ssh steps).
+    #[serde(default)]
+    pub config_source: Option<String>,
+    /// OSS object key (directory) to download, e.g. `config_tpl/<project>/<tag>`.
+    /// Manager appends `configs.tar.gz` when signing the URL.
+    #[serde(default)]
+    pub config_path: Option<String>,
     #[serde(default)]
     pub host: Option<OneOrMany>,
     #[serde(default, alias = "work_dir")]
@@ -263,6 +272,12 @@ pub struct StepData {
     /// Manager Secret name for private registry login (docker / shell / SSH).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registry_secret: Option<String>,
+    /// Manager Secret name (kind=`oss`) for signed OSS config downloads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_source: Option<String>,
+    /// OSS object key (directory) — Manager appends `configs.tar.gz`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -401,6 +416,41 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             }
         }
 
+        let cfg_source = step
+            .config_source
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let cfg_path = step
+            .config_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if cfg_source.is_some() || cfg_path.is_some() {
+            let engine = if uses.is_empty() { "shell" } else { uses };
+            if !matches!(engine, "shell" | "local" | "ssh" | "docker") {
+                errors.push(YamlValidationError {
+                    field: field.clone(),
+                    message: "'config_source'/'config_path' are only valid for shell, ssh, or docker steps"
+                        .into(),
+                });
+            }
+            if cfg_source.is_some() != cfg_path.is_some() {
+                errors.push(YamlValidationError {
+                    field: field.clone(),
+                    message: "'config_source' and 'config_path' must be set together"
+                        .into(),
+                });
+            }
+            if let Some(p) = cfg_path {
+                if !p.ends_with('/') && !p.ends_with("configs.tar.gz") {
+                    warnings.push(format!(
+                        "{field}: 'config_path' should be a directory (Manager appends 'configs.tar.gz')"
+                    ));
+                }
+            }
+        }
+
         if uses != "docker" {
             continue;
         }
@@ -521,6 +571,18 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 privileged: s.privileged,
                 registry_secret: s
                     .registry_secret
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string),
+                config_source: s
+                    .config_source
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string),
+                config_path: s
+                    .config_path
                     .as_deref()
                     .map(str::trim)
                     .filter(|v| !v.is_empty())

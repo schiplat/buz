@@ -1,8 +1,10 @@
 pub mod api_token;
 pub mod auth;
+pub mod config_auth;
 pub mod error;
 pub mod git_webhook;
 pub mod logging;
+pub mod log_masking;
 pub mod models;
 pub mod pipeline_yaml;
 pub mod protocol;

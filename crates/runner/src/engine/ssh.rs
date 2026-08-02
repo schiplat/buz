@@ -230,10 +230,17 @@ async fn execute_inner(command: &str, conn: &SshConnectionParams) -> anyhow::Res
         }
     }
 
+    let exit_code = exit_code.unwrap_or_else(|| {
+        tracing::warn!(
+            "SSH channel for {addr} closed without an exit status — treating as failure"
+        );
+        1
+    });
+
     Ok(SshOutput {
         stdout,
         stderr,
-        exit_code: exit_code.unwrap_or(0),
+        exit_code,
     })
 }
 

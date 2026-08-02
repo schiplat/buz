@@ -1,7 +1,7 @@
 import apiClient from './client'
 
-/** Secret purpose: env injection vs registry login JSON. */
-export type SecretKind = 'generic' | 'registry'
+/** Secret purpose: env injection, registry login JSON, or Aliyun OSS read-only auth. */
+export type SecretKind = 'generic' | 'registry' | 'aliyun_oss_auth'
 
 export interface Secret {
   id: string
@@ -17,19 +17,24 @@ export interface Secret {
    * Default false — use Authorized Secrets / YAML secrets / step secrets / registry_secret.
    */
   team_shared: boolean
-  /** `generic` (default) or `registry` (JSON for registry_secret / docker login). */
+  /** `generic`, `registry`, or `aliyun_oss_auth`. */
   kind: SecretKind
   updated_at: string
+}
+
+export const secretKinds: SecretKind[] = ['generic', 'registry', 'aliyun_oss_auth']
+
+export function normalizeSecretKind(raw: string | null | undefined): SecretKind {
+  if (raw === 'registry') return 'registry'
+  if (raw === 'aliyun_oss_auth') return 'aliyun_oss_auth'
+  return 'generic'
 }
 
 export const secretsApi = {
   async list(): Promise<Secret[]> {
     const resp = await apiClient.get('/secrets')
     const rows = resp.data as Secret[]
-    return rows.map((s) => ({
-      ...s,
-      kind: s.kind === 'registry' ? 'registry' : 'generic',
-    }))
+    return rows.map((s) => ({ ...s, kind: normalizeSecretKind(s.kind) }))
   },
 
   async create(data: {
@@ -54,7 +59,7 @@ export const secretsApi = {
   async get(id: string): Promise<Secret> {
     const resp = await apiClient.get(`/secrets/${id}`)
     const s = resp.data as Secret
-    return { ...s, kind: s.kind === 'registry' ? 'registry' : 'generic' }
+    return { ...s, kind: normalizeSecretKind(s.kind) }
   },
 
   async update(

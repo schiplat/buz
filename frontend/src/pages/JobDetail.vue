@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, XCircle, Trash2, CheckCircle2, Loader2, MinusCircle } from '@lucide/vue'
+import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, XCircle, Trash2, CheckCircle2, Loader2, MinusCircle, AlertTriangle, Info, Lock } from '@lucide/vue'
 import { jobsApi, type Job, type LogChunk } from '@/api/jobs'
 import { parseUtc, formatLogClock, formatLocalDateTime } from '@/utils/time'
 import { formatLogChunkForTerminal } from '@/utils/logFormat'
@@ -21,6 +21,8 @@ const jobId = route.params.id as string
 const job = ref<Job | null>(null)
 const logs = ref<LogChunk[]>([])
 const loading = ref(true)
+/** Set when the logs request failed (e.g. admin-only debug job for non-admins). */
+const logsError = ref(false)
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 let pollInFlight = false
 let pollAbort: AbortController | null = null
@@ -170,11 +172,18 @@ onUnmounted(() => {
 
 async function loadJob() {
   loading.value = true
+  logsError.value = false
+  // Job metadata and logs are fetched separately: debug-job logs are
+  // platform-admin-only, so a logs 403 must not hide the job itself.
   try {
-    const [j, l] = await Promise.all([jobsApi.get(jobId), jobsApi.logs(jobId)])
-    job.value = j
-    logs.value = l
+    job.value = await jobsApi.get(jobId)
   } catch (e) { console.error(e) }
+  try {
+    logs.value = await jobsApi.logs(jobId)
+  } catch (e) {
+    logsError.value = true
+    console.error(e)
+  }
   finally { loading.value = false }
 }
 
@@ -211,7 +220,9 @@ function startRefreshTimer() {
         }
       }
     } catch {
-      /* silent — network blips during manager restart */
+      // Silent for network blips — but a logs 403 on a debug job for a
+      // non-admin must surface the admin-only lock instead of spamming.
+      if (job.value?.debug_unredact) logsError.value = true
     } finally {
       pollInFlight = false
     }
@@ -486,6 +497,31 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
     </div>
 
     <template v-else-if="job">
+      <!-- Verbose-mode notice: extra detail, redaction intact -->
+      <div
+        v-if="job.verbose_logs"
+        class="mb-4 flex items-start gap-2 rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm"
+      >
+        <Info class="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
+        <span class="text-sky-800">
+          <span class="font-semibold">Verbose mode</span> — this run includes extra per-step detail
+          (duration, exit code, full step config, stage progress). Secrets remain redacted.
+        </span>
+      </div>
+
+      <!-- Debug-mode banner: unredacted logs, admin-only, 24h retention -->
+      <div
+        v-if="job.debug_unredact"
+        class="mb-4 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm"
+      >
+        <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+        <span class="text-amber-800">
+          <span class="font-semibold">Debug mode</span> — this run's logs were not redacted (plaintext
+          secret values may appear). They are visible to platform admins only and are
+          <span class="font-semibold">automatically purged 24 hours</span> after the job was created.
+        </span>
+      </div>
+
       <!-- Job Info -->
       <div class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-sm p-6">
         <h3 class="text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground/70 mb-5">Job Info</h3>
@@ -629,7 +665,11 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
                     v-if="(stepLogs.get(t.step_order) || []).length === 0"
                     class="absolute inset-0 flex items-center justify-center pointer-events-none"
                   >
-                    <div class="text-center space-y-1.5">
+                    <div v-if="logsError" class="text-center space-y-1.5">
+                      <Lock class="h-3.5 w-3.5 mx-auto text-amber-600" />
+                      <p class="text-[11px] text-amber-700/80">Logs are admin-only — this run used Debug mode</p>
+                    </div>
+                    <div v-else class="text-center space-y-1.5">
                       <Loader2 v-if="job.status === 'running'" class="h-3.5 w-3.5 mx-auto text-muted-foreground/50 animate-spin" />
                       <MinusCircle v-else class="h-3.5 w-3.5 mx-auto text-muted-foreground/40" />
                       <p class="text-[11px] text-muted-foreground/50">{{ job.status === 'running' ? 'Waiting for output...' : 'No output recorded' }}</p>

@@ -30,7 +30,15 @@ pub async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let base = "SELECT p.id, p.name, p.description, p.trigger_type, p.runner_labels,
+    // Debug (unredacted) jobs are admin-only end to end: non-admins must not
+    // even see them as "latest job" or in the run totals of a pipeline card.
+    let debug_scope = if auth.is_platform_admin {
+        ""
+    } else {
+        "WHERE debug_unredact = 0 "
+    };
+    let base = format!(
+        "SELECT p.id, p.name, p.description, p.trigger_type, p.runner_labels,
                 p.timeout_seconds, p.concurrency_group, p.input_defs, p.is_active,
                 p.source, p.team_id, p.owner_group, p.created_at, p.updated_at,
                 j.id as latest_job_id, j.status as latest_job_status,
@@ -41,17 +49,17 @@ pub async fn list(
          FROM pipelines p
          LEFT JOIN (
              SELECT pipeline_id, MAX(created_at) as max_created
-             FROM jobs GROUP BY pipeline_id
+             FROM jobs {debug_scope}GROUP BY pipeline_id
          ) latest ON p.id = latest.pipeline_id
          LEFT JOIN jobs j ON j.pipeline_id = latest.pipeline_id AND j.created_at = latest.max_created
          LEFT JOIN (
              SELECT pipeline_id,
                     COUNT(*) as job_total,
                     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as job_success
-             FROM jobs
-             GROUP BY pipeline_id
+             FROM jobs {debug_scope}GROUP BY pipeline_id
          ) js ON p.id = js.pipeline_id
-         WHERE 1=1";
+         WHERE 1=1"
+    );
 
     let team_filter = team_in_clause(&auth, "p.team_id");
     let sql = match &team_filter {
@@ -243,10 +251,29 @@ pub async fn get_one(
         .await?;
     let var_ids: Vec<String> = var_bind_rows.iter().map(|r| r.get(0)).collect();
 
+    // Fetch inline env vars (pipeline-level `env:` block) for the edit form.
+    let env_rows = sqlx::query(
+        "SELECT var_name, value FROM variables
+         WHERE pipeline_id = ? AND source_type = 'inline' AND is_secret = 0
+         ORDER BY var_name",
+    )
+    .bind(&id)
+    .fetch_all(&state.pool)
+    .await?;
+    let envs: Vec<serde_json::Value> = env_rows
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.get::<String, _>(0),
+                "value": e.get::<String, _>(1),
+            })
+        })
+        .collect();
+
     let tasks = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
                 work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
-                privileged, registry_secret
+                privileged, registry_secret, config_source, config_path
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&id)
@@ -274,6 +301,8 @@ pub async fn get_one(
             "step_secrets": t.get::<String, _>(14),
             "privileged": t.get::<i64, _>(15) != 0,
             "registry_secret": t.get::<String, _>(16),
+            "config_source": t.get::<String, _>(17),
+            "config_path": t.get::<String, _>(18),
         })
     })
     .collect::<Vec<_>>();
@@ -301,6 +330,7 @@ pub async fn get_one(
         "concurrency_max_queue": r.get::<Option<i64>, _>(17),
         "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(18),
         "tasks": tasks,
+        "env": envs,
     }))))
 }
 
@@ -552,7 +582,22 @@ pub async fn trigger(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::PipelineTrigger)?;
-    let result = do_trigger(&state, &id, &auth.username, &body.inputs).await?;
+
+    // Admin-only debug trigger: skips secret redaction in the Runner's logs for this job.
+    // Non-admins are rejected outright; the flag is never honored silently.
+    let debug_unredact = body.debug.unwrap_or(false);
+    if debug_unredact && !auth.is_platform_admin {
+        return Err(AppError::Unauthorized(
+            "debug (no-redaction) trigger requires a platform admin".into(),
+        ));
+    }
+
+    // Verbose execution mode is available to everyone — it only adds detail,
+    // it never reduces redaction.
+    let verbose = body.verbose.unwrap_or(false);
+
+    let result =
+        do_trigger(&state, &id, &auth.username, &body.inputs, debug_unredact, verbose).await?;
     let name: String = sqlx::query_scalar("SELECT name FROM pipelines WHERE id = ?")
         .bind(&id)
         .fetch_optional(&state.pool)
@@ -581,7 +626,12 @@ pub async fn trigger(
             .resource("pipeline", &id, &name)
             .team(Some(team_id))
             .after(Some(
-                serde_json::json!({ "job_id": job_id, "inputs": audit_inputs }),
+                serde_json::json!({
+                    "job_id": job_id,
+                    "inputs": audit_inputs,
+                    "debug_unredact": debug_unredact,
+                    "verbose": verbose,
+                }),
             )),
     )
     .await;
@@ -594,6 +644,8 @@ pub(crate) async fn do_trigger(
     pipeline_id: &str,
     triggered_by: &str,
     inputs: &std::collections::HashMap<String, String>,
+    debug_unredact: bool,
+    verbose: bool,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let pipeline = sqlx::query(
         "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
@@ -710,7 +762,7 @@ pub(crate) async fn do_trigger(
     let tasks_snapshot = sqlx::query(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes,
-                privileged, registry_secret
+                privileged, registry_secret, config_source, config_path
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(pipeline_id)
@@ -737,6 +789,8 @@ pub(crate) async fn do_trigger(
             ).unwrap_or(serde_json::Value::Array(vec![])),
             "privileged": t.get::<i64, _>(14) != 0,
             "registry_secret": t.get::<String, _>(15),
+            "config_source": t.get::<String, _>(16),
+            "config_path": t.get::<String, _>(17),
         })
     })
     .collect::<Vec<_>>();
@@ -789,8 +843,8 @@ pub(crate) async fn do_trigger(
     let trigger_params_json = serde_json::to_string(&sealed).unwrap_or_else(|_| "{}".into());
 
     sqlx::query(
-        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot, debug_unredact, verbose_logs, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
     )
     .bind(&job_id)
     .bind(pipeline_id)
@@ -798,6 +852,8 @@ pub(crate) async fn do_trigger(
     .bind(triggered_by)
     .bind(&trigger_params_json)
     .bind(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
+    .bind(if debug_unredact { 1 } else { 0 })
+    .bind(if verbose { 1 } else { 0 })
     .execute(&state.pool)
     .await?;
 
@@ -1000,11 +1056,26 @@ pub(crate) async fn insert_steps(
             .unwrap_or("")
             .to_string();
 
+        let config_source_stored = step
+            .config_source
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("")
+            .to_string();
+        let config_path_stored = step
+            .config_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("")
+            .to_string();
+
         sqlx::query(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
              command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
-             volumes, privileged, registry_secret)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             volumes, privileged, registry_secret, config_source, config_path)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(pipeline_id)
@@ -1024,6 +1095,8 @@ pub(crate) async fn insert_steps(
         .bind(&volumes_stored)
         .bind(privileged_val)
         .bind(&registry_secret_stored)
+        .bind(&config_source_stored)
+        .bind(&config_path_stored)
         .execute(pool)
         .await?;
 

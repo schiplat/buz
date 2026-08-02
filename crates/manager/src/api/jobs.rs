@@ -54,18 +54,27 @@ pub async fn list(
                 j.status, j.trigger_by, j.retry_times,
                 j.step_statuses, j.snapshot,
                 j.start_time, j.end_time, j.created_at, j.updated_at,
-                p.team_id
+                p.team_id, j.verbose_logs, j.debug_unredact
          FROM jobs j
          JOIN pipelines p ON j.pipeline_id = p.id
          WHERE 1=1";
 
     let team_filter = team_in_clause(&auth, "p.team_id");
+    // Debug (unredacted) jobs must never surface to non-admins in any job
+    // listing — their logs are admin-only, so the record itself is hidden too.
+    let debug_filter = if auth.is_platform_admin {
+        String::new()
+    } else {
+        "AND j.debug_unredact = 0".to_string()
+    };
     let sql = match &team_filter {
-        None => format!("{base} ORDER BY j.created_at DESC LIMIT 200"),
+        None => format!("{base} {debug_filter} ORDER BY j.created_at DESC LIMIT 200"),
         Some((clause, _)) if clause == "AND 1=0" => {
             return Ok(Json(ApiResponse::success(vec![])));
         }
-        Some((clause, _)) => format!("{base} {clause} ORDER BY j.created_at DESC LIMIT 200"),
+        Some((clause, _)) => {
+            format!("{base} {clause} {debug_filter} ORDER BY j.created_at DESC LIMIT 200")
+        }
     };
 
     let mut q = sqlx::query(&sql);
@@ -101,6 +110,8 @@ pub async fn list(
                 "created_at": r.get::<Option<String>, _>(11),
                 "updated_at": r.get::<Option<String>, _>(12),
                 "team_id": r.get::<String, _>(13),
+                "verbose_logs": r.get::<i64, _>(14) != 0,
+                "debug_unredact": r.get::<i64, _>(15) != 0,
             })
         })
         .collect();
@@ -116,7 +127,7 @@ pub async fn get_one(
     let r = sqlx::query(
         "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
                 j.status, j.trigger_by, j.trigger_params, j.snapshot, j.step_statuses, j.retry_times,
-                j.start_time, j.end_time, j.created_at, j.updated_at
+                j.start_time, j.end_time, j.created_at, j.updated_at, j.debug_unredact, j.verbose_logs
          FROM jobs j
          LEFT JOIN pipelines p ON j.pipeline_id = p.id
          WHERE j.id = ?",
@@ -157,6 +168,8 @@ pub async fn get_one(
         "end_time": r.get::<Option<String>, _>(11),
         "created_at": r.get::<Option<String>, _>(12),
         "updated_at": r.get::<Option<String>, _>(13),
+        "debug_unredact": r.get::<i64, _>(14) != 0,
+        "verbose_logs": r.get::<i64, _>(15) != 0,
     }))))
 }
 

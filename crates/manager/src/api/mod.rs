@@ -145,3 +145,19 @@ pub fn router(state: AppState) -> Router {
 #[cfg(test)]
 #[path = "tests/api_token_tests.rs"]
 mod api_token_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/pipeline_env_tests.rs"]
+mod pipeline_env_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/debug_trigger_tests.rs"]
+mod debug_trigger_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/dispatch_log_mask_tests.rs"]
+mod dispatch_log_mask_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/verbose_trigger_tests.rs"]
+mod verbose_trigger_integration_tests;

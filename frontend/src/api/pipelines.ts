@@ -17,6 +17,8 @@ export interface Pipeline {
   owner_group: string
   team_id?: string
   secret_ids: string[]
+  /** Inline pipeline env vars (`env:` block), for the edit form. */
+  env: { name: string; value: string }[]
   latest_job_id: string | null
   latest_job_status: string | null
   latest_job_start: string | null
@@ -79,6 +81,10 @@ export interface StepDef {
   privileged?: boolean
   /** Manager Secret name for docker login (pull/push). Shell / SSH / Docker. */
   registry_secret?: string
+  /** Manager Secret name (kind=aliyun_oss_auth) for signed OSS config downloads. */
+  config_source?: string
+  /** OSS object key (directory); Manager appends configs.tar.gz when signing. */
+  config_path?: string
 }
 
 export interface YamlValidationResult {
@@ -146,6 +152,10 @@ export interface YamlStepData {
   privileged?: boolean | null
   /** Manager Secret name for docker login (pull/push). */
   registry_secret?: string | null
+  /** Manager Secret name (kind=aliyun_oss_auth) for signed OSS config downloads. */
+  config_source?: string | null
+  /** OSS object key (directory); Manager appends configs.tar.gz when signing. */
+  config_path?: string | null
 }
 
 export interface YamlValidationError {
@@ -174,8 +184,17 @@ export const pipelinesApi = {
     return resp.data
   },
 
-  async trigger(id: string, inputs?: Record<string, string>): Promise<{ job_id: string }> {
-    const resp = await apiClient.post(`/pipelines/${id}/trigger`, { inputs: inputs || {} })
+  async trigger(
+    id: string,
+    inputs?: Record<string, string>,
+    debug?: boolean,
+    verbose?: boolean,
+  ): Promise<{ job_id: string }> {
+    const resp = await apiClient.post(`/pipelines/${id}/trigger`, {
+      inputs: inputs || {},
+      debug: debug ?? false,
+      verbose: verbose ?? false,
+    })
     return resp.data
   },
 

@@ -411,7 +411,8 @@ pub async fn poll(
     // Candidates: oldest pending jobs with pipeline (+ snapshot) labels.
     // Claim only if runner has ALL required labels (see runner_satisfies_labels).
     let candidates = sqlx::query(
-        "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels
+        "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
+                j.debug_unredact, j.verbose_logs
          FROM jobs j
          JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.status = 'pending'
@@ -426,6 +427,8 @@ pub async fn poll(
         let job_id: String = row.get(0);
         let snapshot_raw: String = row.get(3);
         let pipeline_labels_json: String = row.get(4);
+        let debug_unredact: bool = row.get::<i64, _>(5) != 0;
+        let verbose_logs: bool = row.get::<i64, _>(6) != 0;
         let required = required_labels_for_job(&snapshot_raw, &pipeline_labels_json);
         if !runner_satisfies_labels(&runner_labels, &required) {
             continue;
@@ -448,15 +451,17 @@ pub async fn poll(
                 job = %job_id,
                 runner_labels = ?runner_labels,
                 required_labels = ?required,
+                debug_unredact,
+                verbose_logs,
                 "Runner claimed job"
             );
-            claimed = Some((r, snapshot_raw));
+            claimed = Some((r, snapshot_raw, debug_unredact, verbose_logs));
             break;
         }
         // Lost the race — try next matching candidate
     }
 
-    let Some((row, snapshot_raw)) = claimed else {
+    let Some((row, snapshot_raw, debug_unredact, verbose_logs)) = claimed else {
         // No matching pending job
         return Ok(Json(ApiResponse::success(None)));
     };
@@ -513,7 +518,7 @@ pub async fn poll(
     let task_rows = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, image, volumes,
-                registry_secret
+                registry_secret, config_source, config_path
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&pipeline_id)
@@ -622,6 +627,8 @@ pub async fn poll(
         let image: String = t.get(13);
         let volumes_raw: String = t.get(14);
         let registry_secret_name: String = t.get(15);
+        let config_source_name: String = t.get(16);
+        let config_path_raw: String = t.get(17);
 
         let mut task_json = serde_json::json!({
             "id": t.get::<String, _>(0),
@@ -637,7 +644,15 @@ pub async fn poll(
             "volumes": serde_json::from_str::<serde_json::Value>(&volumes_raw)
                 .unwrap_or(serde_json::Value::Array(vec![])),
             "registry_secret": &registry_secret_name,
+            "config_source": &config_source_name,
+            "config_path": &config_path_raw,
         });
+
+        // Values that must be redacted in the Runner's logs. Registered here — the
+        // single source of truth for "which values are sensitive" (see
+        // `shared::log_masking::SecretClass`). Adding a new sensitive field means
+        // pushing its value here; the Runner only consumes this list.
+        let mut log_mask_values: Vec<String> = Vec::new();
 
         // Resolve step-level secrets (only for this step).
         // Step secrets may come from the step_secrets column (by name, stored at pipeline
@@ -849,6 +864,8 @@ pub async fn poll(
                                             auth_json["provider"] = serde_json::Value::String(p);
                                         }
                                         task_json["registry_auth"] = auth_json;
+                                        // SecretClass::RegistryPassword
+                                        log_mask_values.push(auth.password.clone());
                                     }
                                     Err(e) => {
                                         task_json["registry_auth_error"] =
@@ -878,6 +895,140 @@ pub async fn poll(
                 }
             }
         }
+
+        // Resolve config_source → signed OSS GET URL (injected as $BUZ_CONFIG_URL).
+        // Same-team + kind=aliyun_oss_auth only. Never sends long-lived AK/SK to the runner.
+        if !config_source_name.trim().is_empty() {
+            match sqlx::query_as::<_, (String, String)>(
+                "SELECT s.value, s.kind FROM secrets s
+                 JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
+                 WHERE p.id = ? AND s.name = ?",
+            )
+            .bind(&pipeline_id)
+            .bind(config_source_name.trim())
+            .fetch_optional(&state.pool)
+            .await
+            {
+                Ok(Some((stored, kind))) => {
+                    if !shared::secret_kind::is_aliyun_oss_auth_kind(&kind) {
+                        task_json["config_auth_error"] = serde_json::Value::String(format!(
+                            "config_source '{}' has kind='{}' — set Kind to Aliyun OSS auth \
+                             in Infrastructure → Secrets (or create an aliyun_oss_auth secret)",
+                            config_source_name.trim(),
+                            shared::secret_kind::normalize_secret_kind(Some(&kind))
+                        ));
+                    } else {
+                        // Expand `$VAR` / `${VAR}` in config_path against env + secrets + trigger inputs.
+                        let mut config_vars = serde_json::json!({});
+                        if let Some(obj) = env.as_object() {
+                            for (k, v) in obj {
+                                config_vars[k] = v.clone();
+                            }
+                        }
+                        if let Some(obj) = secrets.as_object() {
+                            for (k, v) in obj {
+                                config_vars[k] = v.clone();
+                            }
+                        }
+                        if let Some(obj) = trigger_params.as_object() {
+                            for (k, v) in obj {
+                                config_vars[k] = v.clone();
+                            }
+                        }
+                        let expanded_path = expand_var_refs(&config_path_raw, &config_vars);
+                        let object_key = {
+                            let dir = expanded_path.trim().trim_matches('/');
+                            if dir.is_empty() {
+                                None
+                            } else {
+                                Some(format!("{dir}/configs.tar.gz"))
+                            }
+                        };
+                        match object_key {
+                            None => {
+                                task_json["config_auth_error"] = serde_json::Value::String(
+                                    "config_source requires a non-empty 'config_path' (e.g. config_tpl/super-manager/v1.4.0)"
+                                        .into(),
+                                );
+                            }
+                            Some(key) if key.contains('$') => {
+                                task_json["config_auth_error"] = serde_json::Value::String(
+                                    format!(
+                                        "config_path '{config_path_raw}' left unresolved variable(s) '${}' — inputs are: {}",
+                                        key.split('$').nth(1).unwrap_or(""),
+                                        trigger_params
+                                            .as_object()
+                                            .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+                                            .unwrap_or_default()
+                                    ),
+                                );
+                            }
+                            Some(key) => match crypto::decrypt(&stored, &state.config.auth.jwt_secret)
+                            {
+                                Ok(value) => match shared::config_auth::parse_oss_secret_value(&value)
+                                {
+                                    Ok(auth) => {
+                                        let ttl =
+                                            shared::config_auth::DEFAULT_CONFIG_URL_TTL_SECS;
+                                        match shared::config_auth::sign_oss_get_url(
+                                            &auth, &key, ttl,
+                                        ) {
+                                            Ok(url) => {
+                                                tracing::info!(
+                                                    secret = %config_source_name.trim(),
+                                                    object_key = %key,
+                                                    ttl_secs = ttl,
+                                                    "Resolved config_source → signed OSS URL for job dispatch"
+                                                );
+                                                task_json["config_auth"] = serde_json::json!({
+                                                    "url": url,
+                                                    "object_key": key,
+                                                    "expires_in_secs": ttl,
+                                                });
+                                                // SecretClass::ConfigUrl
+                                                log_mask_values.push(url.clone());
+                                            }
+                                            Err(e) => {
+                                                task_json["config_auth_error"] =
+                                                    serde_json::Value::String(e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        task_json["config_auth_error"] =
+                                            serde_json::Value::String(e);
+                                    }
+                                },
+                                Err(e) => {
+                                    task_json["config_auth_error"] = serde_json::Value::String(
+                                        format!("failed to decrypt config_source: {e}"),
+                                    );
+                                }
+                            },
+                        }
+                    }
+                }
+                Ok(None) => {
+                    task_json["config_auth_error"] = serde_json::Value::String(format!(
+                        "config_source '{}' not found for this pipeline's team (create an OSS secret under the same team, or check the name)",
+                        config_source_name.trim()
+                    ));
+                }
+                Err(e) => {
+                    task_json["config_auth_error"] = serde_json::Value::String(format!(
+                        "failed to load config_source '{}': {e}",
+                        config_source_name.trim()
+                    ));
+                }
+            }
+        }
+
+        task_json["log_mask_values"] = serde_json::Value::Array(
+            log_mask_values
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        );
 
         tasks.push(task_json);
     }
@@ -914,6 +1065,8 @@ pub async fn poll(
         "masking_input_keys": masking_input_keys,
         "env": env,
         "secrets": secrets,
+        "debug_unredact": debug_unredact,
+        "verbose": verbose_logs,
     })))))
 }
 
@@ -951,6 +1104,50 @@ fn resolve_var_ref(raw: &str, inputs: &serde_json::Value) -> Vec<String> {
     }
 
     vec![]
+}
+
+/// Expand `$VAR` / `${VAR}` references inside a string against a lookup map.
+///
+/// Unresolved names expand to empty strings; unknown `$` that are not a
+/// reference (e.g. `a$b`) are kept as-is. Used for `config_path` templating
+/// (e.g. `config_tpl/super-manager/$tag` → `config_tpl/super-manager/1.4.0`).
+fn expand_var_refs(raw: &str, vars: &serde_json::Value) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(start) = rest.find('$') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        if let Some(braced) = after.strip_prefix('{') {
+            match braced.find('}') {
+                Some(close) => {
+                    let name = &braced[..close];
+                    let val = vars.get(name).and_then(|v| v.as_str()).unwrap_or("");
+                    out.push_str(val);
+                    rest = &braced[close + 1..];
+                }
+                None => {
+                    out.push('$');
+                    rest = after;
+                }
+            }
+        } else {
+            let name_len = after
+                .bytes()
+                .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                .count();
+            if name_len > 0 {
+                let name = &after[..name_len];
+                let val = vars.get(name).and_then(|v| v.as_str()).unwrap_or("");
+                out.push_str(val);
+                rest = &after[name_len..];
+            } else {
+                out.push('$');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Build host connection JSON for dispatch to the runner.
@@ -1385,6 +1582,10 @@ pub async fn get_events(
 #[cfg(test)]
 #[path = "tests/runner_label_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/runner_config_path_tests.rs"]
+mod config_path_tests;
 
 #[cfg(test)]
 #[path = "tests/runner_create_tests.rs"]

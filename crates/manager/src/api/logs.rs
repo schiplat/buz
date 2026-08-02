@@ -24,12 +24,23 @@ async fn assert_job_team_view(
     auth: &AuthUser,
     job_id: &str,
 ) -> Result<(), AppError> {
-    let row = sqlx::query("SELECT pipeline_id FROM jobs WHERE id = ?")
+    let row = sqlx::query("SELECT pipeline_id, debug_unredact FROM jobs WHERE id = ?")
         .bind(job_id)
         .fetch_optional(pool)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
     let pipeline_id: String = row.get(0);
+    let debug_unredact: i64 = row.get(1);
+
+    // Debug (no-redaction) jobs contain plaintext secrets in the logs; only
+    // platform admins may read them, regardless of team membership.
+    if debug_unredact != 0 && !auth.is_platform_admin {
+        return Err(AppError::Unauthorized(
+            "this job was run in debug mode (unredacted logs) — only platform admins can view it"
+                .into(),
+        ));
+    }
+
     let team_id = pipeline_team_id(pool, &pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)
 }

@@ -5,7 +5,7 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { jobsApi, type Job } from '@/api/jobs'
-import { XCircle } from '@lucide/vue'
+import { XCircle, Info, Lock } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
@@ -62,6 +62,7 @@ async function handleCancel(jobId: string) {
             <tr>
               <th>Pipeline</th>
               <th>Status</th>
+              <th>Mode</th>
               <th>Runner</th>
               <th>Started</th>
               <th>Duration</th>
@@ -73,6 +74,21 @@ async function handleCancel(jobId: string) {
               <td class="font-medium">{{ j.pipeline_name || j.pipeline_id }}</td>
               <td>
                 <StatusBadge :status="j.status" />
+              </td>
+              <td>
+                <div class="flex items-center gap-1.5">
+                  <span
+                    v-if="j.verbose_logs"
+                    class="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-600"
+                    title="Verbose mode: extra per-step detail in logs; secrets stay redacted."
+                  ><Info class="h-3 w-3" />Verbose</span>
+                  <span
+                    v-if="j.debug_unredact"
+                    class="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700"
+                    title="Debug mode: logs are unredacted, platform-admin-only, and purged after 24h."
+                  ><Lock v-if="!auth.isPlatformAdmin" class="h-3 w-3" />Debug</span>
+                  <span v-if="!j.verbose_logs && !j.debug_unredact" class="text-xs text-muted-foreground/40">—</span>
+                </div>
               </td>
               <td class="font-mono text-xs text-muted-foreground">{{ j.runner_id || '—' }}</td>
               <td class="text-xs text-muted-foreground">{{ j.start_time || '—' }}</td>

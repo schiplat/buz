@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::engine;
+use crate::masker::SecretCatalog;
 use crate::policy::{self, SharedPolicy};
 use std::collections::{HashMap, HashSet};
 
@@ -23,6 +24,11 @@ pub(crate) const LOG_STREAM_START: i32 = 2;
 pub(crate) const LOG_STEP_ERROR: i32 = 9997;
 const LOG_STEP_META_A: i32 = 9998;
 const LOG_STEP_META_B: i32 = 9999;
+// Verbose-mode meta region (9990-9996, free below LOG_STEP_ERROR).
+const LOG_STEP_VERBOSE_PREPARE: i32 = 9990;
+const LOG_STEP_VERBOSE_CONFIG: i32 = 9991;
+const LOG_STEP_VERBOSE_EXEC: i32 = 9992;
+const LOG_STEP_VERBOSE_RESULT: i32 = 9993;
 
 /// Build a structured step header (shown before command output).
 ///
@@ -39,7 +45,7 @@ pub(crate) fn build_step_echo(
     exec_type: &str,
     command: &str,
     env: &HashMap<String, String>,
-    secret_keys: &HashSet<String>,
+    catalog: &SecretCatalog,
     work_dir: Option<&str>,
 ) -> String {
     let mut out = format!("==> RUN [{exec_type}]\n");
@@ -53,7 +59,9 @@ pub(crate) fn build_step_echo(
         let items: Vec<String> = keys
             .into_iter()
             .map(|k| {
-                if secret_keys.contains(k) {
+                if catalog.is_injected_key(k) {
+                    format!("{k}=<injected>")
+                } else if catalog.is_secret_key(k) {
                     format!("{k}=***")
                 } else {
                     format!("{k}={}", env.get(k).map(String::as_str).unwrap_or(""))
@@ -78,6 +86,65 @@ pub(crate) fn build_step_echo(
 /// Banner for a successful local `docker login` before pull/run.
 pub(crate) fn build_login_banner(registry: &str) -> String {
     format!("==> LOGIN [{registry}]\n")
+}
+
+/// Verbose-mode stage marker (`==> STAGE …`).
+fn build_verbose_stage(stage: &str) -> String {
+    format!("==> STAGE {stage}\n")
+}
+
+/// Verbose-mode full step config — the execution shape the runner received.
+/// Renders only keys/metadata, never secret values (registry password, signed
+/// config URL, …), so it is safe for every user.
+fn build_verbose_step_config(
+    step: &serde_json::Value,
+    exec_type: &str,
+    registry_secret_ref: &str,
+) -> String {
+    let mut out = String::from("==> STEP CONFIG\n");
+    let mut push_field = |label: &str, value: String| {
+        if !value.is_empty() {
+            out.push_str(&format!("  {label:<16} {value}\n"));
+        }
+    };
+    push_field("exec_type", exec_type.to_string());
+    if let Some(t) = step["timeout_seconds"].as_u64().filter(|t| *t > 0) {
+        push_field("timeout", format!("{t}s"));
+    }
+    push_field(
+        "fail_strategy",
+        step["fail_strategy"]
+            .as_str()
+            .unwrap_or("stop")
+            .to_string(),
+    );
+    push_field(
+        "work_dir",
+        step["work_dir"].as_str().unwrap_or("").to_string(),
+    );
+    push_field("image", step["image"].as_str().unwrap_or("").to_string());
+    push_field("registry_secret", registry_secret_ref.to_string());
+    if let Some(cs) = step["config_source"].as_str().filter(|s| !s.is_empty()) {
+        let cp = step["config_path"].as_str().unwrap_or("");
+        push_field("config", format!("{cs} (path: {cp})"));
+    }
+    if let Some(hosts) = step["hosts"].as_array() {
+        let joined: Vec<&str> = hosts.iter().filter_map(|h| h.as_str()).collect();
+        if !joined.is_empty() {
+            push_field("hosts", joined.join(", "));
+        }
+    }
+    out
+}
+
+/// Verbose-mode step result summary (duration + exit code).
+fn build_verbose_step_result(duration: Duration, exit_code: i32) -> String {
+    let dur = if duration.as_secs_f64() >= 1.0 {
+        format!("{:.2}s", duration.as_secs_f64())
+    } else {
+        format!("{}ms", duration.as_millis())
+    };
+    format!("==> STEP RESULT\n  duration   {dur}\n  exit code  {exit_code}\n")
 }
 
 /// Human hint when a step exits non-zero (avoid always blaming interactive input).
@@ -354,6 +421,22 @@ async fn execute_job(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
 
+    // Admin-only debug flag: when set, skip all log redaction for this job.
+    // The Manager only sets it for platform-admin-triggered runs; debug-job
+    // logs are additionally gated to admins on the read side.
+    let debug_unredact = task
+        .get("debug_unredact")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // Verbose execution mode: available to any user — adds per-step duration,
+    // exit code, stage markers and full step config to the logs while keeping
+    // secret redaction fully intact.
+    let verbose = task
+        .get("verbose")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     let tasks = task["tasks"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("missing tasks array"))?;
@@ -428,6 +511,10 @@ async fn execute_job(
     }
     // ---------------------------------------------------------------------------
 
+    // Tracks whether any step failed under fail_strategy = "continue". The job
+    // must end as failed even though execution continued past the failing step.
+    let mut any_step_failed = false;
+
     for (idx, step) in tasks.iter().enumerate() {
         let step_name = step["name"].as_str().unwrap_or("unnamed");
         let command = step["command_template"].as_str().unwrap_or("");
@@ -444,29 +531,66 @@ async fn execute_job(
 
         // ── Build step-specific env: base (inputs+pipeline-secrets) + step-level secrets ──
         let mut step_env = base_env.clone();
-        let mut step_secret_keys = pipeline_secret_keys.clone();
+        let mut catalog = SecretCatalog::new();
+        catalog.add_keys(pipeline_secret_keys.iter().cloned());
         if let Some(ss_obj) = step.get("step_secrets").and_then(|v| v.as_object()) {
             for (k, v) in ss_obj {
                 if let Some(s) = v.as_str() {
                     step_env.insert(k.clone(), s.to_string());
-                    step_secret_keys.insert(k.clone());
+                    catalog.add_key(k.clone());
                 }
             }
         }
 
-        // Collect values for log masking — secrets, registry passwords, masking inputs.
-        let mut secret_values =
-            crate::masker::collect_secret_values_for_keys(&step_env, &step_secret_keys);
-        if let Some(pw) = step
-            .get("registry_auth")
-            .and_then(|a| a.get("password"))
+        // OSS config delivery: expose the signed GET URL as $BUZ_CONFIG_URL for this
+        // step. The key is registered as "injected" so the RUN echo shows a readable
+        // `BUZ_CONFIG_URL=<injected>` hint instead of `***`, while the URL value
+        // still joins value-based redaction via `log_mask_values`.
+        if let Some(url) = step
+            .get("config_auth")
+            .and_then(|a| a.get("url"))
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
         {
-            secret_values.push(pw.to_string());
+            step_env.insert("BUZ_CONFIG_URL".to_string(), url.to_string());
+            catalog.add_injected_key("BUZ_CONFIG_URL".to_string());
         }
 
+        // Sensitive values are registered once by the Manager in `log_mask_values`
+        // (registry password, OSS signed URL, …). The Runner no longer needs to know
+        // which step fields carry secrets — adding one is a Manager-only change.
+        if let Some(values) = task.get("log_mask_values").and_then(|v| v.as_array()) {
+            for v in values.iter().filter_map(|x| x.as_str()) {
+                catalog.add_value(v.to_string());
+            }
+        }
+
+        // Debug mode: RUN echo + streams show real values, so the catalog is emptied.
+        if debug_unredact {
+            catalog = SecretCatalog::new();
+        }
+
+        // Collect values for log masking — secrets, registry passwords, masking inputs.
+        let secret_values = catalog.secret_values(&step_env);
+
         let log_base = step_log_base(idx);
+
+        // Verbose mode: record when the step started and mark the prepare stage.
+        let step_started = std::time::Instant::now();
+        if verbose {
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_VERBOSE_PREPARE,
+                    step_order: idx as i32,
+                    content: build_verbose_stage("prepare"),
+                },
+            )
+            .await;
+        }
 
         if let Err(e) = config.engine.ensure_enabled(exec_type) {
             let msg = e.to_string();
@@ -505,6 +629,29 @@ async fn execute_job(
             .filter(|s| !s.is_empty())
         {
             let msg = format!("registry_secret: {err}");
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_ERROR,
+                    step_order: idx as i32,
+                    content: format!("==> ERROR\n{msg}\n"),
+                },
+            )
+            .await;
+            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+            anyhow::bail!(msg);
+        }
+
+        // Fail fast if Manager could not resolve config_source.
+        if let Some(err) = step
+            .get("config_auth_error")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let msg = format!("config_source: {err}");
             let _ = super::logs::upload_chunk(
                 client,
                 config,
@@ -571,7 +718,40 @@ async fn execute_job(
             anyhow::bail!(msg);
         }
 
+        // Verbose mode: full step config + exec-stage marker, uploaded right
+        // before execution so they appear in the correct order.
+        if verbose {
+            let cfg = build_verbose_step_config(step, exec_type, registry_secret_ref);
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_VERBOSE_CONFIG,
+                    step_order: idx as i32,
+                    content: cfg,
+                },
+            )
+            .await;
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_VERBOSE_EXEC,
+                    step_order: idx as i32,
+                    content: build_verbose_stage("exec"),
+                },
+            )
+            .await;
+        }
+
         // ── Race step execution against cancel polling ────────────────────────
+        // SSH output is uploaded as one combined chunk — mask it with the SSH env
+        // catalog (which includes BUZ_REGISTRY_PASSWORD), not the local one.
+        let mut output_secret_values = secret_values.clone();
         let (output, was_cancelled): (engine::shell::ShellOutput, bool) = match exec_type {
             "local" | "shell" => {
                 if let Some((ref registry, ref username, ref password)) = registry_login {
@@ -623,8 +803,7 @@ async fn execute_job(
 
                 // Debug echo — show the command before execution (like bash -x)
                 {
-                    let echo_line =
-                        build_step_echo(exec_type, &cmd, &env, &step_secret_keys, work_dir);
+                    let echo_line = build_step_echo(exec_type, &cmd, &env, &catalog, work_dir);
                     let _ = super::logs::upload_chunk(
                         client,
                         config,
@@ -780,13 +959,12 @@ async fn execute_job(
                 }
 
                 let mut ssh_env = step_env.clone();
-                let mut ssh_secret_keys = step_secret_keys.clone();
+                let mut ssh_catalog = catalog.clone();
                 let cmd = if let Some((ref registry, ref username, ref password)) = registry_login {
                     ssh_env.insert("BUZ_REGISTRY_HOST".into(), registry.clone());
                     ssh_env.insert("BUZ_REGISTRY_USER".into(), username.clone());
                     ssh_env.insert("BUZ_REGISTRY_PASSWORD".into(), password.clone());
-                    ssh_secret_keys.insert("BUZ_REGISTRY_PASSWORD".into());
-                    secret_values.push(password.clone());
+                    ssh_catalog.add_key("BUZ_REGISTRY_PASSWORD".to_string());
                     wrap_remote_cmd_with_registry_login(command)
                 } else {
                     command.to_string()
@@ -796,7 +974,7 @@ async fn execute_job(
                 // Debug echo — show the command before execution (like bash -x)
                 {
                     let echo_line =
-                        build_step_echo(exec_type, &cmd, &ssh_env, &ssh_secret_keys, work_dir);
+                        build_step_echo(exec_type, &cmd, &ssh_env, &ssh_catalog, work_dir);
                     let _ = super::logs::upload_chunk(
                         client,
                         config,
@@ -810,6 +988,10 @@ async fn execute_job(
                     )
                     .await;
                 }
+
+                // Remote output is uploaded combined — mask with the SSH catalog
+                // (covers BUZ_REGISTRY_PASSWORD injected into the remote env).
+                output_secret_values = ssh_catalog.secret_values(&ssh_env);
 
                 let cfg = config.clone();
                 let cfg_ssh = cfg.clone();
@@ -931,7 +1113,7 @@ async fn execute_job(
                 // Debug echo — show the command before execution (like bash -x)
                 {
                     let echo_line =
-                        build_step_echo(exec_type, &cmd, &step_env, &step_secret_keys, work_dir);
+                        build_step_echo(exec_type, &cmd, &step_env, &catalog, work_dir);
                     let _ = super::logs::upload_chunk(
                         client,
                         config,
@@ -1078,7 +1260,7 @@ async fn execute_job(
         // Local steps are fully streamed so we skip this redundant upload.
         if exec_type == "ssh" {
             let combined = format!("==> {step_name}\n{}\n{}", output.stdout, output.stderr);
-            let masked = crate::masker::mask_secrets(&combined, &secret_values);
+            let masked = crate::masker::mask_secrets(&combined, &output_secret_values);
             super::logs::upload_chunk(
                 client,
                 config,
@@ -1093,18 +1275,58 @@ async fn execute_job(
             .await?;
         }
 
+        // Verbose mode: result summary (duration + exit code). Uploaded even on
+        // failure so troubleshooting users see exactly how long the step ran.
+        if verbose && !was_cancelled {
+            let result = build_verbose_step_result(step_started.elapsed(), output.exit_code);
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_VERBOSE_RESULT,
+                    step_order: idx as i32,
+                    content: result,
+                },
+            )
+            .await;
+        }
+
         if output.exit_code != 0 && fail_strategy == "stop" {
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
             let hint = step_failure_hint(&output.stderr, output.exit_code);
-            anyhow::bail!(
-                "{}",
-                build_step_failure_message(step_name, output.exit_code, command, &hint)
-            );
+            let msg = build_step_failure_message(step_name, output.exit_code, command, &hint);
+            // Upload the failure into this step's terminal so it is visible in the
+            // UI. run_one_job's global error chunk uses step_order=-1 which the
+            // frontend does not render into any step terminal.
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_ERROR,
+                    step_order: idx as i32,
+                    content: format!("==> ERROR\n{msg}\n"),
+                },
+            )
+            .await;
+            anyhow::bail!("{}", msg);
         } else if output.exit_code != 0 && fail_strategy == "continue" {
+            any_step_failed = true;
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
         } else {
             update_job_status(client, config, token, job_id, "success", Some(idx as i32)).await?;
         }
+    }
+
+    // fail_strategy = "continue" may leave failed steps behind; the job must
+    // still end as failed rather than silently succeeding.
+    if any_step_failed {
+        tracing::warn!("Job {job_id} finished with failed step(s)");
+        update_job_status(client, config, token, job_id, "failed", None).await?;
+        return Ok(());
     }
 
     // All steps completed successfully

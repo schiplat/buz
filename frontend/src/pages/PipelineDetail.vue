@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, GripVertical, Code, FileText, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye } from '@lucide/vue'
+import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, GripVertical, Code, FileText, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, Lock, Info } from '@lucide/vue'
 import { cn } from '@/lib/utils'
 import {
   pipelinesApi,
@@ -59,6 +59,8 @@ let alive = true
 
 const showTriggerDialog = ref(false)
 const inputPairs = ref<{ key: string; value: string; required?: boolean; masking?: boolean }[]>([])
+const triggerDebug = ref(false)
+const triggerVerbose = ref(false)
 const editAvailableSecrets = ref<{ id: string; name: string; owner_group: string; kind?: string }[]>([])
 const editAvailableVariables = ref<{ id: string; name: string; value: string }[]>([])
 const editAvailableTeams = ref<Team[]>([])
@@ -306,8 +308,8 @@ async function openEditDialog() {
     team_id: p.team_id || '',
     var_ids: p.var_ids || [],
     secret_ids: p.secret_ids || [],
-    env: [],
-      steps: tasks.map((t: any) => ({
+    env: (p.env || []).map((e: any) => ({ name: e.name, value: e.value })),
+    steps: tasks.map((t: any) => ({
         name: t.name || '',
         run: t.command_template || '',
         uses: t.exec_type || 'shell',
@@ -322,6 +324,8 @@ async function openEditDialog() {
       continue_on_error: t.fail_strategy === 'continue' ? true : undefined,
         privileged: (t as any).privileged === true ? true : undefined,
         registry_secret: (t.registry_secret || '').trim() || undefined,
+        config_source: ((t as any).config_source || '').trim() || undefined,
+        config_path: ((t as any).config_path || '').trim() || undefined,
     })),
     input_defs: normalizeInputDefsForForm(p.input_defs),
   }
@@ -388,9 +392,7 @@ async function handleEditSave() {
       team_id: editForm.value.team_id,
       var_ids: editForm.value.var_ids.length > 0 ? editForm.value.var_ids : undefined,
       secret_ids: editForm.value.secret_ids.length > 0 ? editForm.value.secret_ids : undefined,
-      env: editForm.value.env.filter(e => e.name.trim() && e.value.trim()).length > 0
-        ? editForm.value.env.filter(e => e.name.trim() && e.value.trim()).map(e => ({ name: e.name.trim(), value: e.value }))
-        : undefined,
+      env: editForm.value.env.filter(e => e.name.trim() && e.value.trim()).map(e => ({ name: e.name.trim(), value: e.value })),
       steps: editForm.value.steps.map(s => {
         const rawHost = s.host as string | undefined
         const rawHostLabels = s.host_labels as string | undefined
@@ -402,6 +404,8 @@ async function handleEditSave() {
           volumes: volumesArray,
           privileged: isDocker ? (s as any).privileged === true || undefined : undefined,
           registry_secret: ((s as any).registry_secret || '').trim() || undefined,
+          config_source: ((s as any).config_source || '').trim() || undefined,
+          config_path: ((s as any).config_path || '').trim() || undefined,
           host: isDocker
             ? undefined
             : rawHost
@@ -460,6 +464,10 @@ const historyLogs = ref<Map<string, LogChunk[]>>(new Map())
 
 async function loadHistoryLogs(jobId: string) {
   if (!historyLogs.value.has(jobId)) {
+    const job = jobs.value.find(j => j.id === jobId)
+    // Debug-job logs are platform-admin-only; never attempt the fetch for
+    // non-admins (the Manager would reject it with 403 anyway).
+    if (job?.debug_unredact && !auth.isPlatformAdmin) return
     try {
       const logs = await jobsApi.logs(jobId)
       historyLogs.value.set(jobId, logs)
@@ -657,6 +665,16 @@ const editRegistrySecretOptions = computed(() =>
     }))
 )
 
+/** Config Source dropdown — only kind=aliyun_oss_auth. */
+const editConfigSourceOptions = computed(() =>
+  editAvailableSecrets.value
+    .filter((s) => s.kind === 'aliyun_oss_auth')
+    .map(s => ({
+      id: s.name,
+      label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
+    }))
+)
+
 function teamLabel(teamId: string | null | undefined): string {
   if (!teamId) return '—'
   const t = editAvailableTeams.value.find(x => x.id === teamId)
@@ -747,31 +765,19 @@ async function loadData() {
 function openTriggerDialog() {
   if (!pipeline.value) return
   const defs: PipelineInputDef[] = pipeline.value.input_defs || []
-  if (defs.length === 0) {
-    // No dynamic params — trigger directly
-    doDirectTrigger()
-    return
-  }
-  inputPairs.value = normalizeInputDefsForForm(defs).map((d) => ({
-    key: d.name,
-    value: d.default || '',
-    required: d.required,
-    masking: !!d.masking,
-  }))
+  triggerDebug.value = false
+  triggerVerbose.value = false
+  // The dialog is always shown so any user can opt into verbose mode (and
+  // admins can additionally enable the no-redaction debug mode).
+  inputPairs.value = defs.length > 0
+    ? normalizeInputDefsForForm(defs).map((d) => ({
+        key: d.name,
+        value: d.default || '',
+        required: d.required,
+        masking: !!d.masking,
+      }))
+    : [{ key: '', value: '' }]
   showTriggerDialog.value = true
-}
-
-async function doDirectTrigger() {
-  if (!pipeline.value || triggering.value) return
-  triggering.value = true
-  try {
-    const result = await pipelinesApi.trigger(pipelineId.value, {})
-    router.push(`/jobs/${result.job_id}`)
-  } catch (e) {
-    console.error(e)
-  } finally {
-    triggering.value = false
-  }
 }
 
 function navigateTab(tab: string) {
@@ -792,8 +798,10 @@ async function handleTrigger() {
     for (const pair of inputPairs.value) {
       if (pair.key.trim()) inputs[pair.key.trim()] = pair.value
     }
-    const result = await pipelinesApi.trigger(pipelineId.value, inputs)
+    const result = await pipelinesApi.trigger(pipelineId.value, inputs, triggerDebug.value, triggerVerbose.value)
     showTriggerDialog.value = false
+    triggerDebug.value = false
+    triggerVerbose.value = false
     router.push(`/jobs/${result.job_id}`)
   } catch (e) {
     console.error(e)
@@ -859,7 +867,30 @@ async function handleTrigger() {
               <button v-if="!hasInputDefs" @click="removeInputPair(idx)" class="shrink-0 rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors" :disabled="triggering || inputPairs.length <= 1"><Trash2 class="h-4 w-4" /></button>
             </div>
           </div>
-          <button v-if="!hasInputDefs" @click="addInputPair" class="flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors mb-6" :disabled="triggering"><Plus class="h-3.5 w-3.5" /> Add parameter</button>
+          <button v-if="!hasInputDefs" @click="addInputPair" class="flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors mb-4" :disabled="triggering"><Plus class="h-3.5 w-3.5" /> Add parameter</button>
+          <label
+            class="mb-4 flex cursor-pointer items-start gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2.5"
+          >
+            <input v-model="triggerVerbose" type="checkbox" class="mt-0.5" :disabled="triggering" />
+            <span class="text-sm leading-snug">
+              <span class="font-medium">Verbose mode — extra execution detail</span>
+              <span class="block text-xs text-muted-foreground">
+                Logs per step: duration, exit code, full step config and stage progress. Secrets stay redacted.
+              </span>
+            </span>
+          </label>
+          <label
+            v-if="auth.isPlatformAdmin"
+            class="mb-6 flex cursor-pointer items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2.5"
+          >
+            <input v-model="triggerDebug" type="checkbox" class="mt-0.5" :disabled="triggering" />
+            <span class="text-sm leading-snug">
+              <span class="font-medium text-amber-700">Debug mode — do not redact secrets</span>
+              <span class="block text-xs text-muted-foreground">
+                Logs will contain plaintext secret values, are visible to platform admins only, and are automatically purged 24h after this run. Use for troubleshooting only.
+              </span>
+            </span>
+          </label>
           <div class="flex items-center justify-end gap-3">
             <UiButton variant="outline" size="sm" @click="showTriggerDialog = false">Cancel</UiButton>
             <UiButton size="sm" @click="handleTrigger" :disabled="triggering"><Loader2 v-if="triggering" class="mr-1.5 h-4 w-4 animate-spin" /><Play v-else class="mr-1.5 h-4 w-4" /> Run</UiButton>
@@ -1099,6 +1130,35 @@ async function handleTrigger() {
                         JSON value (encrypted):
                         <code class="font-mono">{ "provider", "registry", "username", "password" }</code>.
                         Shell/SSH: login before step; Docker: login before pull. Not injected as env.
+                      </p>
+                    </div>
+
+                    <div v-if="step.uses === 'shell' || step.uses === 'ssh'">
+                      <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
+                        Config Source <span v-if="(step as any).config_path" class="text-red-500">*</span>
+                      </label>
+                      <div class="grid grid-cols-2 gap-3">
+                        <select
+                          v-model="(step as any).config_source"
+                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                        >
+                          <option value="">None</option>
+                          <option v-for="opt in editConfigSourceOptions" :key="opt.id" :value="opt.id">
+                            {{ opt.label }}
+                          </option>
+                        </select>
+                        <input
+                          v-model="(step as any).config_path"
+                          type="text"
+                          placeholder="e.g. config_tpl/super-manager/v1.4.0"
+                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                        />
+                      </div>
+                      <p class="text-xs text-muted-foreground/70 mt-0.5">
+                        Only Secrets with Kind = Aliyun OSS auth. At dispatch the Manager signs a 1-hour GET URL for
+                        <code class="font-mono">config_path + /configs.tar.gz</code> and injects
+                        <code class="font-mono">$BUZ_CONFIG_URL</code> (redacted in logs). Shell/SSH:
+                        <code class="font-mono">curl -fsSL "$BUZ_CONFIG_URL" | tar xz -C /dir</code>. Leave both empty to skip.
                       </p>
                     </div>
 
@@ -1660,6 +1720,20 @@ async function handleTrigger() {
                         </div>
                       </div>
 
+                      <!-- Verbose / Debug mode badges — own row -->
+                      <div v-if="j.verbose_logs || j.debug_unredact" class="flex items-center gap-1.5 mt-1.5">
+                        <span
+                          v-if="j.verbose_logs"
+                          class="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-px text-[10px] font-medium text-sky-600"
+                          title="Verbose mode: extra per-step detail in logs; secrets stay redacted."
+                        ><Info class="h-2.5 w-2.5" />Verbose</span>
+                        <span
+                          v-if="j.debug_unredact"
+                          class="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-px text-[10px] font-medium text-amber-700"
+                          title="Debug mode: logs are unredacted, platform-admin-only, and purged after 24h."
+                        ><Lock v-if="!auth.isPlatformAdmin" class="h-2.5 w-2.5" />Debug</span>
+                      </div>
+
                       <!-- Build time: timestamp · duration -->
                       <div class="flex items-center gap-1.5 mt-0.5">
                         <span class="text-xs text-muted-foreground/35">{{ fmtTime(j.created_at) }}</span>
@@ -1769,6 +1843,7 @@ async function handleTrigger() {
                   :job="j"
                   :run-number="runNum(j, historyPagedJobs)"
                   :logs="getHistoryLogs(j.id)"
+                  :can-view-debug-logs="auth.isPlatformAdmin"
                   @expand="loadHistoryLogs($event)"
                 />
 
@@ -2031,6 +2106,21 @@ async function handleTrigger() {
                       <span v-if="step.volumes" class="inline-flex items-center gap-1">
                         <span class="text-muted-foreground/60 text-xs w-14">volumes</span>
                         <code class="mono-chip text-xs">{{ Array.isArray(step.volumes) ? (step.volumes as string[]).join(', ') : step.volumes }}</code>
+                      </span>
+                    </div>
+
+                    <!-- OSS config delivery: config_source + config_path -->
+                    <div
+                      v-if="(step as any).config_source || (step as any).config_path"
+                      class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-xs"
+                    >
+                      <span v-if="(step as any).config_source" class="inline-flex items-center gap-1">
+                        <span class="text-muted-foreground/60 text-xs">config source</span>
+                        <code class="mono-chip text-xs">{{ (step as any).config_source }}</code>
+                      </span>
+                      <span v-if="(step as any).config_path" class="inline-flex items-center gap-1">
+                        <span class="text-muted-foreground/60 text-xs">config path</span>
+                        <code class="mono-chip text-xs">{{ (step as any).config_path }}</code>
                       </span>
                     </div>
 

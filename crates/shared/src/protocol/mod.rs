@@ -408,6 +408,15 @@ pub struct TriggerPipelineRequest {
     /// These are stored in the job snapshot and exported as INPUT_* env vars on the Runner.
     #[serde(default)]
     pub inputs: std::collections::HashMap<String, String>,
+    /// Admin-only: when true, the Runner skips secret redaction in logs for this job.
+    /// Debug-job logs are then only readable by platform admins. Ignored for non-admins.
+    #[serde(default)]
+    pub debug: Option<bool>,
+    /// Any user: when true, the Runner emits extra execution detail (per-step
+    /// duration, exit code, stage markers, full step config) while keeping
+    /// secret redaction intact.
+    #[serde(default)]
+    pub verbose: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -516,6 +525,12 @@ pub struct StepDef {
     /// Manager Secret name whose JSON value holds registry credentials for `docker login`.
     #[serde(default)]
     pub registry_secret: Option<String>,
+    /// Manager Secret name (kind=`oss`) for signed OSS config downloads.
+    #[serde(default)]
+    pub config_source: Option<String>,
+    /// OSS object key (directory) — Manager appends `configs.tar.gz` when signing.
+    #[serde(default)]
+    pub config_path: Option<String>,
 }
 
 // --- Secrets ---
