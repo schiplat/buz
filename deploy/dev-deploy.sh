@@ -312,6 +312,24 @@ cmd_up() {
   echo "  It then writes ${RUNNER_CONF}."
 }
 
+# True when the Manager API reports ${RUNNER_NAME} as online. Uses
+# BUZ_ADMIN_TOKEN when set, else ADMIN_USERNAME/ADMIN_PASSWORD (same sources as
+# the runner bootstrap); without any credential the check is skipped (returns
+# false, the caller falls back to the "check the UI" hint).
+runner_online() {
+  local token="${BUZ_ADMIN_TOKEN:-}"
+  if [[ -z "${token}" ]]; then
+    [[ -n "${ADMIN_USERNAME:-}" && -n "${ADMIN_PASSWORD:-}" ]] || return 1
+    token="$(admin_login 2>/dev/null)" || return 1
+  fi
+  local body
+  body="$(curl -fsS --max-time 5 \
+    "http://127.0.0.1:${MANAGER_PORT}/api/v1/runners" \
+    -H "Authorization: Bearer ${token}" 2>/dev/null)" || return 1
+  printf '%s' "${body}" | grep -q "\"name\": *\"${RUNNER_NAME}\"" \
+    && printf '%s' "${body}" | grep -q '"status": *"online"'
+}
+
 cmd_runner() {
   require_docker
   ensure_dir
@@ -322,13 +340,31 @@ cmd_runner() {
   # shellcheck disable=SC2086
   $DOCKER pull "${RUNNER_IMAGE}"
 
-  say "Starting Runner (${RUNNER_NAME})"
   # --force-recreate: docker compose `up` may reuse a running container whose
   # embedded-DNS alias cache (manager -> buz-manager) went stale, leaving the
   # runner stuck in a restart loop ("Cannot reach Buz Manager"). Recreating the
   # container re-registers the aliases and reliably fixes it.
+  say "Starting Runner (${RUNNER_NAME})"
   dc up -d --force-recreate runner
-  say "Runner started — check Manager UI → Runners for status 'online'"
+
+  # The stale-DNS issue is intermittent: wait for the runner to actually
+  # register online, force-recreating on each retry so a bad alias cache is
+  # repaired without the operator noticing.
+  say "Waiting for ${RUNNER_NAME} to come online…"
+  for attempt in 1 2 3; do
+    if runner_online; then
+      say "Runner ${RUNNER_NAME} is online"
+      return 0
+    fi
+    if (( attempt < 3 )); then
+      say "Not online yet (attempt ${attempt}/3) — force-recreating runner to refresh DNS"
+      dc up -d --force-recreate runner
+      sleep 5
+    fi
+  done
+  say "Runner not detected as online after 3 attempts."
+  echo "  Check Manager UI → Runners, or:"
+  echo "  ${DOCKER} compose -f ${COMPOSE_FILE} logs --tail=50 runner"
 }
 
 cmd_render() {

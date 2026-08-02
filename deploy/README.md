@@ -97,7 +97,10 @@ the deploying user (the script writes `runner.toml` there).
 
 `./dev-deploy.sh runner` calls `buz-manager gen-runner-token` **inside the Manager
 container** to create the runner and capture its register_token, so no web UI
-Runners page is required. Provisioning a runner is restricted to platform
+Runners page is required. After starting, it **waits for the runner to report
+online** (polling the Manager runners API) and force-recreates the container on
+each retry — repairing the intermittent stale-DNS restart loop without manual
+intervention. Provisioning a runner is restricted to platform
 admins: the script logs in via `POST /api/v1/auth/login` with
 `ADMIN_USERNAME`/`ADMIN_PASSWORD`, or accepts a pre-obtained `BUZ_ADMIN_TOKEN`
 (either a login JWT or an **API token** created in Manager UI → Access → API
