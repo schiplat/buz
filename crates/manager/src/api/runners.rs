@@ -963,30 +963,36 @@ pub async fn poll(
                                     ),
                                 );
                             }
-                            Some(key) => match crypto::decrypt(&stored, &state.config.auth.jwt_secret)
-                            {
-                                Ok(value) => match shared::config_auth::parse_oss_secret_value(&value)
-                                {
-                                    Ok(auth) => {
-                                        let ttl =
+                            Some(key) => {
+                                match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
+                                    Ok(value) => {
+                                        match shared::config_auth::parse_oss_secret_value(&value) {
+                                            Ok(auth) => {
+                                                let ttl =
                                             shared::config_auth::DEFAULT_CONFIG_URL_TTL_SECS;
-                                        match shared::config_auth::sign_oss_get_url(
-                                            &auth, &key, ttl,
-                                        ) {
-                                            Ok(url) => {
-                                                tracing::info!(
-                                                    secret = %config_source_name.trim(),
-                                                    object_key = %key,
-                                                    ttl_secs = ttl,
-                                                    "Resolved config_source → signed OSS URL for job dispatch"
-                                                );
-                                                task_json["config_auth"] = serde_json::json!({
-                                                    "url": url,
-                                                    "object_key": key,
-                                                    "expires_in_secs": ttl,
-                                                });
-                                                // SecretClass::ConfigUrl
-                                                log_mask_values.push(url.clone());
+                                                match shared::config_auth::sign_oss_get_url(
+                                                    &auth, &key, ttl,
+                                                ) {
+                                                    Ok(url) => {
+                                                        tracing::info!(
+                                                            secret = %config_source_name.trim(),
+                                                            object_key = %key,
+                                                            ttl_secs = ttl,
+                                                            "Resolved config_source → signed OSS URL for job dispatch"
+                                                        );
+                                                        task_json["config_auth"] = serde_json::json!({
+                                                            "url": url,
+                                                            "object_key": key,
+                                                            "expires_in_secs": ttl,
+                                                        });
+                                                        // SecretClass::ConfigUrl
+                                                        log_mask_values.push(url.clone());
+                                                    }
+                                                    Err(e) => {
+                                                        task_json["config_auth_error"] =
+                                                            serde_json::Value::String(e);
+                                                    }
+                                                }
                                             }
                                             Err(e) => {
                                                 task_json["config_auth_error"] =
@@ -995,16 +1001,12 @@ pub async fn poll(
                                         }
                                     }
                                     Err(e) => {
-                                        task_json["config_auth_error"] =
-                                            serde_json::Value::String(e);
+                                        task_json["config_auth_error"] = serde_json::Value::String(
+                                            format!("failed to decrypt config_source: {e}"),
+                                        );
                                     }
-                                },
-                                Err(e) => {
-                                    task_json["config_auth_error"] = serde_json::Value::String(
-                                        format!("failed to decrypt config_source: {e}"),
-                                    );
                                 }
-                            },
+                            }
                         }
                     }
                 }

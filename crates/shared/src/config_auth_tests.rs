@@ -72,7 +72,9 @@ fn looks_like_oss_secret_value_heuristic() {
     ));
     assert!(!looks_like_oss_secret_value(""));
     assert!(!looks_like_oss_secret_value("plain-text"));
-    assert!(!looks_like_oss_secret_value(r#"{"endpoint":"e","bucket":"b"}"#));
+    assert!(!looks_like_oss_secret_value(
+        r#"{"endpoint":"e","bucket":"b"}"#
+    ));
     assert!(!looks_like_oss_secret_value(
         r#"{"username":"u","password":"p"}"#
     ));
@@ -154,7 +156,10 @@ fn sign_floors_ttl_at_one_minute() {
         .and_then(|s| s.parse().ok())
         .expect("Expires should parse");
     let now = chrono::Utc::now().timestamp();
-    assert!(expires >= now + 60, "min TTL 60s, got {expires} vs now {now}");
+    assert!(
+        expires >= now + 60,
+        "min TTL 60s, got {expires} vs now {now}"
+    );
 }
 
 #[test]

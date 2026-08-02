@@ -2,11 +2,11 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use shared::config_auth::parse_oss_secret_value;
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::protocol::{CreateSecretRequest, UpdateSecretRequest};
 use shared::rbac::Perm;
-use shared::config_auth::parse_oss_secret_value;
 use shared::registry_auth::{looks_like_registry_secret_value, parse_registry_secret_value};
 use shared::secret_kind::{
     is_aliyun_oss_auth_kind, is_registry_kind, normalize_secret_kind, SECRET_KIND_REGISTRY,

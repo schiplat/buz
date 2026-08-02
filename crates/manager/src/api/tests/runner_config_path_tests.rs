@@ -25,7 +25,10 @@ fn expands_bare_and_braced_refs() {
 fn missing_refs_expand_to_empty() {
     let vars = json!({ "tag": "1.4.0" });
     assert_eq!(expand_var_refs("cfg/$unknown/$tag", &vars), "cfg//1.4.0");
-    assert_eq!(expand_var_refs("cfg/${tag}/v${other}", &vars), "cfg/1.4.0/v");
+    assert_eq!(
+        expand_var_refs("cfg/${tag}/v${other}", &vars),
+        "cfg/1.4.0/v"
+    );
 }
 
 #[test]

@@ -596,8 +596,15 @@ pub async fn trigger(
     // it never reduces redaction.
     let verbose = body.verbose.unwrap_or(false);
 
-    let result =
-        do_trigger(&state, &id, &auth.username, &body.inputs, debug_unredact, verbose).await?;
+    let result = do_trigger(
+        &state,
+        &id,
+        &auth.username,
+        &body.inputs,
+        debug_unredact,
+        verbose,
+    )
+    .await?;
     let name: String = sqlx::query_scalar("SELECT name FROM pipelines WHERE id = ?")
         .bind(&id)
         .fetch_optional(&state.pool)
@@ -625,14 +632,12 @@ pub async fn trigger(
         AuditEvent::from_auth(&auth, "pipeline.trigger")
             .resource("pipeline", &id, &name)
             .team(Some(team_id))
-            .after(Some(
-                serde_json::json!({
-                    "job_id": job_id,
-                    "inputs": audit_inputs,
-                    "debug_unredact": debug_unredact,
-                    "verbose": verbose,
-                }),
-            )),
+            .after(Some(serde_json::json!({
+                "job_id": job_id,
+                "inputs": audit_inputs,
+                "debug_unredact": debug_unredact,
+                "verbose": verbose,
+            }))),
     )
     .await;
     Ok(result)

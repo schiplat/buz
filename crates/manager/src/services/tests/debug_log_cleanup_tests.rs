@@ -34,12 +34,14 @@ async fn seed_expired_debug_job(pool: &sqlx::SqlitePool, id: &str) {
     .execute(pool)
     .await
     .expect("seed expired debug job");
-    sqlx::query("INSERT INTO job_logs (id, job_id, chunk_index, log_content) VALUES (?, ?, 0, 'plaintext')")
-        .bind(format!("{id}-log"))
-        .bind(id)
-        .execute(pool)
-        .await
-        .expect("seed log");
+    sqlx::query(
+        "INSERT INTO job_logs (id, job_id, chunk_index, log_content) VALUES (?, ?, 0, 'plaintext')",
+    )
+    .bind(format!("{id}-log"))
+    .bind(id)
+    .execute(pool)
+    .await
+    .expect("seed log");
 }
 
 /// Insert a debug job created now (within retention) or a non-debug job.
@@ -53,12 +55,14 @@ async fn seed_job(pool: &sqlx::SqlitePool, id: &str, debug: bool) {
     .execute(pool)
     .await
     .expect("seed job");
-    sqlx::query("INSERT INTO job_logs (id, job_id, chunk_index, log_content) VALUES (?, ?, 0, 'plaintext')")
-        .bind(format!("{id}-log"))
-        .bind(id)
-        .execute(pool)
-        .await
-        .expect("seed log");
+    sqlx::query(
+        "INSERT INTO job_logs (id, job_id, chunk_index, log_content) VALUES (?, ?, 0, 'plaintext')",
+    )
+    .bind(format!("{id}-log"))
+    .bind(id)
+    .execute(pool)
+    .await
+    .expect("seed log");
 }
 
 async fn log_count(pool: &sqlx::SqlitePool, job_id: &str) -> i64 {
@@ -87,13 +91,33 @@ async fn purges_only_expired_debug_jobs() {
     let purged = purge_expired_debug_logs(&pool).await.expect("purge runs");
     assert_eq!(purged, 1, "only the expired debug job is purged");
 
-    assert_eq!(log_count(&pool, "old-debug").await, 0, "expired debug logs removed");
-    assert_eq!(debug_flag(&pool, "old-debug").await, 0, "expired debug flag reset");
+    assert_eq!(
+        log_count(&pool, "old-debug").await,
+        0,
+        "expired debug logs removed"
+    );
+    assert_eq!(
+        debug_flag(&pool, "old-debug").await,
+        0,
+        "expired debug flag reset"
+    );
 
-    assert_eq!(log_count(&pool, "fresh-debug").await, 1, "fresh debug logs kept");
-    assert_eq!(debug_flag(&pool, "fresh-debug").await, 1, "fresh debug flag kept");
+    assert_eq!(
+        log_count(&pool, "fresh-debug").await,
+        1,
+        "fresh debug logs kept"
+    );
+    assert_eq!(
+        debug_flag(&pool, "fresh-debug").await,
+        1,
+        "fresh debug flag kept"
+    );
 
-    assert_eq!(log_count(&pool, "old-normal").await, 1, "non-debug logs never touched");
+    assert_eq!(
+        log_count(&pool, "old-normal").await,
+        1,
+        "non-debug logs never touched"
+    );
     assert_eq!(debug_flag(&pool, "old-normal").await, 0);
 }
 
@@ -124,5 +148,9 @@ async fn expired_non_debug_jobs_are_not_touched() {
 
     let purged = purge_expired_debug_logs(&pool).await.expect("purge runs");
     assert_eq!(purged, 0);
-    assert_eq!(log_count(&pool, "old-normal").await, 1, "old non-debug logs kept");
+    assert_eq!(
+        log_count(&pool, "old-normal").await,
+        1,
+        "old non-debug logs kept"
+    );
 }

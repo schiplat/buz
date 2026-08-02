@@ -25,10 +25,12 @@ pub async fn purge_expired_debug_logs(pool: &SqlitePool) -> anyhow::Result<usize
             .bind(job_id)
             .execute(pool)
             .await?;
-        sqlx::query("UPDATE jobs SET debug_unredact = 0, updated_at = datetime('now') WHERE id = ?")
-            .bind(job_id)
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "UPDATE jobs SET debug_unredact = 0, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(job_id)
+        .execute(pool)
+        .await?;
     }
 
     Ok(expired.len())
@@ -49,7 +51,9 @@ pub fn spawn_debug_log_cleanup(pool: SqlitePool) {
 
             match purge_expired_debug_logs(&pool).await {
                 Ok(0) => {}
-                Ok(n) => tracing::info!("Debug log cleanup: purged logs for {n} expired debug job(s)"),
+                Ok(n) => {
+                    tracing::info!("Debug log cleanup: purged logs for {n} expired debug job(s)")
+                }
                 Err(e) => tracing::error!("Debug log cleanup failed: {e}"),
             }
         }

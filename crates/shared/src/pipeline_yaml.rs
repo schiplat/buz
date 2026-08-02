@@ -438,8 +438,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             if cfg_source.is_some() != cfg_path.is_some() {
                 errors.push(YamlValidationError {
                     field: field.clone(),
-                    message: "'config_source' and 'config_path' must be set together"
-                        .into(),
+                    message: "'config_source' and 'config_path' must be set together".into(),
                 });
             }
             if let Some(p) = cfg_path {

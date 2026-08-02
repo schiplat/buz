@@ -78,11 +78,13 @@ async fn test_app() -> (Router, SqlitePool) {
         .await
         .expect("seed team");
 
-    sqlx::query("INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'developer')")
-        .bind(MEMBER_ID)
-        .execute(&pool)
-        .await
-        .expect("seed membership");
+    sqlx::query(
+        "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'developer')",
+    )
+    .bind(MEMBER_ID)
+    .execute(&pool)
+    .await
+    .expect("seed membership");
 
     // Runner with a matching label so dispatch can be exercised.
     sqlx::query(
@@ -160,7 +162,10 @@ async fn create_pipeline(app: &Router) -> String {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "create should succeed");
     let created = read_body(resp).await;
-    created["data"]["id"].as_str().expect("pipeline id").to_string()
+    created["data"]["id"]
+        .as_str()
+        .expect("pipeline id")
+        .to_string()
 }
 
 async fn trigger(
@@ -216,10 +221,17 @@ async fn member_can_request_verbose_trigger() {
     let pipeline_id = create_pipeline(&app).await;
 
     let resp = trigger(&app, &member_jwt(), &pipeline_id, true).await;
-    assert_eq!(resp.status(), StatusCode::OK, "member verbose trigger succeeds");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "member verbose trigger succeeds"
+    );
     let body = read_body(resp).await;
     let job_id = body["data"]["job_id"].as_str().expect("job id");
-    assert!(job_verbose_flag(&pool, job_id).await, "verbose_logs = 1 persisted");
+    assert!(
+        job_verbose_flag(&pool, job_id).await,
+        "verbose_logs = 1 persisted"
+    );
     let debug: i64 = sqlx::query("SELECT debug_unredact FROM jobs WHERE id = ?")
         .bind(job_id)
         .fetch_one(&pool)
@@ -235,10 +247,17 @@ async fn member_verbose_off_by_default() {
     let pipeline_id = create_pipeline(&app).await;
 
     let resp = trigger(&app, &member_jwt(), &pipeline_id, false).await;
-    assert_eq!(resp.status(), StatusCode::OK, "member normal trigger succeeds");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "member normal trigger succeeds"
+    );
     let body = read_body(resp).await;
     let job_id = body["data"]["job_id"].as_str().expect("job id");
-    assert!(!job_verbose_flag(&pool, job_id).await, "verbose flag stays off");
+    assert!(
+        !job_verbose_flag(&pool, job_id).await,
+        "verbose flag stays off"
+    );
 }
 
 #[tokio::test]

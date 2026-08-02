@@ -76,11 +76,13 @@ async fn test_app() -> (Router, SqlitePool) {
         .await
         .expect("seed team");
 
-    sqlx::query("INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'developer')")
-        .bind(MEMBER_ID)
-        .execute(&pool)
-        .await
-        .expect("seed membership");
+    sqlx::query(
+        "INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', ?, 'developer')",
+    )
+    .bind(MEMBER_ID)
+    .execute(&pool)
+    .await
+    .expect("seed membership");
 
     let state = AppState {
         pool: pool.clone(),
@@ -143,7 +145,10 @@ async fn create_pipeline(app: &Router) -> String {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "create should succeed");
     let created = read_body(resp).await;
-    created["data"]["id"].as_str().expect("pipeline id").to_string()
+    created["data"]["id"]
+        .as_str()
+        .expect("pipeline id")
+        .to_string()
 }
 
 async fn trigger(
@@ -184,10 +189,17 @@ async fn member_cannot_request_debug_trigger() {
     let pipeline_id = create_pipeline(&app).await;
 
     let resp = trigger(&app, &member_jwt(), &pipeline_id, true).await;
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "member debug trigger rejected");
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "member debug trigger rejected"
+    );
     let body = read_body(resp).await;
     assert!(
-        body["message"].as_str().unwrap_or_default().contains("platform admin"),
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("platform admin"),
         "error mentions admin-only: {body}"
     );
 }
@@ -198,7 +210,11 @@ async fn member_can_trigger_without_debug() {
     let pipeline_id = create_pipeline(&app).await;
 
     let resp = trigger(&app, &member_jwt(), &pipeline_id, false).await;
-    assert_eq!(resp.status(), StatusCode::OK, "member normal trigger succeeds");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "member normal trigger succeeds"
+    );
     let body = read_body(resp).await;
     let job_id = body["data"]["job_id"].as_str().expect("job id");
     assert!(!job_debug_flag(&pool, job_id).await, "debug flag stays off");
@@ -210,10 +226,17 @@ async fn admin_debug_trigger_persists_flag() {
     let pipeline_id = create_pipeline(&app).await;
 
     let resp = trigger(&app, &admin_jwt(), &pipeline_id, true).await;
-    assert_eq!(resp.status(), StatusCode::OK, "admin debug trigger succeeds");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "admin debug trigger succeeds"
+    );
     let body = read_body(resp).await;
     let job_id = body["data"]["job_id"].as_str().expect("job id");
-    assert!(job_debug_flag(&pool, job_id).await, "debug_unredact = 1 persisted");
+    assert!(
+        job_debug_flag(&pool, job_id).await,
+        "debug_unredact = 1 persisted"
+    );
 }
 
 #[tokio::test]
@@ -222,7 +245,11 @@ async fn admin_normal_trigger_leaves_flag_off() {
     let pipeline_id = create_pipeline(&app).await;
 
     let resp = trigger(&app, &admin_jwt(), &pipeline_id, false).await;
-    assert_eq!(resp.status(), StatusCode::OK, "admin normal trigger succeeds");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "admin normal trigger succeeds"
+    );
     let body = read_body(resp).await;
     let job_id = body["data"]["job_id"].as_str().expect("job id");
     assert!(!job_debug_flag(&pool, job_id).await, "debug flag stays off");

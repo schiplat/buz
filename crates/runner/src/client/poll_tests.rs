@@ -1,8 +1,8 @@
 use super::{
     build_login_banner, build_step_echo, build_step_failure_message, build_verbose_step_config,
     build_verbose_step_result, step_failure_hint, step_log_base, LOG_ECHO, LOG_LOGIN,
-    LOG_STEP_ERROR, LOG_STREAM_START, LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_CONFIG,
-    LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_RESULT,
+    LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE,
+    LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
 };
 use crate::masker::SecretCatalog;
 use std::collections::HashMap;
@@ -111,7 +111,10 @@ fn build_step_failure_message_is_structured() {
 #[test]
 fn build_step_echo_shows_injected_hint_for_injected_keys() {
     let mut env = HashMap::new();
-    env.insert("BUZ_CONFIG_URL".into(), "http://oss.example/signed?sig=abc".into());
+    env.insert(
+        "BUZ_CONFIG_URL".into(),
+        "http://oss.example/signed?sig=abc".into(),
+    );
     env.insert("acr_personal".into(), "secret-json".into());
     let mut catalog = SecretCatalog::new();
     catalog.add_injected_key("BUZ_CONFIG_URL");
@@ -162,7 +165,10 @@ fn verbose_step_config_renders_shape_without_secrets() {
     assert!(cfg.contains("  fail_strategy    stop"), "{cfg}");
     assert!(cfg.contains("  work_dir         /tmp/ws"), "{cfg}");
     assert!(cfg.contains("  registry_secret  acr_hk"), "{cfg}");
-    assert!(cfg.contains("  config           super-manager (path: v1.2.3)"), "{cfg}");
+    assert!(
+        cfg.contains("  config           super-manager (path: v1.2.3)"),
+        "{cfg}"
+    );
     assert!(cfg.contains("  hosts            h1, h2"), "{cfg}");
 }
 

@@ -46,7 +46,10 @@ fn catalog_collects_secret_key_values_and_direct_values() {
     catalog.add_value("http://oss/signed?sig=abc");
 
     let values = catalog.secret_values(&env);
-    assert!(values.contains(&"hunter2".to_string()), "key value collected");
+    assert!(
+        values.contains(&"hunter2".to_string()),
+        "key value collected"
+    );
     assert!(
         values.contains(&"http://oss/signed?sig=abc".to_string()),
         "direct value collected"
@@ -85,14 +88,19 @@ fn catalog_add_keys_batch_and_is_secret_key() {
 fn injected_key_is_secret_but_marked_for_hint() {
     let mut catalog = SecretCatalog::new();
     catalog.add_injected_key("BUZ_CONFIG_URL");
-    assert!(catalog.is_secret_key("BUZ_CONFIG_URL"), "value still masked");
+    assert!(
+        catalog.is_secret_key("BUZ_CONFIG_URL"),
+        "value still masked"
+    );
     assert!(catalog.is_injected_key("BUZ_CONFIG_URL"));
     assert!(!catalog.is_injected_key("acr_personal"));
 
     // Value still participates in value-based masking.
     let mut env = HashMap::new();
     env.insert("BUZ_CONFIG_URL".into(), "http://oss/signed?sig=abc".into());
-    assert!(catalog.secret_values(&env).contains(&"http://oss/signed?sig=abc".to_string()));
+    assert!(catalog
+        .secret_values(&env)
+        .contains(&"http://oss/signed?sig=abc".to_string()));
 }
 
 #[test]

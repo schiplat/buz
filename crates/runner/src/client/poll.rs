@@ -113,10 +113,7 @@ fn build_verbose_step_config(
     }
     push_field(
         "fail_strategy",
-        step["fail_strategy"]
-            .as_str()
-            .unwrap_or("stop")
-            .to_string(),
+        step["fail_strategy"].as_str().unwrap_or("stop").to_string(),
     );
     push_field(
         "work_dir",
@@ -1112,8 +1109,7 @@ async fn execute_job(
 
                 // Debug echo — show the command before execution (like bash -x)
                 {
-                    let echo_line =
-                        build_step_echo(exec_type, &cmd, &step_env, &catalog, work_dir);
+                    let echo_line = build_step_echo(exec_type, &cmd, &step_env, &catalog, work_dir);
                     let _ = super::logs::upload_chunk(
                         client,
                         config,

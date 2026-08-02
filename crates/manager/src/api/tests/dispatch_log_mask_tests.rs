@@ -92,7 +92,8 @@ async fn test_app() -> Router {
     .expect("seed task");
 
     // Registry secret (same team), value encrypted at rest like production.
-    let registry_json = r#"{"registry":"registry.example.com","username":"u1","password":"p4ssw0rd-secret"}"#;
+    let registry_json =
+        r#"{"registry":"registry.example.com","username":"u1","password":"p4ssw0rd-secret"}"#;
     let sealed = crypto::encrypt(registry_json, JWT_SECRET).expect("encrypt registry secret");
     sqlx::query(
         "INSERT INTO secrets (id, name, value, team_id, kind) VALUES ('s1', 'acr', ?, 'team-1', 'registry')",
@@ -174,11 +175,10 @@ async fn dispatch_puts_registry_password_in_log_mask_values() {
     let tasks = body["data"]["tasks"].as_array().expect("tasks array");
     assert_eq!(tasks.len(), 1);
 
-    let mask_values = tasks[0]["log_mask_values"].as_array().expect("log_mask_values");
-    let values: Vec<&str> = mask_values
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
+    let mask_values = tasks[0]["log_mask_values"]
+        .as_array()
+        .expect("log_mask_values");
+    let values: Vec<&str> = mask_values.iter().filter_map(|v| v.as_str()).collect();
     assert!(
         values.contains(&"p4ssw0rd-secret"),
         "registry password registered for log masking: {values:?}"
