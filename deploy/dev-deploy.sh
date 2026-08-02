@@ -19,6 +19,9 @@
 #   ./dev-deploy.sh status              # container + health status
 #   ./dev-deploy.sh logs                # follow compose logs
 #   ./dev-deploy.sh down                # stop everything (data volumes are kept)
+#   IMAGE_TAG=v1.3.2 ./dev-deploy.sh upgrade
+#                                       # pull + recreate Manager & Runner at a new tag
+#                                       # (persists BUZ_JWT_SECRET and data/ workspace)
 #
 # Environment overrides (all optional):
 #   ACR_REGISTRY    registry.cn-hongkong.aliyuncs.com
@@ -345,6 +348,44 @@ cmd_down() {
   dc down
 }
 
+# Upgrade the deployed Manager + Runner to the tag in IMAGE_TAG. Rewrites the
+# `image:` lines in the compose file (keeps any other user edits), pulls the new
+# images and recreates the containers. Persists BUZ_JWT_SECRET (.env) and the
+# bind-mounted data/workspace dirs — only the images change.
+cmd_upgrade() {
+  require_docker
+  [[ -f "${COMPOSE_FILE}" ]] || die "not deployed yet (${COMPOSE_FILE} missing) — run 'up' first"
+
+  say "Upgrading to ${IMAGE_TAG}"
+  say "  ${MANAGER_IMAGE}"
+  say "  ${RUNNER_IMAGE}"
+
+  # Rewrite image lines; use '|' as sed delimiter so registry slashes are literal.
+  sed -i "s|image: ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-manager:.*|image: ${MANAGER_IMAGE}|" "${COMPOSE_FILE}"
+  sed -i "s|image: ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-runner:.*|image: ${RUNNER_IMAGE}|" "${COMPOSE_FILE}"
+
+  # Fail loudly if the expected image lines were not found (e.g. the user
+  # pointed the compose file at a different registry/namespace).
+  if ! grep -q "image: ${MANAGER_IMAGE}" "${COMPOSE_FILE}" \
+    || ! grep -q "image: ${RUNNER_IMAGE}" "${COMPOSE_FILE}"; then
+    die "could not update the image lines in ${COMPOSE_FILE} — expected 'buz-manager:${IMAGE_TAG}' / 'buz-runner:${IMAGE_TAG}'"
+  fi
+  say "Compose file now references ${IMAGE_TAG}:"
+  grep -E '^\s+image:' "${COMPOSE_FILE}"
+
+  # shellcheck disable=SC2086
+  $DOCKER pull "${MANAGER_IMAGE}"
+  # shellcheck disable=SC2086
+  $DOCKER pull "${RUNNER_IMAGE}"
+
+  say "Recreating containers with ${IMAGE_TAG}…"
+  dc up -d
+
+  say "Upgrade complete — Manager: http://127.0.0.1:${MANAGER_PORT}"
+  echo "  Verify with: ${BASH_SOURCE[0]} status"
+  echo "  If the Runner stays offline, re-run: ${BASH_SOURCE[0]} runner"
+}
+
 usage() {
   sed -n '2,26p' "${BASH_SOURCE[0]}"
 }
@@ -354,6 +395,7 @@ case "${1:-}" in
   login)  cmd_login ;;
   up)     cmd_up ;;
   runner) cmd_runner ;;
+  upgrade) cmd_upgrade ;;
   render) cmd_render ;;
   status) cmd_status ;;
   logs)   cmd_logs ;;

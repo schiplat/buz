@@ -55,6 +55,21 @@ ADMIN_USERNAME='<admin>' ADMIN_PASSWORD='<password>' ./dev-deploy.sh runner
 ./dev-deploy.sh status | logs | down
 ```
 
+**Upgrading an existing deployment** (Manager + Runner at once) — pick the new tag
+explicitly rather than `latest`, so the running version stays traceable:
+
+```bash
+IMAGE_TAG=v1.3.2 ./dev-deploy.sh upgrade
+```
+
+`upgrade` rewrites the `image:` lines in the compose file (keeping any other
+edits you made), pulls the new images and recreates the containers.
+`BUZ_JWT_SECRET` (in `$DEPLOY_DIR/.env`) and the bind-mounted `data/`,
+`workspace/`, `logs/` dirs are untouched, so stored secrets stay decryptable and
+job history/workspaces survive. If the Runner does not come back online after the
+upgrade, re-run `./dev-deploy.sh runner` (its embedded-DNS alias cache can go
+stale when Manager restarts).
+
 Runs on a Linux VM with only Docker installed; images are pulled from
 `${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-{manager,runner}:${IMAGE_TAG}` (multi-arch,
 default `registry.cn-hongkong.aliyuncs.com/example`, tag `latest`). Compose +
