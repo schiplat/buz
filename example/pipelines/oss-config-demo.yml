@@ -35,7 +35,7 @@ on:
       tag:
         description: Config bundle tag (e.g. v0.0.1)
         required: false
-        default: "v1.3.1"
+        default: "v1.3.2"
 
 runner:
   labels: [macos]
