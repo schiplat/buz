@@ -266,18 +266,21 @@ pub async fn cancel(
     );
 
     // Broadcast cancelled status to WebSocket subscribers
-    if let Ok(Some(pid_row)) = sqlx::query("SELECT pipeline_id FROM jobs WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await
+    if let Ok(Some(pid_row)) =
+        sqlx::query("SELECT pipeline_id, debug_unredact FROM jobs WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&state.pool)
+            .await
     {
         let pid: String = pid_row.get(0);
+        let debug_unredact: i64 = pid_row.get(1);
         let ss = serde_json::to_string(&step_statuses).unwrap_or_default();
         let payload = serde_json::json!({
             "id": id,
             "status": "cancelled",
             "step_statuses": serde_json::from_str::<serde_json::Value>(&ss).unwrap_or_default(),
             "end_time": now_utc(),
+            "debug_unredact": debug_unredact != 0,
         });
         state.log_broadcast.broadcast_status(
             &id,
@@ -508,7 +511,7 @@ pub async fn update_status(
     if let Some(pid) = &pipeline_id {
         // Build a minimal status snapshot for the broadcast
         if let Ok(Some(job_row)) = sqlx::query(
-            "SELECT j.status, j.step_statuses, j.start_time, j.end_time
+            "SELECT j.status, j.step_statuses, j.start_time, j.end_time, j.debug_unredact
              FROM jobs j WHERE j.id = ?",
         )
         .bind(&job_id)
@@ -519,12 +522,14 @@ pub async fn update_status(
             let step_statuses_raw: String = job_row.get(1);
             let start_time: Option<String> = job_row.get(2);
             let end_time: Option<String> = job_row.get(3);
+            let debug_unredact: i64 = job_row.get(4);
             let payload = serde_json::json!({
                 "id": job_id,
                 "status": status,
                 "step_statuses": serde_json::from_str::<serde_json::Value>(&step_statuses_raw).unwrap_or_default(),
                 "start_time": start_time,
                 "end_time": end_time,
+                "debug_unredact": debug_unredact != 0,
             });
             state.log_broadcast.broadcast_status(
                 &job_id,

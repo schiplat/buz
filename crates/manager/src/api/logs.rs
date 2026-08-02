@@ -190,6 +190,21 @@ async fn handle_stream(socket: WebSocket, broadcast: LogBroadcaster, job_id: Str
 
 /// WebSocket endpoint that streams job status updates for all jobs
 /// within a pipeline (PipelineDetail build-history live refresh).
+/// True when a pipeline-stream status message describes a debug (unredacted)
+/// job. Non-admins must not even learn such a job exists — the pipeline
+/// WebSocket drops these messages on the subscriber side, matching the
+/// REST-level debug filtering on `list` / `get_one`.
+fn is_debug_status_message(msg: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(msg)
+        .map(|v| {
+            v.get("data")
+                .and_then(|d| d.get("debug_unredact"))
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
 pub async fn pipeline_stream(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -201,16 +216,27 @@ pub async fn pipeline_stream(
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let broadcast = state.log_broadcast.clone();
-    Ok(ws.on_upgrade(move |socket| handle_pipeline_stream(socket, broadcast, pipeline_id)))
+    let is_platform_admin = auth.is_platform_admin;
+    Ok(ws.on_upgrade(move |socket| {
+        handle_pipeline_stream(socket, broadcast, pipeline_id, is_platform_admin)
+    }))
 }
 
-async fn handle_pipeline_stream(socket: WebSocket, broadcast: LogBroadcaster, pipeline_id: String) {
+async fn handle_pipeline_stream(
+    socket: WebSocket,
+    broadcast: LogBroadcaster,
+    pipeline_id: String,
+    is_platform_admin: bool,
+) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let mut rx = broadcast.pipeline_subscribe(&pipeline_id);
     let pid_log = pipeline_id.clone();
 
     // Replay recent status history
     for chunk in broadcast.pipeline_replay(&pipeline_id) {
+        if !is_platform_admin && is_debug_status_message(&chunk) {
+            continue;
+        }
         if ws_sender.send(Message::Text(chunk.into())).await.is_err() {
             return;
         }
@@ -228,6 +254,9 @@ async fn handle_pipeline_stream(socket: WebSocket, broadcast: LogBroadcaster, pi
         loop {
             match rx.recv().await {
                 Ok(chunk) => {
+                    if !is_platform_admin && is_debug_status_message(&chunk) {
+                        continue;
+                    }
                     if ws_sender.send(Message::Text(chunk.into())).await.is_err() {
                         break;
                     }
@@ -248,3 +277,7 @@ async fn handle_pipeline_stream(socket: WebSocket, broadcast: LogBroadcaster, pi
 
     broadcast.pipeline_cleanup(&pipeline_id);
 }
+
+#[cfg(test)]
+#[path = "tests/logs_unit_tests.rs"]
+mod tests;
