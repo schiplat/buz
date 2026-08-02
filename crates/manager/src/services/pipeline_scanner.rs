@@ -166,6 +166,18 @@ async fn upsert_from_yaml(
             registry_secret: s.registry_secret.clone(),
             config_source: s.config_source.clone(),
             config_path: s.config_path.clone(),
+            config_dir: s.config_dir.clone(),
+            env_render: s
+                .env_render
+                .clone()
+                .map(|er| shared::protocol::EnvRenderDef {
+                    template: er.template,
+                    output: er.output,
+                    mode: er.mode,
+                    on_missing: er.on_missing,
+                    on_change: er.on_change,
+                    services: er.services,
+                }),
         })
         .collect();
 

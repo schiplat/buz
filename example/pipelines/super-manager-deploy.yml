@@ -20,7 +20,7 @@
 #   1) The image already exists in ACR HK:
 #        registry.cn-hongkong.aliyuncs.com/dadou/super-manager:<tag>
 #      (produced by hzbd/super-pro .github/workflows/release-manager.yml)
-#   2) Infrastructure → Secrets → New Secret `acr_personal` (AES-256-GCM at rest):
+#   2) Infrastructure → Secrets → New Secret `ACR_PERSONAL` (AES-256-GCM at rest):
 #        {
 #          "provider": "acr_personal",
 #          "registry": "registry.cn-hongkong.aliyuncs.com",
@@ -69,9 +69,9 @@ steps:
   - name: Deploy manager-server
     uses: ssh
     host: $deploy_host
-    registry_secret: acr_personal
+    registry_secret: ACR_PERSONAL
     run: |
-      set -e
+      # Fail-fast is built in (SSH prepends `set -e;`); no manual `set -e`.
       # Validate the trigger input: image tags must be plain, no shell metacharacters.
       case "$INPUT_TAG" in
         ''|*[!A-Za-z0-9._-]*)

@@ -9,7 +9,8 @@ use shared::protocol::{CreateSecretRequest, UpdateSecretRequest};
 use shared::rbac::Perm;
 use shared::registry_auth::{looks_like_registry_secret_value, parse_registry_secret_value};
 use shared::secret_kind::{
-    is_aliyun_oss_auth_kind, is_registry_kind, normalize_secret_kind, SECRET_KIND_REGISTRY,
+    is_aliyun_oss_auth_kind, is_registry_kind, normalize_secret_kind, validate_secret_name,
+    SECRET_KIND_REGISTRY,
 };
 use sqlx::Row;
 use uuid::Uuid;
@@ -55,6 +56,9 @@ fn validate_oss_value(value: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// env_name no longer exists: the secret `name` IS the injected env key and
+/// the `${secrets.NAME}` template reference, so it must be UPPER_SNAKE_CASE.
+/// `name` is globally UNIQUE (create-time check below).
 pub async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -114,6 +118,7 @@ pub async fn create(
     if name.is_empty() {
         return Err(AppError::ValidationFailed("name is required".into()));
     }
+    validate_secret_name(&name).map_err(AppError::ValidationFailed)?;
     if req.value.is_empty() {
         return Err(AppError::ValidationFailed("value is required".into()));
     }
@@ -143,13 +148,14 @@ pub async fn create(
         validate_oss_value(&req.value)?;
     }
 
+    let id = Uuid::new_v4().to_string();
+
     let encrypted = crypto::encrypt(&req.value, &state.config.auth.jwt_secret)
         .map_err(|e| AppError::Internal(format!("secret encryption failed: {e}")))?;
 
     let team_shared = req.team_shared.unwrap_or(false);
     let team_shared_i: i64 = if team_shared { 1 } else { 0 };
 
-    let id = Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO secrets (id, name, value, owner_group, team_id, team_shared, kind) \
          VALUES (?, ?, ?, ?, ?, ?, ?)",

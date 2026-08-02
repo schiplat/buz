@@ -5,7 +5,6 @@ import {
   Globe,
   KeyRound,
   PanelLeft,
-  Puzzle,
   ScrollText,
   Server,
   Users,
@@ -46,8 +45,7 @@ const allEntries: NavEntry[] = [
   { kind: 'section', label: 'Infrastructure' },
   { kind: 'link', name: 'runners', label: 'Runners', icon: Server, to: '/runners', adminOnly: true },
   { kind: 'link', name: 'hosts', label: 'Hosts', icon: Globe, to: '/hosts' },
-  { kind: 'link', name: 'secrets', label: 'Secrets', icon: EyeOff, to: '/secrets' },
-  { kind: 'link', name: 'variables', label: 'Variables', icon: Puzzle, to: '/variables' },
+  { kind: 'link', name: 'secrets-variables', label: 'Secrets & Variables', icon: EyeOff, to: '/secrets-variables' },
   { kind: 'section', label: 'Automation' },
   { kind: 'link', name: 'pipelines', label: 'Pipelines', icon: Box, to: '/pipelines' },
   { kind: 'section', label: 'Access' },
@@ -86,6 +84,13 @@ onMounted(async () => {
 
 function isActive(name: string) {
   if (name === 'pipelines') return route.name === 'pipelines' || route.name === 'pipeline-detail'
+  if (name === 'secrets-variables') {
+    return (
+      route.name === 'secrets-variables' ||
+      route.name === 'secrets' ||
+      route.name === 'variables'
+    )
+  }
   return route.name === name
 }
 

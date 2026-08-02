@@ -1,6 +1,6 @@
 # Private registry login (ACR Personal Edition) for docker pull / push.
 #
-# 1) Create Infrastructure → Secrets named e.g. acr_personal (encrypted at rest).
+# 1) Create Infrastructure → Secrets named e.g. ACR_PERSONAL (encrypted at rest).
 #    Leave **Team share OFF** (default) so unrelated pipelines never get this JSON as env.
 #    Value JSON (password never goes in this YAML file):
 #   {
@@ -32,7 +32,7 @@ steps:
   - name: Run private image
     uses: docker
     image: registry.cn-hongkong.aliyuncs.com/dadou/super-manager
-    registry_secret: acr_personal
+    registry_secret: ACR_PERSONAL
     run: |
       echo "hello from private ACR image"
       uname -a || true

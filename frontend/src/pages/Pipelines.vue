@@ -1503,9 +1503,9 @@ async function handleToggleActive(p: Pipeline) {
                         </div>
                         <p class="text-xs text-muted-foreground/70 mt-0.5">
                           Only Secrets with Kind = Aliyun OSS auth. At dispatch the Manager signs a 1-hour GET URL for
-                          <code class="font-mono">config_path + /configs.tar.gz</code> and injects
-                          <code class="font-mono">$BUZ_CONFIG_URL</code> (redacted in logs). Shell/SSH:
-                          <code class="font-mono">curl -fsSL "$BUZ_CONFIG_URL" | tar xz -C /dir</code>. Leave both empty to skip.
+                          <code class="font-mono">config_path + /configs.tar.gz</code>. The Runner downloads + unpacks the
+                          bundle before the run block; <code class="font-mono">$BUZ_CONFIG_DIR</code> points at the unpacked
+                          files. A failed download fails the step. Leave both empty to skip.
                         </p>
                       </div>
 
@@ -2064,7 +2064,7 @@ on:
         description: One-time deploy token
         required: true
         masking: true             # redact logs/audit; encrypt in job DB
-      env_name:
+      environment:
         description: Target environment
         default: staging
 
@@ -2141,12 +2141,12 @@ steps:
     timeout: 15m
 
   # ── Private image from ACR Personal Edition ──
-  # Secret "acr-personal" is created in Infrastructure → Secrets (encrypted).
-  # Value JSON includes provider/registry/username/password — not this YAML.
+  # Secret "ACR_PERSONAL" is created in Infrastructure → Secrets (encrypted;
+  # names are UPPER_SNAKE_CASE). Value JSON includes provider/registry/username/password.
   - name: Run Private Image
     uses: docker
     image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
-    registry_secret: acr-personal
+    registry_secret: ACR_PERSONAL
     run: |
       echo "pulled private image"
     timeout: 10m
@@ -2154,7 +2154,7 @@ steps:
   # ── Docker push via registry_secret (shell engine auto login/logout) ──
   - name: Docker Push
     uses: shell
-    registry_secret: acr-personal
+    registry_secret: ACR_PERSONAL
     run: |
       docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/myapp:$INPUT_VERSION
       echo "CACHE_DIR=$BUILD_CACHE_DIR"
@@ -2168,7 +2168,7 @@ steps:
     timeout: 10m
   - name: Push Image
     uses: shell
-    registry_secret: acr-personal
+    registry_secret: ACR_PERSONAL
     run: |
       docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/hello:$INPUT_VERSION
     timeout: 15m
@@ -2189,18 +2189,46 @@ steps:
     continue-on-error: true
 
   # ── OSS config delivery (config_source + config_path) ──
-  # Secret "oss-cfg" is created with Kind = Aliyun OSS auth (endpoint/bucket/AK/SK JSON).
-  # At dispatch the Manager signs a 1-hour GET URL for config_path + /configs.tar.gz
-  # and injects $BUZ_CONFIG_URL (redacted in logs). The target holds no AK/SK.
-  - name: Fetch Config
+  # Secret "OSS_CONFIG" is created with Kind = Aliyun OSS auth (endpoint/bucket/AK/SK JSON).
+  # At dispatch the Manager signs a 1-hour GET URL for config_path + /configs.tar.gz.
+  # Buz downloads + unpacks the bundle into $BUZ_CONFIG_DIR (config_dir, default /tmp/buz-config)
+  # before the step runs; the target holds no AK/SK and no $BUZ_CONFIG_URL is needed.
+  - name: Deploy Stack
     uses: ssh
     host: $deploy_host
-    config_source: oss-cfg
+    config_source: OSS_CONFIG
     config_path: config_tpl/super-manager/v1.4.0
+    config_dir: /opt/manager
     run: |
-      mkdir -p /opt/manager
-      curl -fsSL "$BUZ_CONFIG_URL" | tar xz -C /opt/manager
-      cd /opt/manager && docker compose up -d
+      cd "$BUZ_CONFIG_DIR"
+      ls -l docker-compose.yml env.example .env   # .env already rendered (see env_render below)
+      docker compose pull
+      docker compose up -d --remove-orphans
+
+  # ── env_render: render env.example → .env from secrets/vars (optional) ──
+  # Template must live inside the bundle (unpacked at $BUZ_CONFIG_DIR), e.g. env.example:
+  #   MANAGER_IMAGE=${vars.MANAGER_IMAGE_TAG:-latest}
+  #   AFDIAN_API_TOKEN=${secrets.AFDIAN_API_TOKEN}
+  #   POSTGRES_PASSWORD=${secrets.POSTGRES_PASSWORD}
+  # Secret references use the secret NAME (UPPER_SNAKE_CASE) — same name injected as $NAME.
+  # Missing ${secrets.X}/${vars.X} sources fail the step (on_missing: fail); env.example's
+  # own defaults like ${VAR:-default} still apply. Existing .env lines are kept unless the
+  # rendered value changes; $BUZ_ENV_CHANGED=1 and $BUZ_ENV_CHANGED_KEYS are injected when it does.
+  - name: Render Env
+    uses: ssh
+    host: $deploy_host
+    config_source: OSS_CONFIG
+    config_path: config_tpl/super-manager/v1.4.0
+    config_dir: /opt/manager
+    env_render:
+      template: env.example
+      output: .env
+      mode: "0600"
+      on_missing: fail
+    run: |
+      cd "$BUZ_CONFIG_DIR"
+      test -f .env
+      docker compose --env-file .env up -d
 
   # ── Step-level secret (only this step sees GIT_SSH_KEY) ──
   - name: Clone Private Repo
@@ -2219,6 +2247,8 @@ steps:
 #   $BUILD_CACHE_DIR → platform Variables (bound via UI or YAML)
 #   $DOCKER_REGISTRY_PASS → pipeline-level Secrets
 #   $GIT_SSH_KEY  → step-level Secret (only for Clone Private Repo)
+#   $BUZ_CONFIG_DIR → unpacked config bundle dir (config_dir)
+#   $BUZ_ENV_CHANGED / $BUZ_ENV_CHANGED_KEYS → set when env_render changed .env
 #
 # Secrets & Variables must first exist in Manager UI:
 #   Infrastructure → Secrets   (add DOCKER_REGISTRY_PASS, etc.)

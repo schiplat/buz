@@ -11,4 +11,5 @@ pub mod protocol;
 pub mod rbac;
 pub mod registry_auth;
 pub mod secret_kind;
+pub mod value_source;
 pub mod version;

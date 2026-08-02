@@ -30,6 +30,17 @@ export function normalizeSecretKind(raw: string | null | undefined): SecretKind 
   return 'generic'
 }
 
+/** Secret names must be UPPER_SNAKE_CASE — they are injected as env vars and
+ * referenced as `${secrets.NAME}` in env_render templates. */
+export function validateSecretName(raw: string): string | null {
+  const name = raw.trim()
+  if (!name) return 'Name is required'
+  if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) {
+    return `"${name}" must be UPPER_SNAKE_CASE — start with an uppercase letter or '_', then only uppercase letters, digits, '_' (e.g. POSTGRES_PASSWORD)`
+  }
+  return null
+}
+
 export const secretsApi = {
   async list(): Promise<Secret[]> {
     const resp = await apiClient.get('/secrets')

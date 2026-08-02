@@ -16,7 +16,7 @@ runner:
 steps:
   - name: Push image
     uses: shell
-    registry_secret: acr_personal
+    registry_secret: ACR_PERSONAL
     run: |
       # Image must already exist locally (build in a prior step).
       docker tag myapp:local registry.cn-hongkong.aliyuncs.com/dadou/hello:1.0

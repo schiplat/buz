@@ -1,7 +1,8 @@
 use super::{
-    build_login_banner, build_step_echo, build_step_failure_message, build_verbose_step_config,
-    build_verbose_step_result, step_failure_hint, step_log_base, LOG_ECHO, LOG_LOGIN,
-    LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE,
+    build_login_banner, build_ssh_env_command, build_step_echo, build_step_failure_message,
+    build_verbose_step_config, build_verbose_step_result, step_failure_hint, step_log_base,
+    wrap_remote_cmd_with_registry_login, LOG_ECHO, LOG_LOGIN, LOG_STEP_ERROR,
+    LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE,
     LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
 };
 use crate::masker::SecretCatalog;
@@ -183,4 +184,80 @@ fn verbose_step_result_reports_duration_and_exit_code() {
     let short = build_verbose_step_result(std::time::Duration::from_millis(80), 3);
     assert!(short.contains("80ms"), "{short}");
     assert!(short.contains("exit code  3"), "{short}");
+}
+
+#[test]
+fn ssh_env_command_prepends_set_e_and_exports_both_forms() {
+    let mut env = HashMap::new();
+    env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
+    env.insert("deploy_token".into(), "tok-secret-value".into());
+
+    let cmd = build_ssh_env_command("echo hi\n", &env);
+    assert!(cmd.starts_with("set -e; "), "{cmd}");
+    assert!(cmd.contains("export GIT_TERMINAL_PROMPT='0'"), "{cmd}");
+    assert!(
+        cmd.contains("export INPUT_GIT_TERMINAL_PROMPT='0'"),
+        "{cmd}"
+    );
+    assert!(
+        cmd.contains("export deploy_token='tok-secret-value'"),
+        "{cmd}"
+    );
+    assert!(
+        cmd.contains("export INPUT_DEPLOY_TOKEN='tok-secret-value'"),
+        "{cmd}"
+    );
+    assert!(cmd.ends_with("echo hi\n"), "{cmd}");
+}
+
+#[test]
+fn ssh_env_command_empty_env_skips_exports() {
+    let env = HashMap::new();
+    let cmd = build_ssh_env_command("true\n", &env);
+    assert_eq!(cmd, "set -e; true\n");
+}
+
+#[test]
+fn registry_wrapper_keeps_fail_fast_via_exit_trap() {
+    let wrapped = wrap_remote_cmd_with_registry_login("docker compose up -d\n");
+    assert!(!wrapped.contains("set +e"), "{wrapped}");
+    assert!(
+        wrapped.contains("|| exit $?"),
+        "login failure must exit before the run block: {wrapped}"
+    );
+    assert!(
+        wrapped
+            .contains("trap 'docker logout \"$BUZ_REGISTRY_HOST\" >/dev/null 2>&1 || true' EXIT"),
+        "logout must be guaranteed via EXIT trap: {wrapped}"
+    );
+    assert!(wrapped.ends_with("docker compose up -d\n"), "{wrapped}");
+}
+
+#[test]
+fn registry_wrapper_preserves_user_command_verbatim() {
+    let wrapped = wrap_remote_cmd_with_registry_login(
+        "set +e\nfalse\n_rc=$?\ndocker logout foo >/dev/null 2>&1 || true\nexit $_rc\n",
+    );
+    // A user block that opts out of fail-fast explicitly stays intact.
+    assert!(
+        wrapped.contains(
+            "set +e\nfalse\n_rc=$?\ndocker logout foo >/dev/null 2>&1 || true\nexit $_rc\n"
+        ),
+        "{wrapped}"
+    );
+}
+
+#[test]
+fn full_ssh_registry_command_is_fail_fast_by_default() {
+    let mut env = HashMap::new();
+    env.insert("BUZ_REGISTRY_HOST".into(), "reg.example.com".into());
+    env.insert("BUZ_REGISTRY_USER".into(), "u".into());
+    env.insert("BUZ_REGISTRY_PASSWORD".into(), "p".into());
+    let wrapped = wrap_remote_cmd_with_registry_login("docker compose up -d\n");
+    let full = build_ssh_env_command(&wrapped, &env);
+
+    assert!(full.starts_with("set -e; "), "{full}");
+    assert!(!full.contains("set +e"), "{full}");
+    assert!(full.contains("trap 'docker logout"), "{full}");
+    assert!(full.contains("docker compose up -d\n"), "{full}");
 }

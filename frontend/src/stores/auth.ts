@@ -55,7 +55,6 @@ export const useAuthStore = defineStore('auth', () => {
     const ok = teams.value.some((t) => t.id === activeTeamId.value)
     if (!ok) setActiveTeamId('')
   }
-
   function matchesActiveTeam(
     resourceTeamId: string | null | undefined,
     opts?: { includeShared?: boolean },

@@ -31,8 +31,20 @@ const routes: RouteRecordRaw[] = [
       { path: 'jobs', name: 'jobs', component: () => import('@/pages/Jobs.vue'), meta: { title: 'Jobs' } },
       { path: 'jobs/:id', name: 'job-detail', component: () => import('@/pages/JobDetail.vue'), meta: { title: 'Job Detail' } },
       { path: 'hosts', name: 'hosts', component: () => import('@/pages/Hosts.vue'), meta: { title: 'Hosts' } },
-      { path: 'secrets', name: 'secrets', component: () => import('@/pages/Secrets.vue'), meta: { title: 'Secrets' } },
-      { path: 'variables', name: 'variables', component: () => import('@/pages/Variables.vue'), meta: { title: 'Variables' } },
+      {
+        path: 'secrets-variables',
+        name: 'secrets-variables',
+        component: () => import('@/pages/SecretsVariables.vue'),
+        meta: { title: 'Secrets & Variables' },
+        children: [
+          { path: '', redirect: { name: 'secrets' } },
+          { path: 'secrets', name: 'secrets', component: () => import('@/pages/Secrets.vue'), meta: { title: 'Secrets' } },
+          { path: 'variables', name: 'variables', component: () => import('@/pages/Variables.vue'), meta: { title: 'Variables' } },
+        ],
+      },
+      // Backwards-compatible aliases for the pre-merge routes.
+      { path: 'secrets', redirect: '/secrets-variables/secrets' },
+      { path: 'variables', redirect: '/secrets-variables/variables' },
       { path: 'teams', name: 'teams', component: () => import('@/pages/Teams.vue'), meta: { title: 'Teams' } },
       { path: 'users', name: 'users', component: () => import('@/pages/Users.vue'), meta: { title: 'Users', adminOnly: true } },
       { path: 'api-tokens', name: 'api-tokens', component: () => import('@/pages/ApiTokens.vue'), meta: { title: 'API tokens', adminOnly: true } },

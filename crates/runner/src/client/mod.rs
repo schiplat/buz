@@ -1,3 +1,5 @@
+pub mod config_source;
+pub mod env_render;
 pub mod heartbeat;
 pub mod logs;
 pub mod poll;

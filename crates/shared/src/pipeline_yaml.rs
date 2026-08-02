@@ -106,6 +106,37 @@ pub struct RunnerYaml {
     pub timeout: Option<String>,
 }
 
+/// Declarative `.env` generation for `config_source` steps.
+///
+/// Runs after the config bundle is unpacked (into `$BUZ_CONFIG_DIR`) and before
+/// the run block. The template is resolved against the job's dispatched
+/// secrets (`${secrets.X}`, by logical name) and vars (`${vars.X}`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct EnvRender {
+    /// Template file relative to `$BUZ_CONFIG_DIR` (e.g. `env.example`).
+    #[serde(default)]
+    pub template: Option<String>,
+    /// Output file relative to `$BUZ_CONFIG_DIR`. Defaults to
+    /// `<template>.rendered` when unset.
+    #[serde(default)]
+    pub output: Option<String>,
+    /// Output file mode (e.g. `0600`).
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// `fail` (default) aborts the render on any unresolved reference;
+    /// `warn` writes `KEY=` with a `# WARNING` comment (rollback deploys).
+    #[serde(default)]
+    pub on_missing: Option<String>,
+    /// `recreate` force-recreates the listed `services` when a template-defined
+    /// key changed (Phase 2; parsed but not yet enforced).
+    #[serde(default)]
+    pub on_change: Option<String>,
+    /// Compose services affected by this `.env` (Phase 2).
+    #[serde(default)]
+    pub services: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepYaml {
     pub name: Option<String>,
@@ -139,6 +170,14 @@ pub struct StepYaml {
     /// Manager appends `configs.tar.gz` when signing the URL.
     #[serde(default)]
     pub config_path: Option<String>,
+    /// Target directory where Buz unpacks the config bundle (exposed to the run
+    /// block as `$BUZ_CONFIG_DIR`). SSH steps: on the target host; shell steps:
+    /// on the runner. Defaults to a per-job temp dir when unset.
+    #[serde(default)]
+    pub config_dir: Option<String>,
+    /// Declarative `.env` rendering after unpack, before the run block.
+    #[serde(default)]
+    pub env_render: Option<EnvRender>,
     #[serde(default)]
     pub host: Option<OneOrMany>,
     #[serde(default, alias = "work_dir")]
@@ -278,6 +317,12 @@ pub struct StepData {
     /// OSS object key (directory) — Manager appends `configs.tar.gz`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_path: Option<String>,
+    /// Target unpack directory for `config_source`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<String>,
+    /// Declarative `.env` rendering after unpack.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_render: Option<EnvRender>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -450,6 +495,63 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             }
         }
 
+        // env_render / config_dir build on config_source: the template lives in
+        // the unpacked bundle, so both require the OSS delivery to be present.
+        if step.env_render.is_some() || step.config_dir.is_some() {
+            let engine = if uses.is_empty() { "shell" } else { uses };
+            if !matches!(engine, "shell" | "local" | "ssh") {
+                errors.push(YamlValidationError {
+                    field: field.clone(),
+                    message:
+                        "'env_render'/'config_dir' are only valid for shell, local, or ssh steps"
+                            .into(),
+                });
+            }
+            if cfg_source.is_none() {
+                errors.push(YamlValidationError {
+                    field: field.clone(),
+                    message: "'env_render'/'config_dir' require 'config_source' (the template lives in the unpacked config bundle)"
+                        .into(),
+                });
+            }
+        }
+        if let Some(er) = &step.env_render {
+            let template = er.template.as_deref().map(str::trim).unwrap_or("");
+            if template.is_empty() {
+                errors.push(YamlValidationError {
+                    field: field.clone(),
+                    message: "'env_render.template' is required (relative to $BUZ_CONFIG_DIR, e.g. env.example)"
+                        .into(),
+                });
+            }
+            if let Some(om) = er
+                .on_missing
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if !matches!(om, "fail" | "warn") {
+                    errors.push(YamlValidationError {
+                        field: field.clone(),
+                        message: "'env_render.on_missing' must be 'fail' or 'warn'".into(),
+                    });
+                }
+            }
+            if let Some(oc) = er
+                .on_change
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if !matches!(oc, "recreate") {
+                    errors.push(YamlValidationError {
+                        field: field.clone(),
+                        message: "'env_render.on_change' must be 'recreate'".into(),
+                    });
+                }
+            }
+        }
+
         if uses != "docker" {
             continue;
         }
@@ -586,6 +688,13 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                     .map(str::trim)
                     .filter(|v| !v.is_empty())
                     .map(str::to_string),
+                config_dir: s
+                    .config_dir
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string),
+                env_render: s.env_render.clone(),
             })
             .collect(),
     };

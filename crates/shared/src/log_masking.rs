@@ -35,6 +35,9 @@ pub struct SecretCatalog {
     keys: HashSet<String>,
     /// 直接登记的打码值：不依赖 env key，按值打码（registry 密码、签名 URL 等）。
     values: Vec<String>,
+    /// 强制按值打码的集合：绕过 `mask_secrets` 的 3 字符下限（如 `env_render`
+    /// 写入 `.env` 的短 secret 值），保证 .env 明文永不未打码回显在日志中。
+    forced_values: Vec<String>,
     /// 敏感但 echo 中只提示"已注入"的 key（显示 `KEY=<injected>`，不打印值、不打 `***`）。
     /// 值仍参与按值打码 —— 这只影响 RUN echo 的展示形态。
     injected_keys: HashSet<String>,
@@ -65,6 +68,21 @@ impl SecretCatalog {
     /// 登记一个直接打码值（不依赖 env key）。
     pub fn add_value(&mut self, value: impl Into<String>) {
         self.values.push(value.into());
+    }
+
+    /// 登记一个强制按值打码值：无论长度（绕过 `mask_secrets` 的 3 字符下限）。
+    /// 用于 `env_render` 写入 `.env` 的 secret 值，保证明文文件永不未打码回显。
+    pub fn add_forced_value(&mut self, value: impl Into<String>) {
+        self.forced_values.push(value.into());
+    }
+
+    /// 汇总强制打码值（跳过空值）。
+    pub fn forced_secret_values(&self) -> Vec<String> {
+        self.forced_values
+            .iter()
+            .filter(|v| !v.is_empty())
+            .cloned()
+            .collect()
     }
 
     /// RUN echo 是否应对该 key 打码。
@@ -101,6 +119,24 @@ pub fn mask_secrets(text: &str, secrets: &[String]) -> String {
     let mut result = text.to_string();
     for secret in secrets {
         if secret.len() < 3 {
+            continue;
+        }
+        result = result.replace(secret.as_str(), "***");
+    }
+    result
+}
+
+/// 对 `text` 中出现的所有敏感值替换为 `***`，**不做长度下限过滤**。
+///
+/// 专用于 `env_render` 写入 `.env` 的 secret 值：这些值由模板精确控制，
+/// 即使短于 3 字符也必须打码（`.env` 明文在 run block 中可能被 `cat` 回显）。
+pub fn mask_secrets_forced(text: &str, secrets: &[String]) -> String {
+    if secrets.is_empty() || text.is_empty() {
+        return text.to_string();
+    }
+    let mut result = text.to_string();
+    for secret in secrets {
+        if secret.is_empty() {
             continue;
         }
         result = result.replace(secret.as_str(), "***");

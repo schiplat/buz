@@ -273,7 +273,7 @@ pub async fn get_one(
     let tasks = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
                 work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
-                privileged, registry_secret, config_source, config_path
+                privileged, registry_secret, config_source, config_path, env_render, config_dir
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&id)
@@ -303,6 +303,10 @@ pub async fn get_one(
             "registry_secret": t.get::<String, _>(16),
             "config_source": t.get::<String, _>(17),
             "config_path": t.get::<String, _>(18),
+            "env_render": serde_json::from_str::<serde_json::Value>(
+                &t.get::<String, _>(19),
+            ).ok().filter(|v| !v.is_null()),
+            "config_dir": t.get::<String, _>(20),
         })
     })
     .collect::<Vec<_>>();
@@ -767,7 +771,7 @@ pub(crate) async fn do_trigger(
     let tasks_snapshot = sqlx::query(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes,
-                privileged, registry_secret, config_source, config_path
+                privileged, registry_secret, config_source, config_path, env_render, config_dir
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(pipeline_id)
@@ -796,6 +800,10 @@ pub(crate) async fn do_trigger(
             "registry_secret": t.get::<String, _>(15),
             "config_source": t.get::<String, _>(16),
             "config_path": t.get::<String, _>(17),
+            "env_render": serde_json::from_str::<serde_json::Value>(
+                &t.get::<String, _>(18),
+            ).ok().filter(|v| !v.is_null()),
+            "config_dir": t.get::<String, _>(19),
         })
     })
     .collect::<Vec<_>>();
@@ -1076,11 +1084,25 @@ pub(crate) async fn insert_steps(
             .unwrap_or("")
             .to_string();
 
+        let config_dir_stored = step
+            .config_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("")
+            .to_string();
+
+        let env_render_stored = step
+            .env_render
+            .as_ref()
+            .map(|e| serde_json::to_string(e).unwrap_or_default())
+            .unwrap_or_default();
+
         sqlx::query(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
              command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
-             volumes, privileged, registry_secret, config_source, config_path)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             volumes, privileged, registry_secret, config_source, config_path, env_render, config_dir)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(pipeline_id)
@@ -1102,6 +1124,8 @@ pub(crate) async fn insert_steps(
         .bind(&registry_secret_stored)
         .bind(&config_source_stored)
         .bind(&config_path_stored)
+        .bind(&env_render_stored)
+        .bind(&config_dir_stored)
         .execute(pool)
         .await?;
 

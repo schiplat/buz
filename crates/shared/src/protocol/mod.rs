@@ -531,6 +531,36 @@ pub struct StepDef {
     /// OSS object key (directory) — Manager appends `configs.tar.gz` when signing.
     #[serde(default)]
     pub config_path: Option<String>,
+    /// Target directory where Buz unpacks the config bundle (`$BUZ_CONFIG_DIR`).
+    #[serde(default)]
+    pub config_dir: Option<String>,
+    /// Declarative `.env` rendering after unpack, before the run block.
+    #[serde(default)]
+    pub env_render: Option<EnvRenderDef>,
+}
+
+/// Declarative `.env` rendering for `config_source` steps (serialized shape).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct EnvRenderDef {
+    /// Template file relative to `$BUZ_CONFIG_DIR` (e.g. `env.example`).
+    #[serde(default)]
+    pub template: Option<String>,
+    /// Output file relative to `$BUZ_CONFIG_DIR`; default `<template>.rendered`.
+    #[serde(default)]
+    pub output: Option<String>,
+    /// Output file mode (e.g. `0600`).
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// `fail` (default) | `warn`.
+    #[serde(default)]
+    pub on_missing: Option<String>,
+    /// `recreate` (Phase 2; parsed but not yet enforced).
+    #[serde(default)]
+    pub on_change: Option<String>,
+    /// Compose services affected by this `.env` (Phase 2).
+    #[serde(default)]
+    pub services: Option<Vec<String>>,
 }
 
 // --- Secrets ---

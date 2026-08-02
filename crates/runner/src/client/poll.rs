@@ -1,10 +1,12 @@
 use reqwest::Client;
 use shared::protocol::{LogChunk, UpdateJobStatusRequest};
+use shared::value_source::ValueMap;
 use std::path::Path;
 use std::time::Duration;
 
 use crate::config::Config;
 use crate::engine;
+use crate::engine::ssh::SshConnectionParams;
 use crate::masker::SecretCatalog;
 use crate::policy::{self, SharedPolicy};
 use std::collections::{HashMap, HashSet};
@@ -482,6 +484,51 @@ async fn execute_job(
         }
     }
 
+    // Build the `env_render` ValueMap once per job:
+    // - `secrets` domain resolves `${secrets.X}` by logical name from
+    //   `render_env_secrets` (attached by the Manager when a step opts in);
+    // - `vars` domain is pipeline env + trigger inputs (both `NAME` /
+    //   `INPUT_NAME` forms), with `masking: true` inputs excluded (Review R2
+    //   #3) so a sensitive trigger value can never route into `.env` via the
+    //   non-sensitive namespace.
+    let mut render_values = ValueMap::new();
+    if let Some(obj) = task.get("render_env_secrets").and_then(|v| v.as_object()) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                render_values.secrets.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    if let Some(obj) = task.get("env").and_then(|v| v.as_object()) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                render_values.vars.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    let masking_input_keys: HashSet<String> = task
+        .get("masking_input_keys")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(obj) = task.get("inputs").and_then(|v| v.as_object()) {
+        for (k, v) in obj {
+            if masking_input_keys.contains(k) {
+                continue;
+            }
+            if let Some(s) = v.as_str() {
+                render_values.vars.insert(k.clone(), s.to_string());
+                render_values
+                    .vars
+                    .insert(format!("INPUT_{}", k.to_uppercase()), s.to_string());
+            }
+        }
+    }
+
     // Force non-interactive mode for common tools. When a step tries to read
     // from stdin (e.g. `git clone` prompting for credentials), these env vars
     // make the tool fail immediately with a clear error instead of hanging.
@@ -569,6 +616,10 @@ async fn execute_job(
 
         // Collect values for log masking — secrets, registry passwords, masking inputs.
         let secret_values = catalog.secret_values(&step_env);
+        // Forced values: rendered `.env` secret values that must be masked
+        // regardless of length (plaintext `.env` content may be echoed by the
+        // run block, e.g. `cat .env`).
+        let forced_values = catalog.forced_secret_values();
 
         let log_base = step_log_base(idx);
 
@@ -665,6 +716,63 @@ async fn execute_job(
             anyhow::bail!(msg);
         }
 
+        // ── config_source internal unpack + env_render ───────────────────────
+        // Sequencing (design env-render.md): download → unpack → render →
+        // run block. Only runs when the Manager attached `config_auth` (i.e.
+        // the step's config_source resolved to a signed OSS URL). The run
+        // block then starts with `$BUZ_CONFIG_DIR` pointing at the unpacked
+        // bundle and (when env_render is set) the output file already written.
+        let mut config_prep: Option<super::config_source::ConfigPrep> = None;
+        if step.get("config_auth").is_some() {
+            let prep = if exec_type == "ssh" {
+                let conns = resolve_ssh_conns(step, config);
+                if conns.is_empty() {
+                    // The SSH branch below reports the missing-host error.
+                    None
+                } else {
+                    Some(
+                        super::config_source::prepare_ssh(
+                            client,
+                            step,
+                            &conns,
+                            Path::new(&config.runner.workspace_dir),
+                            job_id,
+                            idx,
+                            &render_values,
+                            step_timeout,
+                        )
+                        .await?,
+                    )
+                }
+            } else {
+                Some(
+                    super::config_source::prepare_local(
+                        client,
+                        step,
+                        Path::new(&config.runner.workspace_dir),
+                        idx,
+                        &render_values,
+                    )
+                    .await?,
+                )
+            };
+            config_prep = prep;
+        }
+
+        // Inject BUZ_CONFIG_DIR / BUZ_ENV_CHANGED(_KEYS) into the step env and
+        // register every rendered secret value for forced value redaction.
+        if let Some(prep) = &config_prep {
+            for (k, v) in &prep.env {
+                step_env.insert(k.clone(), v.clone());
+            }
+            // Debug mode disables all redaction, forced values included.
+            if !debug_unredact {
+                for v in &prep.forced_redact {
+                    catalog.add_forced_value(v.clone());
+                }
+            }
+        }
+
         let registry_secret_ref = step
             .get("registry_secret")
             .and_then(|v| v.as_str())
@@ -756,7 +864,10 @@ async fn execute_job(
                         engine::docker::registry_login(registry, username, password).await
                     {
                         let msg = e.to_string();
-                        let masked = crate::masker::mask_secrets(&msg, &secret_values);
+                        let masked = crate::masker::mask_secrets_forced(
+                            &crate::masker::mask_secrets(&msg, &secret_values),
+                            &forced_values,
+                        );
                         let _ = super::logs::upload_chunk(
                             client,
                             config,
@@ -835,6 +946,7 @@ async fn execute_job(
 
                 // Clone secret values for use in the async upload task
                 let sv_for_upload = secret_values.clone();
+                let forced_for_upload = forced_values.clone();
 
                 // Background task: stream output chunks to the manager in real time
                 let c_log = client.clone();
@@ -846,7 +958,10 @@ async fn execute_job(
                 let upload_task = tokio::spawn(async move {
                     let mut chunk_num = stream_base;
                     while let Some(chunk) = output_rx.recv().await {
-                        let masked_chunk = crate::masker::mask_secrets(&chunk, &sv_for_upload);
+                        let masked_chunk = crate::masker::mask_secrets_forced(
+                            &crate::masker::mask_secrets(&chunk, &sv_for_upload),
+                            &forced_for_upload,
+                        );
                         match super::logs::upload_chunk(
                             &c_log,
                             &cfg_log,
@@ -1054,7 +1169,10 @@ async fn execute_job(
                         engine::docker::registry_login(registry, username, password).await
                     {
                         let msg = e.to_string();
-                        let masked = crate::masker::mask_secrets(&msg, &secret_values);
+                        let masked = crate::masker::mask_secrets_forced(
+                            &crate::masker::mask_secrets(&msg, &secret_values),
+                            &forced_values,
+                        );
                         let _ = super::logs::upload_chunk(
                             client,
                             config,
@@ -1132,6 +1250,7 @@ async fn execute_job(
                 let jid = job_id.to_string();
                 let sname = step_name.to_string();
                 let sv_for_upload = secret_values.clone();
+                let forced_for_upload = forced_values.clone();
 
                 let exec_result = engine::docker::execute_streaming(
                     &img,
@@ -1163,7 +1282,10 @@ async fn execute_job(
                 let upload_task = tokio::spawn(async move {
                     let mut chunk_num = stream_base;
                     while let Some(chunk) = output_rx.recv().await {
-                        let masked_chunk = crate::masker::mask_secrets(&chunk, &sv_for_upload);
+                        let masked_chunk = crate::masker::mask_secrets_forced(
+                            &crate::masker::mask_secrets(&chunk, &sv_for_upload),
+                            &forced_for_upload,
+                        );
                         match super::logs::upload_chunk(
                             &c_log,
                             &cfg_log,
@@ -1256,7 +1378,10 @@ async fn execute_job(
         // Local steps are fully streamed so we skip this redundant upload.
         if exec_type == "ssh" {
             let combined = format!("==> {step_name}\n{}\n{}", output.stdout, output.stderr);
-            let masked = crate::masker::mask_secrets(&combined, &output_secret_values);
+            let masked = crate::masker::mask_secrets_forced(
+                &crate::masker::mask_secrets(&combined, &output_secret_values),
+                &forced_values,
+            );
             super::logs::upload_chunk(
                 client,
                 config,
@@ -1361,17 +1486,74 @@ fn shell_escape(value: &str) -> String {
 ///
 /// Expects `BUZ_REGISTRY_HOST`, `BUZ_REGISTRY_USER`, `BUZ_REGISTRY_PASSWORD`
 /// already exported on the remote (via [`build_ssh_env_command`]).
+///
+/// `docker logout` runs via an EXIT trap so `set -e` (prepended by
+/// [`build_ssh_env_command`]) stays active for the user command: fail-fast is
+/// built in and a failing command still triggers the logout before the shell
+/// exits with its exit code.
 fn wrap_remote_cmd_with_registry_login(user_command: &str) -> String {
     format!(
-        r#"printf '%s\n' "$BUZ_REGISTRY_PASSWORD" | docker login -u "$BUZ_REGISTRY_USER" --password-stdin "$BUZ_REGISTRY_HOST"
-_buz_login_rc=$?
-if [ $_buz_login_rc -ne 0 ]; then exit $_buz_login_rc; fi
-set +e
-{user_command}
-_buz_cmd_rc=$?
-docker logout "$BUZ_REGISTRY_HOST" >/dev/null 2>&1 || true
-exit $_buz_cmd_rc"#
+        r#"printf '%s\n' "$BUZ_REGISTRY_PASSWORD" | docker login -u "$BUZ_REGISTRY_USER" --password-stdin "$BUZ_REGISTRY_HOST" || exit $?
+trap 'docker logout "$BUZ_REGISTRY_HOST" >/dev/null 2>&1 || true' EXIT
+{user_command}"#
     )
+}
+
+/// Parse the step's `host` field (Manager-resolved connection objects) into
+/// connection params. Used by the config-source delivery path (which runs
+/// before the run block) and by `execute_ssh_step`.
+fn resolve_ssh_conns(step: &serde_json::Value, config: &Config) -> Vec<SshConnectionParams> {
+    let host_values = step["host"]
+        .as_array()
+        .cloned()
+        .or_else(|| {
+            step["host"]
+                .as_object()
+                .map(|o| vec![serde_json::Value::Object(o.clone())])
+        })
+        .unwrap_or_default();
+    host_values
+        .iter()
+        .filter_map(|hv| build_ssh_conn(hv, config).ok())
+        .collect()
+}
+
+/// Build connection params from one Manager-resolved host object.
+fn build_ssh_conn(hv: &serde_json::Value, config: &Config) -> anyhow::Result<SshConnectionParams> {
+    let host_params = hv
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("SSH step host data is not an object"))?;
+    Ok(SshConnectionParams {
+        host: host_params
+            .get("host")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        port: host_params
+            .get("port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(22) as u16,
+        username: host_params
+            .get("username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        credential_type: host_params
+            .get("credential_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("key_path")
+            .to_string(),
+        credential_value: host_params
+            .get("credential_value")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        credential_passphrase: host_params
+            .get("credential_passphrase")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        host_key_policy: config.engine.ssh_host_key_policy.clone(),
+        known_hosts_path: config.engine.ssh_known_hosts_path.clone(),
+    })
 }
 
 /// Extracted SSH execution logic (keeps `execute_job` readable).
@@ -1393,41 +1575,8 @@ async fn execute_ssh_step(
 
     for (hi, hv) in hosts.iter().enumerate() {
         let host_label = hv["host"].as_str().unwrap_or("?");
-        let host_params = hv
-            .as_object()
-            .ok_or_else(|| anyhow::anyhow!("SSH step '{step_name}' host[{hi}] is not an object"))?;
-
-        let ssh_conn = engine::ssh::SshConnectionParams {
-            host: host_params
-                .get("host")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            port: host_params
-                .get("port")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(22) as u16,
-            username: host_params
-                .get("username")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            credential_type: host_params
-                .get("credential_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("key_path")
-                .to_string(),
-            credential_value: host_params
-                .get("credential_value")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            credential_passphrase: host_params
-                .get("credential_passphrase")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            host_key_policy: config.engine.ssh_host_key_policy.clone(),
-            known_hosts_path: config.engine.ssh_known_hosts_path.clone(),
-        };
+        let ssh_conn = build_ssh_conn(hv, config)
+            .map_err(|e| anyhow::anyhow!("SSH step '{step_name}' host[{hi}]: {e}"))?;
 
         let ssh_header = if hosts.len() > 1 {
             format!("--- {step_name} @ {host_label} ---\n")

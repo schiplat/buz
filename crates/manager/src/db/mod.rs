@@ -285,6 +285,36 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
 
+    // env_render config for config_source steps (template/output/mode/... JSON).
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN env_render TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
+    // config_source unpack target directory (empty → runner picks a temp dir).
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_dir TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
+
+    // ── Secret name/env_name merge ──
+    // Design decision: the secret `name` IS the injected env key and the
+    // `${secrets.X}` template reference — there is no separate `env_name`.
+    // New secrets must be UPPER_SNAKE_CASE (enforced at create). For legacy
+    // rows that had a distinct env_name, backfill it into `name` (only when it
+    // does not collide with another secret's name), then drop the column.
+    let _ = sqlx::query(
+        "UPDATE secrets
+         SET name = env_name
+         WHERE env_name != '' AND env_name != name
+           AND NOT EXISTS (
+               SELECT 1 FROM secrets s2
+               WHERE s2.name = secrets.env_name AND s2.id != secrets.id
+           )",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query("ALTER TABLE secrets DROP COLUMN env_name")
+        .execute(pool)
+        .await;
+
     // Add credential_data column to hosts — stores key content or password in DB
     let _ = sqlx::query("ALTER TABLE hosts ADD COLUMN credential_data TEXT NOT NULL DEFAULT ''")
         .execute(pool)

@@ -17,6 +17,36 @@ fn skips_short_values() {
 }
 
 #[test]
+fn forced_masks_short_values() {
+    let text = "PASSWORD=abc SECRET=ab END";
+    let secrets = vec!["abc".to_string(), "ab".to_string()];
+    let masked = mask_secrets_forced(text, &secrets);
+    assert_eq!(masked, "PASSWORD=*** SECRET=*** END");
+}
+
+#[test]
+fn forced_skips_empty_values() {
+    let text = "K=v END";
+    let secrets = vec!["".to_string(), "v".to_string()];
+    assert_eq!(mask_secrets_forced(text, &secrets), "K=*** END");
+}
+
+#[test]
+fn forced_empty_secrets_noop() {
+    assert_eq!(mask_secrets_forced("hello", &[]), "hello");
+    assert_eq!(mask_secrets_forced("", &["x".to_string()]), "");
+}
+
+#[test]
+fn forced_masks_values_shorter_than_normal_floor() {
+    let text = "token: pi (2 chars)";
+    let secrets = vec!["pi".to_string()];
+    // Normal masking would skip `pi` (2 chars); forced masks it.
+    assert_eq!(mask_secrets(text, &secrets), "token: pi (2 chars)");
+    assert_eq!(mask_secrets_forced(text, &secrets), "token: *** (2 chars)");
+}
+
+#[test]
 fn empty_secrets_noop() {
     let text = "hello world";
     assert_eq!(mask_secrets(text, &[]), "hello world");
@@ -109,4 +139,22 @@ fn catalog_default_is_empty() {
     assert!(!catalog.is_secret_key("anything"));
     assert!(!catalog.is_injected_key("anything"));
     assert!(catalog.secret_values(&HashMap::new()).is_empty());
+}
+
+#[test]
+fn catalog_forced_values_bypass_length_floor() {
+    let mut catalog = SecretCatalog::new();
+    catalog.add_forced_value("pi");
+    catalog.add_forced_value("ab");
+    catalog.add_forced_value("");
+    assert_eq!(
+        catalog.forced_secret_values(),
+        vec!["pi".to_string(), "ab".to_string()]
+    );
+}
+
+#[test]
+fn catalog_default_forced_empty() {
+    let catalog = SecretCatalog::new();
+    assert!(catalog.forced_secret_values().is_empty());
 }

@@ -4,11 +4,12 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, Pencil, Trash2, Shield } from '@lucide/vue'
-import { secretsApi, normalizeSecretKind, type Secret, type SecretKind } from '@/api/secrets'
+import { secretsApi, normalizeSecretKind, validateSecretName, type Secret, type SecretKind } from '@/api/secrets'
 import { teamsApi, type Team } from '@/api/teams'
 import { useAuthStore } from '@/stores/auth'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
+import { formatLocalDateTime } from '@/utils/time'
 
 const auth = useAuthStore()
 const secrets = ref<Secret[]>([])
@@ -109,7 +110,11 @@ function openCreate() {
   editing.value = null
   formName.value = ''
   formValue.value = ''
-  formTeamId.value = auth.preferredTeamId || teams.value[0]?.id || ''
+  // Only default to the active team when it still exists — a stale
+  // `buz_active_team` (e.g. a deleted team) would otherwise be submitted and
+  // rejected by the backend with a 422 team_id error.
+  const preferred = auth.preferredTeamId
+  formTeamId.value = teams.value.some((t) => t.id === preferred) ? preferred : (teams.value[0]?.id || '')
   formTeamShared.value = false
   formKind.value = 'generic'
   showValue.value = false
@@ -127,10 +132,29 @@ function openEdit(s: Secret) {
   showDialog.value = true
 }
 
+/** Force the stored value to UPPER_SNAKE_CASE on every keystroke, so the value
+ *  and its visual rendering (CSS `uppercase`) always agree. */
+function onNameInput(e: Event) {
+  formName.value = (e.target as HTMLInputElement).value.toUpperCase()
+}
+
 async function handleSave() {
   if (!formTeamId.value) {
     alert('Team is required')
     return
+  }
+  if (!editing.value) {
+    // Normalize to UPPER_SNAKE_CASE FIRST, then validate the normalized value —
+    // otherwise a mixed-case input like "OSS_demo" is rejected before the
+    // auto-uppercase on save ever runs. Round-trip the normalized name back
+    // into the form so the user sees exactly what will be saved.
+    const name = formName.value.trim().toUpperCase()
+    const nameErr = validateSecretName(name)
+    if (nameErr) {
+      alert(nameErr)
+      return
+    }
+    formName.value = name
   }
   if (editing.value?.reencrypt_required && !formValue.value) {
     alert('This secret must be re-saved with a new value (plaintext storage is no longer accepted).')
@@ -151,7 +175,7 @@ async function handleSave() {
       })
     } else {
       await secretsApi.create({
-        name: formName.value.trim(),
+        name: formName.value.trim().toUpperCase(),
         value: formValue.value,
         team_id: formTeamId.value,
         team_shared: formTeamShared.value,
@@ -160,6 +184,10 @@ async function handleSave() {
     }
     showDialog.value = false
     await loadSecrets()
+  } catch (e: any) {
+    // Show the backend's message (e.g. validation failures) instead of letting
+    // the unhandled rejection crash the page via ErrorBoundary.
+    alert(e?.response?.data?.message || e?.message || 'Failed to save secret')
   } finally {
     saving.value = false
   }
@@ -167,8 +195,12 @@ async function handleSave() {
 
 async function handleDelete(s: Secret) {
   if (!confirm(`Delete secret "${s.name}"? This cannot be undone.`)) return
-  await secretsApi.delete(s.id)
-  await loadSecrets()
+  try {
+    await secretsApi.delete(s.id)
+    await loadSecrets()
+  } catch (e: any) {
+    alert(e?.response?.data?.message || e?.message || 'Failed to delete secret')
+  }
 }
 
 async function loadSecrets() {
@@ -261,7 +293,11 @@ onMounted(loadSecrets)
             </thead>
             <tbody class="divide-y divide-border/20">
               <tr v-for="s in pageItems" :key="s.id" class="hover:bg-muted/5 transition-colors">
-                <td class="px-5 py-3 font-mono text-sm font-semibold whitespace-nowrap">{{ s.name }}</td>
+                <td class="px-5 py-3 whitespace-nowrap">
+                  <div class="flex flex-col">
+                    <span class="font-mono text-sm font-semibold">{{ s.name }}</span>
+                  </div>
+                </td>
                 <td class="px-5 py-3">
                   <div class="flex flex-col gap-1 min-w-0 max-w-md">
                     <code class="mono-chip text-xs select-all break-all whitespace-pre-wrap">{{ s.value }}</code>
@@ -295,7 +331,7 @@ onMounted(loadSecrets)
                   >Team share</span>
                   <span v-else class="text-muted-foreground/70" title="Requires explicit bind or step reference">Explicit</span>
                 </td>
-                <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.updated_at?.slice(0, 10) || '—' }}</td>
+                <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap" :title="s.updated_at || ''">{{ formatLocalDateTime(s.updated_at) }}</td>
                 <td class="px-5 py-3 text-right whitespace-nowrap">
                   <div class="flex items-center justify-end gap-1">
                     <UiButton variant="ghost" size="sm" @click="openEdit(s)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
@@ -330,11 +366,18 @@ onMounted(loadSecrets)
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-red-500">*</span></label>
               <input
-                v-model="formName"
+                :value="formName"
                 :disabled="!!editing"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 disabled:bg-muted/30 disabled:cursor-not-allowed"
-                placeholder="DOCKER_REGISTRY_PASSWORD"
+                @input="onNameInput"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono uppercase outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 disabled:bg-muted/30 disabled:cursor-not-allowed"
+                placeholder="POSTGRES_PASSWORD"
               />
+              <p class="text-[10px] text-muted-foreground mt-1 leading-relaxed">
+                UPPER_SNAKE_CASE — this name IS the injected env var (<code class="mono-chip text-[10px]">$NAME</code>),
+                the YAML binding (<code class="mono-chip text-[10px]">secrets: [NAME]</code>) and the
+                <code class="mono-chip text-[10px]">env_render</code> template key
+                (<code class="mono-chip text-[10px]">{{ '${secrets.' + 'NAME' + '}' }}</code>). Auto-uppercased on save.
+              </p>
             </div>
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">Team <span class="text-red-500">*</span></label>
@@ -469,8 +512,9 @@ onMounted(loadSecrets)
                   <p class="text-[10px] text-muted-foreground leading-relaxed">
                     Create a <strong>read-only</strong> RAM user (AliyunReadOnlyAccess scoped to the bucket) and
                     paste its AK/SK. At job dispatch the Manager signs a short-lived GET URL for
-                    <code class="mono-chip text-[10px]">config_path</code> and injects it as
-                    <code class="mono-chip text-[10px]">$BUZ_CONFIG_URL</code>. The target never holds the AK/SK.
+                    <code class="mono-chip text-[10px]">config_path</code>. The Runner downloads + unpacks the
+                    bundle into <code class="mono-chip text-[10px]">$BUZ_CONFIG_DIR</code> before the run block.
+                    The target never holds the AK/SK.
                   </p>
                 </div>
               </details>

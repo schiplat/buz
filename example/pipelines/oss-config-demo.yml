@@ -7,25 +7,39 @@
 #      (kind = Aliyun OSS auth), signs a 1-hour GET URL for
 #      `config_path + /configs.tar.gz`, and injects it as $BUZ_CONFIG_URL
 #      (redacted in logs).
-#   4. The step can curl the bundle down without holding any AK/SK.
+#   4. The Runner **downloads and unpacks the bundle itself** before the run
+#      block (config_source internal unpack), exposing the directory as
+#      $BUZ_CONFIG_DIR. The run block never needs to curl — it just reads
+#      the unpacked files. No AK/SK ever reaches the target.
 #
-# Setup (local test):
-#   Buz UI → Infrastructure → Secrets → Add Secret:
-#     Name    : oss_demo
-#     Team    : default
-#     Kind    : Aliyun OSS auth
-#     Value   : (any JSON with endpoint/bucket/access_key_id/access_key_secret —
-#               a fake AK/SK is fine, the URL is signed but download will
-#               fail auth at OSS; the point is BUZ_CONFIG_URL is injected)
+# ── IMPORTANT: this demo requires a REAL OSS object ──────────────────────
+# Because the Runner downloads the bundle during the prepare stage, a failed
+# download (HTTP 404 / 403) FAILS THE JOB immediately — the run block never
+# executes. Fake AK/SK will NOT pass: the signed URL must resolve to an object
+# that actually exists in the bucket.
 #
-# If the secret is missing / wrong kind, the step fails fast with a
-# `config_source ... set Kind to Aliyun OSS auth` error — also part of the demo.
+# To run this end-to-end you must:
+#   1. Upload a tar.gz to your OSS bucket at:
+#        config_tpl/demo/<tag>/configs.tar.gz     (e.g. .../v1.3.2/configs.tar.gz)
+#   2. Create the secret with REAL credentials (read-only RAM user):
+#        Buz UI → Secrets & Variables → Secrets → Add Secret
+#          Name  : OSS_DEMO
+#          Team  : default
+#          Kind  : Aliyun OSS auth
+#          Value : {"provider":"aliyun_oss","endpoint":"oss-cn-hongkong.aliyuncs.com",
+#                   "bucket":"<your-bucket>","region":"cn-hongkong",
+#                   "access_key_id":"LTAI...","access_key_secret":"..."}
+#        (secret names are UPPER_SNAKE_CASE — auto-uppercased in the UI form)
 #
-# To only check injection without a real bucket, comment out the curl line;
-# `${BUZ_CONFIG_URL:+set}` prints whether the URL arrived.
+# Failure modes (all fast-fail before the run block):
+#   - secret missing / wrong team      → `config_source 'OSS_DEMO' not found ...`
+#   - secret kind is not OSS auth      → `set Kind to Aliyun OSS auth`
+#   - secret JSON incomplete            → `requires JSON with endpoint/bucket/...`
+#   - object missing in bucket          → `config bundle download returned HTTP 404`
+#   - credentials invalid / no permission → `config bundle download returned HTTP 403`
 
 name: OSS Config Delivery Demo
-description: "Verifies config_source → signed OSS URL → $BUZ_CONFIG_URL on the runner."
+description: "Verifies config_source → signed OSS URL → runner-side unpack into $BUZ_CONFIG_DIR."
 
 team: default
 
@@ -43,31 +57,26 @@ runner:
 
 steps:
   # ── 1. Fetch config bundle from OSS (shell engine, local runner) ──
+  # The Runner downloads + unpacks config_tpl/demo/$tag/configs.tar.gz during
+  # the prepare stage (before the run block). $BUZ_CONFIG_DIR points at the
+  # unpacked bundle; env_render output is written there too.
   - name: Fetch config bundle
     uses: shell
-    config_source: oss_demo
+    config_source: OSS_DEMO
     config_path: config_tpl/demo/$tag
     run: |
-      set -e
-      if [ -z "${BUZ_CONFIG_URL:-}" ]; then
-        echo "==> BUZ_CONFIG_URL injected: NO"
-        echo "!! BUZ_CONFIG_URL is empty — check the step's config_source / secret kind" >&2
+      echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
+      if [ ! -d "${BUZ_CONFIG_DIR:-}" ]; then
+        echo "!! BUZ_CONFIG_DIR is empty — config_source was not resolved" >&2
         exit 1
       fi
-      echo "==> BUZ_CONFIG_URL injected: YES"
-      echo "    (signed 1h URL is set; the value itself is masked in logs)"
-      echo "==> Downloading config bundle ..."
-      mkdir -p /tmp/oss-demo
-      # Real bucket: this unpacks the tag-scoped archive.
-      # Local no-bucket test: expect curl auth failure; that still proves
-      # the signed URL was dispatched to the runner.
-      curl -fsSL --max-time 15 "$BUZ_CONFIG_URL" | tar xz -C /tmp/oss-demo \
-        && echo "==> bundle unpacked:" && ls -la /tmp/oss-demo \
-        || echo "==> download failed (expected if no real OSS bucket) — URL injection verified"
-    timeout: 2m
+      echo "==> bundle contents:"
+      ls -la "$BUZ_CONFIG_DIR"
+      echo "==> config_source verified: signed URL dispatched + bundle unpacked"
 
   # ── 2. Echo sanity (no config) ──
   - name: Echo sanity
     uses: shell
     run: |
       echo "==> config_source absent on this step: ${BUZ_CONFIG_URL:-unset}"
+      echo "==> BUZ_CONFIG_DIR absent on this step: ${BUZ_CONFIG_DIR:-unset}"

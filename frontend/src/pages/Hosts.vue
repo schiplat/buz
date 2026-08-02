@@ -227,7 +227,7 @@ onMounted(async () => {
   <div class="space-y-6">
     <PageHeader
       title="Hosts"
-      description="SSH remote hosts. Reference by name or labels in pipeline steps (uses: ssh + host / host_labels). Auth: SSH Key / Password (encrypted in Manager) or SSH Agent (keys on the runner via ssh-add). Use Test connection in the form to verify credentials from the Manager host."
+      description="SSH targets for pipeline steps. Reference by name or labels (uses: ssh + host / host_labels). Auth: SSH Key / Password / Agent — verify with Test connection."
     >
       <template #actions>
         <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> Add Host</UiButton>

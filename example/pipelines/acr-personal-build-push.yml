@@ -1,7 +1,7 @@
 # Build and push to Alibaba Cloud ACR Personal Edition via registry_secret.
 #
 # Prerequisites:
-#   1) Infrastructure → Secrets named `acr_personal` (AES-256-GCM at rest).
+#   1) Infrastructure → Secrets named `ACR_PERSONAL` (AES-256-GCM at rest).
 #      Leave **Team share OFF** (default); this pipeline uses registry_secret only.
 #      {
 #        "provider": "acr_personal",
@@ -61,7 +61,7 @@ steps:
   # ── 3. Push — Manager resolves registry_secret → Runner docker login/logout ──
   - name: Push image
     uses: shell
-    registry_secret: acr_personal
+    registry_secret: ACR_PERSONAL
     run: |
       IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
       echo "Pushing $IMAGE"
@@ -71,7 +71,7 @@ steps:
   # ── 4. Verify — pull + run the image just pushed ──
   - name: Verify pull
     uses: shell
-    registry_secret: acr_personal
+    registry_secret: ACR_PERSONAL
     run: |
       IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
       docker pull "$IMAGE"

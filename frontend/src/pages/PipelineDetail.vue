@@ -1156,9 +1156,9 @@ async function handleTrigger() {
                       </div>
                       <p class="text-xs text-muted-foreground/70 mt-0.5">
                         Only Secrets with Kind = Aliyun OSS auth. At dispatch the Manager signs a 1-hour GET URL for
-                        <code class="font-mono">config_path + /configs.tar.gz</code> and injects
-                        <code class="font-mono">$BUZ_CONFIG_URL</code> (redacted in logs). Shell/SSH:
-                        <code class="font-mono">curl -fsSL "$BUZ_CONFIG_URL" | tar xz -C /dir</code>. Leave both empty to skip.
+                        <code class="font-mono">config_path + /configs.tar.gz</code>. The Runner downloads + unpacks the
+                        bundle before the run block; <code class="font-mono">$BUZ_CONFIG_DIR</code> points at the unpacked
+                        files. A failed download fails the step. Leave both empty to skip.
                       </p>
                     </div>
 
@@ -1685,11 +1685,11 @@ async function handleTrigger() {
                           <span v-for="l in j.snapshot.runner_labels" :key="l" class="mono-chip text-xs text-muted-foreground/60">{{ l }}</span>
                         </span>
 
-                        <!-- ... menu trigger -->
+                        <!-- ... menu trigger (always visible) -->
                         <div class="ml-auto sidebar-job-menu relative">
                           <button
-                            class="flex items-center justify-center w-6 h-6 rounded-md opacity-0 group-hover:opacity-100 hover:bg-muted transition-all"
-                            :class="showMenuForJob === j.id ? 'opacity-100 bg-muted' : ''"
+                            class="flex items-center justify-center w-6 h-6 rounded-md hover:bg-muted transition-all"
+                            :class="showMenuForJob === j.id ? 'bg-muted' : ''"
                             @click="toggleJobMenu(j.id, $event)"
                             title="Actions"
                           >

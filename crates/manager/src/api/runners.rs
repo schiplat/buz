@@ -518,7 +518,7 @@ pub async fn poll(
     let task_rows = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, image, volumes,
-                registry_secret, config_source, config_path
+                registry_secret, config_source, config_path, env_render, config_dir
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&pipeline_id)
@@ -528,7 +528,12 @@ pub async fn poll(
     // Resolve pipeline secrets from explicit bindings + team_shared (sensitive).
     // Non-secret env (platform vars, inline env:) goes in a separate map so the
     // Runner does not redact those values in logs.
+    //
+    // The secret `name` is BOTH the injected env key and the `${secrets.NAME}`
+    // template reference (UPPER_SNAKE_CASE enforced at create). `secrets_by_name`
+    // is kept for `env_render` templates (${secrets.X}).
     let mut secrets: serde_json::Value = serde_json::json!({});
+    let mut secrets_by_name: serde_json::Value = serde_json::json!({});
     let mut env: serde_json::Value = serde_json::json!({});
 
     // ── Explicit secret bindings (pipeline_secrets table) ──
@@ -549,7 +554,10 @@ pub async fn poll(
         match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
             Ok(value) => {
                 if let Some(obj) = secrets.as_object_mut() {
-                    obj.insert(name, serde_json::Value::String(value));
+                    obj.insert(name.clone(), serde_json::Value::String(value.clone()));
+                }
+                if let Some(obj) = secrets_by_name.as_object_mut() {
+                    obj.insert(name.clone(), serde_json::Value::String(value));
                 }
             }
             Err(e) => {
@@ -574,7 +582,12 @@ pub async fn poll(
         match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
             Ok(value) => {
                 if let Some(obj) = secrets.as_object_mut() {
-                    obj.entry(name).or_insert(serde_json::Value::String(value));
+                    obj.entry(name.clone())
+                        .or_insert(serde_json::Value::String(value.clone()));
+                }
+                if let Some(obj) = secrets_by_name.as_object_mut() {
+                    obj.entry(name.clone())
+                        .or_insert(serde_json::Value::String(value));
                 }
             }
             Err(e) => {
@@ -629,6 +642,8 @@ pub async fn poll(
         let registry_secret_name: String = t.get(15);
         let config_source_name: String = t.get(16);
         let config_path_raw: String = t.get(17);
+        let env_render_raw: String = t.get(18);
+        let config_dir: String = t.get(19);
 
         let mut task_json = serde_json::json!({
             "id": t.get::<String, _>(0),
@@ -646,6 +661,9 @@ pub async fn poll(
             "registry_secret": &registry_secret_name,
             "config_source": &config_source_name,
             "config_path": &config_path_raw,
+            "env_render": serde_json::from_str::<serde_json::Value>(&env_render_raw)
+                .unwrap_or(serde_json::Value::Null),
+            "config_dir": &config_dir,
         });
 
         // Values that must be redacted in the Runner's logs. Registered here — the
@@ -919,13 +937,16 @@ pub async fn poll(
                         ));
                     } else {
                         // Expand `$VAR` / `${VAR}` in config_path against env + secrets + trigger inputs.
+                        // Migrated to the unified `shared::value_source` expander (Lenient mode =
+                        // legacy `expand_var_refs` semantics: unresolved → empty string). Secrets
+                        // resolve by `name` — the same key they are injected as.
                         let mut config_vars = serde_json::json!({});
                         if let Some(obj) = env.as_object() {
                             for (k, v) in obj {
                                 config_vars[k] = v.clone();
                             }
                         }
-                        if let Some(obj) = secrets.as_object() {
+                        if let Some(obj) = secrets_by_name.as_object() {
                             for (k, v) in obj {
                                 config_vars[k] = v.clone();
                             }
@@ -935,7 +956,27 @@ pub async fn poll(
                                 config_vars[k] = v.clone();
                             }
                         }
-                        let expanded_path = expand_var_refs(&config_path_raw, &config_vars);
+                        let config_map = shared::value_source::ValueMap {
+                            vars: config_vars
+                                .as_object()
+                                .map(|o| {
+                                    o.iter()
+                                        .filter_map(|(k, v)| {
+                                            v.as_str().map(|s| (k.clone(), s.to_string()))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            secrets: std::collections::HashMap::new(),
+                        };
+                        let expanded_path = shared::value_source::expand(
+                            &config_path_raw,
+                            &config_map,
+                            shared::value_source::ExpandMode::Lenient,
+                            shared::value_source::MissingPolicy::Blank,
+                        )
+                        .map(|e| e.content)
+                        .unwrap_or_else(|_| config_path_raw.clone());
                         let object_key = {
                             let dir = expanded_path.trim().trim_matches('/');
                             if dir.is_empty() {
@@ -987,6 +1028,14 @@ pub async fn poll(
                                                         });
                                                         // SecretClass::ConfigUrl
                                                         log_mask_values.push(url.clone());
+
+                                                        // env_render resolves ${secrets.X} by secret
+                                                        // `name` — the same key secrets are injected as.
+                                                        // Only attached when a step opts in.
+                                                        if !env_render_raw.is_empty() {
+                                                            task_json["render_env_secrets"] =
+                                                                secrets_by_name.clone();
+                                                        }
                                                     }
                                                     Err(e) => {
                                                         task_json["config_auth_error"] =
@@ -1106,50 +1155,6 @@ fn resolve_var_ref(raw: &str, inputs: &serde_json::Value) -> Vec<String> {
     }
 
     vec![]
-}
-
-/// Expand `$VAR` / `${VAR}` references inside a string against a lookup map.
-///
-/// Unresolved names expand to empty strings; unknown `$` that are not a
-/// reference (e.g. `a$b`) are kept as-is. Used for `config_path` templating
-/// (e.g. `config_tpl/super-manager/$tag` → `config_tpl/super-manager/1.4.0`).
-fn expand_var_refs(raw: &str, vars: &serde_json::Value) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut rest = raw;
-    while let Some(start) = rest.find('$') {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 1..];
-        if let Some(braced) = after.strip_prefix('{') {
-            match braced.find('}') {
-                Some(close) => {
-                    let name = &braced[..close];
-                    let val = vars.get(name).and_then(|v| v.as_str()).unwrap_or("");
-                    out.push_str(val);
-                    rest = &braced[close + 1..];
-                }
-                None => {
-                    out.push('$');
-                    rest = after;
-                }
-            }
-        } else {
-            let name_len = after
-                .bytes()
-                .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
-                .count();
-            if name_len > 0 {
-                let name = &after[..name_len];
-                let val = vars.get(name).and_then(|v| v.as_str()).unwrap_or("");
-                out.push_str(val);
-                rest = &after[name_len..];
-            } else {
-                out.push('$');
-                rest = after;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
 }
 
 /// Build host connection JSON for dispatch to the runner.

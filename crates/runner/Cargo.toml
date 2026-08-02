@@ -38,6 +38,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Log masking
 aho-corasick = "1"
 
+# env_render: base64 file transfer over SSH + flock atomic writes
+base64 = "0.22"
+libc = "0.2"
+
 # SSH execution
 russh = "0.61"
 russh-keys = "0.48"
