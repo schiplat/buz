@@ -142,13 +142,11 @@ pub async fn get_one(
     auth.check_team(&team_id, Perm::TeamView)?;
 
     // Debug (unredacted) jobs are admin-only records — non-admins must not
-    // even see the metadata, matching the `list` endpoint.
+    // even see the metadata. 404 (not 403) so the existence of a debug job
+    // is indistinguishable from a missing job, matching the `list` endpoint.
     let debug_unredact: i64 = r.get(14);
     if debug_unredact != 0 && !auth.is_platform_admin {
-        return Err(AppError::Unauthorized(
-            "this job was run in debug mode (unredacted logs) — only platform admins can view it"
-                .into(),
-        ));
+        return Err(AppError::NotFound("job not found".into()));
     }
 
     let trigger_params: Option<String> = r.get(6);

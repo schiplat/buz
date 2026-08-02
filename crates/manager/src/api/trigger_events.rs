@@ -267,6 +267,16 @@ pub async fn list(
     let page_size = q.page_size.clamp(1, 100);
     let offset = (page - 1) * page_size;
 
+    // Debug (unredacted) jobs are admin-only records — their trigger events
+    // (and the clickable job link in the UI) must not surface to non-admins.
+    let debug_filter = if auth.is_platform_admin {
+        String::new()
+    } else {
+        " AND (e.job_id IS NULL OR NOT EXISTS (
+             SELECT 1 FROM jobs j2 WHERE j2.id = e.job_id AND j2.debug_unredact = 1))"
+            .to_string()
+    };
+
     let mut sql = String::from(
         "SELECT e.id, e.source, e.provider, e.event_type, e.delivery_id,
                 e.repo_full_name, e.git_ref, e.branch, e.tag, e.commit_sha, e.commit_message,
@@ -277,7 +287,7 @@ pub async fn list(
          WHERE e.pipeline_id = ?",
     );
     let mut count_sql =
-        String::from("SELECT COUNT(*) FROM pipeline_trigger_events WHERE pipeline_id = ?");
+        String::from("SELECT COUNT(*) FROM pipeline_trigger_events e WHERE e.pipeline_id = ?");
 
     if let Some(ref s) = q.source {
         if !s.is_empty() {
@@ -291,6 +301,8 @@ pub async fn list(
             count_sql.push_str(" AND decision = ?");
         }
     }
+    sql.push_str(&debug_filter);
+    count_sql.push_str(&debug_filter);
     sql.push_str(" ORDER BY e.received_at DESC LIMIT ? OFFSET ?");
 
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql).bind(&pipeline_id);

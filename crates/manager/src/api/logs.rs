@@ -188,8 +188,6 @@ async fn handle_stream(socket: WebSocket, broadcast: LogBroadcaster, job_id: Str
     broadcast.cleanup(&job_id);
 }
 
-/// WebSocket endpoint that streams job status updates for all jobs
-/// within a pipeline (PipelineDetail build-history live refresh).
 /// True when a pipeline-stream status message describes a debug (unredacted)
 /// job. Non-admins must not even learn such a job exists — the pipeline
 /// WebSocket drops these messages on the subscriber side, matching the
@@ -205,6 +203,8 @@ fn is_debug_status_message(msg: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// WebSocket endpoint that streams job status updates for all jobs
+/// within a pipeline (PipelineDetail build-history live refresh).
 pub async fn pipeline_stream(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,

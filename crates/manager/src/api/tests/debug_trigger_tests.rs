@@ -270,7 +270,7 @@ async fn get_job(app: &Router, jwt: &str, job_id: &str) -> axum::response::Respo
 }
 
 #[tokio::test]
-async fn member_get_one_on_debug_job_is_403() {
+async fn member_get_one_on_debug_job_is_404() {
     let (app, pool) = test_app().await;
     let pipeline_id = create_pipeline(&app).await;
 
@@ -284,8 +284,8 @@ async fn member_get_one_on_debug_job_is_403() {
     let member_resp = get_job(&app, &member_jwt(), &job_id).await;
     assert_eq!(
         member_resp.status(),
-        StatusCode::FORBIDDEN,
-        "non-admin cannot read debug job metadata"
+        StatusCode::NOT_FOUND,
+        "non-admin cannot even see that a debug job exists (404, not 403)"
     );
 
     let admin_resp = get_job(&app, &admin_jwt(), &job_id).await;
@@ -312,5 +312,63 @@ async fn member_get_one_on_normal_job_is_ok() {
         member_resp.status(),
         StatusCode::OK,
         "member can read normal job metadata"
+    );
+}
+
+async fn list_trigger_events(app: &Router, jwt: &str, pipeline_id: &str) -> serde_json::Value {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/pipelines/{pipeline_id}/trigger-events"))
+                .header(AUTHORIZATION, bearer(jwt))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    if resp.status() != StatusCode::OK {
+        let body = read_body(resp).await;
+        panic!("trigger-events list failed: {body}");
+    }
+    read_body(resp).await
+}
+
+#[tokio::test]
+async fn trigger_events_hide_debug_job_from_members() {
+    let (app, _pool) = test_app().await;
+    let pipeline_id = create_pipeline(&app).await;
+
+    let resp = trigger(&app, &admin_jwt(), &pipeline_id, true).await;
+    let debug_job_id = read_body(resp).await["data"]["job_id"]
+        .as_str()
+        .expect("job id")
+        .to_string();
+
+    let member_events = list_trigger_events(&app, &member_jwt(), &pipeline_id).await;
+    let member_ids: Vec<String> = member_events["data"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|e| e["job_id"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        !member_ids.contains(&debug_job_id),
+        "debug job trigger event hidden from members: {member_events}"
+    );
+
+    let admin_events = list_trigger_events(&app, &admin_jwt(), &pipeline_id).await;
+    let admin_ids: Vec<String> = admin_events["data"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|e| e["job_id"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        admin_ids.contains(&debug_job_id),
+        "debug job trigger event visible to admin: {admin_events}"
     );
 }
