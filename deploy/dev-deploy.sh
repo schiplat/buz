@@ -210,7 +210,19 @@ admin_login() {
     return 0
   fi
   [[ -n "${ADMIN_USERNAME:-}" && -n "${ADMIN_PASSWORD:-}" ]] || die \
-    "ADMIN_USERNAME/ADMIN_PASSWORD are required to auto-create the runner"
+    "ADMIN_USERNAME/ADMIN_PASSWORD are required to auto-create the runner
+
+  How to fix (pick one):
+    1) Provide a platform-admin credential and let the script create the runner:
+         ADMIN_USERNAME='<admin>' ADMIN_PASSWORD='<password>' ./dev-deploy.sh runner
+       Or, to avoid storing a password (recommended for automation), mint an API
+       token in Manager UI -> Access -> API tokens and pass:
+         BUZ_ADMIN_TOKEN='<api-token>' ./dev-deploy.sh runner
+    2) Or create the runner in Manager UI -> Runners -> New Runner, then re-run:
+         RUNNER_TOKEN='<token-from-ui>' ./dev-deploy.sh runner
+    3) Or set ADMIN_PASSWORD via stdin instead of the shell env:
+         read -r -s -p 'admin password: ' ADMIN_PASSWORD; export ADMIN_PASSWORD
+       then ./dev-deploy.sh runner"
   say "Logging in to Manager as ${ADMIN_USERNAME}…"
   local body
   body="$(curl -fsS -X POST "http://127.0.0.1:${MANAGER_PORT}/api/v1/auth/login" \
@@ -291,8 +303,13 @@ cmd_up() {
   echo
   say "Next: bootstrap the Runner on this VM"
   echo "  Just run: ${BASH_SOURCE[0]} runner"
-  echo "  It auto-creates runner '${RUNNER_NAME}' (requires ADMIN_USERNAME/ADMIN_PASSWORD"
-  echo "  of a Manager platform admin, or pre-set RUNNER_TOKEN) and writes ${RUNNER_CONF}."
+  echo "  It auto-creates runner '${RUNNER_NAME}' with a platform-admin credential:"
+  echo "    ADMIN_USERNAME='<admin>' ADMIN_PASSWORD='<password>' ./dev-deploy.sh runner"
+  echo "    # or an API token (Manager UI -> Access -> API tokens):"
+  echo "    BUZ_ADMIN_TOKEN='<api-token>' ./dev-deploy.sh runner"
+  echo "  ...or pre-create the runner in Manager UI -> Runners -> New Runner and set:"
+  echo "    RUNNER_TOKEN='<token-from-ui>' ./dev-deploy.sh runner"
+  echo "  It then writes ${RUNNER_CONF}."
 }
 
 cmd_runner() {
