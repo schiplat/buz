@@ -63,12 +63,13 @@ IMAGE_TAG=v1.3.2 ./dev-deploy.sh upgrade
 ```
 
 `upgrade` rewrites the `image:` lines in the compose file (keeping any other
-edits you made), pulls the new images and recreates the containers.
-`BUZ_JWT_SECRET` (in `$DEPLOY_DIR/.env`) and the bind-mounted `data/`,
-`workspace/`, `logs/` dirs are untouched, so stored secrets stay decryptable and
-job history/workspaces survive. If the Runner does not come back online after the
-upgrade, re-run `./dev-deploy.sh runner` (its embedded-DNS alias cache can go
-stale when Manager restarts).
+edits you made), pulls the new images and recreates the containers — the Runner
+is force-recreated so its compose-network DNS alias for `manager` is refreshed
+(the stale-alias restart loop from `Cannot reach Buz Manager`). `BUZ_JWT_SECRET`
+(in `$DEPLOY_DIR/.env`) and the bind-mounted `data/`, `workspace/`, `logs/` dirs
+are untouched, so stored secrets stay decryptable and job history/workspaces
+survive. If the Runner still does not come back online, re-run
+`./dev-deploy.sh runner`.
 
 Runs on a Linux VM with only Docker installed; images are pulled from
 `${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-{manager,runner}:${IMAGE_TAG}` (multi-arch,

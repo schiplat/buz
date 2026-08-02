@@ -396,11 +396,14 @@ cmd_upgrade() {
   $DOCKER pull "${RUNNER_IMAGE}"
 
   say "Recreating containers with ${IMAGE_TAG}…"
-  dc up -d
+  dc up -d manager
+  # Runner must be force-recreated: reusing a container whose embedded-DNS
+  # alias (manager) went stale makes it loop "Cannot reach Buz Manager" even
+  # though Manager is healthy (same fix as `cmd_runner`).
+  dc up -d --force-recreate runner
 
   say "Upgrade complete — Manager: http://127.0.0.1:${MANAGER_PORT}"
   echo "  Verify with: ${BASH_SOURCE[0]} status"
-  echo "  If the Runner stays offline, re-run: ${BASH_SOURCE[0]} runner"
 }
 
 usage() {
