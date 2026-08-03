@@ -49,6 +49,8 @@
 #                   API token created in Manager UI -> Access -> API tokens). Skips
 #                   password login; preferred for automation since it can be revoked
 #                   independently and is audited (api_token.* events).
+#   SKIP_PULL       if set to 1, skip registry pull and use local images only
+#                   (fails if the tag is not already present on the host).
 #
 # Notes:
 #   * ACR_USERNAME / ACR_PASSWORD may be set for non-interactive docker login.
@@ -56,6 +58,8 @@
 #     once and reused on later runs; losing it means re-entering stored secrets.
 #   * To let Runner drive host Docker (`uses: docker` steps), uncomment the
 #     docker.sock mounts in the generated compose file.
+#   * `docker pull` always contacts the registry even when the tag exists locally.
+#     On ACR TLS/network blips, pull falls back to the local image when present.
 set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -68,6 +72,7 @@ RUNNER_NAME="${RUNNER_NAME:-linux-vm-runner}"
 RUNNER_TOKEN="${RUNNER_TOKEN:-}"
 DOCKER="${DOCKER:-}"
 BUZ_CONTAINER_UID="${BUZ_CONTAINER_UID:-10001}"
+SKIP_PULL="${SKIP_PULL:-0}"
 
 MANAGER_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-manager:${IMAGE_TAG}"
 RUNNER_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-runner:${IMAGE_TAG}"
@@ -77,6 +82,39 @@ RUNNER_CONF="${DEPLOY_DIR}/conf/runner.toml"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
+
+# True when the image:tag is already present on the local docker daemon.
+image_present() {
+  # shellcheck disable=SC2086
+  $DOCKER image inspect "$1" >/dev/null 2>&1
+}
+
+# Pull an image from ACR. `docker pull` always hits the registry (even when the
+# tag exists locally) to refresh the manifest — that is why a TLS timeout can
+# abort upgrade despite `docker images` already listing the tag.
+# Fallback: if pull fails but the image is local, continue with a warning.
+# SKIP_PULL=1 skips the registry entirely (requires a local image).
+pull_image() {
+  local image="$1"
+  if [[ "${SKIP_PULL}" == "1" ]]; then
+    if image_present "${image}"; then
+      say "SKIP_PULL=1 — using local ${image}"
+      return 0
+    fi
+    die "SKIP_PULL=1 but ${image} is not present locally — pull it first or unset SKIP_PULL"
+  fi
+  say "Pulling ${image}…"
+  # shellcheck disable=SC2086
+  if $DOCKER pull "${image}"; then
+    return 0
+  fi
+  if image_present "${image}"; then
+    warn "pull failed for ${image}; continuing with local image"
+    return 0
+  fi
+  die "failed to pull ${image} and no local copy exists"
+}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 # Detect a working `docker` invocation: plain docker when the current user can
@@ -397,12 +435,8 @@ cmd_up() {
   write_compose
 
   say "Pulling images…"
-  say "  ${MANAGER_IMAGE}"
-  say "  ${RUNNER_IMAGE}"
-  # shellcheck disable=SC2086
-  $DOCKER pull "${MANAGER_IMAGE}"
-  # shellcheck disable=SC2086
-  $DOCKER pull "${RUNNER_IMAGE}"
+  pull_image "${MANAGER_IMAGE}"
+  pull_image "${RUNNER_IMAGE}"
 
   say "Starting Manager on :${MANAGER_PORT}"
   dc up -d manager
@@ -450,9 +484,7 @@ cmd_runner() {
   write_runner_conf
   ensure_runner_reachability
 
-  say "Pulling ${RUNNER_IMAGE}…"
-  # shellcheck disable=SC2086
-  $DOCKER pull "${RUNNER_IMAGE}"
+  pull_image "${RUNNER_IMAGE}"
 
   # --force-recreate + online wait: repairs stale Manager DNS / race after
   # Manager recreate ("Cannot reach Buz Manager").
@@ -526,10 +558,8 @@ cmd_upgrade() {
 
   ensure_runner_reachability
 
-  # shellcheck disable=SC2086
-  $DOCKER pull "${MANAGER_IMAGE}"
-  # shellcheck disable=SC2086
-  $DOCKER pull "${RUNNER_IMAGE}"
+  pull_image "${MANAGER_IMAGE}"
+  pull_image "${RUNNER_IMAGE}"
 
   say "Recreating Manager with ${IMAGE_TAG}…"
   dc up -d --force-recreate manager

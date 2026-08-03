@@ -74,6 +74,14 @@ on a stale compose DNS alias (`Cannot reach Buz Manager`).
 `workspace/`, `logs/` dirs are untouched. If verification still fails, re-run
 `./dev-deploy.sh runner` with admin credentials.
 
+`docker pull` always contacts ACR even when the tag already exists locally
+(manifest refresh). On TLS/network timeouts, the script falls back to the local
+image when present. To skip the registry entirely:
+
+```bash
+SKIP_PULL=1 IMAGE_TAG=v1.3.3 ./dev-deploy.sh upgrade
+```
+
 Runs on a Linux VM with only Docker installed; images are pulled from
 `${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-{manager,runner}:${IMAGE_TAG}` (multi-arch,
 default `registry.cn-hongkong.aliyuncs.com/example`, tag `latest`). Compose +
