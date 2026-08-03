@@ -4,14 +4,12 @@
 # is managed in Manager UI → Runners.
 #
 # 1) UI → Runners → New Runner → copy register_token
-# 2) Set manager_url:
-#      same-host compose (dev-deploy.sh): http://host.docker.internal:8080
-#      legacy compose DNS alias:           http://manager:8080
+# 2) Set manager_url (same compose network: http://manager:8080)
 # 3) name must match the UI Runner name
 
 [runner]
 name = "docker-runner-01"
-manager_url = "http://host.docker.internal:8080"
+manager_url = "http://manager:8080"
 register_token = "REPLACE_WITH_UI_REGISTER_TOKEN"
 # tls_skip_verify = false
 workspace_dir = "./workspace"

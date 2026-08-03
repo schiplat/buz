@@ -22,7 +22,7 @@
 ```toml
 [runner]
 name = "..."
-manager_url = "http://host.docker.internal:8080"
+manager_url = "http://manager:8080"
 register_token = "..."
 workspace_dir = "./workspace"
 
@@ -64,12 +64,11 @@ IMAGE_TAG=v1.3.3 ./dev-deploy.sh upgrade
 
 `upgrade` rewrites the `image:` lines in the compose file (keeping any other
 edits you made), pulls the new images, **force-recreates Manager and waits for
-`/health`**, then force-recreates Runner and waits until it registers (API online
-check when admin credentials are set, otherwise runner logs). It also migrates
-legacy `manager_url = "http://manager:8080"` to
-`http://host.docker.internal:${MANAGER_PORT}` and adds compose
-`extra_hosts: host-gateway`, so Manager recreate no longer leaves Runner stuck
-on a stale compose DNS alias (`Cannot reach Buz Manager`).
+`/health`**, sleeps 3s, then force-recreates Runner and waits until it registers
+(API online check when admin credentials are set, otherwise runner logs).
+Runner talks to Manager on the compose network (`manager_url =
+http://manager:8080`); if a prior `host.docker.internal` migration is still on
+disk, upgrade/runner strips `extra_hosts` and rewrites `manager_url` back.
 `BUZ_JWT_SECRET` (in `$DEPLOY_DIR/.env`) and the bind-mounted `data/`,
 `workspace/`, `logs/` dirs are untouched. If verification still fails, re-run
 `./dev-deploy.sh runner` with admin credentials.

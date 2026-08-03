@@ -36,12 +36,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.runner
-    # Reach Manager via host-published port (deploy/conf/runner.toml manager_url).
+    # Same-compose DNS: manager_url = http://manager:8080 in deploy/conf/runner.toml
     depends_on:
       manager:
         condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ${BUZ_RUNNER_CONF:-./deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
       - ${BUZ_RUNNER_WS:-buz-runner-ws}:/app/buz/workspace

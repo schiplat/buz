@@ -217,10 +217,6 @@ services:
     depends_on:
       manager:
         condition: service_healthy
-    # Reach Manager via the host-published port so compose embedded-DNS
-    # aliases do not go stale when Manager is recreated during upgrade.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ${RUNNER_CONF}:/app/buz/conf/runner.toml:ro
       - ${DEPLOY_DIR}/workspace:/app/buz/workspace
@@ -238,7 +234,7 @@ write_runner_conf() {
   cat > "${RUNNER_CONF}" <<TOML
 [runner]
 name = "${RUNNER_NAME}"
-manager_url = "http://host.docker.internal:${MANAGER_PORT}"
+manager_url = "http://manager:8080"
 register_token = "${RUNNER_TOKEN}"
 workspace_dir = "./workspace"
 
@@ -248,54 +244,58 @@ level = "info"
 TOML
 }
 
-# Patch an existing compose + runner.toml (from older deploys) so Runner reaches
-# Manager via host.docker.internal:${MANAGER_PORT}. Survives Manager recreate
-# without depending on the compose service alias "manager".
+# Keep same-compose container↔container reachability:
+#   manager_url = http://manager:8080
+#   depends_on manager with condition: service_healthy
+# Migrates away from the short-lived host.docker.internal experiment when present.
 ensure_runner_reachability() {
-  if [[ -f "${COMPOSE_FILE}" ]] && ! grep -q 'host.docker.internal' "${COMPOSE_FILE}"; then
-    say "Patching ${COMPOSE_FILE}: host.docker.internal + healthy depends_on"
+  if [[ -f "${COMPOSE_FILE}" ]] && grep -q 'host.docker.internal' "${COMPOSE_FILE}"; then
+    say "Patching ${COMPOSE_FILE}: remove host.docker.internal (use compose DNS manager)"
     local tmp
     tmp="$(mktemp)"
-    if grep -qE '^\s+- manager\s*$' "${COMPOSE_FILE}"; then
-      awk '
-        /^    depends_on:$/ {
-          if ((getline n) > 0 && n ~ /^      - manager[[:space:]]*$/) {
-            print "    depends_on:"
-            print "      manager:"
-            print "        condition: service_healthy"
-            print "    extra_hosts:"
-            print "      - \"host.docker.internal:host-gateway\""
-            next
-          }
-          print
-          print n
-          next
-        }
-        { print }
-      ' "${COMPOSE_FILE}" > "${tmp}"
-    else
-      awk '
-        /^    container_name: buz-runner$/ {
-          print
-          print "    extra_hosts:"
-          print "      - \"host.docker.internal:host-gateway\""
-          next
-        }
-        { print }
-      ' "${COMPOSE_FILE}" > "${tmp}"
-    fi
+    awk '
+      /^[[:space:]]*extra_hosts:[[:space:]]*$/ {
+        if ((getline n) > 0 && n ~ /host\.docker\.internal/) next
+        print
+        print n
+        next
+      }
+      /host\.docker\.internal/ { next }
+      { print }
+    ' "${COMPOSE_FILE}" > "${tmp}"
     mv "${tmp}" "${COMPOSE_FILE}"
-    grep -q 'host.docker.internal' "${COMPOSE_FILE}" \
-      || die "could not add host.docker.internal to ${COMPOSE_FILE} — edit manually"
+  fi
+
+  if [[ -f "${COMPOSE_FILE}" ]] && grep -qE '^\s+- manager\s*$' "${COMPOSE_FILE}"; then
+    say "Patching ${COMPOSE_FILE}: depends_on manager → service_healthy"
+    local tmp
+    tmp="$(mktemp)"
+    awk '
+      /^    depends_on:$/ {
+        if ((getline n) > 0 && n ~ /^      - manager[[:space:]]*$/) {
+          print "    depends_on:"
+          print "      manager:"
+          print "        condition: service_healthy"
+          next
+        }
+        print
+        print n
+        next
+      }
+      { print }
+    ' "${COMPOSE_FILE}" > "${tmp}"
+    mv "${tmp}" "${COMPOSE_FILE}"
   fi
 
   if [[ -f "${RUNNER_CONF}" ]] \
-    && grep -qE 'manager_url\s*=\s*"https?://manager(:[0-9]+)?"' "${RUNNER_CONF}"; then
-    say "Updating ${RUNNER_CONF}: manager_url → http://host.docker.internal:${MANAGER_PORT}"
-    # GNU sed (Linux VM). -E so https? is portable.
-    sed -i -E "s|manager_url *= *\"https?://manager(:[0-9]+)?\"|manager_url = \"http://host.docker.internal:${MANAGER_PORT}\"|" \
-      "${RUNNER_CONF}"
-    grep -q "host.docker.internal:${MANAGER_PORT}" "${RUNNER_CONF}" \
+    && grep -qE 'manager_url\s*=\s*"https?://host\.docker\.internal(:[0-9]+)?"' "${RUNNER_CONF}"; then
+    say "Updating ${RUNNER_CONF}: manager_url → http://manager:8080"
+    local rtmp
+    rtmp="$(mktemp)"
+    sed -E 's|manager_url *= *"https?://host\.docker\.internal(:[0-9]+)?"|manager_url = "http://manager:8080"|' \
+      "${RUNNER_CONF}" > "${rtmp}"
+    mv "${rtmp}" "${RUNNER_CONF}"
+    grep -qE 'manager_url[[:space:]]*=[[:space:]]*"http://manager:8080"' "${RUNNER_CONF}" \
       || die "failed to rewrite manager_url in ${RUNNER_CONF}"
   fi
 }
@@ -533,8 +533,9 @@ cmd_down() {
 # Upgrade the deployed Manager + Runner to the tag in IMAGE_TAG. Rewrites the
 # `image:` lines in the compose file (keeps any other user edits), pulls the new
 # images, force-recreates Manager (waits for /health), then force-recreates
-# Runner and waits until it registers. Also migrates legacy `manager:8080`
-# reachability to host.docker.internal so upgrades do not hit the stale-DNS loop.
+# Runner and waits until it registers. Restores container↔container
+# manager_url (http://manager:8080) if a prior host.docker.internal migration
+# is still present.
 cmd_upgrade() {
   require_docker
   [[ -f "${COMPOSE_FILE}" ]] || die "not deployed yet (${COMPOSE_FILE} missing) — run 'up' first"
