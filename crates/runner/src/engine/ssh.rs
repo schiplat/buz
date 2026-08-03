@@ -50,7 +50,7 @@ pub async fn execute(
 ) -> anyhow::Result<SshOutput> {
     let default_timeout = cmd_timeout.unwrap_or(Duration::from_secs(300));
 
-    let result = timeout(default_timeout, execute_inner(command, conn)).await;
+    let result = timeout(default_timeout, execute_session(command, None, conn)).await;
 
     match result {
         Ok(inner) => inner,
@@ -60,7 +60,85 @@ pub async fn execute(
     }
 }
 
-async fn execute_inner(command: &str, conn: &SshConnectionParams) -> anyhow::Result<SshOutput> {
+/// Execute a remote command and write `stdin` to the SSH channel (process stdin).
+///
+/// Prefer this for binary uploads (`cat > path`) instead of embedding payloads in
+/// the exec argv — SSH `max_packet_size` is often ~32KiB, so large `echo | base64`
+/// commands fail with an empty exit status.
+pub async fn execute_with_stdin(
+    command: &str,
+    stdin: &[u8],
+    conn: &SshConnectionParams,
+    cmd_timeout: Option<Duration>,
+) -> anyhow::Result<SshOutput> {
+    let default_timeout = cmd_timeout.unwrap_or(Duration::from_secs(300));
+
+    let result = timeout(
+        default_timeout,
+        execute_session(command, Some(stdin), conn),
+    )
+    .await;
+
+    match result {
+        Ok(inner) => inner,
+        Err(_elapsed) => {
+            anyhow::bail!("SSH command timed out after {}s", default_timeout.as_secs())
+        }
+    }
+}
+
+/// Drain stdout/stderr until the channel closes. Do **not** stop on `Eof` alone —
+/// `ExitStatus` often arrives after `Eof`; breaking early yields a false failure
+/// with empty stderr (common for silent commands like uploads).
+async fn drain_channel(
+    channel: &mut russh::Channel<client::Msg>,
+    addr: &str,
+) -> SshOutput {
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut exit_code: Option<u32> = None;
+
+    loop {
+        let Some(msg) = channel.wait().await else {
+            break;
+        };
+        match msg {
+            ChannelMsg::Data { ref data } => {
+                stdout.push_str(&String::from_utf8_lossy(data));
+            }
+            ChannelMsg::ExtendedData { ref data, .. } => {
+                stderr.push_str(&String::from_utf8_lossy(data));
+            }
+            ChannelMsg::ExitStatus {
+                exit_status: status,
+            } => {
+                exit_code = Some(status);
+            }
+            // Keep waiting for ExitStatus / channel close.
+            ChannelMsg::Eof | ChannelMsg::Close => {}
+            _ => {}
+        }
+    }
+
+    let exit_code = exit_code.unwrap_or_else(|| {
+        tracing::warn!(
+            "SSH channel for {addr} closed without an exit status — treating as failure"
+        );
+        1
+    });
+
+    SshOutput {
+        stdout,
+        stderr,
+        exit_code,
+    }
+}
+
+async fn execute_session(
+    command: &str,
+    stdin: Option<&[u8]>,
+    conn: &SshConnectionParams,
+) -> anyhow::Result<SshOutput> {
     let config = client::Config::default();
     let config = Arc::new(config);
 
@@ -189,7 +267,6 @@ async fn execute_inner(command: &str, conn: &SshConnectionParams) -> anyhow::Res
 
     tracing::info!("SSH authenticated to {}@{}", conn.username, addr);
 
-    // Open a session channel and exec the command
     let mut channel = handle
         .channel_open_session()
         .await
@@ -200,48 +277,25 @@ async fn execute_inner(command: &str, conn: &SshConnectionParams) -> anyhow::Res
         .await
         .map_err(|e| anyhow::anyhow!("SSH exec failed: {e}"))?;
 
-    // Read stdout/stderr and exit status
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    let mut exit_code: Option<u32> = None;
-
-    loop {
-        let Some(msg) = channel.wait().await else {
-            break;
-        };
-        match msg {
-            ChannelMsg::Data { ref data } => {
-                stdout.push_str(&String::from_utf8_lossy(data));
-            }
-            ChannelMsg::ExtendedData { ref data, .. } => {
-                stderr.push_str(&String::from_utf8_lossy(data));
-            }
-            ChannelMsg::ExitStatus {
-                exit_status: status,
-            } => {
-                exit_code = Some(status);
-                // Don't break immediately — more data may still arrive
-            }
-            ChannelMsg::Eof => {
-                // Server indicates no more data
-                break;
-            }
-            _ => {}
+    if let Some(data) = stdin {
+        // Flow-controlled by russh window; keep chunks ≤ typical max_packet_size.
+        const STDIN_CHUNK: usize = 16 * 1024;
+        let mut offset = 0;
+        while offset < data.len() {
+            let end = (offset + STDIN_CHUNK).min(data.len());
+            channel
+                .data_bytes(data[offset..end].to_vec())
+                .await
+                .map_err(|e| anyhow::anyhow!("SSH stdin write failed: {e}"))?;
+            offset = end;
         }
+        channel
+            .eof()
+            .await
+            .map_err(|e| anyhow::anyhow!("SSH stdin eof failed: {e}"))?;
     }
 
-    let exit_code = exit_code.unwrap_or_else(|| {
-        tracing::warn!(
-            "SSH channel for {addr} closed without an exit status — treating as failure"
-        );
-        1
-    });
-
-    Ok(SshOutput {
-        stdout,
-        stderr,
-        exit_code,
-    })
+    Ok(drain_channel(&mut channel, &addr).await)
 }
 
 /// Human-readable name for a key algorithm.

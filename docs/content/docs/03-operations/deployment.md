@@ -82,6 +82,9 @@ if the runner name is already authorized (UI → New Runner, or
 **not** change the production register_token protocol used by split
 `buz-manager` / `buz-runner` deployments.
 
+**Full first-run and upgrade guide:** [Standalone (single image)](/docs/03-operations/standalone/).
+Template Compose: `deploy/standalone/docker-compose.yml`.
+
 ### GitHub Actions → personal ACR
 
 Workflows:

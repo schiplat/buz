@@ -19,7 +19,7 @@
 #   ./dev-deploy.sh status              # container + health status
 #   ./dev-deploy.sh logs                # follow compose logs
 #   ./dev-deploy.sh down                # stop everything (data volumes are kept)
-#   IMAGE_TAG=v1.3.3 ./dev-deploy.sh upgrade
+#   IMAGE_TAG=v1.3.4 ./dev-deploy.sh upgrade
 #                                       # pull + recreate Manager & Runner at a new tag;
 #                                       # waits for Manager /health, then force-recreates
 #                                       # Runner and verifies it can reach Manager

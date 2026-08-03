@@ -18,10 +18,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context};
-use base64::Engine;
 use reqwest::Client;
 
-use crate::engine::ssh::{self, SshConnectionParams};
+use crate::engine::ssh::{self, SshConnectionParams, SshOutput};
 use shared::value_source::{self, ExpandMode, MissingPolicy, ValueMap};
 
 use super::env_render;
@@ -30,9 +29,6 @@ use super::env_render;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 /// Default mode for the rendered output file (`0600`).
 const DEFAULT_ENV_MODE: u32 = 0o600;
-/// Base64 chunk size for SSH uploads — each `echo | base64 -d` command stays
-/// far below the remote ARG_MAX.
-const SSH_CHUNK_BASE64: usize = 40 * 1024;
 
 /// Result of preparing the config bundle for one step.
 #[derive(Debug)]
@@ -416,8 +412,24 @@ async fn fetch_remote_text(
     Ok(Some(out.stdout))
 }
 
-/// Transfer `bytes` to `remote_path` on the target: chunked base64 appended to
-/// a temp file, then an atomic `mv` (and optional `chmod`) into place.
+/// Format a failed remote command for logs (stderr preferred, else stdout).
+fn ssh_fail_detail(out: &SshOutput) -> String {
+    let err = out.stderr.trim();
+    if !err.is_empty() {
+        return format!("exit {}: {err}", out.exit_code);
+    }
+    let so = out.stdout.trim();
+    if !so.is_empty() {
+        return format!("exit {}: {so}", out.exit_code);
+    }
+    format!("exit {} (no remote stderr)", out.exit_code)
+}
+
+/// Transfer `bytes` to `remote_path` on the target via SSH stdin (`cat > tmp`),
+/// then an atomic `mv` (and optional `chmod`) into place.
+///
+/// Avoids stuffing the payload into the exec argv (which breaks when the command
+/// exceeds SSH `max_packet_size`, commonly ~32KiB).
 async fn ssh_upload_bytes(
     conn: &SshConnectionParams,
     remote_path: &str,
@@ -425,21 +437,13 @@ async fn ssh_upload_bytes(
     mode: Option<u32>,
     step_timeout: Option<Duration>,
 ) -> anyhow::Result<()> {
-    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     let part = format!("/tmp/.buz_upload_{}", uuid::Uuid::new_v4().simple());
-    let mut i = 0;
-    while i < b64.len() {
-        let end = (i + SSH_CHUNK_BASE64).min(b64.len());
-        let chunk = &b64[i..end];
-        let cmd = format!("echo -n '{chunk}' | base64 -d >> {part}");
-        let out = ssh::execute(&cmd, conn, step_timeout).await?;
-        if out.exit_code != 0 {
-            bail!(
-                "config upload to {remote_path} failed: {}",
-                out.stderr.trim()
-            );
-        }
-        i = end;
+    let out = ssh::execute_with_stdin(&format!("cat > {part}"), bytes, conn, step_timeout).await?;
+    if out.exit_code != 0 {
+        bail!(
+            "config upload to {remote_path} failed: {}",
+            ssh_fail_detail(&out)
+        );
     }
     let mv = match mode {
         Some(m) => format!("mv -f {part} {remote_path} && chmod {m:o} {remote_path}"),
@@ -449,7 +453,7 @@ async fn ssh_upload_bytes(
     if out.exit_code != 0 {
         bail!(
             "config upload finalize to {remote_path} failed: {}",
-            out.stderr.trim()
+            ssh_fail_detail(&out)
         );
     }
     Ok(())

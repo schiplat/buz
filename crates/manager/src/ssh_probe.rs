@@ -166,19 +166,22 @@ async fn probe_inner(params: &ProbeParams) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("SSH exec failed: {e}"))?;
 
-    // Drain channel until EOF / exit
+    // Drain until channel close — ExitStatus may arrive after Eof.
+    let mut exit_code: Option<u32> = None;
     loop {
         match channel.wait().await {
             Some(russh::ChannelMsg::ExitStatus { exit_status }) => {
-                if exit_status != 0 {
-                    anyhow::bail!("probe command exited with status {exit_status}");
-                }
-                break;
+                exit_code = Some(exit_status);
             }
-            Some(russh::ChannelMsg::Eof) => break,
+            Some(russh::ChannelMsg::Eof | russh::ChannelMsg::Close) => {}
             None => break,
             _ => {}
         }
+    }
+    match exit_code {
+        Some(0) => {}
+        Some(status) => anyhow::bail!("probe command exited with status {status}"),
+        None => anyhow::bail!("probe channel closed without an exit status"),
     }
 
     Ok(())

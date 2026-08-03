@@ -106,6 +106,11 @@ Runtime env names unchanged: `$BUZ_CONFIG_DIR`, `$BUZ_CONFIG_URL` (OSS deliver),
 | `ssh` | yes | **yes** (fetch → render → upload) |
 | `docker` | may keep today’s deliver-only allowance | **no** in 2b |
 
+**SSH transfer:** Runner downloads the signed OSS bundle locally, then streams
+bytes to the remote via SSH channel stdin (`cat > /tmp/…` → `mv` into `dest`).
+Payloads are **not** embedded in the exec argv (SSH `max_packet_size` is often
+~32KiB; large `echo | base64` commands fail with an empty exit status).
+
 **Why:** prepare runs **before** the container `run`. Templates must already
 exist on a host filesystem the Runner can read. A `uses: docker` workdir lives
 inside the container unless `dest` is defined as a host path bind-mounted in —

@@ -1,0 +1,24 @@
+# buz-standalone — Manager + Runner in one container (linux/arm64)
+#
+# Docs: docs/content/docs/03-operations/standalone.md
+# Usage:
+#   cd /opt/buz-standalone
+#   cp this file to docker-compose.yml
+#   create .env with BUZ_JWT_SECRET=... and optional IMAGE_TAG=...
+#   docker compose up -d
+
+services:
+  buz:
+    image: registry.cn-hongkong.aliyuncs.com/example/buz-standalone:${IMAGE_TAG:-latest}
+    container_name: buz
+    restart: unless-stopped
+    ports:
+      - "${BUZ_PORT:-8080}:8080"
+    environment:
+      BUZ_JWT_SECRET: ${BUZ_JWT_SECRET:?set BUZ_JWT_SECRET in .env}
+      # BUZ_MODE: all
+    volumes:
+      - ./data:/app/buz/data
+      - ./pipelines:/app/buz/pipelines
+      - ./workspace:/app/buz/workspace
+      - ./logs:/app/buz/logs

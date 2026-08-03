@@ -62,7 +62,7 @@ ADMIN_USERNAME='<admin>' ADMIN_PASSWORD='<password>' ./dev-deploy.sh runner
 explicitly rather than `latest`, so the running version stays traceable:
 
 ```bash
-IMAGE_TAG=v1.3.3 ./dev-deploy.sh upgrade
+IMAGE_TAG=v1.3.4 ./dev-deploy.sh upgrade
 ```
 
 `upgrade` rewrites the `image:` lines in the compose file (keeping any other
@@ -81,10 +81,10 @@ disk, upgrade/runner strips `extra_hosts` and rewrites `manager_url` back.
 image when present. To skip the registry entirely:
 
 ```bash
-SKIP_PULL=1 IMAGE_TAG=v1.3.3 ./dev-deploy.sh upgrade
+SKIP_PULL=1 IMAGE_TAG=v1.3.4 ./dev-deploy.sh upgrade
 # If the stack was first created with sudo/root (common on VMs):
-sudo SKIP_PULL=1 IMAGE_TAG=v1.3.3 ./dev-deploy.sh upgrade
-# or: DOCKER='sudo docker' SKIP_PULL=1 IMAGE_TAG=v1.3.3 ./dev-deploy.sh upgrade
+sudo SKIP_PULL=1 IMAGE_TAG=v1.3.4 ./dev-deploy.sh upgrade
+# or: DOCKER='sudo docker' SKIP_PULL=1 IMAGE_TAG=v1.3.4 ./dev-deploy.sh upgrade
 ```
 
 Runs on a Linux VM with only Docker installed; images are pulled from
@@ -129,31 +129,34 @@ Logs default to **container stdout** (`docker logs`). Set `logging.file` only if
 
 ## Standalone image (Manager + Runner, arm64)
 
-Single image `buz-standalone` (CI: `.github/workflows/docker-standalone.yml`,
-`Dockerfile.standalone`) runs both processes via `deploy/standalone/entrypoint.sh`.
-Default `BUZ_MODE=all`; set `manager` / `runner` to run one side only.
+**Full guide (first run + upgrade):**  
+[`docs/content/docs/03-operations/standalone.md`](../docs/content/docs/03-operations/standalone.md)  
+Compose template: [`deploy/standalone/docker-compose.yml`](standalone/docker-compose.yml)
 
-**Dev-only auth:** Manager ships with `[standalone] enabled = true` and
-`auto_approve = ["standalone-runner"]`. The co-located Runner uses
-`manager_url = http://127.0.0.1:8080` and `standalone = true` (no register_token).
-Manager accepts tokenless register **only from loopback** for authorized names
-(created via UI New Runner or `auto_approve`). Non-loopback register is always
-rejected in this mode. Split Manager/Runner containers must keep using the
-normal register_token flow (`standalone.enabled = false`).
+Quick start:
 
 ```bash
-export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
-docker run -d --name buz \
-  -p 8080:8080 \
-  -e BUZ_JWT_SECRET \
-  -v buz-data:/app/buz/data \
-  -v buz-pipelines:/app/buz/pipelines \
-  -v buz-ws:/app/buz/workspace \
-  registry.cn-hongkong.aliyuncs.com/<ns>/buz-standalone:latest
+mkdir -p /opt/buz-standalone && cd /opt/buz-standalone
+# copy deploy/standalone/docker-compose.yml here
+mkdir -p data pipelines workspace logs && sudo chown -R 10001:10001 data pipelines workspace logs
+cat > .env <<EOF
+BUZ_JWT_SECRET=$(openssl rand -hex 32)
+IMAGE_TAG=latest
+EOF
+chmod 600 .env
+docker compose pull && docker compose up -d
+# http://<host>:8080 → /setup → Runners → standalone-runner online
 ```
 
-First open the UI to complete `/setup`, then the in-container Runner can register
-as `standalone-runner` without a token.
+Upgrade (same `.env` + volumes):
+
+```bash
+cd /opt/buz-standalone
+docker compose pull && docker compose up -d
+```
+
+Dev-only: Manager `[standalone]` + loopback tokenless register for
+`standalone-runner`. Split Manager/Runner deploys keep normal `register_token`.
 
 ## Binary tarball
 
