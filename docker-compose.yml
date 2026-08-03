@@ -24,12 +24,24 @@ services:
       - ${BUZ_MANAGER_DATA:-buz-data}:/app/buz/data
       - ${BUZ_MANAGER_PIPELINES:-buz-pipelines}:/app/buz/pipelines
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   runner:
     image: ${BUZ_IMAGE_RUNNER:-buz-runner:local}
     build:
       context: .
       dockerfile: Dockerfile.runner
+    # Reach Manager via host-published port (deploy/conf/runner.toml manager_url).
+    depends_on:
+      manager:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ${BUZ_RUNNER_CONF:-./deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
       - ${BUZ_RUNNER_WS:-buz-runner-ws}:/app/buz/workspace

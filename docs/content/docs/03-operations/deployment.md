@@ -173,13 +173,24 @@ is not root. `conf/` stays owned by the deploying user so `runner.toml` can be
 
 **Troubleshooting: Runner stuck in a restart loop with `Cannot reach Buz Manager`.**
 If `docker logs buz-runner` shows `error sending request for url (http://manager:8080/...)`
-while `docker ps` shows `buz-manager` is `Up (healthy)`, the runner container's
-embedded-DNS alias for `manager` is stale. Verify with
-`docker exec buz-runner getent hosts manager` (should return the manager IP) and
-compare against `docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' buz-manager`.
-Fix by recreating the runner container so the compose network aliases are
-re-registered: `docker compose -f $DEPLOY_DIR/docker-compose.yml up -d --force-recreate runner`.
-(`dev-deploy.sh runner` already passes `--force-recreate`.)
+(or `host.docker.internal`) while `docker ps` shows `buz-manager` is `Up (healthy)`,
+usual causes are: (1) Runner started before Manager was ready, or (2) legacy
+compose DNS alias `manager` went stale after Manager was recreated.
+
+One-shot fix on a `dev-deploy.sh` host:
+
+```bash
+# Prefer upgrade (waits for Manager health, migrates manager_url, recreates Runner):
+IMAGE_TAG=<current-or-new-tag> ./dev-deploy.sh upgrade
+# Or just repair Runner reachability:
+./dev-deploy.sh runner
+```
+
+Manual check: `docker exec buz-runner getent hosts host.docker.internal` (or
+`manager` on older configs) and compare Manager health on the host port.
+`dev-deploy.sh` now defaults `manager_url` to `http://host.docker.internal:8080`
+with compose `extra_hosts: host-gateway`, so upgrades no longer depend on the
+compose service alias surviving Manager recreate.
 
 **Runner provisioning requires a platform admin.** `runner` auto-creates the
 runner by calling `buz-manager gen-runner-token` inside the Manager container.

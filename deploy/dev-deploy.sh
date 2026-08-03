@@ -19,8 +19,10 @@
 #   ./dev-deploy.sh status              # container + health status
 #   ./dev-deploy.sh logs                # follow compose logs
 #   ./dev-deploy.sh down                # stop everything (data volumes are kept)
-#   IMAGE_TAG=v1.3.2 ./dev-deploy.sh upgrade
-#                                       # pull + recreate Manager & Runner at a new tag
+#   IMAGE_TAG=v1.3.3 ./dev-deploy.sh upgrade
+#                                       # pull + recreate Manager & Runner at a new tag;
+#                                       # waits for Manager /health, then force-recreates
+#                                       # Runner and verifies it can reach Manager
 #                                       # (persists BUZ_JWT_SECRET and data/ workspace)
 #
 # Environment overrides (all optional):
@@ -173,8 +175,14 @@ services:
     image: ${RUNNER_IMAGE}
     container_name: buz-runner
     restart: unless-stopped
+    # Wait until Manager accepts connections before starting Runner.
     depends_on:
-      - manager
+      manager:
+        condition: service_healthy
+    # Reach Manager via the host-published port so compose embedded-DNS
+    # aliases do not go stale when Manager is recreated during upgrade.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ${RUNNER_CONF}:/app/buz/conf/runner.toml:ro
       - ${DEPLOY_DIR}/workspace:/app/buz/workspace
@@ -192,7 +200,7 @@ write_runner_conf() {
   cat > "${RUNNER_CONF}" <<TOML
 [runner]
 name = "${RUNNER_NAME}"
-manager_url = "http://manager:8080"
+manager_url = "http://host.docker.internal:${MANAGER_PORT}"
 register_token = "${RUNNER_TOKEN}"
 workspace_dir = "./workspace"
 
@@ -200,6 +208,121 @@ workspace_dir = "./workspace"
 level = "info"
 # file = "./logs/runner.log"
 TOML
+}
+
+# Patch an existing compose + runner.toml (from older deploys) so Runner reaches
+# Manager via host.docker.internal:${MANAGER_PORT}. Survives Manager recreate
+# without depending on the compose service alias "manager".
+ensure_runner_reachability() {
+  if [[ -f "${COMPOSE_FILE}" ]] && ! grep -q 'host.docker.internal' "${COMPOSE_FILE}"; then
+    say "Patching ${COMPOSE_FILE}: host.docker.internal + healthy depends_on"
+    local tmp
+    tmp="$(mktemp)"
+    if grep -qE '^\s+- manager\s*$' "${COMPOSE_FILE}"; then
+      awk '
+        /^    depends_on:$/ {
+          if ((getline n) > 0 && n ~ /^      - manager[[:space:]]*$/) {
+            print "    depends_on:"
+            print "      manager:"
+            print "        condition: service_healthy"
+            print "    extra_hosts:"
+            print "      - \"host.docker.internal:host-gateway\""
+            next
+          }
+          print
+          print n
+          next
+        }
+        { print }
+      ' "${COMPOSE_FILE}" > "${tmp}"
+    else
+      awk '
+        /^    container_name: buz-runner$/ {
+          print
+          print "    extra_hosts:"
+          print "      - \"host.docker.internal:host-gateway\""
+          next
+        }
+        { print }
+      ' "${COMPOSE_FILE}" > "${tmp}"
+    fi
+    mv "${tmp}" "${COMPOSE_FILE}"
+    grep -q 'host.docker.internal' "${COMPOSE_FILE}" \
+      || die "could not add host.docker.internal to ${COMPOSE_FILE} — edit manually"
+  fi
+
+  if [[ -f "${RUNNER_CONF}" ]] \
+    && grep -qE 'manager_url\s*=\s*"https?://manager(:[0-9]+)?"' "${RUNNER_CONF}"; then
+    say "Updating ${RUNNER_CONF}: manager_url → http://host.docker.internal:${MANAGER_PORT}"
+    # GNU sed (Linux VM). -E so https? is portable.
+    sed -i -E "s|manager_url *= *\"https?://manager(:[0-9]+)?\"|manager_url = \"http://host.docker.internal:${MANAGER_PORT}\"|" \
+      "${RUNNER_CONF}"
+    grep -q "host.docker.internal:${MANAGER_PORT}" "${RUNNER_CONF}" \
+      || die "failed to rewrite manager_url in ${RUNNER_CONF}"
+  fi
+}
+
+wait_manager_healthy() {
+  say "Waiting for Manager /health…"
+  if ! command -v curl >/dev/null 2>&1; then
+    say "curl not found on host — sleeping 8s then continuing"
+    sleep 8
+    return 0
+  fi
+  local i
+  for i in $(seq 1 45); do
+    if curl -fsS --max-time 3 "http://127.0.0.1:${MANAGER_PORT}/health" >/dev/null 2>&1; then
+      say "Manager is healthy → http://127.0.0.1:${MANAGER_PORT}"
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+# True when recent runner logs show a successful register (no reachability error).
+runner_registered_in_logs() {
+  local logs status
+  status="$($DOCKER inspect -f '{{.State.Status}}' buz-runner 2>/dev/null)" || return 1
+  [[ "${status}" == "running" ]] || return 1
+  logs="$($DOCKER logs --tail=40 buz-runner 2>&1)" || return 1
+  printf '%s' "${logs}" | grep -qi 'Cannot reach Buz Manager' && return 1
+  printf '%s' "${logs}" | grep -qiE 'registered with Manager|runner registered'
+}
+
+# Force-recreate runner and wait until it is online (API) or registered (logs).
+start_runner_and_wait() {
+  say "Starting Runner (${RUNNER_NAME})"
+  dc up -d --force-recreate runner
+
+  local use_api=0
+  if [[ -n "${BUZ_ADMIN_TOKEN:-}" ]] \
+    || { [[ -n "${ADMIN_USERNAME:-}" && -n "${ADMIN_PASSWORD:-}" ]]; }; then
+    use_api=1
+  fi
+
+  say "Waiting for ${RUNNER_NAME} to come online…"
+  local attempt _
+  for attempt in 1 2 3 4 5; do
+    for _ in $(seq 1 12); do
+      if (( use_api )); then
+        if runner_online; then
+          say "Runner ${RUNNER_NAME} is online"
+          return 0
+        fi
+      elif runner_registered_in_logs; then
+        say "Runner ${RUNNER_NAME} registered (confirmed via logs)"
+        return 0
+      fi
+      sleep 2
+    done
+    if (( attempt < 5 )); then
+      say "Not ready yet (attempt ${attempt}/5) — force-recreating runner"
+      dc up -d --force-recreate runner
+      sleep 3
+    fi
+  done
+  return 1
 }
 
 # Obtain a platform-admin credential for `gen-runner-token`: reuse a provided
@@ -284,18 +407,8 @@ cmd_up() {
   say "Starting Manager on :${MANAGER_PORT}"
   dc up -d manager
 
-  say "Waiting for /health…"
-  local ok=0
-  if command -v curl >/dev/null 2>&1; then
-    for _ in $(seq 1 30); do
-      if curl -fsS "http://127.0.0.1:${MANAGER_PORT}/health" >/dev/null 2>&1; then ok=1; break; fi
-      sleep 2
-    done
-  else
-    say "curl not found on host — skipping health check; use \`${BASH_SOURCE[0]} logs\` to watch startup"
-  fi
-  if [[ ${ok} -eq 1 ]]; then
-    say "Manager is healthy → http://127.0.0.1:${MANAGER_PORT}"
+  if wait_manager_healthy; then
+    :
   else
     say "Manager did not respond yet — check \`${DOCKER} compose -f ${COMPOSE_FILE} logs manager\`"
   fi
@@ -335,36 +448,20 @@ cmd_runner() {
   ensure_dir
   ensure_runner_token
   write_runner_conf
+  ensure_runner_reachability
 
   say "Pulling ${RUNNER_IMAGE}…"
   # shellcheck disable=SC2086
   $DOCKER pull "${RUNNER_IMAGE}"
 
-  # --force-recreate: docker compose `up` may reuse a running container whose
-  # embedded-DNS alias cache (manager -> buz-manager) went stale, leaving the
-  # runner stuck in a restart loop ("Cannot reach Buz Manager"). Recreating the
-  # container re-registers the aliases and reliably fixes it.
-  say "Starting Runner (${RUNNER_NAME})"
-  dc up -d --force-recreate runner
-
-  # The stale-DNS issue is intermittent: wait for the runner to actually
-  # register online, force-recreating on each retry so a bad alias cache is
-  # repaired without the operator noticing.
-  say "Waiting for ${RUNNER_NAME} to come online…"
-  for attempt in 1 2 3; do
-    if runner_online; then
-      say "Runner ${RUNNER_NAME} is online"
-      return 0
-    fi
-    if (( attempt < 3 )); then
-      say "Not online yet (attempt ${attempt}/3) — force-recreating runner to refresh DNS"
-      dc up -d --force-recreate runner
-      sleep 5
-    fi
-  done
-  say "Runner not detected as online after 3 attempts."
-  echo "  Check Manager UI → Runners, or:"
-  echo "  ${DOCKER} compose -f ${COMPOSE_FILE} logs --tail=50 runner"
+  # --force-recreate + online wait: repairs stale Manager DNS / race after
+  # Manager recreate ("Cannot reach Buz Manager").
+  if ! start_runner_and_wait; then
+    say "Runner not ready after 5 attempts."
+    echo "  Check Manager UI → Runners, or:"
+    echo "  ${DOCKER} compose -f ${COMPOSE_FILE} logs --tail=50 runner"
+    exit 1
+  fi
 }
 
 cmd_render() {
@@ -403,8 +500,9 @@ cmd_down() {
 
 # Upgrade the deployed Manager + Runner to the tag in IMAGE_TAG. Rewrites the
 # `image:` lines in the compose file (keeps any other user edits), pulls the new
-# images and recreates the containers. Persists BUZ_JWT_SECRET (.env) and the
-# bind-mounted data/workspace dirs — only the images change.
+# images, force-recreates Manager (waits for /health), then force-recreates
+# Runner and waits until it registers. Also migrates legacy `manager:8080`
+# reachability to host.docker.internal so upgrades do not hit the stale-DNS loop.
 cmd_upgrade() {
   require_docker
   [[ -f "${COMPOSE_FILE}" ]] || die "not deployed yet (${COMPOSE_FILE} missing) — run 'up' first"
@@ -426,17 +524,30 @@ cmd_upgrade() {
   say "Compose file now references ${IMAGE_TAG}:"
   grep -E '^\s+image:' "${COMPOSE_FILE}"
 
+  ensure_runner_reachability
+
   # shellcheck disable=SC2086
   $DOCKER pull "${MANAGER_IMAGE}"
   # shellcheck disable=SC2086
   $DOCKER pull "${RUNNER_IMAGE}"
 
-  say "Recreating containers with ${IMAGE_TAG}…"
-  dc up -d manager
-  # Runner must be force-recreated: reusing a container whose embedded-DNS
-  # alias (manager) went stale makes it loop "Cannot reach Buz Manager" even
-  # though Manager is healthy (same fix as `cmd_runner`).
-  dc up -d --force-recreate runner
+  say "Recreating Manager with ${IMAGE_TAG}…"
+  dc up -d --force-recreate manager
+  wait_manager_healthy \
+    || die "Manager did not become healthy after upgrade — check: ${DOCKER} compose -f ${COMPOSE_FILE} logs --tail=80 manager"
+
+  # Brief settle time after Manager is healthy before recreating Runner
+  # (port publish / host-gateway routing can lag the /health success).
+  say "Waiting 3s before recreating Runner…"
+  sleep 3
+
+  # Runner after Manager is healthy; force-recreate + wait (same as `runner`).
+  if ! start_runner_and_wait; then
+    echo
+    die "Upgrade pulled ${IMAGE_TAG} but Runner did not come online.
+  Check: ${DOCKER} compose -f ${COMPOSE_FILE} logs --tail=50 runner
+  Or re-run: ADMIN_USERNAME=… ADMIN_PASSWORD=… ${BASH_SOURCE[0]} runner"
+  fi
 
   say "Upgrade complete — Manager: http://127.0.0.1:${MANAGER_PORT}"
   echo "  Verify with: ${BASH_SOURCE[0]} status"
