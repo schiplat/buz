@@ -17,6 +17,7 @@ Validate enables `deny_unknown_fields` on **every** nesting level of the pipelin
 | Level | Register on (`crates/shared/src/pipeline_yaml.rs`) |
 |-------|-----------------------------------------------------|
 | Top-level | `PipelineYaml` |
+| `notify[]` | `NotifyChannelYaml` |
 | `runner` | `RunnerYaml` |
 | `on` / triggers / inputs | `TriggerYaml`, `ManualTriggerYaml`, `InputDef`, … |
 | `concurrency` | `ConcurrencyYaml` (aliases via `#[serde(alias)]`; do not rely on untagged to swallow errors) |
@@ -83,6 +84,11 @@ variables:                             # [pipeline-level] platform variables
 secrets:                               # [pipeline-level] secrets (all steps)
   - DOCKER_PASSWORD
   - DEPLOY_KEY
+
+notify:                                # optional — Manager sends on job terminal status
+  - type: feishu
+    webhook: ${secrets.FEISHU_WEBHOOK} # required; store URL in Secrets
+    # on: [success, failure]           # default; add cancelled if needed
 
 steps:                                 # required — at least one; each step needs `run`
   - name: Checkout
@@ -330,6 +336,40 @@ variables:
 | YAML | `variables: [NAME1, NAME2]` — names must match existing platform variables |
 
 > **Validate / Save:** unknown platform variable names are **rejected** (no silent skip). See [YAML-First Authoring](./yaml-first-authoring.md).
+
+---
+
+### `notify`
+
+Optional end-of-build notifications. Full guide: **[Pipeline Notify](./pipeline-notify.md)** (Feishu setup, events, deep links, troubleshooting).
+
+When a job reaches a **terminal** status (`success` / `failed` / `cancelled`; `timeout` counts as failure), the Manager asynchronously POSTs to configured channels. Send failures are logged only and never block the job state machine.
+
+```yaml
+notify:
+  - type: feishu
+    webhook: ${secrets.FEISHU_WEBHOOK}   # required — Feishu custom bot URL in Secrets
+    on: [success, failure]               # optional; default [success, failure]
+    # on: [success, failure, cancelled]  # include cancelled explicitly to notify on cancel
+```
+
+| Field | Required | Notes |
+|-------|----------|--------|
+| `type` | Yes | Channel kind. Currently only `feishu`. Unknown types fail Validate. |
+| `webhook` | Yes | Must be `${secrets.NAME}` (or bare secret name). Resolved at send time from the pipeline team. |
+| `on` | No | Events: `success` \| `failure` \| `cancelled`. YAML `failure` maps to job status `failed` (and `timeout`). Default `[success, failure]` — **cancelled is not included** unless listed. Empty `on: []` never sends. |
+
+**Behavior (summary):**
+
+- Config is YAML-only (no separate UI / DB table). Frozen into the job snapshot at trigger (expressions kept; plaintext webhook never stored in the snapshot).
+- Deduped by the existing terminal-status write path (non-terminal → terminal once).
+- Feishu card: status, pipeline name, job id, duration, triggered_by, plus **View Job** when [`server.public_base_url`](./pipeline-notify.md#manager-config-job-detail-deep-link) is set (`{base}/jobs/{job_id}`).
+
+| | |
+|---|---|
+| YAML | `notify: [{ type, webhook, on? }]` |
+| Form | — (YAML only) |
+| Required | No |
 
 ---
 

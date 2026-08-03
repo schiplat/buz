@@ -41,6 +41,7 @@ Zero-trust security and architectural minimalism combined.
   {{< card link="env-render/" title="Env Render" subtitle="ValueMap, ${secrets.X}, BUZ_ENV_CHANGED" >}}
   {{< card link="config-block/" title="Config Block DSL v2" subtitle="Shipped: nested config, OSS + render-only" >}}
   {{< card link="pipeline-format/" title="Pipeline Format" subtitle="YAML field reference + field registration" >}}
+  {{< card link="pipeline-notify/" title="Pipeline Notify" subtitle="End-of-build Feishu cards, Secrets webhook, Job Detail link" >}}
   {{< card link="job-concurrency-queue/" title="Job Concurrency Queue" subtitle="Pipeline-level queue / discard" >}}
   {{< card link="git-webhook-triggers/" title="Git Webhook Triggers" subtitle="GitHub/Gitee push, secret verify, Trigger events" >}}
   {{< card link="admin-audit-logs/" title="Admin Audit Logs" subtitle="Platform-admin mutation audit + redaction" >}}

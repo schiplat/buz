@@ -1207,3 +1207,102 @@ steps:
         ]
     );
 }
+
+#[test]
+fn notify_feishu_parses_and_defaults() {
+    use shared::pipeline_yaml::collect_effective_secret_names;
+    let yaml = r#"
+name: with-notify
+notify:
+  - type: feishu
+    webhook: ${secrets.FEISHU_WEBHOOK}
+steps:
+  - name: ok
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "{:?}", r.errors);
+    let parsed = r.parsed.unwrap();
+    let notify = parsed.notify.unwrap();
+    assert_eq!(notify.len(), 1);
+    assert_eq!(notify[0].channel_type, "feishu");
+    assert_eq!(notify[0].webhook, "${secrets.FEISHU_WEBHOOK}");
+    assert!(notify[0].on.is_none());
+
+    let py: shared::pipeline_yaml::PipelineYaml = serde_yaml::from_str(yaml).unwrap();
+    let names = collect_effective_secret_names(&py);
+    assert_eq!(names, vec!["FEISHU_WEBHOOK".to_string()]);
+}
+
+#[test]
+fn notify_unknown_type_rejected() {
+    let yaml = r#"
+name: bad-notify
+notify:
+  - type: slack
+    webhook: ${secrets.HOOK}
+steps:
+  - run: echo x
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.field.contains("notify") && e.field.contains("type")),
+        "{:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn notify_unknown_key_rejected() {
+    let yaml = r#"
+name: bad-notify-key
+notify:
+  - type: feishu
+    webhook: ${secrets.HOOK}
+    extra: nope
+steps:
+  - run: echo x
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.message.contains("unknown field")),
+        "{:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn notify_invalid_on_and_webhook_rejected() {
+    let yaml = r#"
+name: bad-notify-on
+notify:
+  - type: feishu
+    webhook: https://plain.example/hook
+    on: [success, boom]
+steps:
+  - run: echo x
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.field.contains("webhook")),
+        "{:?}",
+        r.errors
+    );
+    assert!(
+        r.errors.iter().any(|e| e.field.contains("on")),
+        "{:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn notify_should_send_helpers() {
+    use shared::pipeline_yaml::notify_should_send;
+    assert!(notify_should_send(None, "success"));
+    assert!(!notify_should_send(None, "cancelled"));
+    let on = vec!["cancelled".into()];
+    assert!(notify_should_send(Some(&on), "cancelled"));
+}

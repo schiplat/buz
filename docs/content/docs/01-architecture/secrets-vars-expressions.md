@@ -46,7 +46,7 @@ Aligned with GitHub Actions day-to-day authoring: **ordinary workflows do not ma
 
 **What counts as an allowlist (any one is enough, same team):**
 
-1. **Use-site reference** — `env: KEY: ${secrets.NAME}`, `registry_secret: ${secrets.NAME}`, or `config.source: ${secrets.NAME}`
+1. **Use-site reference** — `env: KEY: ${secrets.NAME}`, `registry_secret: ${secrets.NAME}`, `config.source: ${secrets.NAME}`, or `notify[].webhook: ${secrets.NAME}`
 2. **Step list** — `secrets: [NAME]` (optional narrowing / explicitness)
 3. **Pipeline list** — top-level `secrets: [NAME]` (optional overview + DB bind)
 4. **Team share** — secret `team_shared: true` (auto-allowlisted for the team)
@@ -87,6 +87,7 @@ Platform Variables bound via `variables:` **are** injected as `$NAME` into every
 | `env:` values (pipeline / step) | ✅ | ✅ | Expanded at job claim → process env |
 | `registry_secret:` | ✅ | — | Purpose slot (registry kind) |
 | `config.source:` | ✅ | — | Purpose slot (OSS auth) |
+| `notify[].webhook` | ✅ | — | Resolved by Manager at send time (not claim) |
 | `config.render` template files | ✅ | ✅ | Runner Strict mode; missing → fail |
 | `config.key_path` | lenient / legacy | lenient | Prefer explicit vars; legacy `$tag` still accepted in places |
 | **`run:` scripts** | ❌ | ❌ | **Not expanded** — use `$KEY` / `$INPUT_*` |

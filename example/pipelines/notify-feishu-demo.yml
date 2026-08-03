@@ -1,0 +1,27 @@
+# ── Notify Feishu demo (commented sample) ─────────────────────────
+# Copy the notify: block into another pipeline after creating a
+# Feishu custom bot and storing its webhook URL as a team Secret.
+#
+# Trigger: manual
+
+name: Notify Feishu Demo
+description: Sample showing end-of-build Feishu notify (channel disabled by default).
+
+team: default
+
+runner:
+  labels: [linux-x64]
+  timeout: 5m
+
+# Uncomment after Secrets → FEISHU_WEBHOOK = https://open.feishu.cn/open-apis/bot/v2/hook/...
+# Also set Manager server.public_base_url so the card shows View Job → /jobs/{id}.
+# notify:
+#   - type: feishu
+#     webhook: ${secrets.FEISHU_WEBHOOK}
+#     # on: [success, failure]           # default
+#     # on: [success, failure, cancelled]
+
+steps:
+  - name: Hello
+    run: |
+      echo "Notify demo — enable the notify block above to receive Feishu cards"

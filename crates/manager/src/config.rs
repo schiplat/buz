@@ -30,6 +30,11 @@ pub struct ServerConfig {
     /// Path to TLS private key PEM file
     #[serde(default)]
     pub tls_key: Option<String>,
+    /// Public UI origin for deep links (e.g. notify cards → Job Detail).
+    /// Example: `https://buz.example.com` — no trailing slash required.
+    /// Empty → notify cards omit the Job Detail button.
+    #[serde(default)]
+    pub public_base_url: String,
 }
 
 impl Default for ServerConfig {
@@ -39,6 +44,7 @@ impl Default for ServerConfig {
             port: default_port(),
             tls_cert: None,
             tls_key: None,
+            public_base_url: String::new(),
         }
     }
 }

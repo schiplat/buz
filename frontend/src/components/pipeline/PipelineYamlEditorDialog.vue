@@ -780,6 +780,13 @@ concurrency:
 #   group: prod
 #   mode: discard-new             # reject while a job is active
 
+# ── Notify (Manager posts on job terminal status; YAML only) ──
+# Requires Secrets webhook + optional server.public_base_url for View Job.
+# notify:
+#   - type: feishu
+#     webhook: ${secrets.FEISHU_WEBHOOK}  # Feishu custom bot URL in Secrets
+#     # on: [success, failure]            # default; add cancelled if needed
+
 # ── Inline env (non-secret) ──
 env:
   APP_NAME: myapp

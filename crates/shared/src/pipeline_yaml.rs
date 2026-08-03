@@ -32,8 +32,53 @@ pub struct PipelineYaml {
     /// Unknown slug fails Validate / create / update (no silent fallback).
     #[serde(default, alias = "owner_group")]
     pub team: Option<String>,
+    /// End-of-build notification channels (`notify:`). Sent by Manager on
+    /// job terminal status; webhook URLs must reference Secrets.
+    #[serde(default)]
+    pub notify: Option<Vec<NotifyChannelYaml>>,
     #[serde(default)]
     pub steps: Vec<StepYaml>,
+}
+
+/// One notification channel under top-level `notify:`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NotifyChannelYaml {
+    #[serde(rename = "type")]
+    pub channel_type: String,
+    /// Webhook URL; must be `${secrets.NAME}` (or bare secret name allowlist).
+    pub webhook: String,
+    /// Events that trigger this channel. Default when omitted: `success`, `failure`.
+    /// Allowed: `success` | `failure` | `cancelled`. YAML `failure` maps to job status `failed`.
+    #[serde(default)]
+    pub on: Option<Vec<String>>,
+}
+
+/// Default `on` events when a notify channel omits `on:`.
+pub const DEFAULT_NOTIFY_ON: &[&str] = &["success", "failure"];
+
+/// Map job status → notify event name (`failure` covers `failed` / `timeout`).
+pub fn notify_event_for_job_status(status: &str) -> Option<&'static str> {
+    match status {
+        "success" => Some("success"),
+        "failed" | "timeout" => Some("failure"),
+        "cancelled" => Some("cancelled"),
+        _ => None,
+    }
+}
+
+/// Whether a channel should fire for the given job status.
+///
+/// Omitted / absent `on` → [`DEFAULT_NOTIFY_ON`]. Empty `on: []` → never.
+pub fn notify_should_send(on: Option<&[String]>, job_status: &str) -> bool {
+    let Some(event) = notify_event_for_job_status(job_status) else {
+        return false;
+    };
+    match on {
+        None => DEFAULT_NOTIFY_ON.contains(&event),
+        Some(list) if list.is_empty() => false,
+        Some(list) => list.iter().any(|e| e.trim() == event),
+    }
 }
 
 /// Concurrency definition: string (legacy) or full object.
@@ -353,7 +398,20 @@ pub struct PipelineYamlData {
     /// Pipeline-level secret names referenced from the YAML.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secrets: Option<Vec<String>>,
+    /// End-of-build notification channels (expressions kept; not resolved).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify: Option<Vec<NotifyChannelData>>,
     pub steps: Vec<StepData>,
+}
+
+/// Serializable notify channel for Validate → frontend / Definition.
+#[derive(Debug, Clone, Serialize)]
+pub struct NotifyChannelData {
+    #[serde(rename = "type")]
+    pub channel_type: String,
+    pub webhook: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -659,9 +717,10 @@ pub fn flatten_config(cfg: Option<&ConfigBlock>) -> (
 
 /// Collect secret names that this pipeline effectively allowlists.
 ///
-/// Includes optional top-level `secrets:`, step `secrets:`, purpose slots, and
-/// `${secrets.NAME}` inside pipeline/step `env:` — so production YAML may omit
-/// the top-level list (GHA-style) while Manager still binds `pipeline_secrets`.
+/// Includes optional top-level `secrets:`, step `secrets:`, purpose slots,
+/// `${secrets.NAME}` inside pipeline/step `env:`, and `notify[].webhook` —
+/// so production YAML may omit the top-level list (GHA-style) while Manager
+/// still binds `pipeline_secrets`.
 pub fn collect_effective_secret_names(parsed: &PipelineYaml) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut names = BTreeSet::new();
@@ -707,6 +766,13 @@ pub fn collect_effective_secret_names(parsed: &PipelineYaml) -> Vec<String> {
                 if let Some(n) = crate::secret_ref::resolve_secret_slot(raw) {
                     names.insert(n);
                 }
+            }
+        }
+    }
+    if let Some(channels) = &parsed.notify {
+        for ch in channels {
+            if let Some(n) = crate::secret_ref::resolve_secret_slot(&ch.webhook) {
+                names.insert(n);
             }
         }
     }
@@ -920,6 +986,53 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
     }
 
+    // 6c. notify channels — type whitelist, webhook secret slot, on events
+    const VALID_NOTIFY_TYPES: &[&str] = &["feishu"];
+    const VALID_NOTIFY_ON: &[&str] = &["success", "failure", "cancelled"];
+    if let Some(channels) = &parsed.notify {
+        for (i, ch) in channels.iter().enumerate() {
+            let field = format!("notify[{i}]");
+            let ty = ch.channel_type.trim();
+            if ty.is_empty() || !VALID_NOTIFY_TYPES.contains(&ty) {
+                errors.push(YamlValidationError {
+                    field: format!("{field}.type"),
+                    message: format!(
+                        "invalid notify type '{}' — must be one of: {}",
+                        ch.channel_type,
+                        VALID_NOTIFY_TYPES.join(", ")
+                    ),
+                });
+            }
+            let webhook = ch.webhook.trim();
+            if webhook.is_empty() {
+                errors.push(YamlValidationError {
+                    field: format!("{field}.webhook"),
+                    message: "notify webhook is required".into(),
+                });
+            } else if crate::secret_ref::resolve_secret_slot(webhook).is_none() {
+                errors.push(YamlValidationError {
+                    field: format!("{field}.webhook"),
+                    message: "notify webhook must be '${secrets.NAME}' (or bare secret name)"
+                        .into(),
+                });
+            }
+            if let Some(on) = &ch.on {
+                for (j, ev) in on.iter().enumerate() {
+                    let e = ev.trim();
+                    if e.is_empty() || !VALID_NOTIFY_ON.contains(&e) {
+                        errors.push(YamlValidationError {
+                            field: format!("{field}.on[{j}]"),
+                            message: format!(
+                                "invalid notify event '{ev}' — must be one of: {}",
+                                VALID_NOTIFY_ON.join(", ")
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     // 6. Docker engine rules
     for (i, step) in parsed.steps.iter().enumerate() {
         let uses = step.uses.as_deref().unwrap_or("").trim();
@@ -1016,6 +1129,17 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     };
 
     // Build the parsed data snapshot for frontend import-to-form
+    let notify_data = parsed.notify.as_ref().map(|channels| {
+        channels
+            .iter()
+            .map(|ch| NotifyChannelData {
+                channel_type: ch.channel_type.clone(),
+                webhook: ch.webhook.clone(),
+                on: ch.on.clone(),
+            })
+            .collect::<Vec<_>>()
+    });
+
     let parsed_data = PipelineYamlData {
         description: parsed.description.clone(),
         concurrency: concurrency_group,
@@ -1023,6 +1147,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         env: parsed.env.clone(),
         variables: parsed.variables.clone(),
         secrets: parsed.secrets.clone(),
+        notify: notify_data,
         runner: parsed.runner.as_ref().map(|r| RunnerConfig {
             labels: r.labels.clone(),
             timeout: r.timeout.clone(),

@@ -14,6 +14,7 @@ import {
   type PipelineInputDef,
 } from '@/api/pipelines'
 import { normalizeInputDefsForForm } from '@/utils/pipelineInputs'
+import { parseApiError, type FormattedApiError } from '@/utils/error'
 import { jobsApi, type Job } from '@/api/jobs'
 import { cn } from '@/lib/utils'
 import { parseUtc } from '@/utils/time'
@@ -105,6 +106,8 @@ const triggerTarget = ref<Pipeline | null>(null)
 const triggerInputPairs = ref<{ key: string; value: string; required?: boolean; masking?: boolean }[]>([])
 /** True when the opened trigger dialog has declared on.manual.inputs. */
 const triggerHasInputDefs = ref(false)
+/** Shown when POST /trigger fails (e.g. 422 YAML validation). */
+const triggerError = ref<FormattedApiError | null>(null)
 /** Ad-hoc params when pipeline has no input_defs — collapsed by default. */
 const showAdhocParams = ref(false)
 const triggerDebug = ref(false)
@@ -225,6 +228,7 @@ async function handleTrigger(p: Pipeline) {
   if (triggeringId.value) return
   triggerDebug.value = false
   triggerVerbose.value = false
+  triggerError.value = null
   showAdhocParams.value = false
   let defs: PipelineInputDef[] = Array.isArray(p.input_defs) ? p.input_defs : []
   try {
@@ -263,6 +267,7 @@ function removeTriggerInputPair(idx: number) {
 async function doTrigger(p: Pipeline) {
   if (triggeringId.value) return
   triggeringId.value = p.id
+  triggerError.value = null
   try {
     const inputs: Record<string, string> = {}
     for (const pair of triggerInputPairs.value) {
@@ -278,6 +283,7 @@ async function doTrigger(p: Pipeline) {
     router.push(`/jobs/${result.job_id}`)
   } catch (e) {
     console.error(e)
+    triggerError.value = parseApiError(e, 'Trigger failed')
   } finally {
     triggeringId.value = null
   }
@@ -290,6 +296,7 @@ function cancelTriggerDialog() {
   showAdhocParams.value = false
   triggerDebug.value = false
   triggerVerbose.value = false
+  triggerError.value = null
   triggeringId.value = null
 }
 
@@ -660,6 +667,30 @@ async function handleToggleActive(p: Pipeline) {
           <p v-else class="text-sm text-muted-foreground mb-4">
             This pipeline has no declared parameters. Optionally enable Verbose/Debug, then Run.
           </p>
+
+          <div
+            v-if="triggerError"
+            role="alert"
+            class="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-destructive"
+          >
+            <p class="text-sm font-semibold tracking-tight">{{ triggerError.title }}</p>
+            <p v-if="triggerError.summary" class="mt-1 text-[11px] font-mono text-destructive/80 truncate" :title="triggerError.summary">
+              {{ triggerError.summary }}
+            </p>
+            <ul class="mt-2.5 space-y-2 border-t border-destructive/20 pt-2.5">
+              <li
+                v-for="(item, i) in triggerError.items"
+                :key="i"
+                class="text-xs leading-relaxed"
+              >
+                <code
+                  v-if="item.field"
+                  class="mb-0.5 inline-block rounded bg-destructive/15 px-1.5 py-0.5 font-mono text-[10px] text-destructive"
+                >{{ item.field }}</code>
+                <p :class="item.field ? 'mt-0.5 pl-0.5 opacity-95' : 'opacity-95'">{{ item.message }}</p>
+              </li>
+            </ul>
+          </div>
 
           <div v-if="triggerHasInputDefs" class="space-y-2 mb-6">
             <div

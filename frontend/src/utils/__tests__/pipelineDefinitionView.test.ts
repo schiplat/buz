@@ -94,7 +94,8 @@ describe('concurrencyFromYaml / collectSecretNamesFromYaml', () => {
           config_source: 'OSS_SRC',
         },
       ],
+      notify: [{ type: 'feishu', webhook: '${secrets.FEISHU_WEBHOOK}' }],
     })
-    expect(names.sort()).toEqual(['A', 'B', 'OSS_SRC', 'REG'])
+    expect(names.sort()).toEqual(['A', 'B', 'FEISHU_WEBHOOK', 'OSS_SRC', 'REG'])
   })
 })

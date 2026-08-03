@@ -263,6 +263,15 @@ pub async fn cancel(
         "Job cancelled by operator"
     );
 
+    // Non-terminal → cancelled: async notify (only if channel `on` includes cancelled).
+    crate::services::notify::spawn_job_notify(
+        state.pool.clone(),
+        state.config.auth.jwt_secret.clone(),
+        state.config.server.public_base_url.clone(),
+        id.clone(),
+        "cancelled".to_string(),
+    );
+
     // Broadcast cancelled status to WebSocket subscribers
     if let Ok(Some(pid_row)) =
         sqlx::query("SELECT pipeline_id, debug_unredact FROM jobs WHERE id = ?")
@@ -492,6 +501,20 @@ pub async fn update_status(
                         .await?;
                 }
             }
+        }
+
+        // Non-terminal → terminal: async notify (failures log-only).
+        if matches!(
+            req.status.as_str(),
+            "success" | "failed" | "cancelled" | "timeout"
+        ) {
+            crate::services::notify::spawn_job_notify(
+                state.pool.clone(),
+                state.config.auth.jwt_secret.clone(),
+                state.config.server.public_base_url.clone(),
+                job_id.clone(),
+                req.status.clone(),
+            );
         }
     }
 

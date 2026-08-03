@@ -152,7 +152,15 @@ export interface YamlParsedData {
   env?: Record<string, string> | null
   variables?: string[] | null
   secrets?: string[] | null
+  /** End-of-build notify channels (expressions kept). */
+  notify?: YamlNotifyChannel[] | null
   steps: YamlStepData[]
+}
+
+export interface YamlNotifyChannel {
+  type: string
+  webhook: string
+  on?: string[] | null
 }
 
 export interface YamlTriggerConfig {

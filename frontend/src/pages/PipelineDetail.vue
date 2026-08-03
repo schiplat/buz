@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp } from '@lucide/vue'
+import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp, Bell } from '@lucide/vue'
 import { cn } from '@/lib/utils'
 import {
   pipelinesApi,
@@ -26,6 +26,7 @@ import { teamsApi, type Team } from '@/api/teams'
 import { jobsApi, type Job, type LogChunk } from '@/api/jobs'
 import { parseUtc, formatLocalShort } from '@/utils/time'
 import { copyText } from '@/utils/copyText'
+import { parseApiError, type FormattedApiError } from '@/utils/error'
 import PipelineTopologyGraph from '@/components/flow/PipelineTopologyGraph.vue'
 import BuildHistoryCard from '@/components/flow/BuildHistoryCard.vue'
 import { createManagedWebSocket, type ManagedWebSocket } from '@/utils/ws'
@@ -64,6 +65,8 @@ watch(pipelineId, async () => {
 const jobs = ref<Job[]>([])
 const loading = ref(true)
 const triggering = ref(false)
+/** Shown inside the trigger dialog when POST /trigger fails (e.g. 422 YAML validation). */
+const triggerError = ref<FormattedApiError | null>(null)
 const activeTab = computed(() => (route.params.tab as string) || 'stage')
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 let pipelineWs: ManagedWebSocket | null = null
@@ -231,19 +234,24 @@ async function loadYamlDefinition() {
     const src = await pipelinesApi.getYamlSource(pipelineId.value)
     defYamlFilename.value = src.filename
     const validation = await pipelinesApi.validateYaml(src.yaml)
-    if (!validation.valid || !validation.parsed) {
+    const errs = (validation.errors || []).map(
+      (e) => `${e.field}: ${e.message}`,
+    )
+    // Prefer parsed tree even when referential checks fail (missing secret, etc.)
+    // so Definition can still show notify / steps from the file.
+    if (!validation.parsed) {
       defYamlAuthority.value = 'unavailable'
       defYamlParsed.value = null
       defYamlName.value = ''
-      defYamlErrors.value = (validation.errors || []).map(
-        (e) => `${e.field}: ${e.message}`,
-      )
+      defYamlErrors.value = errs.length
+        ? errs
+        : ['YAML could not be parsed']
       return
     }
     defYamlAuthority.value = 'file'
     defYamlParsed.value = validation.parsed
     defYamlName.value = validation.name || pipeline.value.name
-    defYamlErrors.value = []
+    defYamlErrors.value = validation.valid ? [] : errs
   } catch (e: any) {
     defYamlAuthority.value = 'unavailable'
     defYamlParsed.value = null
@@ -285,6 +293,15 @@ const yamlSyncBanner = computed(() => {
       detail:
         defYamlErrors.value.slice(0, 4).join(' · ')
         || 'On-disk YAML is missing or invalid — Definition is not shown from DB projection.',
+    }
+  }
+  if (hasYamlSource.value && defYamlAuthority.value === 'file' && defYamlErrors.value.length) {
+    return {
+      tone: 'amber' as const,
+      title: 'YAML validation issues',
+      detail:
+        defYamlErrors.value.slice(0, 4).join(' · ')
+        || 'File parsed for Definition; fix errors before trigger.',
     }
   }
   const s = yamlSync.value
@@ -340,6 +357,7 @@ const definitionView = computed(() => {
       timeout_seconds: parseDurationToSeconds(runner?.timeout) || p.timeout_seconds || 3600,
       variableNames: parsed.variables || [],
       secretNames: collectSecretNamesFromYaml(parsed),
+      notify: Array.isArray(parsed.notify) ? parsed.notify : [],
       team_id: p.team_id,
       source: 'yaml',
       input_defs: (tc?.inputs || []).map((i) => ({
@@ -384,6 +402,7 @@ const definitionView = computed(() => {
     timeout_seconds: p.timeout_seconds || 3600,
     variableNames: boundVariableNames.value,
     secretNames: boundSecretNames.value,
+    notify: [] as { type: string; webhook: string; on?: string[] | null }[],
     team_id: p.team_id,
     source: p.source || 'form',
     input_defs: Array.isArray(p.input_defs) ? p.input_defs : [],
@@ -397,6 +416,9 @@ const showConcurrencyHelp = ref(false)
 
 /** Live pipeline concurrency settings for Definition tab (always shown). */
 const pipelineConcurrency = computed(() => definitionView.value?.concurrency ?? null)
+
+/** Notify channels from YAML (Definition tab). */
+const pipelineNotify = computed(() => definitionView.value?.notify ?? [])
 
 const defHasInputDefs = computed(
   () => (definitionView.value?.input_defs?.length || 0) > 0,
@@ -706,6 +728,7 @@ function openTriggerDialog() {
   const defs: PipelineInputDef[] = pipeline.value.input_defs || []
   triggerDebug.value = false
   triggerVerbose.value = false
+  triggerError.value = null
   showAdhocParams.value = false
   // Always open the dialog so users can opt into Verbose / Debug before Run.
   inputPairs.value = defs.length > 0
@@ -738,6 +761,7 @@ function removeInputPair(idx: number) {
 async function handleTrigger() {
   if (!pipeline.value || triggering.value) return
   triggering.value = true
+  triggerError.value = null
   try {
     const inputs: Record<string, string> = {}
     for (const pair of inputPairs.value) {
@@ -748,8 +772,9 @@ async function handleTrigger() {
     triggerDebug.value = false
     triggerVerbose.value = false
     router.push(`/jobs/${result.job_id}`)
-  } catch (e) {
+  } catch (e: any) {
     console.error(e)
+    triggerError.value = parseApiError(e, 'Trigger failed')
   } finally {
     triggering.value = false
   }
@@ -791,6 +816,30 @@ async function handleTrigger() {
           <p v-else class="text-sm text-muted-foreground mb-4">
             This pipeline has no declared parameters. Optionally enable Verbose/Debug, then Run.
           </p>
+
+          <div
+            v-if="triggerError"
+            role="alert"
+            class="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-destructive"
+          >
+            <p class="text-sm font-semibold tracking-tight">{{ triggerError.title }}</p>
+            <p v-if="triggerError.summary" class="mt-1 text-[11px] font-mono text-destructive/80 truncate" :title="triggerError.summary">
+              {{ triggerError.summary }}
+            </p>
+            <ul class="mt-2.5 space-y-2 border-t border-destructive/20 pt-2.5">
+              <li
+                v-for="(item, i) in triggerError.items"
+                :key="i"
+                class="text-xs leading-relaxed"
+              >
+                <code
+                  v-if="item.field"
+                  class="mb-0.5 inline-block rounded bg-destructive/15 px-1.5 py-0.5 font-mono text-[10px] text-destructive"
+                >{{ item.field }}</code>
+                <p :class="item.field ? 'mt-0.5 pl-0.5 opacity-95' : 'opacity-95'">{{ item.message }}</p>
+              </li>
+            </ul>
+          </div>
 
           <!-- Declared inputs -->
           <div v-if="hasInputDefs" class="space-y-2 mb-4">
@@ -1233,7 +1282,10 @@ async function handleTrigger() {
                 </span>
               </div>
               <p v-if="yamlSyncBanner?.detail" class="mt-1 opacity-90">{{ yamlSyncBanner.detail }}</p>
-              <ul v-if="defYamlErrors.length && defYamlAuthority === 'unavailable'" class="mt-2 space-y-0.5 list-disc pl-4 opacity-95">
+              <ul
+                v-if="defYamlErrors.length && (defYamlAuthority === 'unavailable' || defYamlAuthority === 'file')"
+                class="mt-2 space-y-0.5 list-disc pl-4 opacity-95"
+              >
                 <li v-for="(err, i) in defYamlErrors.slice(0, 8)" :key="i">{{ err }}</li>
               </ul>
             </div>
@@ -1473,6 +1525,54 @@ async function handleTrigger() {
                 </div>
               </div>
 
+              <!-- ── Notify (always shown) ── -->
+              <div class="border-t border-border/20 px-5 py-4">
+                <div class="flex items-center gap-2 mb-3">
+                  <Bell class="h-3.5 w-3.5 text-sky-500" />
+                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notify</span>
+                  <span v-if="pipelineNotify.length" class="text-xs text-muted-foreground/50 ml-auto">{{ pipelineNotify.length }} channel{{ pipelineNotify.length !== 1 ? 's' : '' }}</span>
+                  <button
+                    v-else
+                    type="button"
+                    class="ml-auto inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+                    @click="openEditDialog"
+                  >
+                    <Pencil class="h-3 w-3" />
+                    Edit YAML
+                  </button>
+                </div>
+
+                <template v-if="pipelineNotify.length">
+                  <div class="space-y-2">
+                    <div
+                      v-for="(ch, i) in pipelineNotify"
+                      :key="i"
+                      class="flex flex-wrap items-center gap-2 text-sm"
+                    >
+                      <span class="text-xs text-muted-foreground">Type</span>
+                      <code class="mono-chip text-xs">{{ ch.type }}</code>
+                      <span class="text-xs text-muted-foreground ml-1">Webhook</span>
+                      <code class="mono-chip text-xs truncate max-w-[20rem]" :title="ch.webhook">{{ ch.webhook }}</code>
+                      <span class="text-xs text-muted-foreground ml-1">On</span>
+                      <span class="text-xs font-mono text-foreground/80">{{ (ch.on && ch.on.length ? ch.on : ['success', 'failure']).join(', ') }}</span>
+                    </div>
+                  </div>
+                  <p class="mt-2 text-xs text-muted-foreground leading-relaxed">
+                    Manager sends an end-of-build card when the job reaches a matching terminal status.
+                    Set <code class="font-mono text-[10px]">server.public_base_url</code> for a View Job link.
+                  </p>
+                </template>
+                <template v-else>
+                  <div class="flex flex-wrap items-center gap-2 text-sm">
+                    <span class="text-xs text-muted-foreground">Status</span>
+                    <span class="text-xs font-semibold rounded px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
+                    <span class="text-xs text-muted-foreground ml-1">Add</span>
+                    <code class="font-mono text-[10px] rounded px-1.5 py-0.5 border bg-sky-500/10 text-sky-700 border-sky-500/20">notify:</code>
+                    <span class="text-xs text-muted-foreground">in YAML (e.g. Feishu webhook via Secrets)</span>
+                  </div>
+                </template>
+              </div>
+
               <!-- ── Parameters ── -->
               <div v-if="defHasInputDefs" class="mt-6 border-t border-border/20 pt-1">
                 <div class="px-5 py-3 bg-muted/10 flex items-center gap-2">
@@ -1636,7 +1736,7 @@ async function handleTrigger() {
                 <div>
                   <h2 class="text-base font-semibold tracking-tight flex items-center gap-2">
                     <Webhook class="h-4 w-4 text-muted-foreground" />
-                    Git webhooks
+                    Trigger hook (git)
                   </h2>
                   <p class="text-xs text-muted-foreground mt-1 max-w-xl leading-relaxed">
                     Multiple hooks per pipeline (e.g. GitHub + Gitee). After create, settings are immutable —

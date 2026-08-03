@@ -8,6 +8,9 @@ host = "0.0.0.0"
 port = 8080
 # tls_cert = "certs/cert.pem"
 # tls_key  = "certs/key.pem"
+# Public UI origin for notify deep links (View Job → /jobs/{id}).
+# Example: "https://buz.example.com"  (trailing slash optional)
+# public_base_url = "http://127.0.0.1:8080"
 
 [database]
 path = "./data/buz.db"

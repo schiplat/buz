@@ -914,6 +914,14 @@ pub(crate) async fn do_trigger(
     })
     .unwrap_or(serde_json::json!({}));
 
+    // Freeze notify config from on-disk YAML (keep `${secrets.…}`; resolve at send).
+    let notify_snapshot = crate::services::notify::load_notify_snapshot(
+        &state.pool,
+        &state.config.pipeline.yaml_scan_dir,
+        pipeline_id,
+    )
+    .await;
+
     let snapshot = serde_json::json!({
         "pipeline": pipeline_snapshot,
         "runner_labels": serde_json::from_str::<Vec<String>>(&runner_labels).unwrap_or_default(),
@@ -933,6 +941,7 @@ pub(crate) async fn do_trigger(
         "masking_input_keys": masking_keys,
         "triggered_by": triggered_by,
         "triggered_at": chrono::Utc::now().to_rfc3339(),
+        "notify": notify_snapshot,
     });
 
     // Masking input values encrypted at rest (buzenc:v1:…); claim decrypts for Runner.

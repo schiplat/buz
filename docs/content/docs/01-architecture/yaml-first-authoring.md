@@ -48,7 +48,7 @@ Filenames are bare basenames only (`^[A-Za-z0-9_-]+\.(yml|yaml)$`); the stem mus
 
 **Validate / Save gates (Manager DB):** `/pipelines/validate` and YAML create/update reject when referential checks fail — unknown `team:` / `owner_group:` slug, missing same-team secret names referenced via `${secrets.X}` / purpose slots / lists, or missing platform `variables:` names. Soft fallback of unknown teams to `default` is **removed**.
 
-**Field registration:** unknown keyword keys at every nesting level are rejected (`deny_unknown_fields`). New fields must be registered in `pipeline_yaml.rs` before use — see [Pipeline Format → Field registration](./pipeline-format.md#field-registration-required-before-use).
+**Field registration:** unknown keyword keys at every nesting level are rejected (`deny_unknown_fields`). New fields must be registered in `pipeline_yaml.rs` before use — including top-level `notify:` (`NotifyChannelYaml`) — see [Pipeline Format → Field registration](./pipeline-format.md#field-registration-required-before-use).
 
 **Auth / consistency:**
 

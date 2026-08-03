@@ -92,5 +92,12 @@ export function collectSecretNamesFromYaml(parsed: YamlParsedData): string[] {
       else if (!String(field).includes('$')) secretNames.add(String(field))
     }
   }
+  for (const ch of parsed.notify || []) {
+    const wh = ch.webhook
+    if (!wh) continue
+    const m = String(wh).match(/\$\{secrets\.([^}]+)\}/)
+    if (m) secretNames.add(m[1])
+    else if (!String(wh).includes('$')) secretNames.add(String(wh))
+  }
   return [...secretNames]
 }
