@@ -73,11 +73,7 @@ pub async fn execute_with_stdin(
 ) -> anyhow::Result<SshOutput> {
     let default_timeout = cmd_timeout.unwrap_or(Duration::from_secs(300));
 
-    let result = timeout(
-        default_timeout,
-        execute_session(command, Some(stdin), conn),
-    )
-    .await;
+    let result = timeout(default_timeout, execute_session(command, Some(stdin), conn)).await;
 
     match result {
         Ok(inner) => inner,
@@ -90,10 +86,7 @@ pub async fn execute_with_stdin(
 /// Drain stdout/stderr until the channel closes. Do **not** stop on `Eof` alone —
 /// `ExitStatus` often arrives after `Eof`; breaking early yields a false failure
 /// with empty stderr (common for silent commands like uploads).
-async fn drain_channel(
-    channel: &mut russh::Channel<client::Msg>,
-    addr: &str,
-) -> SshOutput {
+async fn drain_channel(channel: &mut russh::Channel<client::Msg>, addr: &str) -> SshOutput {
     let mut stdout = String::new();
     let mut stderr = String::new();
     let mut exit_code: Option<u32> = None;
