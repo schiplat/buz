@@ -5,9 +5,7 @@ use tokio::time;
 use uuid::Uuid;
 
 use shared::error::AppError;
-use shared::pipeline_yaml::{
-    default_concurrency_mode, ConcurrencyDef, PipelineYaml, TriggerYaml,
-};
+use shared::pipeline_yaml::{default_concurrency_mode, ConcurrencyDef, PipelineYaml, TriggerYaml};
 use shared::protocol::{EnvPair, PipelineInputDef, StepDef};
 
 use crate::api::{
@@ -514,8 +512,7 @@ pub fn yaml_path_storage(_scan_dir: &str, filename: &str) -> Result<String, AppE
 
 /// Normalize any stored path to the basename key used in DB.
 pub fn normalize_yaml_path_key(yaml_path: &str) -> String {
-    filename_from_yaml_path(yaml_path)
-        .unwrap_or_else(|| yaml_path.trim().to_string())
+    filename_from_yaml_path(yaml_path).unwrap_or_else(|| yaml_path.trim().to_string())
 }
 
 /// Weak content ETag for optimistic concurrency (`If-Match` / body `etag`).
@@ -574,7 +571,8 @@ pub fn assert_path_under_scan_dir(scan_dir: &str, path: &Path) -> Result<(), App
         Err(_) => {
             // File may not exist yet — compare parents.
             let parent = path.parent().unwrap_or(path);
-            let parent_canon = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+            let parent_canon =
+                std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
             if !parent_canon.starts_with(&base_canon)
                 && !parent_canon.starts_with(&base)
                 && parent != base.as_path()
@@ -617,7 +615,11 @@ pub async fn list_yaml_files(
         let Ok(ft) = entry.file_type().await else {
             continue;
         };
-        if ft.is_dir() || path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.'))
+        if ft.is_dir()
+            || path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('.'))
         {
             continue;
         }
@@ -639,12 +641,10 @@ pub async fn list_yaml_files(
         let pipeline_id = find_yaml_pipeline_row(pool, &filename).await?;
         files.push(match pipeline_id {
             Some(id) => {
-                let r = sqlx::query(
-                    "SELECT name, team_id, is_active FROM pipelines WHERE id = ?",
-                )
-                .bind(&id)
-                .fetch_one(pool)
-                .await?;
+                let r = sqlx::query("SELECT name, team_id, is_active FROM pipelines WHERE id = ?")
+                    .bind(&id)
+                    .fetch_one(pool)
+                    .await?;
                 YamlFileInfo {
                     filename,
                     yaml_path,
@@ -911,15 +911,16 @@ pub async fn sync_yaml_before_trigger(
     let filename = normalize_yaml_path_key(&yaml_path);
     validate_yaml_filename(&filename)?;
 
-    let content = read_yaml_file(scan_dir, &filename).await.map_err(|e| match e {
-        AppError::NotFound(_) => AppError::ValidationFailed(format!(
-            "YAML file '{filename}' is missing under yaml_scan_dir — cannot trigger"
-        )),
-        other => other,
-    })?;
+    let content = read_yaml_file(scan_dir, &filename)
+        .await
+        .map_err(|e| match e {
+            AppError::NotFound(_) => AppError::ValidationFailed(format!(
+                "YAML file '{filename}' is missing under yaml_scan_dir — cannot trigger"
+            )),
+            other => other,
+        })?;
 
-    let validation =
-        crate::services::yaml_validate::validate_pipeline_yaml(pool, &content).await?;
+    let validation = crate::services::yaml_validate::validate_pipeline_yaml(pool, &content).await?;
     if !validation.valid {
         let msg = validation
             .errors
@@ -958,13 +959,11 @@ pub async fn yaml_sync_status(
     scan_dir: &str,
     pipeline_id: &str,
 ) -> Result<YamlSyncStatus, AppError> {
-    let row = sqlx::query(
-        "SELECT source, yaml_path, updated_at FROM pipelines WHERE id = ?",
-    )
-    .bind(pipeline_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+    let row = sqlx::query("SELECT source, yaml_path, updated_at FROM pipelines WHERE id = ?")
+        .bind(pipeline_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
 
     let source: String = row.get(0);
     let yaml_path: Option<String> = row.get(1);
@@ -1023,8 +1022,7 @@ pub async fn yaml_sync_status(
         .map_err(|e| AppError::Internal(format!("read {filename}: {e}")))?;
     let etag = yaml_content_etag(&content);
 
-    let validation =
-        crate::services::yaml_validate::validate_pipeline_yaml(pool, &content).await?;
+    let validation = crate::services::yaml_validate::validate_pipeline_yaml(pool, &content).await?;
     if !validation.valid {
         let errors = validation
             .errors

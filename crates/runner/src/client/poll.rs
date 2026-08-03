@@ -154,10 +154,7 @@ pub(crate) fn build_verbose_step_config(
             arr.iter()
                 .filter_map(|e| {
                     let t = e.get("template")?.as_str()?;
-                    let o = e
-                        .get("output")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(".env");
+                    let o = e.get("output").and_then(|v| v.as_str()).unwrap_or(".env");
                     Some(format!("{t} → {o}"))
                 })
                 .collect()
@@ -166,10 +163,7 @@ pub(crate) fn build_verbose_step_config(
                 .get("template")
                 .and_then(|v| v.as_str())
                 .unwrap_or("env.example");
-            let o = er
-                .get("output")
-                .and_then(|v| v.as_str())
-                .unwrap_or(".env");
+            let o = er.get("output").and_then(|v| v.as_str()).unwrap_or(".env");
             vec![format!("{t} → {o}")]
         };
         if !pairs.is_empty() {
@@ -210,17 +204,18 @@ pub(crate) fn build_config_prep_banner(step: &serde_json::Value, debug_unredact:
         if let Some(ttl) = auth.get("expires_in_secs").and_then(|v| v.as_u64()) {
             push_field("expires_in", format!("{ttl}s"));
         }
-        if let Some(url) = auth.get("url").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        if let Some(url) = auth
+            .get("url")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
             if debug_unredact {
                 push_field("url", url.to_string());
             } else {
                 push_field("url", "***".into());
             }
         }
-    } else if step
-        .get("config_render")
-        .is_some_and(|v| !v.is_null())
-    {
+    } else if step.get("config_render").is_some_and(|v| !v.is_null()) {
         push_field("mode", "render-only".into());
     }
     out
@@ -978,8 +973,7 @@ async fn execute_job(
                     )
                     .await;
                     if verbose {
-                        let result =
-                            build_verbose_step_result(step_started.elapsed(), -1);
+                        let result = build_verbose_step_result(step_started.elapsed(), -1);
                         let _ = super::logs::upload_chunk(
                             client,
                             config,

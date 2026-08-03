@@ -672,19 +672,15 @@ async fn tasks_has_column(pool: &SqlitePool, name: &str) -> bool {
 async fn migrate_tasks_config_block_columns(pool: &SqlitePool) -> anyhow::Result<()> {
     use sqlx::Row;
 
-    let _ = sqlx::query(
-        "ALTER TABLE tasks ADD COLUMN config_key_path TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_key_path TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
     let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_dest TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await;
-    let _ = sqlx::query(
-        "ALTER TABLE tasks ADD COLUMN config_render TEXT NOT NULL DEFAULT ''",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_render TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
 
     if tasks_has_column(pool, "config_path").await {
         sqlx::query(

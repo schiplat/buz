@@ -95,8 +95,7 @@ pub fn spawn_job_notify(
 ) {
     tokio::spawn(async move {
         if let Err(e) =
-            send_job_notifications(&pool, &jwt_secret, &public_base_url, &job_id, &new_status)
-                .await
+            send_job_notifications(&pool, &jwt_secret, &public_base_url, &job_id, &new_status).await
         {
             tracing::warn!(
                 job_id = %job_id,

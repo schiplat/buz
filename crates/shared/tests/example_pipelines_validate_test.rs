@@ -22,5 +22,9 @@ fn all_example_pipelines_parse_and_validate() {
             ));
         }
     }
-    assert!(failed.is_empty(), "invalid example pipelines:\n{}", failed.join("\n"));
+    assert!(
+        failed.is_empty(),
+        "invalid example pipelines:\n{}",
+        failed.join("\n")
+    );
 }

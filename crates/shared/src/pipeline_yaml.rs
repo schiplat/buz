@@ -553,16 +553,11 @@ pub fn parse_duration_seconds(raw: &str) -> Result<i64, String> {
     if n <= 0 {
         return Err(format!("invalid duration '{raw}' — must be > 0"));
     }
-    n.checked_mul(mult).ok_or_else(|| {
-        format!("invalid duration '{raw}' — overflow when converting to seconds")
-    })
+    n.checked_mul(mult)
+        .ok_or_else(|| format!("invalid duration '{raw}' — overflow when converting to seconds"))
 }
 
-fn validate_duration_field(
-    field: &str,
-    raw: Option<&str>,
-    errors: &mut Vec<YamlValidationError>,
-) {
+fn validate_duration_field(field: &str, raw: Option<&str>, errors: &mut Vec<YamlValidationError>) {
     let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return;
     };
@@ -598,7 +593,8 @@ fn validate_config_block(
     if source.is_some() != key_path.is_some() {
         errors.push(YamlValidationError {
             field: field.into(),
-            message: "'config.source' and 'config.key_path' must be set together (OSS deliver)".into(),
+            message: "'config.source' and 'config.key_path' must be set together (OSS deliver)"
+                .into(),
         });
     }
 
@@ -611,8 +607,9 @@ fn validate_config_block(
         if !matches!(engine, "shell" | "local" | "ssh" | "docker") {
             errors.push(YamlValidationError {
                 field: field.into(),
-                message: "'config' OSS deliver is only valid for shell, local, ssh, or docker steps"
-                    .into(),
+                message:
+                    "'config' OSS deliver is only valid for shell, local, ssh, or docker steps"
+                        .into(),
             });
         }
         if dest.is_none() {
@@ -695,7 +692,9 @@ fn validate_config_block(
 }
 
 /// Flatten nested `config:` into task/API column fields.
-pub fn flatten_config(cfg: Option<&ConfigBlock>) -> (
+pub fn flatten_config(
+    cfg: Option<&ConfigBlock>,
+) -> (
     Option<String>,
     Option<String>,
     Option<String>,
@@ -816,25 +815,27 @@ fn extract_field_from_yaml_parse_error(msg: &str) -> Option<String> {
     let key = extract_unknown_field_name(msg)?;
     // Take the path immediately before ": unknown field"
     let marker = ": unknown field";
-    let path = msg
-        .find(marker)
-        .and_then(|idx| {
-            let before = msg[..idx].trim_end();
-            // Drop leading "YAML error:" if present (usually not yet wrapped).
-            let before = before
-                .strip_prefix("YAML error:")
-                .map(str::trim)
-                .unwrap_or(before);
-            // Last path-like token (handles ", steps[0]" noise).
-            let token = before.split(',').next_back()?.trim();
-            if token.is_empty() {
-                None
-            } else {
-                Some(token.to_string())
-            }
-        });
+    let path = msg.find(marker).and_then(|idx| {
+        let before = msg[..idx].trim_end();
+        // Drop leading "YAML error:" if present (usually not yet wrapped).
+        let before = before
+            .strip_prefix("YAML error:")
+            .map(str::trim)
+            .unwrap_or(before);
+        // Last path-like token (handles ", steps[0]" noise).
+        let token = before.split(',').next_back()?.trim();
+        if token.is_empty() {
+            None
+        } else {
+            Some(token.to_string())
+        }
+    });
     match path {
-        Some(p) if p.contains('[') || p.contains('.') || p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
+        Some(p)
+            if p.contains('[')
+                || p.contains('.')
+                || p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+        {
             Some(format!("{p}.{key}"))
         }
         _ => Some(key),
@@ -1063,9 +1064,18 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
 
         // Reject legacy flat config fields — nested `config:` only.
-        let legacy_flat = step.config_source.as_deref().is_some_and(|s| !s.trim().is_empty())
-            || step.config_path.as_deref().is_some_and(|s| !s.trim().is_empty())
-            || step.config_dir.as_deref().is_some_and(|s| !s.trim().is_empty())
+        let legacy_flat = step
+            .config_source
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+            || step
+                .config_path
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+            || step
+                .config_dir
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
             || step.env_render.as_ref().is_some_and(|v| !v.is_null());
         if legacy_flat {
             errors.push(YamlValidationError {

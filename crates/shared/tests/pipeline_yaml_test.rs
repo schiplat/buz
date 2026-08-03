@@ -126,7 +126,10 @@ steps:
 
 fn assert_unknown_key_rejected(yaml: &str, unknown_token: &str) {
     let r = parse_and_validate(yaml);
-    assert!(!r.valid, "expected rejection for unknown key `{unknown_token}`");
+    assert!(
+        !r.valid,
+        "expected rejection for unknown key `{unknown_token}`"
+    );
     let msg = r
         .errors
         .iter()
@@ -778,7 +781,11 @@ steps:
 "#;
     let r = parse_and_validate(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
-    assert!(r.warnings.is_empty(), "unexpected warnings: {:?}", r.warnings);
+    assert!(
+        r.warnings.is_empty(),
+        "unexpected warnings: {:?}",
+        r.warnings
+    );
     let step = &r.parsed.unwrap().steps[0];
     assert_eq!(step.config_source.as_deref(), Some("OSS_DEMO"));
     assert_eq!(step.config_key_path.as_deref(), Some("config_tpl/demo/v1"));
@@ -1195,8 +1202,7 @@ steps:
       dest: /opt/app
     run: ls
 "#;
-    let parsed: shared::pipeline_yaml::PipelineYaml =
-        serde_yaml::from_str(yaml).expect("parse");
+    let parsed: shared::pipeline_yaml::PipelineYaml = serde_yaml::from_str(yaml).expect("parse");
     let names = collect_effective_secret_names(&parsed);
     assert_eq!(
         names,
@@ -1247,7 +1253,9 @@ steps:
     let r = parse_and_validate(yaml);
     assert!(!r.valid);
     assert!(
-        r.errors.iter().any(|e| e.field.contains("notify") && e.field.contains("type")),
+        r.errors
+            .iter()
+            .any(|e| e.field.contains("notify") && e.field.contains("type")),
         "{:?}",
         r.errors
     );

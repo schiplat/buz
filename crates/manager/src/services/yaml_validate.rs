@@ -120,19 +120,14 @@ async fn enrich_referential_errors(
     let secret_names = collect_effective_secret_names(parsed);
     if !secret_names.is_empty() {
         let placeholders = vec!["?"; secret_names.len()].join(",");
-        let query = format!(
-            "SELECT name FROM secrets WHERE team_id = ? AND name IN ({placeholders})"
-        );
+        let query =
+            format!("SELECT name FROM secrets WHERE team_id = ? AND name IN ({placeholders})");
         let mut q = sqlx::query_as::<_, (String,)>(&query).bind(&team_id);
         for name in &secret_names {
             q = q.bind(name);
         }
-        let found: std::collections::HashSet<String> = q
-            .fetch_all(pool)
-            .await?
-            .into_iter()
-            .map(|r| r.0)
-            .collect();
+        let found: std::collections::HashSet<String> =
+            q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
         for name in &secret_names {
             if !found.contains(name) {
                 result.errors.push(YamlValidationError {
@@ -171,12 +166,8 @@ async fn check_platform_variables(
     for name in &names {
         q = q.bind(name);
     }
-    let found: std::collections::HashSet<String> = q
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(|r| r.0)
-        .collect();
+    let found: std::collections::HashSet<String> =
+        q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
     for name in &names {
         if !found.contains(name) {
             result.errors.push(YamlValidationError {
@@ -234,9 +225,8 @@ pub async fn parse_and_resolve_team(
     pool: &SqlitePool,
     yaml: &str,
 ) -> Result<(PipelineYaml, String, String), AppError> {
-    let parsed: PipelineYaml = serde_yaml::from_str(yaml).map_err(|e| {
-        AppError::ValidationFailed(format!("YAML syntax error: {e}"))
-    })?;
+    let parsed: PipelineYaml = serde_yaml::from_str(yaml)
+        .map_err(|e| AppError::ValidationFailed(format!("YAML syntax error: {e}")))?;
     let (team_id, slug) = resolve_parsed_team_id(pool, &parsed).await?;
     Ok((parsed, team_id, slug))
 }

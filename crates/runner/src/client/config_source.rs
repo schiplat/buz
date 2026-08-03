@@ -95,7 +95,10 @@ fn archive_label(step: &serde_json::Value) -> String {
         .to_string()
 }
 
-fn parse_one_render_entry(er: &serde_json::Value, idx: Option<usize>) -> Result<EnvRenderSpec, String> {
+fn parse_one_render_entry(
+    er: &serde_json::Value,
+    idx: Option<usize>,
+) -> Result<EnvRenderSpec, String> {
     let label = idx
         .map(|i| format!("config_render[{i}]"))
         .unwrap_or_else(|| "config_render".into());
@@ -105,7 +108,9 @@ fn parse_one_render_entry(er: &serde_json::Value, idx: Option<usize>) -> Result<
         .unwrap_or("")
         .trim();
     if template.is_empty() {
-        return Err(format!("{label}.template is required (relative to $BUZ_CONFIG_DIR)"));
+        return Err(format!(
+            "{label}.template is required (relative to $BUZ_CONFIG_DIR)"
+        ));
     }
     let output = er
         .get("output")
@@ -339,10 +344,7 @@ fn write_atomic(path: &Path, content: &str, mode: u32) -> anyhow::Result<()> {
     ));
     let result = (|| -> anyhow::Result<()> {
         let mut f = std::fs::File::create(&tmp).with_context(|| {
-            format!(
-                "config_render: cannot create temp file '{}'",
-                tmp.display()
-            )
+            format!("config_render: cannot create temp file '{}'", tmp.display())
         })?;
         f.write_all(content.as_bytes())?;
         f.sync_all()?;
@@ -462,12 +464,7 @@ async fn ensure_remote_parent(
     if let Some(parent) = Path::new(relative).parent() {
         let p = parent.to_string_lossy();
         if !p.is_empty() && p != "." {
-            run_ssh(
-                conn,
-                &format!("mkdir -p {remote_dir}/{p}"),
-                step_timeout,
-            )
-            .await?;
+            run_ssh(conn, &format!("mkdir -p {remote_dir}/{p}"), step_timeout).await?;
         }
     }
     Ok(())

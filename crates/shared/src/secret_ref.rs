@@ -22,10 +22,7 @@ fn parse_domain_expr<'a>(raw: &'a str, domain: &str) -> Option<&'a str> {
     if rest.is_empty() {
         return None;
     }
-    if !rest
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if !rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return None;
     }
     Some(rest)
@@ -46,10 +43,7 @@ pub fn resolve_secret_slot(raw: &str) -> Option<String> {
     if s.contains('$') || s.contains('{') || s.contains('}') {
         return None;
     }
-    if !s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return None;
     }
     Some(s.to_string())
@@ -71,9 +65,7 @@ pub fn collect_secrets_names(text: &str) -> Vec<String> {
         let Some(end) = rest.find('}') else { break };
         let name = &rest[..end];
         if !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             && !out.iter().any(|x| x == name)
         {
             out.push(name.to_string());

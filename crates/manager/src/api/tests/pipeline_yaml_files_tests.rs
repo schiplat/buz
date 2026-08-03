@@ -44,9 +44,7 @@ async fn test_app(scan_dir: &str) -> Router {
         .connect("sqlite::memory:")
         .await
         .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET)
-        .await
-        .expect("migrate db");
+    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
 
     sqlx::query(
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)

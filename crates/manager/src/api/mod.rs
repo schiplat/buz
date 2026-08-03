@@ -6,8 +6,8 @@ use axum::{
 use crate::state::AppState;
 
 mod auth;
-mod pipelines;
 mod pipeline_yaml_files;
+mod pipelines;
 pub mod runners;
 // Re-export helper functions for YAML scanner and trigger logic
 pub(crate) use pipelines::{

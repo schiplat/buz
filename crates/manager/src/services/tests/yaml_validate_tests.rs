@@ -2,9 +2,7 @@ use shared::rbac::TeamRole;
 use sqlx::SqlitePool;
 
 use crate::rbac::{AuthUser, TeamMembership};
-use crate::services::yaml_validate::{
-    validate_pipeline_yaml, validate_pipeline_yaml_for_viewer,
-};
+use crate::services::yaml_validate::{validate_pipeline_yaml, validate_pipeline_yaml_for_viewer};
 
 async fn pool_with_default_team() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:")

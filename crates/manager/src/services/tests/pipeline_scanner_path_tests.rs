@@ -32,10 +32,7 @@ fn slugifies_pipeline_name() {
         "hello-world.yml"
     );
     assert_eq!(filename_from_pipeline_name("  "), "pipeline.yml");
-    assert_eq!(
-        filename_from_pipeline_name("sd -fad. sf"),
-        "sd-fad-sf.yml"
-    );
+    assert_eq!(filename_from_pipeline_name("sd -fad. sf"), "sd-fad-sf.yml");
 }
 
 #[test]

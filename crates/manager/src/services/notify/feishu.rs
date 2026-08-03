@@ -40,10 +40,7 @@ impl NotifyChannel for FeishuChannel {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body_text) {
             if let Some(code) = v.get("code").and_then(|c| c.as_i64()) {
                 if code != 0 {
-                    let msg = v
-                        .get("msg")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("unknown");
+                    let msg = v.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown");
                     return Err(NotifyError::Message(format!(
                         "feishu webhook code={code}: {msg}"
                     )));

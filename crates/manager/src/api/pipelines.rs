@@ -759,7 +759,9 @@ pub(crate) async fn do_trigger(
         if group.is_empty() {
             "pending"
         } else {
-            let mode = effective_concurrency_mode.as_deref().unwrap_or("discard-new");
+            let mode = effective_concurrency_mode
+                .as_deref()
+                .unwrap_or("discard-new");
 
             match mode {
                 "discard-new" => {

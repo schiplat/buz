@@ -692,10 +692,10 @@ pub async fn poll(
         let config_dest: String = t.get(20);
 
         // Purpose slots accept `${secrets.NAME}` or bare NAME.
-        let registry_secret_name = shared::secret_ref::resolve_secret_slot(&registry_secret_raw)
-            .unwrap_or_default();
-        let config_source_name = shared::secret_ref::resolve_secret_slot(&config_source_raw)
-            .unwrap_or_default();
+        let registry_secret_name =
+            shared::secret_ref::resolve_secret_slot(&registry_secret_raw).unwrap_or_default();
+        let config_source_name =
+            shared::secret_ref::resolve_secret_slot(&config_source_raw).unwrap_or_default();
 
         let mut task_json = serde_json::json!({
             "id": t.get::<String, _>(0),
@@ -801,9 +801,10 @@ pub async fn poll(
                 serde_json::from_str::<std::collections::BTreeMap<String, String>>(&step_env_raw)
             {
                 let mut combined_secrets = secrets_by_name.clone();
-                if let (Some(dst), Some(src)) =
-                    (combined_secrets.as_object_mut(), step_secrets_map.as_object())
-                {
+                if let (Some(dst), Some(src)) = (
+                    combined_secrets.as_object_mut(),
+                    step_secrets_map.as_object(),
+                ) {
                     for (k, v) in src {
                         dst.entry(k.clone()).or_insert(v.clone());
                     }
@@ -820,17 +821,15 @@ pub async fn poll(
                             }
                         }
                         Err(e) => {
-                            task_json["env_expand_error"] = serde_json::Value::String(format!(
-                                "step env '{key}': {e}"
-                            ));
+                            task_json["env_expand_error"] =
+                                serde_json::Value::String(format!("step env '{key}': {e}"));
                             break;
                         }
                     }
                 }
             } else {
-                task_json["env_expand_error"] = serde_json::Value::String(
-                    "step env is not a valid JSON object map".into(),
-                );
+                task_json["env_expand_error"] =
+                    serde_json::Value::String("step env is not a valid JSON object map".into());
             }
         }
         task_json["step_env"] = step_env_expanded;
@@ -958,15 +957,10 @@ pub async fn poll(
 
         // Resolve registry_secret → registry_auth (purpose slot — not env inject).
         // Same-team + kind=registry; name must be allowlisted (pipeline/step/team_shared).
-        if !registry_secret_name.trim().is_empty()
-            && task_json.get("registry_auth_error").is_none()
+        if !registry_secret_name.trim().is_empty() && task_json.get("registry_auth_error").is_none()
         {
-            let allowed = secrets_by_name
-                .get(registry_secret_name.trim())
-                .is_some()
-                || step_secrets_map
-                    .get(registry_secret_name.trim())
-                    .is_some();
+            let allowed = secrets_by_name.get(registry_secret_name.trim()).is_some()
+                || step_secrets_map.get(registry_secret_name.trim()).is_some();
             if !allowed {
                 task_json["registry_auth_error"] = serde_json::Value::String(format!(
                     "registry_secret '{}' not found for this pipeline's team — create the secret \
@@ -976,8 +970,7 @@ pub async fn poll(
                 ));
             }
         }
-        if !registry_secret_name.trim().is_empty()
-            && task_json.get("registry_auth_error").is_none()
+        if !registry_secret_name.trim().is_empty() && task_json.get("registry_auth_error").is_none()
         {
             match sqlx::query_as::<_, (String, String)>(
                 "SELECT s.value, s.kind FROM secrets s
@@ -1057,15 +1050,9 @@ pub async fn poll(
 
         // Resolve config_source → signed OSS GET URL (injected as $BUZ_CONFIG_URL).
         // Same-team + kind=aliyun_oss_auth; name must be allowlisted.
-        if !config_source_name.trim().is_empty()
-            && task_json.get("config_auth_error").is_none()
-        {
-            let allowed = secrets_by_name
-                .get(config_source_name.trim())
-                .is_some()
-                || step_secrets_map
-                    .get(config_source_name.trim())
-                    .is_some();
+        if !config_source_name.trim().is_empty() && task_json.get("config_auth_error").is_none() {
+            let allowed = secrets_by_name.get(config_source_name.trim()).is_some()
+                || step_secrets_map.get(config_source_name.trim()).is_some();
             if !allowed {
                 task_json["config_auth_error"] = serde_json::Value::String(format!(
                     "config.source '{}' not found for this pipeline's team — create an OSS secret \
@@ -1079,9 +1066,7 @@ pub async fn poll(
         // Attach step allowlist values for render/mask (Runner does not auto-inject `$NAME`).
         task_json["step_secrets"] = step_secrets_map.clone();
 
-        if !config_source_name.trim().is_empty()
-            && task_json.get("config_auth_error").is_none()
-        {
+        if !config_source_name.trim().is_empty() && task_json.get("config_auth_error").is_none() {
             match sqlx::query_as::<_, (String, String)>(
                 "SELECT s.value, s.kind FROM secrets s
                  JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
@@ -1320,9 +1305,10 @@ async fn merge_team_secrets_by_name(
     for name in &needed {
         q = q.bind(*name);
     }
-    let rows = q.fetch_all(pool).await.map_err(|e| {
-        AppError::Internal(format!("failed to load secrets by name: {e}"))
-    })?;
+    let rows = q
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("failed to load secrets by name: {e}")))?;
     for (name, stored) in rows {
         match crypto::decrypt(&stored, jwt_secret) {
             Ok(value) => {
@@ -1332,8 +1318,7 @@ async fn merge_team_secrets_by_name(
                 }
                 if let Some(parallel) = into_parallel.as_deref_mut() {
                     if let Some(obj) = parallel.as_object_mut() {
-                        obj.entry(name)
-                            .or_insert(serde_json::Value::String(value));
+                        obj.entry(name).or_insert(serde_json::Value::String(value));
                     }
                 }
             }

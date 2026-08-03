@@ -5,7 +5,10 @@ use shared::secret_ref::{
 
 #[test]
 fn parse_secrets_expr_ok() {
-    assert_eq!(parse_secrets_expr("${secrets.GIT_SSH_KEY}"), Some("GIT_SSH_KEY"));
+    assert_eq!(
+        parse_secrets_expr("${secrets.GIT_SSH_KEY}"),
+        Some("GIT_SSH_KEY")
+    );
     assert_eq!(
         parse_secrets_expr("  ${secrets.ACR_PERSONAL}  "),
         Some("ACR_PERSONAL")
@@ -32,10 +35,7 @@ fn resolve_secret_slot_expr_or_bare() {
         resolve_secret_slot("${secrets.OSS_CONFIG}"),
         Some("OSS_CONFIG".into())
     );
-    assert_eq!(
-        resolve_secret_slot("OSS_CONFIG"),
-        Some("OSS_CONFIG".into())
-    );
+    assert_eq!(resolve_secret_slot("OSS_CONFIG"), Some("OSS_CONFIG".into()));
     assert_eq!(resolve_secret_slot("${secrets.X}extra"), None);
     assert_eq!(resolve_secret_slot(""), None);
 }

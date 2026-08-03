@@ -109,9 +109,8 @@ pub async fn get_pipeline_source(
     }
     let yaml_path =
         yaml_path.ok_or_else(|| AppError::NotFound("pipeline has no yaml_path".into()))?;
-    let filename = filename_from_yaml_path(&yaml_path).ok_or_else(|| {
-        AppError::Internal(format!("invalid yaml_path on pipeline: {yaml_path}"))
-    })?;
+    let filename = filename_from_yaml_path(&yaml_path)
+        .ok_or_else(|| AppError::Internal(format!("invalid yaml_path on pipeline: {yaml_path}")))?;
 
     let scan_dir = &state.config.pipeline.yaml_scan_dir;
     let yaml = read_yaml_file(scan_dir, &filename).await?;
@@ -151,7 +150,12 @@ pub async fn create_file(
         pipeline_name
     };
 
-    let filename = match req.filename.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let filename = match req
+        .filename
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(f) => {
             validate_yaml_filename(f)?;
             f.to_string()

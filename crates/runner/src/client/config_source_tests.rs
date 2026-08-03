@@ -13,7 +13,9 @@ fn step_with(value: serde_json::Value) -> serde_json::Value {
 #[test]
 fn needs_prepare_detects_auth_and_render() {
     assert!(!needs_prepare(&serde_json::json!({})));
-    assert!(!needs_prepare(&serde_json::json!({ "config_dest": "/opt/x" })));
+    assert!(!needs_prepare(
+        &serde_json::json!({ "config_dest": "/opt/x" })
+    ));
     assert!(needs_prepare(&serde_json::json!({
         "config_auth": { "url": "https://example.com/a" }
     })));
@@ -277,7 +279,10 @@ async fn prepare_local_render_only_writes_env() {
         prep.env.get("BUZ_CONFIG_DIR").map(String::as_str),
         Some(dest.to_string_lossy().as_ref())
     );
-    assert_eq!(prep.env.get("BUZ_ENV_CHANGED").map(String::as_str), Some("1"));
+    assert_eq!(
+        prep.env.get("BUZ_ENV_CHANGED").map(String::as_str),
+        Some("1")
+    );
     let env = std::fs::read_to_string(dest.join(".env")).unwrap();
     assert!(env.contains("MANAGER_TOKEN=tok_secret_value"));
     assert!(prep.forced_redact.contains(&"tok_secret_value".to_string()));
@@ -346,8 +351,7 @@ fn apply_renders_on_missing_warn_does_not_fail() {
     let tmp = tempfile::tempdir().unwrap();
     let dest = tmp.path().join("cfg");
     std::fs::create_dir_all(&dest).unwrap();
-    std::fs::write(dest.join("env.example"), "X=${secrets.MISSING}\nY=ok\n")
-        .unwrap();
+    std::fs::write(dest.join("env.example"), "X=${secrets.MISSING}\nY=ok\n").unwrap();
     let specs = vec![EnvRenderSpec {
         template: "env.example".into(),
         output: ".env".into(),

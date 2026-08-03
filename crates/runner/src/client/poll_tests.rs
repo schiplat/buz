@@ -2,8 +2,8 @@ use super::{
     build_config_prep_banner, build_login_banner, build_ssh_env_command, build_step_echo,
     build_step_failure_message, build_verbose_step_config, build_verbose_step_result,
     step_failure_hint, step_log_base, wrap_remote_cmd_with_registry_login, LOG_ECHO, LOG_LOGIN,
-    LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP,
-    LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
+    LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP, LOG_STEP_VERBOSE_EXEC,
+    LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
 };
 use crate::masker::SecretCatalog;
 use std::collections::HashMap;
@@ -211,8 +211,14 @@ fn config_prep_banner_redacts_url_unless_debug() {
     });
     let redacted = build_config_prep_banner(&step, false);
     assert!(redacted.starts_with("==> CONFIG PREP\n"), "{redacted}");
-    assert!(redacted.contains("  source           OSS_DEMO"), "{redacted}");
-    assert!(redacted.contains("  dest             /opt/manager"), "{redacted}");
+    assert!(
+        redacted.contains("  source           OSS_DEMO"),
+        "{redacted}"
+    );
+    assert!(
+        redacted.contains("  dest             /opt/manager"),
+        "{redacted}"
+    );
     assert!(
         redacted.contains("  object_key       config_tpl/demo/v1/configs.tar.gz"),
         "{redacted}"
@@ -238,8 +244,14 @@ fn config_prep_banner_render_only_mode() {
         "config_render": [{ "template": "env.example", "output": ".env" }],
     });
     let banner = build_config_prep_banner(&step, false);
-    assert!(banner.contains("  dest             /opt/manager"), "{banner}");
-    assert!(banner.contains("  mode             render-only"), "{banner}");
+    assert!(
+        banner.contains("  dest             /opt/manager"),
+        "{banner}"
+    );
+    assert!(
+        banner.contains("  mode             render-only"),
+        "{banner}"
+    );
     assert!(!banner.contains("object_key"), "{banner}");
     assert!(!banner.contains("url"), "{banner}");
 }
