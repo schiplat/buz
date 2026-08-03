@@ -79,6 +79,9 @@ image when present. To skip the registry entirely:
 
 ```bash
 SKIP_PULL=1 IMAGE_TAG=v1.3.3 ./dev-deploy.sh upgrade
+# If the stack was first created with sudo/root (common on VMs):
+sudo SKIP_PULL=1 IMAGE_TAG=v1.3.3 ./dev-deploy.sh upgrade
+# or: DOCKER='sudo docker' SKIP_PULL=1 IMAGE_TAG=v1.3.3 ./dev-deploy.sh upgrade
 ```
 
 Runs on a Linux VM with only Docker installed; images are pulled from

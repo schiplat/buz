@@ -35,8 +35,9 @@
 #                   `latest-arm64` / `latest-amd64` or `1.3.0-arm64`.
 #   MANAGER_PORT    8080              (host bind port -> container 8080)
 #   DEPLOY_DIR      /opt/buz
-#   DOCKER          docker invocation (auto-detected: `docker` when the user is
-#                   in the docker group, else `sudo docker`).
+#   DOCKER          docker invocation (auto-detected; prefers the daemon that
+#                   already runs buz-manager — often `sudo docker` if first
+#                   deploy used root/sudo). Override with DOCKER='sudo docker'.
 #   BUZ_CONTAINER_UID  10001  in-container uid for the buz images; bind-mounted
 #                   data dirs are chown'ed to it so the containers can write.
 #   BUZ_JWT_SECRET  auto-generated on first `up` and persisted in $DEPLOY_DIR/.env
@@ -117,17 +118,53 @@ pull_image() {
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-# Detect a working `docker` invocation: plain docker when the current user can
-# reach the daemon, otherwise fall back to `sudo docker`. Override with DOCKER.
+# Detect a working `docker` invocation. Prefer the daemon that already runs
+# buz-manager (rootful `sudo docker` vs rootless/group `docker` are different
+# daemons — mixing them is a common cause of "Cannot reach Buz Manager" after
+# upgrade). Override with DOCKER='sudo docker' or DOCKER=docker.
 require_docker() {
   command -v docker >/dev/null 2>&1 || die "docker is not installed on this VM"
   if [[ -z "${DOCKER}" ]]; then
-    if docker info >/dev/null 2>&1; then
+    local can_plain=0 can_sudo=0
+    docker info >/dev/null 2>&1 && can_plain=1
+    sudo docker info >/dev/null 2>&1 && can_sudo=1
+
+    if (( can_plain == 0 && can_sudo == 0 )); then
+      die "docker daemon is not reachable as 'docker' or 'sudo docker' — add your user to the docker group, or set DOCKER='sudo docker'"
+    fi
+
+    # Prefer the daemon that already has our Manager container (rootful vs
+    # rootless). Operators who first deployed with sudo/root must keep using it.
+    local plain_id="" sudo_id=""
+    if (( can_plain == 1 )); then
+      plain_id="$(docker inspect -f '{{.Id}}' buz-manager 2>/dev/null || true)"
+    fi
+    if (( can_sudo == 1 )); then
+      sudo_id="$(sudo docker inspect -f '{{.Id}}' buz-manager 2>/dev/null || true)"
+    fi
+    if [[ -n "${plain_id}" && -n "${sudo_id}" && "${plain_id}" == "${sudo_id}" ]]; then
+      # Same rootful daemon via docker group — no need for sudo.
       DOCKER="docker"
-    elif sudo docker info >/dev/null 2>&1; then
+    elif [[ -n "${sudo_id}" ]]; then
+      DOCKER="sudo docker"
+    elif [[ -n "${plain_id}" ]]; then
+      DOCKER="docker"
+    elif (( can_sudo == 1 )) && (( can_plain == 1 )); then
+      # Both work, no existing Manager: prefer sudo when roots differ (rootless).
+      local plain_root sudo_root
+      plain_root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
+      sudo_root="$(sudo docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
+      if [[ -n "${plain_root}" && -n "${sudo_root}" && "${plain_root}" != "${sudo_root}" ]]; then
+        say "Detected distinct docker daemons (plain=${plain_root} vs sudo=${sudo_root})"
+        say "Defaulting to sudo docker — override with DOCKER=docker if unintended"
+        DOCKER="sudo docker"
+      else
+        DOCKER="docker"
+      fi
+    elif (( can_sudo == 1 )); then
       DOCKER="sudo docker"
     else
-      die "docker daemon is not reachable as 'docker' or 'sudo docker' — add your user to the docker group, or set DOCKER='sudo docker'"
+      DOCKER="docker"
     fi
     say "Using: ${DOCKER}"
   fi
@@ -144,12 +181,38 @@ dc() {
 # mkdir that transparently falls back to sudo for root-owned parent dirs.
 sudomkdir() { mkdir -p "$@" 2>/dev/null || sudo mkdir -p "$@"; }
 
+# Replace dest with src (src is removed). Uses sudo when dest is root-owned.
+install_file() {
+  local src="$1" dest="$2"
+  if mv "${src}" "${dest}" 2>/dev/null; then
+    return 0
+  fi
+  sudo mv "${src}" "${dest}" || die "cannot write ${dest} — re-run with sudo, or: sudo chown -R \$(id -u):\$(id -g) ${DEPLOY_DIR}/conf ${COMPOSE_FILE}"
+}
+
+# Write stdin to dest (sudo tee when not writable).
+write_file() {
+  local dest="$1"
+  if [[ -e "${dest}" ]] && [[ -w "${dest}" ]]; then
+    cat > "${dest}"
+  elif [[ ! -e "${dest}" ]] && [[ -w "$(dirname "${dest}")" ]]; then
+    cat > "${dest}"
+  else
+    sudo tee "${dest}" >/dev/null || die "cannot write ${dest} — re-run as root/sudo"
+  fi
+}
+
 ensure_dir() {
   if [[ ! -d "${DEPLOY_DIR}" ]]; then
     sudomkdir "${DEPLOY_DIR}"
   fi
   if [[ "$(id -u)" != "$(stat -c %u "${DEPLOY_DIR}")" ]]; then
-    sudo chown "$(id -u):$(id -g)" "${DEPLOY_DIR}"
+    # Running as root to fix a root-owned tree is fine; otherwise reclaim for caller.
+    if [[ "$(id -u)" == "0" ]] || sudo chown "$(id -u):$(id -g)" "${DEPLOY_DIR}" 2>/dev/null; then
+      :
+    else
+      die "${DEPLOY_DIR} is not owned by $(id -un) and chown failed — re-run with sudo"
+    fi
   fi
   local dirs=(conf data pipelines workspace logs)
   for d in "${dirs[@]}"; do
@@ -188,7 +251,7 @@ write_compose() {
     return
   fi
   say "Writing ${COMPOSE_FILE}"
-  cat > "${COMPOSE_FILE}" <<COMPOSE
+  write_file "${COMPOSE_FILE}" <<COMPOSE
 # Generated by dev-deploy.sh — edit with care, then \`docker compose -f ${COMPOSE_FILE} up -d\`.
 services:
   manager:
@@ -231,7 +294,7 @@ COMPOSE
 write_runner_conf() {
   [[ -z "${RUNNER_TOKEN}" ]] && die "RUNNER_TOKEN is required (Manager UI -> Runners -> New Runner). Re-run with RUNNER_TOKEN=..."
   say "Writing ${RUNNER_CONF} (name=${RUNNER_NAME})"
-  cat > "${RUNNER_CONF}" <<TOML
+  write_file "${RUNNER_CONF}" <<TOML
 [runner]
 name = "${RUNNER_NAME}"
 manager_url = "http://manager:8080"
@@ -263,7 +326,7 @@ ensure_runner_reachability() {
       /host\.docker\.internal/ { next }
       { print }
     ' "${COMPOSE_FILE}" > "${tmp}"
-    mv "${tmp}" "${COMPOSE_FILE}"
+    install_file "${tmp}" "${COMPOSE_FILE}"
   fi
 
   if [[ -f "${COMPOSE_FILE}" ]] && grep -qE '^\s+- manager\s*$' "${COMPOSE_FILE}"; then
@@ -284,7 +347,7 @@ ensure_runner_reachability() {
       }
       { print }
     ' "${COMPOSE_FILE}" > "${tmp}"
-    mv "${tmp}" "${COMPOSE_FILE}"
+    install_file "${tmp}" "${COMPOSE_FILE}"
   fi
 
   if [[ -f "${RUNNER_CONF}" ]] \
@@ -294,7 +357,7 @@ ensure_runner_reachability() {
     rtmp="$(mktemp)"
     sed -E 's|manager_url *= *"https?://host\.docker\.internal(:[0-9]+)?"|manager_url = "http://manager:8080"|' \
       "${RUNNER_CONF}" > "${rtmp}"
-    mv "${rtmp}" "${RUNNER_CONF}"
+    install_file "${rtmp}" "${RUNNER_CONF}"
     grep -qE 'manager_url[[:space:]]*=[[:space:]]*"http://manager:8080"' "${RUNNER_CONF}" \
       || die "failed to rewrite manager_url in ${RUNNER_CONF}"
   fi
@@ -492,6 +555,9 @@ cmd_runner() {
     say "Runner not ready after 5 attempts."
     echo "  Check Manager UI → Runners, or:"
     echo "  ${DOCKER} compose -f ${COMPOSE_FILE} logs --tail=50 runner"
+    echo "  If this host was first deployed with sudo/root, re-run as:"
+    echo "    sudo SKIP_PULL=1 IMAGE_TAG=${IMAGE_TAG} ${BASH_SOURCE[0]} runner"
+    echo "    # or: DOCKER='sudo docker' SKIP_PULL=1 ${BASH_SOURCE[0]} runner"
     exit 1
   fi
 }
@@ -544,9 +610,14 @@ cmd_upgrade() {
   say "  ${MANAGER_IMAGE}"
   say "  ${RUNNER_IMAGE}"
 
-  # Rewrite image lines; use '|' as sed delimiter so registry slashes are literal.
-  sed -i "s|image: ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-manager:.*|image: ${MANAGER_IMAGE}|" "${COMPOSE_FILE}"
-  sed -i "s|image: ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-runner:.*|image: ${RUNNER_IMAGE}|" "${COMPOSE_FILE}"
+  # Rewrite image lines via temp file so root-owned compose still works under sudo.
+  local ctmp
+  ctmp="$(mktemp)"
+  sed -E \
+    -e "s|image: ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-manager:.*|image: ${MANAGER_IMAGE}|" \
+    -e "s|image: ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-runner:.*|image: ${RUNNER_IMAGE}|" \
+    "${COMPOSE_FILE}" > "${ctmp}"
+  install_file "${ctmp}" "${COMPOSE_FILE}"
 
   # Fail loudly if the expected image lines were not found (e.g. the user
   # pointed the compose file at a different registry/namespace).
@@ -568,7 +639,7 @@ cmd_upgrade() {
     || die "Manager did not become healthy after upgrade — check: ${DOCKER} compose -f ${COMPOSE_FILE} logs --tail=80 manager"
 
   # Brief settle time after Manager is healthy before recreating Runner
-  # (port publish / host-gateway routing can lag the /health success).
+  # (port publish / compose DNS can lag the /health success).
   say "Waiting 3s before recreating Runner…"
   sleep 3
 
@@ -577,7 +648,11 @@ cmd_upgrade() {
     echo
     die "Upgrade pulled ${IMAGE_TAG} but Runner did not come online.
   Check: ${DOCKER} compose -f ${COMPOSE_FILE} logs --tail=50 runner
-  Or re-run: ADMIN_USERNAME=… ADMIN_PASSWORD=… ${BASH_SOURCE[0]} runner"
+  If first deploy used sudo/root, re-run:
+    sudo SKIP_PULL=1 IMAGE_TAG=${IMAGE_TAG} ${BASH_SOURCE[0]} upgrade
+    # or: DOCKER='sudo docker' SKIP_PULL=1 IMAGE_TAG=${IMAGE_TAG} ${BASH_SOURCE[0]} upgrade
+  Or repair Runner only:
+    sudo SKIP_PULL=1 ${BASH_SOURCE[0]} runner"
   fi
 
   say "Upgrade complete — Manager: http://127.0.0.1:${MANAGER_PORT}"

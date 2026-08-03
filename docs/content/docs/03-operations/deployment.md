@@ -180,15 +180,22 @@ went stale after Manager was recreated.
 One-shot fix on a `dev-deploy.sh` host:
 
 ```bash
-# Prefer upgrade (waits for Manager health, recreates Runner after sleep 3s):
-IMAGE_TAG=<current-or-new-tag> ./dev-deploy.sh upgrade
+# Prefer upgrade (waits for Manager health, recreates Runner after sleep 3s).
+# If the stack was first created with sudo/root, keep using the same daemon:
+sudo SKIP_PULL=1 IMAGE_TAG=<current-or-new-tag> ./dev-deploy.sh upgrade
+# or:
+DOCKER='sudo docker' SKIP_PULL=1 IMAGE_TAG=<tag> ./dev-deploy.sh upgrade
 # Or just repair Runner:
-./dev-deploy.sh runner
+sudo SKIP_PULL=1 ./dev-deploy.sh runner
 ```
 
-Manual check: `docker exec buz-runner getent hosts manager` (should return the
+Mixing plain `docker` (docker group / rootless) with `sudo docker` (rootful) talks
+to different daemons — Runner recreated on the wrong side never reaches Manager.
+`dev-deploy.sh` prefers the daemon that already has `buz-manager`.
+
+Manual check: `sudo docker exec buz-runner getent hosts manager` (should return the
 Manager container IP) and compare against
-`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' buz-manager`.
+`sudo docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' buz-manager`.
 Same-compose default is container↔container: `manager_url = "http://manager:8080"`
 with `depends_on: manager: condition: service_healthy`.
 
