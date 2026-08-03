@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   collectSecretNamesFromYaml,
   concurrencyFromYaml,
+  envEntriesFromRecord,
+  envEntriesFromRows,
   parseDurationToSeconds,
   yamlStepsToDefTasks,
 } from '../pipelineDefinitionView'
@@ -97,5 +99,41 @@ describe('concurrencyFromYaml / collectSecretNamesFromYaml', () => {
       notify: [{ type: 'feishu', webhook: '${secrets.FEISHU_WEBHOOK}' }],
     })
     expect(names.sort()).toEqual(['A', 'B', 'FEISHU_WEBHOOK', 'OSS_SRC', 'REG'])
+  })
+})
+
+describe('envEntriesFromRecord / envEntriesFromRows', () => {
+  it('maps YAML env map to sorted rows', () => {
+    expect(
+      envEntriesFromRecord({
+        Z_LAST: 'z',
+        ACR_IMAGE_PREFIX: 'registry.example/ns/app',
+        CONFIG_DIR: '/opt/app',
+      }),
+    ).toEqual([
+      { name: 'ACR_IMAGE_PREFIX', value: 'registry.example/ns/app' },
+      { name: 'CONFIG_DIR', value: '/opt/app' },
+      { name: 'Z_LAST', value: 'z' },
+    ])
+  })
+
+  it('returns empty for missing env', () => {
+    expect(envEntriesFromRecord(null)).toEqual([])
+    expect(envEntriesFromRecord(undefined)).toEqual([])
+    expect(envEntriesFromRows(null)).toEqual([])
+    expect(envEntriesFromRows([])).toEqual([])
+  })
+
+  it('maps DB env rows', () => {
+    expect(
+      envEntriesFromRows([
+        { name: 'FOO', value: '1' },
+        { name: '', value: 'skip' },
+        { name: 'BAR', value: '2' },
+      ]),
+    ).toEqual([
+      { name: 'FOO', value: '1' },
+      { name: 'BAR', value: '2' },
+    ])
   })
 })

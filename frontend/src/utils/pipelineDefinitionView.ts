@@ -101,3 +101,26 @@ export function collectSecretNamesFromYaml(parsed: YamlParsedData): string[] {
   }
   return [...secretNames]
 }
+
+export type DefinitionEnvEntry = { name: string; value: string }
+
+/** Normalize pipeline-level `env:` map (YAML validate payload) into sorted rows. */
+export function envEntriesFromRecord(
+  env?: Record<string, string> | null,
+): DefinitionEnvEntry[] {
+  if (!env || typeof env !== 'object') return []
+  return Object.entries(env)
+    .filter(([k]) => String(k).trim())
+    .map(([name, value]) => ({ name: String(name), value: value ?? '' }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** Normalize DB / form env rows (`{ name, value }[]`) for Definition. */
+export function envEntriesFromRows(
+  rows?: { name: string; value: string }[] | null,
+): DefinitionEnvEntry[] {
+  if (!Array.isArray(rows)) return []
+  return rows
+    .filter((r) => r?.name && String(r.name).trim())
+    .map((r) => ({ name: String(r.name), value: r.value ?? '' }))
+}

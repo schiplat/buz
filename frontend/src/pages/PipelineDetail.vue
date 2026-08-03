@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp, Bell } from '@lucide/vue'
+import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp, Bell, AlertTriangle, AlertCircle } from '@lucide/vue'
 import { cn } from '@/lib/utils'
 import {
   pipelinesApi,
@@ -15,6 +15,8 @@ import {
 import {
   collectSecretNamesFromYaml,
   concurrencyFromYaml,
+  envEntriesFromRecord,
+  envEntriesFromRows,
   parseDurationToSeconds,
   yamlStepsToDefTasks,
 } from '@/utils/pipelineDefinitionView'
@@ -284,24 +286,23 @@ const hasYamlSource = computed(
 
 const yamlSync = computed(() => pipeline.value?.yaml_sync ?? null)
 
-/** Definition-page banner: prefer live file-load errors, else yaml_sync status. */
+/** Definition-page banner: prefer live file-load errors, else yaml_sync status.
+ *  Only shown when action is needed — idle in-sync state uses the header chip. */
 const yamlSyncBanner = computed(() => {
   if (hasYamlSource.value && defYamlAuthority.value === 'unavailable') {
     return {
       tone: 'destructive' as const,
       title: 'Cannot load definition from file',
-      detail:
-        defYamlErrors.value.slice(0, 4).join(' · ')
-        || 'On-disk YAML is missing or invalid — Definition is not shown from DB projection.',
+      detail: 'On-disk YAML is missing or invalid. Definition is not shown from the DB projection.',
+      errors: defYamlErrors.value,
     }
   }
   if (hasYamlSource.value && defYamlAuthority.value === 'file' && defYamlErrors.value.length) {
     return {
-      tone: 'amber' as const,
+      tone: 'warning' as const,
       title: 'YAML validation issues',
-      detail:
-        defYamlErrors.value.slice(0, 4).join(' · ')
-        || 'File parsed for Definition; fix errors before trigger.',
+      detail: 'Fix these before trigger. The file is still shown below.',
+      errors: defYamlErrors.value,
     }
   }
   const s = yamlSync.value
@@ -310,9 +311,8 @@ const yamlSyncBanner = computed(() => {
     return {
       tone: 'destructive' as const,
       title: 'YAML validation failed',
-      detail:
-        (s.errors || []).slice(0, 3).join(' · ')
-        || 'On-disk file is invalid — trigger is blocked until fixed.',
+      detail: 'Trigger is blocked until the on-disk file is fixed.',
+      errors: s.errors || [],
     }
   }
   if (s.status === 'missing_file') {
@@ -320,13 +320,15 @@ const yamlSyncBanner = computed(() => {
       tone: 'destructive' as const,
       title: 'YAML file missing',
       detail: `Expected ${s.filename || 'file'} under Manager yaml_scan_dir.`,
+      errors: [] as string[],
     }
   }
   if (s.status === 'stale') {
     return {
-      tone: 'amber' as const,
+      tone: 'warning' as const,
       title: 'File newer than last sync',
-      detail: `Last synced ${s.last_synced_at || '—'} · file mtime ${s.file_mtime || '—'}. Showing file contents below; trigger will refresh the DB projection.`,
+      detail: 'Content below is from disk. The next trigger will refresh the DB projection.',
+      errors: [] as string[],
     }
   }
   return null
@@ -357,6 +359,7 @@ const definitionView = computed(() => {
       timeout_seconds: parseDurationToSeconds(runner?.timeout) || p.timeout_seconds || 3600,
       variableNames: parsed.variables || [],
       secretNames: collectSecretNamesFromYaml(parsed),
+      envEntries: envEntriesFromRecord(parsed.env),
       notify: Array.isArray(parsed.notify) ? parsed.notify : [],
       team_id: p.team_id,
       source: 'yaml',
@@ -402,6 +405,7 @@ const definitionView = computed(() => {
     timeout_seconds: p.timeout_seconds || 3600,
     variableNames: boundVariableNames.value,
     secretNames: boundSecretNames.value,
+    envEntries: envEntriesFromRows(p.env),
     notify: [] as { type: string; webhook: string; on?: string[] | null }[],
     team_id: p.team_id,
     source: p.source || 'form',
@@ -1259,35 +1263,40 @@ async function handleTrigger() {
           <!-- ======== DEFINITION ======== -->
           <div v-if="activeTab === 'definition'">
             <div
-              v-if="hasYamlSource && (yamlSyncBanner || yamlSync)"
-              class="mb-3 rounded-lg border px-3 py-2 text-xs leading-relaxed"
-              :class="
-                yamlSyncBanner?.tone === 'destructive'
-                  ? 'border-destructive/35 bg-destructive/5 text-destructive'
-                  : yamlSyncBanner?.tone === 'amber'
-                    ? 'border-amber-500/35 bg-amber-500/5 text-amber-800 dark:text-amber-300'
-                    : 'border-border/40 bg-muted/40 text-muted-foreground'
-              "
+              v-if="yamlSyncBanner"
+              class="mb-3 flex items-start gap-2.5 rounded-xl border border-rose-500 bg-card px-3.5 py-3 text-sm leading-relaxed text-foreground"
             >
-              <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span class="font-medium">
-                  {{ yamlSyncBanner?.title || (definitionView?.authority === 'file' ? 'Showing file contents' : 'YAML in sync') }}
-                </span>
-                <span class="font-mono text-[11px] opacity-80">{{ defYamlFilename || yamlSync?.filename }}</span>
-                <span v-if="yamlSync?.last_synced_at" class="opacity-70">
-                  Last synced {{ yamlSync.last_synced_at }}
-                </span>
-                <span v-if="yamlSync?.file_mtime" class="opacity-70">
-                  File {{ yamlSync.file_mtime }}
-                </span>
+              <AlertCircle
+                v-if="yamlSyncBanner.tone === 'destructive'"
+                class="mt-0.5 h-4 w-4 shrink-0 text-rose-600"
+              />
+              <AlertTriangle
+                v-else
+                class="mt-0.5 h-4 w-4 shrink-0 text-rose-600"
+              />
+              <div class="min-w-0 flex-1 space-y-1">
+                <div class="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
+                  <span class="font-semibold text-foreground">{{ yamlSyncBanner.title }}</span>
+                  <span
+                    v-if="defYamlFilename || yamlSync?.filename"
+                    class="font-mono text-xs text-muted-foreground"
+                  >{{ defYamlFilename || yamlSync?.filename }}</span>
+                </div>
+                <p v-if="yamlSyncBanner.detail" class="text-muted-foreground">{{ yamlSyncBanner.detail }}</p>
+                <div
+                  v-if="yamlSyncBanner.tone === 'warning' && yamlSync?.status === 'stale'"
+                  class="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground"
+                >
+                  <span v-if="yamlSync.last_synced_at">Last synced {{ yamlSync.last_synced_at }}</span>
+                  <span v-if="yamlSync.file_mtime">File {{ yamlSync.file_mtime }}</span>
+                </div>
+                <ul
+                  v-if="yamlSyncBanner.errors?.length"
+                  class="space-y-0.5 list-disc pl-4 font-mono text-xs text-foreground/90"
+                >
+                  <li v-for="(err, i) in yamlSyncBanner.errors.slice(0, 8)" :key="i">{{ err }}</li>
+                </ul>
               </div>
-              <p v-if="yamlSyncBanner?.detail" class="mt-1 opacity-90">{{ yamlSyncBanner.detail }}</p>
-              <ul
-                v-if="defYamlErrors.length && (defYamlAuthority === 'unavailable' || defYamlAuthority === 'file')"
-                class="mt-2 space-y-0.5 list-disc pl-4 opacity-95"
-              >
-                <li v-for="(err, i) in defYamlErrors.slice(0, 8)" :key="i">{{ err }}</li>
-              </ul>
             </div>
 
             <div
@@ -1573,6 +1582,29 @@ async function handleTrigger() {
                 </template>
               </div>
 
+              <!-- ── Environment (pipeline-level env:) ── -->
+              <div
+                v-if="definitionView.envEntries.length"
+                class="mt-6 border-t border-border/20 pt-1"
+              >
+                <div class="px-5 py-3 bg-muted/10 flex items-center gap-2">
+                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Environment</span>
+                  <span class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.envEntries.length }}</span>
+                </div>
+                <div class="px-5 py-3">
+                  <dl class="space-y-2.5">
+                    <div
+                      v-for="e in definitionView.envEntries"
+                      :key="e.name"
+                      class="grid grid-cols-[minmax(8rem,12rem)_1fr] gap-x-4 gap-y-0.5 items-baseline"
+                    >
+                      <dt class="font-mono text-xs text-muted-foreground truncate" :title="e.name">{{ e.name }}</dt>
+                      <dd class="font-mono text-xs text-foreground/85 break-all leading-relaxed">{{ e.value || '—' }}</dd>
+                    </div>
+                  </dl>
+                </div>
+              </div>
+
               <!-- ── Parameters ── -->
               <div v-if="defHasInputDefs" class="mt-6 border-t border-border/20 pt-1">
                 <div class="px-5 py-3 bg-muted/10 flex items-center gap-2">
@@ -1693,6 +1725,23 @@ async function handleTrigger() {
                         <span class="text-muted-foreground/60 text-xs">render</span>
                         <code class="mono-chip text-xs">{{ formatConfigRenderSummary((step as any).config_render) }}</code>
                       </span>
+                    </div>
+
+                    <!-- Step-level env: -->
+                    <div
+                      v-if="step.step_env && typeof step.step_env === 'object' && Object.keys(step.step_env).length"
+                      class="mb-2"
+                    >
+                      <dl class="space-y-1">
+                        <div
+                          v-for="(val, key) in step.step_env"
+                          :key="String(key)"
+                          class="grid grid-cols-[minmax(5rem,9rem)_1fr] gap-x-3 items-baseline text-xs"
+                        >
+                          <dt class="font-mono text-muted-foreground/70 truncate" :title="String(key)">{{ key }}</dt>
+                          <dd class="font-mono text-foreground/80 break-all leading-relaxed">{{ val }}</dd>
+                        </div>
+                      </dl>
                     </div>
 
                     <!-- Other step metadata: SSH hosts, host labels, dir -->
