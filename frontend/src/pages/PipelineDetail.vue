@@ -1264,35 +1264,40 @@ async function handleTrigger() {
           <div v-if="activeTab === 'definition'">
             <div
               v-if="yamlSyncBanner"
-              class="mb-3 flex items-start gap-2.5 rounded-xl border border-rose-500 bg-card px-3.5 py-3 text-sm leading-relaxed text-foreground"
+              class="mb-3 flex items-start gap-2.5 rounded-xl border px-3.5 py-3 text-sm leading-relaxed"
+              :class="
+                yamlSyncBanner.tone === 'destructive'
+                  ? 'border-rose-500/50 bg-rose-100 text-rose-950 dark:border-rose-400/40 dark:bg-rose-950 dark:text-rose-50'
+                  : 'border-amber-500/60 bg-amber-100 text-amber-950 dark:border-amber-400/40 dark:bg-amber-950 dark:text-amber-50'
+              "
             >
               <AlertCircle
                 v-if="yamlSyncBanner.tone === 'destructive'"
-                class="mt-0.5 h-4 w-4 shrink-0 text-rose-600"
+                class="mt-0.5 h-4 w-4 shrink-0 text-rose-800 dark:text-rose-300"
               />
               <AlertTriangle
                 v-else
-                class="mt-0.5 h-4 w-4 shrink-0 text-rose-600"
+                class="mt-0.5 h-4 w-4 shrink-0 text-amber-800 dark:text-amber-300"
               />
               <div class="min-w-0 flex-1 space-y-1">
                 <div class="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
-                  <span class="font-semibold text-foreground">{{ yamlSyncBanner.title }}</span>
+                  <span class="font-semibold">{{ yamlSyncBanner.title }}</span>
                   <span
                     v-if="defYamlFilename || yamlSync?.filename"
-                    class="font-mono text-xs text-muted-foreground"
+                    class="font-mono text-xs opacity-75"
                   >{{ defYamlFilename || yamlSync?.filename }}</span>
                 </div>
-                <p v-if="yamlSyncBanner.detail" class="text-muted-foreground">{{ yamlSyncBanner.detail }}</p>
+                <p v-if="yamlSyncBanner.detail" class="opacity-90">{{ yamlSyncBanner.detail }}</p>
                 <div
                   v-if="yamlSyncBanner.tone === 'warning' && yamlSync?.status === 'stale'"
-                  class="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground"
+                  class="flex flex-wrap gap-x-3 gap-y-0.5 text-xs opacity-75"
                 >
                   <span v-if="yamlSync.last_synced_at">Last synced {{ yamlSync.last_synced_at }}</span>
                   <span v-if="yamlSync.file_mtime">File {{ yamlSync.file_mtime }}</span>
                 </div>
                 <ul
                   v-if="yamlSyncBanner.errors?.length"
-                  class="space-y-0.5 list-disc pl-4 font-mono text-xs text-foreground/90"
+                  class="space-y-0.5 list-disc pl-4 font-mono text-xs opacity-95"
                 >
                   <li v-for="(err, i) in yamlSyncBanner.errors.slice(0, 8)" :key="i">{{ err }}</li>
                 </ul>
