@@ -50,12 +50,16 @@ runner:
   labels: [macos]
   timeout: 5m
 
+secrets:
+  - OSS_DEMO
+
 steps:
   # ── 1. OSS deliver (unpack only) ───────────────────────────────────
   - name: Deliver config
     uses: shell
+    secrets: [OSS_DEMO]
     config:
-      source: OSS_DEMO
+      source: ${secrets.OSS_DEMO}
       key_path: config_tpl/demo/$tag
       dest: /tmp/buz-config-demo
     run: |

@@ -6,19 +6,21 @@ description: "How Buz controls which pipelines can access secrets — kind, team
 
 ## Overview
 
-Buz controls secret delivery with a **team ownership boundary** plus an **opt-in team share flag**. Every secret and pipeline belongs to a Team (`team_id`). Runtime injection is granted through:
+Buz controls secret delivery with a **team ownership boundary** plus an **opt-in team share flag**. Every secret and pipeline belongs to a Team (`team_id`). Runtime **allowlist** (not env injection) is granted through:
 
-1. **Team auto-access** — only when the secret has `team_shared = true` and shares the pipeline’s `team_id`
+1. **Team auto-allowlist** — only when the secret has `team_shared = true` and shares the pipeline’s `team_id`
 2. **Explicit per-pipeline bindings** — `pipeline_secrets` / YAML `secrets:`
-3. **Explicit step references** — step `secrets:` or `registry_secret:`
+3. **Explicit step references** — step `secrets:` or purpose slots (`registry_secret`, `config.source`)
 
-**Default for new secrets: `team_shared = false`.** Same-team pipelines do **not** receive the secret unless they bind or reference it. Cross-team use remains forbidden (future Phase 3 grants).
+**Getting a value into the process env** always requires an explicit map: `env: KEY: ${secrets.NAME}` (or a purpose slot). See [Secrets Access (GHA-style)](/docs/01-architecture/secrets-access/).
+
+**Default for new secrets: `team_shared = false`.** Same-team pipelines do **not** resolve the secret unless they bind or reference it. Cross-team use remains forbidden (future Phase 3 grants).
 
 This is **Scheme B** — chosen over “any pipeline can use any secret” to provide isolation without a full IAM product in early phases. The share flag corrects the earlier over-broad assumption that “same team ⇒ always inject.”
 
 ---
 
-## `team_shared` (opt-in auto-inject)
+## `team_shared` (opt-in auto-allowlist)
 
 | | |
 |---|---|
@@ -31,18 +33,18 @@ This is **Scheme B** — chosen over “any pipeline can use any secret” to pr
 
 | `team_shared` | Same-team pipeline behavior |
 |---------------|-----------------------------|
-| `false` (default) | **Not** auto-injected. Use Authorized Secrets, YAML `secrets:`, step `secrets:`, or `registry_secret`. |
-| `true` | Auto-injected into every job for pipelines in the same team (legacy convenience for shared CI tokens). |
+| `false` (default) | **Not** auto-allowlisted. Use Authorized Secrets, YAML `secrets:`, step `secrets:`, or purpose slots. |
+| `true` | Auto-allowlisted for `${secrets.NAME}` on every same-team job — still **not** auto-injected as `$NAME`. |
 
-`team_shared` does **not** mean “public plaintext” or “cross-team readable.” It only means: *allow Tier‑1 auto-access within the owning team.*
+`team_shared` does **not** mean “public plaintext” or “cross-team readable.” It only means: *allow Tier‑1 expression resolution within the owning team.*
 
 ### Recommended usage
 
 | Secret type | Suggested setting | How pipelines use it |
 |-------------|-------------------|----------------------|
-| Shared CI token used by many pipelines as `$NAME` | `kind: generic`, `team_shared: true` | Auto env inject |
-| Prod DB password, deploy key | `kind: generic`, `team_shared: false` | Explicit bind / step `secrets:` |
-| Registry login JSON (ACR, etc.) | `kind: registry`, `team_shared: false` | `registry_secret:` only (not as `$NAME` env) |
+| Shared CI token used by many pipelines | `kind: generic`, `team_shared: true` | `env: TOKEN: ${secrets.TOKEN}` (no per-pipeline bind) |
+| Prod DB password, deploy key | `kind: generic`, `team_shared: false` | Explicit bind + `env: …: ${secrets.NAME}` |
+| Registry login JSON (ACR, etc.) | `kind: registry`, `team_shared: false` | `registry_secret: ${secrets.NAME}` |
 
 ---
 
@@ -107,10 +109,11 @@ Bind-time auth: binder needs `SecretManage` on the pipeline’s team; secret mus
 
 | Reference | Injection |
 |-----------|-----------|
-| Step `secrets: [NAME]` | Env vars for **that step only** |
-| Step `registry_secret: NAME` | `docker login` credentials only — **not** injected as `$NAME` |
+| Step `secrets: [NAME]` | Explicit step allowlist (optional) |
+| Step `registry_secret` / `config.source: ${secrets.NAME}` | Purpose slot — **reference is allowlist**; not injected as `$NAME` |
+| Step / pipeline `env: KEY: ${secrets.NAME}` | Allowlists `NAME` and injects as `$KEY` |
 
-Resolution requires the secret to exist and `secret.team_id == pipeline.team_id`. Name-only lookup across teams is rejected.
+Resolution requires the secret to exist and `secret.team_id == pipeline.team_id`. Top-level `secrets:` is optional. Name-only lookup across teams is rejected.
 
 **Use case:** Git deploy key only on checkout; ACR JSON only for private pull/push.
 
@@ -152,8 +155,8 @@ Claim payload (Manager → Runner):
 
 | Resource | Where created | How bound to a pipeline | Runtime injection |
 |----------|---------------|-------------------------|-------------------|
-| **Secrets** | Infrastructure → Secrets | (1) `team_shared` + same team, or (2) **Authorized Secrets** / YAML `secrets:`, or (3) step `secrets:` / `registry_secret` | Env `$NAME` (**masked in logs**), except `registry_secret` → login only |
-| **Registry credentials** | Same Secrets store (JSON) | Step `registry_secret: <name>` | `docker login` only |
+| **Secrets** | Infrastructure → Secrets | (1) `team_shared` + same team, or (2) **Authorized Secrets** / YAML `secrets:`, or (3) step `secrets:` / purpose slots | Allowlist for `${secrets.NAME}`; process env only via `env: KEY: ${secrets.NAME}` (**masked**) |
+| **Registry credentials** | Same Secrets store (JSON) | Step `registry_secret: ${secrets.NAME}` (allowlisted) | `docker login` only |
 | **Variables** | Infrastructure → Variables | Advanced → Variables / YAML `variables:` | Env `$NAME` (**not masked**) |
 | **Hosts** | Infrastructure → Hosts | Step `host` / `host_labels` when `uses: ssh` | SSH params on runner |
 | **Inline Env** | Pipeline `env:` | Always scoped to that pipeline | Env for every step (**not masked**) |
@@ -209,15 +212,18 @@ Help text: only secrets with **Team share** enabled are auto-injected; otherwise
 
 ---
 
-## YAML ↔ Form Mapping
+## YAML secret bindings (authoritative)
 
-| YAML | Form | Behavior |
-|------|------|----------|
-| `secrets: [GIT_SSH_KEY, DOCKER_PASS]` | Authorized Secrets | Explicit binding → job env |
-| `steps[].secrets: [GIT_SSH_KEY]` | Step secrets | Step env only; same-team name resolve |
-| `steps[].registry_secret` | Registry Secret | Login only; same-team + **`kind=registry`** |
-| _(no YAML field)_ | Secret → Kind | `generic` vs `registry` (UI filter + claim check) |
-| _(no YAML field)_ | Secret → Team share | Tier‑1 auto-access when enabled |
+Prefer YAML `secrets:` + `env: KEY: ${secrets.NAME}` (see [Secrets Access](./secrets-access.md)). Form create/edit for pipelines is removed ([YAML-First Authoring](/docs/01-architecture/yaml-first-authoring/)).
+
+| YAML / UI | Behavior |
+|-----------|----------|
+| `secrets: [GIT_SSH_KEY, …]` (optional top-level) | Allowlist overview; does **not** inject `$NAME` alone |
+| `env: KEY: ${secrets.NAME}` | Explicit map → process env |
+| `steps[].secrets: [GIT_SSH_KEY]` | Optional step allowlist narrowing |
+| `steps[].registry_secret` | Login purpose slot; same-team + **`kind=registry`** |
+| Secrets UI → Kind | `generic` vs `registry` (filter + claim check) |
+| Secrets UI → Team share | Tier‑1 auto-allowlist when enabled |
 
 ---
 
@@ -324,7 +330,7 @@ Constants and ordering tests live in `poll.rs` / `poll_tests.rs` (`verbose_chunk
 
 ## Debug Mode (admin-only unredacted logs)
 
-For troubleshooting, a **platform admin** can trigger a pipeline with **Debug mode** enabled: secret values are **not redacted** in the job logs (`==> RUN` env lines and streamed output). For `config_source` steps, Debug also prints the full signed URL in `==> CONFIG PREP` (even when Verbose is off) — that is often the only visible difference when prepare fails before any RUN echo. Pair with Verbose for stage markers. This is a deliberate, high-risk escape hatch.
+For troubleshooting, a **platform admin** can trigger a pipeline with **Debug mode** enabled: secret values are **not redacted** in the job logs (`==> RUN` env lines and streamed output). For steps with nested `config:` OSS deliver, Debug also prints the full signed URL in `==> CONFIG PREP` (even when Verbose is off) — that is often the only visible difference when prepare fails before any RUN echo. Pair with Verbose for stage markers. This is a deliberate, high-risk escape hatch. Non-admins cannot enable Debug (UI hidden + API rejected).
 
 ### How it works
 

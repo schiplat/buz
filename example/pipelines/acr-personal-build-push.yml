@@ -2,7 +2,7 @@
 #
 # Prerequisites:
 #   1) Secrets & Variables → Secrets named `ACR_PERSONAL` (AES-256-GCM at rest).
-#      Leave **Team share OFF** (default); this pipeline uses registry_secret only.
+#      Leave **Team share OFF** (default); allowlist via secrets: + purpose slot.
 #      {
 #        "provider": "acr_personal",
 #        "registry": "registry.cn-hongkong.aliyuncs.com",
@@ -30,6 +30,9 @@ on:
 runner:
   labels: [linux-x64]
   timeout: 30m
+
+secrets:
+  - ACR_PERSONAL
 
 env:
   REGISTRY: registry.cn-hongkong.aliyuncs.com
@@ -61,7 +64,8 @@ steps:
   # ── 3. Push — Manager resolves registry_secret → Runner docker login/logout ──
   - name: Push image
     uses: shell
-    registry_secret: ACR_PERSONAL
+    secrets: [ACR_PERSONAL]
+    registry_secret: ${secrets.ACR_PERSONAL}
     run: |
       IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
       echo "Pushing $IMAGE"
@@ -71,7 +75,8 @@ steps:
   # ── 4. Verify — pull + run the image just pushed ──
   - name: Verify pull
     uses: shell
-    registry_secret: ACR_PERSONAL
+    secrets: [ACR_PERSONAL]
+    registry_secret: ${secrets.ACR_PERSONAL}
     run: |
       IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
       docker pull "$IMAGE"

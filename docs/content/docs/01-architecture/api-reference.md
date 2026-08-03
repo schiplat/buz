@@ -276,16 +276,24 @@ Empty response: `204 No Content`
 
 ## Pipelines
 
-| Method | Path | Auth |
-|--------|------|------|
-| GET | `/api/v1/pipelines` | Admin JWT |
-| POST | `/api/v1/pipelines` | Admin JWT |
-| POST | `/api/v1/pipelines/validate` | Admin JWT |
-| GET | `/api/v1/pipelines/:id` | Admin JWT |
-| PUT | `/api/v1/pipelines/:id` | Admin JWT |
-| DELETE | `/api/v1/pipelines/:id` | Admin JWT |
-| PATCH | `/api/v1/pipelines/:id/toggle-active` | Admin JWT |
-| POST | `/api/v1/pipelines/:id/trigger` | Admin JWT |
+Primary authoring is **YAML file APIs** under Manager `yaml_scan_dir` — see [YAML-First Authoring](/docs/01-architecture/yaml-first-authoring/). Legacy JSON body create/update remains only for old `source=form` rows.
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| GET | `/api/v1/pipelines` | JWT | List + rate summary |
+| POST | `/api/v1/pipelines/validate` | JWT | Syntax + schema + DB referential checks (viewer-scoped) |
+| GET | `/api/v1/pipelines/yaml-files` | JWT | List files in `yaml_scan_dir` (+ `scan_dir`) |
+| POST | `/api/v1/pipelines/yaml-files` | JWT | Create file + upsert projection |
+| GET | `/api/v1/pipelines/yaml-files/:filename` | JWT | Read file; returns `etag` |
+| PUT | `/api/v1/pipelines/yaml-files/:filename` | JWT | Overwrite + upsert; body `etag` or `If-Match` → 409 on mismatch |
+| DELETE | `/api/v1/pipelines/yaml-files/:filename` | JWT | Delete file + pipeline row |
+| GET | `/api/v1/pipelines/:id` | JWT | Includes `yaml_sync` for file-backed pipelines |
+| GET | `/api/v1/pipelines/:id/yaml-source` | JWT | Authority YAML for `source=yaml`; returns `etag` |
+| POST | `/api/v1/pipelines` | JWT | **Legacy** JSON create (`source=form`) |
+| PUT | `/api/v1/pipelines/:id` | JWT | **Legacy** JSON update; **409** when `source=yaml` |
+| DELETE | `/api/v1/pipelines/:id` | JWT | |
+| PATCH | `/api/v1/pipelines/:id/toggle-active` | JWT | Deactivate sticks across YAML rescans |
+| POST | `/api/v1/pipelines/:id/trigger` | JWT | Re-reads/validates file first when `source=yaml`; `verbose` / `debug` (debug = platform admin only) |
 
 ### GET /pipelines — List
 
@@ -299,25 +307,33 @@ Each item includes latest-job summary and **build success rate**:
 
 UI column: **Rate** (percentage + `success/total` hint).
 
-### POST /pipelines — Create
+### GET /pipelines/:id — Detail
+
+For `source=yaml`, response includes `yaml_sync`:
+
+| `yaml_sync.status` | Meaning |
+|--------------------|---------|
+| `in_sync` | File mtime matches last projection |
+| `stale` | File newer than last sync (Trigger refreshes) |
+| `validation_failed` | On-disk YAML invalid |
+| `missing_file` | Basename missing under `yaml_scan_dir` |
+| `not_file_backed` | `source≠yaml` |
+
+### POST /pipelines/yaml-files — Create (preferred)
 
 Request:
 ```json
 {
-  "name": "hello-world",
-  "description": "A simple test pipeline",
-  "trigger_type": "manual",
-  "runner_labels": ["linux-x64"],
-  "timeout_seconds": 3600,
-  "concurrency_group": null,
-  "steps": [
-    { "name": "echo-step", "run": "echo Hello from Buz" },
-    { "name": "build", "run": "npm run build", "dir": "./frontend" }
-  ]
+  "yaml": "name: hello-world\nsteps:\n  - name: hi\n    run: echo hello\n",
+  "filename": "hello-world.yml"
 }
 ```
 
+`filename` optional → slug from YAML `name:`. Writes under flat `yaml_scan_dir` (basename only).
+
 ### POST /pipelines/:id/trigger — Trigger Run
+
+Body may include `inputs`, `verbose`, `debug` (`debug` rejected for non–platform-admin).
 
 Response:
 ```json

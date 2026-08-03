@@ -44,7 +44,7 @@ level = "info"                 # error | warn | info | debug | trace
 | `auth` | `jwt_ttl_hours` | UI/API JWT lifetime |
 | `auth` | `runner_register_token_ttl_hours` | Runner JWT lifetime after register |
 | `runner` | `heartbeat_timeout_seconds` | Offline threshold for runners |
-| `pipeline` | `yaml_scan_*` | Directory sync of pipeline YAML |
+| `pipeline` | `yaml_scan_*` | File/Git authority for pipeline YAML; scanner + UI online edit write here. **Flat directory only** (basename files; no private subdirs). See [YAML-First Authoring](/docs/01-architecture/yaml-first-authoring/) |
 | `logging` | `level` | Default `info`. Overridden by `RUST_LOG` if set |
 | `logging` | `file` | Optional append path; empty = stdout only |
 

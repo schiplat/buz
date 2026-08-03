@@ -9,7 +9,9 @@ description: "Render env.example into .env on the target host with explicit ${se
 > security gates, change detection, flock.  
 > Nested step YAML / OSS deliver / render-only / multi-file →
 > [Config Block DSL v2](/docs/01-architecture/config-block/) (**2b complete**).
-> Auto `on_change`/`services` still deferred (**2d**).
+> Auto `on_change`/`services` still deferred (**2d**).  
+> All `${secrets.X}` / `${vars.X}` / `$INPUT_*` syntaxes →
+> [Secrets & Variables Expressions](/docs/01-architecture/secrets-vars-expressions/).
 
 ## Problem
 

@@ -517,7 +517,7 @@ pub async fn poll(
     // Fetch tasks for this pipeline
     let task_rows = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template,
-                work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, image, volumes,
+                work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
                 registry_secret, config_source, config_key_path, config_render, config_dest
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
@@ -526,15 +526,17 @@ pub async fn poll(
     .await?;
 
     // Resolve pipeline secrets from explicit bindings + team_shared (sensitive).
-    // Non-secret env (platform vars, inline env:) goes in a separate map so the
-    // Runner does not redact those values in logs.
+    // `secrets:` / team_shared are an **allowlist** for `${secrets.NAME}` —
+    // values are NOT auto-injected as `$NAME`. Call sites must map explicitly:
+    //   env:
+    //     GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
+    // or purpose slots: `registry_secret: ${secrets.ACR_PERSONAL}`.
     //
-    // The secret `name` is BOTH the injected env key and the `${secrets.NAME}`
-    // template reference (UPPER_SNAKE_CASE enforced at create). `secrets_by_name`
-    // is kept for `config_render` templates (${secrets.X}).
+    // Claim still sends `secrets` (name→value) for log masking + config.render.
     let mut secrets: serde_json::Value = serde_json::json!({});
     let mut secrets_by_name: serde_json::Value = serde_json::json!({});
     let mut env: serde_json::Value = serde_json::json!({});
+    let mut secret_env_keys: Vec<String> = Vec::new();
 
     // ── Explicit secret bindings (pipeline_secrets table) ──
     // Same-team only: ignore stale/cross-team rows if any slipped into the table.
@@ -630,6 +632,49 @@ pub async fn poll(
         }
     }
 
+    // Implicit allowlist: `${secrets.X}` in pipeline env loads same-team secrets
+    // even when top-level `secrets:` was omitted (GHA-style).
+    {
+        let mut needed = Vec::new();
+        if let Some(obj) = env.as_object() {
+            for v in obj.values() {
+                if let Some(s) = v.as_str() {
+                    needed.extend(shared::secret_ref::collect_secrets_names(s));
+                }
+            }
+        }
+        merge_team_secrets_by_name(
+            &state.pool,
+            &pipeline_id,
+            &state.config.auth.jwt_secret,
+            &needed,
+            &mut secrets_by_name,
+            Some(&mut secrets),
+        )
+        .await?;
+    }
+
+    // Expand pipeline `env:` values (`GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}` → concrete).
+    {
+        let value_map = claim_value_map(&secrets_by_name, &env, &trigger_params);
+        if let Some(obj) = env.as_object_mut() {
+            for (key, val) in obj.iter_mut() {
+                let Some(raw) = val.as_str() else { continue };
+                if raw.contains("${secrets.") {
+                    secret_env_keys.push(key.clone());
+                }
+                match shared::value_source::expand_env_value(raw, &value_map) {
+                    Ok(expanded) => *val = serde_json::Value::String(expanded),
+                    Err(e) => {
+                        return Err(AppError::ValidationFailed(format!(
+                            "pipeline env '{key}': {e}"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
     let mut tasks: Vec<serde_json::Value> = Vec::new();
     for t in &task_rows {
         let exec_type: String = t.get(3);
@@ -637,13 +682,20 @@ pub async fn poll(
         let host_names_raw: String = t.get(5);
         let host_labels_raw: String = t.get(6);
         let step_secrets_str: String = t.get(12);
-        let image: String = t.get(13);
-        let volumes_raw: String = t.get(14);
-        let registry_secret_name: String = t.get(15);
-        let config_source_name: String = t.get(16);
-        let config_key_path_raw: String = t.get(17);
-        let config_render_raw: String = t.get(18);
-        let config_dest: String = t.get(19);
+        let step_env_raw: String = t.get(13);
+        let image: String = t.get(14);
+        let volumes_raw: String = t.get(15);
+        let registry_secret_raw: String = t.get(16);
+        let config_source_raw: String = t.get(17);
+        let config_key_path_raw: String = t.get(18);
+        let config_render_raw: String = t.get(19);
+        let config_dest: String = t.get(20);
+
+        // Purpose slots accept `${secrets.NAME}` or bare NAME.
+        let registry_secret_name = shared::secret_ref::resolve_secret_slot(&registry_secret_raw)
+            .unwrap_or_default();
+        let config_source_name = shared::secret_ref::resolve_secret_slot(&config_source_raw)
+            .unwrap_or_default();
 
         let mut task_json = serde_json::json!({
             "id": t.get::<String, _>(0),
@@ -672,45 +724,122 @@ pub async fn poll(
         // pushing its value here; the Runner only consumes this list.
         let mut log_mask_values: Vec<String> = Vec::new();
 
-        // Resolve step-level secrets (only for this step).
-        // Step secrets may come from the step_secrets column (by name, stored at pipeline
-        // creation time) and need to be resolved from the secrets table at dispatch time.
+        if !registry_secret_raw.trim().is_empty() && registry_secret_name.is_empty() {
+            task_json["registry_auth_error"] = serde_json::Value::String(format!(
+                "invalid registry_secret '{registry_secret_raw}' — use ${{secrets.NAME}} or a bare secret name"
+            ));
+        }
+        if !config_source_raw.trim().is_empty() && config_source_name.is_empty() {
+            task_json["config_auth_error"] = serde_json::Value::String(format!(
+                "invalid config.source '{config_source_raw}' — use ${{secrets.NAME}} or a bare secret name"
+            ));
+        }
+
+        // Resolve step allowlist secrets (values for ${secrets.X} / render / mask — not env inject).
         let mut step_secrets_map = serde_json::json!({});
         if !step_secrets_str.is_empty() {
-            let step_names: Vec<&str> = step_secrets_str
+            let step_names: Vec<String> = step_secrets_str
                 .split(',')
-                .map(|s| s.trim())
+                .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
-            if !step_names.is_empty() {
-                // Same-team name resolve only (explicit step reference; not auto-inject)
-                let placeholders = vec!["?"; step_names.len()].join(",");
-                let query = format!(
-                    "SELECT s.name, s.value FROM secrets s
-                     JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
-                     WHERE p.id = ? AND s.name IN ({placeholders})"
-                );
-                let mut q = sqlx::query_as::<_, (String, String)>(&query);
-                q = q.bind(&pipeline_id);
-                for name in &step_names {
-                    q = q.bind(*name);
-                }
-                if let Ok(rows) = q.fetch_all(&state.pool).await {
-                    for (name, stored) in rows {
-                        match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
-                            Ok(value) => {
-                                if let Some(obj) = step_secrets_map.as_object_mut() {
-                                    obj.insert(name, serde_json::Value::String(value));
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to decrypt step secret '{name}': {e}");
-                            }
-                        }
+            merge_team_secrets_by_name(
+                &state.pool,
+                &pipeline_id,
+                &state.config.auth.jwt_secret,
+                &step_names,
+                &mut step_secrets_map,
+                None,
+            )
+            .await?;
+        }
+
+        // Implicit allowlist from purpose slots + step env `${secrets.X}` (top-level optional).
+        {
+            let mut implied: Vec<String> = Vec::new();
+            if !registry_secret_name.trim().is_empty() {
+                implied.push(registry_secret_name.trim().to_string());
+            }
+            if !config_source_name.trim().is_empty() {
+                implied.push(config_source_name.trim().to_string());
+            }
+            if !step_env_raw.trim().is_empty() {
+                if let Ok(raw_map) = serde_json::from_str::<
+                    std::collections::BTreeMap<String, String>,
+                >(&step_env_raw)
+                {
+                    for v in raw_map.values() {
+                        implied.extend(shared::secret_ref::collect_secrets_names(v));
                     }
                 }
             }
+            implied.sort();
+            implied.dedup();
+            // Prefer job-level map when already bound; otherwise load into step map.
+            let mut still_needed = Vec::new();
+            for n in implied {
+                if secrets_by_name.get(&n).and_then(|v| v.as_str()).is_none() {
+                    still_needed.push(n);
+                }
+            }
+            merge_team_secrets_by_name(
+                &state.pool,
+                &pipeline_id,
+                &state.config.auth.jwt_secret,
+                &still_needed,
+                &mut step_secrets_map,
+                None,
+            )
+            .await?;
         }
+
+        // Expand step `env:` map (required path for `$NAME` in run scripts).
+        let mut step_env_expanded = serde_json::json!({});
+        let mut step_secret_env_keys: Vec<String> = Vec::new();
+        if !step_env_raw.trim().is_empty() {
+            if let Ok(raw_map) =
+                serde_json::from_str::<std::collections::BTreeMap<String, String>>(&step_env_raw)
+            {
+                let mut combined_secrets = secrets_by_name.clone();
+                if let (Some(dst), Some(src)) =
+                    (combined_secrets.as_object_mut(), step_secrets_map.as_object())
+                {
+                    for (k, v) in src {
+                        dst.entry(k.clone()).or_insert(v.clone());
+                    }
+                }
+                let value_map = claim_value_map(&combined_secrets, &env, &trigger_params);
+                for (key, raw) in raw_map {
+                    if raw.contains("${secrets.") {
+                        step_secret_env_keys.push(key.clone());
+                    }
+                    match shared::value_source::expand_env_value(&raw, &value_map) {
+                        Ok(expanded) => {
+                            if let Some(obj) = step_env_expanded.as_object_mut() {
+                                obj.insert(key, serde_json::Value::String(expanded));
+                            }
+                        }
+                        Err(e) => {
+                            task_json["env_expand_error"] = serde_json::Value::String(format!(
+                                "step env '{key}': {e}"
+                            ));
+                            break;
+                        }
+                    }
+                }
+            } else {
+                task_json["env_expand_error"] = serde_json::Value::String(
+                    "step env is not a valid JSON object map".into(),
+                );
+            }
+        }
+        task_json["step_env"] = step_env_expanded;
+        task_json["secret_env_keys"] = serde_json::Value::Array(
+            step_secret_env_keys
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        );
 
         // For SSH steps, resolve host IDs → connection details
         if exec_type == "ssh" {
@@ -721,14 +850,9 @@ pub async fn poll(
                 .collect();
 
             // ── Dynamic host resolution: resolve variable references ──
-            // Merge env + secrets + trigger_params into a unified lookup (inputs take priority)
+            // Use expanded pipeline env + trigger inputs only (secrets are not auto `$NAME`).
             let mut unified_vars = serde_json::json!({});
             if let Some(obj) = env.as_object() {
-                for (k, v) in obj {
-                    unified_vars[k] = v.clone();
-                }
-            }
-            if let Some(obj) = secrets.as_object() {
                 for (k, v) in obj {
                     unified_vars[k] = v.clone();
                 }
@@ -832,12 +956,29 @@ pub async fn poll(
             }
         }
 
-        // Attach step-level secrets
-        task_json["step_secrets"] = step_secrets_map;
-
-        // Resolve registry_secret → registry_auth (not injected as env).
-        // Same-team + kind=registry only (does not require team_shared).
-        if !registry_secret_name.trim().is_empty() {
+        // Resolve registry_secret → registry_auth (purpose slot — not env inject).
+        // Same-team + kind=registry; name must be allowlisted (pipeline/step/team_shared).
+        if !registry_secret_name.trim().is_empty()
+            && task_json.get("registry_auth_error").is_none()
+        {
+            let allowed = secrets_by_name
+                .get(registry_secret_name.trim())
+                .is_some()
+                || step_secrets_map
+                    .get(registry_secret_name.trim())
+                    .is_some();
+            if !allowed {
+                task_json["registry_auth_error"] = serde_json::Value::String(format!(
+                    "registry_secret '{}' not found for this pipeline's team — create the secret \
+                     (same team), or enable Team share; reference via registry_secret: ${{secrets.{}}}",
+                    registry_secret_name.trim(),
+                    registry_secret_name.trim()
+                ));
+            }
+        }
+        if !registry_secret_name.trim().is_empty()
+            && task_json.get("registry_auth_error").is_none()
+        {
             match sqlx::query_as::<_, (String, String)>(
                 "SELECT s.value, s.kind FROM secrets s
                  JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
@@ -915,8 +1056,32 @@ pub async fn poll(
         }
 
         // Resolve config_source → signed OSS GET URL (injected as $BUZ_CONFIG_URL).
-        // Same-team + kind=aliyun_oss_auth only. Never sends long-lived AK/SK to the runner.
-        if !config_source_name.trim().is_empty() {
+        // Same-team + kind=aliyun_oss_auth; name must be allowlisted.
+        if !config_source_name.trim().is_empty()
+            && task_json.get("config_auth_error").is_none()
+        {
+            let allowed = secrets_by_name
+                .get(config_source_name.trim())
+                .is_some()
+                || step_secrets_map
+                    .get(config_source_name.trim())
+                    .is_some();
+            if !allowed {
+                task_json["config_auth_error"] = serde_json::Value::String(format!(
+                    "config.source '{}' not found for this pipeline's team — create an OSS secret \
+                     (same team), or enable Team share; reference via source: ${{secrets.{}}}",
+                    config_source_name.trim(),
+                    config_source_name.trim()
+                ));
+            }
+        }
+
+        // Attach step allowlist values for render/mask (Runner does not auto-inject `$NAME`).
+        task_json["step_secrets"] = step_secrets_map.clone();
+
+        if !config_source_name.trim().is_empty()
+            && task_json.get("config_auth_error").is_none()
+        {
             match sqlx::query_as::<_, (String, String)>(
                 "SELECT s.value, s.kind FROM secrets s
                  JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
@@ -1064,9 +1229,17 @@ pub async fn poll(
         }
 
         // `config_render` resolves `${secrets.X}` by secret name — attach for
-        // any step that opts into render (OSS sugar or render-only).
+        // any step that opts into render (pipeline allowlist + step allowlist).
         if !config_render_raw.is_empty() {
-            task_json["render_env_secrets"] = secrets_by_name.clone();
+            let mut render_secrets = secrets_by_name.clone();
+            if let (Some(dst), Some(src)) =
+                (render_secrets.as_object_mut(), step_secrets_map.as_object())
+            {
+                for (k, v) in src {
+                    dst.entry(k.clone()).or_insert(v.clone());
+                }
+            }
+            task_json["render_env_secrets"] = render_secrets;
         }
 
         task_json["log_mask_values"] = serde_json::Value::Array(
@@ -1110,10 +1283,99 @@ pub async fn poll(
         "inputs": trigger_params,
         "masking_input_keys": masking_input_keys,
         "env": env,
+        "secret_env_keys": secret_env_keys,
         "secrets": secrets,
         "debug_unredact": debug_unredact,
         "verbose": verbose_logs,
     })))))
+}
+
+/// Load same-team secrets by name into `into_by_name` (and optionally a parallel map).
+/// Skips names already present. Used for GHA-style implicit allowlist via `${secrets.X}`
+/// / purpose slots when top-level `secrets:` is omitted.
+async fn merge_team_secrets_by_name(
+    pool: &sqlx::SqlitePool,
+    pipeline_id: &str,
+    jwt_secret: &str,
+    names: &[String],
+    into_by_name: &mut serde_json::Value,
+    mut into_parallel: Option<&mut serde_json::Value>,
+) -> Result<(), AppError> {
+    let needed: Vec<&str> = names
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .filter(|s| into_by_name.get(*s).and_then(|v| v.as_str()).is_none())
+        .collect();
+    if needed.is_empty() {
+        return Ok(());
+    }
+    let placeholders = vec!["?"; needed.len()].join(",");
+    let query = format!(
+        "SELECT s.name, s.value FROM secrets s
+         JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
+         WHERE p.id = ? AND s.name IN ({placeholders})"
+    );
+    let mut q = sqlx::query_as::<_, (String, String)>(&query).bind(pipeline_id);
+    for name in &needed {
+        q = q.bind(*name);
+    }
+    let rows = q.fetch_all(pool).await.map_err(|e| {
+        AppError::Internal(format!("failed to load secrets by name: {e}"))
+    })?;
+    for (name, stored) in rows {
+        match crypto::decrypt(&stored, jwt_secret) {
+            Ok(value) => {
+                if let Some(obj) = into_by_name.as_object_mut() {
+                    obj.entry(name.clone())
+                        .or_insert(serde_json::Value::String(value.clone()));
+                }
+                if let Some(parallel) = into_parallel.as_deref_mut() {
+                    if let Some(obj) = parallel.as_object_mut() {
+                        obj.entry(name)
+                            .or_insert(serde_json::Value::String(value));
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to decrypt secret '{name}': {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Build a [`ValueMap`] for expanding `env:` / step `env:` expressions at claim.
+fn claim_value_map(
+    secrets_by_name: &serde_json::Value,
+    env: &serde_json::Value,
+    trigger_params: &serde_json::Value,
+) -> shared::value_source::ValueMap {
+    let mut map = shared::value_source::ValueMap::new();
+    if let Some(obj) = secrets_by_name.as_object() {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                map.secrets.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    if let Some(obj) = env.as_object() {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                map.vars.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    if let Some(obj) = trigger_params.as_object() {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                map.vars.insert(k.clone(), s.to_string());
+                map.vars
+                    .insert(format!("INPUT_{}", k.to_uppercase()), s.to_string());
+            }
+        }
+    }
+    map
 }
 
 /// Resolve a variable reference like `$VAR_NAME` or `${VAR_NAME}` against

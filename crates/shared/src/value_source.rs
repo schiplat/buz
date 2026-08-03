@@ -45,8 +45,8 @@ pub enum MissingPolicy {
 /// The value lookups available to one expansion.
 #[derive(Debug, Clone, Default)]
 pub struct ValueMap {
-    /// Secret `name` -> value (sensitive). Secrets are injected as env vars
-    /// under the same key and matched by `${secrets.X}`.
+    /// Secret `name` -> value (sensitive). Resolved via `${secrets.X}` in
+    /// templates, `env:` maps, and purpose slots — not auto-injected as `$NAME`.
     pub secrets: HashMap<String, String>,
     /// env key -> value (pipeline env + trigger inputs; `masking` inputs must
     /// be excluded by the builder).
@@ -137,7 +137,7 @@ pub fn expand(
             if mode == ExpandMode::Lenient {
                 // Lenient consumers (config_path) pass bare strings without `=`;
                 // expand the whole line as a value.
-                let (expanded, _line_missing) = expand_value(line, map, mode)?;
+                let (expanded, _line_missing) = expand_value(line, map, mode, false)?;
                 content.push_str(&expanded);
             } else {
                 content.push_str(line);
@@ -165,7 +165,8 @@ pub fn expand(
             }
         }
 
-        let (expanded_value, line_missing) = expand_value(value_raw, map, mode)?;
+        let (expanded_value, line_missing) =
+            expand_value(value_raw, map, mode, mode == ExpandMode::Strict)?;
 
         match missing {
             MissingPolicy::Fail => {
@@ -247,11 +248,29 @@ fn is_valid_env_key(key: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Expand `${secrets.X}` / `${vars.X}` inside a process env map value.
+///
+/// Unlike [`expand`] (`.env` files), multiline secret values are allowed
+/// (SSH private keys). Unresolved references fail.
+pub fn expand_env_value(value: &str, map: &ValueMap) -> Result<String, RenderError> {
+    let (expanded, missing) = expand_value(value, map, ExpandMode::Strict, false)?;
+    if let Some(reference) = missing.first() {
+        return Err(RenderError::Missing {
+            reference: reference.clone(),
+        });
+    }
+    Ok(expanded)
+}
+
 /// Expand `$`-references inside one value.
+///
+/// When `reject_multiline` is true (`.env` Strict render), a resolved value
+/// containing newlines is an error — it would corrupt subsequent env-file lines.
 fn expand_value(
     value: &str,
     map: &ValueMap,
     mode: ExpandMode,
+    reject_multiline: bool,
 ) -> Result<(String, Vec<String>), RenderError> {
     let mut out = String::with_capacity(value.len());
     let mut missing: Vec<String> = Vec::new();
@@ -266,10 +285,7 @@ fn expand_value(
                     let inner = &braced[..close];
                     match resolve_reference(inner, map, mode) {
                         Resolved::Value(v) => {
-                            // A newline inside a resolved value would corrupt
-                            // every following `.env` line — fail fast (Strict
-                            // only; lenient config_path keeps legacy behavior).
-                            if mode == ExpandMode::Strict && v.contains(['\n', '\r']) {
+                            if reject_multiline && v.contains(['\n', '\r']) {
                                 return Err(RenderError::MultilineValue {
                                     reference: format!("${{{inner}}}"),
                                 });

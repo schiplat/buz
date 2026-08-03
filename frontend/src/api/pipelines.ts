@@ -12,6 +12,10 @@ export interface Pipeline {
   concurrency_max_queue: number | null
   concurrency_queue_timeout_seconds: number | null
   source: string
+  /** Basename under Manager `yaml_scan_dir` when `source=yaml` (flat dir, no subfolders). */
+  yaml_path?: string | null
+  /** File vs DB projection sync (only meaningful for source=yaml). */
+  yaml_sync?: YamlSyncStatus | null
   input_defs: PipelineInputDef[] | null
   is_active: boolean
   owner_group: string
@@ -30,6 +34,33 @@ export interface Pipeline {
   success_rate: number | null
   created_at: string
   updated_at: string
+}
+
+export interface YamlFileWriteResult {
+  pipeline_id: string
+  filename: string
+  yaml_path: string
+  name: string
+  etag?: string
+}
+
+export interface YamlSourcePayload {
+  pipeline_id: string
+  name: string
+  filename: string
+  yaml_path: string
+  yaml: string
+  etag?: string
+}
+
+/** On-disk YAML vs DB projection — from GET /pipelines/{id}. */
+export interface YamlSyncStatus {
+  filename: string
+  status: 'in_sync' | 'stale' | 'validation_failed' | 'missing_file' | 'not_file_backed' | string
+  last_synced_at?: string | null
+  file_mtime?: string | null
+  etag?: string | null
+  errors?: string[]
 }
 
 export interface CreatePipelinePayload {
@@ -75,13 +106,18 @@ export interface StepDef {
   timeout?: string
   retry?: number
   continue_on_error?: boolean
-  /** Step-level secret names (resolved to values at runtime). */
+  /** Step secret allowlist (optional narrowing). Does not auto-inject `$NAME`. */
   secrets?: string[]
+  /**
+   * Step env map. Secret values must be mapped explicitly, e.g.
+   * `{ GIT_SSH_KEY: '${secrets.GIT_SSH_KEY}' }`, then use `$GIT_SSH_KEY` in `run`.
+   */
+  env?: Record<string, string>
   /** Run the Docker container in privileged mode (DinD). */
   privileged?: boolean
-  /** Manager Secret name for docker login (pull/push). Shell / SSH / Docker. */
+  /** Purpose slot: `${secrets.NAME}` or bare name for docker login. */
   registry_secret?: string
-  /** Manager Secret name (kind=aliyun_oss_auth) for signed OSS config downloads. */
+  /** Purpose slot: `${secrets.NAME}` or bare OSS auth secret name. */
   config_source?: string
   /** OSS object-key prefix; Manager appends configs.tar.gz when signing. */
   config_key_path?: string
@@ -159,11 +195,13 @@ export interface YamlStepData {
   retry?: number | null
   continue_on_error?: boolean | null
   secrets?: string[] | null
+  /** Step env map (`env:` under the step); values may be `${secrets.X}`. */
+  env?: Record<string, string> | null
   /** Privileged mode for docker engine steps. */
   privileged?: boolean | null
-  /** Manager Secret name for docker login (pull/push). */
+  /** Purpose slot: `${secrets.NAME}` or bare name for docker login. */
   registry_secret?: string | null
-  /** Manager Secret name (kind=aliyun_oss_auth) for signed OSS config downloads. */
+  /** Purpose slot / flattened `config.source`. */
   config_source?: string | null
   /** OSS object-key prefix; Manager appends configs.tar.gz when signing. */
   config_key_path?: string | null
@@ -232,6 +270,63 @@ export const pipelinesApi = {
   async validateYaml(yaml: string): Promise<YamlValidationResult> {
     const resp = await apiClient.post('/pipelines/validate', { yaml })
     return resp.data
+  },
+
+  /** List YAML files under Manager `yaml_scan_dir` (includes `scan_dir` path). */
+  async listYamlFiles(): Promise<{
+    scan_dir: string
+    files: Array<{
+      filename: string
+      yaml_path: string
+      pipeline_id?: string | null
+      pipeline_name?: string | null
+      team_id?: string | null
+      is_active?: boolean | null
+    }>
+  }> {
+    const resp = await apiClient.get('/pipelines/yaml-files')
+    return resp.data
+  },
+
+  /** Create a new YAML file under the Manager scan dir and project into DB. */
+  async createYamlFile(payload: {
+    yaml: string
+    filename?: string
+  }): Promise<YamlFileWriteResult> {
+    const resp = await apiClient.post('/pipelines/yaml-files', payload)
+    return resp.data
+  },
+
+  /** Overwrite a YAML file and immediately upsert the DB projection. */
+  async updateYamlFile(
+    filename: string,
+    payload: { yaml: string; pipeline_id?: string; etag?: string },
+  ): Promise<YamlFileWriteResult> {
+    const resp = await apiClient.put(
+      `/pipelines/yaml-files/${encodeURIComponent(filename)}`,
+      payload,
+    )
+    return resp.data
+  },
+
+  async getYamlFile(filename: string): Promise<{
+    filename: string
+    yaml_path: string
+    yaml: string
+    etag?: string
+  }> {
+    const resp = await apiClient.get(`/pipelines/yaml-files/${encodeURIComponent(filename)}`)
+    return resp.data
+  },
+
+  /** Load file-backed YAML for an existing `source=yaml` pipeline. */
+  async getYamlSource(pipelineId: string): Promise<YamlSourcePayload> {
+    const resp = await apiClient.get(`/pipelines/${pipelineId}/yaml-source`)
+    return resp.data
+  },
+
+  async deleteYamlFile(filename: string): Promise<void> {
+    await apiClient.delete(`/pipelines/yaml-files/${encodeURIComponent(filename)}`)
   },
 
   async listTriggerEvents(

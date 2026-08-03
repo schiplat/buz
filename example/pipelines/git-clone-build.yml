@@ -11,7 +11,12 @@
 #        Secrets & Variables → Secrets → Add Secret
 #        Name:  GIT_SSH_KEY
 #        Value: <paste entire contents of /tmp/buz_deploy_key>
-#        Team share: OFF (default) — this pipeline uses step secrets: only
+#        Team share: OFF (default) — this pipeline uses step secrets: + env map
+#
+# Secrets are allowlisted only — map into the process env explicitly:
+#   env:
+#     GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
+# then use $GIT_SSH_KEY in run (not ${secrets.…} inside the script).
 #
 # Trigger inputs are a map (not a list). Each key is available in run blocks
 # as $INPUT_<KEY> (and also as $<KEY>).
@@ -41,6 +46,8 @@ steps:
   # ── Setup + Clone: secret only needed in this step ──
   - name: Clone Private Repository
     secrets: [GIT_SSH_KEY]
+    env:
+      GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
     run: |
       echo "==> Writing SSH deploy key"
       echo "$GIT_SSH_KEY" > /tmp/buz_ssh_key

@@ -39,11 +39,13 @@ group and notes that the mode was not frozen.
 ### Pipeline Detail (Definition)
 
 The Definition tab always shows a **Concurrency** strip (below Trigger / Runner /
-Bindings / Config):
+Bindings / Config). For `source=yaml` pipelines the whole Definition (including
+concurrency) is parsed from the on-disk file; invalid/missing files show an alert
+instead of the stale DB projection:
 
 - **Configured:** live `group` / `mode` / (for `queue`) max-queue + timeout, hint, help.
 - **Not configured:** same defaults preview as Job Detail + how to enable.
-- Form pipelines: **Edit** opens the edit dialog; YAML pipelines: “edit via YAML”.
+- **Edit YAML** on Definition (or Pipelines list) opens the online editor; Save writes `yaml_scan_dir` and upserts immediately. See [YAML-First Authoring](/docs/01-architecture/yaml-first-authoring/).
 
 ---
 
@@ -131,8 +133,8 @@ description: DinD build pipeline with queue control.
 concurrency:
   group: dind-build           # required — shared across pipelines with same group name
   # mode: discard-old         # default (can be omitted) — queue | discard-new
-  # max-queue: 3              # default: 3, only for mode=queue
-  # queue-timeout: 10m        # default: 30m, auto-cancel queued after this
+  # max_queue: 3              # default: 3, only for mode=queue (alias: max-queue)
+  # queue_timeout: 10m        # default: 30m (alias: queue-timeout)
 
 on:
   manual:

@@ -530,8 +530,9 @@ async fn execute_job(
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("missing tasks array"))?;
 
-    // Build base env from trigger inputs + pipeline env + pipeline secrets.
-    // Infrastructure Secrets and masking inputs are tracked for log redaction.
+    // Build base env from trigger inputs + expanded pipeline `env:` only.
+    // Secrets are NOT auto-injected as `$NAME` — Manager expands
+    // `env: KEY: ${secrets.NAME}` before claim; scripts use `$KEY`.
     let mut base_env: std::collections::HashMap<String, String> = task
         .get("inputs")
         .and_then(|v| v.as_object())
@@ -542,7 +543,7 @@ async fn execute_job(
         })
         .unwrap_or_default();
 
-    // Non-secret pipeline env (inline `env:`, platform Variables) — show in clear in logs
+    // Pipeline env (already expanded at claim — may contain secret values via mapping)
     if let Some(env_obj) = task.get("env").and_then(|v| v.as_object()) {
         for (k, v) in env_obj {
             if let Some(s) = v.as_str() {
@@ -551,13 +552,24 @@ async fn execute_job(
         }
     }
 
-    // Pipeline-level secrets from Manager — values redacted in RUN echo + stream logs
+    // Secret catalog keys/values for log redaction (not process env injection).
     let mut pipeline_secret_keys: HashSet<String> = HashSet::new();
+    let mut secret_mask_values: Vec<String> = Vec::new();
     if let Some(secrets_obj) = task.get("secrets").and_then(|v| v.as_object()) {
         for (k, v) in secrets_obj {
             if let Some(s) = v.as_str() {
-                base_env.insert(k.clone(), s.to_string());
                 pipeline_secret_keys.insert(k.clone());
+                if !s.is_empty() {
+                    secret_mask_values.push(s.to_string());
+                }
+            }
+        }
+    }
+    // Env keys that Manager marked as sourced from `${secrets.…}` mappings.
+    if let Some(keys) = task.get("secret_env_keys").and_then(|v| v.as_array()) {
+        for key in keys.iter().filter_map(|v| v.as_str()) {
+            if !key.is_empty() {
+                pipeline_secret_keys.insert(key.to_string());
             }
         }
     }
@@ -673,15 +685,35 @@ async fn execute_job(
         };
         let has_timeout = step_timeout.is_some();
 
-        // ── Build step-specific env: base (inputs+pipeline-secrets) + step-level secrets ──
+        // ── Step env: base + expanded step `env:` map (no auto-inject from secrets:) ──
         let mut step_env = base_env.clone();
         let mut catalog = SecretCatalog::new();
         catalog.add_keys(pipeline_secret_keys.iter().cloned());
+        for v in &secret_mask_values {
+            catalog.add_value(v.clone());
+        }
+        if let Some(se_obj) = step.get("step_env").and_then(|v| v.as_object()) {
+            for (k, v) in se_obj {
+                if let Some(s) = v.as_str() {
+                    step_env.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+        if let Some(keys) = step.get("secret_env_keys").and_then(|v| v.as_array()) {
+            for key in keys.iter().filter_map(|v| v.as_str()) {
+                if !key.is_empty() {
+                    catalog.add_key(key.to_string());
+                }
+            }
+        }
+        // step_secrets values are for render/mask only — do not inject as `$NAME`.
         if let Some(ss_obj) = step.get("step_secrets").and_then(|v| v.as_object()) {
             for (k, v) in ss_obj {
                 if let Some(s) = v.as_str() {
-                    step_env.insert(k.clone(), s.to_string());
                     catalog.add_key(k.clone());
+                    if !s.is_empty() {
+                        catalog.add_value(s.to_string());
+                    }
                 }
             }
         }
@@ -788,6 +820,29 @@ async fn execute_job(
         );
 
         update_job_status(client, config, token, job_id, "running", Some(idx as i32)).await?;
+
+        // Fail fast if Manager could not expand step `env:` (`${secrets.X}`).
+        if let Some(err) = step
+            .get("env_expand_error")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let msg = format!("step env: {err}");
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_ERROR,
+                    step_order: idx as i32,
+                    content: format!("==> ERROR\n{msg}\n"),
+                },
+            )
+            .await;
+            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+            anyhow::bail!(msg);
+        }
 
         // Fail fast if Manager could not resolve registry_secret.
         if let Some(err) = step

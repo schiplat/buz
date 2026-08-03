@@ -57,6 +57,9 @@ runner:
   labels: [linux-x64]
   timeout: 20m
 
+secrets:
+  - ACR_PERSONAL
+
 env:
   REGISTRY: registry.cn-hongkong.aliyuncs.com
   NAMESPACE: dadou
@@ -70,7 +73,8 @@ steps:
   - name: Deploy manager-server
     uses: ssh
     host: $deploy_host
-    registry_secret: ACR_PERSONAL
+    secrets: [ACR_PERSONAL]
+    registry_secret: ${secrets.ACR_PERSONAL}
     run: |
       # Fail-fast is built in (SSH prepends `set -e;`); no manual `set -e`.
       # Validate the trigger input: image tags must be plain, no shell metacharacters.

@@ -515,20 +515,23 @@ pub struct StepDef {
     pub retry: Option<i32>,
     #[serde(rename = "continue-on-error", alias = "continue_on_error")]
     pub continue_on_error: Option<bool>,
-    /// Step-level secret names — scoped only to this step
+    /// Step secret allowlist (optional narrowing). Does not auto-inject `$NAME`.
     #[serde(default)]
     pub secrets: Option<Vec<String>>,
+    /// Step-level env map. Values may contain `${secrets.X}` / `${vars.X}`.
+    #[serde(default)]
+    pub env: Option<std::collections::BTreeMap<String, String>>,
     /// Run container in privileged mode (docker engine only).
     /// Required for Docker-in-Docker. Has host-escaping security implications.
     #[serde(default)]
     pub privileged: Option<bool>,
-    /// Manager Secret name whose JSON value holds registry credentials for `docker login`.
+    /// Purpose slot: `${secrets.NAME}` or bare name for registry login JSON.
     #[serde(default)]
     pub registry_secret: Option<String>,
     /// Nested `config:` block (Phase 2b authoring shape).
     #[serde(default)]
     pub config: Option<crate::pipeline_yaml::ConfigBlock>,
-    /// OSS auth secret name (`config.source` / column `config_source`).
+    /// Purpose slot: `${secrets.NAME}` or bare OSS auth secret name.
     #[serde(default)]
     pub config_source: Option<String>,
     /// OSS object-key prefix (`config.key_path` / column `config_key_path`).
@@ -555,8 +558,9 @@ pub struct CreateSecretRequest {
     pub owner_group: Option<String>,
     #[serde(default)]
     pub team_id: Option<String>,
-    /// When true, same-team pipelines auto-receive this secret at job claim.
-    /// Defaults to false (explicit bind / step reference / registry_secret only).
+    /// When true, same-team pipelines auto-allowlist this secret for
+    /// `${secrets.NAME}` resolution (still not auto-injected as `$NAME`).
+    /// Defaults to false (explicit bind / step reference / purpose slots).
     #[serde(default)]
     pub team_shared: Option<bool>,
     /// `generic` (default) or `registry` (JSON credentials for `registry_secret`).

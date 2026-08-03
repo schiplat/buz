@@ -45,7 +45,8 @@ pub async fn list(
                 j.start_time as latest_job_start,
                 COALESCE(js.job_total, 0) as job_total,
                 COALESCE(js.job_success, 0) as job_success,
-                p.concurrency_mode, p.concurrency_max_queue, p.concurrency_queue_timeout_seconds
+                p.concurrency_mode, p.concurrency_max_queue, p.concurrency_queue_timeout_seconds,
+                p.yaml_path
          FROM pipelines p
          LEFT JOIN (
              SELECT pipeline_id, MAX(created_at) as max_created
@@ -111,6 +112,7 @@ pub async fn list(
                 "concurrency_mode": r.get::<Option<String>, _>(19),
                 "concurrency_max_queue": r.get::<Option<i64>, _>(20),
                 "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(21),
+                "yaml_path": r.get::<Option<String>, _>(22),
             })
         })
         .collect();
@@ -224,7 +226,8 @@ pub async fn get_one(
         "SELECT id, name, description, trigger_type, webhook_path, cron_expr,
                 runner_labels, timeout_seconds, source, input_defs, concurrency_group, is_active,
                 owner_group, team_id, created_at, updated_at,
-                concurrency_mode, concurrency_max_queue, concurrency_queue_timeout_seconds
+                concurrency_mode, concurrency_max_queue, concurrency_queue_timeout_seconds,
+                yaml_path
          FROM pipelines WHERE id = ?",
     )
     .bind(&id)
@@ -273,7 +276,7 @@ pub async fn get_one(
     let tasks = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
                 work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
-                privileged, registry_secret, config_source, config_key_path, config_render, config_dest
+                step_env, privileged, registry_secret, config_source, config_key_path, config_render, config_dest
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&id)
@@ -299,14 +302,17 @@ pub async fn get_one(
                 &t.get::<String, _>(13),
             ).unwrap_or(serde_json::Value::Array(vec![])),
             "step_secrets": t.get::<String, _>(14),
-            "privileged": t.get::<i64, _>(15) != 0,
-            "registry_secret": t.get::<String, _>(16),
-            "config_source": t.get::<String, _>(17),
-            "config_key_path": t.get::<String, _>(18),
+            "step_env": serde_json::from_str::<serde_json::Value>(
+                &t.get::<String, _>(15),
+            ).ok().filter(|v| v.is_object()),
+            "privileged": t.get::<i64, _>(16) != 0,
+            "registry_secret": t.get::<String, _>(17),
+            "config_source": t.get::<String, _>(18),
+            "config_key_path": t.get::<String, _>(19),
             "config_render": serde_json::from_str::<serde_json::Value>(
-                &t.get::<String, _>(19),
+                &t.get::<String, _>(20),
             ).ok().filter(|v| !v.is_null()),
-            "config_dest": t.get::<String, _>(20),
+            "config_dest": t.get::<String, _>(21),
         })
     })
     .collect::<Vec<_>>();
@@ -333,8 +339,16 @@ pub async fn get_one(
         "concurrency_mode": r.get::<Option<String>, _>(16),
         "concurrency_max_queue": r.get::<Option<i64>, _>(17),
         "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(18),
+        "yaml_path": r.get::<Option<String>, _>(19),
         "tasks": tasks,
         "env": envs,
+        "yaml_sync": crate::services::pipeline_scanner::yaml_sync_status(
+            &state.pool,
+            &state.config.pipeline.yaml_scan_dir,
+            &id,
+        )
+        .await
+        .ok(),
     }))))
 }
 
@@ -346,6 +360,19 @@ pub async fn update(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let current_team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&current_team_id, Perm::PipelineWrite)?;
+
+    // YAML-first: file is authority — refuse Form/API mutation that would split DB vs disk.
+    let source: String = sqlx::query_scalar("SELECT source FROM pipelines WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+    if source == "yaml" {
+        return Err(AppError::Conflict(
+            "pipeline is file-backed (source=yaml) — edit via PUT /pipelines/yaml-files/{filename} or the YAML editor"
+                .into(),
+        ));
+    }
 
     let before_row = sqlx::query(
         "SELECT name, trigger_type, team_id, owner_group, is_active FROM pipelines WHERE id = ?",
@@ -486,14 +513,22 @@ pub async fn delete(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::PipelineDelete)?;
 
-    let before_row =
-        sqlx::query("SELECT name, trigger_type, team_id, owner_group FROM pipelines WHERE id = ?")
-            .bind(&id)
-            .fetch_optional(&state.pool)
-            .await?;
-    let (name, before) = match before_row {
+    let before_row = sqlx::query(
+        "SELECT name, trigger_type, team_id, owner_group, source, yaml_path FROM pipelines WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (name, before, yaml_path_to_remove) = match before_row {
         Some(r) => {
             let name: String = r.get(0);
+            let source: String = r.get(4);
+            let yaml_path: Option<String> = r.get(5);
+            let path = if source == "yaml" {
+                yaml_path.clone()
+            } else {
+                None
+            };
             (
                 name.clone(),
                 Some(serde_json::json!({
@@ -502,10 +537,13 @@ pub async fn delete(
                     "trigger_type": r.get::<String, _>(1),
                     "team_id": r.get::<String, _>(2),
                     "owner_group": r.get::<String, _>(3),
+                    "source": source,
+                    "yaml_path": &path,
                 })),
+                path,
             )
         }
-        None => (id.clone(), None),
+        None => (id.clone(), None, None),
     };
 
     let result = sqlx::query("DELETE FROM pipelines WHERE id = ?")
@@ -515,6 +553,24 @@ pub async fn delete(
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("pipeline not found".into()));
+    }
+
+    // File is authority — remove the YAML when deleting a file-backed pipeline.
+    if let Some(ref yaml_path) = yaml_path_to_remove {
+        let scan_dir = &state.config.pipeline.yaml_scan_dir;
+        if let Some(filename) =
+            crate::services::pipeline_scanner::filename_from_yaml_path(yaml_path)
+        {
+            if let Ok(path) =
+                crate::services::pipeline_scanner::resolve_yaml_path(scan_dir, &filename)
+            {
+                if path.exists() {
+                    if let Err(e) = tokio::fs::remove_file(&path).await {
+                        tracing::warn!("Failed to remove YAML file {yaml_path}: {e}");
+                    }
+                }
+            }
+        }
     }
 
     audit::record(
@@ -656,6 +712,15 @@ pub(crate) async fn do_trigger(
     debug_unredact: bool,
     verbose: bool,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    // File-backed pipelines: re-validate on-disk YAML and refresh DB projection
+    // so a broken/stale file cannot silently run the previous good snapshot.
+    crate::services::pipeline_scanner::sync_yaml_before_trigger(
+        &state.pool,
+        &state.config.pipeline.yaml_scan_dir,
+        pipeline_id,
+    )
+    .await?;
+
     let pipeline = sqlx::query(
         "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
                 concurrency_max_queue, concurrency_queue_timeout_seconds, input_defs
@@ -778,7 +843,7 @@ pub(crate) async fn do_trigger(
     // reproducible even if the pipeline is later modified or deleted.
     let tasks_snapshot = sqlx::query(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
-                image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, volumes,
+                image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, volumes,
                 privileged, registry_secret, config_source, config_key_path, config_render, config_dest
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
@@ -801,17 +866,20 @@ pub(crate) async fn do_trigger(
             "timeout_seconds": t.get::<i64, _>(10),
             "fail_strategy": t.get::<String, _>(11),
             "step_secrets": t.get::<String, _>(12),
-            "volumes": serde_json::from_str::<serde_json::Value>(
+            "step_env": serde_json::from_str::<serde_json::Value>(
                 &t.get::<String, _>(13),
+            ).ok().filter(|v| v.is_object()),
+            "volumes": serde_json::from_str::<serde_json::Value>(
+                &t.get::<String, _>(14),
             ).unwrap_or(serde_json::Value::Array(vec![])),
-            "privileged": t.get::<i64, _>(14) != 0,
-            "registry_secret": t.get::<String, _>(15),
-            "config_source": t.get::<String, _>(16),
-            "config_key_path": t.get::<String, _>(17),
+            "privileged": t.get::<i64, _>(15) != 0,
+            "registry_secret": t.get::<String, _>(16),
+            "config_source": t.get::<String, _>(17),
+            "config_key_path": t.get::<String, _>(18),
             "config_render": serde_json::from_str::<serde_json::Value>(
-                &t.get::<String, _>(18),
+                &t.get::<String, _>(19),
             ).ok().filter(|v| !v.is_null()),
-            "config_dest": t.get::<String, _>(19),
+            "config_dest": t.get::<String, _>(20),
         })
     })
     .collect::<Vec<_>>();
@@ -1052,11 +1120,18 @@ pub(crate) async fn insert_steps(
             .as_ref()
             .map(|l| l.join(","))
             .unwrap_or_default();
-        // Step-level secrets (comma-separated)
+        // Step-level secret allowlist (comma-separated)
         let step_secrets_stored = step
             .secrets
             .as_ref()
             .map(|s| s.join(","))
+            .unwrap_or_default();
+        // Step-level env map JSON (values may contain ${secrets.X} / ${vars.X})
+        let step_env_stored = step
+            .env
+            .as_ref()
+            .filter(|m| !m.is_empty())
+            .map(|m| serde_json::to_string(m).unwrap_or_default())
             .unwrap_or_default();
         let image_stored = step
             .image
@@ -1125,8 +1200,8 @@ pub(crate) async fn insert_steps(
         sqlx::query(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
              command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
-             volumes, privileged, registry_secret, config_source, config_key_path, config_render, config_dest)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             step_env, volumes, privileged, registry_secret, config_source, config_key_path, config_render, config_dest)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(pipeline_id)
@@ -1143,6 +1218,7 @@ pub(crate) async fn insert_steps(
         .bind(parse_timeout_seconds(step.timeout.as_deref()))
         .bind(fail_strategy)
         .bind(&step_secrets_stored)
+        .bind(&step_env_stored)
         .bind(&volumes_stored)
         .bind(privileged_val)
         .bind(&registry_secret_stored)
@@ -1166,17 +1242,10 @@ pub(crate) async fn insert_steps(
 }
 
 fn parse_timeout_seconds(raw: Option<&str>) -> i64 {
-    raw.and_then(|s| {
-        let s = s.trim();
-        if let Some(stripped) = s.strip_suffix('m') {
-            stripped.parse::<i64>().ok().map(|v| v * 60)
-        } else if let Some(stripped) = s.strip_suffix('h') {
-            stripped.parse::<i64>().ok().map(|v| v * 3600)
-        } else {
-            s.parse::<i64>().ok()
-        }
-    })
-    .unwrap_or(3600)
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => 3600,
+        Some(s) => shared::pipeline_yaml::parse_duration_seconds(s).unwrap_or(3600),
+    }
 }
 
 pub(crate) async fn insert_env_vars(
@@ -1245,11 +1314,18 @@ pub struct ValidateYamlRequest {
 }
 
 pub async fn validate_yaml(
-    _auth: AuthUser,
+    auth: AuthUser,
+    State(state): State<AppState>,
     Json(req): Json<ValidateYamlRequest>,
-) -> Json<ApiResponse<shared::pipeline_yaml::YamlValidationResult>> {
-    let result = shared::pipeline_yaml::parse_and_validate(&req.yaml);
-    Json(ApiResponse::success(result))
+) -> Result<Json<ApiResponse<shared::pipeline_yaml::YamlValidationResult>>, AppError> {
+    // Viewer-scoped: no TeamView on YAML `team:` → generic error (no secret oracle).
+    let result = crate::services::yaml_validate::validate_pipeline_yaml_for_viewer(
+        &state.pool,
+        &req.yaml,
+        &auth,
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(result)))
 }
 
 #[cfg(test)]

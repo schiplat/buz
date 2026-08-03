@@ -7,6 +7,7 @@ use crate::state::AppState;
 
 mod auth;
 mod pipelines;
+mod pipeline_yaml_files;
 pub mod runners;
 // Re-export helper functions for YAML scanner and trigger logic
 pub(crate) use pipelines::{
@@ -63,6 +64,21 @@ pub fn router(state: AppState) -> Router {
         // Pipelines / jobs
         .route("/pipelines", get(pipelines::list).post(pipelines::create))
         .route("/pipelines/validate", post(pipelines::validate_yaml))
+        // File-backed YAML authoring (scan dir is authority; DB is projection)
+        .route(
+            "/pipelines/yaml-files",
+            get(pipeline_yaml_files::list_files).post(pipeline_yaml_files::create_file),
+        )
+        .route(
+            "/pipelines/yaml-files/{filename}",
+            get(pipeline_yaml_files::get_file)
+                .put(pipeline_yaml_files::put_file)
+                .delete(pipeline_yaml_files::delete_file),
+        )
+        .route(
+            "/pipelines/{id}/yaml-source",
+            get(pipeline_yaml_files::get_pipeline_source),
+        )
         .route(
             "/pipelines/{id}",
             get(pipelines::get_one)
@@ -161,3 +177,7 @@ mod dispatch_log_mask_integration_tests;
 #[cfg(test)]
 #[path = "tests/verbose_trigger_tests.rs"]
 mod verbose_trigger_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/pipeline_yaml_files_tests.rs"]
+mod pipeline_yaml_files_integration_tests;

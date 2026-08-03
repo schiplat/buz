@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     timeout_seconds INTEGER NOT NULL DEFAULT 3600,
     fail_strategy TEXT NOT NULL DEFAULT 'stop',
     step_secrets TEXT NOT NULL DEFAULT '',
+    step_env TEXT NOT NULL DEFAULT '',
     registry_secret TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

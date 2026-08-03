@@ -32,12 +32,15 @@ Zero-trust security and architectural minimalism combined.
 ## Key topics
 
 {{< cards >}}
+  {{< card link="yaml-first-authoring/" title="YAML-First Authoring" subtitle="File/Git authority; UI writes scan dir; DB is projection" >}}
   {{< card link="runner-concurrent-jobs/" title="Runner Policy" subtitle="UI-managed concurrency, engines, cleanup" >}}
   {{< card link="docker-engine/" title="Docker Engine" subtitle="uses: docker + registry_secret" >}}
+  {{< card link="secrets-vars-expressions/" title="Secrets & Variables Expressions" subtitle="Cheat sheet: secrets:/variables:/env:/${secrets.X}/$INPUT_*" >}}
+  {{< card link="secrets-access/" title="Secrets Access (GHA-style)" subtitle="allowlist + env: KEY: ${secrets.NAME}" >}}
   {{< card link="secrets-access-control/" title="Secrets Access Control" subtitle="kind, team_shared, bindings, registry_secret" >}}
   {{< card link="env-render/" title="Env Render" subtitle="ValueMap, ${secrets.X}, BUZ_ENV_CHANGED" >}}
-  {{< card link="config-block/" title="Config Block DSL v2" subtitle="Agreed: nested config, OSS + render-only" >}}
-  {{< card link="pipeline-format/" title="Pipeline Format" subtitle="YAML fields including registry_secret" >}}
+  {{< card link="config-block/" title="Config Block DSL v2" subtitle="Shipped: nested config, OSS + render-only" >}}
+  {{< card link="pipeline-format/" title="Pipeline Format" subtitle="YAML field reference + field registration" >}}
   {{< card link="job-concurrency-queue/" title="Job Concurrency Queue" subtitle="Pipeline-level queue / discard" >}}
   {{< card link="git-webhook-triggers/" title="Git Webhook Triggers" subtitle="GitHub/Gitee push, secret verify, Trigger events" >}}
   {{< card link="admin-audit-logs/" title="Admin Audit Logs" subtitle="Platform-admin mutation audit + redaction" >}}

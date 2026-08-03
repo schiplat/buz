@@ -1,7 +1,7 @@
 # Push-only demo. For full build → push → verify, see acr-personal-build-push.yml.
 # Secret JSON must include `registry` (no step image to infer from).
 # Create secret (Secrets & Variables → Secrets) with Team share OFF;
-# reference via registry_secret (same team). Secret names are UPPER_SNAKE_CASE.
+# allowlist via secrets: and bind the purpose slot with ${secrets.NAME}.
 
 name: acr-personal-push
 description: docker login + push via registry_secret (shell engine)
@@ -14,10 +14,14 @@ runner:
   labels: [linux-x64]
   timeout: 30m
 
+secrets:
+  - ACR_PERSONAL
+
 steps:
   - name: Push image
     uses: shell
-    registry_secret: ACR_PERSONAL
+    secrets: [ACR_PERSONAL]
+    registry_secret: ${secrets.ACR_PERSONAL}
     run: |
       # Image must already exist locally (build in a prior step).
       docker tag myapp:local registry.cn-hongkong.aliyuncs.com/dadou/hello:1.0

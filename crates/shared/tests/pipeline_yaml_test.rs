@@ -66,6 +66,233 @@ steps:
 "#;
     let r = parse_and_validate(yaml);
     assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.field.contains("run") || e.message.contains("'run'")),
+        "{:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn step_typo_ru_instead_of_run_rejected() {
+    // `uses: shell` previously satisfied "run or uses", while unknown `ru:` was ignored.
+    let yaml = r#"
+name: test
+steps:
+  - name: Render env
+    uses: shell
+    ru: |
+      echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid, "typo `ru:` must fail validation");
+    let msg = r
+        .errors
+        .iter()
+        .map(|e| format!("{}: {}", e.field, e.message))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        msg.contains("ru") || msg.contains("'run'"),
+        "expected unknown-field or missing-run error, got: {msg}"
+    );
+    // Navigable field for editor highlight (path + bad key).
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.field == "steps[0].ru" || e.field.ends_with(".ru") || e.field == "ru"),
+        "field should name the bad key for highlighting, got: {msg}"
+    );
+}
+
+#[test]
+fn uses_shell_without_run_rejected() {
+    let yaml = r#"
+name: test
+steps:
+  - name: noop
+    uses: shell
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.message.contains("'run'")),
+        "{:?}",
+        r.errors
+    );
+}
+
+fn assert_unknown_key_rejected(yaml: &str, unknown_token: &str) {
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid, "expected rejection for unknown key `{unknown_token}`");
+    let msg = r
+        .errors
+        .iter()
+        .map(|e| format!("{}: {}", e.field, e.message))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        msg.contains("unknown field") && msg.contains(unknown_token),
+        "expected unknown field `{unknown_token}` in errors, got: {msg}"
+    );
+}
+
+#[test]
+fn unknown_top_level_key_rejected() {
+    assert_unknown_key_rejected(
+        r#"
+name: test
+runners:
+  labels: [linux]
+steps:
+  - name: a
+    run: echo hi
+"#,
+        "runners",
+    );
+}
+
+#[test]
+fn unknown_runner_key_rejected() {
+    assert_unknown_key_rejected(
+        r#"
+name: test
+runner:
+  label: [linux]
+  timeout: 5m
+steps:
+  - name: a
+    run: echo hi
+"#,
+        "label",
+    );
+}
+
+#[test]
+fn unknown_concurrency_key_rejected() {
+    assert_unknown_key_rejected(
+        r#"
+name: test
+concurrency:
+  grup: deploy
+  mode: queue
+steps:
+  - name: a
+    run: echo hi
+"#,
+        "grup",
+    );
+}
+
+#[test]
+fn unknown_on_trigger_key_rejected() {
+    assert_unknown_key_rejected(
+        r#"
+name: test
+on:
+  push:
+    branches: [main]
+steps:
+  - name: a
+    run: echo hi
+"#,
+        "push",
+    );
+}
+
+#[test]
+fn unknown_manual_input_key_rejected() {
+    assert_unknown_key_rejected(
+        r#"
+name: test
+on:
+  manual:
+    inputs:
+      tag:
+        description: Tag
+        require: true
+steps:
+  - name: a
+    run: echo hi
+"#,
+        "require",
+    );
+}
+
+#[test]
+fn unknown_config_key_rejected() {
+    assert_unknown_key_rejected(
+        r#"
+name: test
+steps:
+  - name: a
+    uses: shell
+    config:
+      dest: /tmp/x
+      renders:
+        - template: env.example
+    run: echo hi
+"#,
+        "renders",
+    );
+}
+
+#[test]
+fn unknown_config_render_key_rejected() {
+    assert_unknown_key_rejected(
+        r#"
+name: test
+steps:
+  - name: a
+    uses: shell
+    config:
+      dest: /tmp/x
+      render:
+        template: env.example
+        out: .env
+    run: echo hi
+"#,
+        "out",
+    );
+}
+
+#[test]
+fn invalid_uses_engine_rejected() {
+    let yaml = r#"
+name: test
+steps:
+  - name: a
+    uses: shel
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.field.contains("uses") && e.message.contains("shel")),
+        "{:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn concurrency_kebab_aliases_accepted() {
+    let yaml = r#"
+name: test
+concurrency:
+  group: deploy
+  mode: queue
+  max-queue: 5
+  queue-timeout: 10m
+steps:
+  - name: a
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "{:?}", r.errors);
 }
 
 #[test]
@@ -551,12 +778,59 @@ steps:
 "#;
     let r = parse_and_validate(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
+    assert!(r.warnings.is_empty(), "unexpected warnings: {:?}", r.warnings);
     let step = &r.parsed.unwrap().steps[0];
     assert_eq!(step.config_source.as_deref(), Some("OSS_DEMO"));
     assert_eq!(step.config_key_path.as_deref(), Some("config_tpl/demo/v1"));
     assert_eq!(step.config_dest.as_deref(), Some("/tmp/cfg"));
     assert!(step.config_render.is_none());
     assert!(step.config.is_some());
+}
+
+#[test]
+fn config_key_path_trailing_slash_ok_no_warning() {
+    let yaml = r#"
+name: oss-slash
+steps:
+  - name: deliver
+    uses: shell
+    config:
+      source: OSS_DEMO
+      key_path: config_tpl/demo/v1/
+      dest: /tmp/cfg
+    run: ls
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    assert!(
+        !r.warnings.iter().any(|w| w.contains("key_path")),
+        "trailing slash must not warn: {:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn config_key_path_rejects_archive_filename() {
+    let yaml = r#"
+name: oss-archive
+steps:
+  - name: deliver
+    uses: shell
+    config:
+      source: OSS_DEMO
+      key_path: config_tpl/demo/v1/configs.tar.gz
+      dest: /tmp/cfg
+    run: ls
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.field.contains("key_path") && e.message.contains("directory prefix")),
+        "errors: {:?}",
+        r.errors
+    );
 }
 
 #[test]
@@ -790,5 +1064,146 @@ steps:
         r.errors.iter().any(|e| e.message.contains("render")),
         "Errors: {:?}",
         r.errors
+    );
+}
+
+#[test]
+fn step_env_map_and_secrets_expr_slot_parsed() {
+    let yaml = r#"
+name: gha-secrets
+secrets:
+  - GIT_SSH_KEY
+  - ACR_PERSONAL
+steps:
+  - name: clone
+    secrets: [GIT_SSH_KEY]
+    env:
+      GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
+    run: echo "$GIT_SSH_KEY" > /tmp/key
+  - name: push
+    uses: shell
+    secrets: [ACR_PERSONAL]
+    registry_secret: ${secrets.ACR_PERSONAL}
+    run: docker push example.com/app:1
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    let parsed = r.parsed.unwrap();
+    let env = parsed.steps[0].env.as_ref().unwrap();
+    assert_eq!(
+        env.get("GIT_SSH_KEY").map(String::as_str),
+        Some("${secrets.GIT_SSH_KEY}")
+    );
+    assert_eq!(
+        parsed.steps[1].registry_secret.as_deref(),
+        Some("${secrets.ACR_PERSONAL}")
+    );
+}
+
+#[test]
+fn run_must_not_contain_secrets_expr() {
+    let yaml = r#"
+name: bad-run
+steps:
+  - name: clone
+    secrets: [GIT_SSH_KEY]
+    run: echo "${secrets.GIT_SSH_KEY}"
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.message.contains("${secrets.…}") || e.message.contains("env:")),
+        "Errors: {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn invalid_timeout_with_spaces_or_garbage_rejected() {
+    let yaml = r#"
+name: bad-timeout
+steps:
+  - name: a
+    run: echo hi
+    timeout: 10x m
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.field == "steps[0].timeout" && e.message.contains("10x m")),
+        "errors: {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn timeout_formats_accepted() {
+    for t in ["30", "30s", "10m", "1h", "2H"] {
+        let yaml = format!(
+            r#"
+name: ok-timeout
+runner:
+  timeout: {t}
+steps:
+  - name: a
+    run: echo hi
+    timeout: {t}
+"#
+        );
+        let r = parse_and_validate(&yaml);
+        assert!(r.valid, "timeout={t} errors: {:?}", r.errors);
+    }
+}
+
+#[test]
+fn parse_duration_seconds_helpers() {
+    use shared::pipeline_yaml::parse_duration_seconds;
+    assert_eq!(parse_duration_seconds("10m").unwrap(), 600);
+    assert_eq!(parse_duration_seconds("300s").unwrap(), 300);
+    assert_eq!(parse_duration_seconds("1h").unwrap(), 3600);
+    assert_eq!(parse_duration_seconds("45").unwrap(), 45);
+    assert!(parse_duration_seconds("10x m").is_err());
+    assert!(parse_duration_seconds("10xm").is_err());
+    assert!(parse_duration_seconds("0m").is_err());
+}
+
+#[test]
+fn collect_effective_secret_names_from_refs_without_top_level() {
+    use shared::pipeline_yaml::collect_effective_secret_names;
+
+    let yaml = r#"
+name: thin-top
+steps:
+  - name: clone
+    env:
+      GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
+    run: echo "$GIT_SSH_KEY"
+  - name: push
+    uses: shell
+    registry_secret: ${secrets.ACR_PERSONAL}
+    run: docker push example.com/app:1
+  - name: deliver
+    uses: ssh
+    host: box
+    config:
+      source: ${secrets.OSS_CONFIG}
+      key_path: tpl/v1
+      dest: /opt/app
+    run: ls
+"#;
+    let parsed: shared::pipeline_yaml::PipelineYaml =
+        serde_yaml::from_str(yaml).expect("parse");
+    let names = collect_effective_secret_names(&parsed);
+    assert_eq!(
+        names,
+        vec![
+            "ACR_PERSONAL".to_string(),
+            "GIT_SSH_KEY".to_string(),
+            "OSS_CONFIG".to_string(),
+        ]
     );
 }

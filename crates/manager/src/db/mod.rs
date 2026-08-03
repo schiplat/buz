@@ -267,8 +267,13 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
 
-    // Add step_secrets column to tasks — per-step secret scoping
+    // Add step_secrets column to tasks — per-step secret allowlist
     let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN step_secrets TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
+
+    // Step-level env map JSON (`{"KEY":"${secrets.NAME}"}`) — GHA-style mapping
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN step_env TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await;
 

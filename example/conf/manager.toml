@@ -27,7 +27,9 @@ runner_register_token_ttl_hours = 24
 heartbeat_timeout_seconds = 90
 
 [pipeline]
-# Watch this directory for .yml / .yaml and sync into the DB
+# File/Git authority for pipelines (mount or sync a repo here).
+# UI Save writes .yml into this dir and upserts the DB projection immediately;
+# the scanner also picks up external Git/FS edits on this interval.
 yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30
 

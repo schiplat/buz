@@ -8,7 +8,7 @@ description: "Shipped — nested config: delivery + multi-file render (OSS / ren
 > Nested `config:` is the only authoring shape. DB/API/Runner use
 > `config_key_path` / `config_dest` / `config_render` (legacy columns dropped).
 > Render-only prepare works on shell/local (in place) and ssh (fetch→render→upload).
-> UI: Create/Edit Config modes + multi-row render.  
+> Author via YAML online editor / Quick YAML Reference ([YAML-First](/docs/01-architecture/yaml-first-authoring/)); Form Config cards removed.  
 > **Not in 2b:** `config.git` (2c), auto `on_change`/`services` (2d).  
 > See also [Env Render](/docs/01-architecture/env-render/) (Phase 1 engine).
 
@@ -53,16 +53,23 @@ description: "Shipped — nested config: delivery + multi-file render (OSS / ren
 | YAML | DB column | Meaning |
 |------|-----------|---------|
 | `config.source` | `config_source` | OSS auth secret name |
-| `config.key_path` | `config_key_path` | OSS object-key **prefix** (Manager appends `/configs.tar.gz`) |
-| `config.dest` | `config_dest` | Unpack / working dir → `$BUZ_CONFIG_DIR` |
+| `config.key_path` | `config_key_path` | OSS object-key **directory prefix** — e.g. `config_tpl/app/v1` or `config_tpl/app/v1/` (trailing `/` optional). Manager always builds `{prefix}/configs.tar.gz`; do **not** put `configs.tar.gz` in the value. |
+| `config.dest` | `config_dest` | Unpack / working dir → `$BUZ_CONFIG_DIR` (one root per step) |
 | `config.render` | `config_render` (JSON array) | List (or single object → normalized to 1-element array) |
 
 | `render[]` field | Required in examples | Runtime default if omitted |
 |------------------|----------------------|----------------------------|
-| `template` | yes | — (required) |
-| `output` | yes | `<template>.rendered` |
+| `template` | yes | — (required; **relative to `dest`**) |
+| `output` | yes | `<template>.rendered` (**relative to `dest`**) |
 | `mode` | yes (show always) | `"0600"` |
 | `on_missing` | yes (show always) | `fail` (`fail` \| `warn`) |
+
+**Why `dest` is separate (not absolute paths inside each render entry):** one
+working root aligns Deliver + Render, sets `$BUZ_CONFIG_DIR`, and keeps OSS
+bundle layouts as relative paths. Subdirectories under the same root use
+relative `template` / `output` (e.g. `conf/nginx.conf`). Unrelated filesystem
+roots need **another render-only step** with its own `dest` — a single
+`config:` block has exactly one dest. See [Sample B](#sample-b--paths-under-dest).
 
 **Not in 2b examples or enforcement:** `on_change` / `services` (see below).
 
@@ -212,7 +219,13 @@ steps:
 
 ---
 
-## Sample B — Multi-file render
+## Sample B — Paths under `dest`
+
+### B1 — Same root, different subdirectories (one step)
+
+`dest` is the stack root; `template` / `output` are relative. Resolves to
+`/opt/manager/.env`, `/opt/manager/nginx/nginx.conf`, etc. Matches a typical
+OSS bundle layout.
 
 ```yaml
   - name: Render configs
@@ -225,17 +238,60 @@ steps:
           output: .env
           mode: "0600"
           on_missing: fail
-        - template: nginx.conf.tpl
-          output: conf/nginx.conf
+        - template: nginx/nginx.conf.tpl
+          output: nginx/nginx.conf
           mode: "0644"
           on_missing: fail
-        - template: redis.conf.tpl
-          output: conf/redis.conf
+        - template: app/config.yaml.tpl
+          output: app/config.yaml
           mode: "0644"
           on_missing: warn
     run: |
       echo "changed=${BUZ_ENV_CHANGED:-0} keys=${BUZ_ENV_CHANGED_KEYS:-none}"
+      # $BUZ_CONFIG_DIR == /opt/manager
 ```
+
+| Scenario | Approach |
+|----------|----------|
+| Same root, different subdirs | One `dest` + relative paths (this sample) |
+| Unrelated roots (e.g. `/opt/manager` and `/etc/foo`) | **Two** render-only steps, each with its own `dest` (B2) |
+
+### B2 — Unrelated roots (two steps)
+
+One `config:` block cannot declare two dests. Split steps; each step’s
+`$BUZ_CONFIG_DIR` equals that step’s `dest`.
+
+```yaml
+  - name: Render app env
+    uses: ssh
+    host: $deploy_host
+    config:
+      dest: /opt/manager
+      render:
+        - template: env.example
+          output: .env
+          mode: "0600"
+          on_missing: fail
+    run: |
+      ls -l "$BUZ_CONFIG_DIR/.env"
+
+  - name: Render system conf
+    uses: ssh
+    host: $deploy_host
+    config:
+      dest: /etc/foo
+      render:
+        - template: foo.conf.tpl
+          output: foo.conf
+          mode: "0644"
+          on_missing: fail
+    run: |
+      ls -l "$BUZ_CONFIG_DIR/foo.conf"
+```
+
+Do **not** put absolute paths in `template` / `output` as a substitute for
+`dest` — the engine treats those fields as relative to `dest` for prepare
+(shell in-place / SSH fetch→upload) and for `$BUZ_CONFIG_DIR`.
 
 ---
 

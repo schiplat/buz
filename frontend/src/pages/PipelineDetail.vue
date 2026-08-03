@@ -1,46 +1,43 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, reactive } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, GripVertical, Code, FileText, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, Lock, Info, CircleHelp } from '@lucide/vue'
+import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp } from '@lucide/vue'
 import { cn } from '@/lib/utils'
 import {
   pipelinesApi,
   type PipelineInputDef,
   type TriggerEvent,
   type GitHookConfig,
+  type YamlParsedData,
 } from '@/api/pipelines'
 import {
-  emptyInputDef,
-  normalizeInputDefsForForm,
-  normalizeInputDefsForSave,
-} from '@/utils/pipelineInputs'
-import {
-  formatConfigRenderSummary,
-  normalizeConfigRender,
-  serializeConfigForApi,
-  validateStepConfig,
-} from '@/utils/configForm'
-import StepConfigBlock from '@/components/pipeline/StepConfigBlock.vue'
+  collectSecretNamesFromYaml,
+  concurrencyFromYaml,
+  parseDurationToSeconds,
+  yamlStepsToDefTasks,
+} from '@/utils/pipelineDefinitionView'
+import { normalizeInputDefsForForm } from '@/utils/pipelineInputs'
+import { formatConfigRenderSummary } from '@/utils/configForm'
 import { secretsApi } from '@/api/secrets'
 import { variablesApi } from '@/api/variables'
 import { teamsApi, type Team } from '@/api/teams'
 import { jobsApi, type Job, type LogChunk } from '@/api/jobs'
 import { parseUtc, formatLocalShort } from '@/utils/time'
 import { copyText } from '@/utils/copyText'
-import { type StepDef } from '@/api/pipelines'
 import PipelineTopologyGraph from '@/components/flow/PipelineTopologyGraph.vue'
 import BuildHistoryCard from '@/components/flow/BuildHistoryCard.vue'
-import MultiSelect from '@/components/ui/MultiSelect.vue'
 import { createManagedWebSocket, type ManagedWebSocket } from '@/utils/ws'
 import { navLog } from '@/utils/navigation'
 import { useAuthStore } from '@/stores/auth'
+import PipelineYamlEditorDialog from '@/components/pipeline/PipelineYamlEditorDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const pipelineId = computed(() => route.params.id as string)
+const yamlEditorRef = ref<InstanceType<typeof PipelineYamlEditorDialog> | null>(null)
 
 const pipeline = ref<any>(null)
 
@@ -53,8 +50,16 @@ watch(pipelineId, async () => {
   pipelineWs = null
   jobs.value = []
   pipeline.value = null
+  defYamlAuthority.value = null
+  defYamlParsed.value = null
+  defYamlErrors.value = []
+  defYamlFilename.value = ''
+  defYamlName.value = ''
   await loadData()
   startPipelineWebSocket()
+  if (activeTab.value === 'definition') {
+    await loadYamlDefinition()
+  }
 })
 const jobs = ref<Job[]>([])
 const loading = ref(true)
@@ -66,6 +71,8 @@ let alive = true
 
 const showTriggerDialog = ref(false)
 const inputPairs = ref<{ key: string; value: string; required?: boolean; masking?: boolean }[]>([])
+/** Ad-hoc params when pipeline has no input_defs — collapsed by default. */
+const showAdhocParams = ref(false)
 const triggerDebug = ref(false)
 const triggerVerbose = ref(false)
 const editAvailableSecrets = ref<{ id: string; name: string; owner_group: string; kind?: string }[]>([])
@@ -184,286 +191,74 @@ function decisionClass(d: string) {
   return 'text-muted-foreground'
 }
 
-// ── Edit Dialog ──
-const showEditDialog = ref(false)
-const editSaving = ref(false)
-const editForm = ref({
-  name: '',
-  description: '',
-  trigger_type: 'manual',
-  webhook_path: '',
-  cron_expr: '',
-  runner_labels: 'linux-x64',
-  runner_timeout: '',
-  concurrency_group: '',
-  concurrency_mode: '',
-  concurrency_max_queue: 3,
-  concurrency_queue_timeout_seconds: 1800,
-  owner_group: '',
-  team_id: '',
-  var_ids: [] as string[],
-  secret_ids: [] as string[],
-  env: [] as { name: string; value: string }[],
-  steps: [] as StepDef[],
-  input_defs: [] as PipelineInputDef[],
-})
-const expandedEditSteps = reactive(new Set<number>())
-
-function toggleEditStep(idx: number) {
-  if (expandedEditSteps.has(idx)) expandedEditSteps.delete(idx)
-  else expandedEditSteps.add(idx)
-}
-
-const editFormHasAdvanced = computed(() => {
-  return !!(editForm.value.runner_timeout.trim() || editForm.value.concurrency_group.trim() ||
-    editForm.value.concurrency_mode ||
-    editForm.value.var_ids.length > 0 || editForm.value.secret_ids.length > 0 ||
-    editForm.value.env.length > 0 || editForm.value.input_defs.length > 0)
-})
-
-type VolumeRow = { host: string; container: string }
-
-function parseVolumesToRows(raw: any): VolumeRow[] {
-  if (Array.isArray(raw)) {
-    return raw.map((v: string) => {
-      const [host, container] = v.split(':')
-      return { host: host?.trim() || '', container: container?.trim() || '' }
-    }).filter(r => r.host || r.container)
-  }
-  if (typeof raw === 'string' && raw.trim()) {
-    return raw.split(',').map(p => p.trim()).filter(Boolean).map((v: string) => {
-      const [host, container] = v.split(':')
-      return { host: host?.trim() || '', container: container?.trim() || '' }
-    }).filter(r => r.host || r.container)
-  }
-  return []
-}
-
-function rowsToVolumesArray(rows: VolumeRow[]): string[] | undefined {
-  const arr = rows
-    .filter(r => r.host.trim() && r.container.trim())
-    .map(r => `${r.host.trim()}:${r.container.trim()}`)
-  return arr.length > 0 ? arr : undefined
-}
-
-function addEditStep() {
-  const idx = editForm.value.steps.length
-  editForm.value.steps.push({
-    name: '',
-    run: '',
-    uses: 'shell',
-    volumes: [] as any,
-    secrets: [],
-    config_source: '',
-    config_key_path: '',
-    config_dest: '',
-    config_render: [],
-  })
-  expandedEditSteps.add(idx)
-}
-
-function removeEditStep(idx: number) {
-  editForm.value.steps.splice(idx, 1)
-  expandedEditSteps.delete(idx)
-  const next = new Set<number>()
-  for (const e of expandedEditSteps) {
-    if (e > idx) next.add(e - 1)
-    else if (e < idx) next.add(e)
-  }
-  expandedEditSteps.clear()
-  for (const n of next) expandedEditSteps.add(n)
-}
-
-function addEditInputDef() {
-  editForm.value.input_defs.push(emptyInputDef())
-}
-
-function removeEditInputDef(idx: number) {
-  editForm.value.input_defs.splice(idx, 1)
-}
-
-function addEditEnv() {
-  editForm.value.env.push({ name: '', value: '' })
-}
-
-function removeEditEnv(idx: number) {
-  editForm.value.env.splice(idx, 1)
-}
-
-const editCopiedPath = ref(false)
-async function copyWebhookUrl(path: string) {
-  if (!path) return
-  const fullUrl = `${window.location.origin}/api/v1/hooks/${path}`
-  const ok = await copyText(fullUrl)
-  if (ok) {
-    editCopiedPath.value = true
-    setTimeout(() => { editCopiedPath.value = false }, 2000)
-  }
-}
-
 async function openEditDialog() {
   if (!pipeline.value) return
-  if (pipeline.value.source === 'yaml') {
-    alert('This pipeline is managed by a YAML file. Edit the source file directly — changes will be picked up automatically on the next scan.')
-    return
-  }
-  const p = pipeline.value
-  const tasks = p.tasks || []
-  editForm.value = {
-    name: p.name || '',
-    description: p.description || '',
-    trigger_type: p.trigger_type || 'manual',
-    webhook_path: p.webhook_path || '',
-    cron_expr: p.cron_expr || '',
-    runner_labels: (p.runner_labels || []).join(', '),
-    runner_timeout: p.timeout_seconds ? `${p.timeout_seconds}s` : '',
-    concurrency_group: p.concurrency_group || '',
-    concurrency_mode: (p as any).concurrency_mode || '',
-    concurrency_max_queue: (p as any).concurrency_max_queue ?? 3,
-    concurrency_queue_timeout_seconds: (p as any).concurrency_queue_timeout_seconds ?? 1800,
-    owner_group: p.owner_group || '',
-    team_id: p.team_id || '',
-    var_ids: p.var_ids || [],
-    secret_ids: p.secret_ids || [],
-    env: (p.env || []).map((e: any) => ({ name: e.name, value: e.value })),
-    steps: tasks.map((t: any) => ({
-        name: t.name || '',
-        run: t.command_template || '',
-        uses: t.exec_type || 'shell',
-        image: t.image || undefined,
-        volumes: parseVolumesToRows(t.volumes) as any,
-        secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
-        host: (t.host_names || t.host_id || '').toString().trim() || undefined,
-      host_labels: t.host_labels || undefined,
-      dir: t.work_dir || undefined,
-      timeout: t.timeout_seconds ? `${t.timeout_seconds}s` : undefined,
-      retry: t.retry_count || undefined,
-      continue_on_error: t.fail_strategy === 'continue' ? true : undefined,
-        privileged: (t as any).privileged === true ? true : undefined,
-        registry_secret: (t.registry_secret || '').trim() || undefined,
-        config_source: ((t as any).config_source || '').trim() || '',
-        config_key_path: ((t as any).config_key_path || '').trim() || '',
-        config_dest: ((t as any).config_dest || '').trim() || '',
-        config_render: normalizeConfigRender((t as any).config_render),
-    })),
-    input_defs: normalizeInputDefsForForm(p.input_defs),
-  }
-  expandedEditSteps.clear()
-  for (let i = 0; i < editForm.value.steps.length; i++) expandedEditSteps.add(i)
-  showEditDialog.value = true
-  void loadEditInfrastructureOptions()
+  await yamlEditorRef.value?.openEdit({
+    id: pipeline.value.id,
+    name: pipeline.value.name,
+    source: pipeline.value.source || 'form',
+    yaml_path: pipeline.value.yaml_path || null,
+  })
 }
 
-async function handleEditSave() {
-  if (!editForm.value.name.trim()) return
-  if (editForm.value.steps.length === 0) { alert('Add at least one step'); return }
-  if (auth.showTeamPicker && !editForm.value.team_id.trim()) {
-    alert('Team is required')
-    return
-  }
-  if (!auth.showTeamPicker && !editForm.value.team_id.trim()) {
-    editForm.value.team_id = auth.soleTeamId || editForm.value.team_id
-  }
-  if (!editForm.value.team_id.trim()) { alert('Team is required'); return }
-
-  for (const s of editForm.value.steps) {
-    if (s.uses === 'docker' && !(s.image || '').trim()) {
-      alert(`Step "${s.name || 'unnamed'}": Docker engine requires Image`)
-      return
-    }
-    if (s.uses === 'ssh') {
-      const hasHost = !!(s.host || '').toString().trim()
-      const hasLabels = !!(s.host_labels || '').toString().trim()
-      if (!hasHost && !hasLabels) {
-        alert(`Step "${s.name || 'unnamed'}": SSH requires SSH Host and/or Host Labels`)
-        return
-      }
-    }
-    const configErr = validateStepConfig(s as any)
-    if (configErr) {
-      alert(`Step "${s.name || 'unnamed'}": ${configErr}`)
-      return
-    }
-  }
-
-  editSaving.value = true
-  try {
-    const labels = editForm.value.runner_labels.split(',').map(s => s.trim()).filter(Boolean)
-    let timeout_seconds: number | undefined = undefined
-    if (editForm.value.runner_timeout.trim()) {
-      const raw = editForm.value.runner_timeout.trim()
-      const match = raw.match(/^(\d+)(s|m|h)$/i)
-      if (match) {
-        const val = parseInt(match[1], 10)
-        const unit = match[2].toLowerCase()
-        if (unit === 's') timeout_seconds = val
-        else if (unit === 'm') timeout_seconds = val * 60
-        else if (unit === 'h') timeout_seconds = val * 3600
-      }
-    }
-    const payload = {
-      name: editForm.value.name.trim(),
-      description: editForm.value.description.trim() || undefined,
-      trigger_type: editForm.value.trigger_type,
-      webhook_path: editForm.value.trigger_type === 'webhook' ? editForm.value.webhook_path || undefined : undefined,
-      cron_expr: editForm.value.trigger_type === 'cron' ? editForm.value.cron_expr || undefined : undefined,
-      runner_labels: labels,
-      timeout_seconds,
-      concurrency_group: editForm.value.concurrency_group.trim() || undefined,
-      concurrency_mode: editForm.value.concurrency_group.trim() ? (editForm.value.concurrency_mode || undefined) : undefined,
-      concurrency_max_queue: editForm.value.concurrency_mode === 'queue' ? editForm.value.concurrency_max_queue : undefined,
-      concurrency_queue_timeout_seconds: editForm.value.concurrency_mode === 'queue' ? editForm.value.concurrency_queue_timeout_seconds : undefined,
-      team_id: editForm.value.team_id,
-      var_ids: editForm.value.var_ids.length > 0 ? editForm.value.var_ids : undefined,
-      secret_ids: editForm.value.secret_ids.length > 0 ? editForm.value.secret_ids : undefined,
-      env: editForm.value.env.filter(e => e.name.trim() && e.value.trim()).map(e => ({ name: e.name.trim(), value: e.value })),
-      steps: editForm.value.steps.map(s => {
-        const rawHost = s.host as string | undefined
-        const rawHostLabels = s.host_labels as string | undefined
-        const isDocker = s.uses === 'docker'
-        const volumesArray = isDocker ? rowsToVolumesArray((s as any).volumes || []) : undefined
-        return {
-          ...s,
-          image: isDocker ? (s.image || '').trim() || undefined : undefined,
-          volumes: volumesArray,
-          privileged: isDocker ? (s as any).privileged === true || undefined : undefined,
-          registry_secret: ((s as any).registry_secret || '').trim() || undefined,
-          ...serializeConfigForApi(s as any),
-          host: isDocker
-            ? undefined
-            : rawHost
-              ? (() => {
-                  const hosts = rawHost.split(',').map((h: string) => h.trim()).filter(Boolean)
-                  return hosts.length > 1 ? hosts : (hosts[0] || undefined)
-                })()
-              : undefined,
-          host_labels: isDocker
-            ? undefined
-            : rawHostLabels
-              ? (() => {
-                  const labels = rawHostLabels.split(',').map((l: string) => l.trim()).filter(Boolean)
-                  return labels.length > 1 ? labels : (labels[0] || undefined)
-                })()
-              : undefined,
-        }
-      }),
-      input_defs: editForm.value.trigger_type === 'manual'
-        ? normalizeInputDefsForSave(editForm.value.input_defs)
-        : undefined,
-    }
-    await pipelinesApi.update(pipelineId.value, payload)
-    showEditDialog.value = false
-    await loadData()
-  } catch (e) {
-    console.error(e)
-    alert('Failed to update pipeline')
-  } finally {
-    editSaving.value = false
-  }
+async function onYamlSaved() {
+  await loadData()
+  await loadYamlDefinition()
 }
+
 // ──────────────────────────────
 
+/** File-first Definition payload for `source=yaml` pipelines. */
+const defYamlLoading = ref(false)
+const defYamlAuthority = ref<'file' | 'unavailable' | null>(null)
+const defYamlFilename = ref('')
+const defYamlName = ref('')
+const defYamlErrors = ref<string[]>([])
+const defYamlParsed = ref<YamlParsedData | null>(null)
+
+async function loadYamlDefinition() {
+  if (!pipeline.value || pipeline.value.source !== 'yaml') {
+    defYamlAuthority.value = null
+    defYamlParsed.value = null
+    defYamlErrors.value = []
+    defYamlFilename.value = ''
+    defYamlName.value = ''
+    return
+  }
+  defYamlLoading.value = true
+  defYamlErrors.value = []
+  try {
+    const src = await pipelinesApi.getYamlSource(pipelineId.value)
+    defYamlFilename.value = src.filename
+    const validation = await pipelinesApi.validateYaml(src.yaml)
+    if (!validation.valid || !validation.parsed) {
+      defYamlAuthority.value = 'unavailable'
+      defYamlParsed.value = null
+      defYamlName.value = ''
+      defYamlErrors.value = (validation.errors || []).map(
+        (e) => `${e.field}: ${e.message}`,
+      )
+      return
+    }
+    defYamlAuthority.value = 'file'
+    defYamlParsed.value = validation.parsed
+    defYamlName.value = validation.name || pipeline.value.name
+    defYamlErrors.value = []
+  } catch (e: any) {
+    defYamlAuthority.value = 'unavailable'
+    defYamlParsed.value = null
+    defYamlName.value = ''
+    defYamlFilename.value = pipeline.value?.yaml_path || ''
+    defYamlErrors.value = [
+      e?.response?.data?.message || e?.message || 'Failed to load YAML file',
+    ]
+  } finally {
+    defYamlLoading.value = false
+  }
+}
+
 const hasInputDefs = computed(() => {
+  // Trigger dialog still uses DB projection (runtime).
   const defs: PipelineInputDef[] | undefined = pipeline.value?.input_defs
   return Array.isArray(defs) && defs.length > 0
 })
@@ -475,29 +270,137 @@ const hasRunningJobs = computed(() => runningCount.value > 0 || jobs.value.some(
 
 const stageViewRuns = computed(() => jobs.value.slice(0, Math.min(jobs.value.length, 8)))
 const latestRun = computed(() => jobs.value[0] ?? null)
-const hasYamlSource = computed(() => Boolean(pipeline.value?.yaml_source))
+const hasYamlSource = computed(
+  () => pipeline.value?.source === 'yaml' || Boolean(pipeline.value?.yaml_source),
+)
+
+const yamlSync = computed(() => pipeline.value?.yaml_sync ?? null)
+
+/** Definition-page banner: prefer live file-load errors, else yaml_sync status. */
+const yamlSyncBanner = computed(() => {
+  if (hasYamlSource.value && defYamlAuthority.value === 'unavailable') {
+    return {
+      tone: 'destructive' as const,
+      title: 'Cannot load definition from file',
+      detail:
+        defYamlErrors.value.slice(0, 4).join(' · ')
+        || 'On-disk YAML is missing or invalid — Definition is not shown from DB projection.',
+    }
+  }
+  const s = yamlSync.value
+  if (!s || s.status === 'not_file_backed' || s.status === 'in_sync') return null
+  if (s.status === 'validation_failed') {
+    return {
+      tone: 'destructive' as const,
+      title: 'YAML validation failed',
+      detail:
+        (s.errors || []).slice(0, 3).join(' · ')
+        || 'On-disk file is invalid — trigger is blocked until fixed.',
+    }
+  }
+  if (s.status === 'missing_file') {
+    return {
+      tone: 'destructive' as const,
+      title: 'YAML file missing',
+      detail: `Expected ${s.filename || 'file'} under Manager yaml_scan_dir.`,
+    }
+  }
+  if (s.status === 'stale') {
+    return {
+      tone: 'amber' as const,
+      title: 'File newer than last sync',
+      detail: `Last synced ${s.last_synced_at || '—'} · file mtime ${s.file_mtime || '—'}. Showing file contents below; trigger will refresh the DB projection.`,
+    }
+  }
+  return null
+})
+
+/**
+ * Definition view model: file authority when source=yaml and parse ok;
+ * otherwise DB projection (legacy / non-yaml). Null when yaml unavailable.
+ */
+const definitionView = computed(() => {
+  const p = pipeline.value
+  if (!p) return null
+
+  if (p.source === 'yaml') {
+    if (defYamlAuthority.value !== 'file' || !defYamlParsed.value) return null
+    const parsed = defYamlParsed.value
+    const tc = parsed.trigger_config
+    const runner = parsed.runner
+    return {
+      authority: 'file' as const,
+      name: defYamlName.value || p.name,
+      description: parsed.description || '',
+      id: p.id,
+      trigger_type: parsed.trigger_type || 'manual',
+      webhook_path: tc?.webhook_path || '',
+      cron_expr: tc?.cron_expr || '',
+      runner_labels: runner?.labels || [],
+      timeout_seconds: parseDurationToSeconds(runner?.timeout) || p.timeout_seconds || 3600,
+      variableNames: parsed.variables || [],
+      secretNames: collectSecretNamesFromYaml(parsed),
+      team_id: p.team_id,
+      source: 'yaml',
+      input_defs: (tc?.inputs || []).map((i) => ({
+        name: i.name,
+        description: i.description || undefined,
+        required: !!i.required,
+        default: i.default || undefined,
+        masking: !!i.masking,
+      })),
+      tasks: yamlStepsToDefTasks(parsed.steps || []),
+      concurrency: concurrencyFromYaml(parsed),
+      filename: defYamlFilename.value,
+    }
+  }
+
+  // Legacy / non-yaml: DB projection
+  const group = (p.concurrency_group || '').trim()
+  const concurrency = !group
+    ? {
+        configured: false as const,
+        group: null as string | null,
+        mode: null as string | null,
+        maxQueue: null as number | null,
+        queueTimeoutSec: null as number | null,
+      }
+    : {
+        configured: true as const,
+        group,
+        mode: (p.concurrency_mode || '').trim() || 'discard-new',
+        maxQueue: p.concurrency_max_queue ?? 3,
+        queueTimeoutSec: p.concurrency_queue_timeout_seconds ?? 1800,
+      }
+  return {
+    authority: 'db' as const,
+    name: p.name,
+    description: p.description || '',
+    id: p.id,
+    trigger_type: p.trigger_type || 'manual',
+    webhook_path: p.webhook_path || '',
+    cron_expr: p.cron_expr || '',
+    runner_labels: p.runner_labels || [],
+    timeout_seconds: p.timeout_seconds || 3600,
+    variableNames: boundVariableNames.value,
+    secretNames: boundSecretNames.value,
+    team_id: p.team_id,
+    source: p.source || 'form',
+    input_defs: Array.isArray(p.input_defs) ? p.input_defs : [],
+    tasks: p.tasks || [],
+    concurrency,
+    filename: '',
+  }
+})
 
 const showConcurrencyHelp = ref(false)
 
 /** Live pipeline concurrency settings for Definition tab (always shown). */
-const pipelineConcurrency = computed(() => {
-  const p = pipeline.value
-  if (!p) return null
-  const group = (p.concurrency_group || '').trim()
-  if (!group) {
-    return { configured: false as const, group: null as string | null, mode: null as string | null, maxQueue: null as number | null, queueTimeoutSec: null as number | null }
-  }
-  const rawMode = (p.concurrency_mode || '').trim()
-  // Empty mode + group: Manager trigger treats as discard-new (legacy). Show that effective mode.
-  const mode = rawMode || 'discard-new'
-  return {
-    configured: true as const,
-    group,
-    mode,
-    maxQueue: p.concurrency_max_queue ?? 3,
-    queueTimeoutSec: p.concurrency_queue_timeout_seconds ?? 1800,
-  }
-})
+const pipelineConcurrency = computed(() => definitionView.value?.concurrency ?? null)
+
+const defHasInputDefs = computed(
+  () => (definitionView.value?.input_defs?.length || 0) > 0,
+)
 
 function formatConcurrencyTimeout(sec: number | null): string {
   if (sec == null || sec <= 0) return '—'
@@ -677,12 +580,18 @@ onMounted(async () => {
   await loadData()
   startPipelineWebSocket()
   await loadEditInfrastructureOptions()
+  if (activeTab.value === 'definition') {
+    await loadYamlDefinition()
+  }
   if (activeTab.value === 'trigger-events') {
     await Promise.all([loadTriggerEvents(), loadGitHooks()])
   }
 })
 
 watch(activeTab, async (tab) => {
+  if (tab === 'definition') {
+    await loadYamlDefinition()
+  }
   if (tab === 'trigger-events') {
     await Promise.all([loadTriggerEvents(), loadGitHooks()])
   }
@@ -693,7 +602,7 @@ watch([triggerFilterSource, triggerFilterDecision], () => {
   if (activeTab.value === 'trigger-events') void loadTriggerEvents()
 })
 
-/** Refresh Secrets / Variables / Teams for the edit form (avoid stale lists after Infra edits). */
+/** Refresh Secrets / Variables / Teams for definition labels. */
 async function loadEditInfrastructureOptions() {
   const [secrets, variables, teams] = await Promise.allSettled([
     secretsApi.list(),
@@ -704,44 +613,6 @@ async function loadEditInfrastructureOptions() {
   if (variables.status === 'fulfilled') editAvailableVariables.value = variables.value
   if (teams.status === 'fulfilled') editAvailableTeams.value = teams.value
 }
-
-const editVariableOptions = computed(() =>
-  editAvailableVariables.value.map(v => ({ id: v.id, label: v.name }))
-)
-const editSecretOptions = computed(() =>
-  editAvailableSecrets.value.map(s => ({
-    id: s.id,
-    label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
-  }))
-)
-
-/** Step-level secrets are stored by name (not id). */
-const editStepSecretOptions = computed(() =>
-  editAvailableSecrets.value.map(s => ({
-    id: s.name,
-    label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
-  }))
-)
-
-/** Registry Secret dropdown — only kind=registry. */
-const editRegistrySecretOptions = computed(() =>
-  editAvailableSecrets.value
-    .filter((s) => s.kind === 'registry')
-    .map(s => ({
-      id: s.name,
-      label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
-    }))
-)
-
-/** Config Source dropdown — only kind=aliyun_oss_auth. */
-const editConfigSourceOptions = computed(() =>
-  editAvailableSecrets.value
-    .filter((s) => s.kind === 'aliyun_oss_auth')
-    .map(s => ({
-      id: s.name,
-      label: s.owner_group ? `${s.name} · ${s.owner_group}` : s.name,
-    }))
-)
 
 function teamLabel(teamId: string | null | undefined): string {
   if (!teamId) return '—'
@@ -835,8 +706,8 @@ function openTriggerDialog() {
   const defs: PipelineInputDef[] = pipeline.value.input_defs || []
   triggerDebug.value = false
   triggerVerbose.value = false
-  // The dialog is always shown so any user can opt into verbose mode (and
-  // admins can additionally enable the no-redaction debug mode).
+  showAdhocParams.value = false
+  // Always open the dialog so users can opt into Verbose / Debug before Run.
   inputPairs.value = defs.length > 0
     ? normalizeInputDefsForForm(defs).map((d) => ({
         key: d.name,
@@ -844,7 +715,7 @@ function openTriggerDialog() {
         required: d.required,
         masking: !!d.masking,
       }))
-    : [{ key: '', value: '' }]
+    : []
   showTriggerDialog.value = true
 }
 
@@ -852,9 +723,15 @@ function navigateTab(tab: string) {
   router.push({ name: 'pipeline-detail', params: { id: pipelineId.value, tab } })
 }
 
+function toggleAdhocParams() {
+  showAdhocParams.value = !showAdhocParams.value
+  if (showAdhocParams.value && inputPairs.value.length === 0) {
+    inputPairs.value = [{ key: '', value: '' }]
+  }
+}
+
 function addInputPair() { inputPairs.value.push({ key: '', value: '' }) }
 function removeInputPair(idx: number) {
-  if (inputPairs.value.length <= 1) return
   inputPairs.value.splice(idx, 1)
 }
 
@@ -907,14 +784,18 @@ async function handleTrigger() {
           <div class="absolute inset-0 bg-black/50" @click="showTriggerDialog = false" />
         <div class="relative z-10 w-full max-w-md rounded-xl border border-border bg-background p-6 shadow-2xl">
           <h2 class="text-base font-semibold mb-1">Trigger Pipeline</h2>
-          <p class="text-sm text-muted-foreground mb-4">
+          <p v-if="hasInputDefs" class="text-sm text-muted-foreground mb-4">
             Keys available as <code class="mono-chip">$INPUT_&lt;KEY&gt;</code> in step commands.
             Masked fields use a password input and are redacted in logs / encrypted at rest.
           </p>
-          <div class="space-y-2 mb-4">
-            <p v-if="!hasInputDefs" class="text-xs text-muted-foreground mb-2">Ad-hoc mode — no params defined in the pipeline.</p>
+          <p v-else class="text-sm text-muted-foreground mb-4">
+            This pipeline has no declared parameters. Optionally enable Verbose/Debug, then Run.
+          </p>
+
+          <!-- Declared inputs -->
+          <div v-if="hasInputDefs" class="space-y-2 mb-4">
             <div v-for="(pair, idx) in inputPairs" :key="idx" class="flex items-center gap-2">
-              <div v-if="hasInputDefs" class="flex-1 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground select-none flex items-center gap-1.5 flex-wrap">
+              <div class="flex-1 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground select-none flex items-center gap-1.5 flex-wrap">
                 {{ pair.key }}
                 <span v-if="pair.required" class="text-red-500 text-sm font-sans leading-none">*</span>
                 <span v-else class="text-xs text-muted-foreground/50 font-sans">(optional)</span>
@@ -923,7 +804,6 @@ async function handleTrigger() {
                   class="text-[10px] font-medium uppercase tracking-wide rounded px-1.5 py-0.5 bg-violet-500/10 text-violet-600 border border-violet-500/20 font-sans"
                 >masking</span>
               </div>
-              <input v-else v-model="pair.key" placeholder="key" class="flex-1 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm" :disabled="triggering" />
               <input
                 v-model="pair.value"
                 :type="pair.masking ? 'password' : 'text'"
@@ -932,10 +812,59 @@ async function handleTrigger() {
                 :disabled="triggering"
                 :autocomplete="pair.masking ? 'new-password' : 'off'"
               />
-              <button v-if="!hasInputDefs" @click="removeInputPair(idx)" class="shrink-0 rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors" :disabled="triggering || inputPairs.length <= 1"><Trash2 class="h-4 w-4" /></button>
             </div>
           </div>
-          <button v-if="!hasInputDefs" @click="addInputPair" class="flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors mb-4" :disabled="triggering"><Plus class="h-3.5 w-3.5" /> Add parameter</button>
+
+          <!-- Ad-hoc params (no input_defs) — collapsed by default -->
+          <div v-else class="mb-4">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+              :disabled="triggering"
+              @click="toggleAdhocParams"
+            >
+              <ChevronDown v-if="showAdhocParams" class="h-3.5 w-3.5" />
+              <ChevronRight v-else class="h-3.5 w-3.5" />
+              Advanced: add parameters
+            </button>
+            <div v-if="showAdhocParams" class="mt-3 space-y-2">
+              <p class="text-xs text-muted-foreground">
+                Ad-hoc keys become <code class="mono-chip">$INPUT_&lt;KEY&gt;</code> in step commands.
+              </p>
+              <div v-for="(pair, idx) in inputPairs" :key="idx" class="flex items-center gap-2">
+                <input
+                  v-model="pair.key"
+                  placeholder="key"
+                  class="flex-1 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm"
+                  :disabled="triggering"
+                />
+                <input
+                  v-model="pair.value"
+                  type="text"
+                  placeholder="value"
+                  class="flex-[2] rounded-md border border-border bg-muted/50 px-3 py-2 text-sm"
+                  :disabled="triggering"
+                />
+                <button
+                  type="button"
+                  class="shrink-0 rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors"
+                  :disabled="triggering"
+                  @click="removeInputPair(idx)"
+                >
+                  <Trash2 class="h-4 w-4" />
+                </button>
+              </div>
+              <button
+                type="button"
+                class="flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors"
+                :disabled="triggering"
+                @click="addInputPair"
+              >
+                <Plus class="h-3.5 w-3.5" /> Add parameter
+              </button>
+            </div>
+          </div>
+
           <label
             class="mb-4 flex cursor-pointer items-start gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2.5"
           >
@@ -962,661 +891,6 @@ async function handleTrigger() {
           <div class="flex items-center justify-end gap-3">
             <UiButton variant="outline" size="sm" @click="showTriggerDialog = false">Cancel</UiButton>
             <UiButton size="sm" @click="handleTrigger" :disabled="triggering"><Loader2 v-if="triggering" class="mr-1.5 h-4 w-4 animate-spin" /><Play v-else class="mr-1.5 h-4 w-4" /> Run</UiButton>
-          </div>
-        </div>
-      </div>
-    </Teleport>
-
-    <!-- Edit Dialog -->
-    <Teleport to="body">
-      <div
-        v-if="showEditDialog"
-        class="fixed inset-0 z-50 flex items-start justify-center pt-[8vh]"
-        @click.self="showEditDialog = false"
-      >
-        <div class="soft-panel w-full max-w-xl p-6 space-y-5 max-h-[85vh] overflow-y-auto">
-          <div class="flex items-center justify-between">
-            <h2 class="text-base font-semibold tracking-tight">Edit Pipeline</h2>
-            <button
-              type="button"
-              class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-              @click="showEditDialog = false"
-            >
-              <X class="h-4 w-4" />
-            </button>
-          </div>
-
-          <div class="space-y-4">
-            <div>
-              <label class="type-label block mb-1.5">Name <span class="text-red-500">*</span></label>
-              <input
-                v-model="editForm.name"
-                type="text"
-                placeholder="e.g. hello-world"
-                class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-              />
-            </div>
-            <div>
-              <label class="type-label block mb-1.5">Description</label>
-              <input
-                v-model="editForm.description"
-                type="text"
-                placeholder="Optional description"
-                class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-              />
-            </div>
-            <div class="grid grid-cols-2 gap-4">
-              <div>
-                <label class="type-label block mb-1.5">Trigger</label>
-                <select
-                  v-model="editForm.trigger_type"
-                  class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                >
-                  <option value="manual">Manual</option>
-                  <option value="webhook">Webhook</option>
-                  <option value="cron">Cron</option>
-                </select>
-              </div>
-              <div>
-                <label class="type-label block mb-1.5">Runner Labels</label>
-                <input
-                  v-model="editForm.runner_labels"
-                  type="text"
-                  placeholder="linux-x64, docker"
-                  class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                />
-                <p class="text-xs text-muted-foreground mt-1">
-                  Optional. Comma-separated; runner must have <span class="font-medium text-foreground">all</span> listed labels (AND) to claim jobs.
-                </p>
-              </div>
-            </div>
-
-            <div v-if="editForm.trigger_type === 'webhook'" class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
-              <div class="flex items-center gap-2">
-                <Code class="h-4 w-4 text-muted-foreground" />
-                <span class="text-sm font-medium">Webhook Configuration</span>
-              </div>
-              <div>
-                <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">URL Path</label>
-                <div class="flex items-center gap-2">
-                  <div class="flex items-center gap-1 rounded-lg border border-border bg-muted/50 px-3 py-1.5 text-sm font-mono flex-1 min-w-0">
-                    <span class="text-muted-foreground shrink-0">/api/v1/hooks/</span>
-                    <span class="text-foreground truncate">{{ editForm.webhook_path || '—' }}</span>
-                  </div>
-                  <button
-                    v-if="editForm.webhook_path"
-                    type="button"
-                    class="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                    title="Copy full URL"
-                    @click="copyWebhookUrl(editForm.webhook_path)"
-                  >
-                    <Check v-if="editCopiedPath" class="h-3.5 w-3.5 text-emerald-500" />
-                    <Copy v-else class="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div v-if="editForm.trigger_type === 'cron'" class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
-              <div class="flex items-center gap-2">
-                <Code class="h-4 w-4 text-muted-foreground" />
-                <span class="text-sm font-medium">Cron Configuration</span>
-              </div>
-              <div>
-                <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Schedule (cron expression)</label>
-                <input
-                  v-model="editForm.cron_expr"
-                  type="text"
-                  placeholder="0 2 * * *"
-                  class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                />
-              </div>
-            </div>
-
-            <div v-if="auth.showTeamPicker">
-              <label class="type-label block mb-1.5">Team <span class="text-red-500">*</span></label>
-              <select
-                v-model="editForm.team_id"
-                class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-              >
-                <option value="" disabled>Select a team…</option>
-                <option v-for="t in editAvailableTeams" :key="t.id" :value="t.id">
-                  {{ t.name }} ({{ t.slug }})
-                </option>
-              </select>
-              <p class="mt-1 text-xs text-muted-foreground">
-                Only secrets with <span class="font-medium text-foreground">Team share</span> enabled are auto-injected.
-                Otherwise bind via Authorized Secrets or YAML / step / registry_secret references (same team only).
-              </p>
-            </div>
-
-            <!-- Steps editor -->
-            <div>
-              <div class="flex items-center justify-between mb-1.5">
-                <span class="type-label">Steps <span class="text-red-500">*</span></span>
-                <span class="text-xs text-muted-foreground font-mono">{{ editForm.steps.length }} step(s)</span>
-              </div>
-
-              <button
-                v-if="editForm.steps.length === 0"
-                type="button"
-                class="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-dashed border-border px-3 py-2.5 text-sm text-muted-foreground hover:border-foreground/25 hover:bg-muted/20 hover:text-foreground transition-colors"
-                @click="addEditStep"
-              >
-                <span class="inline-flex items-center gap-1.5 font-medium">
-                  <Plus class="h-3.5 w-3.5" />
-                  Add Step
-                </span>
-                <span class="text-border">·</span>
-                <span class="text-xs font-normal text-muted-foreground/70">No steps defined yet</span>
-              </button>
-
-              <template v-else>
-              <div class="space-y-2 mb-3">
-                <div
-                  v-for="(step, idx) in editForm.steps"
-                  :key="idx"
-                  class="rounded-xl border border-border/70 overflow-hidden transition-colors"
-                  :class="expandedEditSteps.has(idx) ? 'bg-card' : 'bg-muted/30'"
-                >
-                  <button
-                    type="button"
-                    class="w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-muted/30 transition-colors"
-                    @click="toggleEditStep(idx)"
-                  >
-                    <span class="inline-flex items-center justify-center h-6 w-6 rounded-md bg-muted font-mono text-xs text-muted-foreground shrink-0">{{ idx + 1 }}</span>
-                    <div class="flex-1 min-w-0">
-                      <div v-if="step.name" class="text-sm font-medium truncate">{{ step.name }}</div>
-                      <div v-if="step.run" class="text-xs font-mono text-muted-foreground truncate mt-0.5">{{ step.run.slice(0, 60) }}</div>
-                      <div v-if="!step.name && !step.run" class="text-xs text-muted-foreground italic">Empty step</div>
-                    </div>
-                    <div class="flex items-center gap-1 shrink-0">
-                      <span v-if="step.uses" class="mono-chip text-xs">{{ step.uses }}</span>
-                      <span v-if="step.continue_on_error" class="mono-chip text-xs text-amber-600 bg-amber-500/10">no-fail</span>
-                      <button
-                        type="button"
-                        class="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                        @click.stop="removeEditStep(idx)"
-                      >
-                        <X class="h-3.5 w-3.5" />
-                      </button>
-                      <ChevronDown v-if="expandedEditSteps.has(idx)" class="h-4 w-4 text-muted-foreground" />
-                      <ChevronRight v-else class="h-4 w-4 text-muted-foreground" />
-                    </div>
-                  </button>
-
-                  <!-- Step body (expanded) -->
-                  <div v-if="expandedEditSteps.has(idx)" class="px-4 pb-4 space-y-3 border-t border-border/40 pt-3">
-                    <div class="grid grid-cols-5 gap-3">
-                      <div class="col-span-3">
-                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Name <span class="text-red-500">*</span></label>
-                        <input
-                          v-model="step.name"
-                          type="text"
-                          placeholder="e.g. Install dependencies"
-                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                        />
-                      </div>
-                      <div class="col-span-2">
-                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Engine</label>
-                        <select
-                          v-model="step.uses"
-                          class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                        >
-                          <option value="shell">Shell</option>
-                          <option value="ssh">SSH</option>
-                          <option value="docker">Docker</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div v-if="step.uses === 'docker'">
-                      <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Image <span class="text-red-500">*</span></label>
-                      <input
-                        v-model="step.image"
-                        type="text"
-                        placeholder="e.g. alpine:3.20 or crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0"
-                        class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                      />
-                    </div>
-
-                    <div>
-                      <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
-                        Registry Secret
-                      </label>
-                      <select
-                        v-model="(step as any).registry_secret"
-                        class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                      >
-                        <option value="">None</option>
-                        <option v-for="opt in editRegistrySecretOptions" :key="opt.id" :value="opt.id">
-                          {{ opt.label }}
-                        </option>
-                      </select>
-                      <p class="text-xs text-muted-foreground/70 mt-0.5">
-                        Only Secrets with Kind = Registry. Used for <code class="font-mono">docker login</code> (pull or push).
-                        JSON value (encrypted):
-                        <code class="font-mono">{ "provider", "registry", "username", "password" }</code>.
-                        Shell/SSH: login before step; Docker: login before pull. Not injected as env.
-                      </p>
-                    </div>
-
-                    <StepConfigBlock
-                      :step="step as any"
-                      :source-options="editConfigSourceOptions"
-                    />
-
-                                          <div v-if="step.uses === 'docker'">
-                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
-                          Volumes
-                        </label>
-                        <div v-if="((step as any).volumes || []).length > 0" class="rounded-lg border border-border overflow-hidden mb-1.5">
-                          <div class="grid grid-cols-[1fr_1fr_28px] gap-0 text-xs font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border px-3 py-1.5">
-                            <span>Host Path</span>
-                            <span>Container Path</span>
-                            <span />
-                          </div>
-                          <div
-                            v-for="(vol, volIdx) in (step as any).volumes"
-                            :key="volIdx"
-                            class="grid grid-cols-[1fr_1fr_28px] gap-0 border-b border-border/40 last:border-b-0"
-                          >
-                            <input
-                              v-model="vol.host"
-                              type="text"
-                              placeholder="/data/logs"
-                              class="w-full bg-transparent px-3 py-1.5 text-xs font-mono outline-none border-r border-border/30"
-                            />
-                            <input
-                              v-model="vol.container"
-                              type="text"
-                              placeholder="/var/log/app"
-                              class="w-full bg-transparent px-3 py-1.5 text-xs font-mono outline-none border-r border-border/30"
-                            />
-                            <button
-                              type="button"
-                              class="flex items-center justify-center text-muted-foreground/50 hover:text-red-500 transition-colors"
-                              title="Remove volume"
-                              @click="(step as any).volumes.splice(volIdx, 1)"
-                            >
-                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                            </button>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          class="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground bg-muted/20 hover:bg-muted/40 rounded-lg border border-dashed border-border/60 transition-colors"
-                          @click="
-                            if (!(step as any).volumes) (step as any).volumes = [];
-                            (step as any).volumes.push({ host: '', container: '' })
-                          "
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-                          Add Volume
-                        </button>
-                        <p class="text-xs text-muted-foreground/70 mt-1">Map host paths into the container. All host paths must exist on the runner.</p>
-                      </div>
-
-                      <div v-if="step.uses === 'docker'" class="mb-3">
-                        <label class="flex items-start gap-2 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            v-model="(step as any).privileged"
-                            class="mt-0.5 h-4 w-4 rounded border-border accent-red-500"
-                          />
-                          <div>
-                            <span class="text-xs font-medium text-foreground">Privileged mode</span>
-                            <span class="ml-1 px-1 py-0.5 text-xs uppercase tracking-wider rounded bg-red-500/10 text-red-600 font-semibold">Security</span>
-                            <p class="text-xs text-muted-foreground/70 mt-0.5">Required for Docker-in-Docker (docker:dind). Grants full host capabilities — only use on disposable runner VMs.</p>
-                          </div>
-                        </label>
-                      </div>
-
-                    <div>
-                      <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Command</label>
-                      <textarea
-                        v-model="step.run"
-                        rows="4"
-                        spellcheck="false"
-                        placeholder="echo Hello&#10;npm run build&#10;cargo test --release"
-                        class="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15 resize-y"
-                      />
-                    </div>
-
-                      <div class="grid grid-cols-3 gap-3">
-                        <div>
-                          <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Work Dir</label>
-                          <input
-                            v-model="step.dir"
-                            type="text"
-                            placeholder="e.g. ./frontend"
-                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                          />
-                        </div>
-                        <div>
-                          <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Timeout</label>
-                          <input
-                            v-model="step.timeout"
-                            type="text"
-                            placeholder="e.g. 10m"
-                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                          />
-                        </div>
-                        <div>
-                          <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Retry</label>
-                          <input
-                            v-model.number="step.retry"
-                            type="number"
-                            min="0"
-                            max="5"
-                            placeholder="0"
-                            class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                          />
-                        </div>
-                      </div>
-
-                      <div class="mt-3">
-                        <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Step Secrets</label>
-                        <MultiSelect
-                          v-model="(step.secrets as string[])"
-                          :options="editStepSecretOptions"
-                          placeholder="Inherit from pipeline..."
-                        />
-                        <p class="text-xs text-muted-foreground/70 mt-0.5">Authorize secrets for this step only. Injected as env vars at runtime.</p>
-                      </div>
-
-                      <div v-if="step.uses === 'ssh'" class="space-y-3">
-                        <p class="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                          SSH targets <span class="text-red-500">*</span>
-                          <span class="normal-case font-normal text-muted-foreground/80"> — at least one of Host or Labels</span>
-                        </p>
-                        <div class="grid grid-cols-2 gap-3">
-                          <div>
-                            <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">SSH Host</label>
-                            <input
-                              v-model="step.host"
-                              type="text"
-                              placeholder="e.g. prod-server-01, prod-server-02"
-                              class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                            />
-                          </div>
-                          <div>
-                            <label class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1 block">Host Labels</label>
-                            <input
-                              v-model="step.host_labels"
-                              type="text"
-                              placeholder="e.g. prod, web"
-                              class="w-full rounded-lg border border-border bg-input px-3 py-1.5 text-xs outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                            />
-                          </div>
-                        </div>
-                        <p class="text-xs text-muted-foreground">
-                          Combined as a union (OR): named hosts plus any host matching a listed label. Multiple values: comma-separated.
-                        </p>
-                      </div>
-                      <label class="flex items-center gap-2 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          v-model="step.continue_on_error"
-                          class="h-4 w-4 rounded border-border accent-primary"
-                        />
-                        <span class="text-xs text-muted-foreground">Continue on error (next steps will still run)</span>
-                      </label>
-                  </div>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                class="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                @click="addEditStep"
-              >
-                <Plus class="h-3.5 w-3.5" />
-                Add Step
-              </button>
-              </template>
-            </div>
-            <!-- Advanced section -->
-            <details class="group/adv rounded-xl border border-dashed border-border/80 bg-muted/10 px-3 py-2.5" :open="editFormHasAdvanced">
-              <summary class="flex items-center gap-3 cursor-pointer list-none select-none py-0.5 [&::-webkit-details-marker]:hidden">
-                <span class="h-px flex-1 bg-border/80 transition-colors duration-300 group-hover/adv:bg-foreground/20" />
-                <span class="inline-flex items-center gap-1.5 shrink-0 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground transition-colors duration-300 group-hover/adv:text-foreground">
-                  Advanced
-                  <ChevronDown class="h-3.5 w-3.5 transition-transform duration-300 ease-out group-open/adv:rotate-180" />
-                  <span v-if="editFormHasAdvanced" class="text-xs font-normal normal-case tracking-normal text-muted-foreground/60">
-                    ({{ [editForm.runner_timeout && 1, editForm.concurrency_group && 1, editForm.var_ids.length > 0 && 1, editForm.secret_ids.length > 0 && 1, editForm.env.length > 0 && 1, editForm.input_defs.length > 0 && 1].filter(Boolean).length }} configured)
-                  </span>
-                </span>
-                <span class="h-px flex-1 bg-border/80 transition-colors duration-300 group-hover/adv:bg-foreground/20" />
-              </summary>
-              <div class="grid grid-rows-[0fr] transition-[grid-template-rows] duration-300 ease-out group-open/adv:grid-rows-[1fr]">
-                <div class="overflow-hidden">
-                  <div class="mt-3 space-y-4 pt-1">
-              <div class="grid grid-cols-2 gap-4">
-                <div>
-                  <label class="type-label block mb-1.5">Runner Timeout</label>
-                  <input
-                    v-model="editForm.runner_timeout"
-                    type="text"
-                    placeholder="e.g. 60m"
-                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                  />
-                </div>
-                <div>
-                  <label class="type-label block mb-1.5">Concurrency Group</label>
-                  <input
-                    v-model="editForm.concurrency_group"
-                    type="text"
-                    placeholder="e.g. prod"
-                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                  />
-                </div>
-                <div v-if="editForm.concurrency_group">
-                  <label class="type-label block mb-1.5">Concurrency Mode</label>
-                  <select
-                    v-model="editForm.concurrency_mode"
-                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                  >
-                    <option value="">discard-old (default)</option>
-                    <option value="queue">queue</option>
-                    <option value="discard-new">discard-new</option>
-                  </select>
-                </div>
-                <div v-if="editForm.concurrency_group && editForm.concurrency_mode === 'queue'">
-                  <label class="type-label block mb-1.5">Max Queue</label>
-                  <input
-                    v-model.number="editForm.concurrency_max_queue"
-                    type="number"
-                    min="1"
-                    max="100"
-                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                  />
-                </div>
-                <div v-if="editForm.concurrency_group && editForm.concurrency_mode === 'queue'">
-                  <label class="type-label block mb-1.5">Queue Timeout (seconds)</label>
-                  <input
-                    v-model.number="editForm.concurrency_queue_timeout_seconds"
-                    type="number"
-                    min="60"
-                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                    placeholder="1800"
-                  />
-                </div>
-              </div>
-
-              <div class="grid grid-cols-2 gap-4">
-                <div>
-                  <label class="type-label block mb-1.5">Variables</label>
-                  <MultiSelect
-                    v-model="editForm.var_ids"
-                    :options="editVariableOptions"
-                    placeholder="Select platform variables..."
-                  />
-                  <p class="mt-1 text-xs text-muted-foreground">
-                    Bind platform variables (Infrastructure → Variables). Available as <code class="font-mono">$NAME</code> in every step.
-                  </p>
-                </div>
-                <div>
-                  <label class="type-label block mb-1.5">Authorized Secrets</label>
-                  <MultiSelect
-                    v-model="editForm.secret_ids"
-                    :options="editSecretOptions"
-                    placeholder="Select secrets..."
-                  />
-                  <p class="mt-1 text-xs text-muted-foreground">
-                    Explicit binding via <code class="font-mono">pipeline_secrets</code>.
-                    Required for secrets without Team share (same team only).
-                  </p>
-                </div>
-              </div>
-
-              <!-- Env (pipeline-level key-value pairs, user-defined) -->
-              <div class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
-                <div class="flex items-center justify-between">
-                  <div class="flex items-center gap-2">
-                    <GripVertical class="h-4 w-4 text-muted-foreground" />
-                    <span class="text-sm font-medium">Env</span>
-                    <span class="text-xs text-muted-foreground">(user-defined, only for this pipeline)</span>
-                  </div>
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
-                    @click="addEditEnv"
-                  >
-                    <Plus class="h-3 w-3" /> Add
-                  </button>
-                </div>
-                <div v-if="editForm.env.length === 0" class="text-xs text-muted-foreground">
-                  No custom env vars defined. Add key-value pairs specific to this pipeline.
-                </div>
-                <div v-for="(pair, ei) in editForm.env" :key="ei" class="flex items-center gap-3">
-                  <input
-                    v-model="editForm.env[ei].name"
-                    type="text"
-                    placeholder="KEY"
-                    class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                  />
-                  <span class="text-xs text-muted-foreground">=</span>
-                  <input
-                    v-model="editForm.env[ei].value"
-                    type="text"
-                    placeholder="value"
-                    class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-                  />
-                  <button type="button" class="text-muted-foreground hover:text-destructive transition-colors" @click="removeEditEnv(ei)">
-                    <X class="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-
-
-              <!-- Input parameters (manual trigger only) -->
-              <div v-if="editForm.trigger_type === 'manual'" class="rounded-xl border border-border/70 bg-muted/20 p-4 space-y-3">
-                <div class="flex items-center justify-between">
-                  <div class="flex items-center gap-2">
-                    <GripVertical class="h-4 w-4 text-muted-foreground" />
-                    <span class="text-sm font-medium">Params</span>
-                    <span class="text-xs text-muted-foreground">(optional)</span>
-                  </div>
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
-                    @click="addEditInputDef"
-                  >
-                    <Plus class="h-3 w-3" /> Add
-                  </button>
-                </div>
-
-                <p class="text-xs text-muted-foreground leading-relaxed">
-                  Each param is available as <code class="mono-chip">$INPUT_&lt;NAME&gt;</code>.
-                  Enable <span class="font-medium text-foreground/80">Masking</span> to redact logs/audit and encrypt the value in the job DB.
-                </p>
-
-                <div v-if="editForm.input_defs.length === 0" class="text-xs text-muted-foreground">
-                  No input parameters defined.
-                </div>
-
-                <div
-                  v-for="(inp, idx) in editForm.input_defs"
-                  :key="idx"
-                  class="rounded-lg border border-border/50 bg-background px-3 py-2.5 space-y-2"
-                >
-                  <div class="flex items-start gap-2">
-                    <div class="flex-1 min-w-0 space-y-1">
-                      <label class="type-label block text-[11px]">
-                        Name <span class="text-red-500">*</span>
-                      </label>
-                      <input
-                        v-model="inp.name"
-                        type="text"
-                        placeholder="e.g. version"
-                        class="w-full rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-sm font-mono outline-none transition-colors focus:border-ring/40"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      class="inline-flex h-7 w-7 mt-5 items-center justify-center rounded-md text-muted-foreground hover:text-destructive transition-colors shrink-0"
-                      @click="removeEditInputDef(idx)"
-                    >
-                      <Trash2 class="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <div class="space-y-1">
-                      <label class="type-label block text-[11px]">Description</label>
-                      <input
-                        v-model="inp.description"
-                        type="text"
-                        placeholder="Shown in trigger dialog"
-                        class="w-full rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs outline-none transition-colors focus:border-ring/40"
-                      />
-                    </div>
-                    <div class="space-y-1">
-                      <label class="type-label block text-[11px]">Default</label>
-                      <input
-                        v-model="inp.default"
-                        :type="inp.masking ? 'password' : 'text'"
-                        placeholder="Optional default"
-                        class="w-full rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs font-mono outline-none transition-colors focus:border-ring/40"
-                        :autocomplete="inp.masking ? 'new-password' : 'off'"
-                      />
-                    </div>
-                  </div>
-                  <div class="flex flex-wrap items-center gap-4 pt-0.5">
-                    <label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-                      <input v-model="inp.required" type="checkbox" class="rounded border-border" />
-                      Required
-                    </label>
-                    <label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-                      <input v-model="inp.masking" type="checkbox" class="rounded border-border" />
-                      <span>Masking</span>
-                      <span class="text-muted-foreground/60">(logs + DB encrypt)</span>
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-                  </div>
-                </div>
-              </div>
-            </details>
-
-          </div>
-
-
-          <div class="flex justify-end gap-2 pt-1">
-            <button
-              type="button"
-              class="inline-flex items-center justify-center rounded-xl border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              @click="showEditDialog = false"
-            >Cancel</button>
-            <button
-              :disabled="editSaving || !editForm.name.trim() || editForm.steps.length === 0"
-              class="inline-flex items-center justify-center rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              @click="handleEditSave"
-            >
-              {{ editSaving ? 'Saving...' : 'Update Pipeline' }}
-            </button>
           </div>
         </div>
       </div>
@@ -1724,10 +998,17 @@ async function handleTrigger() {
                           :class="j.status === 'success' ? 'text-emerald-600/80' : 'text-red-500/80'"
                         >{{ j.status === 'success' ? 'Passed' : 'Failed' }}</span>
 
-                        <!-- Runner labels -->
-                        <span v-if="j.snapshot?.runner_labels?.length" class="flex items-center gap-1">
-                          <span v-for="l in j.snapshot.runner_labels" :key="l" class="mono-chip text-xs text-muted-foreground/60">{{ l }}</span>
-                        </span>
+                        <!-- Compact Verbose / Debug — square letter -->
+                        <span
+                          v-if="j.verbose_logs"
+                          class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-sky-500/40 text-[9px] font-mono leading-none lowercase text-sky-600"
+                          title="Verbose mode: extra per-step detail in logs; secrets stay redacted."
+                        >v</span>
+                        <span
+                          v-if="j.debug_unredact"
+                          class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-amber-500/45 text-[9px] font-mono leading-none lowercase text-amber-700"
+                          title="Debug mode: logs are unredacted, platform-admin-only, and purged after 24h."
+                        >d</span>
 
                         <!-- ... menu trigger (always visible) -->
                         <div class="ml-auto sidebar-job-menu relative">
@@ -1764,18 +1045,22 @@ async function handleTrigger() {
                         </div>
                       </div>
 
-                      <!-- Verbose / Debug mode badges — own row -->
-                      <div v-if="j.verbose_logs || j.debug_unredact" class="flex items-center gap-1.5 mt-1.5">
+                      <!-- Runner labels — own row; show at most 2, rest as ellipsis -->
+                      <div
+                        v-if="j.snapshot?.runner_labels?.length"
+                        class="flex items-center gap-1 mt-1 min-w-0"
+                      >
                         <span
-                          v-if="j.verbose_logs"
-                          class="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-px text-[10px] font-medium text-sky-600"
-                          title="Verbose mode: extra per-step detail in logs; secrets stay redacted."
-                        ><Info class="h-2.5 w-2.5" />Verbose</span>
+                          v-for="l in j.snapshot.runner_labels.slice(0, 2)"
+                          :key="l"
+                          class="mono-chip text-[10px] text-muted-foreground/60 max-w-[7rem] truncate"
+                          :title="l"
+                        >{{ l }}</span>
                         <span
-                          v-if="j.debug_unredact"
-                          class="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-px text-[10px] font-medium text-amber-700"
-                          title="Debug mode: logs are unredacted, platform-admin-only, and purged after 24h."
-                        ><Lock v-if="!auth.isPlatformAdmin" class="h-2.5 w-2.5" />Debug</span>
+                          v-if="j.snapshot.runner_labels.length > 2"
+                          class="text-[10px] text-muted-foreground/45 shrink-0 select-none"
+                          :title="j.snapshot.runner_labels.slice(2).join(', ')"
+                        >…</span>
                       </div>
 
                       <!-- Build time: timestamp · duration -->
@@ -1924,25 +1209,87 @@ async function handleTrigger() {
 
           <!-- ======== DEFINITION ======== -->
           <div v-if="activeTab === 'definition'">
-            <div class="rounded-xl border border-border/40 bg-card overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+            <div
+              v-if="hasYamlSource && (yamlSyncBanner || yamlSync)"
+              class="mb-3 rounded-lg border px-3 py-2 text-xs leading-relaxed"
+              :class="
+                yamlSyncBanner?.tone === 'destructive'
+                  ? 'border-destructive/35 bg-destructive/5 text-destructive'
+                  : yamlSyncBanner?.tone === 'amber'
+                    ? 'border-amber-500/35 bg-amber-500/5 text-amber-800 dark:text-amber-300'
+                    : 'border-border/40 bg-muted/40 text-muted-foreground'
+              "
+            >
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span class="font-medium">
+                  {{ yamlSyncBanner?.title || (definitionView?.authority === 'file' ? 'Showing file contents' : 'YAML in sync') }}
+                </span>
+                <span class="font-mono text-[11px] opacity-80">{{ defYamlFilename || yamlSync?.filename }}</span>
+                <span v-if="yamlSync?.last_synced_at" class="opacity-70">
+                  Last synced {{ yamlSync.last_synced_at }}
+                </span>
+                <span v-if="yamlSync?.file_mtime" class="opacity-70">
+                  File {{ yamlSync.file_mtime }}
+                </span>
+              </div>
+              <p v-if="yamlSyncBanner?.detail" class="mt-1 opacity-90">{{ yamlSyncBanner.detail }}</p>
+              <ul v-if="defYamlErrors.length && defYamlAuthority === 'unavailable'" class="mt-2 space-y-0.5 list-disc pl-4 opacity-95">
+                <li v-for="(err, i) in defYamlErrors.slice(0, 8)" :key="i">{{ err }}</li>
+              </ul>
+            </div>
+
+            <div
+              v-if="defYamlLoading || (pipeline?.source === 'yaml' && defYamlAuthority === null)"
+              class="rounded-xl border border-border/40 bg-card px-5 py-16 text-center text-sm text-muted-foreground"
+            >
+              Loading definition from YAML file…
+            </div>
+
+            <div
+              v-else-if="pipeline?.source === 'yaml' && defYamlAuthority === 'unavailable'"
+              class="rounded-xl border border-destructive/30 bg-card px-5 py-10 text-center space-y-3"
+            >
+              <p class="text-sm text-destructive font-medium">Definition unavailable</p>
+              <p class="text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+                Fix the on-disk YAML (missing or invalid), then reopen this tab. DB projection is not shown as authority.
+              </p>
+              <button
+                class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+                @click="openEditDialog"
+              >
+                <Pencil class="h-3 w-3" />
+                Edit YAML
+              </button>
+            </div>
+
+            <div
+              v-else-if="definitionView"
+              class="rounded-xl border border-border/40 bg-card overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
+            >
               <!-- ── Header ── -->
               <div class="px-5 pt-4 pb-3 flex items-start justify-between gap-4">
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2.5 flex-wrap">
-                    <h2 class="text-base font-semibold tracking-tight">{{ pipeline.name }}</h2>
-                    <span class="mono-chip text-muted-foreground opacity-60 select-all">{{ pipeline.id?.slice(-8) }}</span>
+                    <h2 class="text-base font-semibold tracking-tight">{{ definitionView.name }}</h2>
+                    <span class="mono-chip text-muted-foreground opacity-60 select-all">{{ definitionView.id?.slice(-8) }}</span>
                   </div>
-                  <p v-if="pipeline.description" class="text-sm text-muted-foreground mt-1.5 leading-relaxed">{{ pipeline.description }}</p>
+                  <p v-if="definitionView.description" class="text-sm text-muted-foreground mt-1.5 leading-relaxed">{{ definitionView.description }}</p>
                 </div>
                 <div class="flex items-center gap-2 shrink-0 pt-0.5">
-                  <span v-if="hasYamlSource" class="text-xs text-muted-foreground bg-muted/60 rounded px-2.5 py-0.5 font-medium">from YAML</span>
+                  <span
+                    v-if="definitionView.authority === 'file'"
+                    class="text-xs text-muted-foreground bg-muted/60 rounded px-2.5 py-0.5 font-medium"
+                  >from file</span>
+                  <span
+                    v-else-if="hasYamlSource"
+                    class="text-xs text-muted-foreground bg-muted/60 rounded px-2.5 py-0.5 font-medium"
+                  >from YAML</span>
                   <button
-                    v-if="!hasYamlSource"
                     class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
                     @click="openEditDialog"
                   >
                     <Pencil class="h-3 w-3" />
-                    Edit
+                    Edit YAML
                   </button>
                 </div>
               </div>
@@ -1956,16 +1303,16 @@ async function handleTrigger() {
                     <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Trigger</span>
                   </div>
                   <div class="space-y-1.5">
-                    <span class="mono-chip text-xs font-semibold px-2">{{ pipeline.trigger_type?.toUpperCase() }}</span>
-                    <div v-if="pipeline.webhook_path" class="flex items-center gap-1.5">
+                    <span class="mono-chip text-xs font-semibold px-2">{{ definitionView.trigger_type?.toUpperCase() }}</span>
+                    <div v-if="definitionView.webhook_path" class="flex items-center gap-1.5">
                       <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">path</span>
-                      <code class="text-xs font-mono text-foreground/70">{{ pipeline.webhook_path }}</code>
+                      <code class="text-xs font-mono text-foreground/70">{{ definitionView.webhook_path }}</code>
                     </div>
-                    <div v-if="pipeline.cron_expr" class="flex items-center gap-1.5">
+                    <div v-if="definitionView.cron_expr" class="flex items-center gap-1.5">
                       <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">cron</span>
-                      <code class="text-xs font-mono text-foreground/70">{{ pipeline.cron_expr }}</code>
+                      <code class="text-xs font-mono text-foreground/70">{{ definitionView.cron_expr }}</code>
                     </div>
-                    <div v-if="!pipeline.webhook_path && !pipeline.cron_expr" class="text-xs text-muted-foreground/50 italic">No external trigger configured</div>
+                    <div v-if="!definitionView.webhook_path && !definitionView.cron_expr" class="text-xs text-muted-foreground/50 italic">No external trigger configured</div>
                   </div>
                 </div>
 
@@ -1974,16 +1321,16 @@ async function handleTrigger() {
                   <div class="flex items-center gap-1.5 mb-3">
                     <Server class="h-3.5 w-3.5 text-blue-500" />
                     <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Runner</span>
-                    <span v-if="(pipeline.runner_labels || []).length" class="text-xs text-muted-foreground/50 ml-auto">{{ pipeline.runner_labels.length }} label{{ pipeline.runner_labels.length !== 1 ? 's' : '' }}</span>
+                    <span v-if="(definitionView.runner_labels || []).length" class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.runner_labels.length }} label{{ definitionView.runner_labels.length !== 1 ? 's' : '' }}</span>
                   </div>
                   <div class="space-y-2">
                     <div class="flex flex-wrap gap-1">
-                      <span v-for="l in (pipeline.runner_labels || [])" :key="l" class="mono-chip text-xs">{{ l }}</span>
-                      <span v-if="!(pipeline.runner_labels || []).length" class="text-xs text-muted-foreground/50 italic">No labels set</span>
+                      <span v-for="l in (definitionView.runner_labels || [])" :key="l" class="mono-chip text-xs">{{ l }}</span>
+                      <span v-if="!(definitionView.runner_labels || []).length" class="text-xs text-muted-foreground/50 italic">No labels set</span>
                     </div>
                     <div class="flex items-center gap-1.5">
                       <Clock class="h-3 w-3 text-muted-foreground/50" />
-                      <span class="font-mono text-xs text-muted-foreground font-medium">{{ pipeline.timeout_seconds }}s</span>
+                      <span class="font-mono text-xs text-muted-foreground font-medium">{{ definitionView.timeout_seconds }}s</span>
                       <span class="text-xs text-muted-foreground/50">timeout</span>
                     </div>
                   </div>
@@ -2000,22 +1347,22 @@ async function handleTrigger() {
                       <div class="flex items-center gap-1.5 mb-1">
                         <span class="h-1.5 w-1.5 rounded-full bg-emerald-500/60"></span>
                         <span class="text-xs text-muted-foreground/60 uppercase tracking-wider">Variables</span>
-                        <span v-if="boundVariableNames.length" class="text-xs text-muted-foreground/40 ml-auto">{{ boundVariableNames.length }}</span>
+                        <span v-if="definitionView.variableNames.length" class="text-xs text-muted-foreground/40 ml-auto">{{ definitionView.variableNames.length }}</span>
                       </div>
-                      <div v-if="boundVariableNames.length === 0" class="text-xs text-muted-foreground/40 pl-3.5">No variables bound</div>
+                      <div v-if="definitionView.variableNames.length === 0" class="text-xs text-muted-foreground/40 pl-3.5">No variables bound</div>
                       <div v-else class="flex flex-wrap gap-1 pl-3.5">
-                        <code v-for="v in boundVariableNames" :key="v" class="mono-chip text-xs">{{ v }}</code>
+                        <code v-for="v in definitionView.variableNames" :key="v" class="mono-chip text-xs">{{ v }}</code>
                       </div>
                     </div>
                     <div>
                       <div class="flex items-center gap-1.5 mb-1">
                         <span class="h-1.5 w-1.5 rounded-full bg-rose-500/60"></span>
                         <span class="text-xs text-muted-foreground/60 uppercase tracking-wider">Secrets</span>
-                        <span v-if="boundSecretNames.length" class="text-xs text-muted-foreground/40 ml-auto">{{ boundSecretNames.length }}</span>
+                        <span v-if="definitionView.secretNames.length" class="text-xs text-muted-foreground/40 ml-auto">{{ definitionView.secretNames.length }}</span>
                       </div>
-                      <div v-if="boundSecretNames.length === 0" class="text-xs text-muted-foreground/40 pl-3.5">No secrets bound</div>
+                      <div v-if="definitionView.secretNames.length === 0" class="text-xs text-muted-foreground/40 pl-3.5">No secrets bound</div>
                       <div v-else class="flex flex-wrap gap-1 pl-3.5">
-                        <code v-for="s in boundSecretNames" :key="s" class="mono-chip text-xs">{{ s }}</code>
+                        <code v-for="s in definitionView.secretNames" :key="s" class="mono-chip text-xs">{{ s }}</code>
                       </div>
                     </div>
                   </div>
@@ -2028,13 +1375,17 @@ async function handleTrigger() {
                     <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Config</span>
                   </div>
                   <div class="space-y-2">
-                    <div v-if="pipeline.team_id" class="flex items-center gap-1.5">
+                    <div v-if="definitionView.team_id" class="flex items-center gap-1.5">
                       <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">team</span>
-                      <code class="mono-chip text-xs truncate">{{ teamLabel(pipeline.team_id) }}</code>
+                      <code class="mono-chip text-xs truncate">{{ teamLabel(definitionView.team_id) }}</code>
                     </div>
                     <div class="flex items-center gap-1.5">
                       <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">source</span>
-                      <span class="mono-chip text-xs">{{ pipeline.source || 'form' }}</span>
+                      <span class="mono-chip text-xs">{{ definitionView.source || 'form' }}</span>
+                    </div>
+                    <div v-if="definitionView.filename" class="flex items-center gap-1.5">
+                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">file</span>
+                      <code class="mono-chip text-xs truncate">{{ definitionView.filename }}</code>
                     </div>
                   </div>
                 </div>
@@ -2055,15 +1406,13 @@ async function handleTrigger() {
                     <CircleHelp class="h-3.5 w-3.5" />
                   </button>
                   <button
-                    v-if="!hasYamlSource"
                     type="button"
                     class="ml-auto inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
                     @click="openEditDialog"
                   >
                     <Pencil class="h-3 w-3" />
-                    Edit
+                    Edit YAML
                   </button>
-                  <span v-else class="ml-auto text-xs text-muted-foreground/50">edit via YAML</span>
                 </div>
 
                 <template v-if="pipelineConcurrency.configured">
@@ -2115,27 +1464,25 @@ async function handleTrigger() {
                     <li><code class="font-mono text-[10px]">queue-timeout</code> (default 30m) — only when mode is <code class="font-mono text-[10px]">queue</code></li>
                   </ul>
                   <p>
-                    <template v-if="hasYamlSource">
-                      Change via pipeline YAML <code class="font-mono text-[10px]">concurrency:</code> and re-import / sync.
-                    </template>
-                    <template v-else>
-                      Change via <button type="button" class="text-primary underline underline-offset-2" @click="openEditDialog">Edit → Advanced / Concurrency</button>.
-                    </template>
+                    Change via
+                    <button type="button" class="text-primary underline underline-offset-2" @click="openEditDialog">Edit YAML</button>
+                    (<code class="font-mono text-[10px]">concurrency:</code> block). Save writes the file and applies immediately.
+
                     Applies to new jobs; already-created job snapshots stay frozen.
                   </p>
                 </div>
               </div>
 
               <!-- ── Parameters ── -->
-              <div v-if="hasInputDefs" class="mt-6 border-t border-border/20 pt-1">
+              <div v-if="defHasInputDefs" class="mt-6 border-t border-border/20 pt-1">
                 <div class="px-5 py-3 bg-muted/10 flex items-center gap-2">
                   <Sliders class="h-3.5 w-3.5 text-foreground/50" />
                   <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Parameters</span>
-                  <span class="text-xs text-muted-foreground/50 ml-auto">{{ pipeline.input_defs.length }}</span>
+                  <span class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.input_defs.length }}</span>
                 </div>
                 <div class="divide-y divide-border/20">
                   <div
-                    v-for="inp in pipeline.input_defs"
+                    v-for="inp in definitionView.input_defs"
                     :key="inp.name"
                     class="px-5 py-3 flex items-center gap-3 text-sm"
                   >
@@ -2164,14 +1511,14 @@ async function handleTrigger() {
                 <div class="px-5 py-3 bg-muted/10 flex items-center gap-2">
                   <List class="h-3.5 w-3.5 text-foreground/50" />
                   <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Steps</span>
-                  <span v-if="(pipeline.tasks || []).length" class="text-xs text-muted-foreground/50 ml-auto">{{ pipeline.tasks.length }}</span>
+                  <span v-if="(definitionView.tasks || []).length" class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.tasks.length }}</span>
                 </div>
-                <div v-if="!(pipeline.tasks || []).length" class="px-5 py-10 text-center text-xs text-muted-foreground/50">
+                <div v-if="!(definitionView.tasks || []).length" class="px-5 py-10 text-center text-xs text-muted-foreground/50">
                   No steps defined.
                 </div>
                 <div v-else class="divide-y divide-border/20">
                   <div
-                    v-for="(step, idx) in pipeline.tasks"
+                    v-for="(step, idx) in definitionView.tasks"
                     :key="idx"
                     class="px-5 py-4"
                   >
@@ -2465,5 +1812,7 @@ async function handleTrigger() {
     </template>
 
     <div v-else class="flex-1 flex items-center justify-center text-sm text-muted-foreground">Pipeline not found</div>
+
+    <PipelineYamlEditorDialog ref="yamlEditorRef" @saved="onYamlSaved" />
   </div>
 </template>

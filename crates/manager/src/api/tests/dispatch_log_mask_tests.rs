@@ -82,10 +82,11 @@ async fn test_app() -> Router {
     .await
     .expect("seed pipeline");
 
+    // No step_secrets / pipeline_secrets — purpose slot alone is the allowlist (GHA-style).
     sqlx::query(
         "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, command_template,
-                            registry_secret)
-         VALUES ('t1', 'p1', 0, 'echo', 'shell', 'echo hi', 'acr')",
+                            step_secrets, registry_secret)
+         VALUES ('t1', 'p1', 0, 'echo', 'shell', 'echo hi', '', '${secrets.acr}')",
     )
     .execute(&pool)
     .await

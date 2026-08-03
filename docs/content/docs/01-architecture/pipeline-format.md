@@ -1,10 +1,53 @@
 ---
 title: Pipeline Format
 weight: 3
-description: "Full reference for Buz pipeline YAML definitions and form fields"
+description: "Full reference for Buz pipeline YAML definitions (Form mapping is transitional)"
 ---
 
 Buz pipeline definitions follow a simplified GitHub Actions-style format with sequential step execution.
+
+> **Authoring direction:** File/Git under Manager `yaml_scan_dir` is the authority; the UI online editor writes that path. Form step-card authoring has been **removed** — see [YAML-First Pipeline Authoring](./yaml-first-authoring.md). Per-field tables below may still mention a historical **Form** column; ignore it when authoring (use YAML + Definition).
+
+## Field registration (required before use)
+
+Validate enables `deny_unknown_fields` on **every** nesting level of the pipeline schema. A YAML keyword that is not registered on the corresponding Rust struct is **rejected** (typos are not silently ignored).
+
+**New fields must be registered in schema before they can be used in YAML.**
+
+| Level | Register on (`crates/shared/src/pipeline_yaml.rs`) |
+|-------|-----------------------------------------------------|
+| Top-level | `PipelineYaml` |
+| `runner` | `RunnerYaml` |
+| `on` / triggers / inputs | `TriggerYaml`, `ManualTriggerYaml`, `InputDef`, … |
+| `concurrency` | `ConcurrencyYaml` (aliases via `#[serde(alias)]`; do not rely on untagged to swallow errors) |
+| `steps[]` | `StepYaml` |
+| `steps[].config` | `ConfigBlock` |
+| `config.render` | `ConfigRenderEntry` (`ConfigRender` uses custom deserialize) |
+
+Rules:
+
+- Do **not** remove `deny_unknown_fields` or reintroduce untagged enums that hide unknown-key errors
+- Legal aliases must be explicit (`alias` / `rename`) — e.g. `work_dir`→`dir`, `max-queue`→`max_queue`, `owner_group`→`team`
+- Enum-like values (`uses`, `concurrency.mode`, …) must be validated in `parse_and_validate()` against an allowlist
+- After schema registration, still wire storage / claim / runner / FE types / examples / docs (project checklist)
+
+```yaml
+# Rejected — `ru` is not a registered step key
+steps:
+  - name: x
+    uses: shell
+    ru: echo hi
+
+# OK — registered key `run`
+steps:
+  - name: x
+    uses: shell
+    run: echo hi
+```
+
+```bash
+cargo test -p shared --test pipeline_yaml_test
+```
 
 ## Quick Reference
 
@@ -41,9 +84,9 @@ secrets:                               # [pipeline-level] secrets (all steps)
   - DOCKER_PASSWORD
   - DEPLOY_KEY
 
-steps:                                 # required — at least one
+steps:                                 # required — at least one; each step needs `run`
   - name: Checkout
-    run: git pull origin main
+    run: git pull origin main          # required (typos like `ru:` are rejected)
 
   - name: Test
     run: cargo test
@@ -231,10 +274,11 @@ Optional. Comma-separated list in the form, YAML array in the file. The manager 
 
 #### `runner.timeout`
 
-Maximum duration for the **entire pipeline run**. Expressed as `<number><s|m|h>` in YAML, parsed to seconds internally. If the sum of all step durations exceeds this, the job is forcibly killed.
+Maximum duration for the **entire pipeline run**. Expressed as `<number>` or `<number><s|m|h>` in YAML (no spaces). Invalid values (e.g. `10x m`) fail Validate / Save. Parsed to seconds internally. If the sum of all step durations exceeds this, the job is forcibly killed.
 
 | Format | Example | Seconds |
 |--------|---------|---------|
+| bare | `300` | 300 |
 | `?s` | `300s` | 300 |
 | `?m` | `60m` | 3600 |
 | `?h` | `1h` | 3600 |
@@ -269,10 +313,10 @@ env:
 
 ### `variables`
 
-Platform-level **non-sensitive** key-value pairs defined in the Manager UI under Infrastructure → Variables. Pipelines **bind** to them by name — via YAML or the form's multi-select dropdown. Injected as env vars into **every step**. Values are **not** masked in Job logs (unlike Infrastructure Secrets).
+Platform-level **non-sensitive** key-value pairs defined in the Manager UI under Infrastructure → Variables. Pipelines **bind** to them by name in YAML. Injected as env vars into **every step**. Values are **not** masked in Job logs (unlike Infrastructure Secrets).
 
 ```yaml
-# YAML (scanned pipelines) — names must exist in the platform_vars table
+# Names must exist in Infrastructure → Variables
 variables:
   - BUILD_CACHE_DIR
   - NOTIFY_EMAIL
@@ -284,49 +328,57 @@ variables:
 | **Scope** | Every step |
 | **Sensitive** | No — values appear in step logs |
 | YAML | `variables: [NAME1, NAME2]` — names must match existing platform variables |
-| Form | Variables multi-select dropdown |
 
-> **Import behavior:** If a variable name in YAML does not exist in the Manager's Variables page, the YAML scanner silently skips it. During **Import to Form**, a warning alert is shown listing each unresolved name.
+> **Validate / Save:** unknown platform variable names are **rejected** (no silent skip). See [YAML-First Authoring](./yaml-first-authoring.md).
 
 ---
 
 ### `secrets`
 
-Sensitive values (passwords, tokens, SSH keys) defined in the Manager UI under Infrastructure → Secrets. Pipelines bind to them by name.
+Sensitive values (passwords, tokens, SSH keys) defined in the Manager UI under Infrastructure → Secrets.
 
-Secrets default to **`team_shared: false`**: they are **not** auto-injected to every same-team pipeline. Reference them via pipeline `secrets:`, step `secrets:`, or `registry_secret`, or enable **Team share** on the secret for opt-in auto-inject. Same-team only; see [Secrets Access Control](/docs/01-architecture/secrets-access-control/).
+**Top-level `secrets:` is optional** (GHA-style). Prefer referencing at the use site — that reference is the allowlist. Declaring a name still does **not** put `$NAME` into the process environment.
 
-**Pipeline-level secrets** are injected into **every step**. Their values are **never logged** and are masked in terminal output.
-
-```yaml
-# Pipeline-level — visible to all steps
-secrets:
-  - DOCKER_PASSWORD
-  - SLACK_WEBHOOK_URL
-```
-
-**Step-level secrets** are scoped to a **single step only** — other steps cannot see them:
+**Required access pattern:** map via `env:` (or a purpose slot), then use the shell variable in `run`:
 
 ```yaml
+# Production (thin top): omit pipeline secrets: — reference at use site
 steps:
   - name: Clone Private Repo
-    secrets: [GIT_SSH_KEY]   # only this step sees GIT_SSH_KEY
-    run: git clone git@github.com:org/repo.git
-  - name: Build
-    run: cargo build         # GIT_SSH_KEY NOT available here
+    env:
+      GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}   # allowlists + injects as $GIT_SSH_KEY
+    run: |
+      echo "$GIT_SSH_KEY" > /tmp/key && chmod 600 /tmp/key
+      GIT_SSH_COMMAND="ssh -i /tmp/key -o StrictHostKeyChecking=no" \
+        git clone git@github.com:org/repo.git /tmp/repo
+  - name: Notify
+    env:
+      SLACK_WEBHOOK_URL: ${secrets.SLACK_WEBHOOK_URL}
+    run: curl -X POST "$SLACK_WEBHOOK_URL"
 ```
+
+Purpose slots use the same expression (no separate list required):
+
+- `registry_secret: ${secrets.ACR_PERSONAL}`
+- `config.source: ${secrets.OSS_CONFIG}`
+
+Optional top-level / step `secrets: [NAME]` remains valid as an overview or narrowing. Manager collects effective names from lists + refs when upserting YAML.
+
+Do **not** write `${secrets.…}` inside `run` — the engine does not expand secrets in scripts. Full rules: [Secrets Access (GHA-style)](/docs/01-architecture/secrets-access/). Syntax cheat sheet: [Secrets & Variables Expressions](/docs/01-architecture/secrets-vars-expressions/).
+
+Secrets default to **`team_shared: false`**. Same-team only; see [Secrets Access Control](/docs/01-architecture/secrets-access-control/).
 
 | | |
 |---|---|
-| **Level** | Pipeline-level: all steps. Step-level: single step only. |
-| **Scope** | Pipeline-level → every step. Step-level → that step only. |
+| **Level** | Use-site `${secrets.NAME}` / purpose slot = allowlist. Top-level / step `secrets:` optional. |
+| **Into process env** | Only via `env: KEY: ${secrets.NAME}` (expanded at claim) |
 | **Sensitive** | Yes — values **never logged**, masked in terminal |
-| YAML (pipeline) | `secrets: [NAME1]` — names must match existing secrets |
-| YAML (step) | `secrets: [NAME1]` under a step — scoped to that step |
-| Form (pipeline) | Secrets multi-select dropdown |
-| Form (step) | Not yet supported — the form shows a warning on import |
+| YAML (pipeline) | `secrets: [NAME1]` — optional overview |
+| YAML (step) | `${secrets.NAME}` in `env:` / slots; optional `secrets: [NAME]` |
+| Form (pipeline) | Authorized Secrets (auto from refs) + Env rows with `${secrets.NAME}` |
+| Form (step) | Step Secrets + auto `env` mapping on save |
 
-> **Import behavior:** Same as variables — unresolved names produce a warning alert during Import to Form.
+> **Validate / Save:** unknown or inaccessible secret names are **rejected** (viewer-scoped; no cross-team name oracle). See [YAML-First Authoring](./yaml-first-authoring.md).
 
 ---
 
@@ -336,10 +388,9 @@ Every placeholder in a pipeline command falls into one of four categories, each 
 
 | Placeholder Type | Declared In | Level | Scope | Sensitive | Reference Syntax |
 |---|---|---|---|---|---|
-| `env` | Top-level `env:` block | **Pipeline** | All steps | No | `$KEY` or `$key` |
+| `env` | Top-level / step `env:` block | **Pipeline / Step** | Mapped steps | Optional (if value from secrets) | `$KEY` after map; values may be `${secrets.X}` / `${vars.X}` |
 | `variables` | Top-level `variables:` / Manager UI | **Pipeline** | All steps | No | `$VAR_NAME` |
-| `secrets` (pipeline) | Top-level `secrets:` / Manager UI | **Pipeline** | All steps | **Yes** | `$SECRET_NAME` |
-| `secrets` (step) | Step-level `secrets:` | **Step** | That step only | **Yes** | `$SECRET_NAME` |
+| `secrets` (allowlist) | Top-level / step `secrets:` | **Pipeline / Step** | Expression resolution | **Yes** | `${secrets.NAME}` in `env:` / slots / render — **not** bare `$NAME` from allowlist |
 | `inputs` (dynamic params) | `on.manual.inputs:` | **Trigger** | All steps | Optional (`masking: true`) | `$INPUT_NAME` (uppercased) |
 
 ### Resolution Precedence
@@ -347,12 +398,11 @@ Every placeholder in a pipeline command falls into one of four categories, each 
 When a variable name appears in more than one source, the most specific wins:
 
 ```
-Step-level secrets  >  Pipeline-level secrets  >  Platform variables  >  Inline env
-        (tightest scope)                                              (widest scope)
+Step env map  >  Pipeline env map  >  Platform variables
 ```
 
-- `$APP_NAME` — resolved from `env:` or `variables:` (non-sensitive), falls back to earlier sources
-- `$DOCKER_PASSWORD` — if declared both pipeline-level and step-level, the **step-level** value takes precedence for that step
+- `$APP_NAME` — from `env:` or `variables:` (non-sensitive)
+- `$GIT_SSH_KEY` — only if `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}` was declared (allowlist alone is not enough)
 - `$INPUT_VERSION` — always from the trigger dialog; has **no overlap** with other types (prefixed with `INPUT_`)
 
 ---
@@ -370,7 +420,8 @@ steps:
 
   - name: Push image
     uses: shell
-    registry_secret: acr_personal
+    secrets: [ACR_PERSONAL]
+    registry_secret: ${secrets.ACR_PERSONAL}
     run: |
       docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:$INPUT_VERSION
 ```
@@ -379,13 +430,12 @@ steps:
 |---|---|---|
 | `$APP_NAME` | `env:` block | Pipeline |
 | `$BUILD_CACHE_DIR` | `variables:` (platform) | Pipeline |
-| `$DOCKER_PASSWORD` | `secrets:` (pipeline or step) — env injection | Pipeline / Step |
-| `$SLACK_WEBHOOK_URL` | `secrets:` (pipeline) | Pipeline |
-| `$GIT_SSH_KEY` | `secrets:` (step) | Step |
+| `$SLACK_WEBHOOK_URL` | `env: SLACK_WEBHOOK_URL: ${secrets.SLACK_WEBHOOK_URL}` | Pipeline / Step |
+| `$GIT_SSH_KEY` | `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}` | Step |
 | `$INPUT_VERSION` | `on.manual.inputs:` | Trigger |
-| `registry_secret:` | Manager Secret **name** for `docker login` (not an env var) | Step |
+| `registry_secret:` | Purpose slot `${secrets.NAME}` (or bare name) for `docker login` | Step |
 
-> Prefer `registry_secret` for registry login/push instead of piping `$DOCKER_PASSWORD` into `docker login` in the script.
+> Prefer `registry_secret` for registry login/push instead of piping passwords into `docker login` in the script.
 > **Note:** Parameter names from `on.manual.inputs` are **automatically uppercased** and prefixed with `INPUT_`. A parameter named `version` becomes `$INPUT_VERSION` inside commands.
 
 ---
@@ -410,7 +460,7 @@ Each step is an atomic unit of work executed **sequentially** by the runner. Ste
 
 #### `run`
 
-**Required.** The actual command(s) to execute. Can be a single line or a multi-line block (YAML `|`). Environment variables (from env, variables, secrets, inputs) are available as regular `$VAR` references.
+**Required** on every step (`uses` alone is not enough). The actual command(s) to execute. Can be a single line or a multi-line block (YAML `|`). Environment variables (from env, variables, secrets, inputs) are available as regular `$VAR` references. Typos like `ru:` are rejected — see [Field registration](#field-registration-required-before-use).
 
 ```yaml
 run: cargo build --release
@@ -429,11 +479,12 @@ run: |
 
 #### `uses` (Engine)
 
-Selects the execution engine. Defaults to `shell` (runner's own shell).
+Selects the execution engine. Defaults to `shell` (runner's own shell). When set, value **must** be one of `shell` / `local` / `ssh` / `docker` (other strings fail Validate).
 
 | Value | Description |
 |-------|-------------|
 | _(omitted)_ | **Local** — runs on the runner host's shell |
+| `shell` / `local` | Same as omitted — runner host shell |
 | `ssh` | **SSH** — connects to remote host(s) via SSH (requires `host` and/or `host_labels`) |
 | `docker` | **Docker** — runs `run:` inside a container on the runner. Requires `image`. See [Docker Engine](/docs/01-architecture/docker-engine/). |
 
@@ -525,6 +576,10 @@ config:
       mode: "0600"
       on_missing: fail
 ```
+
+`template` / `output` are **relative to `dest`**. Same root + subdirs → one step;
+unrelated roots → separate render-only steps (see
+[Config Block — Sample B](/docs/01-architecture/config-block/#sample-b--paths-under-dest)).
 
 Flat `config_source` / `config_path` / `config_dir` / `env_render` are **rejected**.
 Full rules, DB columns, and engines: [Config Block DSL v2](/docs/01-architecture/config-block/).
@@ -635,34 +690,19 @@ Examples: `example/pipelines/docker-engine-smoke.yml`, `example/pipelines/acr-pe
 
 ---
 
-## Form ↔ YAML Mapping
+## YAML → runtime projection
 
-When using the "Import to Form" feature after validating YAML, all fields are automatically populated. The table below shows the exact mapping:
+Authoring is YAML-only ([YAML-First](./yaml-first-authoring.md)). On Validate / Save / scan / Trigger, Manager projects the file into DB tables (`pipelines`, `tasks`, bindings) for dispatch. Definition UI re-reads the **file** for display.
 
-| YAML Field | Form Field | Level | Notes |
-|---|---|---|---|
-| `name` | Name | Pipeline | |
-| `description` | Description | Pipeline | |
-| `on.manual.inputs` | Params | Trigger | Name, Description, Required, Default per param |
-| `on.webhook.path` | Webhook Config → URL Path | Pipeline | Only when trigger is webhook |
-| `on.cron.schedule` | Cron Config → Schedule | Pipeline | Only when trigger is cron |
-| `runner.labels` | Runner Labels | Pipeline | Optional; comma-separated; runner must match **all** (AND) |
-| `runner.timeout` | Runner Timeout | Pipeline | Preserves original format (e.g. `60m`) |
-| `concurrency` | Concurrency Group | Pipeline | |
-| `team` / `owner_group` | Team | Pipeline | Resolves to `team_id`; form requires Team select |
-| `env` | Env | Pipeline | User-defined key-value pairs, per-pipeline |
-| `variables` | Variables | Pipeline | Multi-select from Infrastructure → Variables (`var_ids`) |
-| `secrets` (pipeline) | Authorized Secrets | Pipeline | Multi-select from Infrastructure → Secrets (`secret_ids` → `pipeline_secrets`) |
-| `secrets` (step) | _(warning on import)_ | Step | Not yet supported in form UI |
-| `steps[].name` | Step Name | Step | |
-| `steps[].run` | Command | Step | Multi-line preserved |
-| `steps[].uses` | Engine | Step | Local/SSH/Docker |
-| `steps[].image` | Image | Step | Required when Engine is Docker |
-| `steps[].registry_secret` | Registry Secret | Step | Shell / SSH / Docker; Secret JSON for registry login |
-| `steps[].config` | Config | Step | Nested deliver / render; import flattens to `config_source` / `config_key_path` / `config_dest` / `config_render` |
-| `steps[].host` | SSH Host | Step | Optional alone; **at least one** of host / host_labels required for SSH |
-| `steps[].host_labels` | Host Labels | Step | Optional alone; union (OR) with `host` |
-| `steps[].work_dir` / `steps[].dir` | Work Dir | Step | Both YAML keys accepted |
-| `steps[].timeout` | Timeout | Step | |
-| `steps[].retry` | Retry | Step | |
-| `steps[].continue-on-error` | Continue on error | Step | Checkbox |
+| YAML | DB / runtime | Notes |
+|---|---|---|
+| `name`, `description`, `team` / `owner_group` | `pipelines.*` / `team_id` | Unknown team slug rejected |
+| `on.*` | `trigger_type`, webhook/cron fields, `input_defs` | |
+| `runner.labels` / `timeout` | `runner_labels`, `timeout_seconds` | Duration strings parsed |
+| `concurrency` | concurrency_* columns | Object or legacy string |
+| `env` / `variables` / `secrets` | env rows + `var_ids` / `pipeline_secrets` | Unknown names rejected at Validate |
+| `steps[]` | `tasks` rows | Nested `config:` → `config_source` / `config_key_path` / `config_dest` / `config_render` columns |
+| `steps[].uses` | `exec_type` | `shell`/`local`/`ssh`/`docker` only |
+| `steps[].continue-on-error` | `fail_strategy` | |
+
+New YAML keys must be [registered](#field-registration-required-before-use) before use.

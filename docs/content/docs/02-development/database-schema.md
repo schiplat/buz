@@ -52,7 +52,7 @@ See [Users, Teams & RBAC](/docs/01-architecture/rbac/) for the full model.
 
 ### pipelines
 
-Pipeline definitions.
+Runtime **projection** of pipeline definitions. For `source=yaml`, the file under Manager `yaml_scan_dir` is authoritative — see [YAML-First Authoring](/docs/01-architecture/yaml-first-authoring/).
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -60,7 +60,9 @@ Pipeline definitions.
 | trigger_type | TEXT | `manual`, `webhook`, or `cron` |
 | concurrency_group | TEXT | Prevents concurrent execution of same pipeline |
 | owner_group | TEXT | Team slug mirror (Phase 1 namespace). Phase 2: ownership via `team_id` — see [RBAC](/docs/01-architecture/rbac/) |
-| source | TEXT | `form` (UI) or `yaml` (file) |
+| source | TEXT | Prefer `yaml` (file authority). Legacy `form` until migrated |
+| yaml_path | TEXT | **Basename only** (e.g. `demo.yml`) when `source=yaml`; flat scan dir — no subdirectories |
+| is_active | INTEGER | Toggle sticks across scanner upserts (not forced back to `1`) |
 
 ### tasks
 

@@ -1,7 +1,7 @@
 //! Unit tests for `shared::value_source`.
 //! Included via `value_source.rs` under `#[cfg(test)]`.
 
-use super::{expand, ExpandMode, MissingPolicy, RenderError, ValueMap};
+use super::{expand, expand_env_value, ExpandMode, MissingPolicy, RenderError, ValueMap};
 
 fn map() -> ValueMap {
     let mut m = ValueMap::new();
@@ -128,6 +128,23 @@ fn strict_rejects_multiline_secret_value() {
     let err = strict("A=${secrets.KEY}\n", &m).unwrap_err();
     assert!(matches!(err, RenderError::MultilineValue { .. }));
     assert!(err.to_string().contains("multiline"));
+}
+
+#[test]
+fn expand_env_value_allows_multiline_ssh_key() {
+    let mut m = map();
+    m.secrets
+        .insert("GIT_SSH_KEY".into(), "-----BEGIN\nKEY\n-----END\n".into());
+    let out = expand_env_value("${secrets.GIT_SSH_KEY}", &m).unwrap();
+    assert!(out.contains("BEGIN"));
+    assert!(out.contains('\n'));
+}
+
+#[test]
+fn expand_env_value_requires_mapping() {
+    let m = map();
+    let err = expand_env_value("${secrets.MISSING}", &m).unwrap_err();
+    assert!(matches!(err, RenderError::Missing { .. }));
 }
 
 #[test]

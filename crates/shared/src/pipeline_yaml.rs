@@ -3,7 +3,11 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::OneOrMany;
 
 /// Buz pipeline definition in YAML format (simplified GitHub Actions style).
+///
+/// Unknown keys at every nesting level are rejected (`deny_unknown_fields`) so
+/// typos like `ru:` / `runners:` / `grup:` fail Validate instead of being ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineYaml {
     pub name: String,
     #[serde(default)]
@@ -24,7 +28,8 @@ pub struct PipelineYaml {
     #[serde(default)]
     pub secrets: Option<Vec<String>>,
     /// Team slug this pipeline belongs to (Phase 2). Alias: `owner_group`.
-    /// Resolved to `teams.id` by the YAML scanner; defaults to `default` if omitted.
+    /// Resolved to `teams.id` by the Manager; defaults to `default` if omitted.
+    /// Unknown slug fails Validate / create / update (no silent fallback).
     #[serde(default, alias = "owner_group")]
     pub team: Option<String>,
     #[serde(default)]
@@ -32,7 +37,10 @@ pub struct PipelineYaml {
 }
 
 /// Concurrency definition: string (legacy) or full object.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Custom deserialize (not `untagged`) so unknown object keys surface clearly
+/// instead of falling through to "expected a string".
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum ConcurrencyDef {
     /// Legacy: `concurrency: "my-group"` — backward compat, equivalent to discard-new.
@@ -41,14 +49,45 @@ pub enum ConcurrencyDef {
     Full(ConcurrencyYaml),
 }
 
+impl<'de> Deserialize<'de> for ConcurrencyDef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        match value {
+            serde_yaml::Value::String(s) => Ok(ConcurrencyDef::Simple(s)),
+            serde_yaml::Value::Mapping(_) => {
+                let full: ConcurrencyYaml =
+                    serde_yaml::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(ConcurrencyDef::Full(full))
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "concurrency must be a string or mapping, got {}",
+                type_name_of_yaml(&other)
+            ))),
+        }
+    }
+}
+
+fn type_name_of_yaml(v: &serde_yaml::Value) -> &'static str {
+    match v {
+        serde_yaml::Value::Null => "null",
+        serde_yaml::Value::Bool(_) => "bool",
+        serde_yaml::Value::Number(_) => "number",
+        serde_yaml::Value::String(_) => "string",
+        serde_yaml::Value::Sequence(_) => "sequence",
+        serde_yaml::Value::Mapping(_) => "mapping",
+        serde_yaml::Value::Tagged(_) => "tagged",
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConcurrencyYaml {
     pub group: String,
     #[serde(default = "default_concurrency_mode")]
     pub mode: String, // "discard-old" (default) | "queue" | "discard-new"
-    #[serde(default = "default_max_queue")]
+    #[serde(default = "default_max_queue", alias = "max-queue")]
     pub max_queue: u32,
-    #[serde(default)]
+    #[serde(default, alias = "queue-timeout")]
     pub queue_timeout: Option<String>,
 }
 
@@ -60,6 +99,7 @@ fn default_max_queue() -> u32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TriggerYaml {
     #[serde(default)]
     pub manual: Option<ManualTriggerYaml>,
@@ -70,14 +110,18 @@ pub struct TriggerYaml {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManualTriggerYaml {
     #[serde(default)]
     pub inputs: Option<std::collections::BTreeMap<String, InputDef>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InputDef {
+    #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
     pub required: Option<bool>,
     #[serde(default)]
     pub default: Option<String>,
@@ -87,18 +131,21 @@ pub struct InputDef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebhookTriggerYaml {
     #[serde(default)]
     pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CronTriggerYaml {
     #[serde(default)]
     pub schedule: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunnerYaml {
     #[serde(default)]
     pub labels: Option<Vec<String>>,
@@ -112,7 +159,7 @@ pub struct RunnerYaml {
 /// `$BUZ_CONFIG_DIR`, and before the run block. References resolve against
 /// job secrets (`${secrets.X}`) and vars (`${vars.X}`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ConfigRenderEntry {
     /// Template file relative to `$BUZ_CONFIG_DIR` (e.g. `env.example`).
     #[serde(default)]
@@ -139,11 +186,36 @@ pub struct ConfigRenderEntry {
 pub type EnvRender = ConfigRenderEntry;
 
 /// `config.render`: a single object or a list of objects.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// Custom deserialize so unknown keys on a single object (e.g. `out:`) are not
+/// swallowed by untagged fallback to the list variant.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ConfigRender {
     One(ConfigRenderEntry),
     Many(Vec<ConfigRenderEntry>),
+}
+
+impl<'de> Deserialize<'de> for ConfigRender {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        match value {
+            serde_yaml::Value::Sequence(_) => {
+                let many: Vec<ConfigRenderEntry> =
+                    serde_yaml::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(ConfigRender::Many(many))
+            }
+            serde_yaml::Value::Mapping(_) => {
+                let one: ConfigRenderEntry =
+                    serde_yaml::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(ConfigRender::One(one))
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "config.render must be an object or a list, got {}",
+                type_name_of_yaml(&other)
+            ))),
+        }
+    }
 }
 
 impl ConfigRender {
@@ -169,7 +241,7 @@ impl ConfigRender {
 /// - **render-only:** `dest` + `render`
 /// - **sugar:** deliver fields + `render` in one step (allowed, not preferred)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ConfigBlock {
     /// OSS auth secret name (`kind = aliyun_oss_auth`).
     #[serde(default)]
@@ -186,6 +258,7 @@ pub struct ConfigBlock {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StepYaml {
     pub name: Option<String>,
     #[serde(default)]
@@ -225,18 +298,23 @@ pub struct StepYaml {
     pub host: Option<OneOrMany>,
     #[serde(default, alias = "work_dir")]
     pub dir: Option<String>,
-    #[serde(default, alias = "host_labels")]
+    #[serde(default)]
     pub host_labels: Option<OneOrMany>,
     #[serde(default)]
     pub timeout: Option<String>,
     #[serde(default)]
     pub retry: Option<i32>,
-    #[serde(default, rename = "continue-on-error")]
+    /// Prefer kebab-case `continue-on-error`; snake_case accepted as alias.
+    #[serde(default, rename = "continue-on-error", alias = "continue_on_error")]
     pub continue_on_error: Option<bool>,
-    /// Secrets referenced by this step — resolved at runtime from the Manager.
-    /// These are IN ADDITION to any pipeline-level secrets.
+    /// Step secret allowlist (optional narrowing). Does **not** inject `$NAME`;
+    /// map via `env:` or purpose slots (`registry_secret`, `config.source`).
     #[serde(default)]
     pub secrets: Option<Vec<String>>,
+    /// Step-level env map. Values may use `${secrets.X}` / `${vars.X}`;
+    /// expanded at claim time onto the process environment.
+    #[serde(default)]
+    pub env: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// Result of YAML validation.
@@ -345,13 +423,16 @@ pub struct StepData {
     pub retry: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub continue_on_error: Option<bool>,
-    /// Step-level secret names (in addition to pipeline-level secrets).
+    /// Step secret allowlist (optional narrowing).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secrets: Option<Vec<String>>,
+    /// Step-level env map (`env:` under the step).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<std::collections::BTreeMap<String, String>>,
     /// Privileged mode flag (only for docker steps).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub privileged: Option<bool>,
-    /// Manager Secret name for private registry login (docker / shell / SSH).
+    /// Purpose slot: `${secrets.NAME}` or bare secret name for registry login.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registry_secret: Option<String>,
     /// Nested `config:` block (authoring / import shape).
@@ -378,13 +459,69 @@ fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|v| !v.is_empty())
 }
 
+/// Parse pipeline duration strings: `30`, `30s`, `10m`, `1h` (case-insensitive unit).
+///
+/// - Trims surrounding whitespace only — **internal spaces are rejected** (`10x m` → error).
+/// - Bare digits mean seconds.
+/// - Returns seconds as `i64` (> 0).
+pub fn parse_duration_seconds(raw: &str) -> Result<i64, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err("duration is empty".into());
+    }
+    if s.chars().any(|c| c.is_whitespace()) {
+        return Err(format!(
+            "invalid duration '{raw}' — no spaces allowed (use 30s, 10m, or 1h)"
+        ));
+    }
+    let lower = s.to_ascii_lowercase();
+    let (num, mult): (&str, i64) = if let Some(n) = lower.strip_suffix('s') {
+        (n, 1)
+    } else if let Some(n) = lower.strip_suffix('m') {
+        (n, 60)
+    } else if let Some(n) = lower.strip_suffix('h') {
+        (n, 3600)
+    } else {
+        (lower.as_str(), 1)
+    };
+    if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!(
+            "invalid duration '{raw}' — expected <number> with optional unit s|m|h (e.g. 30s, 10m, 1h)"
+        ));
+    }
+    let n: i64 = num
+        .parse()
+        .map_err(|_| format!("invalid duration '{raw}' — number out of range"))?;
+    if n <= 0 {
+        return Err(format!("invalid duration '{raw}' — must be > 0"));
+    }
+    n.checked_mul(mult).ok_or_else(|| {
+        format!("invalid duration '{raw}' — overflow when converting to seconds")
+    })
+}
+
+fn validate_duration_field(
+    field: &str,
+    raw: Option<&str>,
+    errors: &mut Vec<YamlValidationError>,
+) {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if let Err(msg) = parse_duration_seconds(raw) {
+        errors.push(YamlValidationError {
+            field: field.into(),
+            message: msg,
+        });
+    }
+}
+
 /// Validate a nested `config:` block (deliver / render-only / sugar).
 fn validate_config_block(
     cfg: &ConfigBlock,
     uses: &str,
     field: &str,
     errors: &mut Vec<YamlValidationError>,
-    warnings: &mut Vec<String>,
 ) {
     let source = non_empty(cfg.source.as_deref());
     let key_path = non_empty(cfg.key_path.as_deref());
@@ -427,10 +564,14 @@ fn validate_config_block(
             });
         }
         if let Some(p) = key_path {
-            if !p.ends_with('/') && !p.ends_with("configs.tar.gz") {
-                warnings.push(format!(
-                    "{field}: 'config.key_path' should be a directory prefix (Manager appends 'configs.tar.gz')"
-                ));
+            // Manager always builds `{key_path.trim('/')}/configs.tar.gz`. Trailing
+            // '/' is optional. Including the archive filename would double-append.
+            let trimmed = p.trim().trim_matches('/');
+            if trimmed.ends_with("configs.tar.gz") {
+                errors.push(YamlValidationError {
+                    field: format!("{field}.key_path"),
+                    message: "'config.key_path' must be a directory prefix — Manager appends '/configs.tar.gz' (do not include the archive filename)".into(),
+                });
             }
         }
     }
@@ -516,6 +657,140 @@ pub fn flatten_config(cfg: Option<&ConfigBlock>) -> (
     (source, key_path, dest, render)
 }
 
+/// Collect secret names that this pipeline effectively allowlists.
+///
+/// Includes optional top-level `secrets:`, step `secrets:`, purpose slots, and
+/// `${secrets.NAME}` inside pipeline/step `env:` — so production YAML may omit
+/// the top-level list (GHA-style) while Manager still binds `pipeline_secrets`.
+pub fn collect_effective_secret_names(parsed: &PipelineYaml) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut names = BTreeSet::new();
+
+    if let Some(list) = &parsed.secrets {
+        for n in list {
+            let t = n.trim();
+            if !t.is_empty() {
+                names.insert(t.to_string());
+            }
+        }
+    }
+    if let Some(env) = &parsed.env {
+        for v in env.values() {
+            for n in crate::secret_ref::collect_secrets_names(v) {
+                names.insert(n);
+            }
+        }
+    }
+    for step in &parsed.steps {
+        if let Some(list) = &step.secrets {
+            for n in list {
+                let t = n.trim();
+                if !t.is_empty() {
+                    names.insert(t.to_string());
+                }
+            }
+        }
+        if let Some(env) = &step.env {
+            for v in env.values() {
+                for n in crate::secret_ref::collect_secrets_names(v) {
+                    names.insert(n);
+                }
+            }
+        }
+        if let Some(raw) = step.registry_secret.as_deref() {
+            if let Some(n) = crate::secret_ref::resolve_secret_slot(raw) {
+                names.insert(n);
+            }
+        }
+        if let Some(cfg) = &step.config {
+            if let Some(raw) = cfg.source.as_deref() {
+                if let Some(n) = crate::secret_ref::resolve_secret_slot(raw) {
+                    names.insert(n);
+                }
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+/// Map a serde_yaml parse failure to a validation error with a navigable `field`.
+///
+/// Unknown keys become `steps[0].ru` (path + key) when the message includes a
+/// path prefix, so the editor can highlight the bad keyword.
+fn yaml_parse_error_to_validation(e: &serde_yaml::Error) -> YamlValidationError {
+    let msg = e.to_string();
+    let field = extract_field_from_yaml_parse_error(&msg).unwrap_or_else(|| {
+        if msg.contains("unknown field") {
+            "yaml.keys".into()
+        } else {
+            "yaml".into()
+        }
+    });
+    // Prefer precise line:column when serde provides it (helps FE fallback).
+    let message = if let Some(loc) = e.location() {
+        format!(
+            "YAML error: {msg} (at line {} column {})",
+            loc.line(),
+            loc.column()
+        )
+    } else {
+        format!("YAML error: {msg}")
+    };
+    // Avoid duplicating "at line N column M" if serde already included it.
+    let message = if msg.contains("at line") && message.matches("at line").count() > 1 {
+        format!("YAML error: {msg}")
+    } else {
+        message
+    };
+    YamlValidationError { field, message }
+}
+
+/// Extract `steps[0].ru` from messages like `steps[0]: unknown field \`ru\`, expected …`.
+fn extract_field_from_yaml_parse_error(msg: &str) -> Option<String> {
+    let key = extract_unknown_field_name(msg)?;
+    // Take the path immediately before ": unknown field"
+    let marker = ": unknown field";
+    let path = msg
+        .find(marker)
+        .and_then(|idx| {
+            let before = msg[..idx].trim_end();
+            // Drop leading "YAML error:" if present (usually not yet wrapped).
+            let before = before
+                .strip_prefix("YAML error:")
+                .map(str::trim)
+                .unwrap_or(before);
+            // Last path-like token (handles ", steps[0]" noise).
+            let token = before.split(',').next_back()?.trim();
+            if token.is_empty() {
+                None
+            } else {
+                Some(token.to_string())
+            }
+        });
+    match path {
+        Some(p) if p.contains('[') || p.contains('.') || p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
+            Some(format!("{p}.{key}"))
+        }
+        _ => Some(key),
+    }
+}
+
+fn extract_unknown_field_name(msg: &str) -> Option<String> {
+    for (open, close) in [("`", "`"), ("'", "'"), ("\"", "\"")] {
+        let needle = format!("unknown field {open}");
+        if let Some(idx) = msg.find(&needle) {
+            let rest = &msg[idx + needle.len()..];
+            if let Some(end) = rest.find(close) {
+                let key = rest[..end].trim();
+                if !key.is_empty() {
+                    return Some(key.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Parse a pipeline YAML string and run validation checks.
 pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     let mut errors: Vec<YamlValidationError> = Vec::new();
@@ -524,13 +799,11 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     let parsed: PipelineYaml = match serde_yaml::from_str(raw) {
         Ok(p) => p,
         Err(e) => {
+            let err = yaml_parse_error_to_validation(&e);
             return YamlValidationResult {
                 valid: false,
                 name: None,
-                errors: vec![YamlValidationError {
-                    field: "yaml".into(),
-                    message: format!("YAML syntax error: {e}"),
-                }],
+                errors: vec![err],
                 warnings: vec![],
                 parsed: None,
             };
@@ -556,15 +829,26 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         });
     }
 
-    // 3. Each step must have either `run` or `uses`
+    // 3. Each step must have `run`; `uses` must be a known engine when set.
+    const VALID_USES: &[&str] = &["shell", "local", "ssh", "docker"];
     for (i, step) in parsed.steps.iter().enumerate() {
         let run = step.run.as_deref().unwrap_or("").trim();
-        let uses = step.uses.as_deref().unwrap_or("").trim();
 
-        if run.is_empty() && uses.is_empty() {
+        if run.is_empty() {
             errors.push(YamlValidationError {
-                field: format!("steps[{}]", i),
-                message: "Step must define 'run' or 'uses'".into(),
+                field: format!("steps[{i}].run"),
+                message: "Step requires 'run' (script/command to execute)".into(),
+            });
+        }
+
+        let uses = step.uses.as_deref().unwrap_or("").trim();
+        if !uses.is_empty() && !VALID_USES.contains(&uses) {
+            errors.push(YamlValidationError {
+                field: format!("steps[{i}].uses"),
+                message: format!(
+                    "invalid engine '{uses}' — must be one of: {}",
+                    VALID_USES.join(", ")
+                ),
             });
         }
 
@@ -588,7 +872,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
     }
 
-    // 5. Concurrency mode validation
+    // 5. Concurrency mode + queue_timeout validation
     if let Some(ConcurrencyDef::Full(ref fc)) = parsed.concurrency {
         let valid_modes = ["discard-old", "queue", "discard-new"];
         if !valid_modes.contains(&fc.mode.as_str()) {
@@ -601,6 +885,25 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 ),
             });
         }
+        validate_duration_field(
+            "concurrency.queue_timeout",
+            fc.queue_timeout.as_deref(),
+            &mut errors,
+        );
+    }
+
+    // 5b. runner.timeout / step.timeout — reject garbage like `10x m`
+    validate_duration_field(
+        "runner.timeout",
+        parsed.runner.as_ref().and_then(|r| r.timeout.as_deref()),
+        &mut errors,
+    );
+    for (i, step) in parsed.steps.iter().enumerate() {
+        validate_duration_field(
+            &format!("steps[{i}].timeout"),
+            step.timeout.as_deref(),
+            &mut errors,
+        );
     }
 
     // 6. SSH step requires host
@@ -659,18 +962,23 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
 
         if let Some(cfg) = &step.config {
-            validate_config_block(cfg, uses, &field, &mut errors, &mut warnings);
+            validate_config_block(cfg, uses, &field, &mut errors);
+        }
+
+        // Scripts do not expand `${secrets.…}` — require explicit `env:` mapping.
+        if let Some(run) = step.run.as_deref() {
+            if crate::secret_ref::run_contains_secrets_expr(run) {
+                errors.push(YamlValidationError {
+                    field: field.clone(),
+                    message: "'run' must not contain '${secrets.…}' — map via env: \
+                              (e.g. FOO: ${secrets.NAME}) then use $FOO in the script"
+                        .into(),
+                });
+            }
         }
 
         if uses != "docker" {
             continue;
-        }
-        let run = step.run.as_deref().unwrap_or("").trim();
-        if run.is_empty() {
-            errors.push(YamlValidationError {
-                field: field.clone(),
-                message: "Docker step requires 'run'".into(),
-            });
         }
         let image = step.image.as_deref().unwrap_or("").trim();
         if image.is_empty() {
@@ -690,10 +998,6 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     }
 
     let valid = errors.is_empty();
-
-    if valid {
-        warnings.push("YAML syntax and structure looks good".into());
-    }
 
     // Resolve the concurrency string for UI auto-fill
     let (concurrency_group, concurrency_config) = match &parsed.concurrency {
@@ -782,6 +1086,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                     retry: s.retry,
                     continue_on_error: s.continue_on_error,
                     secrets: s.secrets.clone(),
+                    env: s.env.clone(),
                     privileged: s.privileged,
                     registry_secret: s
                         .registry_secret

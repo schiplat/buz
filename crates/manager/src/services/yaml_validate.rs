@@ -1,0 +1,246 @@
+//! DB-backed pipeline YAML validation (structure + referential checks).
+//!
+//! Structural rules live in `shared::pipeline_yaml::parse_and_validate`.
+//! This module adds Manager checks: team slug, secret names, platform variables.
+//! Create / update / Validate API must all use this path — failures block writes.
+//!
+//! **Access:** callers that have not yet authorized the YAML `team:` must use
+//! [`validate_pipeline_yaml_for_viewer`] so secret/team probes cannot cross teams.
+
+use shared::error::AppError;
+use shared::pipeline_yaml::{
+    collect_effective_secret_names, parse_and_validate, PipelineYaml, YamlValidationError,
+    YamlValidationResult,
+};
+use shared::rbac::Perm;
+use sqlx::{Row, SqlitePool};
+
+use crate::rbac::AuthUser;
+
+/// Full validation (structure + referential). Use only after the caller is
+/// authorized for the YAML target team, or from the trusted scanner.
+pub async fn validate_pipeline_yaml(
+    pool: &SqlitePool,
+    yaml: &str,
+) -> Result<YamlValidationResult, AppError> {
+    let mut result = parse_and_validate(yaml);
+    let parsed: PipelineYaml = match serde_yaml::from_str(yaml) {
+        Ok(p) => p,
+        Err(_) => return Ok(result),
+    };
+
+    enrich_referential_errors(pool, &parsed, &mut result, ReferentialMode::Full).await?;
+    result.valid = result.errors.is_empty();
+    Ok(result)
+}
+
+/// Validate for an interactive viewer. Without TeamView on the target team,
+/// referential checks use a generic team error (no secret-name oracle).
+pub async fn validate_pipeline_yaml_for_viewer(
+    pool: &SqlitePool,
+    yaml: &str,
+    auth: &AuthUser,
+) -> Result<YamlValidationResult, AppError> {
+    let mut result = parse_and_validate(yaml);
+    let parsed: PipelineYaml = match serde_yaml::from_str(yaml) {
+        Ok(p) => p,
+        Err(_) => return Ok(result),
+    };
+
+    let mode = if auth.is_platform_admin {
+        ReferentialMode::Full
+    } else {
+        ReferentialMode::Viewer { auth }
+    };
+    enrich_referential_errors(pool, &parsed, &mut result, mode).await?;
+    result.valid = result.errors.is_empty();
+    Ok(result)
+}
+
+enum ReferentialMode<'a> {
+    Full,
+    Viewer { auth: &'a AuthUser },
+}
+
+/// Append referential errors (team / secrets / variables). Does not clear structural errors.
+async fn enrich_referential_errors(
+    pool: &SqlitePool,
+    parsed: &PipelineYaml,
+    result: &mut YamlValidationResult,
+    mode: ReferentialMode<'_>,
+) -> Result<(), AppError> {
+    let team_slug = parsed
+        .team
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("default");
+
+    let team_row = sqlx::query("SELECT id FROM teams WHERE slug = ?")
+        .bind(team_slug)
+        .fetch_optional(pool)
+        .await?;
+
+    let Some(team_row) = team_row else {
+        match mode {
+            ReferentialMode::Full => {
+                result.errors.push(YamlValidationError {
+                    field: "team".into(),
+                    message: format!(
+                        "team '{team_slug}' does not exist — create it under Teams, or set team: / owner_group: to an existing slug"
+                    ),
+                });
+            }
+            ReferentialMode::Viewer { .. } => {
+                // Same message whether missing or inaccessible — avoid team enumeration.
+                result.errors.push(YamlValidationError {
+                    field: "team".into(),
+                    message: "team not found or not accessible".into(),
+                });
+            }
+        }
+        // Platform vars are global; Full mode still checks them.
+        if matches!(mode, ReferentialMode::Full) {
+            check_platform_variables(pool, parsed, result).await?;
+        }
+        return Ok(());
+    };
+    let team_id: String = team_row.get(0);
+
+    if let ReferentialMode::Viewer { auth } = mode {
+        if auth.check_team(&team_id, Perm::TeamView).is_err() {
+            result.errors.push(YamlValidationError {
+                field: "team".into(),
+                message: "team not found or not accessible".into(),
+            });
+            return Ok(());
+        }
+    }
+
+    let secret_names = collect_effective_secret_names(parsed);
+    if !secret_names.is_empty() {
+        let placeholders = vec!["?"; secret_names.len()].join(",");
+        let query = format!(
+            "SELECT name FROM secrets WHERE team_id = ? AND name IN ({placeholders})"
+        );
+        let mut q = sqlx::query_as::<_, (String,)>(&query).bind(&team_id);
+        for name in &secret_names {
+            q = q.bind(name);
+        }
+        let found: std::collections::HashSet<String> = q
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
+        for name in &secret_names {
+            if !found.contains(name) {
+                result.errors.push(YamlValidationError {
+                    field: "secrets".into(),
+                    message: format!(
+                        "secret '{name}' not found in team '{team_slug}' — create it under Infrastructure → Secrets (same team)"
+                    ),
+                });
+            }
+        }
+    }
+
+    check_platform_variables(pool, parsed, result).await?;
+    Ok(())
+}
+
+async fn check_platform_variables(
+    pool: &SqlitePool,
+    parsed: &PipelineYaml,
+    result: &mut YamlValidationResult,
+) -> Result<(), AppError> {
+    let Some(vars) = parsed.variables.as_ref() else {
+        return Ok(());
+    };
+    let names: Vec<String> = vars
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if names.is_empty() {
+        return Ok(());
+    }
+    let placeholders = vec!["?"; names.len()].join(",");
+    let query = format!("SELECT name FROM platform_vars WHERE name IN ({placeholders})");
+    let mut q = sqlx::query_as::<_, (String,)>(&query);
+    for name in &names {
+        q = q.bind(name);
+    }
+    let found: std::collections::HashSet<String> = q
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|r| r.0)
+        .collect();
+    for name in &names {
+        if !found.contains(name) {
+            result.errors.push(YamlValidationError {
+                field: "variables".into(),
+                message: format!(
+                    "variable '{name}' does not exist — create it under Infrastructure → Variables"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Reject when validation has errors (shared by create / update writers).
+pub fn reject_if_invalid(result: &YamlValidationResult) -> Result<(), AppError> {
+    if result.valid {
+        return Ok(());
+    }
+    let msg = result
+        .errors
+        .iter()
+        .map(|e| format!("{}: {}", e.field, e.message))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(AppError::ValidationFailed(format!(
+        "YAML validation failed: {msg}"
+    )))
+}
+
+/// Resolve `(team_id, slug)` from YAML `team:` / `owner_group:` (omit → `default`).
+pub async fn resolve_parsed_team_id(
+    pool: &SqlitePool,
+    parsed: &PipelineYaml,
+) -> Result<(String, String), AppError> {
+    let team_slug = parsed
+        .team
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("default");
+    let row = sqlx::query("SELECT id, slug FROM teams WHERE slug = ?")
+        .bind(team_slug)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            AppError::ValidationFailed(format!(
+                "team '{team_slug}' does not exist — create it under Teams or fix team: / owner_group:"
+            ))
+        })?;
+    Ok((row.get(0), row.get(1)))
+}
+
+/// Parse YAML and resolve target team (serde — same as upsert).
+pub async fn parse_and_resolve_team(
+    pool: &SqlitePool,
+    yaml: &str,
+) -> Result<(PipelineYaml, String, String), AppError> {
+    let parsed: PipelineYaml = serde_yaml::from_str(yaml).map_err(|e| {
+        AppError::ValidationFailed(format!("YAML syntax error: {e}"))
+    })?;
+    let (team_id, slug) = resolve_parsed_team_id(pool, &parsed).await?;
+    Ok((parsed, team_id, slug))
+}
+
+#[cfg(test)]
+#[path = "tests/yaml_validate_tests.rs"]
+mod yaml_validate_tests;
