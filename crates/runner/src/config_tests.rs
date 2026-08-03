@@ -63,6 +63,36 @@ file = ""
 }
 
 #[test]
+fn standalone_allows_empty_register_token() {
+    let raw = r#"
+[runner]
+name = "standalone-runner"
+manager_url = "http://127.0.0.1:8080"
+standalone = true
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("runner.toml");
+    std::fs::write(&path, raw).unwrap();
+    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    assert!(cfg.runner.standalone);
+    assert!(cfg.runner.register_token.is_empty());
+}
+
+#[test]
+fn rejects_empty_token_without_standalone() {
+    let raw = r#"
+[runner]
+name = "r"
+manager_url = "http://127.0.0.1:8080"
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("runner.toml");
+    std::fs::write(&path, raw).unwrap();
+    let err = load(Some(path.to_str().unwrap())).unwrap_err().to_string();
+    assert!(err.contains("register_token is required"), "{err}");
+}
+
+#[test]
 fn rejects_obsolete_manager_section() {
     let raw = r#"
 [manager]

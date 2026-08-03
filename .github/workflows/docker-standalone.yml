@@ -1,0 +1,107 @@
+name: Docker Standalone / ACR
+
+# Build and push a single arm64 image that contains both Manager and Runner
+# (see Dockerfile.standalone). No multi-arch merge — arm64 only.
+#
+# Required repository configuration (same as docker.yml):
+#   Secrets:
+#     ACR_USERNAME          — ACR login username
+#     ACR_PASSWORD          — ACR login password / temporary token
+#   Variables:
+#     ACR_REGISTRY          — e.g. registry.cn-hongkong.aliyuncs.com
+#     ACR_NAMESPACE         — personal namespace
+#
+# Image:
+#   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-standalone:<tag>  (linux/arm64)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (default: latest, or git tag when on v*)"
+        required: false
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  push:
+    name: Build & push buz-standalone (arm64)
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image names & tags
+        id: meta
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          REGISTRY="${{ vars.ACR_REGISTRY }}"
+          NAMESPACE="${{ vars.ACR_NAMESPACE }}"
+          if [[ -z "$REGISTRY" || -z "$NAMESPACE" ]]; then
+            echo "Set repository Variables: ACR_REGISTRY and ACR_NAMESPACE" >&2
+            exit 1
+          fi
+
+          if [[ -n "${INPUT_TAG}" ]]; then
+            PRIMARY="${INPUT_TAG}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            PRIMARY="${GITHUB_REF_NAME}"
+          else
+            PRIMARY="latest"
+          fi
+
+          IMAGE="${REGISTRY}/${NAMESPACE}/buz-standalone"
+          {
+            echo "${IMAGE}:${PRIMARY}"
+            echo "${IMAGE}:latest"
+            if [[ "$PRIMARY" == v* ]]; then
+              echo "${IMAGE}:${PRIMARY#v}"
+            fi
+            # Explicit platform suffix for operators who pin -arm64 tags.
+            echo "${IMAGE}:${PRIMARY}-arm64"
+            echo "${IMAGE}:latest-arm64"
+            if [[ "$PRIMARY" == v* ]]; then
+              echo "${IMAGE}:${PRIMARY#v}-arm64"
+            fi
+          } > /tmp/tags-standalone.txt
+
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          cat /tmp/tags-standalone.txt >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
+          echo "primary=${PRIMARY}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Standalone tags:"; cat /tmp/tags-standalone.txt
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.meta.outputs.registry }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build & push buz-standalone
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.standalone
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=buz-standalone-arm64
+          cache-to: type=gha,mode=max,scope=buz-standalone-arm64
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect \
+            "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.primary }}"

@@ -22,6 +22,10 @@ pub struct RunnerSection {
     pub manager_url: String,
     #[serde(default)]
     pub register_token: String,
+    /// Dev-only: allow empty `register_token` when Manager runs with
+    /// `[standalone] enabled = true` (loopback + pre-authorized name).
+    #[serde(default)]
+    pub standalone: bool,
     /// Allow invalid TLS certificates (self-signed / internal CA). Labs only.
     #[serde(default)]
     pub tls_skip_verify: bool,
@@ -45,6 +49,7 @@ impl Default for RunnerSection {
             name: default_runner_name(),
             manager_url: default_manager_url(),
             register_token: String::new(),
+            standalone: false,
             tls_skip_verify: false,
             workspace_dir: default_workspace_dir(),
             labels: Vec::new(),
@@ -170,11 +175,18 @@ pub fn load(config_path: Option<&str>) -> anyhow::Result<Config> {
     if let Ok(token) = std::env::var("BUZ_REGISTER_TOKEN") {
         cfg.runner.register_token = token;
     }
+    if let Ok(v) = std::env::var("BUZ_STANDALONE") {
+        let v = v.trim().to_ascii_lowercase();
+        if matches!(v.as_str(), "1" | "true" | "yes" | "on") {
+            cfg.runner.standalone = true;
+        }
+    }
 
-    if cfg.runner.register_token.is_empty() {
+    if cfg.runner.register_token.is_empty() && !cfg.runner.standalone {
         anyhow::bail!(
             "register_token is required under [runner] (or BUZ_REGISTER_TOKEN).\n  \
-             Get the token from Buz Manager → Runners → New Runner."
+             Get the token from Buz Manager → Runners → New Runner.\n  \
+             Dev standalone (same-container Manager): set standalone = true under [runner]."
         );
     }
 

@@ -23,6 +23,11 @@ runner_register_token_ttl_hours = 24
 [runner]
 heartbeat_timeout_seconds = 90
 
+# Dev-only (same-container / loopback Runner). Leave disabled in production.
+# [standalone]
+# enabled = true
+# auto_approve = ["standalone-runner"]
+
 [pipeline]
 yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30

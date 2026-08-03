@@ -16,6 +16,29 @@ pub struct Config {
     pub pipeline: PipelineConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// Dev-only: loopback tokenless register for pre-authorized runner names.
+    /// Production must leave `enabled = false` (default).
+    #[serde(default)]
+    pub standalone: StandaloneConfig,
+}
+
+/// `[standalone]` — same-container / loopback Runner pairing (dev only).
+#[derive(Debug, Clone, Deserialize)]
+pub struct StandaloneConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Runner names created at boot when missing (= Manager authorization).
+    #[serde(default = "default_standalone_auto_approve")]
+    pub auto_approve: Vec<String>,
+}
+
+impl Default for StandaloneConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_approve: default_standalone_auto_approve(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,6 +174,9 @@ fn default_yaml_scan_dir() -> String {
 }
 fn default_yaml_scan_interval() -> u64 {
     30
+}
+fn default_standalone_auto_approve() -> Vec<String> {
+    vec!["standalone-runner".into()]
 }
 
 /// Minimum accepted length for a production JWT secret (bytes as chars).

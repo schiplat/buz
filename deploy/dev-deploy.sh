@@ -307,6 +307,32 @@ level = "info"
 TOML
 }
 
+# Read register_token from an existing runner.toml (empty/missing → empty string).
+read_runner_conf_token() {
+  [[ -f "${RUNNER_CONF}" ]] || { echo ""; return 0; }
+  sed -nE 's/^[[:space:]]*register_token[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' "${RUNNER_CONF}" \
+    | head -n1
+}
+
+# Fail fast before recreating Runner if the mounted conf cannot start the process.
+ensure_runner_conf_has_token() {
+  local token
+  token="$(read_runner_conf_token)"
+  if [[ -z "${token}" ]]; then
+    die "register_token is missing/empty in ${RUNNER_CONF} — Runner will refuse to start.
+
+  Quick fix when this runner already registered successfully once (Manager has its JWT):
+    set any non-empty token in ${RUNNER_CONF}, e.g.
+      register_token = \"reuse\"
+    then:
+      sudo SKIP_PULL=1 ${BASH_SOURCE[0]} runner
+
+  Or mint a fresh runner (new name) / delete the old one in Manager UI → Runners,
+  then:
+      ADMIN_USERNAME=… ADMIN_PASSWORD=… sudo ${BASH_SOURCE[0]} runner"
+  fi
+}
+
 # Keep same-compose container↔container reachability:
 #   manager_url = http://manager:8080
 #   depends_on manager with condition: service_healthy
@@ -459,22 +485,42 @@ admin_login() {
   echo "${token}"
 }
 
-# Create the runner inside the Manager container via `gen-runner-token` and
-# print name/register_token. The command only runs after the caller proves they
-# hold a platform-admin credential (JWT or API token).
+# Resolve RUNNER_TOKEN: env → existing runner.toml → gen-runner-token.
+# If the runner name already exists (common on repair/upgrade), write a
+# placeholder: after the first successful register Manager clears the one-shot
+# DB token and accepts re-registration without checking register_token again,
+# but the Runner process still requires a non-empty value in runner.toml.
 ensure_runner_token() {
   if [[ -n "${RUNNER_TOKEN}" ]]; then
     return
   fi
+
+  local existing
+  existing="$(read_runner_conf_token)"
+  if [[ -n "${existing}" ]]; then
+    RUNNER_TOKEN="${existing}"
+    say "Reusing register_token from ${RUNNER_CONF}"
+    return
+  fi
+
   say "No RUNNER_TOKEN set — generating one via buz-manager gen-runner-token (name=${RUNNER_NAME})"
   local admin_token
   admin_token="$(admin_login)"
-  local out
+  local out rc=0
   # shellcheck disable=SC2086
   out="$($DOCKER exec -e BUZ_ADMIN_TOKEN="${admin_token}" buz-manager \
     /app/buz/buz-manager \
     -c /app/buz/conf/manager.toml \
-    gen-runner-token "${RUNNER_NAME}" 2>&1)" || die "failed to create runner in Manager: ${out}"
+    gen-runner-token "${RUNNER_NAME}" 2>&1)" || rc=$?
+  if (( rc != 0 )); then
+    if printf '%s' "${out}" | grep -qi 'already exists'; then
+      # Re-registration path: any non-empty token satisfies local config validation.
+      RUNNER_TOKEN="reuse-${RUNNER_NAME}"
+      say "Runner '${RUNNER_NAME}' already exists — using placeholder register_token for re-registration"
+      return
+    fi
+    die "failed to create runner in Manager: ${out}"
+  fi
   RUNNER_TOKEN="$(printf '%s\n' "${out}" | sed -n 's/^register_token: //p')"
   [[ -n "${RUNNER_TOKEN}" ]] || die "could not parse register_token from: ${out}"
   say "Runner '${RUNNER_NAME}' created — register_token captured"
@@ -546,6 +592,7 @@ cmd_runner() {
   ensure_runner_token
   write_runner_conf
   ensure_runner_reachability
+  ensure_runner_conf_has_token
 
   pull_image "${RUNNER_IMAGE}"
 
@@ -629,6 +676,7 @@ cmd_upgrade() {
   grep -E '^\s+image:' "${COMPOSE_FILE}"
 
   ensure_runner_reachability
+  ensure_runner_conf_has_token
 
   pull_image "${MANAGER_IMAGE}"
   pull_image "${RUNNER_IMAGE}"

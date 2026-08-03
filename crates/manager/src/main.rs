@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use axum::Router;
+use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -84,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
     let db_pool = db::init(&config).await?;
     db::run_migrations(&db_pool, &config.auth.jwt_secret).await?;
     rbac::bootstrap(&db_pool).await?;
+    api::runners::ensure_standalone_auto_approve(&db_pool, &config).await?;
 
     tracing::info!(
         host = %config.server.host,
@@ -160,12 +162,16 @@ async fn main() -> anyhow::Result<()> {
 
         tracing::info!(port = config.server.port, "Web UI https ready");
         axum_server::bind_rustls(addr.parse().unwrap(), tls_config)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
     } else {
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         tracing::info!(port = config.server.port, "Web UI http ready");
-        axum::serve(listener, app).await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await?;
     }
 
     Ok(())

@@ -1,0 +1,57 @@
+# syntax=docker/dockerfile:1
+# Standalone image: Manager + Runner in one container (linux/arm64 primary).
+#
+# Layout:
+#   /app/buz/buz-manager
+#   /app/buz/buz-runner
+#   /app/buz/conf/manager.toml
+#   /app/buz/conf/runner.toml   (loopback manager_url)
+#   /app/buz/entrypoint.sh
+#
+# BUZ_MODE=all|manager|runner (default: all)
+
+ARG NODE_VERSION=20
+
+FROM node:${NODE_VERSION}-bookworm-slim AS frontend
+WORKDIR /src/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+FROM rust:bookworm AS builder
+WORKDIR /src
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY --from=frontend /src/frontend/dist ./frontend/dist
+
+RUN cargo build --locked --release -p manager -p runner \
+ && strip target/release/buz-manager target/release/buz-runner
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends ca-certificates bash \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10001 --home /app/buz --shell /usr/sbin/nologin buz \
+ && mkdir -p /app/buz/conf /app/buz/data /app/buz/pipelines \
+            /app/buz/workspace /app/buz/logs \
+ && chown -R buz:buz /app/buz
+
+COPY --from=builder /src/target/release/buz-manager /app/buz/buz-manager
+COPY --from=builder /src/target/release/buz-runner /app/buz/buz-runner
+COPY deploy/conf/manager.standalone.toml /app/buz/conf/manager.toml
+COPY deploy/conf/runner.standalone.toml /app/buz/conf/runner.toml
+COPY deploy/standalone/entrypoint.sh /app/buz/entrypoint.sh
+RUN chmod 755 /app/buz/entrypoint.sh
+
+USER buz
+WORKDIR /app/buz
+EXPOSE 8080
+VOLUME ["/app/buz/data", "/app/buz/pipelines", "/app/buz/workspace", "/app/buz/logs"]
+
+ENV BUZ_MODE=all
+ENTRYPOINT ["/app/buz/entrypoint.sh"]

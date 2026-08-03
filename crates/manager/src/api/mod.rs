@@ -181,3 +181,7 @@ mod verbose_trigger_integration_tests;
 #[cfg(test)]
 #[path = "tests/pipeline_yaml_files_tests.rs"]
 mod pipeline_yaml_files_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/runner_standalone_register_tests.rs"]
+mod runner_standalone_register_integration_tests;

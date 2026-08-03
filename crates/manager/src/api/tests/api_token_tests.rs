@@ -34,6 +34,7 @@ fn test_config() -> Config {
         },
         runner: RunnerConfig::default(),
         pipeline: PipelineConfig::default(),
+        standalone: Default::default(),
         logging: Default::default(),
     }
 }

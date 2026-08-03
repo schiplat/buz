@@ -1,0 +1,14 @@
+# Runner config for the standalone image (same container as Manager).
+# manager_url is loopback; register_token is optional when standalone = true
+# and Manager has authorized this name (UI New Runner or standalone.auto_approve).
+
+[runner]
+name = "standalone-runner"
+manager_url = "http://127.0.0.1:8080"
+standalone = true
+register_token = ""
+workspace_dir = "./workspace"
+
+[logging]
+level = "info"
+file = "./logs/runner.log"

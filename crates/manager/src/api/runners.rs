@@ -1,5 +1,7 @@
+use axum::extract::ConnectInfo;
+use axum::http::request::Parts;
 use axum::http::StatusCode;
-use axum::{extract::State, response::IntoResponse, Json};
+use axum::{extract::FromRequestParts, extract::State, response::IntoResponse, Json};
 use shared::auth::TokenManager;
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
@@ -7,12 +9,35 @@ use shared::protocol::{
     CreateRunnerRequest, HeartbeatRequest, HeartbeatResponse, RegisterRequest, RegisterResponse,
     RunnerPolicyConfig, UpdateRunnerRequest,
 };
+use std::convert::Infallible;
+use std::net::SocketAddr;
 
+use crate::config::Config;
 use crate::crypto;
 use crate::middleware::{PlatformAdmin, RunnerClaims};
 use crate::state::AppState;
 use sqlx::Row;
 use uuid::Uuid;
+
+/// Peer address when the server is served with `into_make_service_with_connect_info`.
+/// Missing ConnectInfo → `None` (treated as non-loopback for standalone checks).
+pub(crate) struct ClientAddr(pub(crate) Option<SocketAddr>);
+
+impl<S> FromRequestParts<S> for ClientAddr
+where
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(ClientAddr(
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ConnectInfo(addr)| *addr),
+        ))
+    }
+}
 
 /// True when the runner has **every** label required by the pipeline/job
 /// (intersection / "must match ALL"). Empty `required` matches any runner.
@@ -223,12 +248,93 @@ pub(crate) struct CreatedRunner {
     pub max_concurrent_jobs: u32,
 }
 
+/// Ensure `standalone.auto_approve` runner rows exist (Manager-side authorization).
+/// No-op when standalone mode is disabled.
+pub async fn ensure_standalone_auto_approve(
+    pool: &sqlx::SqlitePool,
+    config: &Config,
+) -> anyhow::Result<()> {
+    if !config.standalone.enabled {
+        return Ok(());
+    }
+
+    tracing::warn!(
+        auto_approve = ?config.standalone.auto_approve,
+        "STANDALONE DEV MODE enabled — rejecting non-loopback runner registration; \
+         tokenless register allowed only from loopback for authorized runner names"
+    );
+
+    for name in &config.standalone.auto_approve {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let exists: i64 = sqlx::query_scalar("SELECT COUNT(1) FROM runners WHERE name = ?")
+            .bind(name)
+            .fetch_one(pool)
+            .await?;
+        if exists > 0 {
+            tracing::info!(runner = %name, "standalone auto_approve: runner already exists");
+            continue;
+        }
+        let req = CreateRunnerRequest {
+            name: name.to_string(),
+            labels: Some(vec!["standalone".into()]),
+            version: Some(shared::version::VERSION.to_string()),
+            max_concurrent_jobs: None,
+            clean_workspace_after_job: None,
+            shell_enabled: None,
+            ssh_enabled: None,
+            docker_enabled: None,
+            wasm_enabled: None,
+            ssh_host_key_policy: None,
+        };
+        match create_runner_record(pool, &req).await {
+            Ok(created) => {
+                tracing::info!(
+                    runner = %created.name,
+                    id = %created.id,
+                    "standalone auto_approve: created authorized runner"
+                );
+            }
+            Err(e) if e.to_string().contains("UNIQUE constraint failed") => {
+                tracing::info!(runner = %name, "standalone auto_approve: raced create, already exists");
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "standalone auto_approve failed for '{name}': {e}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn peer_is_loopback(peer: Option<SocketAddr>) -> bool {
+    peer.map(|addr| addr.ip().is_loopback()).unwrap_or(false)
+}
+
 pub async fn register(
+    ClientAddr(peer): ClientAddr,
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Json<ApiResponse<RegisterResponse>>, AppError> {
     let name = req.name.trim();
     let register_token = req.register_token.trim();
+    let standalone = state.config.standalone.enabled;
+    let loopback = peer_is_loopback(peer);
+
+    // Standalone: never accept runners from outside the host network namespace.
+    if standalone && !loopback {
+        tracing::warn!(
+            runner = %name,
+            ?peer,
+            "standalone mode rejected non-loopback runner registration"
+        );
+        return Err(AppError::Unauthorized(
+            "standalone mode rejects non-loopback runner registration".into(),
+        ));
+    }
 
     // Look up the runner by name first.
     let existing = sqlx::query("SELECT id, register_token, token FROM runners WHERE name = ?")
@@ -245,21 +351,41 @@ pub async fn register(
             // First-time registration — must match the one-shot register_token.
             let stored_rt: String = row.get(1);
             if stored_rt != register_token {
-                tracing::warn!(
-                    runner = %name,
-                    labels = ?req.labels,
-                    version = ?req.version,
-                    "Runner registration failed: invalid register token"
-                );
-                return Err(AppError::AuthFailed(
-                    "invalid register token or runner name".into(),
-                ));
+                // Standalone + loopback + authorized name (row exists): allow
+                // tokenless / mismatched token. Production path unchanged.
+                if standalone && loopback {
+                    tracing::info!(
+                        runner = %name,
+                        "standalone loopback register without token (authorized)"
+                    );
+                } else {
+                    tracing::warn!(
+                        runner = %name,
+                        labels = ?req.labels,
+                        version = ?req.version,
+                        "Runner registration failed: invalid register token"
+                    );
+                    return Err(AppError::AuthFailed(
+                        "invalid register token or runner name".into(),
+                    ));
+                }
             }
         }
         // else: re-registration — runner already has a JWT; allow without re-checking register_token.
 
         runner_id = row.get(0);
     } else {
+        if standalone && loopback {
+            tracing::warn!(
+                runner = %name,
+                "standalone register rejected: runner not authorized (create in UI or auto_approve)"
+            );
+            return Err(AppError::Unauthorized(
+                "standalone: runner not authorized — create it in Manager UI (New Runner) \
+                 or add the name to standalone.auto_approve"
+                    .into(),
+            ));
+        }
         tracing::warn!(
             runner = %name,
             labels = ?req.labels,

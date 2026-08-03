@@ -1,0 +1,31 @@
+# Manager config for the standalone (Manager + Runner in one) image.
+# Dev-only: [standalone] allows loopback tokenless register for auto_approve names.
+
+[server]
+host = "0.0.0.0"
+port = 8080
+# public_base_url = ""
+
+[database]
+path = "./data/buz.db"
+max_connections = 8
+
+[auth]
+# Required: set via BUZ_JWT_SECRET or a strong value here.
+jwt_secret = ""
+jwt_ttl_hours = 24
+runner_register_token_ttl_hours = 24
+
+[runner]
+heartbeat_timeout_seconds = 90
+
+[pipeline]
+yaml_scan_dir = "./pipelines"
+yaml_scan_interval_seconds = 30
+
+[standalone]
+enabled = true
+auto_approve = ["standalone-runner"]
+
+[logging]
+level = "info"

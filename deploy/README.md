@@ -3,7 +3,10 @@
 | Path | Used by |
 |------|---------|
 | `conf/manager.toml` | Docker / Compose / release tarball |
+| `conf/manager.standalone.toml` | Standalone image Manager conf (`[standalone]` on) |
 | `conf/runner.toml` | Same |
+| `conf/runner.standalone.toml` | Standalone image Runner conf (loopback, no token) |
+| `standalone/entrypoint.sh` | Starts Manager + Runner in one container |
 | `dev-deploy.sh` | One-shot deploy of Manager + Runner on a Linux VM (pull from ACR + compose) |
 | `nginx/buz-manager.conf` | Optional system Nginx reverse proxy (HTTP-only, non-Docker) |
 | `nginx/buz-manager-docker.conf` | Same, for `dev-deploy.sh` Docker deployments (HTTP-only) |
@@ -123,6 +126,34 @@ the audit log (`api_token.*`). Set `RUNNER_TOKEN` explicitly to override this
 behaviour (e.g. when the runner lives on a different host than Manager).
 
 Logs default to **container stdout** (`docker logs`). Set `logging.file` only if you need a file inside the volume.
+
+## Standalone image (Manager + Runner, arm64)
+
+Single image `buz-standalone` (CI: `.github/workflows/docker-standalone.yml`,
+`Dockerfile.standalone`) runs both processes via `deploy/standalone/entrypoint.sh`.
+Default `BUZ_MODE=all`; set `manager` / `runner` to run one side only.
+
+**Dev-only auth:** Manager ships with `[standalone] enabled = true` and
+`auto_approve = ["standalone-runner"]`. The co-located Runner uses
+`manager_url = http://127.0.0.1:8080` and `standalone = true` (no register_token).
+Manager accepts tokenless register **only from loopback** for authorized names
+(created via UI New Runner or `auto_approve`). Non-loopback register is always
+rejected in this mode. Split Manager/Runner containers must keep using the
+normal register_token flow (`standalone.enabled = false`).
+
+```bash
+export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
+docker run -d --name buz \
+  -p 8080:8080 \
+  -e BUZ_JWT_SECRET \
+  -v buz-data:/app/buz/data \
+  -v buz-pipelines:/app/buz/pipelines \
+  -v buz-ws:/app/buz/workspace \
+  registry.cn-hongkong.aliyuncs.com/<ns>/buz-standalone:latest
+```
+
+First open the UI to complete `/setup`, then the in-container Runner can register
+as `standalone-runner` without a token.
 
 ## Binary tarball
 

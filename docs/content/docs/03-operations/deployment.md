@@ -69,12 +69,26 @@ Images:
 |-------|------------|
 | `buz-manager` | `Dockerfile` |
 | `buz-runner` | `Dockerfile.runner` |
+| `buz-standalone` (arm64 only) | `Dockerfile.standalone` — Manager + Runner in one image |
 
-Both images are built for `linux/amd64` **and** `linux/arm64` (native matrix builds: `ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64, no QEMU emulation). The matrix jobs push platform-specific tags (`v1.3.0-amd64` / `v1.3.0-arm64`), and a final `merge` job assembles the shared multi-arch tags (`v1.3.0` / `1.3.0` / `latest`) with `docker buildx imagetools create`. Pushing the same tag concurrently from both jobs would make ACR produce a broken index (arm64 as `unknown/unknown`), so the two tags are never pushed in parallel.
+Both split images are built for `linux/amd64` **and** `linux/arm64` (native matrix builds: `ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64, no QEMU emulation). The matrix jobs push platform-specific tags (`v1.3.0-amd64` / `v1.3.0-arm64`), and a final `merge` job assembles the shared multi-arch tags (`v1.3.0` / `1.3.0` / `latest`) with `docker buildx imagetools create`. Pushing the same tag concurrently from both jobs would make ACR produce a broken index (arm64 as `unknown/unknown`), so the two tags are never pushed in parallel.
+
+The standalone image is **arm64-only** (workflow `.github/workflows/docker-standalone.yml` on `ubuntu-24.04-arm`); tags are `buz-standalone:vX.Y.Z` / `:latest` / `:X.Y.Z` plus `-arm64` suffixes.
+
+**Standalone auth (dev only).** The image enables Manager `[standalone]` so the
+co-located Runner may register over loopback without `register_token`, but only
+if the runner name is already authorized (UI → New Runner, or
+`standalone.auto_approve`). Non-loopback registration is rejected. This does
+**not** change the production register_token protocol used by split
+`buz-manager` / `buz-runner` deployments.
 
 ### GitHub Actions → personal ACR
 
-Workflow: `.github/workflows/docker.yml` (on `v*` tag or manual).
+Workflows:
+- `.github/workflows/docker.yml` — split `buz-manager` / `buz-runner` (amd64 + arm64)
+- `.github/workflows/docker-standalone.yml` — combined `buz-standalone` (**arm64 only**)
+
+Both trigger on `v*` tags or manual `workflow_dispatch`.
 
 Configure the GitHub repository:
 
@@ -85,7 +99,7 @@ Configure the GitHub repository:
 | Secret | `ACR_USERNAME` | ACR login user |
 | Secret | `ACR_PASSWORD` | ACR password / token |
 
-Pushed tags: `<registry>/<namespace>/buz-manager:v1.3.0` (and `:1.3.0`, `:latest`), same for `buz-runner`.
+Pushed tags: `<registry>/<namespace>/buz-manager:v1.3.0` (and `:1.3.0`, `:latest`), same for `buz-runner`. Standalone: `<registry>/<namespace>/buz-standalone:v1.3.0` (linux/arm64).
 
 ### Container layout
 
@@ -93,7 +107,7 @@ Each image contains **only** the binary + a default config (UI is embedded in `b
 
 ```text
 /app/buz/
-  buz-manager | buz-runner
+  buz-manager | buz-runner          # standalone image has both + entrypoint.sh
   conf/manager.toml | conf/runner.toml
   data/  pipelines/          # Manager volumes
   workspace/                 # Runner volume
