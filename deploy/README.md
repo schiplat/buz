@@ -62,7 +62,7 @@ ADMIN_USERNAME='<admin>' ADMIN_PASSWORD='<password>' ./dev-deploy.sh runner
 explicitly rather than `latest`, so the running version stays traceable:
 
 ```bash
-IMAGE_TAG=v1.3.4 ./dev-deploy.sh upgrade
+IMAGE_TAG=v1.3.5 ./dev-deploy.sh upgrade
 ```
 
 `upgrade` rewrites the `image:` lines in the compose file (keeping any other
@@ -81,10 +81,10 @@ disk, upgrade/runner strips `extra_hosts` and rewrites `manager_url` back.
 image when present. To skip the registry entirely:
 
 ```bash
-SKIP_PULL=1 IMAGE_TAG=v1.3.4 ./dev-deploy.sh upgrade
+SKIP_PULL=1 IMAGE_TAG=v1.3.5 ./dev-deploy.sh upgrade
 # If the stack was first created with sudo/root (common on VMs):
-sudo SKIP_PULL=1 IMAGE_TAG=v1.3.4 ./dev-deploy.sh upgrade
-# or: DOCKER='sudo docker' SKIP_PULL=1 IMAGE_TAG=v1.3.4 ./dev-deploy.sh upgrade
+sudo SKIP_PULL=1 IMAGE_TAG=v1.3.5 ./dev-deploy.sh upgrade
+# or: DOCKER='sudo docker' SKIP_PULL=1 IMAGE_TAG=v1.3.5 ./dev-deploy.sh upgrade
 ```
 
 Runs on a Linux VM with only Docker installed; images are pulled from

@@ -26,7 +26,7 @@ docker compose up -d
 
 ```bash
 cd /opt/buz-standalone
-# Optional pin: IMAGE_TAG=v1.3.4
+# Optional pin: IMAGE_TAG=v1.3.5
 docker compose pull
 docker compose up -d
 ```
