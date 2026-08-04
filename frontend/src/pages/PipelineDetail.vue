@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp, Bell, AlertTriangle, AlertCircle } from '@lucide/vue'
+import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Braces, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp, Bell, AlertTriangle, AlertCircle } from '@lucide/vue'
 import { cn } from '@/lib/utils'
 import {
   pipelinesApi,
@@ -1367,19 +1367,19 @@ async function handleTrigger() {
               <div class="px-5 pt-4 pb-3 flex items-start justify-between gap-4">
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2.5 flex-wrap">
-                    <h2 class="text-base font-semibold tracking-tight">{{ definitionView.name }}</h2>
-                    <span class="mono-chip text-muted-foreground opacity-60 select-all">{{ definitionView.id?.slice(-8) }}</span>
+                    <h2 class="text-sm font-semibold tracking-tight">{{ definitionView.name }}</h2>
+                    <span class="mono-chip text-xs text-muted-foreground opacity-60 select-all">{{ definitionView.id?.slice(-8) }}</span>
                   </div>
-                  <p v-if="definitionView.description" class="text-sm text-muted-foreground mt-1.5 leading-relaxed">{{ definitionView.description }}</p>
+                  <p v-if="definitionView.description" class="text-xs text-muted-foreground mt-1.5 leading-relaxed">{{ definitionView.description }}</p>
                 </div>
                 <div class="flex items-center gap-2 shrink-0 pt-0.5">
                   <span
                     v-if="definitionView.authority === 'file'"
-                    class="text-xs text-muted-foreground bg-muted/60 rounded px-2.5 py-0.5 font-medium"
+                    class="text-xs text-muted-foreground bg-muted/60 rounded px-2 py-0.5 font-medium"
                   >from file</span>
                   <span
                     v-else-if="hasYamlSource"
-                    class="text-xs text-muted-foreground bg-muted/60 rounded px-2.5 py-0.5 font-medium"
+                    class="text-xs text-muted-foreground bg-muted/60 rounded px-2 py-0.5 font-medium"
                   >from YAML</span>
                   <button
                     class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
@@ -1513,12 +1513,12 @@ async function handleTrigger() {
                 </div>
 
                 <template v-if="pipelineConcurrency.configured">
-                  <div class="flex flex-wrap items-center gap-2 text-sm">
-                    <span class="text-xs text-muted-foreground">Group</span>
+                  <div class="flex flex-wrap items-center gap-2 text-xs">
+                    <span class="text-muted-foreground">Group</span>
                     <code class="mono-chip text-xs">{{ pipelineConcurrency.group }}</code>
-                    <span class="text-xs text-muted-foreground ml-1">Mode</span>
+                    <span class="text-muted-foreground ml-1">Mode</span>
                     <span
-                      class="text-xs font-semibold rounded px-1.5 py-0.5 border"
+                      class="font-semibold rounded px-1.5 py-0.5 border"
                       :class="{
                         'bg-amber-500/10 text-amber-600 border-amber-500/20': pipelineConcurrency.mode === 'queue',
                         'bg-blue-500/10 text-blue-600 border-blue-500/20': pipelineConcurrency.mode === 'discard-new',
@@ -1526,23 +1526,23 @@ async function handleTrigger() {
                       }"
                     >{{ pipelineConcurrency.mode }}</span>
                     <template v-if="pipelineConcurrency.mode === 'queue'">
-                      <span class="text-xs text-muted-foreground ml-1">Max queue</span>
-                      <span class="text-xs font-mono tabular-nums text-foreground/80">{{ pipelineConcurrency.maxQueue ?? '—' }}</span>
-                      <span class="text-xs text-muted-foreground ml-1">Queue timeout</span>
-                      <span class="text-xs font-mono tabular-nums text-foreground/80">{{ formatConcurrencyTimeout(pipelineConcurrency.queueTimeoutSec) }}</span>
+                      <span class="text-muted-foreground ml-1">Max queue</span>
+                      <span class="font-mono tabular-nums text-foreground/80">{{ pipelineConcurrency.maxQueue ?? '—' }}</span>
+                      <span class="text-muted-foreground ml-1">Queue timeout</span>
+                      <span class="font-mono tabular-nums text-foreground/80">{{ formatConcurrencyTimeout(pipelineConcurrency.queueTimeoutSec) }}</span>
                     </template>
                   </div>
                 </template>
                 <template v-else>
-                  <div class="flex flex-wrap items-center gap-2 text-sm">
-                    <span class="text-xs text-muted-foreground">Status</span>
-                    <span class="text-xs font-semibold rounded px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
-                    <span class="text-xs text-muted-foreground ml-1">Default mode if enabled</span>
-                    <span class="text-xs font-mono rounded px-1.5 py-0.5 border bg-emerald-500/10 text-emerald-700 border-emerald-500/20">discard-old</span>
-                    <span class="text-xs text-muted-foreground ml-1">Max queue</span>
-                    <span class="text-xs font-mono tabular-nums text-foreground/80">3</span>
-                    <span class="text-xs text-muted-foreground ml-1">Queue timeout</span>
-                    <span class="text-xs font-mono tabular-nums text-foreground/80">30m</span>
+                  <div class="flex flex-wrap items-center gap-2 text-xs">
+                    <span class="text-muted-foreground">Status</span>
+                    <span class="font-semibold rounded px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
+                    <span class="text-muted-foreground ml-1">Default mode if enabled</span>
+                    <span class="font-mono rounded px-1.5 py-0.5 border bg-emerald-500/10 text-emerald-700 border-emerald-500/20">discard-old</span>
+                    <span class="text-muted-foreground ml-1">Max queue</span>
+                    <span class="font-mono tabular-nums text-foreground/80">3</span>
+                    <span class="text-muted-foreground ml-1">Queue timeout</span>
+                    <span class="font-mono tabular-nums text-foreground/80">30m</span>
                   </div>
                 </template>
 
@@ -1592,14 +1592,14 @@ async function handleTrigger() {
                     <div
                       v-for="(ch, i) in pipelineNotify"
                       :key="i"
-                      class="flex flex-wrap items-center gap-2 text-sm"
+                      class="flex flex-wrap items-center gap-2 text-xs"
                     >
-                      <span class="text-xs text-muted-foreground">Type</span>
+                      <span class="text-muted-foreground">Type</span>
                       <code class="mono-chip text-xs">{{ ch.type }}</code>
-                      <span class="text-xs text-muted-foreground ml-1">Webhook</span>
+                      <span class="text-muted-foreground ml-1">Webhook</span>
                       <code class="mono-chip text-xs truncate max-w-[20rem]" :title="ch.webhook">{{ ch.webhook }}</code>
-                      <span class="text-xs text-muted-foreground ml-1">On</span>
-                      <span class="text-xs font-mono text-foreground/80">{{ (ch.on && ch.on.length ? ch.on : ['success', 'failure']).join(', ') }}</span>
+                      <span class="text-muted-foreground ml-1">On</span>
+                      <span class="font-mono text-foreground/80">{{ (ch.on && ch.on.length ? ch.on : ['success', 'failure']).join(', ') }}</span>
                     </div>
                   </div>
                   <p class="mt-2 text-xs text-muted-foreground leading-relaxed">
@@ -1608,12 +1608,12 @@ async function handleTrigger() {
                   </p>
                 </template>
                 <template v-else>
-                  <div class="flex flex-wrap items-center gap-2 text-sm">
-                    <span class="text-xs text-muted-foreground">Status</span>
-                    <span class="text-xs font-semibold rounded px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
-                    <span class="text-xs text-muted-foreground ml-1">Add</span>
+                  <div class="flex flex-wrap items-center gap-2 text-xs">
+                    <span class="text-muted-foreground">Status</span>
+                    <span class="font-semibold rounded px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
+                    <span class="text-muted-foreground ml-1">Add</span>
                     <code class="font-mono text-[10px] rounded px-1.5 py-0.5 border bg-sky-500/10 text-sky-700 border-sky-500/20">notify:</code>
-                    <span class="text-xs text-muted-foreground">in YAML (e.g. Feishu webhook via Secrets)</span>
+                    <span class="text-muted-foreground">in YAML (e.g. Feishu webhook via Secrets)</span>
                   </div>
                 </template>
               </div>
@@ -1621,91 +1621,90 @@ async function handleTrigger() {
               <!-- ── Environment (pipeline-level env:) ── -->
               <div
                 v-if="definitionView.envEntries.length"
-                class="mt-6 border-t border-border/20 pt-1"
+                class="border-t border-border/20 px-5 py-4"
               >
-                <div class="px-5 py-3 bg-muted/10 flex items-center gap-2">
+                <div class="flex items-center gap-2 mb-3">
+                  <Braces class="h-3.5 w-3.5 text-teal-500" />
                   <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Environment</span>
                   <span class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.envEntries.length }}</span>
                 </div>
-                <div class="px-5 py-3">
-                  <dl class="space-y-2.5">
-                    <div
-                      v-for="e in definitionView.envEntries"
-                      :key="e.name"
-                      class="grid grid-cols-[minmax(8rem,12rem)_1fr] gap-x-4 gap-y-0.5 items-baseline"
-                    >
-                      <dt class="font-mono text-xs text-muted-foreground truncate" :title="e.name">{{ e.name }}</dt>
-                      <dd class="font-mono text-xs text-foreground/85 break-all leading-relaxed">{{ e.value || '—' }}</dd>
-                    </div>
-                  </dl>
-                </div>
+                <dl class="space-y-2">
+                  <div
+                    v-for="e in definitionView.envEntries"
+                    :key="e.name"
+                    class="grid grid-cols-[minmax(8rem,12rem)_1fr] gap-x-4 gap-y-0.5 items-baseline text-xs"
+                  >
+                    <dt class="font-mono text-muted-foreground truncate" :title="e.name">{{ e.name }}</dt>
+                    <dd class="font-mono text-foreground/85 break-all leading-relaxed">{{ e.value || '—' }}</dd>
+                  </div>
+                </dl>
               </div>
 
               <!-- ── Parameters ── -->
-              <div v-if="defHasInputDefs" class="mt-6 border-t border-border/20 pt-1">
-                <div class="px-5 py-3 bg-muted/10 flex items-center gap-2">
-                  <Sliders class="h-3.5 w-3.5 text-foreground/50" />
+              <div v-if="defHasInputDefs" class="border-t border-border/20 px-5 py-4">
+                <div class="flex items-center gap-2 mb-3">
+                  <Sliders class="h-3.5 w-3.5 text-orange-500" />
                   <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Parameters</span>
                   <span class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.input_defs.length }}</span>
                 </div>
-                <div class="divide-y divide-border/20">
+                <div class="divide-y divide-border/20 -mx-5">
                   <div
                     v-for="inp in definitionView.input_defs"
                     :key="inp.name"
-                    class="px-5 py-3 flex items-center gap-3 text-sm"
+                    class="px-5 py-2.5 flex items-center gap-3 text-xs"
                   >
                     <span class="font-mono font-semibold text-foreground w-36 shrink-0">{{ inp.name }}</span>
-                    <span v-if="inp.description" class="text-muted-foreground text-sm min-w-0">{{ inp.description }}</span>
-                    <span v-else class="italic text-sm text-muted-foreground/50">—</span>
+                    <span v-if="inp.description" class="text-muted-foreground min-w-0">{{ inp.description }}</span>
+                    <span v-else class="italic text-muted-foreground/50">—</span>
                     <span class="flex-1" />
                     <span
-                      class="text-xs font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0"
+                      class="font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0"
                       :class="inp.required ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20' : 'bg-slate-500/10 text-slate-500 border border-slate-500/20'"
                     >{{ inp.required ? 'required' : 'optional' }}</span>
                     <span
                       v-if="inp.masking"
-                      class="text-xs font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0 bg-violet-500/10 text-violet-600 border border-violet-500/20"
+                      class="font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0 bg-violet-500/10 text-violet-600 border border-violet-500/20"
                       title="Redacted in logs, audit, and job snapshots"
                     >masking</span>
-                    <span v-if="inp.default && !inp.masking" class="text-xs text-muted-foreground font-mono shrink-0">= {{ inp.default }}</span>
-                    <span v-else-if="inp.default && inp.masking" class="text-xs text-muted-foreground font-mono shrink-0">= ***</span>
-                    <span v-else class="text-xs text-muted-foreground/35 italic font-mono shrink-0 select-none">= ?</span>
+                    <span v-if="inp.default && !inp.masking" class="text-muted-foreground font-mono shrink-0">= {{ inp.default }}</span>
+                    <span v-else-if="inp.default && inp.masking" class="text-muted-foreground font-mono shrink-0">= ***</span>
+                    <span v-else class="text-muted-foreground/35 italic font-mono shrink-0 select-none">= ?</span>
                   </div>
                 </div>
               </div>
 
               <!-- ── Steps ── -->
-              <div class="mt-6 border-t border-border/20 pt-1">
-                <div class="px-5 py-3 bg-muted/10 flex items-center gap-2">
-                  <List class="h-3.5 w-3.5 text-foreground/50" />
+              <div class="border-t border-border/20 px-5 py-4">
+                <div class="flex items-center gap-2 mb-3">
+                  <List class="h-3.5 w-3.5 text-indigo-500" />
                   <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Steps</span>
                   <span v-if="(definitionView.tasks || []).length" class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.tasks.length }}</span>
                 </div>
-                <div v-if="!(definitionView.tasks || []).length" class="px-5 py-10 text-center text-xs text-muted-foreground/50">
+                <div v-if="!(definitionView.tasks || []).length" class="py-8 text-center text-xs text-muted-foreground/50">
                   No steps defined.
                 </div>
-                <div v-else class="divide-y divide-border/20">
+                <div v-else class="divide-y divide-border/20 -mx-5">
                   <div
                     v-for="(step, idx) in definitionView.tasks"
                     :key="idx"
-                    class="px-5 py-4"
+                    class="px-5 py-3.5"
                   >
                     <!-- Step header: number, name, engine badge, flags, metadata -->
-                    <div class="flex items-center gap-2 mb-2 flex-wrap">
-                      <span class="font-mono text-xs font-bold text-muted-foreground/70 tabular-nums w-6">
+                    <div class="flex items-center gap-2 mb-2 flex-wrap text-xs">
+                      <span class="font-mono font-bold text-muted-foreground/70 tabular-nums w-6">
                         {{ String(Number(idx) + 1).padStart(2, '0') }}
                       </span>
-                      <span class="font-semibold text-foreground text-sm">{{ step.name }}</span>
-                      <span class="mono-chip font-medium">{{ step.exec_type }}</span>
+                      <span class="font-semibold text-foreground">{{ step.name }}</span>
+                      <span class="mono-chip text-xs font-medium">{{ step.exec_type }}</span>
 
                       <!-- Timeout -->
-                      <span v-if="step.timeout_seconds > 0" class="inline-flex items-center gap-1 text-xs text-muted-foreground/70">
+                      <span v-if="step.timeout_seconds > 0" class="inline-flex items-center gap-1 text-muted-foreground/70">
                         <Clock class="h-3 w-3" />
                         <span class="font-mono">{{ step.timeout_seconds }}s</span>
                       </span>
 
                       <!-- Retry -->
-                      <span v-if="step.retry_count > 0" class="inline-flex items-center gap-1 text-xs text-muted-foreground/70">
+                      <span v-if="step.retry_count > 0" class="inline-flex items-center gap-1 text-muted-foreground/70">
                         <RotateCw class="h-3 w-3" />
                         <span class="font-mono">{{ step.retry_count }}</span>
                       </span>
@@ -1713,10 +1712,10 @@ async function handleTrigger() {
                       <span class="flex-1" />
 
                       <!-- Flags: continue-on-error, privileged -->
-                      <span v-if="step.fail_strategy === 'continue'" class="text-xs font-medium text-amber-600 bg-amber-500/8 border border-amber-500/20 rounded px-1.5 py-0.5">
+                      <span v-if="step.fail_strategy === 'continue'" class="font-medium text-amber-600 bg-amber-500/8 border border-amber-500/20 rounded px-1.5 py-0.5">
                         continue-on-error
                       </span>
-                      <span v-if="(step as any).privileged" class="text-xs font-semibold text-red-500 bg-red-500/8 border border-red-500/20 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                      <span v-if="(step as any).privileged" class="font-semibold text-red-500 bg-red-500/8 border border-red-500/20 rounded px-1.5 py-0.5 uppercase tracking-wider">
                         privileged
                       </span>
                     </div>
@@ -1811,7 +1810,7 @@ async function handleTrigger() {
 
                     <!-- Command block — keep text node flush against tags so
                          whitespace-pre-wrap does not indent the first line -->
-                    <div class="relative font-mono text-sm leading-relaxed text-foreground/80 bg-muted/30 rounded-lg px-3.5 py-3 whitespace-pre-wrap break-all border border-border/25"><div class="absolute left-0 top-1 bottom-1 w-0.5 rounded-full bg-border/30" aria-hidden="true" />{{ step.command_template }}</div>
+                    <div class="relative font-mono text-xs leading-relaxed text-foreground/80 bg-muted/30 rounded-lg px-3.5 py-2.5 whitespace-pre-wrap break-all border border-border/25"><div class="absolute left-0 top-1 bottom-1 w-0.5 rounded-full bg-border/30" aria-hidden="true" />{{ step.command_template }}</div>
                   </div>
                 </div>
               </div>
