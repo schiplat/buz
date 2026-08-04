@@ -1,6 +1,7 @@
 use super::{
-    build_config_prep_banner, build_login_banner, build_ssh_env_command, build_step_echo,
-    build_step_failure_message, build_verbose_step_config, build_verbose_step_result,
+    build_config_prep_banner, build_login_banner, build_ssh_banner, build_ssh_env_command,
+    build_step_echo, build_step_failure_message, build_verbose_step_config,
+    build_verbose_step_result, format_resolved_ssh_targets, merge_ssh_host_outputs,
     step_failure_hint, step_log_base, wrap_remote_cmd_with_registry_login, LOG_ECHO, LOG_LOGIN,
     LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP, LOG_STEP_VERBOSE_EXEC,
     LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
@@ -95,6 +96,115 @@ fn build_login_banner_matches_style() {
         build_login_banner("registry.example.com"),
         "==> LOGIN [registry.example.com]\n"
     );
+}
+
+#[test]
+fn build_ssh_banner_includes_target_and_workspace() {
+    let banner = build_ssh_banner(&[
+        ("deploy@10.0.0.1:22".into(), "/home/deploy".into()),
+        ("deploy@10.0.0.2:2222".into(), String::new()),
+    ]);
+    assert!(banner.contains("==> SSH [deploy@10.0.0.1:22]\n"), "{banner}");
+    assert!(banner.contains("  workspace  /home/deploy\n"), "{banner}");
+    assert!(banner.contains("==> SSH [deploy@10.0.0.2:2222]\n"), "{banner}");
+    assert!(
+        !banner.contains("workspace  \n")
+            || banner
+                .lines()
+                .filter(|l| l.contains("10.0.0.2"))
+                .count()
+                == 1,
+        "empty workspace must omit workspace line: {banner}"
+    );
+    let only_second = banner.split("==> SSH [deploy@10.0.0.2:2222]\n").nth(1).unwrap();
+    assert!(
+        !only_second.contains("workspace"),
+        "second host has no workspace: {banner}"
+    );
+}
+
+#[test]
+fn format_resolved_ssh_targets_from_host_objects() {
+    let step = serde_json::json!({
+        "host": [
+            { "host": "a.example", "port": 22, "username": "ubuntu" },
+            { "host": "b.example", "port": 2222, "username": "deploy" }
+        ]
+    });
+    assert_eq!(
+        format_resolved_ssh_targets(&step),
+        vec!["ubuntu@a.example:22", "deploy@b.example:2222"]
+    );
+}
+
+#[test]
+fn verbose_step_config_prefers_resolved_host_objects() {
+    let step = serde_json::json!({
+        "exec_type": "ssh",
+        "hosts": ["legacy-name"],
+        "hosts_strategy": "chain",
+        "host": {
+            "host": "81.71.41.19",
+            "port": 2424,
+            "username": "root",
+            "credential_value": "SECRET_KEY_MATERIAL"
+        }
+    });
+    let cfg = build_verbose_step_config(&step, "ssh", "");
+    assert!(cfg.contains("  hosts            root@81.71.41.19:2424"), "{cfg}");
+    assert!(cfg.contains("  hosts_strategy   chain"), "{cfg}");
+    assert!(!cfg.contains("SECRET_KEY_MATERIAL"), "{cfg}");
+    assert!(!cfg.contains("legacy-name"), "{cfg}");
+}
+
+#[test]
+fn merge_ssh_host_outputs_any_failure_fails_step() {
+    let out = merge_ssh_host_outputs(
+        "Deploy",
+        true,
+        vec![
+            (
+                "host-b".into(),
+                Ok(crate::engine::ssh::SshOutput {
+                    stdout: "ok-b\n".into(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                }),
+            ),
+            (
+                "host-a".into(),
+                Ok(crate::engine::ssh::SshOutput {
+                    stdout: "fail-a\n".into(),
+                    stderr: "boom\n".into(),
+                    exit_code: 7,
+                }),
+            ),
+        ],
+    );
+    assert_eq!(out.exit_code, 7);
+    assert!(out.stdout.contains("--- Deploy @ host-a ---"), "{:?}", out.stdout);
+    assert!(out.stdout.contains("--- Deploy @ host-b ---"), "{:?}", out.stdout);
+    // Sorted by host label: a before b
+    let pos_a = out.stdout.find("host-a").unwrap();
+    let pos_b = out.stdout.find("host-b").unwrap();
+    assert!(pos_a < pos_b, "hosts sorted: {}", out.stdout);
+    assert!(out.stdout.contains("--- summary ---"), "{}", out.stdout);
+    assert!(out.stdout.contains("host-a: exit 7"), "{}", out.stdout);
+    assert!(out.stdout.contains("host-b: exit 0"), "{}", out.stdout);
+}
+
+#[test]
+fn merge_ssh_host_outputs_error_sets_minus_one() {
+    let out = merge_ssh_host_outputs(
+        "x",
+        false,
+        vec![(
+            "only".into(),
+            Err(anyhow::anyhow!("channel died")),
+        )],
+    );
+    assert_eq!(out.exit_code, -1);
+    assert!(out.stderr.contains("ERROR: channel died"), "{}", out.stderr);
 }
 
 #[test]

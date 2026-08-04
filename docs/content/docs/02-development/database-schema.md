@@ -42,7 +42,7 @@ SSH remote host configuration. Stores encrypted credentials (private key or pass
 
 ### users / teams / team_members (Phase 2 RBAC)
 
-See [Users, Teams & RBAC](/docs/01-architecture/rbac/) for the full model.
+See [Users, Teams & RBAC](/docs/01-architecture/platform/rbac/) for the full model.
 
 | Table | Purpose |
 |-------|---------|
@@ -52,14 +52,14 @@ See [Users, Teams & RBAC](/docs/01-architecture/rbac/) for the full model.
 
 ### pipelines
 
-Runtime **projection** of pipeline definitions. For `source=yaml`, the file under Manager `yaml_scan_dir` is authoritative — see [YAML-First Authoring](/docs/01-architecture/yaml-first-authoring/).
+Runtime **projection** of pipeline definitions. For `source=yaml`, the file under Manager `yaml_scan_dir` is authoritative — see [YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/).
 
 | Column | Type | Notes |
 |--------|------|-------|
 | team_id | TEXT | **Required** team ownership (Phase 2) |
 | trigger_type | TEXT | `manual`, `webhook`, or `cron` |
 | concurrency_group | TEXT | Prevents concurrent execution of same pipeline |
-| owner_group | TEXT | Team slug mirror (Phase 1 namespace). Phase 2: ownership via `team_id` — see [RBAC](/docs/01-architecture/rbac/) |
+| owner_group | TEXT | Team slug mirror (Phase 1 namespace). Phase 2: ownership via `team_id` — see [RBAC](/docs/01-architecture/platform/rbac/) |
 | source | TEXT | Prefer `yaml` (file authority). Legacy `form` until migrated |
 | yaml_path | TEXT | **Basename only** (e.g. `demo.yml`) when `source=yaml`; flat scan dir — no subdirectories |
 | is_active | INTEGER | Toggle sticks across scanner upserts (not forced back to `1`) |
@@ -75,6 +75,7 @@ Pipeline step definitions.
 | image | TEXT | Container image when `exec_type=docker` (empty otherwise) |
 | registry_secret | TEXT | Manager Secret name for `docker login` (shell / SSH / docker; empty otherwise) |
 | fail_strategy | TEXT | `stop`, `continue`, or `ignore` |
+| hosts_strategy | TEXT | SSH multi-host fan-out: `chain` (default) or `parallel` |
 
 ### variables
 
@@ -120,9 +121,9 @@ Secret storage. Values are stored in the database and injected as environment va
 | id | TEXT PK | UUID v4 |
 | name | TEXT UNIQUE | Secret name (e.g. `DOCKER_PASS`, `GIT_SSH_KEY`) |
 | value | TEXT | AES-256-GCM ciphertext only (plaintext rows are rejected at decrypt) |
-| owner_group | TEXT | Team slug mirror; Phase 2 ownership via `team_id` (required). See [RBAC](/docs/01-architecture/rbac/) |
+| owner_group | TEXT | Team slug mirror; Phase 2 ownership via `team_id` (required). See [RBAC](/docs/01-architecture/platform/rbac/) |
 | team_id | TEXT | Owning team (required after bootstrap) |
-| team_shared | INTEGER NOT NULL DEFAULT 0 | `1` = same-team pipelines auto-receive this secret at job claim; `0` = explicit bind/reference only. See [Secrets Access Control](/docs/01-architecture/secrets-access-control/) |
+| team_shared | INTEGER NOT NULL DEFAULT 0 | `1` = same-team pipelines auto-receive this secret at job claim; `0` = explicit bind/reference only. See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) |
 | kind | TEXT NOT NULL DEFAULT `'generic'` | `generic` = env inject; `registry` = JSON credentials for `registry_secret` / docker login. Backfill marks decryptable registry JSON as `registry`. |
 | created_at, updated_at | TEXT | Auto-managed |
 
@@ -140,7 +141,7 @@ Index: `idx_pipeline_secrets_pipeline` on `pipeline_id`.
 
 ### pipeline_git_hooks
 
-GitHub/Gitee webhook adapter config per pipeline. See [Git Webhook Triggers](/docs/01-architecture/git-webhook-triggers/).
+GitHub/Gitee webhook adapter config per pipeline. See [Git Webhook Triggers](/docs/01-architecture/authoring/git-webhook-triggers/).
 
 | Column | Type | Notes |
 |--------|------|-------|

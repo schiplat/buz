@@ -345,6 +345,9 @@ pub struct StepYaml {
     pub dir: Option<String>,
     #[serde(default)]
     pub host_labels: Option<OneOrMany>,
+    /// Multi-host SSH fan-out: `chain` (default) or `parallel`.
+    #[serde(default)]
+    pub hosts_strategy: Option<String>,
     #[serde(default)]
     pub timeout: Option<String>,
     #[serde(default)]
@@ -473,6 +476,9 @@ pub struct StepData {
     pub host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_labels: Option<String>,
+    /// `chain` (default) or `parallel` — SSH multi-host fan-out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hosts_strategy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -515,6 +521,19 @@ pub struct YamlValidationError {
 
 fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// Normalize SSH multi-host strategy. Empty / omitted → `chain` (one host after another).
+///
+/// Accepts legacy alias `serial` → `chain` (pre-release name).
+pub fn normalize_hosts_strategy(raw: Option<&str>) -> Result<&'static str, String> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("chain") {
+        "chain" | "serial" => Ok("chain"),
+        "parallel" => Ok("parallel"),
+        other => Err(format!(
+            "invalid hosts_strategy '{other}' — must be chain or parallel"
+        )),
+    }
 }
 
 /// Parse pipeline duration strings: `30`, `30s`, `10m`, `1h` (case-insensitive unit).
@@ -973,7 +992,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         );
     }
 
-    // 6. SSH step requires host
+    // 6. SSH step requires host; validate hosts_strategy
     for (i, step) in parsed.steps.iter().enumerate() {
         let uses = step.uses.as_deref().unwrap_or("").trim();
         if uses == "ssh"
@@ -984,6 +1003,22 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 field: format!("steps[{}]", i),
                 message: "SSH execution requires 'host' or 'host_labels' field".into(),
             });
+        }
+        if let Some(raw) = step.hosts_strategy.as_deref() {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                if uses != "ssh" {
+                    errors.push(YamlValidationError {
+                        field: format!("steps[{i}].hosts_strategy"),
+                        message: "hosts_strategy is only valid for uses: ssh".into(),
+                    });
+                } else if let Err(msg) = normalize_hosts_strategy(Some(trimmed)) {
+                    errors.push(YamlValidationError {
+                        field: format!("steps[{i}].hosts_strategy"),
+                        message: msg,
+                    });
+                }
+            }
         }
     }
 
@@ -1216,6 +1251,12 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                         OneOrMany::One(s) => s.clone(),
                         OneOrMany::Many(v) => v.join(","),
                     }),
+                    hosts_strategy: s
+                        .hosts_strategy
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(|v| normalize_hosts_strategy(Some(v)).unwrap_or("chain").to_string()),
                     dir: s.dir.clone(),
                     timeout: s.timeout.clone(),
                     retry: s.retry,

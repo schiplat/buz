@@ -15,6 +15,7 @@ type StepLike = {
   env?: Record<string, string>
   host?: string
   host_labels?: string
+  hosts_strategy?: string
   dir?: string
   timeout?: string
   retry?: number
@@ -217,6 +218,7 @@ export function serializePipelineFormToYaml(
         for (const h of labs) lines.push(`      - ${esc(h)}`)
       }
     }
+    if (s.hosts_strategy) lines.push(`    hosts_strategy: ${esc(s.hosts_strategy)}`)
     if (s.dir) lines.push(`    dir: ${esc(s.dir)}`)
     if (s.timeout) lines.push(`    timeout: ${esc(s.timeout)}`)
     if (s.retry) lines.push(`    retry: ${s.retry}`)

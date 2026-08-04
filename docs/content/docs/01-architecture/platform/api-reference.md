@@ -2,6 +2,8 @@
 title: API Reference
 weight: 4
 description: "Buz Manager REST API reference"
+aliases:
+  - /docs/01-architecture/api-reference/
 ---
 
 All API endpoints use the prefix `/api/v1/`.
@@ -107,7 +109,7 @@ Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`
 
 ## Runners
 
-> Policy fields (`max_concurrent_jobs`, engines, cleanup, `ssh_host_key_policy`) are UI-managed. See [Runner Policy](/docs/01-architecture/runner-concurrent-jobs/).
+> Policy fields (`max_concurrent_jobs`, engines, cleanup, `ssh_host_key_policy`) are UI-managed. See [Runner Policy](/docs/01-architecture/execution/runner-concurrent-jobs/).
 
 | Method | Path | Auth |
 |--------|------|------|
@@ -276,7 +278,7 @@ Empty response: `204 No Content`
 
 ## Pipelines
 
-Primary authoring is **YAML file APIs** under Manager `yaml_scan_dir` — see [YAML-First Authoring](/docs/01-architecture/yaml-first-authoring/). Legacy JSON body create/update remains only for old `source=form` rows.
+Primary authoring is **YAML file APIs** under Manager `yaml_scan_dir` — see [YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/). Legacy JSON body create/update remains only for old `source=form` rows.
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
@@ -417,9 +419,9 @@ Response:
 - List/get return a **partially redacted** preview (`ab****yz`, or JSON with `password`/`token` fields masked) — never full plaintext.
 - When ciphertext cannot be decrypted: `value` is `****` and `reencrypt_required: true`.
 - Empty `value` on PUT keeps the existing ciphertext.
-- `team_shared` (boolean, default `false` on create): when `true`, same-team pipelines auto-receive the secret at job claim; when `false`, use Authorized Secrets / YAML `secrets:` / step `secrets:` / `registry_secret`. See [Secrets Access Control](/docs/01-architecture/secrets-access-control/).
+- `team_shared` (boolean, default `false` on create): when `true`, same-team pipelines auto-receive the secret at job claim; when `false`, use Authorized Secrets / YAML `secrets:` / step `secrets:` / `registry_secret`. See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
 - `kind` (`generic` \| `registry`, default `generic`): `registry` requires parseable JSON with `username`/`password` and is required for step `registry_secret` at claim. List/get return `kind`. Pipeline UI **Registry Secret** dropdown filters to `kind=registry`.
-- For private registries, set `kind: registry`, store JSON credentials, and reference the secret **name** via `registry_secret` (see [Docker Engine](/docs/01-architecture/docker-engine/)). Prefer `team_shared: false`.
+- For private registries, set `kind: registry`, store JSON credentials, and reference the secret **name** via `registry_secret` (see [Docker Engine](/docs/01-architecture/execution/docker-engine/)). Prefer `team_shared: false`.
 
 ## Variables
 
@@ -437,7 +439,7 @@ Response:
 | POST | `/api/v1/hooks/:path` | None (public) — generic HTTP trigger |
 | POST | `/api/v1/hooks/git/:provider/:hook_key` | Platform Secret/Token (planned) — GitHub/Gitee |
 
-Generic hooks use query / flat JSON / `inputs` (below). Git platform push events use a **separate** adapter with URL + independent Secret (not in the URL). Design: [Git Webhook Triggers](/docs/01-architecture/git-webhook-triggers/).
+Generic hooks use query / flat JSON / `inputs` (below). Git platform push events use a **separate** adapter with URL + independent Secret (not in the URL). Design: [Git Webhook Triggers](/docs/01-architecture/authoring/git-webhook-triggers/).
 
 ### POST /hooks/:path — External Webhook Trigger
 
@@ -477,7 +479,7 @@ Errors:
 
 - `{provider}`: `github` | `gitee`
 - URL has **no** secret query param; verify via GitHub `X-Hub-Signature-256` or Gitee `X-Gitee-Token` against the secret stored (encrypted) on `pipeline_git_hooks` — user pastes the same secret into the platform Webhook UI.
-- On success, triggers a job with normalized `INPUT_GIT_*` (see [Git Webhook Triggers](/docs/01-architecture/git-webhook-triggers/)).
+- On success, triggers a job with normalized `INPUT_GIT_*` (see [Git Webhook Triggers](/docs/01-architecture/authoring/git-webhook-triggers/)).
 - Skipped deliveries return HTTP 202; bad signature → 401 (`AuthFailed`).
 
 ### Git hook config (JWT) — multiple per pipeline
@@ -494,7 +496,7 @@ JWT. Paginated **Trigger events** (`source`, `decision` filters) for Pipeline de
 
 ## Audit logs
 
-Platform-admin only. See [Admin Audit Logs](/docs/01-architecture/admin-audit-logs/).
+Platform-admin only. See [Admin Audit Logs](/docs/01-architecture/platform/admin-audit-logs/).
 
 | Method | Path | Auth |
 |--------|------|------|

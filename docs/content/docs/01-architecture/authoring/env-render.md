@@ -2,16 +2,18 @@
 title: Env Render — Declarative .env Generation
 weight: 5
 description: "Render env.example into .env on the target host with explicit ${secrets.X} / ${vars.X} namespaces, GH-Actions-style references, fail-fast on missing sources"
+aliases:
+  - /docs/01-architecture/env-render/
 ---
 
 > **Status: IMPLEMENTED — Phase 1 engine + Phase 2b authoring shipped.**  
 > This page is the **render engine** design: template syntax, `ValueMap`,
 > security gates, change detection, flock.  
 > Nested step YAML / OSS deliver / render-only / multi-file →
-> [Config Block DSL v2](/docs/01-architecture/config-block/) (**2b complete**).
+> [Config Block DSL v2](/docs/01-architecture/authoring/config-block/) (**2b complete**).
 > Auto `on_change`/`services` still deferred (**2d**).  
 > All `${secrets.X}` / `${vars.X}` / `$INPUT_*` syntaxes →
-> [Secrets & Variables Expressions](/docs/01-architecture/secrets-vars-expressions/).
+> [Secrets & Variables Expressions](/docs/01-architecture/authoring/secrets-vars-expressions/).
 
 ## Problem
 
@@ -155,7 +157,7 @@ Prepare runs **before** the run block: delivery (if any) → render → `run`.
 `warn` writes empty `KEY=` plus a warning comment (rollback deploys).
 
 Authoring shape, DB columns, and samples →
-[Config Block DSL v2](/docs/01-architecture/config-block/).
+[Config Block DSL v2](/docs/01-architecture/authoring/config-block/).
 
 ### Security gate on template references
 
@@ -325,12 +327,12 @@ already reflected in the DSL / render-rules / ValueMap sections above.
 |-------|-------|--------|
 | 1 | Secret naming; unpack + render; `ValueMap`; fail-fast; `BUZ_ENV_CHANGED`; flock; tests | **Shipped** |
 | 2 | `on_missing: warn`; key semantics; **`on_change` / `services` auto-recreate** | **Partly shipped** — warn + change env done; auto-recreate **not** enforced (branch in `run` on `$BUZ_ENV_CHANGED`) |
-| 2b | Nested `config:`; multi-file render; OSS deliver + render-only; DB cut-over; UI | **Shipped** — see [Config Block](/docs/01-architecture/config-block/) |
+| 2b | Nested `config:`; multi-file render; OSS deliver + render-only; DB cut-over; UI | **Shipped** — see [Config Block](/docs/01-architecture/authoring/config-block/) |
 | 2c | `config.git` | Planned |
 | 2d | Enforce `on_change` / `services` | Planned |
 
 ## Related
 
-- [Config Block DSL v2](/docs/01-architecture/config-block/) — step `config:` (shipped)
-- [Secrets Access Control](/docs/01-architecture/secrets-access-control/)
-- [Pipeline Format](/docs/01-architecture/pipeline-format/)
+- [Config Block DSL v2](/docs/01-architecture/authoring/config-block/) — step `config:` (shipped)
+- [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/)
+- [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/)

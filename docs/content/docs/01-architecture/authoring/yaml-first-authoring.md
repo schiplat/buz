@@ -2,6 +2,8 @@
 title: YAML-First Pipeline Authoring
 weight: 2
 description: "YAML file/Git is the authority; Manager projects into DB; UI edits write back to the scan directory"
+aliases:
+  - /docs/01-architecture/yaml-first-authoring/
 ---
 
 # YAML-First Pipeline Authoring
@@ -105,5 +107,5 @@ See [Configuration](/docs/03-operations/configuration/).
 ## Related
 
 - [Pipeline Format](./pipeline-format.md) — YAML field reference
-- [Secrets Access (GHA-style)](./secrets-access.md) — `env: KEY: ${secrets.NAME}`
+- [Secrets Access (GHA-style)](../platform/secrets-access.md) — `env: KEY: ${secrets.NAME}`
 - [Config Block](./config-block.md)

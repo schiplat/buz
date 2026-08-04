@@ -1,7 +1,9 @@
 use super::{
-    build_rsa_fallback_chain, format_agent_identity_label, hash_label, is_transient_ssh_error,
-    key_type_display, resolve_known_hosts_path, verify_against_known_hosts,
+    build_rsa_fallback_chain, format_agent_identity_label, format_ssh_target, hash_label,
+    is_transient_ssh_error, key_type_display, resolve_known_hosts_path, verify_against_known_hosts,
+    SshConnectionParams,
 };
+use crate::config::SshHostKeyPolicy;
 use russh::keys::{load_secret_key, HashAlg};
 
 /// Unencrypted Ed25519 OpenSSH private key (test fixture, not a real host key).
@@ -236,4 +238,21 @@ fn transient_ssh_error_skips_auth_and_command_timeout() {
     assert!(!is_transient_ssh_error(&anyhow::anyhow!(
         "unsupported credential type: foo"
     )));
+}
+
+#[test]
+fn format_ssh_target_is_user_at_host_port() {
+    let conn = SshConnectionParams {
+        host: "10.0.0.1".into(),
+        port: 2424,
+        username: "deploy".into(),
+        credential_type: "agent".into(),
+        credential_value: Some("must-not-appear".into()),
+        credential_passphrase: None,
+        host_key_policy: SshHostKeyPolicy::Insecure,
+        known_hosts_path: None,
+    };
+    let label = format_ssh_target(&conn);
+    assert_eq!(label, "deploy@10.0.0.1:2424");
+    assert!(!label.contains("must-not-appear"));
 }

@@ -510,6 +510,9 @@ pub struct StepDef {
     /// Host labels to match — single string or array. SSH steps will run on all hosts matching any of these labels.
     #[serde(default, alias = "host_labels")]
     pub host_labels: Option<OneOrMany>,
+    /// Multi-host SSH fan-out: `chain` (default) or `parallel`.
+    #[serde(default)]
+    pub hosts_strategy: Option<String>,
     pub dir: Option<String>,
     pub timeout: Option<String>,
     pub retry: Option<i32>,

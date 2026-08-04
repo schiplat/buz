@@ -50,6 +50,9 @@ async-trait = "0.1"
 thiserror.workspace = true
 anyhow = "1"
 
+# Parallel SSH fan-out (same-task join; sessions need not be Send across threads)
+futures-util = "0.3"
+
 # System information collection
 sysinfo = "0.33"
 

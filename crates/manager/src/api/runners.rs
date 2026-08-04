@@ -644,7 +644,7 @@ pub async fn poll(
     let task_rows = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
-                registry_secret, config_source, config_key_path, config_render, config_dest
+                registry_secret, config_source, config_key_path, config_render, config_dest, hosts_strategy
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&pipeline_id)
@@ -816,6 +816,7 @@ pub async fn poll(
         let config_key_path_raw: String = t.get(18);
         let config_render_raw: String = t.get(19);
         let config_dest: String = t.get(20);
+        let hosts_strategy: String = t.get(21);
 
         // Purpose slots accept `${secrets.NAME}` or bare NAME.
         let registry_secret_name =
@@ -842,6 +843,10 @@ pub async fn poll(
             "config_render": serde_json::from_str::<serde_json::Value>(&config_render_raw)
                 .unwrap_or(serde_json::Value::Null),
             "config_dest": &config_dest,
+            "hosts_strategy": shared::pipeline_yaml::normalize_hosts_strategy(
+                Some(hosts_strategy.as_str()),
+            )
+            .unwrap_or("chain"),
         });
 
         // Values that must be redacted in the Runner's logs. Registered here — the

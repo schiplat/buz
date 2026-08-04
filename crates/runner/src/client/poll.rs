@@ -105,6 +105,57 @@ pub(crate) fn build_login_banner(registry: &str) -> String {
     format!("==> LOGIN [{registry}]\n")
 }
 
+/// Banner after SSH auth: target (`user@host:port`) and remote workspace (`pwd`).
+///
+/// Never includes credentials. Empty workspace omits the workspace line.
+pub(crate) fn build_ssh_banner(targets: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (target, workspace) in targets {
+        out.push_str(&format!("==> SSH [{target}]\n"));
+        if !workspace.is_empty() {
+            out.push_str(&format!("  workspace  {workspace}\n"));
+        }
+    }
+    out
+}
+
+/// Resolved SSH targets from Manager `host` payload objects (no credentials).
+pub(crate) fn format_resolved_ssh_targets(step: &serde_json::Value) -> Vec<String> {
+    let host_values = step["host"]
+        .as_array()
+        .cloned()
+        .or_else(|| {
+            step["host"]
+                .as_object()
+                .map(|o| vec![serde_json::Value::Object(o.clone())])
+        })
+        .unwrap_or_default();
+    host_values
+        .iter()
+        .filter_map(|hv| {
+            let obj = hv.as_object()?;
+            let host = obj.get("host")?.as_str()?.trim();
+            if host.is_empty() {
+                return None;
+            }
+            let user = obj
+                .get("username")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let port = obj.get("port").and_then(|v| v.as_u64()).unwrap_or(22);
+            let user = if user.is_empty() { "?" } else { user };
+            Some(format!("{user}@{host}:{port}"))
+        })
+        .collect()
+}
+
+/// True when SSH multi-host fan-out should run in parallel (`hosts_strategy: parallel`).
+/// Omitted / `chain` / legacy `serial` → chain (one after another).
+pub(crate) fn ssh_hosts_parallel(step: &serde_json::Value) -> bool {
+    step["hosts_strategy"].as_str() == Some("parallel")
+}
+
 /// Verbose-mode stage marker (`==> STAGE …`).
 fn build_verbose_stage(stage: &str) -> String {
     format!("==> STAGE {stage}\n")
@@ -170,11 +221,18 @@ pub(crate) fn build_verbose_step_config(
             push_field("config_render", pairs.join(", "));
         }
     }
-    if let Some(hosts) = step["hosts"].as_array() {
+    let resolved = format_resolved_ssh_targets(step);
+    if !resolved.is_empty() {
+        push_field("hosts", resolved.join(", "));
+    } else if let Some(hosts) = step["hosts"].as_array() {
         let joined: Vec<&str> = hosts.iter().filter_map(|h| h.as_str()).collect();
         if !joined.is_empty() {
             push_field("hosts", joined.join(", "));
         }
+    }
+    if exec_type == "ssh" {
+        let strategy = step["hosts_strategy"].as_str().unwrap_or("chain");
+        push_field("hosts_strategy", strategy.to_string());
     }
     out
 }
@@ -903,19 +961,41 @@ async fn execute_job(
         // ── SSH step session (one TCP connect per host for prepare + run) ──
         // Open before config prepare so deliver/render share the same session as
         // the run block (avoids reconnect storms / fail2ban / MaxStartups).
+        // Multi-host: connect in parallel; cancel aborts all in-flight connects.
         let mut ssh_sessions: Vec<SshSession> = Vec::new();
         if exec_type == "ssh" {
             let conns = resolve_ssh_conns(step, config);
             if !conns.is_empty() {
-                match engine::ssh::connect_all(&conns).await {
-                    Ok(sessions) => {
-                        tracing::info!(
-                            hosts = sessions.len(),
-                            "SSH step '{step_name}': opened step session(s)"
-                        );
-                        ssh_sessions = sessions;
+                let connect_result = tokio::select! {
+                    result = engine::ssh::connect_all(&conns, ssh_hosts_parallel(step)) => Some(result),
+                    _ = cancel_watcher(client, config, token, job_id) => None,
+                };
+                match connect_result {
+                    None => {
+                        let _ = super::logs::upload_chunk(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            LogChunk {
+                                chunk_index: log_base + LOG_STEP_META_A,
+                                step_order: idx as i32,
+                                content: "==> CANCELLED\nJob was cancelled by user.\n".into(),
+                            },
+                        )
+                        .await;
+                        update_job_status(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            "cancelled",
+                            Some(idx as i32),
+                        )
+                        .await?;
+                        anyhow::bail!("job cancelled by user");
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         let msg = e.to_string();
                         let _ = super::logs::upload_chunk(
                             client,
@@ -939,6 +1019,65 @@ async fn execute_job(
                         )
                         .await?;
                         anyhow::bail!(msg);
+                    }
+                    Some(Ok(mut sessions)) => {
+                        tracing::info!(
+                            hosts = sessions.len(),
+                            "SSH step '{step_name}': opened step session(s)"
+                        );
+                        let targets = {
+                            let probe = engine::ssh::probe_workspaces(&mut sessions, step_timeout);
+                            tokio::select! {
+                                t = probe => Some(t),
+                                _ = cancel_watcher(client, config, token, job_id) => None,
+                            }
+                        };
+                        match targets {
+                            None => {
+                                drop(sessions);
+                                let _ = super::logs::upload_chunk(
+                                    client,
+                                    config,
+                                    token,
+                                    job_id,
+                                    LogChunk {
+                                        chunk_index: log_base + LOG_STEP_META_A,
+                                        step_order: idx as i32,
+                                        content: "==> CANCELLED\nJob was cancelled by user.\n"
+                                            .into(),
+                                    },
+                                )
+                                .await;
+                                update_job_status(
+                                    client,
+                                    config,
+                                    token,
+                                    job_id,
+                                    "cancelled",
+                                    Some(idx as i32),
+                                )
+                                .await?;
+                                anyhow::bail!("job cancelled by user");
+                            }
+                            Some(targets) => {
+                                let banner = build_ssh_banner(&targets);
+                                if !banner.is_empty() {
+                                    let _ = super::logs::upload_chunk(
+                                        client,
+                                        config,
+                                        token,
+                                        job_id,
+                                        LogChunk {
+                                            chunk_index: log_base + LOG_LOGIN,
+                                            step_order: idx as i32,
+                                            content: banner,
+                                        },
+                                    )
+                                    .await;
+                                }
+                                ssh_sessions = sessions;
+                            }
+                        }
                     }
                 }
             }
@@ -975,7 +1114,7 @@ async fn execute_job(
                     // The SSH branch below reports the missing-host error.
                     Ok(None)
                 } else {
-                    super::config_source::prepare_ssh(
+                    let prep_fut = super::config_source::prepare_ssh(
                         client,
                         step,
                         &mut ssh_sessions,
@@ -984,9 +1123,35 @@ async fn execute_job(
                         idx,
                         &render_values,
                         step_timeout,
-                    )
-                    .await
-                    .map(Some)
+                        ssh_hosts_parallel(step),
+                    );
+                    tokio::select! {
+                        result = prep_fut => result.map(Some),
+                        _ = cancel_watcher(client, config, token, job_id) => {
+                            let _ = super::logs::upload_chunk(
+                                client,
+                                config,
+                                token,
+                                job_id,
+                                LogChunk {
+                                    chunk_index: log_base + LOG_STEP_META_A,
+                                    step_order: idx as i32,
+                                    content: "==> CANCELLED\nJob was cancelled by user.\n".into(),
+                                },
+                            )
+                            .await;
+                            update_job_status(
+                                client,
+                                config,
+                                token,
+                                job_id,
+                                "cancelled",
+                                Some(idx as i32),
+                            )
+                            .await?;
+                            anyhow::bail!("job cancelled by user");
+                        }
+                    }
                 }
             } else {
                 super::config_source::prepare_local(
@@ -1356,28 +1521,23 @@ async fn execute_job(
                 let sname = step_name.to_string();
                 let sname2 = sname.clone();
                 let step_env_ssh = ssh_env;
-                // Move step sessions into the exec task (prepare already used them).
-                let mut sessions_for_run = std::mem::take(&mut ssh_sessions);
+                // Parallel fan-out inside execute_ssh_step; cancelling this
+                // select arm drops join_all and aborts every in-flight host.
+                let sessions_for_run = std::mem::take(&mut ssh_sessions);
 
-                let step_task = tokio::spawn(async move {
-                    execute_ssh_step(
-                        &mut sessions_for_run,
+                tokio::select! {
+                    result = execute_ssh_step(
+                        sessions_for_run,
                         &cmd,
                         step_timeout,
                         &sname,
                         &step_env_ssh,
-                    )
-                    .await
-                });
-                let abort_handle = step_task.abort_handle();
-
-                tokio::select! {
-                    result = step_task => {
-                        (result??, false)
+                        ssh_hosts_parallel(step),
+                    ) => {
+                        (result?, false)
                     }
                     _ = cancel_watcher(&c, &cfg, &t, &jid) => {
-                        tracing::warn!("Job {jid} cancelled during SSH step '{sname2}' — aborting");
-                        abort_handle.abort();
+                        tracing::warn!("Job {jid} cancelled during SSH step '{sname2}' — aborting all hosts");
                         (engine::shell::ShellOutput {
                             stdout: String::new(),
                             stderr: "==> CANCELLED\n".to_string(),
@@ -1800,29 +1960,66 @@ fn build_ssh_conn(hv: &serde_json::Value, config: &Config) -> anyhow::Result<Ssh
     })
 }
 
-/// Run the step command on already-open step sessions (one channel per host).
+/// Run the step command on already-open step sessions.
+///
+/// When `parallel` is true, hosts run concurrently; when false, one-by-one.
+/// Wait-all: every host finishes (unless this future is dropped on cancel).
+/// Any non-zero exit or exec error fails the step. Per-host output is buffered
+/// then concatenated under `--- {step} @ {host} ---` when multi-host.
 async fn execute_ssh_step(
-    sessions: &mut [SshSession],
+    sessions: Vec<SshSession>,
     command: &str,
     step_timeout: Option<std::time::Duration>,
     step_name: &str,
     env: &std::collections::HashMap<String, String>,
+    parallel: bool,
 ) -> anyhow::Result<engine::shell::ShellOutput> {
+    let multi = sessions.len() > 1;
+    let ssh_cmd = build_ssh_env_command(command, env);
+    let results = if parallel && multi {
+        let futs = sessions.into_iter().map(|mut session| {
+            let ssh_cmd = ssh_cmd.clone();
+            async move {
+                let host_label = session.host_label().to_string();
+                let result = session.exec(&ssh_cmd, None, step_timeout).await;
+                (host_label, result)
+            }
+        });
+        futures_util::future::join_all(futs).await
+    } else {
+        let mut results = Vec::with_capacity(sessions.len());
+        for mut session in sessions {
+            let host_label = session.host_label().to_string();
+            let result = session.exec(&ssh_cmd, None, step_timeout).await;
+            results.push((host_label, result));
+        }
+        results
+    };
+    Ok(merge_ssh_host_outputs(step_name, multi, results))
+}
+
+/// Merge per-host SSH results into one step output (wait-all semantics).
+///
+/// `Ok(output)` / `Err(error)` per host. Any failure → non-zero step exit.
+pub(crate) fn merge_ssh_host_outputs(
+    step_name: &str,
+    multi: bool,
+    mut results: Vec<(String, anyhow::Result<engine::ssh::SshOutput>)>,
+) -> engine::shell::ShellOutput {
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+
     let mut combined_stdout = String::new();
     let mut combined_stderr = String::new();
-    let mut last_exit_code: i32 = 0;
-    let multi = sessions.len() > 1;
+    let mut exit_code: i32 = 0;
+    let mut summary: Vec<String> = Vec::new();
 
-    for session in sessions.iter_mut() {
-        let host_label = session.host_label().to_string();
+    for (host_label, result) in results {
         let ssh_header = if multi {
             format!("--- {step_name} @ {host_label} ---\n")
         } else {
             String::new()
         };
-
-        let ssh_cmd = build_ssh_env_command(command, env);
-        match session.exec(&ssh_cmd, None, step_timeout).await {
+        match result {
             Ok(o) => {
                 combined_stdout.push_str(&ssh_header);
                 combined_stdout.push_str(&o.stdout);
@@ -1833,27 +2030,39 @@ async fn execute_ssh_step(
                     combined_stderr.push_str(&ssh_header);
                     combined_stderr.push_str(&o.stderr);
                 }
-                last_exit_code = o.exit_code as i32;
-                if o.exit_code != 0 {
-                    tracing::warn!(
-                        "SSH step '{step_name}' on {host_label} exited with code {}",
-                        o.exit_code
-                    );
+                let code = o.exit_code as i32;
+                if code != 0 {
+                    tracing::warn!("SSH step '{step_name}' on {host_label} exited with code {code}");
+                    if exit_code == 0 {
+                        exit_code = code;
+                    }
                 }
+                summary.push(format!("{host_label}: exit {code}"));
             }
             Err(e) => {
                 tracing::error!("SSH step '{step_name}' on {host_label} failed: {e}");
                 combined_stderr.push_str(&format!("{ssh_header}ERROR: {e}\n"));
-                last_exit_code = -1;
+                if exit_code == 0 {
+                    exit_code = -1;
+                }
+                summary.push(format!("{host_label}: error"));
             }
         }
     }
 
-    Ok(engine::shell::ShellOutput {
+    if multi && !summary.is_empty() {
+        let line = format!("--- summary ---\n{}\n", summary.join("\n"));
+        if !combined_stdout.is_empty() && !combined_stdout.ends_with('\n') {
+            combined_stdout.push('\n');
+        }
+        combined_stdout.push_str(&line);
+    }
+
+    engine::shell::ShellOutput {
         stdout: combined_stdout,
         stderr: combined_stderr,
-        exit_code: last_exit_code,
-    })
+        exit_code,
+    }
 }
 
 async fn update_job_status(

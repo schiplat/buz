@@ -1,6 +1,6 @@
 ---
 title: Configuration Reference
-weight: 2
+weight: 1
 description: "All configuration options for Manager and Runner"
 ---
 
@@ -44,7 +44,7 @@ level = "info"                 # error | warn | info | debug | trace
 | `auth` | `jwt_ttl_hours` | UI/API JWT lifetime |
 | `auth` | `runner_register_token_ttl_hours` | Runner JWT lifetime after register |
 | `runner` | `heartbeat_timeout_seconds` | Offline threshold for runners |
-| `pipeline` | `yaml_scan_*` | File/Git authority for pipeline YAML; scanner + UI online edit write here. **Flat directory only** (basename files; no private subdirs). See [YAML-First Authoring](/docs/01-architecture/yaml-first-authoring/) |
+| `pipeline` | `yaml_scan_*` | File/Git authority for pipeline YAML; scanner + UI online edit write here. **Flat directory only** (basename files; no private subdirs). See [YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/) |
 | `logging` | `level` | Default `info`. Overridden by `RUST_LOG` if set |
 | `logging` | `file` | Optional append path; empty = stdout only |
 
@@ -62,7 +62,7 @@ Then restart Manager and sign in. Prefer changing the password again from the UI
 
 ## Runner (`conf/runner.toml`)
 
-Machine-local only. Strategy is **not** configured here — see [Runner Policy](/docs/01-architecture/runner-concurrent-jobs/).
+Machine-local only. Strategy is **not** configured here — see [Runner Policy](/docs/01-architecture/execution/runner-concurrent-jobs/).
 
 | Managed in UI | Kept in TOML (`[runner]` / `[engine]` / `[logging]`) |
 |---------------|-----------------------------------------------------|

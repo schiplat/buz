@@ -2,6 +2,8 @@
 title: Secrets Access Control
 weight: 4
 description: "How Buz controls which pipelines can access secrets — kind, team_shared opt-in, explicit binding, and three-tier resolution"
+aliases:
+  - /docs/01-architecture/secrets-access-control/
 ---
 
 ## Overview
@@ -12,7 +14,7 @@ Buz controls secret delivery with a **team ownership boundary** plus an **opt-in
 2. **Explicit per-pipeline bindings** — `pipeline_secrets` / YAML `secrets:`
 3. **Explicit step references** — step `secrets:` or purpose slots (`registry_secret`, `config.source`)
 
-**Getting a value into the process env** always requires an explicit map: `env: KEY: ${secrets.NAME}` (or a purpose slot). See [Secrets Access (GHA-style)](/docs/01-architecture/secrets-access/).
+**Getting a value into the process env** always requires an explicit map: `env: KEY: ${secrets.NAME}` (or a purpose slot). See [Secrets Access (GHA-style)](/docs/01-architecture/platform/secrets-access/).
 
 **Default for new secrets: `team_shared = false`.** Same-team pipelines do **not** resolve the secret unless they bind or reference it. Cross-team use remains forbidden (future Phase 3 grants).
 
@@ -214,7 +216,7 @@ Help text: only secrets with **Team share** enabled are auto-injected; otherwise
 
 ## YAML secret bindings (authoritative)
 
-Prefer YAML `secrets:` + `env: KEY: ${secrets.NAME}` (see [Secrets Access](./secrets-access.md)). Form create/edit for pipelines is removed ([YAML-First Authoring](/docs/01-architecture/yaml-first-authoring/)).
+Prefer YAML `secrets:` + `env: KEY: ${secrets.NAME}` (see [Secrets Access](./secrets-access.md)). Form create/edit for pipelines is removed ([YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/)).
 
 | YAML / UI | Behavior |
 |-----------|----------|
@@ -241,7 +243,7 @@ registry_secret: acr-personal
 - Prefer **`team_shared: false`** so unrelated pipelines never receive the JSON as env.
 - Password encrypted at rest; API returns partial redaction only.
 - Pipeline form **Registry Secret** dropdown lists only `kind=registry` secrets.
-- See [Docker Engine — ACR Personal Edition](/docs/01-architecture/docker-engine/).
+- See [Docker Engine — ACR Personal Edition](/docs/01-architecture/execution/docker-engine/).
 
 ---
 
@@ -268,7 +270,7 @@ For every user (member or admin), the trigger dialog offers **Verbose mode**: th
 | `POST /pipelines/{id}/trigger` | No admin check — `verbose` is honored for any caller; audit event records `verbose` |
 | `jobs.verbose_logs` | Persisted on the job (DB column, default `0`); distinct from `debug_unredact` |
 | Runner dispatch | `poll` returns `verbose` on the task payload |
-| Runner logs | Per step: `==> STAGE prepare / exec` markers, `==> STEP CONFIG` (exec type, timeout, fail strategy, work dir, image, `registry_secret` by name, `config_source`/`config_key_path`/`config_dest`/`config_render`, ssh hosts — **names/keys only, never values**), `==> CONFIG PREP` when the step has `config_auth` (object_key / expires_in; signed URL as `***`), `==> STEP RESULT` (duration + exit code, including prepare-stage failures) |
+| Runner logs | Per step: `==> STAGE prepare / exec` markers, `==> STEP CONFIG` (exec type, timeout, fail strategy, work dir, image, `registry_secret` by name, `config_source`/`config_key_path`/`config_dest`/`config_render`, ssh hosts as `user@host:port` — **never credentials**), `==> SSH [user@host:port]` + remote `workspace` after login, `==> CONFIG PREP` when the step has `config_auth` (object_key / expires_in; signed URL as `***`), `==> STEP RESULT` (duration + exit code, including prepare-stage failures) |
 
 ### What verbose adds
 
@@ -368,6 +370,6 @@ Registry passwords, SSH keys, and other long-lived secrets become plaintext in `
 
 ## Related
 
-- [Users, Teams & RBAC](/docs/01-architecture/rbac/)
+- [Users, Teams & RBAC](/docs/01-architecture/platform/rbac/)
 - [Database Schema](/docs/02-development/database-schema/)
-- [Pipeline Format](/docs/01-architecture/pipeline-format/)
+- [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/)

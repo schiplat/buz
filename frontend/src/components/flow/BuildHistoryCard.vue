@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ChevronDown, ChevronRight, ArrowRight, Lock, Info } from '@lucide/vue'
 import { parseUtc, formatLocalDateTime } from '@/utils/time'
@@ -12,6 +12,10 @@ const props = defineProps<{
   logs: LogChunk[] // per-job logs, passed from parent
   /** Whether the viewer is a platform admin (the only role that may read debug-job logs). */
   canViewDebugLogs: boolean
+  /** Expand this card when opened from Trigger events → Build History deep-link. */
+  initiallyExpanded?: boolean
+  /** Visual focus ring for the deep-linked build. */
+  highlighted?: boolean
 }>()
 
 const router = useRouter()
@@ -86,10 +90,26 @@ function toggleStepLog(stepOrder: number) {
 function goToStep(stepOrder: number) {
   router.push(`/jobs/${props.job.id}?step=${stepOrder}`)
 }
+
+watch(
+  () => props.initiallyExpanded,
+  (v) => {
+    if (!v || expanded.value) return
+    expanded.value = true
+    if (!debugLogsRestricted.value) {
+      emit('expand', props.job.id)
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
-  <div class="rounded-xl border border-border/50 bg-card shadow-sm overflow-hidden">
+  <div
+    :id="`hist-job-${job.id}`"
+    class="rounded-xl border border-border/50 bg-card shadow-sm overflow-hidden"
+    :class="highlighted ? 'ring-2 ring-primary/40' : ''"
+  >
     <!-- Run header bar -->
     <div
       class="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/20 transition-colors"

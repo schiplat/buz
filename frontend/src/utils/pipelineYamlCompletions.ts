@@ -54,6 +54,11 @@ const STEP: Completion[] = [
   { label: 'volumes', type: 'property', info: 'host:container binds' },
   { label: 'host', type: 'property', info: 'SSH host name(s)' },
   { label: 'host_labels', type: 'property', info: 'SSH host label union' },
+  {
+    label: 'hosts_strategy',
+    type: 'property',
+    info: 'SSH multi-host fan-out: chain (default) | parallel',
+  },
   { label: 'dir', type: 'property', info: 'Working directory' },
   { label: 'work_dir', type: 'property' },
   { label: 'timeout', type: 'property' },

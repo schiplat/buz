@@ -276,7 +276,8 @@ pub async fn get_one(
     let tasks = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
                 work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
-                step_env, privileged, registry_secret, config_source, config_key_path, config_render, config_dest
+                step_env, privileged, registry_secret, config_source, config_key_path, config_render, config_dest,
+                hosts_strategy
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&id)
@@ -313,6 +314,7 @@ pub async fn get_one(
                 &t.get::<String, _>(20),
             ).ok().filter(|v| !v.is_null()),
             "config_dest": t.get::<String, _>(21),
+            "hosts_strategy": t.get::<String, _>(22),
         })
     })
     .collect::<Vec<_>>();
@@ -846,7 +848,8 @@ pub(crate) async fn do_trigger(
     let tasks_snapshot = sqlx::query(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, volumes,
-                privileged, registry_secret, config_source, config_key_path, config_render, config_dest
+                privileged, registry_secret, config_source, config_key_path, config_render, config_dest,
+                hosts_strategy
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(pipeline_id)
@@ -882,6 +885,7 @@ pub(crate) async fn do_trigger(
                 &t.get::<String, _>(19),
             ).ok().filter(|v| !v.is_null()),
             "config_dest": t.get::<String, _>(20),
+            "hosts_strategy": t.get::<String, _>(21),
         })
     })
     .collect::<Vec<_>>();
@@ -1131,6 +1135,11 @@ pub(crate) async fn insert_steps(
             .as_ref()
             .map(|l| l.join(","))
             .unwrap_or_default();
+        let hosts_strategy_stored = shared::pipeline_yaml::normalize_hosts_strategy(
+            step.hosts_strategy.as_deref(),
+        )
+        .unwrap_or("chain")
+        .to_string();
         // Step-level secret allowlist (comma-separated)
         let step_secrets_stored = step
             .secrets
@@ -1211,8 +1220,9 @@ pub(crate) async fn insert_steps(
         sqlx::query(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
              command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
-             step_env, volumes, privileged, registry_secret, config_source, config_key_path, config_render, config_dest)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             step_env, volumes, privileged, registry_secret, config_source, config_key_path, config_render, config_dest,
+             hosts_strategy)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(pipeline_id)
@@ -1237,6 +1247,7 @@ pub(crate) async fn insert_steps(
         .bind(&config_key_path_stored)
         .bind(&config_render_stored)
         .bind(&config_dest_stored)
+        .bind(&hosts_strategy_stored)
         .execute(pool)
         .await?;
 

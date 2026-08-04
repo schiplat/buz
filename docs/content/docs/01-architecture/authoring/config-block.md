@@ -2,15 +2,17 @@
 title: Config Block DSL v2
 weight: 6
 description: "Shipped — nested config: delivery + multi-file render (OSS / render-only)"
+aliases:
+  - /docs/01-architecture/config-block/
 ---
 
 > **Status: SHIPPED — Phase 2b complete (D1–D5).**  
 > Nested `config:` is the only authoring shape. DB/API/Runner use
 > `config_key_path` / `config_dest` / `config_render` (legacy columns dropped).
 > Render-only prepare works on shell/local (in place) and ssh (fetch→render→upload).
-> Author via YAML online editor / Quick YAML Reference ([YAML-First](/docs/01-architecture/yaml-first-authoring/)); Form Config cards removed.  
+> Author via YAML online editor / Quick YAML Reference ([YAML-First](/docs/01-architecture/authoring/yaml-first-authoring/)); Form Config cards removed.  
 > **Not in 2b:** `config.git` (2c), auto `on_change`/`services` (2d).  
-> See also [Env Render](/docs/01-architecture/env-render/) (Phase 1 engine).
+> See also [Env Render](/docs/01-architecture/authoring/env-render/) (Phase 1 engine).
 
 ## Goals
 
@@ -115,7 +117,10 @@ Payloads are **not** embedded in the exec argv (SSH `max_packet_size` is often
 (with connect retries on transient reset/refused/timeout). Config prepare
 (upload / `cat` / render) and the step `run` block reuse that session via new
 exec channels — they do **not** reconnect per remote command. Sessions are not
-shared across steps or jobs.
+shared across steps or jobs. When a step resolves **multiple** hosts, fan-out
+follows `hosts_strategy` (`chain` default, or `parallel`): OSS download once on
+the Runner, then upload/render/`run` per host. **Cancel** aborts every in-flight
+host — see [SSH Multi-Host Execution](/docs/01-architecture/execution/ssh-multi-host/).
 
 **Why:** prepare runs **before** the container `run`. Templates must already
 exist on a host filesystem the Runner can read. A `uses: docker` workdir lives
@@ -464,6 +469,6 @@ for `docker` without a host-`dest` + volume design.
 
 ## Related
 
-- [Env Render](/docs/01-architecture/env-render/) — Phase 1 engine, ValueMap, security
-- [Secrets Access Control](/docs/01-architecture/secrets-access-control/) — OSS secret kind, verbose/debug
-- [Pipeline Format](/docs/01-architecture/pipeline-format/)
+- [Env Render](/docs/01-architecture/authoring/env-render/) — Phase 1 engine, ValueMap, security
+- [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) — OSS secret kind, verbose/debug
+- [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/)

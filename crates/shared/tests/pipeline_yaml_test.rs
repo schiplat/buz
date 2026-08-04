@@ -442,6 +442,109 @@ steps:
 }
 
 #[test]
+fn hosts_strategy_chain_default_and_parallel_opt_in() {
+    let omitted = r#"
+name: Multi
+steps:
+  - name: deploy
+    uses: ssh
+    host: a
+    run: true
+"#;
+    let r = parse_and_validate(omitted);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    assert!(
+        r.parsed.as_ref().unwrap().steps[0].hosts_strategy.is_none(),
+        "omitted stays None in parsed; runtime normalizes to chain"
+    );
+    assert_eq!(
+        shared::pipeline_yaml::normalize_hosts_strategy(None).unwrap(),
+        "chain"
+    );
+    assert_eq!(
+        shared::pipeline_yaml::normalize_hosts_strategy(Some("serial")).unwrap(),
+        "chain",
+        "legacy serial alias"
+    );
+
+    let parallel = r#"
+name: Multi
+steps:
+  - name: deploy
+    uses: ssh
+    host: a
+    hosts_strategy: parallel
+    run: true
+"#;
+    let r2 = parse_and_validate(parallel);
+    assert!(r2.valid, "Errors: {:?}", r2.errors);
+    assert_eq!(
+        r2.parsed.as_ref().unwrap().steps[0]
+            .hosts_strategy
+            .as_deref(),
+        Some("parallel")
+    );
+
+    let chain = r#"
+name: Multi
+steps:
+  - name: deploy
+    uses: ssh
+    host: a
+    hosts_strategy: chain
+    run: true
+"#;
+    let r3 = parse_and_validate(chain);
+    assert!(r3.valid, "Errors: {:?}", r3.errors);
+    assert_eq!(
+        r3.parsed.as_ref().unwrap().steps[0]
+            .hosts_strategy
+            .as_deref(),
+        Some("chain")
+    );
+}
+
+#[test]
+fn hosts_strategy_rejects_invalid_and_non_ssh() {
+    let bad = r#"
+name: Bad
+steps:
+  - name: d
+    uses: ssh
+    host: a
+    hosts_strategy: zigzag
+    run: true
+"#;
+    let r = parse_and_validate(bad);
+    assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.field.contains("hosts_strategy") && e.message.contains("parallel")),
+        "{:?}",
+        r.errors
+    );
+
+    let on_shell = r#"
+name: Shell
+steps:
+  - name: s
+    uses: shell
+    hosts_strategy: parallel
+    run: true
+"#;
+    let r2 = parse_and_validate(on_shell);
+    assert!(!r2.valid);
+    assert!(
+        r2.errors
+            .iter()
+            .any(|e| e.message.contains("only valid for uses: ssh")),
+        "{:?}",
+        r2.errors
+    );
+}
+
+#[test]
 fn step_work_dir_alias() {
     let yaml = r#"
 name: Dir Test

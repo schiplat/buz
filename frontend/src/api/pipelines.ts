@@ -102,6 +102,8 @@ export interface StepDef {
   volumes?: string[]
   host?: string | string[]
   host_labels?: string | string[]
+  /** SSH multi-host fan-out: `chain` (default) or `parallel`. */
+  hosts_strategy?: 'chain' | 'parallel' | string
   dir?: string
   timeout?: string
   retry?: number
@@ -198,6 +200,8 @@ export interface YamlStepData {
   volumes?: string | null
   host?: string | null
   host_labels?: string | null
+  /** SSH multi-host fan-out: `chain` (default) or `parallel`. */
+  hosts_strategy?: string | null
   dir?: string | null
   timeout?: string | null
   retry?: number | null

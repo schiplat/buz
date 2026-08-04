@@ -2,13 +2,15 @@
 title: Docker Engine
 weight: 6
 description: "Step-level Docker execution on the runner — design target aligned with GitHub Actions job container semantics"
+aliases:
+  - /docs/01-architecture/docker-engine/
 ---
 
 ## Status
 
 **Implemented (MVP).** Step-level `uses: docker` with required `image`, always `docker run --rm` (container removed when the step ends — not controlled by Runner Policy), workspace mount at `/buz/workspace`, gated by UI `docker_enabled` on the Runner. See acceptance criteria below.
 
-Related: [Pipeline Format](/docs/01-architecture/pipeline-format/) (`uses` / execution engines), [Configuration](/docs/03-operations/configuration/).
+Related: [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/) (`uses` / execution engines), [Configuration](/docs/03-operations/configuration/).
 
 Reference model: [GitHub Actions job `container`](https://docs.github.com/en/actions/using-jobs/running-jobs-in-a-container) — semantics and UX, not the full Actions product surface.
 
@@ -213,7 +215,7 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 | 3 | **Required field**: `image` when `uses: docker` |
 | 4 | **Command model**: same as local/SSH — multi-line `run:` executed via container shell (`sh -lc` unless overridden later) |
 | 5 | **Workspace**: bind-mount runner step work directory into a fixed container path (default `/buz/workspace`); container cwd = that path |
-| 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution as shell/SSH. **Log masking**: Infrastructure Secrets, registry passwords, and trigger inputs with `masking: true` are redacted — pipeline `env:` and Variables stay readable. Claim payload splits `env` vs `secrets` and includes `masking_input_keys` — see [Secrets Access Control](/docs/01-architecture/secrets-access-control/) |
+| 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution as shell/SSH. **Log masking**: Infrastructure Secrets, registry passwords, and trigger inputs with `masking: true` are redacted — pipeline `env:` and Variables stay readable. Claim payload splits `env` vs `secrets` and includes `masking_input_keys` — see [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) |
 | 7 | **Gate**: Runner UI `docker_enabled` must be `true`; otherwise step fails with a clear error (do not fall back to shell) |
 | 8 | **Scheduling**: pipelines that need Docker should set `runner.labels` to include `docker`; Manager dispatches only to runners that have **all** required labels |
 | 9 | **Private registry auth**: YAML/form stores only a **Secret name** (`registry_secret`) — never the password. Encrypted at rest; Manager sends `registry_auth` to the Runner. **Docker**: login before pull/run. **Shell / SSH**: login before `run` (SSH login happens on the remote host) so `docker push` works; then logout. Target: ACR Personal Edition; optional JSON `provider`. |
@@ -357,7 +359,7 @@ Import-from-YAML should map `image` like other step fields once the parser gains
 3. `crates/runner/src/engine/docker.rs` + poll dispatch when `docker_enabled`
 4. Tests: argv construction, disabled gate, missing image, comment/fixture without needing a real daemon where possible
 5. Example pipeline using `uses: docker` (distinct from `docker-deploy.yml`)
-6. Update [pipeline-format](/docs/01-architecture/pipeline-format/) status from “stub” to “supported”
+6. Update [pipeline-format](/docs/01-architecture/authoring/pipeline-format/) status from “stub” to “supported”
 
 ---
 

@@ -2,13 +2,15 @@
 title: Users, Teams & RBAC
 weight: 5
 description: "Phase 2 authorization model — platform admins, teams, four team roles, and resource scoping"
+aliases:
+  - /docs/01-architecture/rbac/
 ---
 
 ## Status
 
 **Implemented (Phase 2 + Phase 3 auth items).** Multi-user login, teams, four team roles, required `team_id` on pipelines/secrets, optional host team, membership-filtered list APIs, platform-admin API tokens, and tiered audit-log visibility (super admin vs regular admin).
 
-Related: [Secrets Access Control](/docs/01-architecture/secrets-access-control/) (`owner_group` synced from team slug; runtime prefers `team_id`).
+Related: [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) (`owner_group` synced from team slug; runtime prefers `team_id`).
 
 ---
 
@@ -22,7 +24,7 @@ Related: [Secrets Access Control](/docs/01-architecture/secrets-access-control/)
 
 Out of scope for Phase 2 (defer to Phase 3): SSO/OIDC, user API tokens, approval flows, per-step secret ACL, cross-team grant tables.
 
-Platform-admin **Audit logs** UI/API (mutation before/after with redaction) is available — see [Admin Audit Logs](/docs/01-architecture/admin-audit-logs/).
+Platform-admin **Audit logs** UI/API (mutation before/after with redaction) is available — see [Admin Audit Logs](/docs/01-architecture/platform/admin-audit-logs/).
 
 ---
 
@@ -69,7 +71,7 @@ Runners and Manager config remain **global infrastructure** — Platform Admin o
 | `platform_admin` | Full access: all teams, runners, user/team admin, unscoped hosts, own API tokens |
 | `member` | Only resources in teams they belong to, constrained by team role |
 
-`is_super_admin` is a separate boolean on `users`. The first admin created via `/setup` is a super admin. Regular platform admins see a filtered audit log (only their own actions) and only their own API tokens. See [Admin Audit Logs](/docs/01-architecture/admin-audit-logs/).
+`is_super_admin` is a separate boolean on `users`. The first admin created via `/setup` is a super admin. Regular platform admins see a filtered audit log (only their own actions) and only their own API tokens. See [Admin Audit Logs](/docs/01-architecture/platform/admin-audit-logs/).
 
 ### Team role matrix
 
@@ -187,7 +189,7 @@ Credentials remain encrypted server-side; UI never receives plaintext (unchanged
 2. **Explicit binding**: `pipeline_secrets` / YAML `secrets:` (bind requires Maintainer+; same team only)
 3. **Step / registry name reference**: step `secrets:` or `registry_secret:` resolved at dispatch only if `secret.team_id == pipeline.team_id`
 
-New secrets default to `team_shared = false` (no auto-inject). See [Secrets Access Control](/docs/01-architecture/secrets-access-control/).
+New secrets default to `team_shared = false` (no auto-inject). See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
 
 Cross-team secret use: forbidden in Phase 2 (future Phase 3 grant). Binding UI lists secrets from the **same team** (+ admin override).
 
@@ -263,5 +265,5 @@ There is **no** production interim where multiple users share one flat admin vie
 - Cross-team secret grants
 
 **Completed during Phase 3 iteration:**
-- Personal / CI API tokens (UI + hashed storage + audit) — see [API Reference](/docs/01-architecture/api-reference/)
-- Audit log UI with tiered visibility (super admin vs regular admin) — see [Admin Audit Logs](/docs/01-architecture/admin-audit-logs/)
+- Personal / CI API tokens (UI + hashed storage + audit) — see [API Reference](/docs/01-architecture/platform/api-reference/)
+- Audit log UI with tiered visibility (super admin vs regular admin) — see [Admin Audit Logs](/docs/01-architecture/platform/admin-audit-logs/)

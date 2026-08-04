@@ -2,6 +2,8 @@
 title: Admin Audit Logs
 weight: 12
 description: "Platform-admin operation audit — redacted before/after snapshots"
+aliases:
+  - /docs/01-architecture/admin-audit-logs/
 ---
 
 ## Overview
@@ -52,4 +54,4 @@ GET /api/v1/audit-logs?page=&page_size=&action=&actor=&resource_type=&q=&from=&t
 
 Requires **PlatformAdmin**. Response: `{ items, total, page, page_size }`. Each item includes redacted `before` / `after` JSON for the detail drawer.
 
-See also [API Reference](/docs/01-architecture/api-reference/) and [Database Schema](/docs/02-development/database-schema/).
+See also [API Reference](/docs/01-architecture/platform/api-reference/) and [Database Schema](/docs/02-development/database-schema/).

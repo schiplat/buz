@@ -179,6 +179,7 @@ pub async fn upsert_from_yaml(
                 volumes: s.volumes.clone(),
                 host: s.host.clone(),
                 host_labels: s.host_labels.clone(),
+                hosts_strategy: s.hosts_strategy.clone(),
                 dir: s.dir.clone(),
                 timeout: s.timeout.clone(),
                 retry: s.retry,

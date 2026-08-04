@@ -2,6 +2,8 @@
 title: Pipeline Notify
 weight: 9
 description: "End-of-build notifications — Feishu custom bot first; YAML notify: + Secrets webhook + Job Detail deep link"
+aliases:
+  - /docs/01-architecture/pipeline-notify/
 ---
 
 When a job reaches a **terminal** status, Manager can push a notification to external chat bots. Configuration is **YAML-only** (`notify:`); webhook URLs live in Infrastructure **Secrets**. Sending is asynchronous and never blocks the job state machine.

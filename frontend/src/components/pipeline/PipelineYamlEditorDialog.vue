@@ -851,6 +851,7 @@ steps:
     timeout: 5m
 
   # SSH — at least one of host / host_labels (union of targets)
+  # hosts_strategy: chain (default) | parallel — multi-host fan-out
   - name: Deploy
     uses: ssh
     host:
@@ -859,6 +860,7 @@ steps:
     host_labels:
       - prod
       - web
+    hosts_strategy: parallel
     env:
       SLACK_WEBHOOK_URL: ${secrets.SLACK_WEBHOOK_URL}
     run: |

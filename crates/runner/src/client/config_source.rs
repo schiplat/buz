@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
@@ -39,7 +40,7 @@ pub struct ConfigPrep {
     pub forced_redact: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct EnvRenderSpec {
     template: String,
     output: String,
@@ -522,17 +523,19 @@ pub async fn prepare_local(
 /// templates from the remote, renders on the Runner, uploads outputs.
 ///
 /// Uses the caller's open [`SshSession`]s (one per host) so prepare shares the
-/// same TCP connection as the subsequent `run` block.
+/// same TCP connection as the subsequent `run` block. Multi-host prepare runs
+/// **in parallel**; dropping this future (job cancel) aborts all hosts.
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare_ssh(
     client: &Client,
     step: &serde_json::Value,
-    sessions: &mut [SshSession],
+    sessions: &mut Vec<SshSession>,
     local_root: &Path,
     job_id: &str,
     step_idx: usize,
     values: &ValueMap,
     step_timeout: Option<Duration>,
+    parallel: bool,
 ) -> anyhow::Result<ConfigPrep> {
     let specs = config_render_specs(step).map_err(anyhow::Error::msg)?;
     let remote_dir = resolve_remote_dir(step, job_id, step_idx);
@@ -549,6 +552,7 @@ pub async fn prepare_ssh(
             step_timeout,
             &specs,
             &remote_dir,
+            parallel,
         )
         .await;
     }
@@ -567,6 +571,7 @@ pub async fn prepare_ssh(
         step_timeout,
         &specs,
         &remote_dir,
+        parallel,
     )
     .await
 }
@@ -575,7 +580,7 @@ pub async fn prepare_ssh(
 async fn prepare_ssh_deliver(
     client: &Client,
     step: &serde_json::Value,
-    sessions: &mut [SshSession],
+    sessions: &mut Vec<SshSession>,
     local_root: &Path,
     job_id: &str,
     step_idx: usize,
@@ -583,68 +588,154 @@ async fn prepare_ssh_deliver(
     step_timeout: Option<Duration>,
     specs: &[EnvRenderSpec],
     remote_dir: &str,
+    parallel: bool,
 ) -> anyhow::Result<ConfigPrep> {
     let url = config_url(step)?;
     let archive = archive_label(step);
-    let tarball = download(client, &url).await?;
+    let tarball = std::sync::Arc::new(download(client, &url).await?);
     let local_dir = local_root.join(format!("config-{job_id}-{step_idx}"));
-    unpack(&tarball, &local_dir)?;
+    unpack(tarball.as_ref(), &local_dir)?;
     let tar_remote = format!("/tmp/buz_config_{job_id}_{step_idx}.tar.gz");
+    let remote_dir = remote_dir.to_string();
+    let specs = specs.to_vec();
+    let values = values.clone();
+    let archive = archive.clone();
+
+    let owned = std::mem::take(sessions);
+    let results = if parallel && owned.len() > 1 {
+        let futs = owned.into_iter().map(|mut session| {
+            let tarball = Arc::clone(&tarball);
+            let tar_remote = tar_remote.clone();
+            let remote_dir = remote_dir.clone();
+            let local_dir = local_dir.clone();
+            let specs = specs.clone();
+            let values = values.clone();
+            let archive = archive.clone();
+            async move {
+                let host = session.host_label().to_string();
+                let result = prepare_one_host_deliver(
+                    &mut session,
+                    &tarball,
+                    &tar_remote,
+                    &remote_dir,
+                    &local_dir,
+                    &specs,
+                    &values,
+                    &archive,
+                    step_timeout,
+                )
+                .await;
+                (session, host, result)
+            }
+        });
+        futures_util::future::join_all(futs).await
+    } else {
+        let mut results = Vec::with_capacity(owned.len());
+        for mut session in owned {
+            let host = session.host_label().to_string();
+            let result = prepare_one_host_deliver(
+                &mut session,
+                tarball.as_ref(),
+                &tar_remote,
+                &remote_dir,
+                &local_dir,
+                &specs,
+                &values,
+                &archive,
+                step_timeout,
+            )
+            .await;
+            results.push((session, host, result));
+        }
+        results
+    };
 
     let mut forced_redact = Vec::new();
     let mut changed_agg: Vec<String> = Vec::new();
-    for session in sessions.iter_mut() {
-        ssh_upload_bytes(session, &tar_remote, &tarball, None, step_timeout).await?;
-        let unpack_cmd = format!(
-            "mkdir -p {remote_dir} && tar xzf {tar_remote} -C {remote_dir} && rm -f {tar_remote}"
-        );
-        run_ssh(session, &unpack_cmd, step_timeout).await?;
-        let mut host_changed: Vec<String> = Vec::new();
-        for spec in specs {
-            ensure_remote_parent(session, remote_dir, &spec.output, step_timeout).await?;
-            let remote_out = format!("{remote_dir}/{}", spec.output);
-            let old = fetch_remote_text(session, &remote_out, step_timeout).await?;
-            let (content, changed, forced) = render_env_with_old(
-                &local_dir,
-                spec,
-                values,
-                &archive,
-                old.as_deref().unwrap_or(""),
-            )?;
-            ssh_upload_bytes(
-                session,
-                &remote_out,
-                content.as_bytes(),
-                Some(spec.mode),
-                step_timeout,
-            )
-            .await?;
-            forced_redact = forced;
-            for k in changed {
-                if !host_changed.contains(&k) {
-                    host_changed.push(k);
+    let mut first_err: Option<anyhow::Error> = None;
+    for (session, host, result) in results {
+        sessions.push(session);
+        match result {
+            Ok((changed, forced)) => {
+                forced_redact = forced;
+                for k in changed {
+                    if !changed_agg.contains(&k) {
+                        changed_agg.push(k);
+                    }
+                }
+            }
+            Err(e) => {
+                let err = e.context(format!("config prepare on {host} failed"));
+                if first_err.is_none() {
+                    first_err = Some(err);
                 }
             }
         }
-        for k in host_changed {
-            if !changed_agg.contains(&k) {
-                changed_agg.push(k);
-            }
-        }
+    }
+    if let Some(err) = first_err {
+        return Err(err);
     }
 
     let mut env = HashMap::new();
     if !specs.is_empty() {
         set_changed_env(&mut env, &changed_agg);
     }
-    env.insert("BUZ_CONFIG_DIR".to_string(), remote_dir.to_string());
+    env.insert("BUZ_CONFIG_DIR".to_string(), remote_dir);
     Ok(ConfigPrep { env, forced_redact })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_one_host_deliver(
+    session: &mut SshSession,
+    tarball: &[u8],
+    tar_remote: &str,
+    remote_dir: &str,
+    local_dir: &Path,
+    specs: &[EnvRenderSpec],
+    values: &ValueMap,
+    archive: &str,
+    step_timeout: Option<Duration>,
+) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    ssh_upload_bytes(session, tar_remote, tarball, None, step_timeout).await?;
+    let unpack_cmd = format!(
+        "mkdir -p {remote_dir} && tar xzf {tar_remote} -C {remote_dir} && rm -f {tar_remote}"
+    );
+    run_ssh(session, &unpack_cmd, step_timeout).await?;
+    let mut host_changed: Vec<String> = Vec::new();
+    let mut forced_redact = Vec::new();
+    for spec in specs {
+        ensure_remote_parent(session, remote_dir, &spec.output, step_timeout).await?;
+        let remote_out = format!("{remote_dir}/{}", spec.output);
+        let old = fetch_remote_text(session, &remote_out, step_timeout).await?;
+        let (content, changed, forced) = render_env_with_old(
+            local_dir,
+            spec,
+            values,
+            archive,
+            old.as_deref().unwrap_or(""),
+        )?;
+        ssh_upload_bytes(
+            session,
+            &remote_out,
+            content.as_bytes(),
+            Some(spec.mode),
+            step_timeout,
+        )
+        .await?;
+        forced_redact = forced;
+        for k in changed {
+            if !host_changed.contains(&k) {
+                host_changed.push(k);
+            }
+        }
+    }
+    Ok((host_changed, forced_redact))
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn prepare_ssh_render_only(
     _step: &serde_json::Value,
-    sessions: &mut [SshSession],
+    sessions: &mut Vec<SshSession>,
     local_root: &Path,
     job_id: &str,
     step_idx: usize,
@@ -652,6 +743,7 @@ async fn prepare_ssh_render_only(
     step_timeout: Option<Duration>,
     specs: &[EnvRenderSpec],
     remote_dir: &str,
+    parallel: bool,
 ) -> anyhow::Result<ConfigPrep> {
     let staging = local_root.join(format!("config-render-{job_id}-{step_idx}"));
     std::fs::create_dir_all(&staging).with_context(|| {
@@ -661,80 +753,159 @@ async fn prepare_ssh_render_only(
         )
     })?;
 
-    let mut forced_redact = Vec::new();
-    let mut changed_agg: Vec<String> = Vec::new();
-
-    for session in sessions.iter_mut() {
-        // Templates must already exist under dest (prior deliver / git / manual).
-        run_ssh(
-            session,
-            &format!(
-                "test -d {remote_dir} || {{ echo \"config_render: dest '{remote_dir}' does not exist on remote\" >&2; exit 1; }}"
-            ),
-            step_timeout,
-        )
-        .await?;
-
-        let mut host_changed: Vec<String> = Vec::new();
-        for spec in specs {
-            let remote_tmpl = format!("{remote_dir}/{}", spec.template);
-            let tmpl = fetch_remote_text(session, &remote_tmpl, step_timeout)
-                .await?
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "config_render: template '{}' not found on remote at '{}'",
-                        spec.template,
-                        remote_tmpl
-                    )
-                })?;
-
-            let local_tmpl = staging.join(&spec.template);
-            if let Some(parent) = local_tmpl.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&local_tmpl, &tmpl).with_context(|| {
-                format!(
-                    "config_render: cannot stage template '{}'",
-                    local_tmpl.display()
+    let remote_dir = remote_dir.to_string();
+    let specs = specs.to_vec();
+    let values = values.clone();
+    // Per-host staging dirs avoid parallel writes colliding on the same template path.
+    let owned = std::mem::take(sessions);
+    let results = if parallel && owned.len() > 1 {
+        let futs = owned.into_iter().enumerate().map(|(host_i, mut session)| {
+            let remote_dir = remote_dir.clone();
+            let specs = specs.clone();
+            let values = values.clone();
+            let staging = staging.join(format!("host-{host_i}"));
+            async move {
+                let host = session.host_label().to_string();
+                let result = prepare_one_host_render_only(
+                    &mut session,
+                    &staging,
+                    &remote_dir,
+                    &specs,
+                    &values,
+                    step_timeout,
                 )
-            })?;
-
-            ensure_remote_parent(session, remote_dir, &spec.output, step_timeout).await?;
-            let remote_out = format!("{remote_dir}/{}", spec.output);
-            let old = fetch_remote_text(session, &remote_out, step_timeout).await?;
-            let (content, changed, forced) = render_env_with_old(
-                &staging,
-                spec,
-                values,
-                "render-only",
-                old.as_deref().unwrap_or(""),
-            )?;
-            ssh_upload_bytes(
-                session,
-                &remote_out,
-                content.as_bytes(),
-                Some(spec.mode),
+                .await;
+                (session, host, result)
+            }
+        });
+        futures_util::future::join_all(futs).await
+    } else {
+        let mut results = Vec::with_capacity(owned.len());
+        for (host_i, mut session) in owned.into_iter().enumerate() {
+            let host = session.host_label().to_string();
+            let host_staging = staging.join(format!("host-{host_i}"));
+            let result = prepare_one_host_render_only(
+                &mut session,
+                &host_staging,
+                &remote_dir,
+                &specs,
+                &values,
                 step_timeout,
             )
-            .await?;
-            forced_redact = forced;
-            for k in changed {
-                if !host_changed.contains(&k) {
-                    host_changed.push(k);
+            .await;
+            results.push((session, host, result));
+        }
+        results
+    };
+
+    let mut forced_redact = Vec::new();
+    let mut changed_agg: Vec<String> = Vec::new();
+    let mut first_err: Option<anyhow::Error> = None;
+    for (session, host, result) in results {
+        sessions.push(session);
+        match result {
+            Ok((changed, forced)) => {
+                forced_redact = forced;
+                for k in changed {
+                    if !changed_agg.contains(&k) {
+                        changed_agg.push(k);
+                    }
+                }
+            }
+            Err(e) => {
+                let err = e.context(format!("config_render on {host} failed"));
+                if first_err.is_none() {
+                    first_err = Some(err);
                 }
             }
         }
-        for k in host_changed {
-            if !changed_agg.contains(&k) {
-                changed_agg.push(k);
-            }
-        }
+    }
+    if let Some(err) = first_err {
+        return Err(err);
     }
 
     let mut env = HashMap::new();
     set_changed_env(&mut env, &changed_agg);
-    env.insert("BUZ_CONFIG_DIR".to_string(), remote_dir.to_string());
+    env.insert("BUZ_CONFIG_DIR".to_string(), remote_dir);
     Ok(ConfigPrep { env, forced_redact })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_one_host_render_only(
+    session: &mut SshSession,
+    staging: &Path,
+    remote_dir: &str,
+    specs: &[EnvRenderSpec],
+    values: &ValueMap,
+    step_timeout: Option<Duration>,
+) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    std::fs::create_dir_all(staging).with_context(|| {
+        format!(
+            "config_render: cannot create staging dir '{}'",
+            staging.display()
+        )
+    })?;
+
+    run_ssh(
+        session,
+        &format!(
+            "test -d {remote_dir} || {{ echo \"config_render: dest '{remote_dir}' does not exist on remote\" >&2; exit 1; }}"
+        ),
+        step_timeout,
+    )
+    .await?;
+
+    let mut host_changed: Vec<String> = Vec::new();
+    let mut forced_redact = Vec::new();
+    for spec in specs {
+        let remote_tmpl = format!("{remote_dir}/{}", spec.template);
+        let tmpl = fetch_remote_text(session, &remote_tmpl, step_timeout)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "config_render: template '{}' not found on remote at '{}'",
+                    spec.template,
+                    remote_tmpl
+                )
+            })?;
+
+        let local_tmpl = staging.join(&spec.template);
+        if let Some(parent) = local_tmpl.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&local_tmpl, &tmpl).with_context(|| {
+            format!(
+                "config_render: cannot stage template '{}'",
+                local_tmpl.display()
+            )
+        })?;
+
+        ensure_remote_parent(session, remote_dir, &spec.output, step_timeout).await?;
+        let remote_out = format!("{remote_dir}/{}", spec.output);
+        let old = fetch_remote_text(session, &remote_out, step_timeout).await?;
+        let (content, changed, forced) = render_env_with_old(
+            staging,
+            spec,
+            values,
+            "render-only",
+            old.as_deref().unwrap_or(""),
+        )?;
+        ssh_upload_bytes(
+            session,
+            &remote_out,
+            content.as_bytes(),
+            Some(spec.mode),
+            step_timeout,
+        )
+        .await?;
+        forced_redact = forced;
+        for k in changed {
+            if !host_changed.contains(&k) {
+                host_changed.push(k);
+            }
+        }
+    }
+    Ok((host_changed, forced_redact))
 }
 
 #[cfg(test)]

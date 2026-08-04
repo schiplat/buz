@@ -28,6 +28,7 @@ export function yamlStepsToDefTasks(steps: YamlStepData[]) {
     host_names: (s.host || '').toString(),
     host_id: '',
     host_labels: s.host_labels || '',
+    hosts_strategy: s.hosts_strategy || '',
     work_dir: s.dir || '',
     timeout_seconds: parseDurationToSeconds(s.timeout),
     retry_count: s.retry || 0,

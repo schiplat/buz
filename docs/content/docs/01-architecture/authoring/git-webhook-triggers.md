@@ -2,13 +2,15 @@
 title: Git Webhook Triggers
 weight: 5
 description: "GitHub/Gitee push → signed webhook → job trigger, normalized INPUT_GIT_*, and Trigger events history"
+aliases:
+  - /docs/01-architecture/git-webhook-triggers/
 ---
 
 ## Overview
 
 Buz integrates Git hosting platforms (**GitHub**, **Gitee** first) so that a **push** (and later tag/PR) can start a job on an **existing** pipeline. Checkout/build steps stay in the pipeline definition the user already wrote — **no new YAML `git` / `on.git` fields**.
 
-This is separate from the generic HTTP trigger [`POST /api/v1/hooks/:path`](/docs/01-architecture/api-reference/#webhooks) (flat `inputs` / query). Git platforms send a large signed event payload; Buz uses a dedicated adapter endpoint, verifies a shared secret, normalizes fields into `INPUT_GIT_*`, then reuses the existing job trigger path (`do_trigger`).
+This is separate from the generic HTTP trigger [`POST /api/v1/hooks/:path`](/docs/01-architecture/platform/api-reference/#webhooks) (flat `inputs` / query). Git platforms send a large signed event payload; Buz uses a dedicated adapter endpoint, verifies a shared secret, normalizes fields into `INPUT_GIT_*`, then reuses the existing job trigger path (`do_trigger`).
 
 | Concern | Where it lives |
 |---------|----------------|
@@ -312,7 +314,7 @@ Optional: expose localhost with a tunnel (`cloudflared` / ngrok) and paste that 
 
 ## Related
 
-- [API Reference — Webhooks](/docs/01-architecture/api-reference/) (generic + git adapter outline)
-- [Pipeline Format](/docs/01-architecture/pipeline-format/) (no YAML change for git hooks)
-- [Secrets Access Control](/docs/01-architecture/secrets-access-control/) (deploy keys for checkout steps)
+- [API Reference — Webhooks](/docs/01-architecture/platform/api-reference/) (generic + git adapter outline)
+- [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/) (no YAML change for git hooks)
+- [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) (deploy keys for checkout steps)
 - [Database Schema](/docs/02-development/database-schema/)

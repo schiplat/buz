@@ -2,6 +2,8 @@
 title: Secrets Access (GHA-style)
 weight: 3
 description: Allowlist secrets, map via env or purpose slots, expand ${secrets.X} / ${vars.X}
+aliases:
+  - /docs/01-architecture/secrets-access/
 ---
 
 # Secrets Access (GHA-style)
@@ -15,7 +17,7 @@ Buz uses the same **allowlist → explicit map → consume** flow as GitHub Acti
 3. **Scripts use shell vars.** After `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}`, `run` uses `$GIT_SSH_KEY`. Do not write `${secrets.…}` inside `run` — the engine does not expand secrets inside scripts.
 4. **Templates still use expressions.** `config.render` templates may contain `${secrets.X}` / `${vars.X}`; the runner expands them when generating files.
 5. **Team-shared secrets** are auto-**allowlisted** for expression resolution; they are still not auto-injected as env vars.
-6. **Top-level `secrets:` is optional.** Prefer GHA-style production YAML: omit the pipeline list and reference secrets at the step (`env:` / purpose slots). A top-level list remains useful as an optional overview. Full cheat sheet: [Secrets & Variables Expressions](./secrets-vars-expressions.md).
+6. **Top-level `secrets:` is optional.** Prefer GHA-style production YAML: omit the pipeline list and reference secrets at the step (`env:` / purpose slots). A top-level list remains useful as an optional overview. Full cheat sheet: [Secrets & Variables Expressions](../authoring/secrets-vars-expressions.md).
 
 ## Pipeline shape
 
@@ -94,8 +96,8 @@ Cross-team names always fail. Missing same-team secret → claim / expand error.
 
 ## Related
 
-- [Secrets & Variables — Expression Cheat Sheet](./secrets-vars-expressions.md) — **all syntaxes in one place**
-- [Pipeline YAML format](./pipeline-format.md)
+- [Secrets & Variables — Expression Cheat Sheet](../authoring/secrets-vars-expressions.md) — **all syntaxes in one place**
+- [Pipeline YAML format](../authoring/pipeline-format.md)
 - [Secrets Access Control](./secrets-access-control.md) — kind, team_shared, bindings
-- [Config Block](./config-block.md) — Deliver / Render / `${secrets.X}` in templates
-- [YAML-First Authoring](./yaml-first-authoring.md) — YAML sole orchestration source (file authority)
+- [Config Block](../authoring/config-block.md) — Deliver / Render / `${secrets.X}` in templates
+- [YAML-First Authoring](../authoring/yaml-first-authoring.md) — YAML sole orchestration source (file authority)

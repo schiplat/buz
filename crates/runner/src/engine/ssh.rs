@@ -134,6 +134,11 @@ impl SshSession {
         &self.conn.host
     }
 
+    /// Safe log target: `user@host:port` (no credentials).
+    pub fn target_label(&self) -> String {
+        format_ssh_target(&self.conn)
+    }
+
     /// Run a remote command on a new session channel (keeps the TCP session open).
     pub async fn exec(
         &mut self,
@@ -204,13 +209,123 @@ impl SshSession {
     }
 }
 
+/// Safe SSH target string for job logs: `user@host:port`.
+pub fn format_ssh_target(conn: &SshConnectionParams) -> String {
+    format!("{}@{}:{}", conn.username, conn.host, conn.port)
+}
+
 /// Open one authenticated session per host (connect retries included).
-pub async fn connect_all(conns: &[SshConnectionParams]) -> anyhow::Result<Vec<SshSession>> {
-    let mut out = Vec::with_capacity(conns.len());
-    for conn in conns {
-        out.push(SshSession::connect(conn).await?);
+///
+/// When `parallel` is true (`hosts_strategy: parallel`), hosts connect
+/// concurrently via `join_all`. When false (default `chain`), connect
+/// one-by-one. Failures wait for all attempts to finish (wait-all), then return
+/// the first error so half-open sessions are dropped together. Dropping this
+/// future (e.g. job cancel via `select!`) aborts in-flight connects.
+pub async fn connect_all(
+    conns: &[SshConnectionParams],
+    parallel: bool,
+) -> anyhow::Result<Vec<SshSession>> {
+    if conns.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(out)
+    if conns.len() == 1 || !parallel {
+        let mut out = Vec::with_capacity(conns.len());
+        let mut first_err: Option<anyhow::Error> = None;
+        for conn in conns {
+            match SshSession::connect(conn).await {
+                Ok(s) => out.push(s),
+                Err(e) => {
+                    let err = e.context(format!(
+                        "SSH connection to {}:{} failed",
+                        conn.host, conn.port
+                    ));
+                    tracing::error!(
+                        host = %conn.host,
+                        port = conn.port,
+                        error = %err,
+                        "SSH connect failed"
+                    );
+                    if first_err.is_none() {
+                        first_err = Some(err);
+                    }
+                }
+            }
+        }
+        if let Some(err) = first_err {
+            return Err(err);
+        }
+        return Ok(out);
+    }
+
+    let futs = conns.iter().cloned().enumerate().map(|(idx, conn)| async move {
+        let result = SshSession::connect(&conn).await;
+        (idx, conn.host, conn.port, result)
+    });
+    let results = futures_util::future::join_all(futs).await;
+
+    let mut indexed: Vec<(usize, SshSession)> = Vec::with_capacity(conns.len());
+    let mut first_err: Option<anyhow::Error> = None;
+    for (idx, host, port, result) in results {
+        match result {
+            Ok(session) => indexed.push((idx, session)),
+            Err(e) => {
+                let err = e.context(format!("SSH connection to {host}:{port} failed"));
+                tracing::error!(host = %host, port, index = idx, error = %err, "SSH connect failed");
+                if first_err.is_none() {
+                    first_err = Some(err);
+                }
+            }
+        }
+    }
+
+    if let Some(err) = first_err {
+        return Err(err);
+    }
+    indexed.sort_by_key(|(i, _)| *i);
+    Ok(indexed.into_iter().map(|(_, s)| s).collect())
+}
+
+/// Probe remote working directory (`pwd`) on each session in parallel.
+///
+/// Returns `(target_label, workspace)` pairs in session order. Empty workspace
+/// string when `pwd` fails (banner still shows the SSH target).
+pub async fn probe_workspaces(
+    sessions: &mut Vec<SshSession>,
+    cmd_timeout: Option<Duration>,
+) -> Vec<(String, String)> {
+    if sessions.is_empty() {
+        return Vec::new();
+    }
+    let timeout = cmd_timeout.or(Some(Duration::from_secs(15)));
+    let owned = std::mem::take(sessions);
+    let futs = owned.into_iter().enumerate().map(|(idx, mut session)| async move {
+        let target = session.target_label();
+        let workspace = match session.exec("pwd", None, timeout).await {
+            Ok(out) if out.exit_code == 0 => out.stdout.trim().to_string(),
+            Ok(out) => {
+                tracing::warn!(
+                    target = %target,
+                    exit = out.exit_code,
+                    "SSH pwd probe failed"
+                );
+                String::new()
+            }
+            Err(e) => {
+                tracing::warn!(target = %target, error = %e, "SSH pwd probe error");
+                String::new()
+            }
+        };
+        (idx, session, target, workspace)
+    });
+    let results = futures_util::future::join_all(futs).await;
+    let mut indexed: Vec<(usize, SshSession, String, String)> = results;
+    indexed.sort_by_key(|(i, _, _, _)| *i);
+    let mut out = Vec::with_capacity(indexed.len());
+    for (_, session, target, workspace) in indexed {
+        out.push((target, workspace));
+        sessions.push(session);
+    }
+    out
 }
 
 /// One-shot helper: connect (with retries) → exec → drop session.

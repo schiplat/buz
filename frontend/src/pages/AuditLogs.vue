@@ -134,11 +134,23 @@ watch(
   },
 )
 
+function formatTime(raw?: string | null): string {
+  if (!raw) return '—'
+  return raw.slice(0, 19).replace('T', ' ')
+}
+
+/** Split `secret.create` → { ns: 'secret', op: 'create' } for quieter table cells. */
+function splitAction(action: string): { ns: string; op: string } {
+  const i = action.lastIndexOf('.')
+  if (i <= 0) return { ns: '', op: action }
+  return { ns: action.slice(0, i), op: action.slice(i + 1) }
+}
+
 onMounted(load)
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="page-stack">
     <PageHeader
       title="Audit logs"
       :description="auth.isSuperAdmin ? 'Super-admin view of all operation audit records. Sensitive fields are redacted.' : 'Platform-admin view of your own operation audit records. Sensitive fields are redacted.'"
@@ -149,23 +161,23 @@ onMounted(load)
     </div>
 
     <div v-else class="surface-card overflow-hidden">
-      <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
+      <div class="px-5 py-3 border-b border-border/30 flex items-center gap-2.5 flex-wrap">
         <input
           v-model="searchQuery"
           type="text"
           placeholder="Search resource, action, actor…"
-          class="w-full max-w-52 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+          class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
         />
         <select
           v-model="filterAction"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50"
+          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50"
         >
           <option value="">All actions</option>
           <option v-for="a in ACTION_OPTIONS.filter(Boolean)" :key="a" :value="a">{{ a }}</option>
         </select>
         <select
           v-model="filterResourceType"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50"
+          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50"
         >
           <option value="">All resources</option>
           <option v-for="r in RESOURCE_TYPE_OPTIONS.filter(Boolean)" :key="r" :value="r">{{ r }}</option>
@@ -174,18 +186,18 @@ onMounted(load)
           v-model="filterActor"
           type="text"
           placeholder="Actor…"
-          class="w-32 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50"
+          class="w-36 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50"
         />
         <input
           v-model="filterFrom"
           type="datetime-local"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50"
+          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50"
           title="From"
         />
         <input
           v-model="filterTo"
           type="datetime-local"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50"
+          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50"
           title="To"
         />
       </div>
@@ -196,39 +208,50 @@ onMounted(load)
       </div>
 
       <template v-else>
-        <div class="overflow-x-auto">
-          <table class="data-table">
+        <div class="data-table-scroll">
+          <table class="data-table min-w-[720px]">
             <thead>
               <tr>
-                <th>Time</th>
-                <th>Actor</th>
-                <th>Action</th>
+                <th class="w-[11rem]">Time</th>
+                <th class="w-[8rem]">Actor</th>
+                <th class="w-[10rem]">Action</th>
                 <th>Resource</th>
-                <th>Team</th>
-                <th class="text-right">Actions</th>
+                <th class="w-[6rem]">Team</th>
+                <th class="w-[4.5rem] text-right" />
               </tr>
             </thead>
             <tbody>
               <tr
                 v-for="row in items"
                 :key="row.id"
-                class="cursor-pointer hover:bg-muted/40"
+                class="clickable"
                 @click="openDetail(row)"
               >
-                <td class="font-mono text-xs tabular-nums whitespace-nowrap">
-                  {{ row.created_at?.slice(0, 19) || '—' }}
+                <td class="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
+                  {{ formatTime(row.created_at) }}
                 </td>
-                <td>{{ row.actor_username || '—' }}</td>
-                <td>
-                  <span class="mono-chip">{{ row.action }}</span>
+                <td class="font-medium whitespace-nowrap">
+                  {{ row.actor_username || '—' }}
                 </td>
                 <td>
-                  <div class="font-medium text-sm">{{ row.resource_name || row.resource_id || '—' }}</div>
-                  <div class="text-xs text-muted-foreground">
-                    {{ row.resource_type }}{{ row.resource_id ? ` · ${row.resource_id.slice(0, 8)}` : '' }}
+                  <div
+                    class="text-[13px] leading-snug"
+                    :title="row.action"
+                  >
+                    <template v-for="a in [splitAction(row.action)]" :key="`${row.id}-action`">
+                      <span v-if="a.ns" class="text-muted-foreground">{{ a.ns }}.</span><span class="font-medium">{{ a.op }}</span>
+                    </template>
                   </div>
                 </td>
-                <td class="font-mono text-xs text-muted-foreground">
+                <td>
+                  <div class="font-medium truncate max-w-[18rem]" :title="row.resource_name || row.resource_id || undefined">
+                    {{ row.resource_name || row.resource_id || '—' }}
+                  </div>
+                  <div v-if="row.resource_type" class="type-meta mt-0.5">
+                    {{ row.resource_type }}
+                  </div>
+                </td>
+                <td class="text-xs text-muted-foreground truncate" :title="row.team_id || undefined">
                   {{ row.team_id ? row.team_id.slice(0, 8) : '—' }}
                 </td>
                 <td class="text-right" @click.stop>
@@ -268,8 +291,8 @@ onMounted(load)
               <h2 class="text-base font-semibold tracking-tight truncate">
                 {{ active?.action || 'Audit entry' }}
               </h2>
-              <p class="text-xs text-muted-foreground mt-0.5 truncate">
-                {{ active?.actor_username }} · {{ active?.created_at?.slice(0, 19) }}
+              <p class="type-meta mt-0.5 truncate">
+                {{ active?.actor_username || '—' }} · {{ formatTime(active?.created_at) }}
               </p>
             </div>
             <button
@@ -282,29 +305,31 @@ onMounted(load)
           </div>
 
           <div v-if="active" class="px-6 py-5 space-y-5">
-            <div class="grid grid-cols-2 gap-3 text-xs">
+            <div class="grid grid-cols-2 gap-4">
               <div>
-                <div class="text-muted-foreground mb-0.5">Resource</div>
-                <div class="font-medium">{{ active.resource_name || '—' }}</div>
-                <div class="font-mono text-muted-foreground">{{ active.resource_type }} / {{ active.resource_id }}</div>
+                <div class="type-label mb-1">Resource</div>
+                <div class="text-sm font-medium">{{ active.resource_name || '—' }}</div>
+                <div class="type-meta mt-0.5 break-all">
+                  {{ active.resource_type || '—' }}<template v-if="active.resource_id"> · {{ active.resource_id }}</template>
+                </div>
               </div>
               <div>
-                <div class="text-muted-foreground mb-0.5">Team</div>
-                <div class="font-mono">{{ active.team_id || '—' }}</div>
+                <div class="type-label mb-1">Team</div>
+                <div class="text-sm break-all">{{ active.team_id || '—' }}</div>
               </div>
             </div>
 
             <div>
-              <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">Before</div>
-              <pre class="rounded-lg border border-border/60 bg-muted/30 p-3 text-[11px] font-mono overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.before) }}</pre>
+              <div class="type-label mb-2">Before</div>
+              <pre class="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.before) }}</pre>
             </div>
             <div>
-              <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">After</div>
-              <pre class="rounded-lg border border-border/60 bg-muted/30 p-3 text-[11px] font-mono overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.after) }}</pre>
+              <div class="type-label mb-2">After</div>
+              <pre class="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.after) }}</pre>
             </div>
             <div v-if="active.meta != null">
-              <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">Meta</div>
-              <pre class="rounded-lg border border-border/60 bg-muted/30 p-3 text-[11px] font-mono overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.meta) }}</pre>
+              <div class="type-label mb-2">Meta</div>
+              <pre class="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">{{ formatAuditJson(active.meta) }}</pre>
             </div>
           </div>
         </div>

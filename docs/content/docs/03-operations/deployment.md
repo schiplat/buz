@@ -1,21 +1,12 @@
 ---
 title: Deployment
-weight: 1
+weight: 2
 description: "Deploying Center and Runner in production"
 ---
 
-## Quick Start
-
-```bash
-# One-step: build all + run Center
-make run
-# → http://localhost:8080  (first visit → /setup to create admin)
-
-# Or step by step
-make example        # create example config directory
-make build          # build frontend + backend
-cd example && ../target/release/buz-manager
-```
+> **New here?** Start with [Quick Start](/docs/00-quick-start/) (`make run`). This page covers **production** deploy: release packages, split Manager + Runner, Docker, and upgrades.
+>
+> **Lab / single-VM?** Prefer the one-container image — see [Standalone](/docs/03-operations/standalone/) (`buz-standalone`, arm64).
 
 ## Embedded Web UI
 
@@ -348,7 +339,7 @@ export BUZ_REGISTER_TOKEN="your-token"
 ./target/release/buz-runner
 ```
 
-> Enable Docker steps (`uses: docker`) in **Manager UI → Runners → Docker**. See [Docker Engine](/docs/01-architecture/docker-engine/). Host-side `docker build` / SSH `docker …` does **not** need this flag.
+> Enable Docker steps (`uses: docker`) in **Manager UI → Runners → Docker**. See [Docker Engine](/docs/01-architecture/execution/docker-engine/). Host-side `docker build` / SSH `docker …` does **not** need this flag.
 
 ## Requirements
 

@@ -2,6 +2,8 @@
 title: Job Concurrency & Queue
 weight: 8
 description: "Design for pipeline-level concurrency control with queue, discard-old, and discard-new modes — ready for multi-runner and multi-manager clusters."
+aliases:
+  - /docs/01-architecture/job-concurrency-queue/
 ---
 
 ## Status
@@ -9,7 +11,7 @@ description: "Design for pipeline-level concurrency control with queue, discard-
 **Implemented** in Manager trigger (`crates/manager/src/api/pipelines.rs`) and
 surfaced on **Job Detail**.
 
-Related: YAML schema in [Pipeline Format](/docs/01-architecture/pipeline-format/).
+Related: YAML schema in [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/).
 
 ### Job Detail UX
 
@@ -45,7 +47,7 @@ instead of the stale DB projection:
 
 - **Configured:** live `group` / `mode` / (for `queue`) max-queue + timeout, hint, help.
 - **Not configured:** same defaults preview as Job Detail + how to enable.
-- **Edit YAML** on Definition (or Pipelines list) opens the online editor; Save writes `yaml_scan_dir` and upserts immediately. See [YAML-First Authoring](/docs/01-architecture/yaml-first-authoring/).
+- **Edit YAML** on Definition (or Pipelines list) opens the online editor; Save writes `yaml_scan_dir` and upserts immediately. See [YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/).
 
 ---
 

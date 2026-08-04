@@ -2,6 +2,8 @@
 title: Secrets & Variables — Expression Cheat Sheet
 weight: 3
 description: "All YAML / script / template ways to declare and reference secrets, platform variables, env, and trigger inputs"
+aliases:
+  - /docs/01-architecture/secrets-vars-expressions/
 ---
 
 # Secrets & Variables — Expression Cheat Sheet
@@ -11,8 +13,8 @@ Use this page when authoring YAML or reviewing Quick YAML Reference.
 
 Related deep-dives:
 
-- [Secrets Access (GHA-style)](./secrets-access.md) — allowlist → map → consume
-- [Secrets Access Control](./secrets-access-control.md) — kind, `team_shared`, bindings
+- [Secrets Access (GHA-style)](../platform/secrets-access.md) — allowlist → map → consume
+- [Secrets Access Control](../platform/secrets-access-control.md) — kind, `team_shared`, bindings
 - [Env Render](./env-render.md) — `${secrets.X}` / `${vars.X}` in `.env` templates
 - [Pipeline Format](./pipeline-format.md) — field catalogue
 - [Config Block](./config-block.md) — `config.source` / `config.render`
@@ -286,7 +288,7 @@ Step env  >  Pipeline env  >  Platform variables
 | `false` (default) | Must appear in pipeline/step `secrets:` (or purpose-slot resolution path) |
 | `true` | Auto-allowlisted for same-team jobs — **still** needs `${secrets.X}` / `env:` to inject |
 
-Cross-team secrets are forbidden. Details: [Secrets Access Control](./secrets-access-control.md).
+Cross-team secrets are forbidden. Details: [Secrets Access Control](../platform/secrets-access-control.md).
 
 ---
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { useRoute, useRouter, RouterLink } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp, Bell, AlertTriangle, AlertCircle } from '@lucide/vue'
@@ -486,6 +486,34 @@ function historyGo(page: number) {
   historyPage.value = Math.max(1, Math.min(page, historyTotalPages.value))
 }
 
+/** Deep-link target from Trigger events (`?job=`). */
+const historyFocusJobId = computed(() => {
+  const q = route.query.job
+  return typeof q === 'string' && q ? q : ''
+})
+
+function runNumberForJobId(jobId: string): number | null {
+  const idx = jobs.value.findIndex(j => j.id === jobId)
+  return idx >= 0 ? jobs.value.length - idx : null
+}
+
+async function focusHistoryJob(jobId: string) {
+  const idx = jobs.value.findIndex(j => j.id === jobId)
+  if (idx < 0) return
+  historyPage.value = Math.floor(idx / historyPageSize) + 1
+  await nextTick()
+  document.getElementById(`hist-job-${jobId}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+watch(
+  [activeTab, historyFocusJobId, jobs],
+  async () => {
+    if (activeTab.value !== 'history' || !historyFocusJobId.value) return
+    await focusHistoryJob(historyFocusJobId.value)
+  },
+  { flush: 'post' },
+)
+
 /** Returns the raw status string (e.g. 'success', 'running'), not a CSS class. */
 function getStepStatus(stepIndex: number, stepStatuses: any[] | null): string {
   if (!stepStatuses) return 'pending'
@@ -747,7 +775,8 @@ function openTriggerDialog() {
 }
 
 function navigateTab(tab: string) {
-  router.push({ name: 'pipeline-detail', params: { id: pipelineId.value, tab } })
+  // Clear deep-link query when switching tabs via the tab bar.
+  router.push({ name: 'pipeline-detail', params: { id: pipelineId.value, tab }, query: {} })
 }
 
 function toggleAdhocParams() {
@@ -1226,6 +1255,8 @@ async function handleTrigger() {
                   :run-number="runNum(j, historyPagedJobs)"
                   :logs="getHistoryLogs(j.id)"
                   :can-view-debug-logs="auth.isPlatformAdmin"
+                  :initially-expanded="historyFocusJobId === j.id"
+                  :highlighted="historyFocusJobId === j.id"
                   @expand="loadHistoryLogs($event)"
                 />
 
@@ -1751,7 +1782,7 @@ async function handleTrigger() {
 
                     <!-- Other step metadata: SSH hosts, host labels, dir -->
                     <div
-                      v-if="sshHostDisplay(step) || step.host_labels || step.work_dir"
+                      v-if="sshHostDisplay(step) || step.host_labels || step.work_dir || step.hosts_strategy"
                       class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-xs"
                     >
                       <span v-if="step.work_dir" class="inline-flex items-center gap-1">
@@ -1765,6 +1796,10 @@ async function handleTrigger() {
                       <span v-if="step.host_labels" class="inline-flex items-center gap-1">
                         <span class="text-muted-foreground/60 text-xs w-14">labels</span>
                         <code class="mono-chip text-xs">{{ step.host_labels }}</code>
+                      </span>
+                      <span v-if="step.hosts_strategy" class="inline-flex items-center gap-1">
+                        <span class="text-muted-foreground/60 text-xs w-16">strategy</span>
+                        <code class="mono-chip text-xs">{{ step.hosts_strategy }}</code>
                       </span>
                     </div>
 
@@ -1926,14 +1961,19 @@ async function handleTrigger() {
                         <span v-if="ev.skip_reason" class="text-muted-foreground ml-1">{{ ev.skip_reason }}</span>
                       </td>
                       <td class="px-4 py-2.5 text-xs whitespace-nowrap">
-                        <button
+                        <RouterLink
                           v-if="ev.job_id"
-                          type="button"
-                          class="text-primary hover:underline font-mono"
-                          @click="router.push(`/jobs/${ev.job_id}`)"
+                          :to="{
+                            name: 'pipeline-detail',
+                            params: { id: pipelineId, tab: 'history' },
+                            query: { job: ev.job_id },
+                          }"
+                          class="text-primary hover:underline font-mono inline-flex items-center gap-1.5"
+                          title="Open in Build History"
                         >
-                          {{ ev.job_status || 'job' }}
-                        </button>
+                          <span v-if="runNumberForJobId(ev.job_id) != null">#{{ runNumberForJobId(ev.job_id) }}</span>
+                          <span>{{ ev.job_status || 'view' }}</span>
+                        </RouterLink>
                         <span v-else class="text-muted-foreground">—</span>
                       </td>
                     </tr>

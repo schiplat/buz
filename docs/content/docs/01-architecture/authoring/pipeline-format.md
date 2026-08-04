@@ -2,6 +2,8 @@
 title: Pipeline Format
 weight: 3
 description: "Full reference for Buz pipeline YAML definitions (Form mapping is transitional)"
+aliases:
+  - /docs/01-architecture/pipeline-format/
 ---
 
 Buz pipeline definitions follow a simplified GitHub Actions-style format with sequential step execution.
@@ -110,13 +112,15 @@ steps:                                 # required — at least one; each step ne
       - prod-server-01
       - prod-server-02
     host_labels: [prod, web]
+    hosts_strategy: parallel          # chain (default) | parallel
     run: |
       docker pull $APP_NAME:$INPUT_VERSION
       docker-compose up -d
     continue-on-error: true
 
   - name: Clone Private Repo
-    secrets: [GIT_SSH_KEY]            # [step-level] secret — only this step
+    env:
+      GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}  # [step-level] map → $GIT_SSH_KEY
     run: |
       echo "$GIT_SSH_KEY" > /tmp/key && chmod 600 /tmp/key
       GIT_SSH_COMMAND="ssh -i /tmp/key" git clone git@github.com:org/repo.git
@@ -127,6 +131,22 @@ steps:                                 # required — at least one; each step ne
 ---
 
 ## Pipeline-Level Fields
+
+Built-in top-level keys on `PipelineYaml` (`deny_unknown_fields`):
+
+| Field | Required | Summary |
+|-------|:--------:|---------|
+| [`name`](#name) | ✓ | Unique pipeline name |
+| [`description`](#description) | | UI description |
+| [`team`](#team) / `owner_group` | | Team slug (default `default`) |
+| [`on`](#on-trigger) | | Triggers: `manual` / `webhook` / `cron` |
+| [`concurrency`](#concurrency) | | Concurrent-run policy |
+| [`runner`](#runner) | | Label match + job timeout |
+| [`env`](#env) | | Pipeline-level env map |
+| [`variables`](#variables) | | Platform variable name allowlist |
+| [`secrets`](#secrets) | | Optional secret name overview / allowlist |
+| [`notify`](#notify) | | End-of-job notification channels |
+| `steps` | ✓ | Ordered step list (see [Steps](#steps)) |
 
 ### `name`
 
@@ -210,7 +230,7 @@ on:
 | YAML | `webhook.path: my-pipeline` |
 | Form | Webhook Config → URL Path |
 
-> **GitHub / Gitee push triggers** do **not** add YAML fields. Configure URL + Secret in the Pipeline UI; the adapter injects `INPUT_GIT_*` at job creation. See [Git Webhook Triggers](/docs/01-architecture/git-webhook-triggers/).
+> **GitHub / Gitee push triggers** do **not** add YAML fields. Configure URL + Secret in the Pipeline UI; the adapter injects `INPUT_GIT_*` at job creation. See [Git Webhook Triggers](/docs/01-architecture/authoring/git-webhook-triggers/).
 
 #### `on.cron` (Scheduled)
 
@@ -255,7 +275,7 @@ The YAML scanner resolves the slug to `teams.id`. If omitted or unknown, it fall
 | YAML | `team: backend` (or `owner_group: backend`) |
 | Form | Advanced → **Team** (required dropdown) |
 | Required | Yes at runtime (`team_id`); YAML may omit and get `default` |
-| See also | [Users, Teams & RBAC](/docs/01-architecture/rbac/) |
+| See also | [Users, Teams & RBAC](/docs/01-architecture/platform/rbac/) |
 
 ---
 
@@ -404,9 +424,9 @@ Purpose slots use the same expression (no separate list required):
 
 Optional top-level / step `secrets: [NAME]` remains valid as an overview or narrowing. Manager collects effective names from lists + refs when upserting YAML.
 
-Do **not** write `${secrets.…}` inside `run` — the engine does not expand secrets in scripts. Full rules: [Secrets Access (GHA-style)](/docs/01-architecture/secrets-access/). Syntax cheat sheet: [Secrets & Variables Expressions](/docs/01-architecture/secrets-vars-expressions/).
+Do **not** write `${secrets.…}` inside `run` — the engine does not expand secrets in scripts. Full rules: [Secrets Access (GHA-style)](/docs/01-architecture/platform/secrets-access/). Syntax cheat sheet: [Secrets & Variables Expressions](/docs/01-architecture/authoring/secrets-vars-expressions/).
 
-Secrets default to **`team_shared: false`**. Same-team only; see [Secrets Access Control](/docs/01-architecture/secrets-access-control/).
+Secrets default to **`team_shared: false`**. Same-team only; see [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
 
 | | |
 |---|---|
@@ -484,6 +504,31 @@ steps:
 
 Each step is an atomic unit of work executed **sequentially** by the runner. Steps appear one after another in order.
 
+### Step field index
+
+Every registered key on `StepYaml` (`crates/shared/src/pipeline_yaml.rs`). Unknown keys are rejected.
+
+| Field | Required | Engines | Summary |
+|-------|:--------:|---------|---------|
+| [`name`](#name-1) | ✓ | all | Display name |
+| [`run`](#run) | ✓ | all | Command / script |
+| [`uses`](#uses-engine) | | all | `shell` / `local` / `ssh` / `docker` (default: shell) |
+| [`image`](#image) | if docker | docker | Container image |
+| [`volumes`](#volumes) | | docker | Extra `host:container` binds |
+| [`privileged`](#privileged) | | docker | `--privileged` (DinD opt-in) |
+| [`registry_secret`](#registry_secret) | | shell / ssh / docker | Secret name for `docker login` |
+| [`config`](#config) | | shell / local / ssh | Nested OSS deliver / render block |
+| [`host`](#host--host_labels-ssh) / [`host_labels`](#host--host_labels-ssh) | ≥1 for ssh | ssh | Named hosts ∪ label matches |
+| [`hosts_strategy`](#hosts_strategy-ssh) | | ssh | Multi-host fan-out: `chain` (default) \| `parallel` |
+| [`work_dir`](#work_dir) / `dir` | | all | Working directory (`work_dir` aliases `dir`) |
+| [`timeout`](#timeout) | | all | Per-step duration (`10m`, …) |
+| [`retry`](#retry) | | all | Automatic retries on failure |
+| [`continue-on-error`](#continue-on-error) | | all | Do not fail the job on step failure |
+| [`env`](#env-1) | | all | Step env map (`KEY: ${secrets.X}`) |
+| [`secrets`](#secrets-1) | | all | Optional step secret allowlist (no auto-inject) |
+
+**Rejected legacy flat keys** (use nested [`config`](#config) instead): `config_source`, `config_path`, `config_dir`, `env_render`.
+
 ### Step Fields
 
 #### `name`
@@ -526,14 +571,14 @@ Selects the execution engine. Defaults to `shell` (runner's own shell). When set
 | _(omitted)_ | **Local** — runs on the runner host's shell |
 | `shell` / `local` | Same as omitted — runner host shell |
 | `ssh` | **SSH** — connects to remote host(s) via SSH (requires `host` and/or `host_labels`) |
-| `docker` | **Docker** — runs `run:` inside a container on the runner. Requires `image`. See [Docker Engine](/docs/01-architecture/docker-engine/). |
+| `docker` | **Docker** — runs `run:` inside a container on the runner. Requires `image`. See [Docker Engine](/docs/01-architecture/execution/docker-engine/). |
 
 | | |
 |---|---|
 | YAML | `uses: ssh` |
 | Form | Engine dropdown (Runner Shell / SSH / Docker) |
 
-> **Docker** is supported (MVP). See [Docker Engine](/docs/01-architecture/docker-engine/). Enable **Docker** on the Runner in Manager UI.
+> **Docker** is supported (MVP). See [Docker Engine](/docs/01-architecture/execution/docker-engine/). Enable **Docker** on the Runner in Manager UI.
 
 ---
 
@@ -551,7 +596,48 @@ run: cargo test
 |---|---|
 | YAML | `image: node:20` |
 | Form | Image (shown when Engine is Docker) |
-| See | [Docker Engine](/docs/01-architecture/docker-engine/) |
+| See | [Docker Engine](/docs/01-architecture/execution/docker-engine/) |
+
+---
+
+#### `volumes`
+
+**Docker only.** Extra host→container bind mounts beyond the default workspace mount (`/buz/workspace`). Each entry is `host_path:container_path`.
+
+```yaml
+uses: docker
+image: docker:27-cli
+volumes:
+  - /var/run/docker.sock:/var/run/docker.sock
+run: docker version
+```
+
+Invalid on non-docker steps. Mounting the Docker socket grants root-equivalent control of the host — only on disposable runner VMs. See [Docker Engine](/docs/01-architecture/execution/docker-engine/).
+
+| | |
+|---|---|
+| YAML | `volumes: ["/host:/container"]` |
+| Runtime | `docker run -v …` |
+
+---
+
+#### `privileged`
+
+**Docker only.** When `true`, runs the container with `--privileged` (needed for true Docker-in-Docker / nested containers). Default `false`.
+
+```yaml
+uses: docker
+image: docker:27-dind
+privileged: true
+run: dockerd-entrypoint.sh & sleep 3 && docker info
+```
+
+Invalid on non-docker steps. Privileged containers can escape to the host — use only on isolated runners.
+
+| | |
+|---|---|
+| YAML | `privileged: true` |
+| Runtime | `docker run --privileged` |
 
 ---
 
@@ -591,7 +677,7 @@ Full orchestration (prepare → build → push → verify): `example/pipelines/a
 |---|---|
 | YAML | `registry_secret: acr_personal` |
 | Form | Registry Secret |
-| See | [Docker Engine — ACR Personal Edition](/docs/01-architecture/docker-engine/) |
+| See | [Docker Engine — ACR Personal Edition](/docs/01-architecture/execution/docker-engine/) |
 
 ---
 
@@ -619,11 +705,11 @@ config:
 
 `template` / `output` are **relative to `dest`**. Same root + subdirs → one step;
 unrelated roots → separate render-only steps (see
-[Config Block — Sample B](/docs/01-architecture/config-block/#sample-b--paths-under-dest)).
+[Config Block — Sample B](/docs/01-architecture/authoring/config-block/#sample-b--paths-under-dest)).
 
 Flat `config_source` / `config_path` / `config_dir` / `env_render` are **rejected**.
-Full rules, DB columns, and engines: [Config Block DSL v2](/docs/01-architecture/config-block/).
-Render engine details: [Env Render](/docs/01-architecture/env-render/).
+Full rules, DB columns, and engines: [Config Block DSL v2](/docs/01-architecture/authoring/config-block/).
+Render engine details: [Env Render](/docs/01-architecture/authoring/env-render/).
 
 | | |
 |---|---|
@@ -654,10 +740,35 @@ host_labels: [web]
 
 In the form: comma-separated for multiple names/labels. Help text states “at least one required; combined as union.”
 
+**Multi-host execution:** when the union resolves to **N > 1** hosts, the step fans out according to [`hosts_strategy`](#hosts_strategy-ssh) (default **`chain`**). Set `parallel` for concurrent deploy. Job **Cancel** aborts **all** in-flight hosts. See [SSH Multi-Host Execution](/docs/01-architecture/execution/ssh-multi-host/).
+
 | | |
 |---|---|
 | YAML | `host` and/or `host_labels` |
 | Form | SSH Host / Host Labels |
+
+---
+
+#### `hosts_strategy` (SSH)
+
+**SSH only.** Controls multi-host fan-out for connect, config prepare, and `run`.
+
+| Value | Behavior |
+|-------|----------|
+| `chain` (default) | One host after another (wait-all exit aggregation) |
+| `parallel` | All resolved hosts run concurrently (`join_all`) |
+
+Omitted or empty → `chain`. Legacy alias `serial` is accepted and stored as `chain`. Invalid on non-SSH steps. Single-host steps ignore the distinction.
+
+```yaml
+host_labels: [prod]
+hosts_strategy: parallel   # opt-in concurrent fan-out
+```
+
+| | |
+|---|---|
+| YAML | `hosts_strategy: chain \| parallel` |
+| Runtime | Runner `step.hosts_strategy`; DB column `tasks.hosts_strategy` |
 
 ---
 
@@ -711,18 +822,57 @@ If `true`, a failure in this step does **not** stop the pipeline — subsequent 
 
 ---
 
+#### `env`
+
+**Step-level** environment map. Values may use `${secrets.NAME}` / `${vars.NAME}`; Manager expands them at claim time onto the process environment. Prefer this over bare allowlists when you need `$KEY` in `run`.
+
+```yaml
+env:
+  APP_ENV: production
+  GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
+run: echo "$APP_ENV" && test -n "$GIT_SSH_KEY"
+```
+
+Pipeline-level [`env`](#env) applies to all steps; step `env` merges / overrides for that step. Do **not** put `${secrets.…}` inside `run` — expand via `env:` first. See [Secrets Access](/docs/01-architecture/platform/secrets-access/).
+
+| | |
+|---|---|
+| YAML | `env: { KEY: value \| ${secrets.X} }` |
+| Runtime | Process env for this step |
+
+---
+
+#### `secrets`
+
+Optional **step-level** secret name allowlist. Declaring a name does **not** inject `$NAME` into the environment — map via [`env`](#env-1) or purpose slots (`registry_secret`, `config.source`). Use to narrow or document which secrets this step may reference.
+
+```yaml
+secrets: [GIT_SSH_KEY]
+env:
+  GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
+```
+
+Full rules: [pipeline `secrets`](#secrets) and [Secrets Access](/docs/01-architecture/platform/secrets-access/).
+
+| | |
+|---|---|
+| YAML | `secrets: [NAME]` |
+| Into process env | Only via `env:` / purpose slots |
+
+---
+
 ## Execution Engines
 
 | Value | Engine | Description |
 |-------|--------|-------------|
 | _(omitted)_ | `local` | Run on runner host's shell (default) |
 | `ssh` | `ssh` | Execute on remote host(s) via SSH (russh). Requires `host` and/or `host_labels`. |
-| `docker` | `docker` | Execute `run:` in a Docker container on the runner. Requires `image`. Gated by Runner UI `docker_enabled`. See [Docker Engine](/docs/01-architecture/docker-engine/). |
+| `docker` | `docker` | Execute `run:` in a Docker container on the runner. Requires `image`. Gated by Runner UI `docker_enabled`. See [Docker Engine](/docs/01-architecture/execution/docker-engine/). |
 | `wasm` | `wasm` | Execute in Wasm sandbox (not implemented) |
 
 ### Docker step fields
 
-When `uses: docker`, YAML requires `image` (container image reference). Optional `registry_secret` works on docker **and** on shell/SSH steps (for push). Workspace is bind-mounted to `/buz/workspace`. Full rules: [Docker Engine](/docs/01-architecture/docker-engine/).
+When `uses: docker`, YAML requires `image`. Optional docker-only fields: [`volumes`](#volumes), [`privileged`](#privileged). [`registry_secret`](#registry_secret) also works on shell/SSH (for push). Workspace is bind-mounted to `/buz/workspace`. Full rules: [Docker Engine](/docs/01-architecture/execution/docker-engine/).
 
 Examples: `example/pipelines/docker-engine-smoke.yml`, `example/pipelines/acr-personal-pull.yml`, `example/pipelines/acr-personal-push.yml`.
 
@@ -741,8 +891,13 @@ Authoring is YAML-only ([YAML-First](./yaml-first-authoring.md)). On Validate / 
 | `runner.labels` / `timeout` | `runner_labels`, `timeout_seconds` | Duration strings parsed |
 | `concurrency` | concurrency_* columns | Object or legacy string |
 | `env` / `variables` / `secrets` | env rows + `var_ids` / `pipeline_secrets` | Unknown names rejected at Validate |
-| `steps[]` | `tasks` rows | Nested `config:` → `config_source` / `config_key_path` / `config_dest` / `config_render` columns |
+| `notify` | job-end notify channels | Expressions resolved at send time |
+| `steps[]` | `tasks` rows | Nested `config:` → config_* columns |
 | `steps[].uses` | `exec_type` | `shell`/`local`/`ssh`/`docker` only |
+| `steps[].image` / `volumes` / `privileged` | `tasks.image` / `volumes` / `privileged` | Docker engine |
+| `steps[].host` / `host_labels` / `hosts_strategy` | `tasks.*` | SSH; strategy default `chain` |
+| `steps[].env` / `secrets` | `step_env` / `step_secrets` | |
 | `steps[].continue-on-error` | `fail_strategy` | |
+| `steps[].registry_secret` | `tasks.registry_secret` | Purpose slot |
 
 New YAML keys must be [registered](#field-registration-required-before-use) before use.

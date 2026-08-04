@@ -1,7 +1,7 @@
 ---
 title: Architecture
-weight: 1
-description: "Buz platform architecture — B-U-Z core principles and system design"
+weight: 2
+description: "Buz platform architecture — principles, then authoring → execution → platform"
 ---
 
 ## B-U-Z Architecture Principles
@@ -29,21 +29,32 @@ Zero-trust security and architectural minimalism combined.
 - **Zero-trust security**: Secrets stay in Runner memory only — never persisted, never sent back. Log masking via Aho-Corasick
 - **Zero operations burden**: V1.x uses no Redis, MQ, or external DB. All persistence, scheduling, and services are built into the Center binary
 
-## Key topics
+More: [Principles](./principles/) · [Tech Stack](./tech-stack/)
+
+---
+
+## Reading map (recommended)
+
+Follow the product journey — **run locally → write a pipeline → see how it runs → operate**:
+
+| Stage | Section | Start here |
+|-------|---------|------------|
+| **1. Quick Start** | [Quick Start](/docs/00-quick-start/) | `make run` · then [Deployment](/docs/03-operations/deployment/) |
+| **2. Concepts** | This page | Principles above |
+| **3. Authoring** | [Authoring](./authoring/) | [Pipeline Format](./authoring/pipeline-format/) (parameter reference) |
+| **4. Execution** | [Execution](./execution/) | [SSH Multi-Host](./execution/ssh-multi-host/) · [Docker Engine](./execution/docker-engine/) |
+| **5. Platform** | [Platform](./platform/) | [RBAC](./platform/rbac/) · [Secrets Access Control](./platform/secrets-access-control/) |
+| **6. Operations** | [Operations](/docs/03-operations/) | Configuration · Deployment · Standalone · TLS |
+| **7. Development** | [Development](/docs/02-development/) | Schema · project structure (contributors) |
+
+---
+
+## Sections
 
 {{< cards >}}
-  {{< card link="yaml-first-authoring/" title="YAML-First Authoring" subtitle="File/Git authority; UI writes scan dir; DB is projection" >}}
-  {{< card link="runner-concurrent-jobs/" title="Runner Policy" subtitle="UI-managed concurrency, engines, cleanup" >}}
-  {{< card link="docker-engine/" title="Docker Engine" subtitle="uses: docker + registry_secret" >}}
-  {{< card link="secrets-vars-expressions/" title="Secrets & Variables Expressions" subtitle="Cheat sheet: secrets:/variables:/env:/${secrets.X}/$INPUT_*" >}}
-  {{< card link="secrets-access/" title="Secrets Access (GHA-style)" subtitle="allowlist + env: KEY: ${secrets.NAME}" >}}
-  {{< card link="secrets-access-control/" title="Secrets Access Control" subtitle="kind, team_shared, bindings, registry_secret" >}}
-  {{< card link="env-render/" title="Env Render" subtitle="ValueMap, ${secrets.X}, BUZ_ENV_CHANGED" >}}
-  {{< card link="config-block/" title="Config Block DSL v2" subtitle="Shipped: nested config, OSS + render-only" >}}
-  {{< card link="pipeline-format/" title="Pipeline Format" subtitle="YAML field reference + field registration" >}}
-  {{< card link="pipeline-notify/" title="Pipeline Notify" subtitle="End-of-build Feishu cards, Secrets webhook, Job Detail link" >}}
-  {{< card link="job-concurrency-queue/" title="Job Concurrency Queue" subtitle="Pipeline-level queue / discard" >}}
-  {{< card link="git-webhook-triggers/" title="Git Webhook Triggers" subtitle="GitHub/Gitee push, secret verify, Trigger events" >}}
-  {{< card link="admin-audit-logs/" title="Admin Audit Logs" subtitle="Platform-admin mutation audit + redaction" >}}
-  {{< card link="api-reference/" title="API Reference" subtitle="HTTP endpoints including Runners" >}}
+  {{< card link="authoring/" title="Authoring" subtitle="YAML format · expressions · config · notify · triggers" >}}
+  {{< card link="execution/" title="Execution" subtitle="Runner policy · Docker · SSH multi-host" >}}
+  {{< card link="platform/" title="Platform" subtitle="RBAC · secrets · API · audit" >}}
+  {{< card link="principles/" title="Principles" subtitle="B-U-Z detail notes" >}}
+  {{< card link="tech-stack/" title="Tech Stack" subtitle="Languages and major crates" >}}
 {{< /cards >}}

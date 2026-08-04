@@ -36,7 +36,7 @@ Membership filtering already happens on the server. An optional `?team_id=` woul
 
 ### Docs
 
-See [Users, Teams & RBAC](/docs/01-architecture/rbac/) — product rule **#7** and Frontend section.
+See [Users, Teams & RBAC](/docs/01-architecture/platform/rbac/) — product rule **#7** and Frontend section.
 
 ---
 

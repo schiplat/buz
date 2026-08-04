@@ -2,6 +2,8 @@
 title: Runner Policy (UI-managed)
 weight: 25
 description: "Centralized runner strategy — labels, concurrency, engines, cleanup — configured in Manager UI"
+aliases:
+  - /docs/01-architecture/runner-concurrent-jobs/
 ---
 
 # Runner Policy (UI-managed)
@@ -115,7 +117,7 @@ Policy columns live on `runners` (see [Database Schema](/docs/02-development/dat
 ## Related
 
 - [Configuration Reference](/docs/03-operations/configuration/) — machine-local `runner.toml` keys
-- [API Reference — Runners](/docs/01-architecture/api-reference/) — create / update / register / heartbeat payloads
-- [Docker Engine](/docs/01-architecture/docker-engine/) — gated by UI `docker_enabled`
-- [Job Concurrency Queue](/docs/01-architecture/job-concurrency-queue/) — pipeline-level queue / discard modes
+- [API Reference — Runners](/docs/01-architecture/platform/api-reference/) — create / update / register / heartbeat payloads
+- [Docker Engine](/docs/01-architecture/execution/docker-engine/) — gated by UI `docker_enabled`
+- [Job Concurrency Queue](/docs/01-architecture/authoring/job-concurrency-queue/) — pipeline-level queue / discard modes
 - [Deployment](/docs/03-operations/deployment/) — install + smoke path
