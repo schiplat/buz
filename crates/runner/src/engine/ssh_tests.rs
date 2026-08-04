@@ -1,6 +1,6 @@
 use super::{
-    build_rsa_fallback_chain, format_agent_identity_label, hash_label, key_type_display,
-    resolve_known_hosts_path, verify_against_known_hosts,
+    build_rsa_fallback_chain, format_agent_identity_label, hash_label, is_transient_ssh_error,
+    key_type_display, resolve_known_hosts_path, verify_against_known_hosts,
 };
 use russh::keys::{load_secret_key, HashAlg};
 
@@ -210,4 +210,30 @@ fn known_hosts_rejects_unknown_host() {
     assert!(err.is_err(), "unknown host must fail");
     let msg = err.unwrap_err().to_string();
     assert!(msg.contains("not found"), "{msg}");
+}
+
+#[test]
+fn transient_ssh_error_detects_reset_and_refused() {
+    assert!(is_transient_ssh_error(&anyhow::anyhow!(
+        "SSH connection to 1.2.3.4:22 failed: Connection reset by peer (os error 104)"
+    )));
+    assert!(is_transient_ssh_error(&anyhow::anyhow!(
+        "failed to open SSH session channel: Connection refused (os error 111)"
+    )));
+    assert!(is_transient_ssh_error(&anyhow::anyhow!(
+        "SSH connection timed out"
+    )));
+}
+
+#[test]
+fn transient_ssh_error_skips_auth_and_command_timeout() {
+    assert!(!is_transient_ssh_error(&anyhow::anyhow!(
+        "SSH key authentication rejected for user@host"
+    )));
+    assert!(!is_transient_ssh_error(&anyhow::anyhow!(
+        "SSH command timed out after 300s"
+    )));
+    assert!(!is_transient_ssh_error(&anyhow::anyhow!(
+        "unsupported credential type: foo"
+    )));
 }

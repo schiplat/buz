@@ -24,6 +24,7 @@ pub struct SshOutput {
 }
 
 /// Connection parameters for an SSH remote host.
+#[derive(Clone)]
 pub struct SshConnectionParams {
     pub host: String,
     pub port: u16,
@@ -42,45 +43,200 @@ pub struct SshConnectionParams {
     pub known_hosts_path: Option<String>,
 }
 
-/// Execute a command on a remote host via SSH.
+/// Connect attempts for transient network failures (reset / refused / timeout).
+const SSH_CONNECT_MAX_ATTEMPTS: u32 = 4;
+/// Backoff between connect attempts (ms), indexed by `attempt - 1`.
+const SSH_CONNECT_BACKOFF_MS: &[u64] = &[400, 1_000, 2_000];
+
+/// True when an error looks like a transient **transport** failure worth retrying.
+///
+/// Does **not** match command-level timeouts (`SSH command timed out after …`) —
+/// those must not reconnect-and-rerun a long `run` block.
+pub(crate) fn is_transient_ssh_error(err: &anyhow::Error) -> bool {
+    let s = format!("{err:#}").to_ascii_lowercase();
+    if s.contains("ssh command timed out") {
+        return false;
+    }
+    s.contains("connection reset")
+        || s.contains("connection refused")
+        || s.contains("broken pipe")
+        || s.contains("network is unreachable")
+        || s.contains("host is unreachable")
+        || s.contains("temporarily unavailable")
+        || s.contains("connection aborted")
+        || s.contains("connection timed out")
+        || s.contains("os error 104") // ECONNRESET
+        || s.contains("os error 111") // ECONNREFUSED
+        || s.contains("os error 110") // ETIMEDOUT
+        || s.contains("os error 101") // ENETUNREACH
+        || s.contains("os error 54") // macOS ECONNRESET
+        || s.contains("os error 61") // macOS ECONNREFUSED
+}
+
+/// Authenticated SSH connection that can run multiple exec channels.
+///
+/// One session per host for a pipeline SSH step (prepare + run) avoids reconnect
+/// storms that trip fail2ban / MaxStartups. Connect retries cover transient resets.
+pub struct SshSession {
+    handle: client::Handle<HostKeyHandler>,
+    addr: String,
+    conn: SshConnectionParams,
+}
+
+impl SshSession {
+    /// Connect and authenticate, retrying transient transport errors.
+    pub async fn connect(conn: &SshConnectionParams) -> anyhow::Result<Self> {
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..SSH_CONNECT_MAX_ATTEMPTS {
+            if attempt > 0 {
+                let delay = SSH_CONNECT_BACKOFF_MS
+                    .get((attempt as usize).saturating_sub(1))
+                    .copied()
+                    .unwrap_or(2_000);
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    max = SSH_CONNECT_MAX_ATTEMPTS,
+                    delay_ms = delay,
+                    host = %conn.host,
+                    port = conn.port,
+                    "SSH connect retry after transient failure"
+                );
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            match connect_authenticated(conn).await {
+                Ok(session) => {
+                    if attempt > 0 {
+                        tracing::info!(
+                            attempt = attempt + 1,
+                            host = %conn.host,
+                            port = conn.port,
+                            "SSH connect succeeded after retry"
+                        );
+                    }
+                    return Ok(session);
+                }
+                Err(e) if is_transient_ssh_error(&e) && attempt + 1 < SSH_CONNECT_MAX_ATTEMPTS => {
+                    tracing::warn!(
+                        error = %e,
+                        host = %conn.host,
+                        port = conn.port,
+                        "SSH connect failed (transient)"
+                    );
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("SSH connect failed")))
+    }
+
+    pub fn host_label(&self) -> &str {
+        &self.conn.host
+    }
+
+    /// Run a remote command on a new session channel (keeps the TCP session open).
+    pub async fn exec(
+        &mut self,
+        command: &str,
+        stdin: Option<&[u8]>,
+        cmd_timeout: Option<Duration>,
+    ) -> anyhow::Result<SshOutput> {
+        let default_timeout = cmd_timeout.unwrap_or(Duration::from_secs(300));
+        match timeout(default_timeout, self.exec_inner(command, stdin)).await {
+            Ok(Ok(out)) => Ok(out),
+            Ok(Err(e)) if is_transient_ssh_error(&e) => {
+                // Session may have died; reconnect once and retry the command.
+                tracing::warn!(
+                    error = %e,
+                    addr = %self.addr,
+                    "SSH channel failed (transient) — reconnecting session"
+                );
+                let conn = self.conn.clone();
+                *self = SshSession::connect(&conn).await?;
+                match timeout(default_timeout, self.exec_inner(command, stdin)).await {
+                    Ok(inner) => inner,
+                    Err(_) => {
+                        anyhow::bail!("SSH command timed out after {}s", default_timeout.as_secs())
+                    }
+                }
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => {
+                anyhow::bail!("SSH command timed out after {}s", default_timeout.as_secs())
+            }
+        }
+    }
+
+    async fn exec_inner(
+        &mut self,
+        command: &str,
+        stdin: Option<&[u8]>,
+    ) -> anyhow::Result<SshOutput> {
+        let mut channel = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to open SSH session channel: {e}"))?;
+
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|e| anyhow::anyhow!("SSH exec failed: {e}"))?;
+
+        if let Some(data) = stdin {
+            const STDIN_CHUNK: usize = 16 * 1024;
+            let mut offset = 0;
+            while offset < data.len() {
+                let end = (offset + STDIN_CHUNK).min(data.len());
+                channel
+                    .data_bytes(data[offset..end].to_vec())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("SSH stdin write failed: {e}"))?;
+                offset = end;
+            }
+            channel
+                .eof()
+                .await
+                .map_err(|e| anyhow::anyhow!("SSH stdin eof failed: {e}"))?;
+        }
+
+        Ok(drain_channel(&mut channel, &self.addr).await)
+    }
+}
+
+/// Open one authenticated session per host (connect retries included).
+pub async fn connect_all(conns: &[SshConnectionParams]) -> anyhow::Result<Vec<SshSession>> {
+    let mut out = Vec::with_capacity(conns.len());
+    for conn in conns {
+        out.push(SshSession::connect(conn).await?);
+    }
+    Ok(out)
+}
+
+/// One-shot helper: connect (with retries) → exec → drop session.
+///
+/// Pipeline SSH steps should prefer a reused [`SshSession`] via [`connect_all`];
+/// this remains for ad-hoc single commands outside the step path.
+#[allow(dead_code)]
 pub async fn execute(
     command: &str,
     conn: &SshConnectionParams,
     cmd_timeout: Option<Duration>,
 ) -> anyhow::Result<SshOutput> {
-    let default_timeout = cmd_timeout.unwrap_or(Duration::from_secs(300));
-
-    let result = timeout(default_timeout, execute_session(command, None, conn)).await;
-
-    match result {
-        Ok(inner) => inner,
-        Err(_elapsed) => {
-            anyhow::bail!("SSH command timed out after {}s", default_timeout.as_secs())
-        }
-    }
+    let mut session = SshSession::connect(conn).await?;
+    session.exec(command, None, cmd_timeout).await
 }
 
-/// Execute a remote command and write `stdin` to the SSH channel (process stdin).
-///
-/// Prefer this for binary uploads (`cat > path`) instead of embedding payloads in
-/// the exec argv — SSH `max_packet_size` is often ~32KiB, so large `echo | base64`
-/// commands fail with an empty exit status.
+/// One-shot helper with stdin (same lifecycle as [`execute`]).
+#[allow(dead_code)]
 pub async fn execute_with_stdin(
     command: &str,
     stdin: &[u8],
     conn: &SshConnectionParams,
     cmd_timeout: Option<Duration>,
 ) -> anyhow::Result<SshOutput> {
-    let default_timeout = cmd_timeout.unwrap_or(Duration::from_secs(300));
-
-    let result = timeout(default_timeout, execute_session(command, Some(stdin), conn)).await;
-
-    match result {
-        Ok(inner) => inner,
-        Err(_elapsed) => {
-            anyhow::bail!("SSH command timed out after {}s", default_timeout.as_secs())
-        }
-    }
+    let mut session = SshSession::connect(conn).await?;
+    session.exec(command, Some(stdin), cmd_timeout).await
 }
 
 /// Drain stdout/stderr until the channel closes. Do **not** stop on `Eof` alone —
@@ -127,11 +283,8 @@ async fn drain_channel(channel: &mut russh::Channel<client::Msg>, addr: &str) ->
     }
 }
 
-async fn execute_session(
-    command: &str,
-    stdin: Option<&[u8]>,
-    conn: &SshConnectionParams,
-) -> anyhow::Result<SshOutput> {
+/// One TCP connect + authenticate (no command). Used by [`SshSession::connect`].
+async fn connect_authenticated(conn: &SshConnectionParams) -> anyhow::Result<SshSession> {
     let config = client::Config::default();
     let config = Arc::new(config);
 
@@ -168,14 +321,25 @@ async fn execute_session(
                 )
             })?;
 
-            // Sanity-check: key should look like a valid PEM/OpenSSH key
-            let first_50 = if key_data.len() > 50 { &key_data[..50] } else { key_data };
-            tracing::info!("SSH key for {}@{}: first 50 chars = {:?}", conn.username, addr, first_50);
+            let first_50 = if key_data.len() > 50 {
+                &key_data[..50]
+            } else {
+                key_data
+            };
+            tracing::info!(
+                "SSH key for {}@{}: first 50 chars = {:?}",
+                conn.username,
+                addr,
+                first_50
+            );
 
             let tmp_path = std::env::temp_dir()
                 .join(format!("buz_ssh_key_{}", uuid::Uuid::new_v4()));
             std::fs::write(&tmp_path, key_data).map_err(|e| {
-                anyhow::anyhow!("failed to write SSH key to temp file {}: {e}", tmp_path.display())
+                anyhow::anyhow!(
+                    "failed to write SSH key to temp file {}: {e}",
+                    tmp_path.display()
+                )
             })?;
             let path_str = tmp_path.to_string_lossy().to_string();
             let path_for_cleanup = tmp_path.clone();
@@ -183,19 +347,16 @@ async fn execute_session(
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 let _ = std::fs::remove_file(path_for_cleanup);
             });
-            let key_pair = load_secret_key(
-                &path_str,
-                conn.credential_passphrase.as_deref(),
-            ).map_err(|e| {
-                anyhow::anyhow!(
-                    "failed to parse SSH private key for host '{}': {e}\n\
-                     → Make sure you pasted a valid private key (not a public key) in the Host form.\n\
-                     → If your key requires a passphrase, enter it in the 'Key Passphrase' field.",
-                    conn.host
-                )
-            })?;
+            let key_pair = load_secret_key(&path_str, conn.credential_passphrase.as_deref())
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to parse SSH private key for host '{}': {e}\n\
+                         → Make sure you pasted a valid private key (not a public key) in the Host form.\n\
+                         → If your key requires a passphrase, enter it in the 'Key Passphrase' field.",
+                        conn.host
+                    )
+                })?;
 
-            // Log key type and fingerprint for diagnostics
             let key_alg = key_pair.algorithm();
             let key_type_name = key_type_display(&key_alg);
             tracing::info!(
@@ -203,19 +364,18 @@ async fn execute_session(
                 key_pair.fingerprint(HashAlg::Sha256)
             );
 
-            authenticate_with_private_key(
-                &mut handle,
-                &conn.username,
-                &key_pair,
-                &addr,
-            ).await.map_err(|e| anyhow::anyhow!(
-                "SSH key authentication rejected for {}@{}: {e}\n\
-                 → Key type: {key_type_name}\n\
-                 → The key was loaded but the server refused it.\n\
-                 → Check that the public key matches ~/.ssh/authorized_keys on the target server.\n\
-                 → On the target server, run: cat ~/.ssh/authorized_keys",
-                conn.username, addr
-            ))?
+            authenticate_with_private_key(&mut handle, &conn.username, &key_pair, &addr)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "SSH key authentication rejected for {}@{}: {e}\n\
+                         → Key type: {key_type_name}\n\
+                         → The key was loaded but the server refused it.\n\
+                         → Check that the public key matches ~/.ssh/authorized_keys on the target server.\n\
+                         → On the target server, run: cat ~/.ssh/authorized_keys",
+                        conn.username, addr
+                    )
+                })?
         }
         "vault" => {
             let password = conn.credential_value.as_deref().ok_or_else(|| {
@@ -228,24 +388,24 @@ async fn execute_session(
             handle
                 .authenticate_password(&conn.username, password)
                 .await
-                .map_err(|e| anyhow::anyhow!(
-                    "SSH password authentication rejected for {}@{}: {e}\n\
-                     → The password was provided but the server refused it. Check the password or try key-based auth.",
-                    conn.username, addr
-                ))?
-        }
-        "agent" => {
-            authenticate_with_agent(&mut handle, &conn.username, &addr)
-                .await
                 .map_err(|e| {
                     anyhow::anyhow!(
-                        "SSH agent authentication failed for {}@{}: {e}\n\
-                         → Ensure the runner process has SSH_AUTH_SOCK set and keys loaded (ssh-add -l).\n\
-                         → On the target server, confirm the matching public key is in ~/.ssh/authorized_keys.",
+                        "SSH password authentication rejected for {}@{}: {e}\n\
+                         → The password was provided but the server refused it. Check the password or try key-based auth.",
                         conn.username, addr
                     )
                 })?
         }
+        "agent" => authenticate_with_agent(&mut handle, &conn.username, &addr)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "SSH agent authentication failed for {}@{}: {e}\n\
+                     → Ensure the runner process has SSH_AUTH_SOCK set and keys loaded (ssh-add -l).\n\
+                     → On the target server, confirm the matching public key is in ~/.ssh/authorized_keys.",
+                    conn.username, addr
+                )
+            })?,
         other => anyhow::bail!("unsupported credential type: {other}"),
     };
 
@@ -260,35 +420,11 @@ async fn execute_session(
 
     tracing::info!("SSH authenticated to {}@{}", conn.username, addr);
 
-    let mut channel = handle
-        .channel_open_session()
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to open SSH session channel: {e}"))?;
-
-    channel
-        .exec(true, command)
-        .await
-        .map_err(|e| anyhow::anyhow!("SSH exec failed: {e}"))?;
-
-    if let Some(data) = stdin {
-        // Flow-controlled by russh window; keep chunks ≤ typical max_packet_size.
-        const STDIN_CHUNK: usize = 16 * 1024;
-        let mut offset = 0;
-        while offset < data.len() {
-            let end = (offset + STDIN_CHUNK).min(data.len());
-            channel
-                .data_bytes(data[offset..end].to_vec())
-                .await
-                .map_err(|e| anyhow::anyhow!("SSH stdin write failed: {e}"))?;
-            offset = end;
-        }
-        channel
-            .eof()
-            .await
-            .map_err(|e| anyhow::anyhow!("SSH stdin eof failed: {e}"))?;
-    }
-
-    Ok(drain_channel(&mut channel, &addr).await)
+    Ok(SshSession {
+        handle,
+        addr,
+        conn: conn.clone(),
+    })
 }
 
 /// Human-readable name for a key algorithm.

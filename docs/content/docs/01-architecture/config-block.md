@@ -111,6 +111,12 @@ bytes to the remote via SSH channel stdin (`cat > /tmp/…` → `mv` into `dest`
 Payloads are **not** embedded in the exec argv (SSH `max_packet_size` is often
 ~32KiB; large `echo | base64` commands fail with an empty exit status).
 
+**SSH step session:** each `uses: ssh` step opens **one TCP session per host**
+(with connect retries on transient reset/refused/timeout). Config prepare
+(upload / `cat` / render) and the step `run` block reuse that session via new
+exec channels — they do **not** reconnect per remote command. Sessions are not
+shared across steps or jobs.
+
 **Why:** prepare runs **before** the container `run`. Templates must already
 exist on a host filesystem the Runner can read. A `uses: docker` workdir lives
 inside the container unless `dest` is defined as a host path bind-mounted in —

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::engine;
-use crate::engine::ssh::SshConnectionParams;
+use crate::engine::ssh::{SshConnectionParams, SshSession};
 use crate::masker::SecretCatalog;
 use crate::policy::{self, SharedPolicy};
 use std::collections::{HashMap, HashSet};
@@ -900,6 +900,50 @@ async fn execute_job(
             anyhow::bail!(msg);
         }
 
+        // ── SSH step session (one TCP connect per host for prepare + run) ──
+        // Open before config prepare so deliver/render share the same session as
+        // the run block (avoids reconnect storms / fail2ban / MaxStartups).
+        let mut ssh_sessions: Vec<SshSession> = Vec::new();
+        if exec_type == "ssh" {
+            let conns = resolve_ssh_conns(step, config);
+            if !conns.is_empty() {
+                match engine::ssh::connect_all(&conns).await {
+                    Ok(sessions) => {
+                        tracing::info!(
+                            hosts = sessions.len(),
+                            "SSH step '{step_name}': opened step session(s)"
+                        );
+                        ssh_sessions = sessions;
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        let _ = super::logs::upload_chunk(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            LogChunk {
+                                chunk_index: log_base + LOG_STEP_ERROR,
+                                step_order: idx as i32,
+                                content: format!("==> ERROR\n{msg}\n"),
+                            },
+                        )
+                        .await;
+                        update_job_status(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            "failed",
+                            Some(idx as i32),
+                        )
+                        .await?;
+                        anyhow::bail!(msg);
+                    }
+                }
+            }
+        }
+
         // ── config prepare: OSS deliver and/or config_render ─────────────────
         // OSS: download → unpack → [render] → run.
         // Render-only: templates already at dest (shell in place / SSH fetch→
@@ -927,15 +971,14 @@ async fn execute_job(
                 .await;
             }
             let prep_result = if exec_type == "ssh" {
-                let conns = resolve_ssh_conns(step, config);
-                if conns.is_empty() {
+                if ssh_sessions.is_empty() {
                     // The SSH branch below reports the missing-host error.
                     Ok(None)
                 } else {
                     super::config_source::prepare_ssh(
                         client,
                         step,
-                        &conns,
+                        &mut ssh_sessions,
                         Path::new(&config.runner.workspace_dir),
                         job_id,
                         idx,
@@ -1249,27 +1292,12 @@ async fn execute_job(
                 )
             }
             "ssh" => {
-                let host_values = step["host"]
-                    .as_array()
-                    .cloned()
-                    .or_else(|| {
-                        step["host"]
-                            .as_object()
-                            .map(|o| vec![serde_json::Value::Object(o.clone())])
-                    })
-                    .unwrap_or_else(|| {
-                        let _msg =
-                            format!("SSH step '{step_name}' missing host connection details");
-                        vec![]
-                    });
-
-                if host_values.is_empty() {
+                if ssh_sessions.is_empty() {
                     let msg = if step["host"].is_null() {
                         format!("SSH step '{step_name}' missing host connection details")
                     } else {
                         format!("SSH step '{step_name}': no hosts resolved from the database. Register your hosts in the Manager UI first.")
                     };
-                    // Upload the error as a log chunk so it appears in the step's terminal
                     let _ = super::logs::upload_chunk(
                         client,
                         config,
@@ -1323,19 +1351,18 @@ async fn execute_job(
                 output_secret_values = ssh_catalog.secret_values(&ssh_env);
 
                 let cfg = config.clone();
-                let cfg_ssh = cfg.clone();
                 let t = token.to_string();
                 let jid = job_id.to_string();
                 let sname = step_name.to_string();
                 let sname2 = sname.clone();
-                let hosts_json = serde_json::Value::Array(host_values);
                 let step_env_ssh = ssh_env;
+                // Move step sessions into the exec task (prepare already used them).
+                let mut sessions_for_run = std::mem::take(&mut ssh_sessions);
 
                 let step_task = tokio::spawn(async move {
                     execute_ssh_step(
-                        &cfg_ssh,
+                        &mut sessions_for_run,
                         &cmd,
-                        &hosts_json,
                         step_timeout,
                         &sname,
                         &step_env_ssh,
@@ -1773,36 +1800,29 @@ fn build_ssh_conn(hv: &serde_json::Value, config: &Config) -> anyhow::Result<Ssh
     })
 }
 
-/// Extracted SSH execution logic (keeps `execute_job` readable).
+/// Run the step command on already-open step sessions (one channel per host).
 async fn execute_ssh_step(
-    config: &Config,
+    sessions: &mut [SshSession],
     command: &str,
-    host_values: &serde_json::Value,
     step_timeout: Option<std::time::Duration>,
     step_name: &str,
     env: &std::collections::HashMap<String, String>,
 ) -> anyhow::Result<engine::shell::ShellOutput> {
-    let hosts = host_values
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("SSH step '{step_name}' host data is not an array"))?;
-
     let mut combined_stdout = String::new();
     let mut combined_stderr = String::new();
     let mut last_exit_code: i32 = 0;
+    let multi = sessions.len() > 1;
 
-    for (hi, hv) in hosts.iter().enumerate() {
-        let host_label = hv["host"].as_str().unwrap_or("?");
-        let ssh_conn = build_ssh_conn(hv, config)
-            .map_err(|e| anyhow::anyhow!("SSH step '{step_name}' host[{hi}]: {e}"))?;
-
-        let ssh_header = if hosts.len() > 1 {
+    for session in sessions.iter_mut() {
+        let host_label = session.host_label().to_string();
+        let ssh_header = if multi {
             format!("--- {step_name} @ {host_label} ---\n")
         } else {
             String::new()
         };
 
         let ssh_cmd = build_ssh_env_command(command, env);
-        match engine::ssh::execute(&ssh_cmd, &ssh_conn, step_timeout).await {
+        match session.exec(&ssh_cmd, None, step_timeout).await {
             Ok(o) => {
                 combined_stdout.push_str(&ssh_header);
                 combined_stdout.push_str(&o.stdout);

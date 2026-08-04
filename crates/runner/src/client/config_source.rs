@@ -20,7 +20,7 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use reqwest::Client;
 
-use crate::engine::ssh::{self, SshConnectionParams, SshOutput};
+use crate::engine::ssh::{SshOutput, SshSession};
 use shared::value_source::{self, ExpandMode, MissingPolicy, ValueMap};
 
 use super::env_render;
@@ -377,13 +377,13 @@ fn set_changed_env(env: &mut HashMap<String, String>, changed: &[String]) {
     }
 }
 
-/// Run one remote command, failing on a non-zero exit.
+/// Run one remote command on an open session, failing on a non-zero exit.
 async fn run_ssh(
-    conn: &SshConnectionParams,
+    session: &mut SshSession,
     cmd: &str,
     step_timeout: Option<Duration>,
 ) -> anyhow::Result<()> {
-    let out = ssh::execute(cmd, conn, step_timeout).await?;
+    let out = session.exec(cmd, None, step_timeout).await?;
     if out.exit_code != 0 {
         bail!(
             "remote command failed (exit {}): {}",
@@ -396,16 +396,17 @@ async fn run_ssh(
 
 /// Read a file on the target if it exists and is non-empty.
 async fn fetch_remote_text(
-    conn: &SshConnectionParams,
+    session: &mut SshSession,
     remote_path: &str,
     step_timeout: Option<Duration>,
 ) -> anyhow::Result<Option<String>> {
-    let out = ssh::execute(
-        &format!("cat {remote_path} 2>/dev/null || true"),
-        conn,
-        step_timeout,
-    )
-    .await?;
+    let out = session
+        .exec(
+            &format!("cat {remote_path} 2>/dev/null || true"),
+            None,
+            step_timeout,
+        )
+        .await?;
     if out.exit_code != 0 || out.stdout.is_empty() {
         return Ok(None);
     }
@@ -425,20 +426,19 @@ fn ssh_fail_detail(out: &SshOutput) -> String {
     format!("exit {} (no remote stderr)", out.exit_code)
 }
 
-/// Transfer `bytes` to `remote_path` on the target via SSH stdin (`cat > tmp`),
+/// Transfer `bytes` to `remote_path` via the open session (`cat > tmp` over stdin),
 /// then an atomic `mv` (and optional `chmod`) into place.
-///
-/// Avoids stuffing the payload into the exec argv (which breaks when the command
-/// exceeds SSH `max_packet_size`, commonly ~32KiB).
 async fn ssh_upload_bytes(
-    conn: &SshConnectionParams,
+    session: &mut SshSession,
     remote_path: &str,
     bytes: &[u8],
     mode: Option<u32>,
     step_timeout: Option<Duration>,
 ) -> anyhow::Result<()> {
     let part = format!("/tmp/.buz_upload_{}", uuid::Uuid::new_v4().simple());
-    let out = ssh::execute_with_stdin(&format!("cat > {part}"), bytes, conn, step_timeout).await?;
+    let out = session
+        .exec(&format!("cat > {part}"), Some(bytes), step_timeout)
+        .await?;
     if out.exit_code != 0 {
         bail!(
             "config upload to {remote_path} failed: {}",
@@ -449,7 +449,7 @@ async fn ssh_upload_bytes(
         Some(m) => format!("mv -f {part} {remote_path} && chmod {m:o} {remote_path}"),
         None => format!("mv -f {part} {remote_path}"),
     };
-    let out = ssh::execute(&mv, conn, step_timeout).await?;
+    let out = session.exec(&mv, None, step_timeout).await?;
     if out.exit_code != 0 {
         bail!(
             "config upload finalize to {remote_path} failed: {}",
@@ -460,7 +460,7 @@ async fn ssh_upload_bytes(
 }
 
 async fn ensure_remote_parent(
-    conn: &SshConnectionParams,
+    session: &mut SshSession,
     remote_dir: &str,
     relative: &str,
     step_timeout: Option<Duration>,
@@ -468,7 +468,7 @@ async fn ensure_remote_parent(
     if let Some(parent) = Path::new(relative).parent() {
         let p = parent.to_string_lossy();
         if !p.is_empty() && p != "." {
-            run_ssh(conn, &format!("mkdir -p {remote_dir}/{p}"), step_timeout).await?;
+            run_ssh(session, &format!("mkdir -p {remote_dir}/{p}"), step_timeout).await?;
         }
     }
     Ok(())
@@ -520,11 +520,14 @@ pub async fn prepare_local(
 
 /// Prepare for SSH: OSS deliver uploads the bundle; render-only fetches
 /// templates from the remote, renders on the Runner, uploads outputs.
+///
+/// Uses the caller's open [`SshSession`]s (one per host) so prepare shares the
+/// same TCP connection as the subsequent `run` block.
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare_ssh(
     client: &Client,
     step: &serde_json::Value,
-    conns: &[SshConnectionParams],
+    sessions: &mut [SshSession],
     local_root: &Path,
     job_id: &str,
     step_idx: usize,
@@ -538,7 +541,7 @@ pub async fn prepare_ssh(
         return prepare_ssh_deliver(
             client,
             step,
-            conns,
+            sessions,
             local_root,
             job_id,
             step_idx,
@@ -556,7 +559,7 @@ pub async fn prepare_ssh(
 
     prepare_ssh_render_only(
         step,
-        conns,
+        sessions,
         local_root,
         job_id,
         step_idx,
@@ -572,7 +575,7 @@ pub async fn prepare_ssh(
 async fn prepare_ssh_deliver(
     client: &Client,
     step: &serde_json::Value,
-    conns: &[SshConnectionParams],
+    sessions: &mut [SshSession],
     local_root: &Path,
     job_id: &str,
     step_idx: usize,
@@ -590,17 +593,17 @@ async fn prepare_ssh_deliver(
 
     let mut forced_redact = Vec::new();
     let mut changed_agg: Vec<String> = Vec::new();
-    for conn in conns {
-        ssh_upload_bytes(conn, &tar_remote, &tarball, None, step_timeout).await?;
+    for session in sessions.iter_mut() {
+        ssh_upload_bytes(session, &tar_remote, &tarball, None, step_timeout).await?;
         let unpack_cmd = format!(
             "mkdir -p {remote_dir} && tar xzf {tar_remote} -C {remote_dir} && rm -f {tar_remote}"
         );
-        run_ssh(conn, &unpack_cmd, step_timeout).await?;
+        run_ssh(session, &unpack_cmd, step_timeout).await?;
         let mut host_changed: Vec<String> = Vec::new();
         for spec in specs {
-            ensure_remote_parent(conn, remote_dir, &spec.output, step_timeout).await?;
+            ensure_remote_parent(session, remote_dir, &spec.output, step_timeout).await?;
             let remote_out = format!("{remote_dir}/{}", spec.output);
-            let old = fetch_remote_text(conn, &remote_out, step_timeout).await?;
+            let old = fetch_remote_text(session, &remote_out, step_timeout).await?;
             let (content, changed, forced) = render_env_with_old(
                 &local_dir,
                 spec,
@@ -609,7 +612,7 @@ async fn prepare_ssh_deliver(
                 old.as_deref().unwrap_or(""),
             )?;
             ssh_upload_bytes(
-                conn,
+                session,
                 &remote_out,
                 content.as_bytes(),
                 Some(spec.mode),
@@ -641,7 +644,7 @@ async fn prepare_ssh_deliver(
 #[allow(clippy::too_many_arguments)]
 async fn prepare_ssh_render_only(
     _step: &serde_json::Value,
-    conns: &[SshConnectionParams],
+    sessions: &mut [SshSession],
     local_root: &Path,
     job_id: &str,
     step_idx: usize,
@@ -661,10 +664,10 @@ async fn prepare_ssh_render_only(
     let mut forced_redact = Vec::new();
     let mut changed_agg: Vec<String> = Vec::new();
 
-    for conn in conns {
+    for session in sessions.iter_mut() {
         // Templates must already exist under dest (prior deliver / git / manual).
         run_ssh(
-            conn,
+            session,
             &format!(
                 "test -d {remote_dir} || {{ echo \"config_render: dest '{remote_dir}' does not exist on remote\" >&2; exit 1; }}"
             ),
@@ -675,7 +678,7 @@ async fn prepare_ssh_render_only(
         let mut host_changed: Vec<String> = Vec::new();
         for spec in specs {
             let remote_tmpl = format!("{remote_dir}/{}", spec.template);
-            let tmpl = fetch_remote_text(conn, &remote_tmpl, step_timeout)
+            let tmpl = fetch_remote_text(session, &remote_tmpl, step_timeout)
                 .await?
                 .ok_or_else(|| {
                     anyhow::anyhow!(
@@ -696,9 +699,9 @@ async fn prepare_ssh_render_only(
                 )
             })?;
 
-            ensure_remote_parent(conn, remote_dir, &spec.output, step_timeout).await?;
+            ensure_remote_parent(session, remote_dir, &spec.output, step_timeout).await?;
             let remote_out = format!("{remote_dir}/{}", spec.output);
-            let old = fetch_remote_text(conn, &remote_out, step_timeout).await?;
+            let old = fetch_remote_text(session, &remote_out, step_timeout).await?;
             let (content, changed, forced) = render_env_with_old(
                 &staging,
                 spec,
@@ -707,7 +710,7 @@ async fn prepare_ssh_render_only(
                 old.as_deref().unwrap_or(""),
             )?;
             ssh_upload_bytes(
-                conn,
+                session,
                 &remote_out,
                 content.as_bytes(),
                 Some(spec.mode),
