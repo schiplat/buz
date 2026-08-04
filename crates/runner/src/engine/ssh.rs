@@ -257,10 +257,14 @@ pub async fn connect_all(
         return Ok(out);
     }
 
-    let futs = conns.iter().cloned().enumerate().map(|(idx, conn)| async move {
-        let result = SshSession::connect(&conn).await;
-        (idx, conn.host, conn.port, result)
-    });
+    let futs = conns
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(idx, conn)| async move {
+            let result = SshSession::connect(&conn).await;
+            (idx, conn.host, conn.port, result)
+        });
     let results = futures_util::future::join_all(futs).await;
 
     let mut indexed: Vec<(usize, SshSession)> = Vec::with_capacity(conns.len());
@@ -298,25 +302,28 @@ pub async fn probe_workspaces(
     }
     let timeout = cmd_timeout.or(Some(Duration::from_secs(15)));
     let owned = std::mem::take(sessions);
-    let futs = owned.into_iter().enumerate().map(|(idx, mut session)| async move {
-        let target = session.target_label();
-        let workspace = match session.exec("pwd", None, timeout).await {
-            Ok(out) if out.exit_code == 0 => out.stdout.trim().to_string(),
-            Ok(out) => {
-                tracing::warn!(
-                    target = %target,
-                    exit = out.exit_code,
-                    "SSH pwd probe failed"
-                );
-                String::new()
-            }
-            Err(e) => {
-                tracing::warn!(target = %target, error = %e, "SSH pwd probe error");
-                String::new()
-            }
-        };
-        (idx, session, target, workspace)
-    });
+    let futs = owned
+        .into_iter()
+        .enumerate()
+        .map(|(idx, mut session)| async move {
+            let target = session.target_label();
+            let workspace = match session.exec("pwd", None, timeout).await {
+                Ok(out) if out.exit_code == 0 => out.stdout.trim().to_string(),
+                Ok(out) => {
+                    tracing::warn!(
+                        target = %target,
+                        exit = out.exit_code,
+                        "SSH pwd probe failed"
+                    );
+                    String::new()
+                }
+                Err(e) => {
+                    tracing::warn!(target = %target, error = %e, "SSH pwd probe error");
+                    String::new()
+                }
+            };
+            (idx, session, target, workspace)
+        });
     let results = futures_util::future::join_all(futs).await;
     let mut indexed: Vec<(usize, SshSession, String, String)> = results;
     indexed.sort_by_key(|(i, _, _, _)| *i);

@@ -59,13 +59,25 @@ Docs layout: **Quick Start → Architecture** (Authoring / Execution / Platform)
 
 ```
 buzproject/
+├── Cargo.toml                 # Workspace (shared / manager / runner)
+├── Makefile
 ├── crates/
-│   ├── shared/        # Protocol, YAML schema, shared types
-│   ├── manager/       # Control plane (buz-manager)
-│   └── runner/        # Execution agent (buz-runner)
-├── frontend/          # Vue 3 SPA (embedded into buz-manager at build)
-├── docs/              # Hugo documentation site
-├── example/           # Local conf + sample pipelines
-├── deploy/            # Docker / standalone Compose templates
-└── pipelines/         # Optional pipeline YAML definitions
+│   ├── shared/                # Protocol, pipeline YAML schema, shared types
+│   ├── manager/               # Control plane → buz-manager
+│   └── runner/                # Execution agent → buz-runner
+├── frontend/                  # Vue 3 SPA (embedded into buz-manager at build)
+├── docs/                      # Hugo + Hextra documentation site
+├── example/                   # Local run scaffold
+│   ├── conf/                  # manager.toml / runner.toml
+│   └── pipelines/             # Sample pipeline YAML
+├── deploy/                    # Packaged configs + ops scripts
+│   ├── conf/                  # Docker / release config templates
+│   ├── standalone/            # buz-standalone Compose
+│   └── nginx/                 # Reverse-proxy examples
+├── scripts/                   # Release packaging, e2e helpers
+├── Dockerfile                 # buz-manager image
+├── Dockerfile.runner          # buz-runner image
+├── Dockerfile.standalone      # Manager + Runner (arm64 lab image)
+├── docker-compose.yml
+└── .github/workflows/         # CI, Docker, release
 ```

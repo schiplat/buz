@@ -104,19 +104,24 @@ fn build_ssh_banner_includes_target_and_workspace() {
         ("deploy@10.0.0.1:22".into(), "/home/deploy".into()),
         ("deploy@10.0.0.2:2222".into(), String::new()),
     ]);
-    assert!(banner.contains("==> SSH [deploy@10.0.0.1:22]\n"), "{banner}");
+    assert!(
+        banner.contains("==> SSH [deploy@10.0.0.1:22]\n"),
+        "{banner}"
+    );
     assert!(banner.contains("  workspace  /home/deploy\n"), "{banner}");
-    assert!(banner.contains("==> SSH [deploy@10.0.0.2:2222]\n"), "{banner}");
+    assert!(
+        banner.contains("==> SSH [deploy@10.0.0.2:2222]\n"),
+        "{banner}"
+    );
     assert!(
         !banner.contains("workspace  \n")
-            || banner
-                .lines()
-                .filter(|l| l.contains("10.0.0.2"))
-                .count()
-                == 1,
+            || banner.lines().filter(|l| l.contains("10.0.0.2")).count() == 1,
         "empty workspace must omit workspace line: {banner}"
     );
-    let only_second = banner.split("==> SSH [deploy@10.0.0.2:2222]\n").nth(1).unwrap();
+    let only_second = banner
+        .split("==> SSH [deploy@10.0.0.2:2222]\n")
+        .nth(1)
+        .unwrap();
     assert!(
         !only_second.contains("workspace"),
         "second host has no workspace: {banner}"
@@ -151,7 +156,10 @@ fn verbose_step_config_prefers_resolved_host_objects() {
         }
     });
     let cfg = build_verbose_step_config(&step, "ssh", "");
-    assert!(cfg.contains("  hosts            root@81.71.41.19:2424"), "{cfg}");
+    assert!(
+        cfg.contains("  hosts            root@81.71.41.19:2424"),
+        "{cfg}"
+    );
     assert!(cfg.contains("  hosts_strategy   chain"), "{cfg}");
     assert!(!cfg.contains("SECRET_KEY_MATERIAL"), "{cfg}");
     assert!(!cfg.contains("legacy-name"), "{cfg}");
@@ -182,8 +190,16 @@ fn merge_ssh_host_outputs_any_failure_fails_step() {
         ],
     );
     assert_eq!(out.exit_code, 7);
-    assert!(out.stdout.contains("--- Deploy @ host-a ---"), "{:?}", out.stdout);
-    assert!(out.stdout.contains("--- Deploy @ host-b ---"), "{:?}", out.stdout);
+    assert!(
+        out.stdout.contains("--- Deploy @ host-a ---"),
+        "{:?}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("--- Deploy @ host-b ---"),
+        "{:?}",
+        out.stdout
+    );
     // Sorted by host label: a before b
     let pos_a = out.stdout.find("host-a").unwrap();
     let pos_b = out.stdout.find("host-b").unwrap();
@@ -198,10 +214,7 @@ fn merge_ssh_host_outputs_error_sets_minus_one() {
     let out = merge_ssh_host_outputs(
         "x",
         false,
-        vec![(
-            "only".into(),
-            Err(anyhow::anyhow!("channel died")),
-        )],
+        vec![("only".into(), Err(anyhow::anyhow!("channel died")))],
     );
     assert_eq!(out.exit_code, -1);
     assert!(out.stderr.contains("ERROR: channel died"), "{}", out.stderr);

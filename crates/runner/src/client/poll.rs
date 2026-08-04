@@ -2032,7 +2032,9 @@ pub(crate) fn merge_ssh_host_outputs(
                 }
                 let code = o.exit_code as i32;
                 if code != 0 {
-                    tracing::warn!("SSH step '{step_name}' on {host_label} exited with code {code}");
+                    tracing::warn!(
+                        "SSH step '{step_name}' on {host_label} exited with code {code}"
+                    );
                     if exit_code == 0 {
                         exit_code = code;
                     }

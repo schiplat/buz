@@ -682,11 +682,10 @@ async fn migrate_tasks_config_block_columns(pool: &SqlitePool) -> anyhow::Result
         .execute(pool)
         .await;
 
-    let _ = sqlx::query(
-        "ALTER TABLE tasks ADD COLUMN hosts_strategy TEXT NOT NULL DEFAULT 'chain'",
-    )
-    .execute(pool)
-    .await;
+    let _ =
+        sqlx::query("ALTER TABLE tasks ADD COLUMN hosts_strategy TEXT NOT NULL DEFAULT 'chain'")
+            .execute(pool)
+            .await;
 
     if tasks_has_column(pool, "config_path").await {
         sqlx::query(

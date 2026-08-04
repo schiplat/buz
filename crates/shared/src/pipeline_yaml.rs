@@ -527,7 +527,11 @@ fn non_empty(s: Option<&str>) -> Option<&str> {
 ///
 /// Accepts legacy alias `serial` → `chain` (pre-release name).
 pub fn normalize_hosts_strategy(raw: Option<&str>) -> Result<&'static str, String> {
-    match raw.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("chain") {
+    match raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("chain")
+    {
         "chain" | "serial" => Ok("chain"),
         "parallel" => Ok("parallel"),
         other => Err(format!(
@@ -1256,7 +1260,11 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                         .as_deref()
                         .map(str::trim)
                         .filter(|v| !v.is_empty())
-                        .map(|v| normalize_hosts_strategy(Some(v)).unwrap_or("chain").to_string()),
+                        .map(|v| {
+                            normalize_hosts_strategy(Some(v))
+                                .unwrap_or("chain")
+                                .to_string()
+                        }),
                     dir: s.dir.clone(),
                     timeout: s.timeout.clone(),
                     retry: s.retry,

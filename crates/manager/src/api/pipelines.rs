@@ -1135,11 +1135,10 @@ pub(crate) async fn insert_steps(
             .as_ref()
             .map(|l| l.join(","))
             .unwrap_or_default();
-        let hosts_strategy_stored = shared::pipeline_yaml::normalize_hosts_strategy(
-            step.hosts_strategy.as_deref(),
-        )
-        .unwrap_or("chain")
-        .to_string();
+        let hosts_strategy_stored =
+            shared::pipeline_yaml::normalize_hosts_strategy(step.hosts_strategy.as_deref())
+                .unwrap_or("chain")
+                .to_string();
         // Step-level secret allowlist (comma-separated)
         let step_secrets_stored = step
             .secrets
