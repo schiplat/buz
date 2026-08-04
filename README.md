@@ -15,23 +15,27 @@ buz-runner --version
 ## Quick Start
 
 ```bash
-# Build
-cargo build --release
+# One-step: build frontend + backend and start Manager
+make run
+# → http://localhost:8080  (first visit → /setup to create admin)
 
-# Start Manager
-./target/release/buz-manager
+# Or step by step
+make example        # create data/pipelines dirs (configs in example/conf/)
+make build          # frontend + release binaries (UI embedded in buz-manager)
+cd example && BUZ_ALLOW_INSECURE_JWT=1 ../target/release/buz-manager
 
-# Start Runner
+# Runner (register_token from Manager UI → Runners)
 export BUZ_REGISTER_TOKEN="your-token"
-./target/release/buz-runner
+./target/release/buz-runner -c example/conf/runner.toml
 
-# Frontend dev server
-cd frontend && npm run dev
-
-# Documentation
+# Docs site (local)
 make docs-serve
-# → http://127.0.0.1:3001/
+# → http://127.0.0.1:3001/  (or :1313 depending on Hugo)
 ```
+
+**Lab / single-VM (arm64):** one-container image — see [Standalone](docs/content/docs/03-operations/standalone.md) (`buz-standalone`).
+
+More: [docs Quick Start](docs/content/docs/00-quick-start/_index.md) · [Deployment](docs/content/docs/03-operations/deployment.md) · [Configuration](docs/content/docs/03-operations/configuration.md) (includes `[standalone]`).
 
 ## Architecture
 
@@ -41,6 +45,7 @@ Buz follows three core principles:
 - **U (Unified)** — Single Manager orchestrates runners across all network segments.
 - **Z (Zero)** — Zero-trust security + zero operations burden.
 
+Docs layout: **Quick Start → Architecture** (Authoring / Execution / Platform) → **Development** → **Operations**.
 
 ## Tech Stack
 
@@ -55,10 +60,12 @@ Buz follows three core principles:
 ```
 buzproject/
 ├── crates/
-│   ├── buz-core/      # Shared library
-│   ├── buz-manager/   # Control plane
-│   └── buz-runner/    # Execution agent
-├── frontend/          # Vue 3 SPA
+│   ├── shared/        # Protocol, YAML schema, shared types
+│   ├── manager/       # Control plane (buz-manager)
+│   └── runner/        # Execution agent (buz-runner)
+├── frontend/          # Vue 3 SPA (embedded into buz-manager at build)
 ├── docs/              # Hugo documentation site
-└── pipelines/         # Pipeline YAML definitions
+├── example/           # Local conf + sample pipelines
+├── deploy/            # Docker / standalone Compose templates
+└── pipelines/         # Optional pipeline YAML definitions
 ```
