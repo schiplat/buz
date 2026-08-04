@@ -264,10 +264,15 @@ Bind mounts must be writable by **uid 10001** (`chown -R 10001:10001 …`).
 ### Image defaults (inside the image)
 
 - Manager: `deploy/conf/manager.standalone.toml` → `/app/buz/conf/manager.toml`
+  - `[standalone] enabled = true`
+  - `auto_approve = ["standalone-runner"]`
 - Runner: `deploy/conf/runner.standalone.toml` → `/app/buz/conf/runner.toml`
   - `name = "standalone-runner"`
   - `manager_url = "http://127.0.0.1:8080"`
   - `standalone = true`
+  - `register_token = ""` (tokenless loopback register)
+
+Config key reference: [Configuration — Standalone mode](/docs/03-operations/configuration/#standalone-mode).
 
 To override configs, bind-mount your own files over those paths (advanced).
 

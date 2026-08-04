@@ -30,6 +30,11 @@ heartbeat_timeout_seconds = 90
 yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30
 
+# Dev / single-container only — leave disabled in production (default)
+# [standalone]
+# enabled = true
+# auto_approve = ["standalone-runner"]
+
 [logging]
 level = "info"                 # error | warn | info | debug | trace
 # file = "./logs/manager.log"  # optional; when set → stdout + file
@@ -45,6 +50,8 @@ level = "info"                 # error | warn | info | debug | trace
 | `auth` | `runner_register_token_ttl_hours` | Runner JWT lifetime after register |
 | `runner` | `heartbeat_timeout_seconds` | Offline threshold for runners |
 | `pipeline` | `yaml_scan_*` | File/Git authority for pipeline YAML; scanner + UI online edit write here. **Flat directory only** (basename files; no private subdirs). See [YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/) |
+| `standalone` | `enabled` | Default `false`. When `true`, allow **loopback** Runner register without `register_token` for names in `auto_approve` (or pre-created in UI). Non-loopback register is **rejected**. Dev / `buz-standalone` only — see [Standalone mode](#standalone-mode) |
+| `standalone` | `auto_approve` | Runner names created at Manager boot if missing. Default `["standalone-runner"]` |
 | `logging` | `level` | Default `info`. Overridden by `RUST_LOG` if set |
 | `logging` | `file` | Optional append path; empty = stdout only |
 
@@ -66,7 +73,7 @@ Machine-local only. Strategy is **not** configured here — see [Runner Policy](
 
 | Managed in UI | Kept in TOML (`[runner]` / `[engine]` / `[logging]`) |
 |---------------|-----------------------------------------------------|
-| `labels` | `manager_url`, `register_token`, `tls_skip_verify` |
+| `labels` | `manager_url`, `register_token`, `tls_skip_verify`, `standalone` |
 | `max_concurrent_jobs`, cleanup | `name`, `workspace_dir` |
 | engine enable flags + `ssh_host_key_policy` | `prefer_interfaces`, `ssh_known_hosts_path` |
 
@@ -75,6 +82,7 @@ Machine-local only. Strategy is **not** configured here — see [Runner Policy](
 name = "prod-runner-01"              # must match UI Runner name
 manager_url = "https://buz-api.example.com"
 register_token = "paste-from-ui"     # or env BUZ_REGISTER_TOKEN
+# standalone = false                 # true → allow empty register_token (lab image only)
 # tls_skip_verify = false
 workspace_dir = "/tmp/buz-runner"
 # prefer_interfaces = ["enp26s0"]
@@ -87,7 +95,52 @@ level = "info"
 # file = "./logs/runner.log"   # Runner default if omitted: ./logs/runner.log
 ```
 
+| Key | Notes |
+|-----|-------|
+| `register_token` | Required unless `standalone = true` (see [Standalone mode](#standalone-mode)) |
+| `standalone` | Default `false`. When `true`, Runner may start with an empty `register_token` and register over loopback against a Manager with `[standalone] enabled = true` |
+
 > Obsolete `[manager]` section is **rejected** at startup with a migration hint.
+
+## Standalone mode
+
+**Dev / lab only** — same-container Manager + Runner (`buz-standalone` image), or a local loopback pair. Do **not** enable on a production multi-runner control plane.
+
+### Manager — `[standalone]`
+
+```toml
+[standalone]
+enabled = true
+auto_approve = ["standalone-runner"]   # created at boot if missing
+```
+
+| Behavior | Detail |
+|----------|--------|
+| Boot | For each name in `auto_approve`, create an authorized runner row if absent (`labels` include `standalone`) |
+| Register (loopback) | Peer `127.0.0.1` / `::1` may register **without** `register_token` when the runner name is authorized (`auto_approve` or UI **New Runner**) |
+| Register (remote) | Always **rejected** while `enabled = true` — even with a valid token |
+| Default | `enabled = false` — normal token registration only |
+
+Checked-in template: `deploy/conf/manager.standalone.toml`.
+
+### Runner — `[runner].standalone`
+
+```toml
+[runner]
+name = "standalone-runner"           # must match auto_approve / UI name
+manager_url = "http://127.0.0.1:8080"
+standalone = true
+register_token = ""                  # allowed when standalone = true
+```
+
+| Behavior | Detail |
+|----------|--------|
+| Startup | Empty `register_token` is allowed only when `standalone = true`; otherwise Manager refuses to start the process |
+| Pairing | Expects Manager `[standalone] enabled = true` and loopback `manager_url` |
+
+Checked-in template: `deploy/conf/runner.standalone.toml`.
+
+First-run Compose, volumes, and upgrade: **[Standalone (single image)](/docs/03-operations/standalone/)**.
 
 ## Logging
 
