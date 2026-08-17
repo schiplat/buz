@@ -1,5 +1,5 @@
 /**
- * Unit tests for safeNavigate — run with: cd frontend && npx vitest run
+ * Unit tests for safeNavigate — run with: cd dashboard && npx vitest run
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createRouter, createMemoryHistory } from 'vue-router'

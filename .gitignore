@@ -20,9 +20,9 @@ example/data/
 *.db-wal
 *.db-shm
 
-# Node / Frontend
-frontend/node_modules/
-frontend/dist/
+# Node / Dashboard
+dashboard/node_modules/
+dashboard/dist/
 
 # Config with secrets (use *.example.toml or placeholders in committed samples)
 *.local.toml

@@ -429,7 +429,7 @@ still reserving half a day for joint integration.
    - Failures isolated: OSS 404 on deliver step; missing `${secrets.X}` on render step
 4. **After D4:** YAML import **new shape only**; UI can edit deliver vs multi-row render.
 5. **Exit gate (D5 — passed):** `cargo test --all`,
-   `example_pipelines_validate_test`, `cd frontend && npm test && npm run build`.
+   `example_pipelines_validate_test`, `cd dashboard && npm test && npm run build`.
 
 ### Acceptance (D5)
 

@@ -33,7 +33,7 @@ buzproject/
 │           ├── client/     # HTTP communication
 │           ├── engine/     # Execution engines (shell, ssh, docker)
 │           └── masker/     # Log masking (Aho-Corasick)
-├── frontend/               # Vue 3 + TypeScript (built into buz-manager via rust-embed)
+├── dashboard/              # Vue 3 + TypeScript (built into buz-manager via rust-embed)
 ├── Dockerfile              # Manager image → /app/buz/
 ├── Dockerfile.runner       # Runner image → /app/buz/
 ├── docker-compose.yml      # Mounts deploy/conf → /app/buz/conf
@@ -63,8 +63,8 @@ cargo build
 # Run Runner (in another terminal)
 ./target/debug/buz-runner
 
-# Frontend dev server
-cd frontend && npm run dev
+# Dashboard dev server
+cd dashboard && npm run dev
 
 # Docs
 cd docs && hugo server --port 3001

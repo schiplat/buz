@@ -5,19 +5,20 @@ import {
 } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { isNavDebugEnabled, navLog } from '@/utils/navigation'
+import { pageTitle } from '@/utils/documentTitle'
 
 const routes: RouteRecordRaw[] = [
   {
     path: '/setup',
     name: 'setup',
     component: () => import('@/pages/Setup.vue'),
-    meta: { public: true },
+    meta: { public: true, title: 'Setup' },
   },
   {
     path: '/login',
     name: 'login',
     component: () => import('@/pages/Login.vue'),
-    meta: { public: true },
+    meta: { public: true, title: 'Sign in' },
   },
   {
     path: '/',
@@ -111,6 +112,10 @@ router.afterEach((to, from, failure) => {
   } else {
     navLog('afterEach ok', { from: from.fullPath, to: to.fullPath })
   }
+
+  // Per-route tab title: `{page} · Buz` (falls back to `Buz`).
+  const title = typeof to.meta.title === 'string' ? to.meta.title : undefined
+  document.title = pageTitle(title)
 })
 
 router.onError((error, to) => {

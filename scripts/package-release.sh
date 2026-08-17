@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assemble a deployable archive: binaries + config templates + frontend dist.
+# Assemble a deployable archive: binaries + config templates + dashboard dist.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -44,7 +44,7 @@ strip "$STAGE/bin/buz-manager" "$STAGE/bin/buz-runner" 2>/dev/null || true
 
 cp -a "$ROOT/deploy/conf/manager.toml" "$ROOT/deploy/conf/runner.toml" "$STAGE/conf/"
 cp -a "$ROOT/deploy/README.md" "$STAGE/README.md"
-# UI is embedded in buz-manager — no frontend/ directory in the archive.
+# UI is embedded in buz-manager — no dashboard/ directory in the archive.
 
 # Never ship a usable default JWT secret — require BUZ_JWT_SECRET (or edit) at deploy time.
 STAGE_MANAGER_TOML="$STAGE/conf/manager.toml" python3 - <<'PY'

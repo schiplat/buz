@@ -10,7 +10,7 @@ use rust_embed::Embed;
 use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Embed)]
-#[folder = "../../frontend/dist"]
+#[folder = "../../dashboard/dist"]
 #[prefix = ""]
 struct EmbeddedAssets;
 

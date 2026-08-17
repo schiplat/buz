@@ -12,8 +12,8 @@ RUN apt-get update -qq \
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-RUN mkdir -p frontend/dist \
- && printf '%s\n' '<!doctype html><title>stub</title>' > frontend/dist/index.html
+RUN mkdir -p dashboard/dist \
+ && printf '%s\n' '<!doctype html><title>stub</title>' > dashboard/dist/index.html
 
 RUN cargo build --locked --release -p runner \
  && strip target/release/buz-runner

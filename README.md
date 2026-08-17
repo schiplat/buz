@@ -4,7 +4,7 @@ Lightweight Cross-Network Orchestration Platform.
 
 **Single Binary, Unified Orchestration, Zero Trust.**
 
-Current version: **1.3.7** (workspace `Cargo.toml` + `frontend/package.json`).
+Current version: **1.3.8** (workspace `Cargo.toml` + `dashboard/package.json`).
 
 ```bash
 buz-manager --version
@@ -15,13 +15,13 @@ buz-runner --version
 ## Quick Start
 
 ```bash
-# One-step: build frontend + backend and start Manager
+# One-step: build dashboard + backend and start Manager
 make run
 # → http://localhost:8080  (first visit → /setup to create admin)
 
 # Or step by step
 make example        # create data/pipelines dirs (configs in example/conf/)
-make build          # frontend + release binaries (UI embedded in buz-manager)
+make build          # dashboard + release binaries (UI embedded in buz-manager)
 cd example && BUZ_ALLOW_INSECURE_JWT=1 ../target/release/buz-manager
 
 # Runner (register_token from Manager UI → Runners)
@@ -65,7 +65,7 @@ buzproject/
 │   ├── shared/                # Protocol, pipeline YAML schema, shared types
 │   ├── manager/               # Control plane → buz-manager
 │   └── runner/                # Execution agent → buz-runner
-├── frontend/                  # Vue 3 SPA (embedded into buz-manager at build)
+├── dashboard/                 # Vue 3 SPA (embedded into buz-manager at build)
 ├── docs/                      # Hugo + Hextra documentation site
 ├── example/                   # Local run scaffold
 │   ├── conf/                  # manager.toml / runner.toml

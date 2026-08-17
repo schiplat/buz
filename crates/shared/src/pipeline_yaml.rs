@@ -76,7 +76,7 @@ pub fn notify_should_send(on: Option<&[String]>, job_status: &str) -> bool {
     };
     match on {
         None => DEFAULT_NOTIFY_ON.contains(&event),
-        Some(list) if list.is_empty() => false,
+        Some([]) => false,
         Some(list) => list.iter().any(|e| e.trim() == event),
     }
 }
@@ -672,13 +672,13 @@ fn validate_config_block(
 
     // Partial junk: render without deliver source but also missing dest already handled;
     // key_path/source alone handled; dest-only without render/deliver is useless.
-    if !is_deliver && !has_render {
-        if dest.is_some() {
-            errors.push(YamlValidationError {
-                field: field.into(),
-                message: "'config.dest' alone is not enough — add OSS deliver (source+key_path) or render".into(),
-            });
-        }
+    if !is_deliver && !has_render && dest.is_some() {
+        errors.push(YamlValidationError {
+            field: field.into(),
+            message:
+                "'config.dest' alone is not enough — add OSS deliver (source+key_path) or render"
+                    .into(),
+        });
     }
 
     for (i, er) in render_entries.iter().enumerate() {

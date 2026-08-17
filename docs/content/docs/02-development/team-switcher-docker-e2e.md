@@ -23,8 +23,8 @@ List APIs already membership-filter (`team_in_clause`). Multi-team users (and pl
 
 | Piece | Change |
 |-------|--------|
-| `frontend/src/utils/teamFilter.ts` | Pure `matchesTeamFilter(resourceTeamId, activeTeamId, { includeShared? })` |
-| `frontend/src/stores/auth.ts` | `activeTeamId` (persisted), `showTeamSwitcher`, `preferredTeamId`, `matchesActiveTeam` |
+| `dashboard/src/utils/teamFilter.ts` | Pure `matchesTeamFilter(resourceTeamId, activeTeamId, { includeShared? })` |
+| `dashboard/src/stores/auth.ts` | `activeTeamId` (persisted), `showTeamSwitcher`, `preferredTeamId`, `matchesActiveTeam` |
 | `TeamSwitcher.vue` + `TopNav` | Select: All my teams \| team… (admin loads `GET /teams`) |
 | Pipelines / Secrets / Jobs / Hosts | `filtered*` computed lists; empty copy distinguishes “none at all” vs “none in team” |
 | `GET /jobs` | Response includes `team_id` from joined pipeline for filtering |

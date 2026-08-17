@@ -9,7 +9,7 @@ Get Manager (and optionally Runner) running on your machine. For production layo
 ## One-step local run
 
 ```bash
-# Build frontend + backend and start Manager
+# Build dashboard + backend and start Manager
 make run
 # → http://localhost:8080  (first visit → /setup to create admin)
 ```
@@ -18,7 +18,7 @@ make run
 
 ```bash
 make example        # create example/conf + sample pipelines
-make build          # frontend + release binaries
+make build          # dashboard + release binaries
 cd example && ../target/release/buz-manager
 ```
 

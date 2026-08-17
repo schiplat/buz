@@ -10,13 +10,13 @@ description: "Deploying Center and Runner in production"
 
 ## Embedded Web UI
 
-`buz-manager` embeds `frontend/dist` at compile time (`rust-embed`). Production binaries and Docker images need **no** separate `frontend/` directory.
+`buz-manager` embeds `dashboard/dist` at compile time (`rust-embed`). Production binaries and Docker images need **no** separate `dashboard/` directory.
 
 ```bash
-make build-frontend   # required before release cargo build
+make build-dashboard   # required before release cargo build
 make build-backend
 ./target/release/buz-manager -c conf/manager.toml
-# Optional disk override for UI iteration: -f frontend/dist
+# Optional disk override for UI iteration: -f dashboard/dist
 ```
 
 ## GitHub Release packages
@@ -277,11 +277,11 @@ For HTTPS, add `listen 443 ssl` + certificate lines to the site config (see [HTT
 
 ## Center Deployment
 
-The Center binary includes the frontend static assets and SQLite database. No external dependencies required.
+The Center binary includes the dashboard static assets and SQLite database. No external dependencies required.
 
 ```bash
 # Build
-make build-frontend
+make build-dashboard
 make build-backend
 
 # Create config (or use `make example`)

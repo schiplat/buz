@@ -105,7 +105,7 @@ Returns liveness plus package version (no separate `/version` endpoint).
 { "status": "ok", "name": "Buz", "version": "1.3.0", "component": "manager" }
 ```
 
-Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`) and mirrored in `frontend/package.json`. CLI: `buz-manager --version` / `buz-runner --version`.
+Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`) and mirrored in `dashboard/package.json`. CLI: `buz-manager --version` / `buz-runner --version`.
 
 ## Runners
 

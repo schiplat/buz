@@ -12,11 +12,11 @@
 
 ARG NODE_VERSION=20
 
-FROM node:${NODE_VERSION}-bookworm-slim AS frontend
-WORKDIR /src/frontend
-COPY frontend/package.json frontend/package-lock.json ./
+FROM node:${NODE_VERSION}-bookworm-slim AS dashboard
+WORKDIR /src/dashboard
+COPY dashboard/package.json dashboard/package-lock.json ./
 RUN npm ci
-COPY frontend/ ./
+COPY dashboard/ ./
 RUN npm run build
 
 FROM rust:bookworm AS builder
@@ -27,7 +27,7 @@ RUN apt-get update -qq \
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY --from=frontend /src/frontend/dist ./frontend/dist
+COPY --from=dashboard /src/dashboard/dist ./dashboard/dist
 
 RUN cargo build --locked --release -p manager -p runner \
  && strip target/release/buz-manager target/release/buz-runner

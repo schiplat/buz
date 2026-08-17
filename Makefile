@@ -1,4 +1,4 @@
-.PHONY: dev dev-frontend dev-manager run build build-frontend build-backend build example test test-docker-e2e ci package
+.PHONY: dev dev-dashboard dev-manager run build build-dashboard build-backend build example test test-docker-e2e ci package
 
 # ── One-step: build everything and run ─────────────────────────────
 run: build
@@ -10,16 +10,16 @@ run-runner: build
 	cd example && ../target/release/buz-runner
 
 # ── Build all ─────────────────────────────────────────────────────
-# Frontend must be built first — release embeds frontend/dist into buz-manager.
-build: build-frontend build-backend
+# Dashboard must be built first — release embeds dashboard/dist into buz-manager.
+build: build-dashboard build-backend
 	@echo "=== Build complete (UI embedded in buz-manager) ==="
 
-# ── Frontend ──────────────────────────────────────────────────────
-build-frontend:
-	cd frontend && npm run build
+# ── Dashboard ──────────────────────────────────────────────────────
+build-dashboard:
+	cd dashboard && npm run build
 
-dev-frontend:
-	cd frontend && npm run dev
+dev-dashboard:
+	cd dashboard && npm run dev
 
 # ── Backend ───────────────────────────────────────────────────────
 build-backend:
@@ -30,8 +30,8 @@ dev-manager:
 
 # ── Quick dev (no release optimization) ───────────────────────────
 dev:
-	@echo "=== Building frontend + debug manager ==="
-	cd frontend && npm run build
+	@echo "=== Building dashboard + debug manager ==="
+	cd dashboard && npm run build
 	cargo build -p manager
 	@echo "=== Starting ==="
 	cd example && BUZ_ALLOW_INSECURE_JWT=1 ../target/debug/buz-manager
@@ -62,7 +62,7 @@ docs-clean:
 # ── Clean ─────────────────────────────────────────────────────────
 clean:
 	cargo clean
-	rm -rf frontend/dist
+	rm -rf dashboard/dist
 	rm -rf example/data
 	# Keep example/conf and example/pipelines (committed templates)
 # ── Test & CI ────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ test-docker-e2e:
 ci: test
 	cargo fmt --all -- --check
 	cargo check --all
-	cd frontend && npm run build
+	cd dashboard && npm run build
 	@echo "=== CI passed ==="
 
 # ── Release tarball (local) ───────────────────────────────────────

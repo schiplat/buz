@@ -33,14 +33,16 @@ fn login_echo_stream_do_not_collide() {
 fn verbose_chunk_order_matches_display_sequence() {
     // ORDER BY chunk_index must yield prepare → config → prep → login →
     // exec → run → stream → result → error.
-    assert!(LOG_STEP_VERBOSE_PREPARE < LOG_STEP_VERBOSE_CONFIG);
-    assert!(LOG_STEP_VERBOSE_CONFIG < LOG_STEP_VERBOSE_CONFIG_PREP);
-    assert!(LOG_STEP_VERBOSE_CONFIG_PREP < LOG_LOGIN);
-    assert!(LOG_LOGIN < LOG_STEP_VERBOSE_EXEC);
-    assert!(LOG_STEP_VERBOSE_EXEC < LOG_ECHO);
-    assert!(LOG_ECHO < LOG_STREAM_START);
-    assert!(LOG_STREAM_START < LOG_STEP_VERBOSE_RESULT);
-    assert!(LOG_STEP_VERBOSE_RESULT < LOG_STEP_ERROR);
+    const _: () = {
+        assert!(LOG_STEP_VERBOSE_PREPARE < LOG_STEP_VERBOSE_CONFIG);
+        assert!(LOG_STEP_VERBOSE_CONFIG < LOG_STEP_VERBOSE_CONFIG_PREP);
+        assert!(LOG_STEP_VERBOSE_CONFIG_PREP < LOG_LOGIN);
+        assert!(LOG_LOGIN < LOG_STEP_VERBOSE_EXEC);
+        assert!(LOG_STEP_VERBOSE_EXEC < LOG_ECHO);
+        assert!(LOG_ECHO < LOG_STREAM_START);
+        assert!(LOG_STREAM_START < LOG_STEP_VERBOSE_RESULT);
+        assert!(LOG_STEP_VERBOSE_RESULT < LOG_STEP_ERROR);
+    };
 }
 
 #[test]

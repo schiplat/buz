@@ -201,7 +201,7 @@ pub async fn upsert_from_yaml(
     // slots ∪ `${secrets.X}` in env maps. Top-level list is optional (GHA-style).
     // Step `secrets:` column still stores per-step narrowing for claim-time scope.
     let pipeline_secrets: Vec<String> =
-        shared::pipeline_yaml::collect_effective_secret_names(&parsed);
+        shared::pipeline_yaml::collect_effective_secret_names(parsed);
 
     // Normalize key to basename and migrate legacy absolute/relative paths.
     let yaml_key = normalize_yaml_path_key(file_path);
@@ -316,7 +316,7 @@ pub async fn upsert_from_yaml(
             }
         }
 
-        return Ok(id);
+        Ok(id)
     } else {
         let id = Uuid::new_v4().to_string();
 
@@ -1013,9 +1013,9 @@ pub async fn yaml_sync_status(
         }
     };
 
-    let file_mtime = meta.modified().ok().and_then(|t| {
+    let file_mtime = meta.modified().ok().map(|t| {
         let dt: chrono::DateTime<chrono::Utc> = t.into();
-        Some(dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        dt.format("%Y-%m-%d %H:%M:%S").to_string()
     });
 
     let content = tokio::fs::read_to_string(&path)
