@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
 import type { LogChunk } from '@/api/jobs'
 import { formatLogClock } from '@/utils/time'
 import { formatLogChunkForTerminal } from '@/utils/logFormat'
@@ -14,6 +15,9 @@ const props = defineProps<{
 const containerEl = ref<HTMLDivElement | null>(null)
 let term: Terminal | null = null
 let fitAddon: FitAddon | null = null
+/** Number of chunks already written to the terminal — lets live polls append
+ *  only new chunks instead of clearing and re-writing (which would flicker). */
+let writtenCount = 0
 
 const terminalTheme = {
   background: '#0d1117',
@@ -31,6 +35,18 @@ function clockFor(chunk: LogChunk): string {
   return formatLogClock(chunk.created_at, '--:--:--')
 }
 
+/** Write any chunks not yet rendered (incremental; avoids full clear+flicker). */
+function syncLogs() {
+  if (!term) return
+  const filtered = props.logs.filter(c => c.step_order === props.stepOrder)
+  for (let i = writtenCount; i < filtered.length; i++) {
+    const chunk = filtered[i]
+    const ts = clockFor(chunk)
+    term.write(formatLogChunkForTerminal(ts, chunk.content))
+  }
+  writtenCount = filtered.length
+}
+
 function initTerminal() {
   if (!containerEl.value || term) return
   fitAddon = new FitAddon()
@@ -45,11 +61,8 @@ function initTerminal() {
   fitAddon.fit()
 
   // Write initial logs
-  const filtered = props.logs.filter(c => c.step_order === props.stepOrder)
-  for (const chunk of filtered) {
-    const ts = clockFor(chunk)
-    term.write(formatLogChunkForTerminal(ts, chunk.content))
-  }
+  writtenCount = 0
+  syncLogs()
 }
 
 onMounted(async () => {
@@ -57,14 +70,8 @@ onMounted(async () => {
   initTerminal()
 })
 
-watch(() => props.logs, async () => {
-  if (!term) return
-  term.clear()
-  const filtered = props.logs.filter(c => c.step_order === props.stepOrder)
-  for (const chunk of filtered) {
-    const ts = clockFor(chunk)
-    term.write(formatLogChunkForTerminal(ts, chunk.content))
-  }
+watch(() => props.logs, () => {
+  syncLogs()
 }, { deep: true })
 
 onUnmounted(() => {

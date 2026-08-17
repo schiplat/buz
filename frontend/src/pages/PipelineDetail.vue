@@ -49,6 +49,8 @@ watch(pipelineId, async () => {
   const id = pipelineId.value
   if (!id) return
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+  stopHistoryLogPoll()
+  historyLogs.value.clear()
   pipelineWs?.close()
   pipelineWs = null
   jobs.value = []
@@ -470,10 +472,52 @@ async function loadHistoryLogs(jobId: string) {
       historyLogs.value.set(jobId, logs)
     } catch { /* ignore */ }
   }
+  // Keep already-expanded live jobs streaming while the user is watching.
+  startHistoryLogPoll()
 }
 
 function getHistoryLogs(jobId: string): LogChunk[] {
   return historyLogs.value.get(jobId) || []
+}
+
+// ── Live history log polling (step terminals on the Build History tab) ──
+// Pipeline-level WS only pushes job *status*; log chunks are per-job. Poll the
+// logs endpoint for live jobs the user has already expanded so their step
+// terminals stream instead of freezing at first load.
+let historyLogPoll: ReturnType<typeof setInterval> | null = null
+let historyLogPollBusy = false
+
+function liveLoadedJobIds(): string[] {
+  return jobs.value
+    .filter((j) => j.status === 'running' || j.status === 'pending')
+    .map((j) => j.id)
+    .filter((id) => historyLogs.value.has(id))
+}
+
+function startHistoryLogPoll() {
+  if (historyLogPoll) return
+  historyLogPoll = setInterval(async () => {
+    if (!alive || historyLogPollBusy) return
+    if (liveLoadedJobIds().length === 0) return
+    historyLogPollBusy = true
+    try {
+      for (const id of liveLoadedJobIds()) {
+        const job = jobs.value.find((j) => j.id === id)
+        if (job?.debug_unredact && !auth.isPlatformAdmin) continue
+        try {
+          const logs = await jobsApi.logs(id, { timeout: 5000 })
+          if (alive) historyLogs.value.set(id, logs)
+        } catch { /* ignore */ }
+      }
+    } finally {
+      historyLogPollBusy = false
+    }
+  }, 3000)
+}
+
+function stopHistoryLogPoll() {
+  if (historyLogPoll) { clearInterval(historyLogPoll); historyLogPoll = null }
+  historyLogPollBusy = false
 }
 
 function runNum(job: Job, paged: Job[]) {
@@ -693,6 +737,7 @@ const boundSecretNames = computed(() => {
 onUnmounted(() => {
   alive = false
   if (refreshTimer) clearInterval(refreshTimer)
+  stopHistoryLogPoll()
   pipelineWs?.close()
   pipelineWs = null
 })
