@@ -188,6 +188,9 @@ pub async fn verify_cli_admin_token(
 }
 
 /// Resolve team_id from request: prefer `team_id`, else look up slug from `owner_group`.
+/// When both are empty, fall back to the `default` team so callers (create secret /
+/// pipeline) stay consistent with YAML pipelines whose omitted `team:` also resolves
+/// to `default` — the user never has to manually align a team.
 pub async fn resolve_required_team_id(
     pool: &SqlitePool,
     team_id: Option<&str>,
@@ -215,9 +218,15 @@ pub async fn resolve_required_team_id(
         return Ok((row.get(0), row.get(1)));
     }
 
-    Err(AppError::ValidationFailed(
-        "team_id is required (pipelines and secrets must belong to a team)".into(),
-    ))
+    // Zero-config fallback: default team (created by bootstrap). Matches YAML
+    // scanner behavior (`team:` omitted → `default`).
+    let row = sqlx::query("SELECT id, slug FROM teams WHERE slug = 'default'")
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            AppError::Internal("default team not found — run manager bootstrap".into())
+        })?;
+    Ok((row.get(0), row.get(1)))
 }
 
 pub async fn resolve_optional_team_id(

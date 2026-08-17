@@ -110,11 +110,12 @@ function openCreate() {
   editing.value = null
   formName.value = ''
   formValue.value = ''
-  // Only default to the active team when it still exists — a stale
-  // `buz_active_team` (e.g. a deleted team) would otherwise be submitted and
-  // rejected by the backend with a 422 team_id error.
+  // Default to the `default` team (matching YAML `team:` omission) so secrets
+  // created here line up with YAML-sourced pipelines without a manual team pick.
+  const def = teams.value.find((t) => t.slug === 'default')
   const preferred = auth.preferredTeamId
-  formTeamId.value = teams.value.some((t) => t.id === preferred) ? preferred : (teams.value[0]?.id || '')
+  formTeamId.value = def?.id
+    ?? (teams.value.some((t) => t.id === preferred) ? preferred : (teams.value[0]?.id || ''))
   formTeamShared.value = false
   formKind.value = 'generic'
   showValue.value = false

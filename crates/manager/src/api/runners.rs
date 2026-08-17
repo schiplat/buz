@@ -1355,6 +1355,29 @@ pub async fn poll(
                     dst.entry(k.clone()).or_insert(v.clone());
                 }
             }
+
+            // Surface a precise, team-aware error when a render-referenced
+            // secret is missing from the pipeline's team (the usual cause is a
+            // secret created in another team). Enforced only when
+            // `on_missing: fail` (the default); `warn` stays permissive.
+            if config_render_strict(&config_render_raw) {
+                let mut missing: Vec<String> = Vec::new();
+                for name in step_secrets_str
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                {
+                    if render_secrets.get(name).and_then(|v| v.as_str()).is_none()
+                        && !missing.iter().any(|m| m == name)
+                    {
+                        missing.push(name.to_string());
+                    }
+                }
+                if let Some(msg) = render_missing_error(&state.pool, &pipeline_id, &missing).await {
+                    task_json["config_render_error"] = serde_json::Value::String(msg);
+                }
+            }
+
             task_json["render_env_secrets"] = render_secrets;
         }
 
@@ -1409,6 +1432,97 @@ pub async fn poll(
 /// Load same-team secrets by name into `into_by_name` (and optionally a parallel map).
 /// Skips names already present. Used for GHA-style implicit allowlist via `${secrets.X}`
 /// / purpose slots when top-level `secrets:` is omitted.
+/// Whether any `config.render` entry enforces `on_missing: fail` (the default
+/// when the key is absent). Only `warn` is permissive.
+fn config_render_strict(config_render_raw: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(config_render_raw) else {
+        return true;
+    };
+    let entries: &[serde_json::Value] = match &value {
+        serde_json::Value::Array(items) => items.as_slice(),
+        serde_json::Value::Object(_) => std::slice::from_ref(&value),
+        _ => return true,
+    };
+    if entries.is_empty() {
+        return false;
+    }
+    entries.iter().any(|e| {
+        let om = e
+            .get("on_missing")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("fail");
+        !om.eq_ignore_ascii_case("warn")
+    })
+}
+
+/// Build a precise, team-aware error message for render secrets referenced in
+/// the step allowlist but not resolvable in the pipeline's team. Returns
+/// `None` when `missing` is empty. The message never leaks secret values.
+async fn render_missing_error(
+    pool: &sqlx::SqlitePool,
+    pipeline_id: &str,
+    missing: &[String],
+) -> Option<String> {
+    if missing.is_empty() {
+        return None;
+    }
+
+    let team_row: Option<(String, String)> = sqlx::query_as(
+        "SELECT t.name, t.slug FROM teams t
+         JOIN pipelines p ON p.team_id = t.id
+         WHERE p.id = ?",
+    )
+    .bind(pipeline_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+
+    let placeholders = vec!["?"; missing.len()].join(",");
+    let query = format!(
+        "SELECT s.name, COALESCE(t.name, ''), COALESCE(t.slug, '') FROM secrets s
+         LEFT JOIN teams t ON t.id = s.team_id
+         WHERE s.name IN ({placeholders})"
+    );
+    let mut q = sqlx::query_as::<_, (String, String, String)>(&query);
+    for name in missing {
+        q = q.bind(name);
+    }
+    let located: Vec<(String, String, String)> = q.fetch_all(pool).await.unwrap_or_default();
+
+    let (team_name, team_slug) = team_row.unwrap_or_else(|| ("unknown".into(), "unknown".into()));
+    let mut msg = format!(
+        "config.render references secret(s) not found in pipeline team '{team_name}' \
+         (slug: {team_slug}): {}. ",
+        missing.join(", ")
+    );
+
+    for name in missing {
+        match located.iter().find(|(n, _, _)| n == name) {
+            Some((_, other_name, other_slug)) if !other_slug.is_empty() => {
+                msg.push_str(&format!(
+                    "'{name}' exists in team '{other_name}' (slug: {other_slug}) — \
+                     move the secret into '{team_slug}' or bind the pipeline to \
+                     '{other_slug}'. "
+                ));
+            }
+            Some(_) => {
+                msg.push_str(&format!(
+                    "'{name}' exists but has no team — assign it to team '{team_slug}'. "
+                ));
+            }
+            None => {
+                msg.push_str(&format!(
+                    "'{name}' does not exist in any team — create it under team '{team_slug}'. "
+                ));
+            }
+        }
+    }
+
+    Some(msg)
+}
+
 async fn merge_team_secrets_by_name(
     pool: &sqlx::SqlitePool,
     pipeline_id: &str,

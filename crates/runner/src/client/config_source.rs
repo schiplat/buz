@@ -31,6 +31,32 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 /// Default mode for the rendered output file (`0600`).
 const DEFAULT_ENV_MODE: u32 = 0o600;
 
+/// One progress line emitted while preparing a config bundle.
+///
+/// `verbose_only` lines (e.g. unpacked file listings, changed-key detail) are
+/// only shown in Verbose mode; everything else is always visible.
+#[derive(Debug, Clone)]
+pub struct PrepLogLine {
+    pub verbose_only: bool,
+    pub text: String,
+}
+
+impl PrepLogLine {
+    pub fn info(text: impl Into<String>) -> Self {
+        Self {
+            verbose_only: false,
+            text: text.into(),
+        }
+    }
+
+    pub fn verbose(text: impl Into<String>) -> Self {
+        Self {
+            verbose_only: true,
+            text: text.into(),
+        }
+    }
+}
+
 /// Result of preparing the config bundle for one step.
 #[derive(Debug)]
 pub struct ConfigPrep {
@@ -38,6 +64,10 @@ pub struct ConfigPrep {
     pub env: HashMap<String, String>,
     /// Secret values written to the rendered `.env` — force-redact in logs.
     pub forced_redact: Vec<String>,
+    /// Progress lines to surface under the `==> CONFIG PREP` banner (download
+    /// result, unpack listing, per-file render, readiness). Never carries
+    /// secrets or the signed URL — only status, sizes and file/template names.
+    pub logs: Vec<PrepLogLine>,
 }
 
 #[derive(Debug, Clone)]
@@ -193,8 +223,8 @@ fn resolve_remote_dir(step: &serde_json::Value, job_id: &str, step_idx: usize) -
     }
 }
 
-/// Download the signed OSS bundle.
-async fn download(client: &Client, url: &str) -> anyhow::Result<Vec<u8>> {
+/// Download the signed OSS bundle, returning `(bytes, http_status, byte_len)`.
+async fn download(client: &Client, url: &str) -> anyhow::Result<(Vec<u8>, u16, usize)> {
     let resp = client
         .get(url)
         .timeout(DOWNLOAD_TIMEOUT)
@@ -204,11 +234,53 @@ async fn download(client: &Client, url: &str) -> anyhow::Result<Vec<u8>> {
     if !resp.status().is_success() {
         bail!("config bundle download returned HTTP {}", resp.status());
     }
-    Ok(resp.bytes().await?.to_vec())
+    let status = resp.status().as_u16();
+    let bytes = resp.bytes().await?.to_vec();
+    let len = bytes.len();
+    Ok((bytes, status, len))
 }
 
-/// Extract a tar.gz byte blob into `dest` via the system `tar`.
-fn unpack(tarball: &[u8], dest: &Path) -> anyhow::Result<()> {
+/// Format a byte count as a human-readable size (e.g. `12.3 KiB`).
+fn format_bytes(n: usize) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Recursively list regular files under `root` as root-relative paths, sorted.
+fn list_files(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut items: Vec<_> = entries.flatten().collect();
+        items.sort_by_key(|e| e.path());
+        for entry in items {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(rel) = path.strip_prefix(root) {
+                out.push(rel.to_string_lossy().into_owned());
+            }
+        }
+    }
+    out
+}
+
+/// Extract a tar.gz byte blob into `dest` via the system `tar`, returning the
+/// unpacked file list (root-relative, for the Verbose listing).
+fn unpack(tarball: &[u8], dest: &Path) -> anyhow::Result<Vec<String>> {
     std::fs::create_dir_all(dest)
         .with_context(|| format!("cannot create config dir '{}'", dest.display()))?;
     let mut child = std::process::Command::new("tar")
@@ -234,7 +306,7 @@ fn unpack(tarball: &[u8], dest: &Path) -> anyhow::Result<()> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(())
+    Ok(list_files(dest))
 }
 
 /// Render the template against the job's `ValueMap`, merge with the existing
@@ -265,6 +337,33 @@ fn render_env_with_old(
     Ok((merged, changed, forced_redact))
 }
 
+/// Append per-render progress lines: an always-visible `template → output`
+/// line, plus a Verbose `changed` line when any managed key actually changed.
+fn push_render_logs(logs: &mut Vec<PrepLogLine>, template: &str, output: &str, changed: &[String]) {
+    logs.push(PrepLogLine::info(format!(
+        "  render          {template} → {output}"
+    )));
+    if !changed.is_empty() {
+        logs.push(PrepLogLine::verbose(format!(
+            "  changed         {}",
+            changed.join(", ")
+        )));
+    }
+}
+
+/// Append the unpacked file listing as Verbose-only progress lines.
+fn push_files_logs(logs: &mut Vec<PrepLogLine>, files: &[String]) {
+    if files.is_empty() {
+        logs.push(PrepLogLine::verbose(
+            "  files           (empty bundle)".to_string(),
+        ));
+        return;
+    }
+    for file in files {
+        logs.push(PrepLogLine::verbose(format!("  files           {file}")));
+    }
+}
+
 /// Apply all render specs under `config_dir`, returning union of changed keys
 /// and forced-redact values from the last render (secret set is job-wide).
 fn apply_renders_local(
@@ -272,6 +371,7 @@ fn apply_renders_local(
     specs: &[EnvRenderSpec],
     values: &ValueMap,
     archive: &str,
+    logs: &mut Vec<PrepLogLine>,
 ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
     let mut changed_all: Vec<String> = Vec::new();
     let mut forced_redact = Vec::new();
@@ -289,6 +389,7 @@ fn apply_renders_local(
         let (content, changed, forced) =
             render_env_with_old(config_dir, spec, values, archive, &old)?;
         write_atomic(&output_path, &content, spec.mode)?;
+        push_render_logs(logs, &spec.template, &spec.output, &changed);
         forced_redact = forced;
         for k in changed {
             if !changed_all.contains(&k) {
@@ -485,12 +586,18 @@ pub async fn prepare_local(
 ) -> anyhow::Result<ConfigPrep> {
     let specs = config_render_specs(step).map_err(anyhow::Error::msg)?;
     let local_dir = resolve_local_dir(step, local_root, step_idx);
+    let mut logs: Vec<PrepLogLine> = Vec::new();
 
     let archive = if has_config_auth(step) {
         let url = config_url(step)?;
         let label = archive_label(step);
-        let tarball = download(client, &url).await?;
-        unpack(&tarball, &local_dir)?;
+        let (tarball, status, len) = download(client, &url).await?;
+        logs.push(PrepLogLine::info(format!(
+            "  download        HTTP {status} ({})",
+            format_bytes(len)
+        )));
+        let files = unpack(&tarball, &local_dir)?;
+        push_files_logs(&mut logs, &files);
         label
     } else if !specs.is_empty() {
         if !local_dir.is_dir() {
@@ -508,7 +615,8 @@ pub async fn prepare_local(
     let mut env = HashMap::new();
     let mut forced_redact = Vec::new();
     if !specs.is_empty() {
-        let (changed_all, forced) = apply_renders_local(&local_dir, &specs, values, &archive)?;
+        let (changed_all, forced) =
+            apply_renders_local(&local_dir, &specs, values, &archive, &mut logs)?;
         forced_redact = forced;
         set_changed_env(&mut env, &changed_all);
     }
@@ -516,7 +624,12 @@ pub async fn prepare_local(
         "BUZ_CONFIG_DIR".to_string(),
         local_dir.to_string_lossy().into_owned(),
     );
-    Ok(ConfigPrep { env, forced_redact })
+    logs.push(PrepLogLine::info("==> CONFIG READY".to_string()));
+    Ok(ConfigPrep {
+        env,
+        forced_redact,
+        logs,
+    })
 }
 
 /// Prepare for SSH: OSS deliver uploads the bundle; render-only fetches
@@ -592,14 +705,22 @@ async fn prepare_ssh_deliver(
 ) -> anyhow::Result<ConfigPrep> {
     let url = config_url(step)?;
     let archive = archive_label(step);
-    let tarball = std::sync::Arc::new(download(client, &url).await?);
+    let (tarball_bytes, status, len) = download(client, &url).await?;
+    let mut logs: Vec<PrepLogLine> = Vec::new();
+    logs.push(PrepLogLine::info(format!(
+        "  download        HTTP {status} ({})",
+        format_bytes(len)
+    )));
+    let tarball = std::sync::Arc::new(tarball_bytes);
     let local_dir = local_root.join(format!("config-{job_id}-{step_idx}"));
-    unpack(tarball.as_ref(), &local_dir)?;
+    let files = unpack(tarball.as_ref(), &local_dir)?;
+    push_files_logs(&mut logs, &files);
     let tar_remote = format!("/tmp/buz_config_{job_id}_{step_idx}.tar.gz");
     let remote_dir = remote_dir.to_string();
     let specs = specs.to_vec();
     let values = values.clone();
     let archive = archive.clone();
+    let multi_host = sessions.len() > 1;
 
     let owned = std::mem::take(sessions);
     let results = if parallel && owned.len() > 1 {
@@ -656,8 +777,12 @@ async fn prepare_ssh_deliver(
     for (session, host, result) in results {
         sessions.push(session);
         match result {
-            Ok((changed, forced)) => {
+            Ok((changed, forced, host_logs)) => {
                 forced_redact = forced;
+                if multi_host {
+                    logs.push(PrepLogLine::info(format!("  host            {host}")));
+                }
+                logs.extend(host_logs);
                 for k in changed {
                     if !changed_agg.contains(&k) {
                         changed_agg.push(k);
@@ -681,7 +806,12 @@ async fn prepare_ssh_deliver(
         set_changed_env(&mut env, &changed_agg);
     }
     env.insert("BUZ_CONFIG_DIR".to_string(), remote_dir);
-    Ok(ConfigPrep { env, forced_redact })
+    logs.push(PrepLogLine::info("==> CONFIG READY".to_string()));
+    Ok(ConfigPrep {
+        env,
+        forced_redact,
+        logs,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -695,7 +825,7 @@ async fn prepare_one_host_deliver(
     values: &ValueMap,
     archive: &str,
     step_timeout: Option<Duration>,
-) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+) -> anyhow::Result<(Vec<String>, Vec<String>, Vec<PrepLogLine>)> {
     ssh_upload_bytes(session, tar_remote, tarball, None, step_timeout).await?;
     let unpack_cmd = format!(
         "mkdir -p {remote_dir} && tar xzf {tar_remote} -C {remote_dir} && rm -f {tar_remote}"
@@ -703,6 +833,7 @@ async fn prepare_one_host_deliver(
     run_ssh(session, &unpack_cmd, step_timeout).await?;
     let mut host_changed: Vec<String> = Vec::new();
     let mut forced_redact = Vec::new();
+    let mut host_logs: Vec<PrepLogLine> = Vec::new();
     for spec in specs {
         ensure_remote_parent(session, remote_dir, &spec.output, step_timeout).await?;
         let remote_out = format!("{remote_dir}/{}", spec.output);
@@ -722,6 +853,7 @@ async fn prepare_one_host_deliver(
             step_timeout,
         )
         .await?;
+        push_render_logs(&mut host_logs, &spec.template, &spec.output, &changed);
         forced_redact = forced;
         for k in changed {
             if !host_changed.contains(&k) {
@@ -729,7 +861,7 @@ async fn prepare_one_host_deliver(
             }
         }
     }
-    Ok((host_changed, forced_redact))
+    Ok((host_changed, forced_redact, host_logs))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -756,6 +888,8 @@ async fn prepare_ssh_render_only(
     let remote_dir = remote_dir.to_string();
     let specs = specs.to_vec();
     let values = values.clone();
+    let multi_host = sessions.len() > 1;
+    let mut logs: Vec<PrepLogLine> = Vec::new();
     // Per-host staging dirs avoid parallel writes colliding on the same template path.
     let owned = std::mem::take(sessions);
     let results = if parallel && owned.len() > 1 {
@@ -804,8 +938,12 @@ async fn prepare_ssh_render_only(
     for (session, host, result) in results {
         sessions.push(session);
         match result {
-            Ok((changed, forced)) => {
+            Ok((changed, forced, host_logs)) => {
                 forced_redact = forced;
+                if multi_host {
+                    logs.push(PrepLogLine::info(format!("  host            {host}")));
+                }
+                logs.extend(host_logs);
                 for k in changed {
                     if !changed_agg.contains(&k) {
                         changed_agg.push(k);
@@ -827,7 +965,12 @@ async fn prepare_ssh_render_only(
     let mut env = HashMap::new();
     set_changed_env(&mut env, &changed_agg);
     env.insert("BUZ_CONFIG_DIR".to_string(), remote_dir);
-    Ok(ConfigPrep { env, forced_redact })
+    logs.push(PrepLogLine::info("==> CONFIG READY".to_string()));
+    Ok(ConfigPrep {
+        env,
+        forced_redact,
+        logs,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -838,7 +981,7 @@ async fn prepare_one_host_render_only(
     specs: &[EnvRenderSpec],
     values: &ValueMap,
     step_timeout: Option<Duration>,
-) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+) -> anyhow::Result<(Vec<String>, Vec<String>, Vec<PrepLogLine>)> {
     std::fs::create_dir_all(staging).with_context(|| {
         format!(
             "config_render: cannot create staging dir '{}'",
@@ -857,6 +1000,7 @@ async fn prepare_one_host_render_only(
 
     let mut host_changed: Vec<String> = Vec::new();
     let mut forced_redact = Vec::new();
+    let mut host_logs: Vec<PrepLogLine> = Vec::new();
     for spec in specs {
         let remote_tmpl = format!("{remote_dir}/{}", spec.template);
         let tmpl = fetch_remote_text(session, &remote_tmpl, step_timeout)
@@ -898,6 +1042,7 @@ async fn prepare_one_host_render_only(
             step_timeout,
         )
         .await?;
+        push_render_logs(&mut host_logs, &spec.template, &spec.output, &changed);
         forced_redact = forced;
         for k in changed {
             if !host_changed.contains(&k) {
@@ -905,7 +1050,7 @@ async fn prepare_one_host_render_only(
             }
         }
     }
-    Ok((host_changed, forced_redact))
+    Ok((host_changed, forced_redact, host_logs))
 }
 
 #[cfg(test)]

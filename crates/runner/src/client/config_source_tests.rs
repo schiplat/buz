@@ -342,7 +342,8 @@ fn apply_renders_unions_changed_keys() {
             on_missing: MissingPolicy::Fail,
         },
     ];
-    let (changed, _) = apply_renders_local(&dest, &specs, &value_map(), "render-only").unwrap();
+    let (changed, _) =
+        apply_renders_local(&dest, &specs, &value_map(), "render-only", &mut Vec::new()).unwrap();
     assert_eq!(changed, vec!["A".to_string(), "B".to_string()]);
 }
 
@@ -358,7 +359,7 @@ fn apply_renders_on_missing_warn_does_not_fail() {
         mode: 0o600,
         on_missing: MissingPolicy::Warn,
     }];
-    apply_renders_local(&dest, &specs, &value_map(), "render-only").unwrap();
+    apply_renders_local(&dest, &specs, &value_map(), "render-only", &mut Vec::new()).unwrap();
     let env = std::fs::read_to_string(dest.join(".env")).unwrap();
     assert!(env.contains("Y=ok"), "got: {env}");
     assert!(

@@ -279,6 +279,25 @@ pub(crate) fn build_config_prep_banner(step: &serde_json::Value, debug_unredact:
     out
 }
 
+/// Render config-prepare progress lines (download result, unpack listing,
+/// per-file render, readiness) for the `==> CONFIG PREP` chunk. Verbose-only
+/// lines are dropped unless `verbose` is set. Always safe — carries no secrets
+/// or signed URLs, only status, sizes and file/template names.
+pub(crate) fn build_config_prep_progress(
+    logs: &[super::config_source::PrepLogLine],
+    verbose: bool,
+) -> String {
+    let mut out = String::new();
+    for l in logs {
+        if l.verbose_only && !verbose {
+            continue;
+        }
+        out.push_str(&l.text);
+        out.push('\n');
+    }
+    out
+}
+
 /// Verbose-mode step result summary (duration + exit code).
 pub(crate) fn build_verbose_step_result(duration: Duration, exit_code: i32) -> String {
     let dur = if duration.as_secs_f64() >= 1.0 {
@@ -481,7 +500,7 @@ async fn run_one_job(
     let job_id = task["job_id"].as_str().unwrap_or("unknown");
 
     if let Err(e) = execute_job(client, config, token, task).await {
-        let msg = e.to_string();
+        let msg = format!("{e:#}");
         if msg.contains("job cancelled by user") {
             tracing::warn!("Job {job_id} cancelled by user — skipping error log");
             if let Err(se) =
@@ -492,7 +511,7 @@ async fn run_one_job(
                 );
             }
         } else {
-            tracing::error!("Job {job_id} failed: {e}");
+            tracing::error!("Job {job_id} failed: {e:#}");
             if let Err(le) = super::logs::upload_chunk(
                 client,
                 config,
@@ -501,7 +520,7 @@ async fn run_one_job(
                 LogChunk {
                     chunk_index: -1,
                     step_order: -1,
-                    content: format!("==> ERROR\n{e}\n"),
+                    content: format!("==> ERROR\n{e:#}\n"),
                 },
             )
             .await
@@ -845,7 +864,7 @@ async fn execute_job(
         }
 
         if let Err(e) = config.engine.ensure_enabled(exec_type) {
-            let msg = e.to_string();
+            let msg = format!("{e:#}");
             let _ = super::logs::upload_chunk(
                 client,
                 config,
@@ -958,6 +977,30 @@ async fn execute_job(
             anyhow::bail!(msg);
         }
 
+        // Fail fast if Manager detected a missing render secret (e.g. a secret
+        // created in a different team than the pipeline).
+        if let Some(err) = step
+            .get("config_render_error")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let msg = format!("config_render: {err}");
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_ERROR,
+                    step_order: idx as i32,
+                    content: format!("==> ERROR\n{msg}\n"),
+                },
+            )
+            .await;
+            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+            anyhow::bail!(msg);
+        }
+
         // ── SSH step session (one TCP connect per host for prepare + run) ──
         // Open before config prepare so deliver/render share the same session as
         // the run block (avoids reconnect storms / fail2ban / MaxStartups).
@@ -996,7 +1039,7 @@ async fn execute_job(
                         anyhow::bail!("job cancelled by user");
                     }
                     Some(Err(e)) => {
-                        let msg = e.to_string();
+                        let msg = format!("{e:#}");
                         let _ = super::logs::upload_chunk(
                             client,
                             config,
@@ -1093,22 +1136,6 @@ async fn execute_job(
         // ERROR to the correct terminal without frontend guessing.
         let mut config_prep: Option<super::config_source::ConfigPrep> = None;
         if super::config_source::needs_prepare(step) {
-            // Verbose / Debug: show dest / object_key (+ URL when debug) before
-            // prepare so prepare-only failures still differ from a normal run.
-            if verbose || debug_unredact {
-                let _ = super::logs::upload_chunk(
-                    client,
-                    config,
-                    token,
-                    job_id,
-                    LogChunk {
-                        chunk_index: log_base + LOG_STEP_VERBOSE_CONFIG_PREP,
-                        step_order: idx as i32,
-                        content: build_config_prep_banner(step, debug_unredact),
-                    },
-                )
-                .await;
-            }
             let prep_result = if exec_type == "ssh" {
                 if ssh_sessions.is_empty() {
                     // The SSH branch below reports the missing-host error.
@@ -1165,9 +1192,60 @@ async fn execute_job(
                 .map(Some)
             };
             match prep_result {
-                Ok(prep) => config_prep = prep,
+                Ok(prep) => {
+                    // Emit the CONFIG PREP chunk once, on success: the Verbose /
+                    // Debug banner (dest / object_key) plus the always-visible
+                    // progress (download result, render, readiness). Progress is
+                    // collected by the prepare functions and never leaks secrets.
+                    if let Some(p) = &prep {
+                        let mut content = String::new();
+                        if verbose || debug_unredact {
+                            content.push_str(&build_config_prep_banner(step, debug_unredact));
+                        }
+                        if !p.logs.is_empty() {
+                            let progress = build_config_prep_progress(&p.logs, verbose);
+                            if !progress.is_empty() {
+                                if !content.is_empty() && !content.ends_with('\n') {
+                                    content.push('\n');
+                                }
+                                content.push_str(&progress);
+                            }
+                        }
+                        if !content.is_empty() {
+                            let _ = super::logs::upload_chunk(
+                                client,
+                                config,
+                                token,
+                                job_id,
+                                LogChunk {
+                                    chunk_index: log_base + LOG_STEP_VERBOSE_CONFIG_PREP,
+                                    step_order: idx as i32,
+                                    content,
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                    config_prep = prep;
+                }
                 Err(e) => {
-                    let msg = e.to_string();
+                    // Verbose / Debug: still surface the dest / object_key shape
+                    // on a prepare-only failure (banner chunk is otherwise empty).
+                    if verbose || debug_unredact {
+                        let _ = super::logs::upload_chunk(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            LogChunk {
+                                chunk_index: log_base + LOG_STEP_VERBOSE_CONFIG_PREP,
+                                step_order: idx as i32,
+                                content: build_config_prep_banner(step, debug_unredact),
+                            },
+                        )
+                        .await;
+                    }
+                    let msg = format!("{e:#}");
                     let _ = super::logs::upload_chunk(
                         client,
                         config,
@@ -1288,7 +1366,7 @@ async fn execute_job(
                     if let Err(e) =
                         engine::docker::registry_login(registry, username, password).await
                     {
-                        let msg = e.to_string();
+                        let msg = format!("{e:#}");
                         let masked = crate::masker::mask_secrets_forced(
                             &crate::masker::mask_secrets(&msg, &secret_values),
                             &forced_values,
@@ -1549,7 +1627,7 @@ async fn execute_job(
             "docker" => {
                 let image = step["image"].as_str().unwrap_or("").trim();
                 if let Err(e) = engine::docker::preflight(config.engine.docker_enabled, image) {
-                    let msg = e.to_string();
+                    let msg = format!("{e:#}");
                     let _ = super::logs::upload_chunk(
                         client,
                         config,
@@ -1572,7 +1650,7 @@ async fn execute_job(
                     if let Err(e) =
                         engine::docker::registry_login(registry, username, password).await
                     {
-                        let msg = e.to_string();
+                        let msg = format!("{e:#}");
                         let masked = crate::masker::mask_secrets_forced(
                             &crate::masker::mask_secrets(&msg, &secret_values),
                             &forced_values,
