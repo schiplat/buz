@@ -4,7 +4,7 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
-import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText } from '@lucide/vue'
+import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw } from '@lucide/vue'
 import { runnersApi, type Runner } from '@/api/runners'
 import { formatLocalDateTime } from '@/utils/time'
 import { copyText } from '@/utils/copyText'
@@ -256,6 +256,24 @@ async function handleToggleFreeze(r: Runner) {
   } catch (e) { console.error(e) }
 }
 
+async function handleRestart(r: Runner) {
+  const running = r.running_jobs ?? 0
+  if (!confirm(
+    `Restart runner "${r.name}"?\n\n` +
+    (running > 0
+      ? `It has ${running} running job(s) — restart will be refused until they finish.`
+      : `The runner will finish any in-flight work, exit cleanly, and be restarted by its supervisor (Docker/systemd).`)
+  )) return
+  try {
+    await runnersApi.restart(r.id)
+    alert(`Restart requested for "${r.name}". The runner will restart within ~30s.`)
+  } catch (e: any) {
+    console.error(e)
+    const detail = e?.response?.data?.message || e?.message || 'Failed to restart runner'
+    alert(detail)
+  }
+}
+
 async function handleDeleteRunner(r: Runner) {
   if (!confirm(`Delete runner "${r.name}"? This cannot be undone.`)) return
   try {
@@ -399,6 +417,9 @@ const eventBadge = (t: string) => {
                   <div class="flex items-center justify-end gap-1">
                     <UiButton variant="ghost" size="sm" @click="handleToggleFreeze(r)" :title="r.is_frozen ? 'Unfreeze' : 'Freeze'">
                       <Snowflake class="h-3.5 w-3.5" :class="r.is_frozen ? 'text-sky-500' : 'text-muted-foreground'" />
+                    </UiButton>
+                    <UiButton variant="ghost" size="sm" @click="handleRestart(r)" title="Restart">
+                      <RotateCcw class="h-3.5 w-3.5 text-muted-foreground" />
                     </UiButton>
                     <UiButton variant="ghost" size="sm" @click="handleDeleteRunner(r)" title="Delete">
                       <Trash2 class="h-3.5 w-3.5 text-destructive" />

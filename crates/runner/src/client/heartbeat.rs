@@ -1,5 +1,7 @@
 use reqwest::Client;
-use shared::protocol::{HeartbeatRequest, HeartbeatResponse, RunnerPolicyConfig};
+use shared::protocol::{HeartbeatRequest, HeartbeatResponse};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::config::Config;
 use crate::policy::{self, SharedPolicy};
@@ -10,6 +12,7 @@ pub async fn run_heartbeat_loop(
     token: &str,
     started_at: std::time::Instant,
     shared_policy: SharedPolicy,
+    restart_requested: Arc<AtomicBool>,
 ) {
     loop {
         // Refresh system info on every heartbeat so CPU/mem/disk stay current
@@ -22,8 +25,15 @@ pub async fn run_heartbeat_loop(
         );
 
         match send_heartbeat(client, config, token, &system_info).await {
-            Ok(next) => {
+            Ok(resp) => {
+                let next = resp.policy;
                 let prev = policy::store(&shared_policy, next.clone());
+
+                if resp.restart {
+                    tracing::info!("Restart command received from Manager — signaling poll loop");
+                    restart_requested.store(true, Ordering::SeqCst);
+                }
+
                 if prev.max_concurrent_jobs != next.max_concurrent_jobs
                     || prev.clean_workspace_after_job != next.clean_workspace_after_job
                     || prev.shell_enabled != next.shell_enabled
@@ -64,7 +74,7 @@ async fn send_heartbeat(
     config: &Config,
     token: &str,
     system_info: &shared::protocol::SystemInfo,
-) -> anyhow::Result<RunnerPolicyConfig> {
+) -> anyhow::Result<HeartbeatResponse> {
     let url = format!("{}/api/v1/runners/heartbeat", config.runner.manager_url);
     let resp = client
         .post(&url)
@@ -84,11 +94,10 @@ async fn send_heartbeat(
     }
 
     let body = resp.json::<serde_json::Value>().await?;
-    let mut policy = body
+    let mut resp = body
         .get("data")
         .and_then(|d| serde_json::from_value::<HeartbeatResponse>(d.clone()).ok())
-        .map(|h| h.policy)
         .unwrap_or_default();
-    policy.max_concurrent_jobs = policy.max_concurrent_jobs.max(1);
-    Ok(policy)
+    resp.policy.max_concurrent_jobs = resp.policy.max_concurrent_jobs.max(1);
+    Ok(resp)
 }

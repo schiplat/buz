@@ -109,6 +109,11 @@ export const runnersApi = {
     return resp.data
   },
 
+  async restart(id: string): Promise<{ restart_requested: boolean }> {
+    const resp = await apiClient.post(`/runners/${id}/restart`)
+    return resp.data
+  },
+
   async events(id: string, page = 1, pageSize = 20): Promise<{ items: Array<{ id: string; event_type: string; message: string; created_at: string }>; total: number; page: number; page_size: number; total_pages: number }> {
     const resp = await apiClient.get(`/runners/${id}/events`, { params: { page, page_size: pageSize } })
     return resp.data

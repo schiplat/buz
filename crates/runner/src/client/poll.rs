@@ -2,6 +2,8 @@ use reqwest::Client;
 use shared::protocol::{LogChunk, UpdateJobStatusRequest};
 use shared::value_source::ValueMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::Config;
@@ -403,6 +405,7 @@ pub async fn run_poll_loop(
     config: &Config,
     token: &str,
     shared_policy: SharedPolicy,
+    restart_requested: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     use tokio::task::JoinSet;
 
@@ -417,6 +420,25 @@ pub async fn run_poll_loop(
                 Ok(Err(e)) => tracing::error!("Job task error: {e}"),
                 Err(e) => tracing::error!("Job task panicked: {e}"),
             }
+        }
+
+        // Graceful restart: stop claiming new work, let in-flight jobs drain,
+        // then exit cleanly (exit 0) so the supervisor restarts us. The Manager
+        // already blocks new dispatch once `restart_requested` is set, so the
+        // remaining in-flight set is bounded by the current running jobs.
+        if restart_requested.load(Ordering::SeqCst) {
+            if jobs.is_empty() {
+                tracing::info!(
+                    "Restart requested and no active jobs — exiting for supervisor restart"
+                );
+                return Ok(());
+            }
+            tracing::info!(
+                "Restart requested — draining {} active job(s) before exit",
+                jobs.len()
+            );
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
         }
 
         let local_max = policy::max_concurrent(&shared_policy);

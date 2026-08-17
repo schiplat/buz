@@ -97,6 +97,14 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
 
+    // One-shot restart flag: set by POST /runners/{id}/restart, served via the
+    // next heartbeat, then cleared. Also blocks dispatch (like freeze) during
+    // the request window so pending jobs don't sneak in before the restart lands.
+    let _ =
+        sqlx::query("ALTER TABLE runners ADD COLUMN restart_requested INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await;
+
     // Max parallel jobs per runner (UI-controlled; default 1 = serial)
     let _ = sqlx::query(
         "ALTER TABLE runners ADD COLUMN max_concurrent_jobs INTEGER NOT NULL DEFAULT 1",

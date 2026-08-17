@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS runners (
     version TEXT,
     system_info TEXT NOT NULL DEFAULT '{}',
     is_frozen INTEGER NOT NULL DEFAULT 0,
+    restart_requested INTEGER NOT NULL DEFAULT 0,
     max_concurrent_jobs INTEGER NOT NULL DEFAULT 1,
     clean_workspace_after_job INTEGER NOT NULL DEFAULT 0,
     shell_enabled INTEGER NOT NULL DEFAULT 1,

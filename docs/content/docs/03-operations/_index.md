@@ -9,6 +9,7 @@ description: "Configuration, deployment, and operations guides"
   {{< card link="deployment/" title="Deployment" subtitle="Install Manager and Runner" >}}
   {{< card link="standalone/" title="Standalone" subtitle="Single-image first run & upgrade (arm64)" >}}
   {{< card link="tls/" title="HTTPS" subtitle="Manager TLS, Runner client, reverse proxy, commands" >}}
+  {{< card link="runner-restart/" title="Runner Restart" subtitle="Remotely restart a Runner from the UI" >}}
 {{< /cards >}}
 
 Local first run: [Quick Start](/docs/00-quick-start/). Production detail: [Deployment](/docs/03-operations/deployment/).

@@ -169,11 +169,17 @@ pub struct HeartbeatRequest {
     pub system_info: Option<SystemInfo>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct HeartbeatResponse {
     /// UI-managed policy snapshot.
     #[serde(default)]
     pub policy: RunnerPolicyConfig,
+    /// One-shot restart command: the Runner exits cleanly (exit 0) so its
+    /// supervisor (docker `restart: unless-stopped` / systemd `Restart=always`)
+    /// can bring it back up. `false` is the steady state; the Manager clears the
+    /// DB flag once it has been served.
+    #[serde(default)]
+    pub restart: bool,
 }
 
 /// Runner strategy settings controlled from Manager UI (not machine-local paths).

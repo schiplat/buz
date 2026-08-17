@@ -411,7 +411,8 @@ pub async fn register(
 
     sqlx::query(
         "UPDATE runners SET token = ?, register_token = '', status = 'online', \
-         version = COALESCE(?, version), last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+         version = COALESCE(?, version), last_seen = datetime('now'), updated_at = datetime('now'), \
+         restart_requested = 0 WHERE id = ?",
     )
     .bind(&runner_jwt)
     .bind(version)
@@ -476,9 +477,36 @@ pub async fn heartbeat(
 
     let policy = load_runner_policy(&state.pool, &auth.runner_id).await?;
 
+    // Serve a pending one-shot restart command, then clear it (serve-and-consume).
+    let restart_requested: bool =
+        sqlx::query_scalar("SELECT restart_requested FROM runners WHERE id = ?")
+            .bind(&auth.runner_id)
+            .fetch_one(&state.pool)
+            .await
+            .map(|v: i64| v != 0)
+            .unwrap_or(false);
+
+    if restart_requested {
+        tracing::info!(runner = %auth.runner_id, "Serving restart command via heartbeat");
+        sqlx::query("UPDATE runners SET restart_requested = 0 WHERE id = ?")
+            .bind(&auth.runner_id)
+            .execute(&state.pool)
+            .await?;
+        log_runner_event(
+            &state.pool,
+            &auth.runner_id,
+            "restart_served",
+            "Restart command delivered to runner",
+        )
+        .await;
+    }
+
     Ok((
         StatusCode::OK,
-        Json(ApiResponse::success(HeartbeatResponse { policy })),
+        Json(ApiResponse::success(HeartbeatResponse {
+            policy,
+            restart: restart_requested,
+        })),
     ))
 }
 
@@ -486,16 +514,27 @@ pub async fn poll(
     auth: RunnerClaims,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Option<serde_json::Value>>>, AppError> {
-    // Reject frozen runners — they should not be dispatched work
-    let frozen: bool = sqlx::query_scalar("SELECT is_frozen FROM runners WHERE id = ?")
-        .bind(&auth.runner_id)
-        .fetch_one(&state.pool)
-        .await
-        .map(|v: i64| v != 0)
-        .unwrap_or(false);
+    // Reject frozen runners — they should not be dispatched work.
+    // Also skip dispatch while a restart is pending: otherwise the window between
+    // the restart request and the next heartbeat (up to 30s) would let this
+    // runner claim pending jobs that then block the graceful exit.
+    let (frozen, restart_requested): (bool, bool) =
+        sqlx::query_as("SELECT is_frozen != 0, restart_requested != 0 FROM runners WHERE id = ?")
+            .bind(&auth.runner_id)
+            .fetch_one(&state.pool)
+            .await
+            .map(|(f, r): (i64, i64)| (f != 0, r != 0))
+            .unwrap_or((false, false));
 
     if frozen {
         tracing::debug!("Runner {} is frozen — skipping poll", auth.runner_id);
+        return Ok(Json(ApiResponse::success(None)));
+    }
+    if restart_requested {
+        tracing::debug!(
+            "Runner {} has a pending restart — skipping poll",
+            auth.runner_id
+        );
         return Ok(Json(ApiResponse::success(None)));
     }
 
@@ -2009,6 +2048,57 @@ pub async fn toggle_freeze(
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "is_frozen": new_frozen != 0
+    }))))
+}
+
+/// Request a clean runner restart. The flag is served on the runner's next
+/// heartbeat (≤30s); the runner then exits with code 0 and its supervisor
+/// brings it back up. Refused with 409 while the runner has running jobs.
+pub async fn restart(
+    _auth: PlatformAdmin,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let row = sqlx::query("SELECT name FROM runners WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
+    let name: String = row.get(0);
+
+    let running_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM jobs WHERE runner_id = ? AND status = 'running' ORDER BY created_at",
+    )
+    .bind(&id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    if !running_ids.is_empty() {
+        return Err(AppError::Conflict(format!(
+            "runner has {} running job(s): {} — cancel them before restarting",
+            running_ids.len(),
+            running_ids.join(", ")
+        )));
+    }
+
+    sqlx::query(
+        "UPDATE runners SET restart_requested = 1, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(&id)
+    .execute(&state.pool)
+    .await?;
+
+    tracing::info!("Runner {name} ({id}) restart requested");
+    log_runner_event(
+        &state.pool,
+        &id,
+        "restart_requested",
+        "Restart requested — runner will exit on next heartbeat",
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "restart_requested": true
     }))))
 }
 

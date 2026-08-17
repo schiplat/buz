@@ -149,6 +149,7 @@ pub fn router(state: AppState) -> Router {
                 .delete(runners::delete_runner),
         )
         .route("/runners/{id}/freeze", patch(runners::toggle_freeze))
+        .route("/runners/{id}/restart", post(runners::restart))
         .route("/runners/{id}/events", get(runners::get_events))
         .route(
             "/hooks/git/{provider}/{hook_key}",
@@ -185,3 +186,7 @@ mod pipeline_yaml_files_integration_tests;
 #[cfg(test)]
 #[path = "tests/runner_standalone_register_tests.rs"]
 mod runner_standalone_register_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/runner_restart_tests.rs"]
+mod runner_restart_integration_tests;

@@ -92,18 +92,31 @@ async fn run_loop(config: config::Config) -> anyhow::Result<()> {
         );
     }
 
+    // Shared one-shot restart signal: the heartbeat loop sets it when the Manager
+    // serves a restart command; the poll loop then stops claiming new work,
+    // drains in-flight jobs, and returns Ok(()) so we exit with code 0.
+    let restart_requested = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     let hb_config = config.clone();
     let hb_client = http_client.clone();
     let hb_token = runner_token.clone();
     let hb_policy = shared_policy.clone();
+    let hb_restart = restart_requested.clone();
     let heartbeat_handle = tokio::spawn(async move {
         client::heartbeat::run_heartbeat_loop(
-            &hb_client, &hb_config, &hb_token, started_at, hb_policy,
+            &hb_client, &hb_config, &hb_token, started_at, hb_policy, hb_restart,
         )
         .await
     });
 
-    client::poll::run_poll_loop(&http_client, &config, &runner_token, shared_policy).await?;
+    client::poll::run_poll_loop(
+        &http_client,
+        &config,
+        &runner_token,
+        shared_policy,
+        restart_requested,
+    )
+    .await?;
 
     heartbeat_handle.abort();
     Ok(())
