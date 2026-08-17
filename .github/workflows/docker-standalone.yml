@@ -98,6 +98,11 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          # Aliyun ACR (personal) rejects the OCI provenance/SBOM attachments
+          # buildx emits by default (`unknown manifest class for
+          # application/vnd.oci.empty.v1+json`). Disable both.
+          provenance: false
+          sbom: false
           cache-from: type=gha,scope=buz-standalone-arm64
           cache-to: type=gha,mode=max,scope=buz-standalone-arm64
 
