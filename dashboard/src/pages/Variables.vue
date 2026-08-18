@@ -66,6 +66,10 @@ async function handleSave() {
     }
     showDialog.value = false
     await loadVars()
+  } catch (e: any) {
+    // Surface the backend's message instead of letting the unhandled rejection
+    // crash the page via ErrorBoundary (same pattern as Secrets.vue).
+    alert(e?.response?.data?.message || e?.message || 'Failed to save variable')
   } finally {
     saving.value = false
   }
@@ -73,8 +77,12 @@ async function handleSave() {
 
 async function handleDelete(v: Variable) {
   if (!confirm(`Delete variable "${v.name}"?`)) return
-  await variablesApi.delete(v.id)
-  await loadVars()
+  try {
+    await variablesApi.delete(v.id)
+    await loadVars()
+  } catch (e: any) {
+    alert(e?.response?.data?.message || e?.message || 'Failed to delete variable')
+  }
 }
 
 async function loadVars() {
