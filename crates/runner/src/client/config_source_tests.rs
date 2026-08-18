@@ -31,6 +31,27 @@ fn config_url_missing_is_error() {
 }
 
 #[test]
+fn oss_error_detail_extracts_code_and_message() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+  <Code>AccessDenied</Code>
+  <Message>Request has expired.</Message>
+  <RequestId>6A84E4B4ACF6C5383921087D</RequestId>
+  <HostId>example-bucket.oss-cn-hongkong.aliyuncs.com</HostId>
+</Error>"#;
+    assert_eq!(oss_error_detail(xml), "AccessDenied: Request has expired.");
+}
+
+#[test]
+fn oss_error_detail_falls_back_to_snippet() {
+    assert_eq!(oss_error_detail(""), "(no response body)");
+    assert_eq!(
+        oss_error_detail("  <html>oops</html>  "),
+        "<html>oops</html>"
+    );
+}
+
+#[test]
 fn config_url_extracts_signed_url() {
     let step = serde_json::json!({ "config_auth": { "url": "https://oss.example.com/obj?Expires=1", "object_key": "config_tpl/a/1.0" } });
     assert_eq!(

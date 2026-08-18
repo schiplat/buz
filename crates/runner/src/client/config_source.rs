@@ -233,6 +233,38 @@ fn resolve_remote_dir(step: &serde_json::Value, job_id: &str, step_idx: usize) -
     }
 }
 
+/// Extract a single XML tag's text content (OSS error bodies use `<Code>` /
+/// `<Message>`). Returns `None` when the tag is absent.
+fn xml_tag_text(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)? + start;
+    Some(xml[start..end].trim().to_string())
+}
+
+/// Build a human-readable reason from an OSS error body, falling back to a
+/// trimmed snippet when the body isn't the expected XML shape. Never exposes
+/// the signed URL — only the `<Code>` / `<Message>` OSS reports.
+fn oss_error_detail(body: &str) -> String {
+    match (xml_tag_text(body, "Code"), xml_tag_text(body, "Message")) {
+        (Some(code), Some(msg)) => format!("{code}: {msg}"),
+        (Some(code), None) => code,
+        _ => {
+            let trimmed = body.trim();
+            if trimmed.is_empty() {
+                "(no response body)".to_string()
+            } else {
+                let mut s: String = trimmed.chars().take(240).collect();
+                if trimmed.chars().count() > 240 {
+                    s.push('…');
+                }
+                s
+            }
+        }
+    }
+}
+
 /// Download the signed OSS bundle, returning `(bytes, http_status, byte_len)`.
 async fn download(client: &Client, url: &str) -> anyhow::Result<(Vec<u8>, u16, usize)> {
     let resp = client
@@ -242,7 +274,12 @@ async fn download(client: &Client, url: &str) -> anyhow::Result<(Vec<u8>, u16, u
         .await
         .map_err(|e| anyhow::anyhow!("config bundle download failed: {e}"))?;
     if !resp.status().is_success() {
-        bail!("config bundle download returned HTTP {}", resp.status());
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        bail!(
+            "config bundle download returned HTTP {status}: {}",
+            oss_error_detail(&body)
+        );
     }
     let status = resp.status().as_u16();
     let bytes = resp.bytes().await?.to_vec();
