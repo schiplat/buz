@@ -102,8 +102,9 @@ Runtime env names unchanged: `$BUZ_CONFIG_DIR`, `$BUZ_CONFIG_URL` (OSS deliver),
    - **`shell` / `local`:** `dest` is on the Runner machine → read templates and
      write outputs **in place** (same as today’s local OSS prepare).
    - **`ssh`:** `dest` is on the remote host → fetch each `template` (+ old
-     `output` for merge) over SSH, render on the Runner (secrets never leave),
-     upload outputs back. Same trust model as today’s SSH + OSS path.
+     `output` for change-diff / timestamped backup) over SSH, render on the
+     Runner (secrets never leave), upload outputs back. Same trust model as
+     today’s SSH + OSS path.
    - **`docker`:** **not supported for `render` / render-only in 2b** (see below).
 
 ### Engines: render-only does **not** include `docker`

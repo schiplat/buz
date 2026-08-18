@@ -251,8 +251,9 @@ configs.tar.gz (release)        Buz Secrets DB (live)
          ▼  config.render (before run block; multi-file in order)
    outputs (mode 0600, atomic+flock) ──►  diff old ──► $BUZ_ENV_CHANGED(_KEYS)
                                           │           └─ optional on_change (2d)
-                                          └─ key semantics
-                                          (values registered for redaction)
+                                          └─ full rebuild
+                                             (+ .env.bak.<ts>, keep backup_keep)
+                                             (values registered for redaction)
 ```
 
 Step machinery order: **[download → unpack] → render → run block → (optional)
@@ -293,7 +294,7 @@ already reflected in the DSL / render-rules / ValueMap sections above.
 | 2 | **Template references bypass Authorized Secrets** — `${secrets.X}` looked up by name/team would let any same-team pipeline pull any same-team secret into `.env` without binding it | Render resolves **only against secrets already authorized for this job** (bound `secrets:` / Authorized Secrets / `team_shared`, same-team). Referencing anything else fails the render — same producer rule as masking. |
 | 3 | **`masking: true` trigger inputs leak via `${vars.X}`** — sensitive trigger values would enter `.env` plaintext through the non-sensitive vars domain | `vars` domain **excludes masking inputs**. A pipeline needing a sensitive trigger value in `.env` must route it through a secret. |
 | 4 | **`${...}` inside a secret value is re-interpolated by compose** — single-pass rendering leaves it verbatim, but compose's env_file interpolation expands it against host env | **Compose-interpolation guard**: values containing `${` are rejected at write; the round-trip check simulates compose's interpolation layer so the *post-compose* value is validated, not just the render output. |
-| 5 | **Free/managed section contradiction** — "template lines above `# buz-managed` are preserved verbatim" would freeze template updates (e.g. a new `MANAGER_SMTP_PORT` never reaches `.env`) | **Key semantics**: the template is the source of truth for every key it defines, anywhere in the file; the marker only preserves keys the template does **not** define (operator-added extras). |
+| 5 | **Free/managed section contradiction** — "template lines above `# buz-managed` are preserved verbatim" would freeze template updates (e.g. a new `MANAGER_SMTP_PORT` never reaches `.env`) | **Full rebuild**: the template is the sole source of truth; every render rewrites `.env` from the template only, so template updates always reach the output. Keys no longer in the template are dropped; the pre-overwrite timestamped backup (kept `backup_keep`, default `3`) preserves the prior content for rollback. |
 | 6 | **Env-key collisions undetected** — two secrets resolving to one env var bound to one job silently overwrite in the secrets map | Secret names are globally UNIQUE and enforced UPPER_SNAKE_CASE at create, so the inject key and the template key are the same name — a collision is structurally impossible. (The former `env_name` alias column and its per-team uniqueness check were removed.) |
 | 7 | **Unified expander would break `config.key_path`** — path expansion is lenient (unresolved → empty), `config.render` must be strict (fail-fast); one expander can't serve both without a mode | `ExpandMode { Lenient, Strict }` — caller chooses. `config_key_path` / host resolution stay lenient; `config.render` uses strict. |
 | 8 | **Two-name cognitive load** — template key (left of `=`) and reference (right) could diverge | Resolved by the **single-name merge**: the secret `name` IS the env key, the YAML binding and the template reference — one UPPER_SNAKE_CASE name everywhere, so there is nothing to map. |
@@ -327,7 +328,7 @@ already reflected in the DSL / render-rules / ValueMap sections above.
 | Phase | Scope | Status |
 |-------|-------|--------|
 | 1 | Secret naming; unpack + render; `ValueMap`; fail-fast; `BUZ_ENV_CHANGED`; flock; tests | **Shipped** |
-| 2 | `on_missing: warn`; key semantics; **`on_change` / `services` auto-recreate** | **Partly shipped** — warn + change env done; auto-recreate **not** enforced (branch in `run` on `$BUZ_ENV_CHANGED`) |
+| 2 | `on_missing: warn`; full rebuild + `backup_keep`; **`on_change` / `services` auto-recreate** | **Partly shipped** — warn + change env + full rebuild done; auto-recreate **not** enforced (branch in `run` on `$BUZ_ENV_CHANGED`) |
 | 2b | Nested `config:`; multi-file render; OSS deliver + render-only; DB cut-over; UI | **Shipped** — see [Config Block](/docs/01-architecture/authoring/config-block/) |
 | 2c | `config.git` | Planned |
 | 2d | Enforce `on_change` / `services` | Planned |
