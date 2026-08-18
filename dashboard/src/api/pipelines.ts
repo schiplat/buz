@@ -133,6 +133,7 @@ export interface StepDef {
     on_missing?: string
     on_change?: string
     services?: string[]
+    backup_keep?: number
   }>
 }
 
@@ -227,6 +228,7 @@ export interface YamlStepData {
     on_missing?: string | null
     on_change?: string | null
     services?: string[] | null
+    backup_keep?: number | null
   }> | null
 }
 

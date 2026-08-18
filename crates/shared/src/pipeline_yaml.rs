@@ -225,6 +225,11 @@ pub struct ConfigRenderEntry {
     /// Compose services for `on_change` (Phase 2d — parsed, not enforced).
     #[serde(default)]
     pub services: Option<Vec<String>>,
+    /// Number of timestamped `<output>.bak.<ts>` backups to keep when the
+    /// render overwrites an existing output file. `0` disables backups.
+    /// Defaults to `3` when unset.
+    #[serde(default)]
+    pub backup_keep: Option<u32>,
 }
 
 /// Legacy alias — prefer [`ConfigRenderEntry`].

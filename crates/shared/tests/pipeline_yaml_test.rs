@@ -958,6 +958,7 @@ steps:
         output: .env
         mode: "0600"
         on_missing: fail
+        backup_keep: 2
     run: cat "$BUZ_CONFIG_DIR/.env"
 "#;
     let r = parse_and_validate(yaml);
@@ -971,6 +972,7 @@ steps:
     assert_eq!(render[0].output.as_deref(), Some(".env"));
     assert_eq!(render[0].mode.as_deref(), Some("0600"));
     assert_eq!(render[0].on_missing.as_deref(), Some("fail"));
+    assert_eq!(render[0].backup_keep, Some(2));
 }
 
 #[test]

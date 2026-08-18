@@ -130,12 +130,13 @@ MANAGER_SESSION_TTL_SECS=43200
 - **Atomic replace + flock.** Render to a temp file, diff, then atomically move
   into place under `flock` on the output file; a failed render never leaves a
   half-written `.env`, and concurrent renders cannot tear it.
-- **Key semantics, not section semantics (Review R2 #5).** The template is the
-  source of truth for **every key it defines**, wherever the key sits (above or
-  below the `# buz-managed` marker). The marker only preserves keys that the
-  template does **not** define (operator-added extras). This fixes the earlier
-  self-contradictory "free section is preserved verbatim" wording, which would
-  have prevented template updates from ever reaching `.env`.
+- **Full rebuild, not merge (Review R2 #5).** The template is the **sole source
+  of truth** for the output file: every render rewrites `.env` from the template
+  only. Keys removed from the template are dropped instead of lingering — stale
+  keys (e.g. a renamed credential) would otherwise cause subtle bugs. Before
+  overwriting, the prior `.env` is backed up to `<output>.bak.<timestamp>` and
+  only the newest `backup_keep` backups are retained (default `3`, `0` disables),
+  so the previous content stays available for rollback.
 - **Job-scoped resolution.** Rendering resolves against the secrets already
   dispatched for the job (post-RBAC) and the job's `env` map (with `masking`
   trigger inputs excluded from the vars domain). The Runner never queries the
@@ -272,7 +273,7 @@ behavior, the change is already reflected in the DSL / render-rules sections.
 | 4 | **`$` in secret values** — a token containing `$` can be re-interpreted on write / by compose | Renderer never re-expands resolved values (single pass). A bare `$` / `$$` keeps verbatim (compose does not expand bare `$`); a value containing **`${` is rejected at write time** (compose would interpolate it — Review R2 #4). Round-trip tests cover `$` / `$$` / `${}` in secret values. Documented in the secrets guide: prefer tokens without `$` when the target app allows it. |
 | 5 | **compose env_file parser limits** — `#` / trailing spaces truncate values | **Value line-safety**: values containing `#`, leading/trailing space, `=` or `"` are written quoted (`KEY="…"`). A **round-trip check** runs after render: the renderer re-parses the written file with the same compose-env_file rules and asserts every key round-trips; mismatch fails the render. Quoting rules are validated against the installed compose version in CI. |
 | 6 | **Concurrent renders** — two jobs rendering the same `.env` race | Atomic temp-file+rename prevents torn writes. The diff-and-swap critical section runs under **`flock` on the output file** (Linux native, target is Linux). Deploy pipelines are additionally documented as single-flight. |
-| 7 | **Overwriting manual edits** — operators tweak `.env` by hand | **Key semantics** (Review R2 #5): the template is the source of truth for every key it defines, wherever it sits; the `# buz-managed` marker only preserves keys the template does **not** define (operator-added extras). `on_change` detection covers template-defined keys only, so operator-only keys never trigger recreates. |
+| 7 | **Overwriting manual edits** — operators tweak `.env` by hand | **Full rebuild** (Review R2 #5): the template is the sole source of truth; every render rewrites `.env` from the template only. Prior content is preserved as a timestamped `<output>.bak.<ts>` (newest `backup_keep` kept, default `3`), so a hand-edit is recoverable. `on_change` detection covers template-defined keys only. |
 | 8 | **`on_change` scope** — `.env` feeds several services (postgres `POSTGRES_*`, manager-server) | `services:` is explicit in the DSL; the renderer emits `BUZ_ENV_CHANGED_KEYS` so the run block (or `on_change`) recreates **only** the affected service. Default: no auto-recreate; the pipeline author opts in. |
 | 9 | **Secret-name churn** — renaming a secret silently orphans templates/scripts | Phase 3 reference tracking (reverse lookup across `pipeline_secrets`, step `secrets:`, `registry_secret`, `config_source`, and render templates). Until then: rename shows a **confirm dialog** in the UI, and any template referencing the old name hits fail-fast (#3) — the reference never fails silently. |
 | 10 | **Plaintext secrets on disk** — `.env` holds secret values (vs. host-env passthrough) | Accepted trade-off for the "write `.env`" route. Mitigations: file `0600` + root ownership; `cat .env` output stays value-redacted in job logs; target hardening note (don't ship general-purpose log agents on the deploy host). A **host-env passthrough** route (compose `environment:` + `${VAR:-}`) remains available as the zero-disk option for values that only need in-container visibility. |

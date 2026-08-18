@@ -30,6 +30,7 @@ type StepLike = {
     output?: string
     mode?: string
     on_missing?: string
+    backup_keep?: number
   }>
 }
 
@@ -239,6 +240,9 @@ export function serializePipelineFormToYaml(
           if (r.output) lines.push(`          output: ${esc(r.output)}`)
           if (r.mode) lines.push(`          mode: ${esc(r.mode)}`)
           if (r.on_missing) lines.push(`          on_missing: ${esc(r.on_missing)}`)
+          if (r.backup_keep != null && r.backup_keep !== 3) {
+            lines.push(`          backup_keep: ${r.backup_keep}`)
+          }
         }
       }
     }

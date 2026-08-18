@@ -701,11 +701,16 @@ config:
       output: .env
       mode: "0600"
       on_missing: fail
+      backup_keep: 3     # optional — timestamped .env.bak.<ts> backups to keep (0 disables)
 ```
 
 `template` / `output` are **relative to `dest`**. Same root + subdirs → one step;
 unrelated roots → separate render-only steps (see
 [Config Block — Sample B](/docs/01-architecture/authoring/config-block/#sample-b--paths-under-dest)).
+
+Render is a **full rebuild** (the template is the sole source of truth), so keys
+removed from the template are dropped. `backup_keep` (default `3`) keeps the
+newest timestamped backups of the prior output for rollback.
 
 Flat `config_source` / `config_path` / `config_dir` / `env_render` are **rejected**.
 Full rules, DB columns, and engines: [Config Block DSL v2](/docs/01-architecture/authoring/config-block/).

@@ -13,13 +13,13 @@ describe('normalizeConfigRender', () => {
   it('accepts array, single object, and JSON string', () => {
     expect(
       normalizeConfigRender([{ template: 'a', output: '.env', mode: '0600', on_missing: 'fail' }]),
-    ).toEqual([{ template: 'a', output: '.env', mode: '0600', on_missing: 'fail' }])
+    ).toEqual([{ template: 'a', output: '.env', mode: '0600', on_missing: 'fail', backup_keep: 3 }])
     expect(normalizeConfigRender({ template: 't' })).toEqual([
-      { template: 't', output: '.env', mode: '0600', on_missing: 'fail' },
+      { template: 't', output: '.env', mode: '0600', on_missing: 'fail', backup_keep: 3 },
     ])
     expect(
       normalizeConfigRender(JSON.stringify({ template: 'x', output: 'out', mode: '0644', on_missing: 'warn' })),
-    ).toEqual([{ template: 'x', output: 'out', mode: '0644', on_missing: 'warn' }])
+    ).toEqual([{ template: 'x', output: 'out', mode: '0644', on_missing: 'warn', backup_keep: 3 }])
   })
 
   it('returns empty for null/blank', () => {
@@ -37,7 +37,7 @@ describe('serializeConfigRender', () => {
         { template: ' env.example ', output: '', mode: '', on_missing: 'warn' },
       ]),
     ).toEqual([
-      { template: 'env.example', output: '.env', mode: '0600', on_missing: 'warn' },
+      { template: 'env.example', output: '.env', mode: '0600', on_missing: 'warn', backup_keep: 3 },
     ])
   })
 })
@@ -148,7 +148,7 @@ describe('serializeConfigForApi', () => {
       config_source: 'OSS',
       config_key_path: 'p',
       config_dest: '/opt',
-      config_render: [{ template: 't', output: '.env', mode: '0600', on_missing: 'fail' }],
+      config_render: [{ template: 't', output: '.env', mode: '0600', on_missing: 'fail', backup_keep: 3 }],
     })
   })
 })

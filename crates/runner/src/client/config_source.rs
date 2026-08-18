@@ -30,6 +30,8 @@ use super::env_render;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 /// Default mode for the rendered output file (`0600`).
 const DEFAULT_ENV_MODE: u32 = 0o600;
+/// Default number of timestamped `.env` backups to retain when overwriting.
+const DEFAULT_BACKUP_KEEP: usize = 3;
 
 /// One progress line emitted while preparing a config bundle.
 ///
@@ -76,6 +78,8 @@ struct EnvRenderSpec {
     output: String,
     mode: u32,
     on_missing: MissingPolicy,
+    /// Number of timestamped `.bak` backups to keep (0 disables backups).
+    backup_keep: usize,
 }
 
 /// True when the step needs prepare (OSS deliver and/or `config_render`).
@@ -163,11 +167,17 @@ fn parse_one_render_entry(
         "warn" => MissingPolicy::Warn,
         _ => MissingPolicy::Fail,
     };
+    let backup_keep = er
+        .get("backup_keep")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .unwrap_or(DEFAULT_BACKUP_KEEP);
     Ok(EnvRenderSpec {
         template: template.to_string(),
         output,
         mode,
         on_missing,
+        backup_keep,
     })
 }
 
@@ -329,12 +339,66 @@ fn render_env_with_old(
     })?;
     let expanded = value_source::expand(&template, values, ExpandMode::Strict, spec.on_missing)
         .map_err(|e| anyhow::anyhow!("config_render: {e}"))?;
-    let (merged, changed) = env_render::merge_env(old, &expanded.content);
-    env_render::round_trip_check(&merged).map_err(|e| anyhow::anyhow!("config_render: {e}"))?;
+    // Full rebuild: the template is the sole source of truth. Rendering against
+    // an empty `old` drops operator-added keys that are no longer in the
+    // template (stale keys would otherwise linger and cause subtle bugs). The
+    // pre-overwrite backup preserves the prior content for rollback.
+    let (content, _) = env_render::merge_env("", &expanded.content);
+    env_render::round_trip_check(&content).map_err(|e| anyhow::anyhow!("config_render: {e}"))?;
+    // Diff against the real old content so `BUZ_ENV_CHANGED` stays precise.
+    let changed = env_render::diff_env(old, &content);
     // Forced value registration: every secret dispatched for this job is
     // force-redacted so the plaintext `.env` never echoes unredacted.
     let forced_redact: Vec<String> = values.secrets.values().cloned().collect();
-    Ok((merged, changed, forced_redact))
+    Ok((content, changed, forced_redact))
+}
+
+/// Back up the existing output file to `<output>.bak.<timestamp>` before it is
+/// overwritten, then prune so only the most recent `keep` backups remain.
+/// `keep == 0` disables backups entirely (caller should skip this fn).
+fn backup_output_local(path: &Path, old: &str, keep: usize) -> anyhow::Result<()> {
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("env");
+    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let backup = path.with_file_name(format!("{file_name}.bak.{ts}"));
+    std::fs::write(&backup, old)
+        .with_context(|| format!("config_render: cannot write backup '{}'", backup.display()))?;
+    prune_backups_local(path, keep)
+}
+
+/// Remove the oldest `<output>.bak.*` files beyond `keep`, keeping the newest.
+fn prune_backups_local(path: &Path, keep: usize) -> anyhow::Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("env");
+    let prefix = format!("{base}.bak.");
+    let mut backups: Vec<PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("config_render: cannot list '{}'", dir.display()))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.starts_with(&prefix))
+        })
+        .collect();
+    backups.sort();
+    let excess = backups.len().saturating_sub(keep);
+    for b in backups.into_iter().take(excess) {
+        let _ = std::fs::remove_file(b);
+    }
+    Ok(())
+}
+
+/// Shell snippet to back up the remote output file in place, keeping only the
+/// newest `keep` timestamped backups. `keep == 0` disables backups (caller
+/// should skip). Assumes `remote_out` is a single path (no glob chars).
+fn backup_output_remote_cmd(remote_out: &str, keep: usize) -> String {
+    format!(
+        "if [ -f \"{remote_out}\" ]; then \
+           ts=$(date +%Y%m%d-%H%M%S); \
+           cp -a \"{remote_out}\" \"{remote_out}.bak.$ts\"; \
+           ls -1 \"{remote_out}.bak.\"* 2>/dev/null | sort | head -n -{keep} | xargs -r rm -f; \
+         fi"
+    )
 }
 
 /// Append per-render progress lines: an always-visible `template → output`
@@ -388,6 +452,9 @@ fn apply_renders_local(
         let old = std::fs::read_to_string(&output_path).unwrap_or_default();
         let (content, changed, forced) =
             render_env_with_old(config_dir, spec, values, archive, &old)?;
+        if spec.backup_keep > 0 && output_path.is_file() {
+            backup_output_local(&output_path, &old, spec.backup_keep)?;
+        }
         write_atomic(&output_path, &content, spec.mode)?;
         push_render_logs(logs, &spec.template, &spec.output, &changed);
         forced_redact = forced;
@@ -845,6 +912,14 @@ async fn prepare_one_host_deliver(
             archive,
             old.as_deref().unwrap_or(""),
         )?;
+        if spec.backup_keep > 0 && old.is_some() {
+            run_ssh(
+                session,
+                &backup_output_remote_cmd(&remote_out, spec.backup_keep),
+                step_timeout,
+            )
+            .await?;
+        }
         ssh_upload_bytes(
             session,
             &remote_out,
@@ -1034,6 +1109,14 @@ async fn prepare_one_host_render_only(
             "render-only",
             old.as_deref().unwrap_or(""),
         )?;
+        if spec.backup_keep > 0 && old.is_some() {
+            run_ssh(
+                session,
+                &backup_output_remote_cmd(&remote_out, spec.backup_keep),
+                step_timeout,
+            )
+            .await?;
+        }
         ssh_upload_bytes(
             session,
             &remote_out,

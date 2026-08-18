@@ -5,6 +5,7 @@ export interface ConfigRenderRow {
   output: string
   mode: string
   on_missing: string
+  backup_keep: number
 }
 
 export type ConfigFormMode = 'none' | 'deliver' | 'render' | 'sugar'
@@ -15,6 +16,7 @@ export function emptyRenderRow(): ConfigRenderRow {
     output: '.env',
     mode: '0600',
     on_missing: 'fail',
+    backup_keep: 3,
   }
 }
 
@@ -41,6 +43,9 @@ export function normalizeConfigRender(raw: unknown): ConfigRenderRow[] {
       output: trimStr(e.output) || '.env',
       mode: trimStr(e.mode) || '0600',
       on_missing: trimStr(e.on_missing) || 'fail',
+      backup_keep: typeof e.backup_keep === 'number' && Number.isFinite(e.backup_keep)
+        ? e.backup_keep
+        : 3,
     }))
 }
 
@@ -53,6 +58,7 @@ export function serializeConfigRender(raw: unknown): ConfigRenderRow[] | undefin
     output: r.output || '.env',
     mode: r.mode || '0600',
     on_missing: r.on_missing === 'warn' ? 'warn' : 'fail',
+    backup_keep: r.backup_keep,
   }))
 }
 

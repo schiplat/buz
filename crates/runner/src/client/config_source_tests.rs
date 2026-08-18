@@ -157,7 +157,7 @@ fn value_map() -> ValueMap {
 }
 
 #[test]
-fn render_env_merges_and_detects_change() {
+fn render_env_rebuilds_and_detects_change() {
     let tmp = tempfile::tempdir().unwrap();
     let tarball = sample_tarball(tmp.path());
     let dest = tmp.path().join("cfg");
@@ -168,6 +168,7 @@ fn render_env_merges_and_detects_change() {
         output: ".env".into(),
         mode: 0o600,
         on_missing: MissingPolicy::Fail,
+        backup_keep: 0,
     };
     let (content, changed, forced) =
         render_env_with_old(&dest, &spec, &value_map(), "configs.tar.gz", "").unwrap();
@@ -178,6 +179,32 @@ fn render_env_merges_and_detects_change() {
         vec!["MANAGER_IMAGE".to_string(), "MANAGER_TOKEN".to_string()]
     );
     assert_eq!(forced, vec!["tok_secret_value".to_string()]);
+}
+
+#[test]
+fn render_env_rebuild_drops_stale_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tarball = sample_tarball(tmp.path());
+    let dest = tmp.path().join("cfg");
+    unpack(&tarball, &dest).unwrap();
+
+    let spec = EnvRenderSpec {
+        template: "env.example".into(),
+        output: ".env".into(),
+        mode: 0o600,
+        on_missing: MissingPolicy::Fail,
+        backup_keep: 0,
+    };
+    // Old `.env` carries an operator-added key that the template no longer
+    // defines; a full rebuild must drop it instead of preserving it.
+    let old = "STALE_KEY=should_be_removed\nMANAGER_TOKEN=old\n";
+    let (content, _changed, _forced) =
+        render_env_with_old(&dest, &spec, &value_map(), "configs.tar.gz", old).unwrap();
+    assert!(
+        !content.contains("STALE_KEY"),
+        "stale key leaked: {content}"
+    );
+    assert!(content.contains("MANAGER_TOKEN=tok_secret_value"));
 }
 
 #[test]
@@ -192,6 +219,7 @@ fn render_env_fails_fast_on_missing_secret() {
         output: ".env".into(),
         mode: 0o600,
         on_missing: MissingPolicy::Fail,
+        backup_keep: 0,
     };
     let m = value_map();
     // remove the token → template references an unresolved secret
@@ -221,6 +249,7 @@ fn render_env_unchanged_detects_no_change() {
         output: ".env".into(),
         mode: 0o600,
         on_missing: MissingPolicy::Fail,
+        backup_keep: 0,
     };
     let (content, _, _) =
         render_env_with_old(&dest, &spec, &value_map(), "configs.tar.gz", "").unwrap();
@@ -334,12 +363,14 @@ fn apply_renders_unions_changed_keys() {
             output: "a.env".into(),
             mode: 0o600,
             on_missing: MissingPolicy::Fail,
+            backup_keep: 0,
         },
         EnvRenderSpec {
             template: "b.tpl".into(),
             output: "b.env".into(),
             mode: 0o600,
             on_missing: MissingPolicy::Fail,
+            backup_keep: 0,
         },
     ];
     let (changed, _) =
@@ -358,6 +389,7 @@ fn apply_renders_on_missing_warn_does_not_fail() {
         output: ".env".into(),
         mode: 0o600,
         on_missing: MissingPolicy::Warn,
+        backup_keep: 0,
     }];
     apply_renders_local(&dest, &specs, &value_map(), "render-only", &mut Vec::new()).unwrap();
     let env = std::fs::read_to_string(dest.join(".env")).unwrap();
@@ -365,5 +397,53 @@ fn apply_renders_on_missing_warn_does_not_fail() {
     assert!(
         env.contains("WARNING") || env.contains("X="),
         "warn mode should keep the line or emit a warning: {env}"
+    );
+}
+
+fn list_backups(dir: &Path, base: &str) -> Vec<String> {
+    let prefix = format!("{base}.bak.");
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(&prefix))
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn backup_output_local_writes_timestamped_backup() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join(".env");
+    std::fs::write(&out, "OLD=1\n").unwrap();
+    backup_output_local(&out, "OLD=1\n", 3).unwrap();
+    let backups = list_backups(tmp.path(), ".env");
+    assert_eq!(backups.len(), 1, "backups: {backups:?}");
+    let backup = std::fs::read_to_string(tmp.path().join(&backups[0])).unwrap();
+    assert_eq!(backup, "OLD=1\n");
+}
+
+#[test]
+fn prune_backups_local_keeps_only_newest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join(".env");
+    for ts in [
+        "20260101-000000",
+        "20260101-000001",
+        "20260101-000002",
+        "20260101-000003",
+    ] {
+        std::fs::write(tmp.path().join(format!(".env.bak.{ts}")), "x").unwrap();
+    }
+    prune_backups_local(&out, 3).unwrap();
+    let backups = list_backups(tmp.path(), ".env");
+    assert_eq!(
+        backups,
+        vec![
+            ".env.bak.20260101-000001".to_string(),
+            ".env.bak.20260101-000002".to_string(),
+            ".env.bak.20260101-000003".to_string(),
+        ]
     );
 }

@@ -65,6 +65,12 @@ aliases:
 | `output` | yes | `<template>.rendered` (**relative to `dest`**) |
 | `mode` | yes (show always) | `"0600"` |
 | `on_missing` | yes (show always) | `fail` (`fail` \| `warn`) |
+| `backup_keep` | no | `3` (`0` disables timestamped `<output>.bak.<ts>` backups before overwrite) |
+
+Render is a **full rebuild**: the template is the sole source of truth, so keys
+removed from the template are dropped (no stale keys linger). The pre-overwrite
+`.bak` backup preserves the prior `.env` for rollback; only the newest
+`backup_keep` backups are kept.
 
 **Why `dest` is separate (not absolute paths inside each render entry):** one
 working root aligns Deliver + Render, sets `$BUZ_CONFIG_DIR`, and keeps OSS

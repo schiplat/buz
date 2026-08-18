@@ -77,7 +77,8 @@ const STEP: Completion[] = [
   { label: 'template', type: 'property' },
   { label: 'output', type: 'property' },
   { label: 'mode', type: 'property' },
-  { label: 'on_missing', type: 'property', info: 'fail | skip' },
+  { label: 'on_missing', type: 'property', info: 'fail | warn' },
+  { label: 'backup_keep', type: 'property', info: 'timestamped .env backups to keep (default 3, 0 disables)' },
 ]
 
 const USES_VALUES: Completion[] = [
