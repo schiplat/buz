@@ -5,7 +5,8 @@
 //! stays consistent and is easy to extend:
 //!
 //!   1. `ANSI`           — the only place raw escape codes live.
-//!   2. `BANNER_RULES`   — ordered classifier for `==> …` banner lines.
+//!   2. `BANNER_RULES`   — ordered classifier for `==> …` banner lines; the
+//!                         `==>` marker is stripped for a cleaner display.
 //!   3. `FIELD_KEYS`     — every `  key   value` field key the runner emits.
 
 /** Central ANSI palette. */
@@ -22,6 +23,9 @@ const ANSI = {
   boldBlue: '\x1b[1;34m',
   boldWhite: '\x1b[1;37m',
 } as const
+
+/** Leading marker the runner emits on banner lines (`==> RUN`, `==> ERROR`, …). */
+const BANNER_MARKER = '==>'
 
 /**
  * Ordered banner classifier for `==> …` lines. First match wins, so specific
@@ -84,22 +88,30 @@ function splitFieldLine(line: string): { key: string; value: string } | null {
   return best
 }
 
-/** Color a `==> …` banner line via the central classifier. */
+/** Strip the leading `==>` marker; returns the banner body or null if absent. */
+function stripBannerMarker(line: string): string | null {
+  const trimmed = line.trimStart()
+  if (!trimmed.startsWith(BANNER_MARKER)) return null
+  return trimmed.slice(BANNER_MARKER.length).replace(/^\s+/, '')
+}
+
+/** Color a `==> …` banner line via the central classifier (marker removed). */
 function colorizeBannerLine(line: string): string {
-  const upper = line.trimStart().toUpperCase()
+  const body = stripBannerMarker(line)!
+  const upper = body.toUpperCase()
   for (const rule of BANNER_RULES) {
     if (rule.match(upper)) {
-      return `${rule.style}${line}${ANSI.reset}`
+      return `${rule.style}${body}${ANSI.reset}`
     }
   }
   // Generic banner, e.g. the SSH summary `==> <step_name>`.
-  return `${ANSI.boldBlue}${line}${ANSI.reset}`
+  return `${ANSI.boldBlue}${body}${ANSI.reset}`
 }
 
 /** Color a single log line: banner / separator / field / continuation. */
 export function colorizeLogLine(line: string): string {
   const trimmed = line.trimStart()
-  if (trimmed.startsWith('==>')) {
+  if (trimmed.startsWith(BANNER_MARKER)) {
     return colorizeBannerLine(line)
   }
   // Multi-host separator / summary lines (`--- host ---`, `--- summary ---`).

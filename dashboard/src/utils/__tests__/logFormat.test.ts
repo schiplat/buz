@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { colorizeLogLine, formatLogChunkForTerminal } from '@/utils/logFormat'
 
 describe('formatLogChunkForTerminal', () => {
-  it('prefixes every non-empty line with the same clock', () => {
+  it('prefixes every non-empty line with the same clock and strips banner marker', () => {
     const out = formatLogChunkForTerminal(
       '11:56:55',
       '==> RUN [docker]\n  cmd  echo hi\n',
@@ -10,7 +10,8 @@ describe('formatLogChunkForTerminal', () => {
     const lines = out.replace(/\r\n$/, '').split('\r\n')
     expect(lines).toHaveLength(2)
     expect(lines[0]).toContain('[11:56:55]')
-    expect(lines[0]).toContain('==> RUN [docker]')
+    expect(lines[0]).toContain('RUN [docker]')
+    expect(lines[0]).not.toContain('==>')
     expect(lines[1]).toContain('[11:56:55]')
     expect(lines[1]).toContain('cmd')
   })
@@ -22,12 +23,18 @@ describe('formatLogChunkForTerminal', () => {
 })
 
 describe('colorizeLogLine — banner classification', () => {
+  it('strips the `==>` marker from banner lines', () => {
+    expect(colorizeLogLine('==> RUNNER')).not.toContain('==>')
+    expect(colorizeLogLine('==> RUN [docker]')).not.toContain('==>')
+    expect(colorizeLogLine('==> ERROR')).not.toContain('==>')
+  })
+
   it('colors ERROR banners bold red', () => {
-    expect(colorizeLogLine('==> ERROR')).toContain('\x1b[1;31m')
+    expect(colorizeLogLine('==> ERROR')).toBe('\x1b[1;31mERROR\x1b[0m')
   })
 
   it('colors RUN banners bold green', () => {
-    expect(colorizeLogLine('==> RUN [docker]')).toContain('\x1b[1;32m')
+    expect(colorizeLogLine('==> RUN [docker]')).toBe('\x1b[1;32mRUN [docker]\x1b[0m')
   })
 
   it('colors RUNNER bold cyan, not the RUN green', () => {
@@ -59,7 +66,7 @@ describe('colorizeLogLine — banner classification', () => {
   })
 
   it('colors generic `==> <step_name>` banner bold blue', () => {
-    expect(colorizeLogLine('==> deploy')).toContain('\x1b[1;34m')
+    expect(colorizeLogLine('==> deploy')).toBe('\x1b[1;34mdeploy\x1b[0m')
   })
 })
 
