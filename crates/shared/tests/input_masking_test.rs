@@ -11,6 +11,9 @@ fn masking_input_names_filters_true_only() {
             required: Some(true),
             default: None,
             masking: None,
+            input_type: None,
+            pattern: None,
+            options: None,
         },
         PipelineInputDef {
             name: "token".into(),
@@ -18,6 +21,9 @@ fn masking_input_names_filters_true_only() {
             required: None,
             default: None,
             masking: Some(true),
+            input_type: None,
+            pattern: None,
+            options: None,
         },
         PipelineInputDef {
             name: "nope".into(),
@@ -25,6 +31,9 @@ fn masking_input_names_filters_true_only() {
             required: None,
             default: None,
             masking: Some(false),
+            input_type: None,
+            pattern: None,
+            options: None,
         },
     ];
     assert_eq!(masking_input_names(&defs), vec!["token".to_string()]);

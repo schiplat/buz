@@ -18,6 +18,33 @@ describe('normalizeInputDefsForSave', () => {
     ])
   })
 
+  it('carries declared constraints (type / pattern / options)', () => {
+    const saved = normalizeInputDefsForSave([
+      {
+        name: 'tag',
+        type: 'string',
+        pattern: '^[A-Za-z0-9._-]+$',
+      },
+      {
+        name: 'env',
+        type: 'choice',
+        options: ['staging', 'production'],
+      },
+    ])
+    expect(saved).toEqual([
+      { name: 'tag', type: 'string', pattern: '^[A-Za-z0-9._-]+$' },
+      { name: 'env', type: 'choice', options: ['staging', 'production'] },
+    ])
+  })
+
+  it('omits empty pattern and empty options', () => {
+    const saved = normalizeInputDefsForSave([
+      { name: 'a', pattern: '', options: [] },
+      { name: 'b', pattern: 'x', options: [] },
+    ])
+    expect(saved).toEqual([{ name: 'a' }, { name: 'b', pattern: 'x' }])
+  })
+
   it('returns undefined for empty list', () => {
     expect(normalizeInputDefsForSave([])).toBeUndefined()
     expect(normalizeInputDefsForSave(undefined)).toBeUndefined()
@@ -34,6 +61,26 @@ describe('normalizeInputDefsForForm', () => {
     ).toEqual([
       { name: 'a', description: '', required: false, default: '', masking: true },
       { name: 'b', description: '', required: false, default: '', masking: false },
+    ])
+  })
+
+  it('preserves declared constraints for the trigger form', () => {
+    expect(
+      normalizeInputDefsForForm([
+        { name: 'env', type: 'choice', options: ['staging', 'production'] },
+        { name: 'tag', pattern: '^[0-9]+$' },
+      ]),
+    ).toEqual([
+      {
+        name: 'env',
+        description: '',
+        required: false,
+        default: '',
+        masking: false,
+        type: 'choice',
+        options: ['staging', 'production'],
+      },
+      { name: 'tag', description: '', required: false, default: '', masking: false, pattern: '^[0-9]+$' },
     ])
   })
 })

@@ -103,11 +103,28 @@ async function onYamlSaved() {
 
 const triggeringId = ref<string | null>(null)
 const triggerTarget = ref<Pipeline | null>(null)
-const triggerInputPairs = ref<{ key: string; value: string; required?: boolean; masking?: boolean }[]>([])
+type TriggerInputPair = {
+  key: string
+  value: string
+  required?: boolean
+  masking?: boolean
+  type?: string
+  pattern?: string
+  options?: string[]
+}
+const triggerInputPairs = ref<TriggerInputPair[]>([])
 /** True when the opened trigger dialog has declared on.manual.inputs. */
 const triggerHasInputDefs = ref(false)
 /** Shown when POST /trigger fails (e.g. 422 YAML validation). */
 const triggerError = ref<FormattedApiError | null>(null)
+/** Field names flagged by the last validation error — highlighted red in the dialog. */
+const triggerErrorFields = computed<Set<string>>(() => {
+  const set = new Set<string>()
+  for (const item of triggerError.value?.items || []) {
+    if (item.field) set.add(item.field)
+  }
+  return set
+})
 /** Ad-hoc params when pipeline has no input_defs — collapsed by default. */
 const showAdhocParams = ref(false)
 const triggerDebug = ref(false)
@@ -245,6 +262,9 @@ async function handleTrigger(p: Pipeline) {
         value: d.default || '',
         required: d.required,
         masking: !!d.masking,
+        type: d.type,
+        pattern: d.pattern,
+        options: d.options,
       }))
     : []
 }
@@ -708,16 +728,41 @@ async function handleToggleActive(p: Pipeline) {
                   v-if="pair.masking"
                   class="text-[10px] font-medium uppercase tracking-wide rounded px-1.5 py-0.5 bg-violet-500/10 text-violet-600 border border-violet-500/20 font-sans"
                 >masking</span>
+                <span
+                  v-if="pair.type"
+                  class="text-[10px] font-medium rounded px-1.5 py-0.5 bg-sky-500/10 text-sky-600 border border-sky-500/20 font-sans"
+                >{{ pair.type }}</span>
               </div>
-              <input
+              <select
+                v-if="pair.type === 'choice' || pair.type === 'boolean'"
                 v-model="pair.value"
-                :type="pair.masking ? 'password' : 'text'"
+                class="flex-[2] rounded-md border bg-muted/50 px-3 py-2 text-sm"
+                :class="triggerErrorFields.has(pair.key) ? 'border-destructive' : 'border-border'"
+                :disabled="triggeringId !== null"
+              >
+                <option v-if="!pair.options?.length" value="" disabled>select…</option>
+                <template v-if="pair.type === 'choice'">
+                  <option v-for="opt in pair.options" :key="opt" :value="opt">{{ opt }}</option>
+                </template>
+                <template v-else>
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </template>
+              </select>
+              <input
+                v-else
+                v-model="pair.value"
+                :type="pair.masking ? 'password' : pair.type === 'number' ? 'number' : 'text'"
                 :placeholder="pair.required ? 'required' : 'enter value (leave empty for default)'"
                 class="flex-[2] rounded-md border border-border bg-muted/50 px-3 py-2 text-sm"
+                :class="triggerErrorFields.has(pair.key) ? 'border-destructive' : 'border-border'"
                 :disabled="triggeringId !== null"
                 :autocomplete="pair.masking ? 'new-password' : 'off'"
               />
             </div>
+            <p v-if="triggerErrorFields.size > 0" class="text-xs text-destructive">
+              {{ triggerErrorFields.size }} invalid field(s) — fix them and trigger again.
+            </p>
           </div>
 
           <div v-else class="mb-6">

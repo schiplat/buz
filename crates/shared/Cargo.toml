@@ -11,6 +11,7 @@ web = ["axum", "sqlx"]
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
+regex.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 thiserror.workspace = true

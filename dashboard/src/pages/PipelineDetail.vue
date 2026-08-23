@@ -77,7 +77,25 @@ let pipelineWs: ManagedWebSocket | null = null
 let alive = true
 
 const showTriggerDialog = ref(false)
-const inputPairs = ref<{ key: string; value: string; required?: boolean; masking?: boolean }[]>([])
+type InputPair = {
+  key: string
+  value: string
+  required?: boolean
+  masking?: boolean
+  /** Declared constraint: string / number / boolean / host / choice. */
+  type?: string
+  pattern?: string
+  options?: string[]
+}
+const inputPairs = ref<InputPair[]>([])
+/** Field names flagged by the last validation error — highlighted red in the dialog. */
+const errorFields = computed<Set<string>>(() => {
+  const set = new Set<string>()
+  for (const item of triggerError.value?.items || []) {
+    if (item.field) set.add(item.field)
+  }
+  return set
+})
 /** Ad-hoc params when pipeline has no input_defs — collapsed by default. */
 const showAdhocParams = ref(false)
 const triggerDebug = ref(false)
@@ -814,6 +832,9 @@ function openTriggerDialog() {
         value: d.default || '',
         required: d.required,
         masking: !!d.masking,
+        type: d.type,
+        pattern: d.pattern,
+        options: d.options,
       }))
     : []
   showTriggerDialog.value = true
@@ -930,16 +951,43 @@ async function handleTrigger() {
                   v-if="pair.masking"
                   class="text-[10px] font-medium uppercase tracking-wide rounded px-1.5 py-0.5 bg-violet-500/10 text-violet-600 border border-violet-500/20 font-sans"
                 >masking</span>
+                <span
+                  v-if="pair.type"
+                  class="text-[10px] font-medium rounded px-1.5 py-0.5 bg-sky-500/10 text-sky-600 border border-sky-500/20 font-sans"
+                >{{ pair.type }}</span>
               </div>
-              <input
+
+              <select
+                v-if="pair.type === 'choice' || pair.type === 'boolean'"
                 v-model="pair.value"
-                :type="pair.masking ? 'password' : 'text'"
+                class="flex-[2] rounded-md border bg-muted/50 px-3 py-2 text-sm"
+                :class="errorFields.has(pair.key) ? 'border-destructive' : 'border-border'"
+                :disabled="triggering"
+              >
+                <option v-if="!pair.options?.length" value="" disabled>select…</option>
+                <template v-if="pair.type === 'choice'">
+                  <option v-for="opt in pair.options" :key="opt" :value="opt">{{ opt }}</option>
+                </template>
+                <template v-else>
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </template>
+              </select>
+
+              <input
+                v-else
+                v-model="pair.value"
+                :type="pair.masking ? 'password' : pair.type === 'number' ? 'number' : 'text'"
                 :placeholder="pair.required ? 'required' : 'enter value (leave empty for default)'"
-                class="flex-[2] rounded-md border border-border bg-muted/50 px-3 py-2 text-sm"
+                class="flex-[2] rounded-md border bg-muted/50 px-3 py-2 text-sm"
+                :class="errorFields.has(pair.key) ? 'border-destructive' : 'border-border'"
                 :disabled="triggering"
                 :autocomplete="pair.masking ? 'new-password' : 'off'"
               />
             </div>
+            <p v-if="errorFields.size > 0" class="text-xs text-destructive">
+              {{ errorFields.size }} invalid field(s) — fix them and trigger again.
+            </p>
           </div>
 
           <!-- Ad-hoc params (no input_defs) — collapsed by default -->

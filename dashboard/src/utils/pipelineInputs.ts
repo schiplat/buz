@@ -16,6 +16,9 @@ export function normalizeInputDefsForSave(
     const defVal = (d.default || '').trim()
     if (defVal) item.default = defVal
     if (d.masking) item.masking = true
+    if (d.type) item.type = d.type
+    if (d.pattern) item.pattern = d.pattern
+    if (d.options?.length) item.options = [...d.options]
     out.push(item)
   }
   return out.length > 0 ? out : undefined
@@ -32,6 +35,9 @@ export function normalizeInputDefsForForm(
     required: !!d.required,
     default: d.default || '',
     masking: !!d.masking,
+    type: d.type,
+    pattern: d.pattern,
+    options: d.options,
   }))
 }
 

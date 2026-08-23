@@ -238,3 +238,7 @@ mod runner_restart_integration_tests;
 #[cfg(test)]
 #[path = "tests/github_sync_tests.rs"]
 mod github_sync_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/input_validation_trigger_tests.rs"]
+mod input_validation_trigger_integration_tests;

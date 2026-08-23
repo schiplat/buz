@@ -91,6 +91,12 @@ export interface PipelineInputDef {
   default?: string
   /** When true, values are redacted in logs, audit, and job snapshots (still injected as env). */
   masking?: boolean
+  /** Optional value constraint: string / number / boolean / host / choice. */
+  type?: string
+  /** ECMAScript-compatible regex the resolved value must match. */
+  pattern?: string
+  /** Allowed values for `type: choice`. */
+  options?: string[]
 }
 
 export interface StepDef {

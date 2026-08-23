@@ -5,7 +5,8 @@ use axum::{
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::protocol::{
-    masking_input_names, redact_input_map, CreatePipelineRequest, PipelineInputDef, StepDef,
+    masking_input_names, redact_input_map, validate_input_values, CreatePipelineRequest,
+    PipelineInputDef, StepDef,
 };
 use shared::rbac::Perm;
 use sqlx::Row;
@@ -741,6 +742,41 @@ pub(crate) async fn do_trigger(
     let input_defs: Vec<PipelineInputDef> =
         serde_json::from_str(&input_defs_raw).unwrap_or_default();
     let masking_keys = masking_input_names(&input_defs);
+
+    // Merge declared defaults, then validate inputs against the pipeline's
+    // declared constraints (type / pattern / choice / host / required) before
+    // anything is scheduled. Fail fast with field-level errors so the UI can
+    // point at the offending input.
+    let mut resolved_inputs = inputs.clone();
+    for def in &input_defs {
+        if !resolved_inputs.contains_key(&def.name) {
+            if let Some(d) = def.default.as_deref() {
+                resolved_inputs.insert(def.name.clone(), d.to_string());
+            }
+        }
+    }
+    // Host references are validated against the hosts registry. Load the
+    // name set once up-front so the shared validator stays DB-agnostic.
+    let host_names: std::collections::HashSet<String> =
+        sqlx::query_scalar("SELECT name FROM hosts")
+            .fetch_all(&state.pool)
+            .await?
+            .into_iter()
+            .collect();
+    if let Err(field_errors) = validate_input_values(&input_defs, &resolved_inputs, |host_name| {
+        host_names.contains(host_name)
+    }) {
+        let detail = field_errors
+            .iter()
+            .map(|e| format!("{}: {}", e.name, e.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(AppError::ValidationFailed(format!(
+            "invalid trigger inputs — {detail}"
+        )));
+    }
+    let inputs = &resolved_inputs;
+
     let inputs_for_snapshot = redact_input_map(inputs, &masking_keys);
 
     // Effective mode frozen into the job snapshot (Job Detail). Empty mode with

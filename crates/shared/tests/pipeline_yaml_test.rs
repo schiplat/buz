@@ -339,10 +339,19 @@ on:
         description: Version to deploy
         required: true
         default: latest
+        type: string
+        pattern: "^[A-Za-z0-9._-]+$"
       deploy_token:
         description: One-time token
         required: true
         masking: true
+      environment:
+        description: Target env
+        type: choice
+        options: [staging, production]
+      replicas:
+        type: number
+        default: "3"
 concurrency:
   group: deploy-prod
 runner:
@@ -382,6 +391,18 @@ steps:
         .expect("inputs");
     let token = inputs.iter().find(|i| i.name == "deploy_token").unwrap();
     assert_eq!(token.masking, Some(true));
+    let version = inputs.iter().find(|i| i.name == "version").unwrap();
+    assert_eq!(version.input_type.as_deref(), Some("string"));
+    assert_eq!(version.pattern.as_deref(), Some("^[A-Za-z0-9._-]+$"));
+    let env = inputs.iter().find(|i| i.name == "environment").unwrap();
+    assert_eq!(env.input_type.as_deref(), Some("choice"));
+    assert_eq!(
+        env.options.as_deref(),
+        Some(["staging".to_string(), "production".to_string()].as_slice())
+    );
+    let replicas = inputs.iter().find(|i| i.name == "replicas").unwrap();
+    assert_eq!(replicas.input_type.as_deref(), Some("number"));
+    assert_eq!(replicas.default.as_deref(), Some("3"));
 }
 
 #[test]

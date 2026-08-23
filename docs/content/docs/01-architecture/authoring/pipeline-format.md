@@ -197,6 +197,47 @@ on:
   - `masking` — If `true`, the value is still injected as env for execution, but:
     - Redacted (`***`) in Runner `==> RUN` env echo / step logs, job snapshot, API `trigger_params`, and `pipeline.trigger` audit
     - **Encrypted at rest** in `jobs.trigger_params` (AES-256-GCM, same key as Secrets; `buzenc:v1:` prefix). Claim decrypts for the Runner.
+  - `type` — Optional value constraint, validated **at trigger time** (fail-fast, before a job is scheduled):
+    - `string` (default) — free-form text
+    - `number` — must parse as an integer
+    - `boolean` — must be `true` or `false` (case-insensitive); rendered as a `true`/`false` select in the dialog
+    - `host` — must reference a **registered Buz Host name** (validated against the Hosts registry)
+    - `choice` — value must be one of the declared `options`; rendered as a dropdown in the dialog
+  - `pattern` — Optional ECMAScript-compatible regex the resolved value must match (e.g. `"^[A-Za-z0-9._-]+$"`). Works with any `type` and replaces hand-written shell `case`/regex guards in the first step.
+  - `options` — Allowed values for `type: choice`.
+
+```yaml
+on:
+  manual:
+    inputs:
+      version:
+        description: Version to deploy
+        required: true
+      tag:
+        description: ACR image tag
+        required: true
+        default: "0.1.0"
+        type: string
+        pattern: "^[A-Za-z0-9._-]+$"
+      env:
+        description: Target environment
+        type: choice
+        options: [staging, production]
+      deploy_host:
+        description: Buz Host name
+        required: true
+        type: host
+      dry_run:
+        description: Skip live changes
+        type: boolean
+        default: "false"
+      replicas:
+        description: Instance count
+        type: number
+        default: "3"
+```
+
+> **Validation timing:** `required` / `type` / `pattern` / `options` are enforced by the Manager on every trigger path (manual, webhook, cron) **before** the job is queued. A violation returns `422` with field-level errors (`invalid trigger inputs — tag: value does not match pattern '…'`), and the trigger dialog highlights the offending fields in red. `default` is merged when the field is omitted, then validated like any user-provided value — so a malformed default is caught at trigger, not silently injected.
 
 ```yaml
 on:

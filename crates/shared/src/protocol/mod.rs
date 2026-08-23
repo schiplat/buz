@@ -372,6 +372,13 @@ pub struct PipelineInputDef {
     /// When true, values are redacted in logs, audit, and job snapshots (still injected as env at runtime).
     #[serde(default)]
     pub masking: Option<bool>,
+    /// Optional value constraint: string / number / boolean / host / choice.
+    #[serde(default, rename = "type")]
+    pub input_type: Option<String>,
+    #[serde(default)]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub options: Option<Vec<String>>,
 }
 
 impl PipelineInputDef {
@@ -406,6 +413,145 @@ pub fn redact_input_map(
             }
         })
         .collect()
+}
+
+/// One input validation failure, keyed by input name for frontend field-level display.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputFieldError {
+    pub name: String,
+    pub message: String,
+}
+
+/// Constraint kinds an input can declare in YAML (`on.manual.inputs.*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputTypeKind {
+    String,
+    Number,
+    Boolean,
+    Host,
+    Choice,
+}
+
+impl InputTypeKind {
+    pub fn parse(raw: Option<&str>) -> Option<Self> {
+        match raw.unwrap_or("string").trim() {
+            "" | "string" => Some(Self::String),
+            "number" => Some(Self::Number),
+            "boolean" => Some(Self::Boolean),
+            "host" => Some(Self::Host),
+            "choice" => Some(Self::Choice),
+            _ => None,
+        }
+    }
+}
+
+/// Apply declared input constraints to the resolved trigger inputs.
+///
+/// `defs` are the pipeline's `PipelineInputDef`s; `inputs` is the final map
+/// (already merged with defaults). For `type: host`, `host_exists` decides
+/// whether the referenced Buz Host is registered — it is a hook so the shared
+/// layer stays DB-agnostic (Manager injects a query-backed closure).
+///
+/// Returns `Err` with one `InputFieldError` per offending field so the UI can
+/// render field-level badges. Unknown type names are a YAML-definition problem,
+/// reported as a validation error rather than silently ignored.
+pub fn validate_input_values(
+    defs: &[PipelineInputDef],
+    inputs: &std::collections::HashMap<String, String>,
+    host_exists: impl Fn(&str) -> bool,
+) -> Result<(), Vec<InputFieldError>> {
+    let mut errors: Vec<InputFieldError> = Vec::new();
+
+    for def in defs {
+        let kind = InputTypeKind::parse(def.input_type.as_deref());
+        let Some(kind) = kind else {
+            errors.push(InputFieldError {
+                name: def.name.clone(),
+                message: format!(
+                    "unknown input type {:?}",
+                    def.input_type.as_deref().unwrap_or("")
+                ),
+            });
+            continue;
+        };
+
+        let Some(raw) = inputs.get(&def.name) else {
+            if def.required.unwrap_or(false) {
+                errors.push(InputFieldError {
+                    name: def.name.clone(),
+                    message: "required input is missing".into(),
+                });
+            }
+            continue;
+        };
+
+        let value = raw.trim();
+
+        // `choice` needs its options declared; `options` without `choice` is ignored.
+        if kind == InputTypeKind::Choice {
+            match def.options.as_deref() {
+                Some(opts) if !opts.is_empty() => {
+                    if !opts.iter().any(|o| o == value) {
+                        errors.push(InputFieldError {
+                            name: def.name.clone(),
+                            message: format!("value must be one of: {}", opts.join(", ")),
+                        });
+                    }
+                }
+                _ => {
+                    errors.push(InputFieldError {
+                        name: def.name.clone(),
+                        message: "type: choice requires a non-empty options list".into(),
+                    });
+                }
+            }
+        } else if kind == InputTypeKind::Number {
+            if value.parse::<i64>().is_err() {
+                errors.push(InputFieldError {
+                    name: def.name.clone(),
+                    message: "must be an integer".into(),
+                });
+            }
+        } else if kind == InputTypeKind::Boolean {
+            let ok = matches!(value.to_ascii_lowercase().as_str(), "true" | "false");
+            if !ok {
+                errors.push(InputFieldError {
+                    name: def.name.clone(),
+                    message: "must be true or false".into(),
+                });
+            }
+        } else if kind == InputTypeKind::Host {
+            if value.is_empty() || !host_exists(value) {
+                errors.push(InputFieldError {
+                    name: def.name.clone(),
+                    message: format!("host '{value}' is not registered"),
+                });
+            }
+        }
+
+        if let Some(pat) = def.pattern.as_deref() {
+            if !pat.is_empty() {
+                let re = regex::Regex::new(pat).map_err(|_| {
+                    vec![InputFieldError {
+                        name: def.name.clone(),
+                        message: format!("invalid pattern '{pat}' in pipeline definition"),
+                    }]
+                })?;
+                if !re.is_match(value) {
+                    errors.push(InputFieldError {
+                        name: def.name.clone(),
+                        message: format!("value does not match pattern '{pat}'"),
+                    });
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

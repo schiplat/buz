@@ -66,6 +66,23 @@ describe('parseApiError', () => {
     ])
   })
 
+  it('structures declarative input validation failures into field bullets', () => {
+    const err = {
+      response: {
+        data: {
+          message:
+            "ValidationFailed: invalid trigger inputs — tag: value does not match pattern '^[A-Za-z0-9._-]+$'; deploy_host: host 'ghost' is not registered",
+        },
+      },
+    }
+    const parsed = parseApiError(err, 'Trigger failed')
+    expect(parsed.title).toBe('Invalid inputs')
+    expect(parsed.items).toEqual([
+      { field: 'tag', message: "value does not match pattern '^[A-Za-z0-9._-]+$'" },
+      { field: 'deploy_host', message: "host 'ghost' is not registered" },
+    ])
+  })
+
   it('keeps plain messages as a single item', () => {
     const parsed = parseApiError({ message: 'Network Error' }, 'Trigger failed')
     expect(parsed.title).toBe('Trigger failed')

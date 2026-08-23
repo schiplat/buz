@@ -1085,6 +1085,9 @@ fn extract_trigger(
                         required: def.required,
                         default: def.default.clone(),
                         masking: def.masking.filter(|m| *m),
+                        input_type: def.r#type.clone(),
+                        pattern: def.pattern.clone(),
+                        options: def.options.clone(),
                     })
                     .collect()
             })

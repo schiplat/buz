@@ -109,6 +109,17 @@ export function parseApiError(err: unknown, fallback = 'Request failed'): Format
     }
   }
 
+  // invalid trigger inputs — tag: value does not match…; env: must be one of…
+  const triggerFail = raw.match(/^invalid trigger inputs\s*[—\-–:]\s*(.+)$/is)
+  if (triggerFail) {
+    const items = splitFieldMessages(triggerFail[1].trim())
+    return {
+      title: 'Invalid inputs',
+      summary: 'Fix the highlighted fields and trigger again.',
+      items: items.length ? items : [{ message: triggerFail[1].trim() }],
+    }
+  }
+
   if (raw.includes(';')) {
     const items = splitFieldMessages(raw)
     if (items.length > 1 || items.some((i) => i.field)) {

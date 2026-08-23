@@ -173,6 +173,20 @@ pub struct InputDef {
     /// When true, values are redacted in logs, audit, and job snapshots (still injected as env at runtime).
     #[serde(default)]
     pub masking: Option<bool>,
+    /// Optional value constraint. Supported kinds:
+    ///   - absent / "string": free-form text
+    ///   - "number": must parse as i64
+    ///   - "boolean": "true"/"false" (case-insensitive)
+    ///   - "host": must reference a registered Buz Host name (validated at trigger)
+    ///   - "choice": value must be one of `options` (options are required then)
+    #[serde(default)]
+    pub r#type: Option<String>,
+    /// Optional ECMAScript-compatible regex; the resolved value must match.
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Allowed values for `type: choice`.
+    #[serde(default)]
+    pub options: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,6 +476,12 @@ pub struct InputData {
     pub default: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub masking: Option<bool>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub input_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1235,6 +1255,9 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                             required: v.required,
                             default: v.default.clone(),
                             masking: v.masking.filter(|m| *m),
+                            input_type: v.r#type.clone(),
+                            pattern: v.pattern.clone(),
+                            options: v.options.clone(),
                         })
                         .collect()
                 })
