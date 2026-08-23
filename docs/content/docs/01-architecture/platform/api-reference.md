@@ -432,6 +432,72 @@ Response:
 | PUT | `/api/v1/variables/:id` | JWT |
 | DELETE | `/api/v1/variables/:id` | JWT |
 
+## GitHub Actions Sync
+
+See [GitHub Actions Secrets/Variables Sync](/docs/01-architecture/platform/github-actions-sync/).
+
+**Connections / repos / repo fetch / test** — `PlatformAdmin`:
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/api/v1/github-sync/connections` | PlatformAdmin |
+| POST | `/api/v1/github-sync/connections` | PlatformAdmin |
+| PUT | `/api/v1/github-sync/connections/:id` | PlatformAdmin |
+| DELETE | `/api/v1/github-sync/connections/:id` | PlatformAdmin |
+| GET | `/api/v1/github-sync/repos` | PlatformAdmin |
+| POST | `/api/v1/github-sync/repos` | PlatformAdmin |
+| PUT | `/api/v1/github-sync/repos/:id` | PlatformAdmin |
+| DELETE | `/api/v1/github-sync/repos/:id` | PlatformAdmin |
+| POST | `/api/v1/github-sync/repos/fetch` | PlatformAdmin |
+| POST | `/api/v1/github-sync/test` | PlatformAdmin |
+
+Connection create/update accept optional auto-fetch fields
+`fetch_owners` (comma/newline-separated owners) and `fetch_interval_minutes`
+(positive integer, or `null` to disable). On update, absent fetch fields keep
+their current value; explicit `null` clears owners / disables the interval.
+`GET /connections` returns `fetch_owners`, `fetch_interval_minutes`, and
+`last_fetch_at` alongside the existing fields. Auto-fetch runs on a leader-
+leased scheduler (60s tick, shared `scheduler_lease` row `id=2`); manual and
+scheduled fetches both update `last_fetch_at`.
+
+`GET /api/v1/github-sync/repos` returns each repo with a `binds` array listing
+the secrets / variables bound to it: `{kind: "secret"|"variable", id, name,
+last_status, last_op}` — metadata only, never values.
+
+`POST /api/v1/github-sync/test` verifies a connection token. When `owner`
+(and optionally `repo`) is provided it checks read access to that owner / repo;
+when both are omitted it validates the token alone via `GET /user` and returns
+`{ok: true, login: "<account>"}`.
+
+**Secret binds** — `GET` is `TeamView` (read-only status); mutations are
+`PlatformAdmin` (they push using a connection PAT):
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/api/v1/secrets/:id/github-binds` | TeamView |
+| POST | `/api/v1/secrets/:id/github-binds` | PlatformAdmin |
+| DELETE | `/api/v1/secrets/:id/github-binds/:bindId` | PlatformAdmin |
+| POST | `/api/v1/secrets/:id/github-binds/push` | PlatformAdmin |
+
+**Variable binds** — `PlatformAdmin`:
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/api/v1/variables/:id/github-binds` | PlatformAdmin |
+| POST | `/api/v1/variables/:id/github-binds` | PlatformAdmin |
+| DELETE | `/api/v1/variables/:id/github-binds/:bindId` | PlatformAdmin |
+| POST | `/api/v1/variables/:id/github-binds/push` | PlatformAdmin |
+
+- Secret pushes seal the plaintext with libsodium `crypto_box_seal` (fresh key
+  per push) and `PUT` to GitHub Actions; variable pushes `POST`/`PATCH` the
+  value. Per-repo results are returned and persisted to the bind row.
+- Unbinding (`DELETE …/github-binds/:bindId`) is **remote-first**: it deletes
+  the value from GitHub Actions and only then removes the local bind row
+  (idempotent — never-pushed binds still complete; a failed remote cleanup
+  keeps the bind and returns the error).
+- `GET /api/v1/secrets` and `GET /api/v1/variables` each gain a `github_binds`
+  array per row (bind metadata only — never values).
+
 ## Webhooks
 
 | Method | Path | Auth |

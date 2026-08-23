@@ -6,8 +6,6 @@ aliases:
   - /docs/01-architecture/secrets-vars-expressions/
 ---
 
-# Secrets & Variables — Expression Cheat Sheet
-
 **Canonical quick reference** for every way Buz expresses secrets and variables.
 Use this page when authoring YAML or reviewing Quick YAML Reference.
 

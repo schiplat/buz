@@ -317,6 +317,30 @@ Standalone Manager **rejects non-loopback** registration. Use the normal
 two-image deploy (`buz-manager` + `buz-runner`) instead — see
 [Deployment](/docs/03-operations/deployment/).
 
+**Host sleep → runner shows offline**
+
+When the physical host (or hypervisor) suspends, the whole VM — and the
+standalone container inside it — freezes. The runner stops heartbeating, so the
+Manager marks it `offline` after `heartbeat_timeout_seconds` (default 90s).
+
+Recovery (manual, no code change needed):
+
+1. Wake the host. The container's processes are still alive (suspend ≠ kill),
+   so the runner resumes heartbeating and flips back to `online` on its own
+   within ~30s. **Wait ~60s first — no action needed.**
+2. If it stays offline after ~60s, the container was stopped (the host was
+   powered off/rebooted, not suspended). Bring it back manually:
+
+```bash
+ssh <vm>
+cd /opt/buz-standalone        # your deploy dir
+docker compose ps             # confirm state: running vs exited
+docker compose up -d          # or: docker compose restart buz
+docker compose logs --tail=50 | grep -E 'registered|ERROR'
+```
+
+The Runners page should show `online` again within a few seconds.
+
 **Wrong architecture**
 
 Image is arm64-only. On amd64 hosts Docker will fail to run (or need emulation,

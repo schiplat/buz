@@ -21,14 +21,19 @@ pub async fn list(
             .fetch_all(&state.pool)
             .await?;
 
+    let var_ids: Vec<String> = rows.iter().map(|r| r.get::<String, _>(0)).collect();
+    let binds_map = super::github_sync::variable_binds_map(&state.pool, &var_ids).await?;
+
     let vars: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
+            let id: String = r.get(0);
             serde_json::json!({
-                "id": r.get::<String, _>(0),
+                "id": id,
                 "name": r.get::<String, _>(1),
                 "value": r.get::<String, _>(2),
                 "updated_at": r.get::<Option<String>, _>(3),
+                "github_binds": binds_map.get(&id).cloned().unwrap_or_default(),
             })
         })
         .collect();

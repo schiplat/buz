@@ -3,10 +3,15 @@ import { ref, computed, onMounted } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
-import { Plus, Pencil, Trash2, SlidersHorizontal } from '@lucide/vue'
+import { Plus, Pencil, Trash2, SlidersHorizontal, GitBranch } from '@lucide/vue'
 import { variablesApi, type Variable } from '@/api/variables'
+import GitHubBindChips from '@/components/github/GitHubBindChips.vue'
+import GitHubBindDialog from '@/components/github/GitHubBindDialog.vue'
+import { useAuthStore } from '@/stores/auth'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
+
+const auth = useAuthStore()
 
 const variables = ref<Variable[]>([])
 const loading = ref(true)
@@ -27,6 +32,7 @@ const { sorted, toggleSort, sortIndicator } = useClientSort(filteredVars, {
     switch (key) {
       case 'name': return row.name
       case 'value': return row.value
+      case 'github_status': return githubStatusValue(row)
       case 'updated_at': return row.updated_at || ''
       default: return ''
     }
@@ -34,6 +40,27 @@ const { sorted, toggleSort, sortIndicator } = useClientSort(filteredVars, {
 })
 
 const { page, pageSize, pageCount, total, pageItems, rangeLabel } = useClientPagination(sorted)
+
+// ── GitHub Sync bindings (platform admin only — variables are platform-level) ──
+const showGithubDialog = ref(false)
+const githubTarget = ref<Variable | null>(null)
+
+/** Sorting summary for the GitHub Sync column: none < failed < pending < ok. */
+function githubStatusValue(v: Variable): string {
+  if (!v.github_binds?.length) return ''
+  if (v.github_binds.some((b) => b.last_status === 'failed')) return 'failed'
+  if (v.github_binds.some((b) => b.last_status === 'pending')) return 'pending'
+  return 'ok'
+}
+
+function openGithub(v: Variable) {
+  githubTarget.value = v
+  showGithubDialog.value = true
+}
+
+function onGithubChanged() {
+  void loadVars()
+}
 
 // ── Create / Edit dialog ──
 const showDialog = ref(false)
@@ -149,6 +176,12 @@ onMounted(loadVars)
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('github_status')">
+                    GitHub Sync
+                    <span class="font-mono text-xs">{{ sortIndicator('github_status') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('updated_at')">
                     Updated
                     <span class="font-mono text-xs">{{ sortIndicator('updated_at') || '↕' }}</span>
@@ -163,9 +196,18 @@ onMounted(loadVars)
                 <td class="px-5 py-3">
                   <code class="mono-chip text-xs">{{ v.value }}</code>
                 </td>
+                <td v-if="auth.isPlatformAdmin" class="px-5 py-3">
+                  <GitHubBindChips
+                    v-if="v.github_binds && v.github_binds.length > 0"
+                    :binds="v.github_binds"
+                    @open="openGithub(v)"
+                  />
+                  <span v-else class="text-muted-foreground/50" title="No GitHub repo bound">—</span>
+                </td>
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ v.updated_at?.slice(0, 10) || '—' }}</td>
                 <td class="px-5 py-3 text-right whitespace-nowrap">
                   <div class="flex items-center justify-end gap-1">
+                    <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" @click="openGithub(v)" title="GitHub Actions sync"><GitBranch class="h-3.5 w-3.5" /></UiButton>
                     <UiButton variant="ghost" size="sm" @click="openEdit(v)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
                     <UiButton variant="ghost" size="sm" @click="handleDelete(v)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
                   </div>
@@ -215,5 +257,15 @@ onMounted(loadVars)
         </div>
       </div>
     </Teleport>
+
+    <!-- GitHub Sync bindings dialog (platform admin) -->
+    <GitHubBindDialog
+      v-model:show="showGithubDialog"
+      resource-kind="variable"
+      :resource-id="githubTarget?.id || ''"
+      :resource-name="githubTarget?.name || ''"
+      :can-manage="auth.isPlatformAdmin"
+      @changed="onGithubChanged"
+    />
   </div>
 </template>

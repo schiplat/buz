@@ -3,9 +3,11 @@ import { ref, computed, onMounted } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
-import { Plus, Pencil, Trash2, Shield } from '@lucide/vue'
+import { Plus, Pencil, Trash2, Shield, GitBranch } from '@lucide/vue'
 import { secretsApi, normalizeSecretKind, validateSecretName, type Secret, type SecretKind } from '@/api/secrets'
 import { teamsApi, type Team } from '@/api/teams'
+import GitHubBindChips from '@/components/github/GitHubBindChips.vue'
+import GitHubBindDialog from '@/components/github/GitHubBindDialog.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
@@ -42,6 +44,7 @@ const { sorted, toggleSort, sortIndicator } = useClientSort(filteredSecrets, {
       }
       case 'team_shared': return row.team_shared ? 1 : 0
       case 'kind': return row.kind || 'generic'
+      case 'github_status': return githubStatusValue(row)
       case 'updated_at': return row.updated_at || ''
       default: return ''
     }
@@ -49,6 +52,34 @@ const { sorted, toggleSort, sortIndicator } = useClientSort(filteredSecrets, {
 })
 
 const { page, pageSize, pageCount, total, pageItems, rangeLabel } = useClientPagination(sorted)
+
+// ── GitHub Sync bindings ──
+const showGithubDialog = ref(false)
+const githubTarget = ref<Secret | null>(null)
+
+/** Sorting summary for the GitHub Sync column: none < failed < pending < ok. */
+function githubStatusValue(s: Secret): string {
+  if (!s.github_binds?.length) return ''
+  if (s.github_binds.some((b) => b.last_status === 'failed')) return 'failed'
+  if (s.github_binds.some((b) => b.last_status === 'pending')) return 'pending'
+  return 'ok'
+}
+
+/** Secret binds need SecretManage: platform admin or owner/maintainer in the team. */
+function canManageSecret(s: Secret): boolean {
+  // GitHub binds push the secret to a repo with a connection PAT, so the
+  // bind/unbind/push actions are platform-admin-only.
+  return auth.isPlatformAdmin
+}
+
+function openGithub(s: Secret) {
+  githubTarget.value = s
+  showGithubDialog.value = true
+}
+
+function onGithubChanged() {
+  void loadSecrets()
+}
 
 // ── Create / Edit dialog ──
 const showDialog = ref(false)
@@ -284,6 +315,12 @@ onMounted(loadSecrets)
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
+                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('github_status')">
+                    GitHub Sync
+                    <span class="font-mono text-xs">{{ sortIndicator('github_status') || '↕' }}</span>
+                  </button>
+                </th>
+                <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('updated_at')">
                     Updated
                     <span class="font-mono text-xs">{{ sortIndicator('updated_at') || '↕' }}</span>
@@ -332,9 +369,18 @@ onMounted(loadSecrets)
                   >Team share</span>
                   <span v-else class="text-muted-foreground/70" title="Requires explicit bind or step reference">Explicit</span>
                 </td>
+                <td class="px-5 py-3">
+                  <GitHubBindChips
+                    v-if="s.github_binds && s.github_binds.length > 0"
+                    :binds="s.github_binds"
+                    @open="openGithub(s)"
+                  />
+                  <span v-else class="text-muted-foreground/50" title="No GitHub repo bound">—</span>
+                </td>
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap" :title="s.updated_at || ''">{{ formatLocalDateTime(s.updated_at) }}</td>
                 <td class="px-5 py-3 text-right whitespace-nowrap">
                   <div class="flex items-center justify-end gap-1">
+                    <UiButton variant="ghost" size="sm" @click="openGithub(s)" title="GitHub Actions sync"><GitBranch class="h-3.5 w-3.5" /></UiButton>
                     <UiButton variant="ghost" size="sm" @click="openEdit(s)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
                     <UiButton variant="ghost" size="sm" @click="handleDelete(s)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
                   </div>
@@ -528,5 +574,15 @@ onMounted(loadSecrets)
         </div>
       </div>
     </Teleport>
+
+    <!-- GitHub Sync bindings dialog -->
+    <GitHubBindDialog
+      v-model:show="showGithubDialog"
+      resource-kind="secret"
+      :resource-id="githubTarget?.id || ''"
+      :resource-name="githubTarget?.name || ''"
+      :can-manage="githubTarget ? canManageSecret(githubTarget) : false"
+      @changed="onGithubChanged"
+    />
   </div>
 </template>

@@ -1,0 +1,1759 @@
+//! GitHub Actions sync API — connections, repo registration, bindings, push.
+//!
+//! Connections and repos are platform-admin only (the PAT is the blast radius).
+//! Secret binds use the secret's own team `SecretManage` permission; variable
+//! binds are platform-admin (platform_vars is platform-level).
+
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
+use serde::{Deserialize, Deserializer};
+use shared::error::AppError;
+use shared::protocol::response::ApiResponse;
+use shared::rbac::Perm;
+use sqlx::Row;
+use uuid::Uuid;
+
+use crate::audit::{self, AuditEvent};
+use crate::crypto;
+use crate::middleware::{AuthUser, PlatformAdmin};
+use crate::rbac::secret_team_id;
+use crate::services::github_actions_sync::{
+    fetch_and_upsert_repos, seal_secret_value, GitHubClient,
+};
+use crate::state::AppState;
+
+// ────────────────────────────── helpers ──────────────────────────────
+
+/// Load a connection's token (decrypted) for outbound calls.
+async fn connection_client(
+    pool: &sqlx::SqlitePool,
+    jwt_secret: &str,
+    connection_id: &str,
+) -> Result<(GitHubClient, String), AppError> {
+    let row = sqlx::query(
+        "SELECT api_base_url, token_ciphertext, name FROM github_connections WHERE id = ?",
+    )
+    .bind(connection_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
+    let api_base_url: String = row.get(0);
+    let token_cipher: String = row.get(1);
+    let name: String = row.get(2);
+    let token = crypto::decrypt(&token_cipher, jwt_secret)
+        .map_err(|e| AppError::Internal(format!("decrypt connection token '{name}': {e}")))?;
+    Ok((GitHubClient::new(&api_base_url, &token), name))
+}
+
+/// Validate a GitHub Actions secret/variable name for pushability.
+/// Buz names are already UPPER_SNAKE_CASE; GitHub forbids `GITHUB_` prefix and
+/// leading digit.
+fn validate_gh_name(name: &str) -> Result<(), AppError> {
+    if name.starts_with("GITHUB_") {
+        return Err(AppError::ValidationFailed(format!(
+            "'{name}' is reserved on GitHub (GITHUB_ prefix) — skip it"
+        )));
+    }
+    if name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return Err(AppError::ValidationFailed(format!(
+            "'{name}' must not start with a digit on GitHub"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate a GitHub API base URL. Requires `https` (plain `http` is accepted
+/// only for localhost, e.g. a local GHE or tests); the normalized URL has no
+/// trailing slash. Rejects other schemes and malformed URLs so the stored PAT
+/// is never sent to an arbitrary scheme/host by construction.
+fn validate_api_base_url(raw: &str) -> Result<String, AppError> {
+    let s = raw.trim().trim_end_matches('/');
+    let url = url::Url::parse(s)
+        .map_err(|_| AppError::ValidationFailed("api_base_url must be a valid URL".into()))?;
+    let scheme_ok = url.scheme() == "https"
+        || (url.scheme() == "http"
+            && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")));
+    if !scheme_ok {
+        return Err(AppError::ValidationFailed(
+            "api_base_url must use https (plain http is only allowed for localhost)".into(),
+        ));
+    }
+    Ok(s.to_string())
+}
+
+/// Display data for a `github_connections` row (token never included).
+struct ConnectionView {
+    pub id: String,
+    pub name: String,
+    pub api_base_url: String,
+    pub has_token: bool,
+    pub updated_at: Option<String>,
+    pub fetch_owners: String,
+    pub fetch_interval_minutes: Option<i64>,
+    pub last_fetch_at: Option<String>,
+}
+
+fn connection_view(v: &ConnectionView) -> serde_json::Value {
+    serde_json::json!({
+        "id": v.id,
+        "name": v.name,
+        "api_base_url": v.api_base_url,
+        "has_token": v.has_token,
+        "fetch_owners": v.fetch_owners,
+        "fetch_interval_minutes": v.fetch_interval_minutes,
+        "last_fetch_at": v.last_fetch_at,
+        "updated_at": v.updated_at,
+    })
+}
+
+// ────────────────────────── connections (admin) ──────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct CreateConnectionRequest {
+    pub name: String,
+    #[serde(default)]
+    pub api_base_url: Option<String>,
+    pub token: String,
+    #[serde(default)]
+    pub fetch_owners: Option<String>,
+    #[serde(default)]
+    pub fetch_interval_minutes: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateConnectionRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub api_base_url: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+    /// `Some(Some(s))` update; `Some(None)` clear; `None` keep current.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub fetch_owners: Option<Option<String>>,
+    /// `Some(Some(n))` update; `Some(None)` disable; `None` keep current.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub fetch_interval_minutes: Option<Option<i64>>,
+}
+
+/// Wrap a `null` JSON value as `Some(None)` so update requests can distinguish
+/// "field absent" (`None`) from "explicitly cleared" (`Some(None)`).
+fn deserialize_some<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
+}
+
+/// Normalize a fetch-owners list (comma or newline separated) into a canonical
+/// comma-separated string. Empty input → empty string (no auto-fetch).
+fn normalize_fetch_owners(raw: Option<String>) -> String {
+    let Some(raw) = raw else {
+        return String::new();
+    };
+    raw.split([',', '\n'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Validate a fetch interval: positive minutes, or None to disable auto-fetch.
+fn validate_fetch_interval(raw: Option<i64>) -> Result<Option<i64>, AppError> {
+    match raw {
+        Some(n) if n <= 0 => Err(AppError::ValidationFailed(
+            "fetch_interval_minutes must be a positive integer, or omit/null to disable".into(),
+        )),
+        other => Ok(other),
+    }
+}
+
+pub async fn list_connections(
+    _auth: PlatformAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    let rows = sqlx::query(
+        "SELECT id, name, api_base_url, token_ciphertext, fetch_owners, fetch_interval_minutes, last_fetch_at, updated_at
+         FROM github_connections ORDER BY name ASC",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let out: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            let cipher: String = r.get(3);
+            connection_view(&ConnectionView {
+                id: r.get(0),
+                name: r.get(1),
+                api_base_url: r.get(2),
+                has_token: !cipher.is_empty(),
+                updated_at: r.get(7),
+                fetch_owners: r.get(4),
+                fetch_interval_minutes: r.get(5),
+                last_fetch_at: r.get(6),
+            })
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(out)))
+}
+
+pub async fn create_connection(
+    auth: PlatformAdmin,
+    State(state): State<AppState>,
+    Json(req): Json<CreateConnectionRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let name = req.name.trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::ValidationFailed("name is required".into()));
+    }
+    if req.token.trim().is_empty() {
+        return Err(AppError::ValidationFailed("token is required".into()));
+    }
+    let api_base_url = match req
+        .api_base_url
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => validate_api_base_url(&raw)?,
+        None => "https://api.github.com".to_string(),
+    };
+    let fetch_owners = normalize_fetch_owners(req.fetch_owners);
+    let fetch_interval_minutes = validate_fetch_interval(req.fetch_interval_minutes)?;
+
+    let existing = sqlx::query("SELECT id FROM github_connections WHERE name = ?")
+        .bind(&name)
+        .fetch_optional(&state.pool)
+        .await?;
+    if existing.is_some() {
+        return Err(AppError::Conflict(format!(
+            "github connection '{name}' already exists"
+        )));
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let cipher = crypto::encrypt(req.token.trim(), &state.config.auth.jwt_secret)
+        .map_err(|e| AppError::Internal(format!("token encryption failed: {e}")))?;
+    sqlx::query(
+        "INSERT INTO github_connections
+            (id, name, api_base_url, token_ciphertext, fetch_owners, fetch_interval_minutes)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(&name)
+    .bind(&api_base_url)
+    .bind(&cipher)
+    .bind(&fetch_owners)
+    .bind(fetch_interval_minutes)
+    .execute(&state.pool)
+    .await?;
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "github_connection.create")
+            .resource("github_connection", &id, &name)
+            .after(Some(serde_json::json!({
+                "name": name,
+                "api_base_url": api_base_url,
+                "has_token": true,
+                "fetch_owners": fetch_owners,
+                "fetch_interval_minutes": fetch_interval_minutes,
+            }))),
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(connection_view(
+        &ConnectionView {
+            id,
+            name,
+            api_base_url,
+            has_token: true,
+            updated_at: None,
+            fetch_owners,
+            fetch_interval_minutes,
+            last_fetch_at: None,
+        },
+    ))))
+}
+
+pub async fn update_connection(
+    auth: PlatformAdmin,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(req): Json<UpdateConnectionRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let row = sqlx::query(
+        "SELECT name, api_base_url, token_ciphertext, fetch_owners, fetch_interval_minutes
+         FROM github_connections WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
+    let old_name: String = row.get(0);
+    let old_base: String = row.get(1);
+    let old_cipher: String = row.get(2);
+    let old_fetch_owners: String = row.get(3);
+    let old_fetch_interval: Option<i64> = row.get(4);
+
+    let requested_name = req.name.as_deref().map(str::trim);
+    let requested_token = req
+        .token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+
+    let new_name = requested_name
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .unwrap_or(old_name.clone());
+    let new_base = match req
+        .api_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => validate_api_base_url(raw)?,
+        None => old_base,
+    };
+    // Fetch config: keep current when the field is absent; explicit null clears
+    // owners / disables the interval.
+    let new_fetch_owners = match req.fetch_owners {
+        Some(Some(raw)) => normalize_fetch_owners(Some(raw)),
+        Some(None) => String::new(),
+        None => old_fetch_owners,
+    };
+    let new_fetch_interval = match req.fetch_interval_minutes {
+        Some(Some(n)) => Some(validate_fetch_interval(Some(n))?.expect("validated")),
+        Some(None) => None,
+        None => old_fetch_interval,
+    };
+
+    if let Some(n) = requested_name.filter(|n| !n.is_empty()) {
+        if n != old_name {
+            let dup = sqlx::query("SELECT id FROM github_connections WHERE name = ? AND id != ?")
+                .bind(n)
+                .bind(&id)
+                .fetch_optional(&state.pool)
+                .await?;
+            if dup.is_some() {
+                return Err(AppError::Conflict(format!(
+                    "github connection '{n}' already exists"
+                )));
+            }
+        }
+    }
+
+    match requested_token {
+        Some(token) => {
+            let cipher = crypto::encrypt(token, &state.config.auth.jwt_secret)
+                .map_err(|e| AppError::Internal(format!("token encryption failed: {e}")))?;
+            sqlx::query(
+                "UPDATE github_connections SET name = ?, api_base_url = ?, token_ciphertext = ?, fetch_owners = ?, fetch_interval_minutes = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(&new_name)
+            .bind(&new_base)
+            .bind(&cipher)
+            .bind(&new_fetch_owners)
+            .bind(new_fetch_interval)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+        }
+        None => {
+            sqlx::query(
+                "UPDATE github_connections SET name = ?, api_base_url = ?, fetch_owners = ?, fetch_interval_minutes = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(&new_name)
+            .bind(&new_base)
+            .bind(&new_fetch_owners)
+            .bind(new_fetch_interval)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+        }
+    }
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "github_connection.update")
+            .resource("github_connection", &id, &new_name)
+            .before(Some(serde_json::json!({ "name": old_name })))
+            .after(Some(serde_json::json!({
+                "name": new_name,
+                "api_base_url": new_base,
+                "fetch_owners": new_fetch_owners,
+                "fetch_interval_minutes": new_fetch_interval,
+            }))),
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(connection_view(
+        &ConnectionView {
+            id,
+            name: new_name,
+            api_base_url: new_base,
+            has_token: !old_cipher.is_empty() || requested_token.is_some(),
+            updated_at: None,
+            fetch_owners: new_fetch_owners,
+            fetch_interval_minutes: new_fetch_interval,
+            last_fetch_at: None,
+        },
+    ))))
+}
+
+pub async fn delete_connection(
+    auth: PlatformAdmin,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let row = sqlx::query("SELECT name FROM github_connections WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
+    let name: String = row.get(0);
+    sqlx::query("DELETE FROM github_connections WHERE id = ?")
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "github_connection.delete")
+            .resource("github_connection", &id, &name)
+            .before(Some(serde_json::json!({ "name": name }))),
+    )
+    .await;
+    Ok(Json(ApiResponse::success(())))
+}
+
+// ─────────────────────────── repos (admin) ───────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct CreateRepoRequest {
+    pub connection_id: String,
+    pub owner: String,
+    pub repo: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateRepoRequest {
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+}
+
+/// Derive the repo's web UI base from an API base URL.
+/// `https://api.github.com` → `https://github.com`; GHE `https://ghe.example.com/api/v3`
+/// → `https://ghe.example.com`; a bare `https://api.ghe.example.com` → `https://ghe.example.com`.
+fn gh_web_base(api_base_url: &str) -> String {
+    let base = api_base_url.trim().trim_end_matches('/');
+    if base == "https://api.github.com" {
+        return "https://github.com".to_string();
+    }
+    if let Some(rest) = base.strip_prefix("https://api.") {
+        return format!("https://{rest}");
+    }
+    if let Some(rest) = base.strip_prefix("http://api.") {
+        return format!("http://{rest}");
+    }
+    // GHE: take scheme://host only.
+    base.split('/').take(3).collect::<Vec<_>>().join("/")
+}
+
+fn repo_view(
+    id: &str,
+    connection_id: &str,
+    connection_name: &str,
+    owner: &str,
+    repo: &str,
+    updated_at: Option<String>,
+    api_base_url: &str,
+    binds: &[serde_json::Value],
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "connection_id": connection_id,
+        "connection_name": connection_name,
+        "owner": owner,
+        "repo": repo,
+        "url": format!("{}/{owner}/{repo}", gh_web_base(api_base_url)),
+        "updated_at": updated_at,
+        "binds": binds,
+    })
+}
+
+/// Batch-load repo → bound secret/var summaries for the repos list.
+/// Only metadata (bind id, resource name, push state) — never values.
+pub(crate) async fn repo_binds_map(
+    pool: &sqlx::SqlitePool,
+    repo_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, AppError> {
+    let mut map: std::collections::HashMap<String, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    if repo_ids.is_empty() {
+        return Ok(map);
+    }
+    let placeholders = repo_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+    let secret_sql = format!(
+        "SELECT b.repo_id, b.id, s.name, b.last_status, b.last_op
+         FROM secret_github_binds b
+         JOIN secrets s ON s.id = b.secret_id
+         WHERE b.repo_id IN ({placeholders})
+         ORDER BY s.name ASC"
+    );
+    let mut q = sqlx::query(&secret_sql);
+    for id in repo_ids {
+        q = q.bind(id);
+    }
+    for r in q.fetch_all(pool).await? {
+        map.entry(r.get::<String, _>(0))
+            .or_default()
+            .push(serde_json::json!({
+                "kind": "secret",
+                "id": r.get::<String, _>(1),
+                "name": r.get::<String, _>(2),
+                "last_status": r.get::<String, _>(3),
+                "last_op": r.get::<String, _>(4),
+            }));
+    }
+
+    let var_sql = format!(
+        "SELECT b.repo_id, b.id, v.name, b.last_status, b.last_op
+         FROM variable_github_binds b
+         JOIN platform_vars v ON v.id = b.var_id
+         WHERE b.repo_id IN ({placeholders})
+         ORDER BY v.name ASC"
+    );
+    let mut q = sqlx::query(&var_sql);
+    for id in repo_ids {
+        q = q.bind(id);
+    }
+    for r in q.fetch_all(pool).await? {
+        map.entry(r.get::<String, _>(0))
+            .or_default()
+            .push(serde_json::json!({
+                "kind": "variable",
+                "id": r.get::<String, _>(1),
+                "name": r.get::<String, _>(2),
+                "last_status": r.get::<String, _>(3),
+                "last_op": r.get::<String, _>(4),
+            }));
+    }
+
+    Ok(map)
+}
+
+pub async fn list_repos(
+    _auth: PlatformAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    let rows = sqlx::query(
+        "SELECT r.id, r.connection_id, c.name, r.owner, r.repo, r.updated_at, c.api_base_url
+         FROM github_repos r
+         JOIN github_connections c ON c.id = r.connection_id
+         ORDER BY r.owner ASC, r.repo ASC",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let repo_ids: Vec<String> = rows.iter().map(|r| r.get::<String, _>(0)).collect();
+    let binds_map = repo_binds_map(&state.pool, &repo_ids).await?;
+    let out: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            let id = r.get::<String, _>(0);
+            repo_view(
+                &id,
+                &r.get::<String, _>(1),
+                &r.get::<String, _>(2),
+                &r.get::<String, _>(3),
+                &r.get::<String, _>(4),
+                r.get(5),
+                &r.get::<String, _>(6),
+                binds_map.get(&id).cloned().unwrap_or_default().as_slice(),
+            )
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(out)))
+}
+
+pub async fn create_repo(
+    auth: PlatformAdmin,
+    State(state): State<AppState>,
+    Json(req): Json<CreateRepoRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let owner = req.owner.trim().to_string();
+    let repo = req.repo.trim().to_string();
+    if owner.is_empty() || repo.is_empty() {
+        return Err(AppError::ValidationFailed(
+            "owner and repo are required".into(),
+        ));
+    }
+    let conn = sqlx::query("SELECT name, api_base_url FROM github_connections WHERE id = ?")
+        .bind(&req.connection_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
+    let conn_name: String = conn.get(0);
+    let conn_api_base: String = conn.get(1);
+
+    let dup = sqlx::query(
+        "SELECT id FROM github_repos WHERE connection_id = ? AND owner = ? AND repo = ?",
+    )
+    .bind(&req.connection_id)
+    .bind(&owner)
+    .bind(&repo)
+    .fetch_optional(&state.pool)
+    .await?;
+    if dup.is_some() {
+        return Err(AppError::Conflict(format!(
+            "repo '{owner}/{repo}' already registered on this connection"
+        )));
+    }
+
+    let id = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO github_repos (id, connection_id, owner, repo) VALUES (?, ?, ?, ?)")
+        .bind(&id)
+        .bind(&req.connection_id)
+        .bind(&owner)
+        .bind(&repo)
+        .execute(&state.pool)
+        .await?;
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "github_repo.create")
+            .resource("github_repo", &id, &format!("{owner}/{repo}"))
+            .after(Some(serde_json::json!({ "connection_id": &req.connection_id, "owner": owner, "repo": repo }))),
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(repo_view(
+        &id,
+        &req.connection_id,
+        &conn_name,
+        &owner,
+        &repo,
+        None,
+        &conn_api_base,
+        &[],
+    ))))
+}
+
+pub async fn update_repo(
+    auth: PlatformAdmin,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(req): Json<UpdateRepoRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let row = sqlx::query(
+        "SELECT r.owner, r.repo, r.connection_id, c.name, c.api_base_url
+         FROM github_repos r JOIN github_connections c ON c.id = r.connection_id WHERE r.id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("github repo not found".into()))?;
+    let old_owner: String = row.get(0);
+    let old_repo: String = row.get(1);
+    let conn_id: String = row.get(2);
+    let conn_name: String = row.get(3);
+    let conn_api_base: String = row.get(4);
+
+    let new_owner = req.owner.unwrap_or_else(|| old_owner.clone());
+    let new_repo = req.repo.unwrap_or_else(|| old_repo.clone());
+    if new_owner.trim().is_empty() || new_repo.trim().is_empty() {
+        return Err(AppError::ValidationFailed(
+            "owner and repo are required".into(),
+        ));
+    }
+
+    sqlx::query(
+        "UPDATE github_repos SET owner = ?, repo = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(&new_owner)
+    .bind(&new_repo)
+    .bind(&id)
+    .execute(&state.pool)
+    .await?;
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "github_repo.update")
+            .resource("github_repo", &id, &format!("{old_owner}/{old_repo}"))
+            .after(Some(
+                serde_json::json!({ "owner": new_owner, "repo": new_repo }),
+            )),
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(repo_view(
+        &id,
+        &conn_id,
+        &conn_name,
+        &new_owner,
+        &new_repo,
+        None,
+        &conn_api_base,
+        &[],
+    ))))
+}
+
+pub async fn delete_repo(
+    auth: PlatformAdmin,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let row = sqlx::query("SELECT owner, repo FROM github_repos WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("github repo not found".into()))?;
+    let owner: String = row.get(0);
+    let repo: String = row.get(1);
+    sqlx::query("DELETE FROM github_repos WHERE id = ?")
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "github_repo.delete")
+            .resource("github_repo", &id, &format!("{owner}/{repo}"))
+            .before(Some(serde_json::json!({ "owner": owner, "repo": repo }))),
+    )
+    .await;
+    Ok(Json(ApiResponse::success(())))
+}
+
+// ────────────────────────── fetch + test (admin) ──────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct FetchReposRequest {
+    pub connection_id: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TestRequest {
+    pub connection_id: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+}
+
+/// POST /github-sync/repos/fetch — upsert an owner's repos (org, user fallback).
+pub async fn fetch_repos(
+    auth: PlatformAdmin,
+    State(state): State<AppState>,
+    Json(req): Json<FetchReposRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let owner = req
+        .owner
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let owner = match owner {
+        Some(o) => o,
+        None => return Err(AppError::ValidationFailed("owner is required".into())),
+    };
+
+    let (client, name) = connection_client(
+        &state.pool,
+        &state.config.auth.jwt_secret,
+        &req.connection_id,
+    )
+    .await?;
+
+    tracing::info!(
+        connection = %name,
+        connection_id = %req.connection_id,
+        owner = %owner,
+        source = "manual",
+        "github-sync: fetch repos from owner"
+    );
+
+    let (added, existing) =
+        fetch_and_upsert_repos(&state.pool, &req.connection_id, &name, &owner, &client).await?;
+
+    // A manual fetch suppresses the next scheduled run.
+    sqlx::query("UPDATE github_connections SET last_fetch_at = datetime('now') WHERE id = ?")
+        .bind(&req.connection_id)
+        .execute(&state.pool)
+        .await?;
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "github_repo.fetch")
+            .resource("github_connection", &req.connection_id, &owner)
+            .after(Some(
+                serde_json::json!({ "owner": owner, "added": added, "existing": existing }),
+            )),
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "added": added,
+        "existing": existing,
+    }))))
+}
+
+/// POST /github-sync/test — verify token validity and repo access.
+pub async fn test_connection(
+    auth: PlatformAdmin,
+    State(state): State<AppState>,
+    Json(req): Json<TestRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let (client, name) = connection_client(
+        &state.pool,
+        &state.config.auth.jwt_secret,
+        &req.connection_id,
+    )
+    .await?;
+    let owner = req
+        .owner
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let repo = req
+        .repo
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let result = match (&owner, &repo) {
+        (Some(o), Some(r)) => client.test_connection(o, Some(r)).await,
+        (Some(o), None) => client.test_connection(o, None).await,
+        // No owner/repo: validate the token alone via GET /user.
+        (None, None) => match client.test_token().await {
+            Ok(login) => {
+                audit::record(
+                    &state.pool,
+                    AuditEvent::from_auth(&auth, "github_connection.test")
+                        .resource("github_connection", &req.connection_id, &name)
+                        .after(Some(serde_json::json!({ "ok": true, "login": login }))),
+                )
+                .await;
+                return Ok(Json(ApiResponse::success(serde_json::json!({
+                    "ok": true,
+                    "login": login,
+                }))));
+            }
+            Err(e) => Err(e),
+        },
+        (None, Some(_)) => {
+            return Err(AppError::ValidationFailed(
+                "repo is set but owner is missing — provide owner, or leave both empty to just validate the token"
+                    .into(),
+            ))
+        }
+    };
+    match result {
+        Ok(()) => {
+            audit::record(
+                &state.pool,
+                AuditEvent::from_auth(&auth, "github_connection.test")
+                    .resource("github_connection", &req.connection_id, &name)
+                    .after(Some(serde_json::json!({ "ok": true }))),
+            )
+            .await;
+            Ok(Json(ApiResponse::success(
+                serde_json::json!({ "ok": true }),
+            )))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+// ────────────────────────── secret binds ──────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct AddBindRequest {
+    pub repo_id: String,
+}
+
+fn bind_view(
+    id: &str,
+    repo_id: &str,
+    connection_name: &str,
+    owner: &str,
+    repo: &str,
+    last_pushed_at: Option<String>,
+    last_status: &str,
+    last_error: &str,
+    last_op: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "repo_id": repo_id,
+        "connection_name": connection_name,
+        "owner": owner,
+        "repo": repo,
+        "last_pushed_at": last_pushed_at,
+        "last_status": last_status,
+        "last_error": last_error,
+        "last_op": last_op,
+    })
+}
+
+pub async fn list_secret_binds(
+    auth: AuthUser,
+    Path(secret_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    let team_id = secret_team_id(&state.pool, &secret_id).await?;
+    auth.check_team(&team_id, Perm::TeamView)?;
+    let rows = sqlx::query(
+        "SELECT b.id, b.repo_id, c.name, r.owner, r.repo, b.last_pushed_at, b.last_status, b.last_error, b.last_op
+         FROM secret_github_binds b
+         JOIN github_repos r ON r.id = b.repo_id
+         JOIN github_connections c ON c.id = r.connection_id
+         WHERE b.secret_id = ?
+         ORDER BY r.owner ASC, r.repo ASC",
+    )
+    .bind(&secret_id)
+    .fetch_all(&state.pool)
+    .await?;
+    let out: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            bind_view(
+                &r.get::<String, _>(0),
+                &r.get::<String, _>(1),
+                &r.get::<String, _>(2),
+                &r.get::<String, _>(3),
+                &r.get::<String, _>(4),
+                r.get(5),
+                &r.get::<String, _>(6),
+                &r.get::<String, _>(7),
+                &r.get::<String, _>(8),
+            )
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(out)))
+}
+
+pub async fn add_secret_bind(
+    auth: PlatformAdmin,
+    Path(secret_id): Path<String>,
+    State(state): State<AppState>,
+    Json(req): Json<AddBindRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    // GitHub binds push the secret to a repo using the connection's PAT, so
+    // binding is restricted to platform admins — team maintainers can read the
+    // bind state but not change it.
+    let team_id = secret_team_id(&state.pool, &secret_id).await?;
+
+    let repo = sqlx::query(
+        "SELECT r.owner, r.repo, c.name FROM github_repos r
+         JOIN github_connections c ON c.id = r.connection_id
+         WHERE r.id = ?",
+    )
+    .bind(&req.repo_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (owner, repo_name, conn_name) = match repo {
+        Some(r) => (
+            r.get::<String, _>(0),
+            r.get::<String, _>(1),
+            r.get::<String, _>(2),
+        ),
+        None => {
+            // Binding failed — record it so the failure is traceable.
+            let secret_name: String = sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
+                .bind(&secret_id)
+                .fetch_optional(&state.pool)
+                .await?
+                .unwrap_or_default();
+            audit::record(
+                &state.pool,
+                AuditEvent::from_auth(&auth, "secret.github_bind.add")
+                    .resource("secret", &secret_id, &secret_name)
+                    .team(Some(team_id.clone()))
+                    .meta(Some(serde_json::json!({
+                        "repo_id": req.repo_id,
+                        "status": "failed",
+                        "error": "github repo not found",
+                    }))),
+            )
+            .await;
+            return Err(AppError::NotFound("github repo not found".into()));
+        }
+    };
+
+    let dup = sqlx::query("SELECT id FROM secret_github_binds WHERE secret_id = ? AND repo_id = ?")
+        .bind(&secret_id)
+        .bind(&req.repo_id)
+        .fetch_optional(&state.pool)
+        .await?;
+    if dup.is_some() {
+        let secret_name: String = sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
+            .bind(&secret_id)
+            .fetch_one(&state.pool)
+            .await?;
+        audit::record(
+            &state.pool,
+            AuditEvent::from_auth(&auth, "secret.github_bind.add")
+                .resource("secret", &secret_id, &secret_name)
+                .team(Some(team_id))
+                .meta(Some(serde_json::json!({
+                    "repo": format!("{owner}/{repo_name}"),
+                    "connection": conn_name,
+                    "status": "failed",
+                    "error": "already bound",
+                }))),
+        )
+        .await;
+        return Err(AppError::Conflict(format!(
+            "secret already bound to '{owner}/{repo_name}'"
+        )));
+    }
+
+    let id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO secret_github_binds (id, secret_id, repo_id, last_op) VALUES (?, ?, ?, 'bind')",
+    )
+    .bind(&id)
+    .bind(&secret_id)
+    .bind(&req.repo_id)
+    .execute(&state.pool)
+    .await?;
+
+    let secret_name: String = sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
+        .bind(&secret_id)
+        .fetch_one(&state.pool)
+        .await?;
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "secret.github_bind.add")
+            .resource("secret", &secret_id, &secret_name)
+            .team(Some(team_id))
+            .after(Some(serde_json::json!({
+                "repo": format!("{owner}/{repo_name}"), "connection": conn_name, "status": "ok",
+            }))),
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(bind_view(
+        &id,
+        &req.repo_id,
+        &conn_name,
+        &owner,
+        &repo_name,
+        None,
+        "pending",
+        "",
+        "bind",
+    ))))
+}
+
+pub async fn delete_secret_bind(
+    auth: PlatformAdmin,
+    Path((secret_id, bind_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let team_id = secret_team_id(&state.pool, &secret_id).await?;
+
+    let row = sqlx::query(
+        "SELECT r.owner, r.repo, c.api_base_url, c.token_ciphertext, c.name
+         FROM secret_github_binds b
+         JOIN github_repos r ON r.id = b.repo_id
+         JOIN github_connections c ON c.id = r.connection_id
+         WHERE b.id = ? AND b.secret_id = ?",
+    )
+    .bind(&bind_id)
+    .bind(&secret_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (owner, repo, api_base, token_cipher, conn_name) = match row {
+        Some(r) => (
+            r.get::<String, _>(0),
+            r.get::<String, _>(1),
+            r.get::<String, _>(2),
+            r.get::<String, _>(3),
+            r.get::<String, _>(4),
+        ),
+        None => return Err(AppError::NotFound("secret github bind not found".into())),
+    };
+
+    let secret_name: String = sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
+        .bind(&secret_id)
+        .fetch_one(&state.pool)
+        .await?;
+
+    // Remove the value from GitHub Actions first; only unbind locally when the
+    // remote cleanup succeeds. 404 is treated as success (never pushed).
+    let token = crypto::decrypt(&token_cipher, &state.config.auth.jwt_secret)
+        .map_err(|e| AppError::Internal(format!("decrypt connection token '{conn_name}': {e}")))?;
+    let client = GitHubClient::new(&api_base, &token);
+    if let Err(e) = client.delete_secret(&owner, &repo, &secret_name).await {
+        // Record the failed unbind on the bind row so the UI can surface it;
+        // the row is kept so the operator can fix the connection and retry.
+        sqlx::query(
+            "UPDATE secret_github_binds SET last_op = 'unbind', last_status = 'failed', last_error = ?, updated_at = datetime('now') WHERE id = ? AND secret_id = ?",
+        )
+        .bind(format!("unbind failed: {e}"))
+        .bind(&bind_id)
+        .bind(&secret_id)
+        .execute(&state.pool)
+        .await?;
+        tracing::warn!(
+            connection = %conn_name,
+            secret = %secret_name,
+            repo = %format!("{owner}/{repo}"),
+            error = %e,
+            "github-sync: secret unbind failed at remote cleanup, keeping local bind"
+        );
+        return Err(e);
+    }
+
+    sqlx::query("DELETE FROM secret_github_binds WHERE id = ? AND secret_id = ?")
+        .bind(&bind_id)
+        .bind(&secret_id)
+        .execute(&state.pool)
+        .await?;
+
+    tracing::info!(
+        connection = %conn_name,
+        secret = %secret_name,
+        repo = %format!("{owner}/{repo}"),
+        "github-sync: secret unbound and removed from repo"
+    );
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "secret.github_bind.remove")
+            .resource("secret", &secret_id, &secret_name)
+            .team(Some(team_id))
+            .before(Some(
+                serde_json::json!({ "repo": format!("{owner}/{repo}") }),
+            )),
+    )
+    .await;
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PushBindsQuery {
+    #[serde(default)]
+    pub bind_id: Option<String>,
+}
+
+/// POST /secrets/{id}/github-binds/push — push secret value to bound repos.
+pub async fn push_secret_binds(
+    auth: PlatformAdmin,
+    Path(secret_id): Path<String>,
+    Query(query): Query<PushBindsQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let row = sqlx::query("SELECT name, value, team_id FROM secrets WHERE id = ?")
+        .bind(&secret_id)
+        .fetch_one(&state.pool)
+        .await?;
+    let secret_name: String = row.get(0);
+    let stored: String = row.get(1);
+    let secret_team: String = row.get(2);
+    let plaintext = crypto::decrypt(&stored, &state.config.auth.jwt_secret)
+        .map_err(|e| AppError::Internal(format!("decrypt secret '{secret_name}': {e}")))?;
+    validate_gh_name(&secret_name)?;
+
+    let bind_ids: Vec<String> = match &query.bind_id {
+        Some(bid) if !bid.is_empty() => vec![bid.clone()],
+        _ => {
+            sqlx::query_scalar("SELECT id FROM secret_github_binds WHERE secret_id = ?")
+                .bind(&secret_id)
+                .fetch_all(&state.pool)
+                .await?
+        }
+    };
+    if bind_ids.is_empty() {
+        return Ok(Json(ApiResponse::success(serde_json::json!({
+            "results": [],
+        }))));
+    }
+
+    let mut results = Vec::new();
+    for bind_id in &bind_ids {
+        let target = sqlx::query(
+            "SELECT b.id, r.owner, r.repo, c.api_base_url, c.token_ciphertext, c.name
+             FROM secret_github_binds b
+             JOIN github_repos r ON r.id = b.repo_id
+             JOIN github_connections c ON c.id = r.connection_id
+             WHERE b.id = ? AND b.secret_id = ?",
+        )
+        .bind(bind_id)
+        .bind(&secret_id)
+        .fetch_optional(&state.pool)
+        .await;
+        let target = match target {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                results.push(serde_json::json!({ "bind_id": bind_id, "status": "failed", "error": "bind not found" }));
+                continue;
+            }
+            Err(e) => {
+                results.push(serde_json::json!({ "bind_id": bind_id, "status": "failed", "error": e.to_string() }));
+                continue;
+            }
+        };
+        let owner: String = target.get(1);
+        let repo: String = target.get(2);
+        let api_base: String = target.get(3);
+        let token_cipher: String = target.get(4);
+        let conn_name: String = target.get(5);
+
+        let outcome = async {
+            let token = crypto::decrypt(&token_cipher, &state.config.auth.jwt_secret)
+                .map_err(|e| AppError::Internal(format!("decrypt connection token: {e}")))?;
+            let client = GitHubClient::new(&api_base, &token);
+            let pk = client.get_repo_public_key(&owner, &repo).await?;
+            let encrypted = seal_secret_value(&pk.key, &plaintext).map_err(AppError::Internal)?;
+            client
+                .put_secret(&owner, &repo, &secret_name, &encrypted, &pk.key_id)
+                .await?;
+            Ok::<(), AppError>(())
+        }
+        .await;
+
+        let outcome_success = match outcome {
+            Ok(()) => {
+                sqlx::query(
+                    "UPDATE secret_github_binds SET last_status = 'ok', last_error = '', last_pushed_at = datetime('now'), last_op = 'push', updated_at = datetime('now') WHERE id = ?",
+                )
+                .bind(bind_id)
+                .execute(&state.pool)
+                .await?;
+                results.push(serde_json::json!({
+                    "bind_id": bind_id, "owner": owner, "repo": repo, "status": "ok",
+                }));
+                tracing::info!(
+                    connection = %conn_name,
+                    secret = %secret_name,
+                    repo = %format!("{owner}/{repo}"),
+                    "github-sync: secret pushed to repo"
+                );
+                true
+            }
+            Err(e) => {
+                sqlx::query(
+                    "UPDATE secret_github_binds SET last_status = 'failed', last_error = ?, last_op = 'push', updated_at = datetime('now') WHERE id = ?",
+                )
+                .bind(e.to_string())
+                .bind(bind_id)
+                .execute(&state.pool)
+                .await?;
+                results.push(serde_json::json!({
+                    "bind_id": bind_id, "owner": owner, "repo": repo, "status": "failed", "error": e.to_string(),
+                }));
+                tracing::warn!(
+                    connection = %conn_name,
+                    secret = %secret_name,
+                    repo = %format!("{owner}/{repo}"),
+                    error = %e,
+                    "github-sync: secret push failed"
+                );
+                false
+            }
+        };
+
+        audit::record(
+            &state.pool,
+            AuditEvent::from_auth(&auth, "secret.github_push")
+                .resource("secret", &secret_id, &secret_name)
+                .team(Some(secret_team.clone()))
+                .meta(Some(serde_json::json!({
+                    "repo": format!("{owner}/{repo}"),
+                    "connection": conn_name,
+                    "status": if outcome_success { "ok" } else { "failed" },
+                }))),
+        )
+        .await;
+    }
+
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "results": results }),
+    )))
+}
+
+// ────────────────────────── variable binds (admin) ──────────────────────────
+
+async fn variable_exists(pool: &sqlx::SqlitePool, var_id: &str) -> Result<(), AppError> {
+    sqlx::query("SELECT id FROM platform_vars WHERE id = ?")
+        .bind(var_id)
+        .fetch_optional(pool)
+        .await?
+        .map(|_| ())
+        .ok_or_else(|| AppError::NotFound("variable not found".into()))
+}
+
+pub async fn list_variable_binds(
+    _auth: PlatformAdmin,
+    Path(var_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    variable_exists(&state.pool, &var_id).await?;
+    let rows = sqlx::query(
+        "SELECT b.id, b.repo_id, c.name, r.owner, r.repo, b.last_pushed_at, b.last_status, b.last_error, b.last_op
+         FROM variable_github_binds b
+         JOIN github_repos r ON r.id = b.repo_id
+         JOIN github_connections c ON c.id = r.connection_id
+         WHERE b.var_id = ?
+         ORDER BY r.owner ASC, r.repo ASC",
+    )
+    .bind(&var_id)
+    .fetch_all(&state.pool)
+    .await?;
+    let out: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            bind_view(
+                &r.get::<String, _>(0),
+                &r.get::<String, _>(1),
+                &r.get::<String, _>(2),
+                &r.get::<String, _>(3),
+                &r.get::<String, _>(4),
+                r.get(5),
+                &r.get::<String, _>(6),
+                &r.get::<String, _>(7),
+                &r.get::<String, _>(8),
+            )
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(out)))
+}
+
+pub async fn add_variable_bind(
+    auth: PlatformAdmin,
+    Path(var_id): Path<String>,
+    State(state): State<AppState>,
+    Json(req): Json<AddBindRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    variable_exists(&state.pool, &var_id).await?;
+
+    let repo = sqlx::query(
+        "SELECT r.owner, r.repo, c.name FROM github_repos r
+         JOIN github_connections c ON c.id = r.connection_id
+         WHERE r.id = ?",
+    )
+    .bind(&req.repo_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (owner, repo_name, conn_name) = match repo {
+        Some(r) => (
+            r.get::<String, _>(0),
+            r.get::<String, _>(1),
+            r.get::<String, _>(2),
+        ),
+        None => {
+            // Binding failed — record it so the failure is traceable.
+            let var_name: String =
+                sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
+                    .bind(&var_id)
+                    .fetch_optional(&state.pool)
+                    .await?
+                    .unwrap_or_default();
+            audit::record(
+                &state.pool,
+                AuditEvent::from_auth(&auth, "variable.github_bind.add")
+                    .resource("variable", &var_id, &var_name)
+                    .meta(Some(serde_json::json!({
+                        "repo_id": req.repo_id,
+                        "status": "failed",
+                        "error": "github repo not found",
+                    }))),
+            )
+            .await;
+            return Err(AppError::NotFound("github repo not found".into()));
+        }
+    };
+
+    let dup = sqlx::query("SELECT id FROM variable_github_binds WHERE var_id = ? AND repo_id = ?")
+        .bind(&var_id)
+        .bind(&req.repo_id)
+        .fetch_optional(&state.pool)
+        .await?;
+    if dup.is_some() {
+        let var_name: String = sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
+            .bind(&var_id)
+            .fetch_one(&state.pool)
+            .await?;
+        audit::record(
+            &state.pool,
+            AuditEvent::from_auth(&auth, "variable.github_bind.add")
+                .resource("variable", &var_id, &var_name)
+                .meta(Some(serde_json::json!({
+                    "repo": format!("{owner}/{repo_name}"),
+                    "connection": conn_name,
+                    "status": "failed",
+                    "error": "already bound",
+                }))),
+        )
+        .await;
+        return Err(AppError::Conflict(format!(
+            "variable already bound to '{owner}/{repo_name}'"
+        )));
+    }
+
+    let id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO variable_github_binds (id, var_id, repo_id, last_op) VALUES (?, ?, ?, 'bind')",
+    )
+    .bind(&id)
+    .bind(&var_id)
+    .bind(&req.repo_id)
+    .execute(&state.pool)
+    .await?;
+
+    let var_name: String = sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
+        .bind(&var_id)
+        .fetch_one(&state.pool)
+        .await?;
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "variable.github_bind.add")
+            .resource("variable", &var_id, &var_name)
+            .after(Some(serde_json::json!({
+                "repo": format!("{owner}/{repo_name}"), "connection": conn_name, "status": "ok",
+            }))),
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(bind_view(
+        &id,
+        &req.repo_id,
+        &conn_name,
+        &owner,
+        &repo_name,
+        None,
+        "pending",
+        "",
+        "bind",
+    ))))
+}
+
+pub async fn delete_variable_bind(
+    auth: PlatformAdmin,
+    Path((var_id, bind_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    variable_exists(&state.pool, &var_id).await?;
+
+    let row = sqlx::query(
+        "SELECT r.owner, r.repo, c.api_base_url, c.token_ciphertext, c.name
+         FROM variable_github_binds b
+         JOIN github_repos r ON r.id = b.repo_id
+         JOIN github_connections c ON c.id = r.connection_id
+         WHERE b.id = ? AND b.var_id = ?",
+    )
+    .bind(&bind_id)
+    .bind(&var_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (owner, repo, api_base, token_cipher, conn_name) = match row {
+        Some(r) => (
+            r.get::<String, _>(0),
+            r.get::<String, _>(1),
+            r.get::<String, _>(2),
+            r.get::<String, _>(3),
+            r.get::<String, _>(4),
+        ),
+        None => return Err(AppError::NotFound("variable github bind not found".into())),
+    };
+
+    let var_name: String = sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
+        .bind(&var_id)
+        .fetch_one(&state.pool)
+        .await?;
+
+    // Remove the value from GitHub Actions first; only unbind locally when the
+    // remote cleanup succeeds. 404 is treated as success (never pushed).
+    let token = crypto::decrypt(&token_cipher, &state.config.auth.jwt_secret)
+        .map_err(|e| AppError::Internal(format!("decrypt connection token '{conn_name}': {e}")))?;
+    let client = GitHubClient::new(&api_base, &token);
+    if let Err(e) = client.delete_variable(&owner, &repo, &var_name).await {
+        // Record the failed unbind on the bind row so the UI can surface it;
+        // the row is kept so the operator can fix the connection and retry.
+        sqlx::query(
+            "UPDATE variable_github_binds SET last_op = 'unbind', last_status = 'failed', last_error = ?, updated_at = datetime('now') WHERE id = ? AND var_id = ?",
+        )
+        .bind(format!("unbind failed: {e}"))
+        .bind(&bind_id)
+        .bind(&var_id)
+        .execute(&state.pool)
+        .await?;
+        tracing::warn!(
+            connection = %conn_name,
+            variable = %var_name,
+            repo = %format!("{owner}/{repo}"),
+            error = %e,
+            "github-sync: variable unbind failed at remote cleanup, keeping local bind"
+        );
+        return Err(e);
+    }
+
+    sqlx::query("DELETE FROM variable_github_binds WHERE id = ? AND var_id = ?")
+        .bind(&bind_id)
+        .bind(&var_id)
+        .execute(&state.pool)
+        .await?;
+
+    tracing::info!(
+        connection = %conn_name,
+        variable = %var_name,
+        repo = %format!("{owner}/{repo}"),
+        "github-sync: variable unbound and removed from repo"
+    );
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "variable.github_bind.remove")
+            .resource("variable", &var_id, &var_name)
+            .before(Some(
+                serde_json::json!({ "repo": format!("{owner}/{repo}") }),
+            )),
+    )
+    .await;
+    Ok(Json(ApiResponse::success(())))
+}
+
+/// POST /variables/{id}/github-binds/push — push variable value to bound repos.
+pub async fn push_variable_binds(
+    auth: PlatformAdmin,
+    Path(var_id): Path<String>,
+    Query(query): Query<PushBindsQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    variable_exists(&state.pool, &var_id).await?;
+
+    let row = sqlx::query("SELECT name, value FROM platform_vars WHERE id = ?")
+        .bind(&var_id)
+        .fetch_one(&state.pool)
+        .await?;
+    let var_name: String = row.get(0);
+    let value: String = row.get(1);
+    validate_gh_name(&var_name)?;
+
+    let bind_ids: Vec<String> = match &query.bind_id {
+        Some(bid) if !bid.is_empty() => vec![bid.clone()],
+        _ => {
+            sqlx::query_scalar("SELECT id FROM variable_github_binds WHERE var_id = ?")
+                .bind(&var_id)
+                .fetch_all(&state.pool)
+                .await?
+        }
+    };
+    if bind_ids.is_empty() {
+        return Ok(Json(ApiResponse::success(serde_json::json!({
+            "results": [],
+        }))));
+    }
+
+    let mut results = Vec::new();
+    for bind_id in &bind_ids {
+        let target = sqlx::query(
+            "SELECT b.id, r.owner, r.repo, c.api_base_url, c.token_ciphertext, c.name
+             FROM variable_github_binds b
+             JOIN github_repos r ON r.id = b.repo_id
+             JOIN github_connections c ON c.id = r.connection_id
+             WHERE b.id = ? AND b.var_id = ?",
+        )
+        .bind(bind_id)
+        .bind(&var_id)
+        .fetch_optional(&state.pool)
+        .await;
+        let target = match target {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                results.push(serde_json::json!({ "bind_id": bind_id, "status": "failed", "error": "bind not found" }));
+                continue;
+            }
+            Err(e) => {
+                results.push(serde_json::json!({ "bind_id": bind_id, "status": "failed", "error": e.to_string() }));
+                continue;
+            }
+        };
+        let owner: String = target.get(1);
+        let repo: String = target.get(2);
+        let api_base: String = target.get(3);
+        let token_cipher: String = target.get(4);
+        let conn_name: String = target.get(5);
+
+        let outcome = async {
+            let token = crypto::decrypt(&token_cipher, &state.config.auth.jwt_secret)
+                .map_err(|e| AppError::Internal(format!("decrypt connection token: {e}")))?;
+            let client = GitHubClient::new(&api_base, &token);
+            client
+                .upsert_variable(&owner, &repo, &var_name, &value)
+                .await?;
+            Ok::<(), AppError>(())
+        }
+        .await;
+
+        let outcome_success = match outcome {
+            Ok(()) => {
+                sqlx::query(
+                    "UPDATE variable_github_binds SET last_status = 'ok', last_error = '', last_pushed_at = datetime('now'), last_op = 'push', updated_at = datetime('now') WHERE id = ?",
+                )
+                .bind(bind_id)
+                .execute(&state.pool)
+                .await?;
+                results.push(serde_json::json!({
+                    "bind_id": bind_id, "owner": owner, "repo": repo, "status": "ok",
+                }));
+                tracing::info!(
+                    connection = %conn_name,
+                    variable = %var_name,
+                    repo = %format!("{owner}/{repo}"),
+                    "github-sync: variable pushed to repo"
+                );
+                true
+            }
+            Err(e) => {
+                sqlx::query(
+                    "UPDATE variable_github_binds SET last_status = 'failed', last_error = ?, last_op = 'push', updated_at = datetime('now') WHERE id = ?",
+                )
+                .bind(e.to_string())
+                .bind(bind_id)
+                .execute(&state.pool)
+                .await?;
+                results.push(serde_json::json!({
+                    "bind_id": bind_id, "owner": owner, "repo": repo, "status": "failed", "error": e.to_string(),
+                }));
+                tracing::warn!(
+                    connection = %conn_name,
+                    variable = %var_name,
+                    repo = %format!("{owner}/{repo}"),
+                    error = %e,
+                    "github-sync: variable push failed"
+                );
+                false
+            }
+        };
+
+        audit::record(
+            &state.pool,
+            AuditEvent::from_auth(&auth, "variable.github_push")
+                .resource("variable", &var_id, &var_name)
+                .meta(Some(serde_json::json!({
+                    "repo": format!("{owner}/{repo}"),
+                    "connection": conn_name,
+                    "status": if outcome_success { "ok" } else { "failed" },
+                }))),
+        )
+        .await;
+    }
+
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "results": results }),
+    )))
+}
+
+// Re-export helper for the resource list enrichment in secrets.rs / variables.rs.
+pub(crate) fn bind_row_json(
+    id: &str,
+    repo_id: &str,
+    connection_name: &str,
+    owner: &str,
+    repo: &str,
+    last_status: &str,
+    last_pushed_at: Option<String>,
+    last_error: &str,
+    last_op: &str,
+) -> serde_json::Value {
+    bind_view(
+        id,
+        repo_id,
+        connection_name,
+        owner,
+        repo,
+        last_pushed_at,
+        last_status,
+        last_error,
+        last_op,
+    )
+}
+
+/// Batch-load secret → binds map for list enrichment (single query, no N+1).
+pub(crate) async fn secret_binds_map(
+    pool: &sqlx::SqlitePool,
+    secret_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, AppError> {
+    if secret_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let placeholders = secret_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT b.secret_id, b.id, b.repo_id, c.name, r.owner, r.repo, b.last_status, b.last_pushed_at, b.last_error, b.last_op
+         FROM secret_github_binds b
+         JOIN github_repos r ON r.id = b.repo_id
+         JOIN github_connections c ON c.id = r.connection_id
+         WHERE b.secret_id IN ({placeholders})
+         ORDER BY r.owner ASC, r.repo ASC"
+    );
+    let mut q = sqlx::query(&sql);
+    for id in secret_ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(pool).await?;
+    let mut map: std::collections::HashMap<String, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    for r in rows {
+        let secret_id: String = r.get(0);
+        map.entry(secret_id).or_default().push(bind_row_json(
+            &r.get::<String, _>(1),
+            &r.get::<String, _>(2),
+            &r.get::<String, _>(3),
+            &r.get::<String, _>(4),
+            &r.get::<String, _>(5),
+            &r.get::<String, _>(6),
+            r.get(7),
+            &r.get::<String, _>(8),
+            &r.get::<String, _>(9),
+        ));
+    }
+    Ok(map)
+}
+
+/// Batch-load variable → binds map for list enrichment.
+pub(crate) async fn variable_binds_map(
+    pool: &sqlx::SqlitePool,
+    var_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, AppError> {
+    if var_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let placeholders = var_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT b.var_id, b.id, b.repo_id, c.name, r.owner, r.repo, b.last_status, b.last_pushed_at, b.last_error, b.last_op
+         FROM variable_github_binds b
+         JOIN github_repos r ON r.id = b.repo_id
+         JOIN github_connections c ON c.id = r.connection_id
+         WHERE b.var_id IN ({placeholders})
+         ORDER BY r.owner ASC, r.repo ASC"
+    );
+    let mut q = sqlx::query(&sql);
+    for id in var_ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(pool).await?;
+    let mut map: std::collections::HashMap<String, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    for r in rows {
+        let var_id: String = r.get(0);
+        map.entry(var_id).or_default().push(bind_row_json(
+            &r.get::<String, _>(1),
+            &r.get::<String, _>(2),
+            &r.get::<String, _>(3),
+            &r.get::<String, _>(4),
+            &r.get::<String, _>(5),
+            &r.get::<String, _>(6),
+            r.get(7),
+            &r.get::<String, _>(8),
+            &r.get::<String, _>(9),
+        ));
+    }
+    Ok(map)
+}

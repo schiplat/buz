@@ -4,8 +4,6 @@ weight: 4
 description: "Step-by-step HTTPS for Manager ↔ Runner (and UI) — commands, configs, Docker, reverse proxy"
 ---
 
-# HTTPS Communication
-
 Buz HTTPS is **runtime configuration** — not a build-time switch. The release binary / Docker image already includes TLS support.
 
 | Component | Role |

@@ -1,4 +1,5 @@
 import apiClient from './client'
+import type { GitHubBind } from './githubSync'
 
 /** Secret purpose: env injection, registry login JSON, or Aliyun OSS read-only auth. */
 export type SecretKind = 'generic' | 'registry' | 'aliyun_oss_auth'
@@ -20,6 +21,8 @@ export interface Secret {
   /** `generic`, `registry`, or `aliyun_oss_auth`. */
   kind: SecretKind
   updated_at: string
+  /** Bound GitHub repos + push status (enriched by the list API). */
+  github_binds?: GitHubBind[]
 }
 
 export const secretKinds: SecretKind[] = ['generic', 'registry', 'aliyun_oss_auth']

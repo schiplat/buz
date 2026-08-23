@@ -25,7 +25,7 @@ pub fn start_scheduler(pool: SqlitePool) {
         tracing::info!("Scheduler starting: instance={instance_id}");
         loop {
             // ── Try to become the leader ─────────────────────────────────
-            match try_acquire_lease(&pool, &instance_id).await {
+            match try_acquire_lease(&pool, JOB_DISPATCH_LEASE_ID, &instance_id).await {
                 Ok(true) => {
                     tracing::debug!("Scheduler: acquired lease, acting as leader");
                     // Run one dispatch cycle
@@ -46,27 +46,39 @@ pub fn start_scheduler(pool: SqlitePool) {
     });
 }
 
-/// Try to acquire or refresh the leader lease. Returns `Ok(true)` if this
-/// instance is (now) the leader.
-async fn try_acquire_lease(pool: &SqlitePool, instance_id: &str) -> Result<bool, sqlx::Error> {
+/// Lease row used by the job-dispatch scheduler (`scheduler_lease.id`).
+pub(crate) const JOB_DISPATCH_LEASE_ID: i64 = 1;
+
+/// Try to acquire or refresh the leader lease on a specific lease row.
+///
+/// Different background schedulers use different `lease_id` rows of the shared
+/// `scheduler_lease` table so they never kick each other out.
+pub(crate) async fn try_acquire_lease(
+    pool: &SqlitePool,
+    lease_id: i64,
+    instance_id: &str,
+) -> Result<bool, sqlx::Error> {
     use sqlx::Row;
 
     // Try to take the lease if it doesn't exist or has expired
     let rows_affected = sqlx::query(
         "INSERT OR REPLACE INTO scheduler_lease (id, instance_id, expires_at, updated_at)
-         SELECT 1, ?, datetime('now', ?), datetime('now')
+         SELECT ?, ?, datetime('now', ?), datetime('now')
          WHERE NOT EXISTS (
              SELECT 1 FROM scheduler_lease
-             WHERE id = 1 AND expires_at > datetime('now')
+             WHERE id = ? AND expires_at > datetime('now')
          )",
     )
+    .bind(lease_id)
     .bind(instance_id)
     .bind(format!("+{LEASE_TTL_SECS} seconds"))
+    .bind(lease_id)
     .execute(pool)
     .await?;
 
     // Check if we own the lease
-    let row = sqlx::query("SELECT instance_id FROM scheduler_lease WHERE id = 1")
+    let row = sqlx::query("SELECT instance_id FROM scheduler_lease WHERE id = ?")
+        .bind(lease_id)
         .fetch_optional(pool)
         .await?;
 
@@ -77,9 +89,10 @@ async fn try_acquire_lease(pool: &SqlitePool, instance_id: &str) -> Result<bool,
                 // Already owned, refresh
                 sqlx::query(
                     "UPDATE scheduler_lease SET expires_at = datetime('now', ?),
-                     updated_at = datetime('now') WHERE id = 1",
+                     updated_at = datetime('now') WHERE id = ?",
                 )
                 .bind(format!("+{LEASE_TTL_SECS} seconds"))
+                .bind(lease_id)
                 .execute(pool)
                 .await?;
             }

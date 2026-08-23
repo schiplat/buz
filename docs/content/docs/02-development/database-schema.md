@@ -178,6 +178,57 @@ Unified trigger timeline for Pipeline detail → **Trigger events**.
 
 Partial unique index on `(pipeline_id, delivery_id)` when delivery_id is set.
 
+### github_connections
+
+GitHub API connection credentials for Actions sync (PAT, optional GHE base URL).
+See [GitHub Actions Secrets/Variables Sync](/docs/01-architecture/platform/github-actions-sync/).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | TEXT PK | UUID v4 |
+| name | TEXT UNIQUE | Human-readable name, e.g. `buz-org-writer` |
+| api_base_url | TEXT | Default `https://api.github.com`; GHE server base URL supported |
+| token_ciphertext | TEXT | AES-256-GCM ciphertext (`crypto::encrypt(token, jwt_secret)`); never returned by API |
+| fetch_owners | TEXT | Comma-separated org/user owners to auto-fetch; empty string disables |
+| fetch_interval_minutes | INTEGER NULL | Poll interval; NULL disables auto-fetch. Must be > 0 when set |
+| last_fetch_at | TEXT NULL | Last successful fetch (manual or auto); drives the scheduler's due check |
+| created_at, updated_at | TEXT | Auto-managed |
+
+### github_repos
+
+Pre-registered target repos, reused across secret/variable binds.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | TEXT PK | UUID v4 |
+| connection_id | TEXT FK → github_connections.id | ON DELETE CASCADE |
+| owner | TEXT | Org or user name |
+| repo | TEXT | Repo name |
+| created_at, updated_at | TEXT | Auto-managed |
+| UNIQUE(connection_id, owner, repo) | | Prevents duplicates per connection |
+
+Index: `idx_github_repos_connection` on `connection_id`.
+
+### secret_github_binds / variable_github_binds
+
+Many-to-many binding between a Buz secret (resp. platform var) and a GitHub
+repo, plus the last operation state.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | TEXT PK | UUID v4 |
+| secret_id / var_id | TEXT FK | `secrets.id` / `platform_vars.id`, ON DELETE CASCADE |
+| repo_id | TEXT FK → github_repos.id | ON DELETE CASCADE |
+| last_pushed_at | TEXT NULL | Last successful push time |
+| last_status | TEXT | `pending` \| `ok` \| `failed` |
+| last_error | TEXT | Failure message; empty when ok |
+| last_op | TEXT | Last operation: `bind` (added) \| `push` (value pushed) \| `unbind` (remote cleanup failed, row kept) |
+| created_at, updated_at | TEXT | Auto-managed |
+| UNIQUE(secret_id, repo_id) / UNIQUE(var_id, repo_id) | | One bind per resource per repo |
+
+Indexes: `idx_secret_github_binds_secret` on `secret_id`,
+`idx_variable_github_binds_var` on `var_id`.
+
 ### audit_logs
 
 Platform-admin operation audit. Written best-effort after successful JWT mutations (and `auth.login`). JSON columns are **already redacted** before insert.

@@ -119,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     services::cron_scheduler::spawn_scheduler(app_state.clone(), 30);
+    services::github_fetch_scheduler::spawn_fetch_scheduler(app_state.clone(), 60);
     services::scheduler::start_scheduler(db_pool.clone());
 
     let app = match cli

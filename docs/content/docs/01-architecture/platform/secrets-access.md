@@ -6,8 +6,6 @@ aliases:
   - /docs/01-architecture/secrets-access/
 ---
 
-# Secrets Access (GHA-style)
-
 Buz uses the same **allowlist → explicit map → consume** flow as GitHub Actions, with expression syntax aligned to config render: `${secrets.X}` / `${vars.X}` (not `${{ }}`).
 
 ## Rules

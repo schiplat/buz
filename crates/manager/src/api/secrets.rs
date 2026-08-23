@@ -86,15 +86,22 @@ pub async fn list(
 
     let rows = q.fetch_all(&state.pool).await?;
     let jwt = &state.config.auth.jwt_secret;
+
+    // Batch-load GitHub bind summaries so list rows can render bound repos.
+    let secret_ids: Vec<String> = rows.iter().map(|r| r.get::<String, _>(0)).collect();
+    let binds_map = super::github_sync::secret_binds_map(&state.pool, &secret_ids).await?;
+
     let secrets: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
             let stored: String = r.get(2);
             let (value, reencrypt_required) = value_fields_for_api(&stored, jwt);
             let kind_raw: String = r.get(6);
+            let id: String = r.get(0);
+            let name: String = r.get(1);
             serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "name": r.get::<String, _>(1),
+                "id": id,
+                "name": name,
                 "value": value,
                 "reencrypt_required": reencrypt_required,
                 "owner_group": r.get::<String, _>(3),
@@ -102,6 +109,7 @@ pub async fn list(
                 "team_shared": team_shared_from_row(r.get::<i64, _>(5)),
                 "kind": normalize_secret_kind(Some(&kind_raw)),
                 "updated_at": r.get::<Option<String>, _>(7),
+                "github_binds": binds_map.get(&id).cloned().unwrap_or_default(),
             })
         })
         .collect();

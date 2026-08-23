@@ -41,6 +41,7 @@ const routes: RouteRecordRaw[] = [
           { path: '', redirect: { name: 'secrets' } },
           { path: 'secrets', name: 'secrets', component: () => import('@/pages/Secrets.vue'), meta: { title: 'Secrets' } },
           { path: 'variables', name: 'variables', component: () => import('@/pages/Variables.vue'), meta: { title: 'Variables' } },
+          { path: 'github-sync', name: 'github-sync', component: () => import('@/pages/GitHubSync.vue'), meta: { title: 'GitHub Sync', adminOnly: true } },
         ],
       },
       // Backwards-compatible aliases for the pre-merge routes.

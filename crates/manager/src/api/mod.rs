@@ -18,6 +18,7 @@ mod api_tokens;
 mod audit_logs;
 mod git_hooks;
 mod git_webhook;
+mod github_sync;
 mod hosts;
 mod jobs;
 mod logs;
@@ -131,6 +132,49 @@ pub fn router(state: AppState) -> Router {
         )
         // Audit logs (platform admin; super admin sees all, others only their own)
         .route("/audit-logs", get(audit_logs::list))
+        // GitHub Actions sync (platform admin; secret binds use SecretManage)
+        .route(
+            "/github-sync/connections",
+            get(github_sync::list_connections).post(github_sync::create_connection),
+        )
+        .route(
+            "/github-sync/connections/{id}",
+            put(github_sync::update_connection).delete(github_sync::delete_connection),
+        )
+        .route("/github-sync/repos/fetch", post(github_sync::fetch_repos))
+        .route(
+            "/github-sync/repos",
+            get(github_sync::list_repos).post(github_sync::create_repo),
+        )
+        .route(
+            "/github-sync/repos/{id}",
+            put(github_sync::update_repo).delete(github_sync::delete_repo),
+        )
+        .route("/github-sync/test", post(github_sync::test_connection))
+        .route(
+            "/secrets/{id}/github-binds",
+            get(github_sync::list_secret_binds).post(github_sync::add_secret_bind),
+        )
+        .route(
+            "/secrets/{id}/github-binds/push",
+            post(github_sync::push_secret_binds),
+        )
+        .route(
+            "/secrets/{id}/github-binds/{bind_id}",
+            delete(github_sync::delete_secret_bind),
+        )
+        .route(
+            "/variables/{id}/github-binds",
+            get(github_sync::list_variable_binds).post(github_sync::add_variable_bind),
+        )
+        .route(
+            "/variables/{id}/github-binds/push",
+            post(github_sync::push_variable_binds),
+        )
+        .route(
+            "/variables/{id}/github-binds/{bind_id}",
+            delete(github_sync::delete_variable_bind),
+        )
         // API tokens (platform admin; super admin sees all)
         .route(
             "/api-tokens",
@@ -190,3 +234,7 @@ mod runner_standalone_register_integration_tests;
 #[cfg(test)]
 #[path = "tests/runner_restart_tests.rs"]
 mod runner_restart_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/github_sync_tests.rs"]
+mod github_sync_integration_tests;

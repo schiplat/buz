@@ -657,6 +657,113 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await?;
 
+    // ── GitHub Actions sync (connections / repos / secret & var binds) ──
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS github_connections (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            api_base_url TEXT NOT NULL DEFAULT 'https://api.github.com',
+            token_ciphertext TEXT NOT NULL,
+            fetch_owners TEXT NOT NULL DEFAULT '',
+            fetch_interval_minutes INTEGER,
+            last_fetch_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    // Migrate pre-existing connections (v1 shipped without auto-fetch columns).
+    let _ = sqlx::query(
+        "ALTER TABLE github_connections ADD COLUMN fetch_owners TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query("ALTER TABLE github_connections ADD COLUMN fetch_interval_minutes INTEGER")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE github_connections ADD COLUMN last_fetch_at TEXT")
+        .execute(pool)
+        .await;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS github_repos (
+            id TEXT PRIMARY KEY,
+            connection_id TEXT NOT NULL REFERENCES github_connections(id) ON DELETE CASCADE,
+            owner TEXT NOT NULL,
+            repo TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(connection_id, owner, repo)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS secret_github_binds (
+            id TEXT PRIMARY KEY,
+            secret_id TEXT NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
+            repo_id TEXT NOT NULL REFERENCES github_repos(id) ON DELETE CASCADE,
+            last_pushed_at TEXT,
+            last_status TEXT NOT NULL DEFAULT 'pending',
+            last_error TEXT NOT NULL DEFAULT '',
+            last_op TEXT NOT NULL DEFAULT 'push',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(secret_id, repo_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS variable_github_binds (
+            id TEXT PRIMARY KEY,
+            var_id TEXT NOT NULL REFERENCES platform_vars(id) ON DELETE CASCADE,
+            repo_id TEXT NOT NULL REFERENCES github_repos(id) ON DELETE CASCADE,
+            last_pushed_at TEXT,
+            last_status TEXT NOT NULL DEFAULT 'pending',
+            last_error TEXT NOT NULL DEFAULT '',
+            last_op TEXT NOT NULL DEFAULT 'push',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(var_id, repo_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    // Migrate pre-existing bind rows (v1 shipped without a last-op marker).
+    let _ = sqlx::query(
+        "ALTER TABLE secret_github_binds ADD COLUMN last_op TEXT NOT NULL DEFAULT 'push'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "ALTER TABLE variable_github_binds ADD COLUMN last_op TEXT NOT NULL DEFAULT 'push'",
+    )
+    .execute(pool)
+    .await;
+
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_github_repos_connection
+         ON github_repos(connection_id)",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_secret_github_binds_secret
+         ON secret_github_binds(secret_id)",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_variable_github_binds_var
+         ON variable_github_binds(var_id)",
+    )
+    .execute(pool)
+    .await;
+
     backfill_registry_secret_kind(pool, jwt_secret).await?;
 
     tracing::info!("Database migrations applied successfully");

@@ -1,10 +1,13 @@
 import apiClient from './client'
+import type { GitHubBind } from './githubSync'
 
 export interface Variable {
   id: string
   name: string
   value: string
   updated_at: string
+  /** Bound GitHub repos + push status (enriched by the list API). */
+  github_binds?: GitHubBind[]
 }
 
 export const variablesApi = {

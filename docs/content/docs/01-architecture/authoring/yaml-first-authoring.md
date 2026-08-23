@@ -6,8 +6,6 @@ aliases:
   - /docs/01-architecture/yaml-first-authoring/
 ---
 
-# YAML-First Pipeline Authoring
-
 **Status:** Implemented (2026-08). Form UI stays hidden. Online YAML editor creates/updates/deletes files under Manager `pipeline.yaml_scan_dir` and immediately upserts the DB projection.
 
 ## Decision

@@ -6,8 +6,6 @@ aliases:
   - /docs/01-architecture/runner-concurrent-jobs/
 ---
 
-# Runner Policy (UI-managed)
-
 Runner **strategy** (what the agent is allowed to do and how) is configured in **Manager UI / DB**, not in `runner.toml`.  
 Machine-local settings (how to reach Manager and where to write files) stay in `runner.toml`.
 
