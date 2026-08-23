@@ -66,6 +66,19 @@ on:                                    # optional — defaults to manual trigger
         description: Version to deploy
         required: true
         default: latest
+        type: string                  # optional; string is the default
+        pattern: "^[A-Za-z0-9._-]+$"  # regex — validated at trigger (fail-fast)
+      deploy_host:
+        description: Buz Host name (must exist in Infrastructure → Hosts)
+        required: true
+        type: host                    # registry check at trigger
+      env:
+        description: Target environment
+        type: choice
+        options: [staging, production]
+      replicas:
+        type: number
+        default: "3"
   cron:
     schedule: "0 2 * * *"
   webhook:

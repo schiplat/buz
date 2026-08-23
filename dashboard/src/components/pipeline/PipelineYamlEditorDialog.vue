@@ -743,17 +743,26 @@ on:
       version:
         description: Version to deploy
         required: true
+        type: string                # optional; string is the default
+        pattern: "^[A-Za-z0-9._-]+$"  # regex — validated at trigger
       deploy_host:
         description: Host name from Infrastructure → Hosts
         required: true
-        default: prod-server-01
+        type: host                  # must match a registered Host name
       deploy_token:
         description: One-time deploy token
         required: true
-        masking: true             # redact logs/audit; encrypted in job DB
+        masking: true               # redact logs/audit; encrypted in job DB
       environment:
         description: Target environment
-        default: staging
+        type: choice                # dropdown in trigger dialog
+        options: [staging, production]
+      replicas:
+        type: number                # must be an integer
+        default: "3"
+      dry_run:
+        type: boolean               # true / false (case-insensitive)
+        default: "false"
 
   # webhook:
   #   path: abc123def456
