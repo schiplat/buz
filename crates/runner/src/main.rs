@@ -51,6 +51,11 @@ async fn main() -> anyhow::Result<()> {
         shared::version::long_version("runner"),
     );
 
+    // GitHub Actions-style startup banner — plain stdout, always visible
+    // regardless of log level, so operators can identify version + OS at a glance.
+    println!("Current runner version: '{}'", shared::version::VERSION);
+    println!("Operating System: {}", sysinfo::os_description());
+
     run_loop(config).await
 }
 

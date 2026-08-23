@@ -1,10 +1,10 @@
 use super::{
-    build_config_prep_banner, build_login_banner, build_ssh_banner, build_ssh_env_command,
-    build_step_echo, build_step_failure_message, build_verbose_step_config,
+    build_config_prep_banner, build_login_banner, build_runner_banner, build_ssh_banner,
+    build_ssh_env_command, build_step_echo, build_step_failure_message, build_verbose_step_config,
     build_verbose_step_result, format_resolved_ssh_targets, merge_ssh_host_outputs,
     step_failure_hint, step_log_base, wrap_remote_cmd_with_registry_login, LOG_ECHO, LOG_LOGIN,
-    LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP, LOG_STEP_VERBOSE_EXEC,
-    LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
+    LOG_RUNNER_BANNER, LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP,
+    LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
 };
 use crate::masker::SecretCatalog;
 use std::collections::HashMap;
@@ -98,6 +98,24 @@ fn build_login_banner_matches_style() {
         build_login_banner("registry.example.com"),
         "==> LOGIN [registry.example.com]\n"
     );
+}
+
+#[test]
+fn runner_banner_identifies_version_and_os() {
+    let banner = build_runner_banner();
+    assert!(banner.starts_with("==> RUNNER\n"), "{banner}");
+    assert!(
+        banner.contains(&format!("  version          {}", shared::version::VERSION)),
+        "{banner}"
+    );
+    // OS line is present and non-empty (never the "unknown" placeholder).
+    assert!(banner.contains("  os               "), "{banner}");
+    assert!(!banner.contains("  os               \n"), "{banner}");
+}
+
+#[test]
+fn runner_banner_sorts_before_step_zero() {
+    assert!(LOG_RUNNER_BANNER < step_log_base(0));
 }
 
 #[test]

@@ -12,6 +12,22 @@ pub struct SysInfoOpts {
     pub prefer_interfaces: Vec<String>,
 }
 
+/// Human-readable OS description for the startup banner, e.g. "Ubuntu 24.04.4 LTS".
+/// Prefers the long distribution string; falls back to `<name> <version>`.
+pub fn os_description() -> String {
+    if let Some(long) = System::long_os_version() {
+        return long;
+    }
+    let name = System::name().unwrap_or_default();
+    let version = System::os_version().unwrap_or_default();
+    let combined = format!("{name} {version}").trim().to_string();
+    if combined.is_empty() {
+        "unknown".to_string()
+    } else {
+        combined
+    }
+}
+
 /// Collect host hardware, OS, and network information.
 /// `started_at` is the runner process start instant, used to compute process uptime.
 pub fn collect_system_info(started_at: std::time::Instant, opts: &SysInfoOpts) -> SystemInfo {
@@ -25,9 +41,7 @@ pub fn collect_system_info(started_at: std::time::Instant, opts: &SysInfoOpts) -
     sys.refresh_all();
 
     let hostname = System::host_name().unwrap_or_else(|| "unknown".into());
-    let os = System::long_os_version()
-        .or_else(|| Some(System::name()? + " " + &System::os_version()?))
-        .unwrap_or_else(|| "unknown".into());
+    let os = os_description();
     let kernel_version = System::kernel_version().unwrap_or_else(|| "unknown".into());
 
     let cpu_arch = std::env::consts::ARCH.to_string();

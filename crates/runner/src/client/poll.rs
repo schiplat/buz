@@ -29,6 +29,10 @@ use std::collections::{HashMap, HashSet};
 ///   9993  ==> STEP RESULT       (verbose; after stream)
 ///   9997  ==> ERROR
 ///   9998–9999  reserved meta
+///
+/// The job-start runner identity banner uses `step_order = 0` with
+/// `chunk_index = -1` (see `LOG_RUNNER_BANNER`), so it sorts before step 0's
+/// first chunk and never collides with the global `step_order = -1` error path.
 /// ```
 ///
 /// Verbose prep/config used to live at 9990+, which sorted **after** RUN +
@@ -36,6 +40,11 @@ use std::collections::{HashMap, HashSet};
 pub(crate) fn step_log_base(step_idx: usize) -> i32 {
     (step_idx * 10_000) as i32
 }
+
+/// Job-start runner identity banner (`==> RUNNER`), ordered before step 0's
+/// first chunk (`step_log_base(0) == 0`) so it appears at the very top of the
+/// job's logs.
+pub(crate) const LOG_RUNNER_BANNER: i32 = -1;
 
 pub(crate) const LOG_STEP_VERBOSE_PREPARE: i32 = 0;
 pub(crate) const LOG_STEP_VERBOSE_CONFIG: i32 = 1;
@@ -105,6 +114,23 @@ pub(crate) fn build_step_echo(
 /// Banner for a successful local `docker login` before pull/run.
 pub(crate) fn build_login_banner(registry: &str) -> String {
     format!("==> LOGIN [{registry}]\n")
+}
+
+/// Identity banner for the runner that executed this job (version + OS),
+/// uploaded once at job start so every job's logs are self-describing.
+pub(crate) fn build_runner_banner() -> String {
+    let mut out = String::from("==> RUNNER\n");
+    out.push_str(&format!(
+        "  {:<16} {}\n",
+        "version",
+        shared::version::VERSION
+    ));
+    out.push_str(&format!(
+        "  {:<16} {}\n",
+        "os",
+        crate::sysinfo::os_description()
+    ));
+    out
 }
 
 /// Banner after SSH auth: target (`user@host:port`) and remote workspace (`pwd`).
@@ -623,6 +649,21 @@ async fn execute_job(
     let tasks = task["tasks"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("missing tasks array"))?;
+
+    // Job-start runner identity (version + OS) — makes every job's logs
+    // self-describing for troubleshooting. Non-fatal if the upload fails.
+    let _ = super::logs::upload_chunk(
+        client,
+        config,
+        token,
+        job_id,
+        LogChunk {
+            chunk_index: LOG_RUNNER_BANNER,
+            step_order: 0,
+            content: build_runner_banner(),
+        },
+    )
+    .await;
 
     // Build base env from trigger inputs + expanded pipeline `env:` only.
     // Secrets are NOT auto-injected as `$NAME` — Manager expands

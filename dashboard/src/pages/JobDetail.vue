@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, XCircle, Trash2, CheckCircle2, Loader2, MinusCircle, AlertTriangle, Info, Lock, CircleHelp, Clock } from '@lucide/vue'
+import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, XCircle, Trash2, Loader2, MinusCircle, AlertTriangle, Info, Lock, CircleHelp, Clock } from '@lucide/vue'
 import { jobsApi, type Job, type LogChunk } from '@/api/jobs'
 import { parseUtc, formatLogClock, formatLocalDateTime } from '@/utils/time'
 import { formatLogChunkForTerminal } from '@/utils/logFormat'
@@ -650,6 +650,18 @@ function stepStatusColor(status: string): string {
   }
 }
 
+/** Step number color — the ordinal is always shown as a large standalone
+ *  numeral, tinted by status (no badge background, no separate status icon). */
+function stepNumberClass(status: string): string {
+  switch (status) {
+    case 'success': return 'text-emerald-600'
+    case 'failed': return 'text-red-600'
+    case 'running': return 'text-amber-600'
+    case 'cancelled': return 'text-slate-400'
+    default: return 'text-muted-foreground/50'
+  }
+}
+
 function terminalTitleStatus(status: string): { dot: string; label: string } {
   switch (status) {
     case 'running': return { dot: 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]', label: 'Running' }
@@ -897,13 +909,12 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
                 ]"
                 @click="getStepStatus(t.step_order) !== 'pending' && toggleStep(t.step_order)"
               >
-                <!-- Step status icon -->
-                <div class="shrink-0">
-                  <CheckCircle2 v-if="getStepStatus(t.step_order) === 'success'" class="h-4.5 w-4.5 text-emerald-500" />
-                  <XCircle v-else-if="getStepStatus(t.step_order) === 'failed'" class="h-4.5 w-4.5 text-red-500" />
-                  <Loader2 v-else-if="getStepStatus(t.step_order) === 'running'" class="h-4.5 w-4.5 text-amber-400 animate-spin" />
-                  <MinusCircle v-else-if="getStepStatus(t.step_order) === 'cancelled'" class="h-4.5 w-4.5 text-slate-400" />
-                  <span v-else class="inline-flex items-center justify-center h-[18px] w-[18px] rounded-full bg-muted text-[10px] font-bold text-muted-foreground/60 tabular-nums leading-none">{{ t.step_order + 1 }}</span>
+                <!-- Step number (large standalone numeral, tinted by status) -->
+                <div class="shrink-0 w-8 flex items-center justify-center">
+                  <span
+                    class="text-xl font-semibold tabular-nums leading-none"
+                    :class="stepNumberClass(getStepStatus(t.step_order))"
+                  >{{ t.step_order + 1 }}</span>
                 </div>
 
                 <!-- Step main content -->
