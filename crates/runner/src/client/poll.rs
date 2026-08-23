@@ -30,9 +30,11 @@ use std::collections::{HashMap, HashSet};
 ///   9997  ==> ERROR
 ///   9998–9999  reserved meta
 ///
-/// The job-start runner identity banner uses `step_order = 0` with
-/// `chunk_index = -1` (see `LOG_RUNNER_BANNER`), so it sorts before step 0's
-/// first chunk and never collides with the global `step_order = -1` error path.
+/// The job-start runner identity banner uses `step_order = 0` with a negative
+/// `chunk_index` (see `LOG_RUNNER_BANNER`), so it sorts before step 0's first
+/// chunk. It must NOT reuse `-1`, which is reserved for the global
+/// `step_order = -1` error path — `UNIQUE(job_id, chunk_index)` +
+/// `INSERT OR REPLACE` would otherwise let the error chunk overwrite the banner.
 /// ```
 ///
 /// Verbose prep/config used to live at 9990+, which sorted **after** RUN +
@@ -44,7 +46,7 @@ pub(crate) fn step_log_base(step_idx: usize) -> i32 {
 /// Job-start runner identity banner (`==> RUNNER`), ordered before step 0's
 /// first chunk (`step_log_base(0) == 0`) so it appears at the very top of the
 /// job's logs.
-pub(crate) const LOG_RUNNER_BANNER: i32 = -1;
+pub(crate) const LOG_RUNNER_BANNER: i32 = -2;
 
 pub(crate) const LOG_STEP_VERBOSE_PREPARE: i32 = 0;
 pub(crate) const LOG_STEP_VERBOSE_CONFIG: i32 = 1;
