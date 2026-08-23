@@ -2242,7 +2242,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "manager"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -3202,6 +3202,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "regex-automata"
 version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3346,7 +3358,7 @@ dependencies = [
 
 [[package]]
 name = "runner"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -3955,7 +3967,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3964,6 +3976,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "jsonwebtoken",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",
