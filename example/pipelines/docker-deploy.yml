@@ -23,6 +23,7 @@ on:
         required: true
         default: latest
         type: string
+        pattern: "^[A-Za-z0-9._-]+$"
       target:
         description: Target host name (must exist in Hosts)
         required: false
