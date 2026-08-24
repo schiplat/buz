@@ -465,25 +465,28 @@ fn gh_web_base(api_base_url: &str) -> String {
     base.split('/').take(3).collect::<Vec<_>>().join("/")
 }
 
-fn repo_view(
-    id: &str,
-    connection_id: &str,
-    connection_name: &str,
-    owner: &str,
-    repo: &str,
+/// Display data for a registered GitHub repo (repos list / create / update).
+struct RepoView<'a> {
+    id: &'a str,
+    connection_id: &'a str,
+    connection_name: &'a str,
+    owner: &'a str,
+    repo: &'a str,
     updated_at: Option<String>,
-    api_base_url: &str,
-    binds: &[serde_json::Value],
-) -> serde_json::Value {
+    api_base_url: &'a str,
+    binds: &'a [serde_json::Value],
+}
+
+fn repo_view(r: &RepoView<'_>) -> serde_json::Value {
     serde_json::json!({
-        "id": id,
-        "connection_id": connection_id,
-        "connection_name": connection_name,
-        "owner": owner,
-        "repo": repo,
-        "url": format!("{}/{owner}/{repo}", gh_web_base(api_base_url)),
-        "updated_at": updated_at,
-        "binds": binds,
+        "id": r.id,
+        "connection_id": r.connection_id,
+        "connection_name": r.connection_name,
+        "owner": r.owner,
+        "repo": r.repo,
+        "url": format!("{}/{}/{}", gh_web_base(r.api_base_url), r.owner, r.repo),
+        "updated_at": r.updated_at,
+        "binds": r.binds,
     })
 }
 
@@ -567,16 +570,17 @@ pub async fn list_repos(
         .into_iter()
         .map(|r| {
             let id = r.get::<String, _>(0);
-            repo_view(
-                &id,
-                &r.get::<String, _>(1),
-                &r.get::<String, _>(2),
-                &r.get::<String, _>(3),
-                &r.get::<String, _>(4),
-                r.get(5),
-                &r.get::<String, _>(6),
-                binds_map.get(&id).cloned().unwrap_or_default().as_slice(),
-            )
+            let binds = binds_map.get(&id).cloned().unwrap_or_default();
+            repo_view(&RepoView {
+                id: &id,
+                connection_id: &r.get::<String, _>(1),
+                connection_name: &r.get::<String, _>(2),
+                owner: &r.get::<String, _>(3),
+                repo: &r.get::<String, _>(4),
+                updated_at: r.get(5),
+                api_base_url: &r.get::<String, _>(6),
+                binds: &binds,
+            })
         })
         .collect();
     Ok(Json(ApiResponse::success(out)))
@@ -628,21 +632,21 @@ pub async fn create_repo(
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, "github_repo.create")
-            .resource("github_repo", &id, &format!("{owner}/{repo}"))
+            .resource("github_repo", &id, format!("{owner}/{repo}"))
             .after(Some(serde_json::json!({ "connection_id": &req.connection_id, "owner": owner, "repo": repo }))),
     )
     .await;
 
-    Ok(Json(ApiResponse::success(repo_view(
-        &id,
-        &req.connection_id,
-        &conn_name,
-        &owner,
-        &repo,
-        None,
-        &conn_api_base,
-        &[],
-    ))))
+    Ok(Json(ApiResponse::success(repo_view(&RepoView {
+        id: &id,
+        connection_id: &req.connection_id,
+        connection_name: &conn_name,
+        owner: &owner,
+        repo: &repo,
+        updated_at: None,
+        api_base_url: &conn_api_base,
+        binds: &[],
+    }))))
 }
 
 pub async fn update_repo(
@@ -685,23 +689,23 @@ pub async fn update_repo(
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, "github_repo.update")
-            .resource("github_repo", &id, &format!("{old_owner}/{old_repo}"))
+            .resource("github_repo", &id, format!("{old_owner}/{old_repo}"))
             .after(Some(
                 serde_json::json!({ "owner": new_owner, "repo": new_repo }),
             )),
     )
     .await;
 
-    Ok(Json(ApiResponse::success(repo_view(
-        &id,
-        &conn_id,
-        &conn_name,
-        &new_owner,
-        &new_repo,
-        None,
-        &conn_api_base,
-        &[],
-    ))))
+    Ok(Json(ApiResponse::success(repo_view(&RepoView {
+        id: &id,
+        connection_id: &conn_id,
+        connection_name: &conn_name,
+        owner: &new_owner,
+        repo: &new_repo,
+        updated_at: None,
+        api_base_url: &conn_api_base,
+        binds: &[],
+    }))))
 }
 
 pub async fn delete_repo(
@@ -723,7 +727,7 @@ pub async fn delete_repo(
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, "github_repo.delete")
-            .resource("github_repo", &id, &format!("{owner}/{repo}"))
+            .resource("github_repo", &id, format!("{owner}/{repo}"))
             .before(Some(serde_json::json!({ "owner": owner, "repo": repo }))),
     )
     .await;
@@ -875,27 +879,30 @@ pub struct AddBindRequest {
     pub repo_id: String,
 }
 
-fn bind_view(
-    id: &str,
-    repo_id: &str,
-    connection_name: &str,
-    owner: &str,
-    repo: &str,
+/// Display data for a secret/var ↔ GitHub repo bind.
+pub(crate) struct BindView<'a> {
+    id: &'a str,
+    repo_id: &'a str,
+    connection_name: &'a str,
+    owner: &'a str,
+    repo: &'a str,
     last_pushed_at: Option<String>,
-    last_status: &str,
-    last_error: &str,
-    last_op: &str,
-) -> serde_json::Value {
+    last_status: &'a str,
+    last_error: &'a str,
+    last_op: &'a str,
+}
+
+fn bind_view(b: &BindView<'_>) -> serde_json::Value {
     serde_json::json!({
-        "id": id,
-        "repo_id": repo_id,
-        "connection_name": connection_name,
-        "owner": owner,
-        "repo": repo,
-        "last_pushed_at": last_pushed_at,
-        "last_status": last_status,
-        "last_error": last_error,
-        "last_op": last_op,
+        "id": b.id,
+        "repo_id": b.repo_id,
+        "connection_name": b.connection_name,
+        "owner": b.owner,
+        "repo": b.repo,
+        "last_pushed_at": b.last_pushed_at,
+        "last_status": b.last_status,
+        "last_error": b.last_error,
+        "last_op": b.last_op,
     })
 }
 
@@ -920,17 +927,17 @@ pub async fn list_secret_binds(
     let out: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
-            bind_view(
-                &r.get::<String, _>(0),
-                &r.get::<String, _>(1),
-                &r.get::<String, _>(2),
-                &r.get::<String, _>(3),
-                &r.get::<String, _>(4),
-                r.get(5),
-                &r.get::<String, _>(6),
-                &r.get::<String, _>(7),
-                &r.get::<String, _>(8),
-            )
+            bind_view(&BindView {
+                id: &r.get::<String, _>(0),
+                repo_id: &r.get::<String, _>(1),
+                connection_name: &r.get::<String, _>(2),
+                owner: &r.get::<String, _>(3),
+                repo: &r.get::<String, _>(4),
+                last_pushed_at: r.get(5),
+                last_status: &r.get::<String, _>(6),
+                last_error: &r.get::<String, _>(7),
+                last_op: &r.get::<String, _>(8),
+            })
         })
         .collect();
     Ok(Json(ApiResponse::success(out)))
@@ -1037,17 +1044,17 @@ pub async fn add_secret_bind(
     )
     .await;
 
-    Ok(Json(ApiResponse::success(bind_view(
-        &id,
-        &req.repo_id,
-        &conn_name,
-        &owner,
-        &repo_name,
-        None,
-        "pending",
-        "",
-        "bind",
-    ))))
+    Ok(Json(ApiResponse::success(bind_view(&BindView {
+        id: &id,
+        repo_id: &req.repo_id,
+        connection_name: &conn_name,
+        owner: &owner,
+        repo: &repo_name,
+        last_pushed_at: None,
+        last_status: "pending",
+        last_error: "",
+        last_op: "bind",
+    }))))
 }
 
 pub async fn delete_secret_bind(
@@ -1309,17 +1316,17 @@ pub async fn list_variable_binds(
     let out: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
-            bind_view(
-                &r.get::<String, _>(0),
-                &r.get::<String, _>(1),
-                &r.get::<String, _>(2),
-                &r.get::<String, _>(3),
-                &r.get::<String, _>(4),
-                r.get(5),
-                &r.get::<String, _>(6),
-                &r.get::<String, _>(7),
-                &r.get::<String, _>(8),
-            )
+            bind_view(&BindView {
+                id: &r.get::<String, _>(0),
+                repo_id: &r.get::<String, _>(1),
+                connection_name: &r.get::<String, _>(2),
+                owner: &r.get::<String, _>(3),
+                repo: &r.get::<String, _>(4),
+                last_pushed_at: r.get(5),
+                last_status: &r.get::<String, _>(6),
+                last_error: &r.get::<String, _>(7),
+                last_op: &r.get::<String, _>(8),
+            })
         })
         .collect();
     Ok(Json(ApiResponse::success(out)))
@@ -1421,17 +1428,17 @@ pub async fn add_variable_bind(
     )
     .await;
 
-    Ok(Json(ApiResponse::success(bind_view(
-        &id,
-        &req.repo_id,
-        &conn_name,
-        &owner,
-        &repo_name,
-        None,
-        "pending",
-        "",
-        "bind",
-    ))))
+    Ok(Json(ApiResponse::success(bind_view(&BindView {
+        id: &id,
+        repo_id: &req.repo_id,
+        connection_name: &conn_name,
+        owner: &owner,
+        repo: &repo_name,
+        last_pushed_at: None,
+        last_status: "pending",
+        last_error: "",
+        last_op: "bind",
+    }))))
 }
 
 pub async fn delete_variable_bind(
@@ -1652,28 +1659,8 @@ pub async fn push_variable_binds(
 }
 
 // Re-export helper for the resource list enrichment in secrets.rs / variables.rs.
-pub(crate) fn bind_row_json(
-    id: &str,
-    repo_id: &str,
-    connection_name: &str,
-    owner: &str,
-    repo: &str,
-    last_status: &str,
-    last_pushed_at: Option<String>,
-    last_error: &str,
-    last_op: &str,
-) -> serde_json::Value {
-    bind_view(
-        id,
-        repo_id,
-        connection_name,
-        owner,
-        repo,
-        last_pushed_at,
-        last_status,
-        last_error,
-        last_op,
-    )
+pub(crate) fn bind_row_json(b: &BindView<'_>) -> serde_json::Value {
+    bind_view(b)
 }
 
 /// Batch-load secret → binds map for list enrichment (single query, no N+1).
@@ -1702,17 +1689,19 @@ pub(crate) async fn secret_binds_map(
         std::collections::HashMap::new();
     for r in rows {
         let secret_id: String = r.get(0);
-        map.entry(secret_id).or_default().push(bind_row_json(
-            &r.get::<String, _>(1),
-            &r.get::<String, _>(2),
-            &r.get::<String, _>(3),
-            &r.get::<String, _>(4),
-            &r.get::<String, _>(5),
-            &r.get::<String, _>(6),
-            r.get(7),
-            &r.get::<String, _>(8),
-            &r.get::<String, _>(9),
-        ));
+        map.entry(secret_id)
+            .or_default()
+            .push(bind_row_json(&BindView {
+                id: &r.get::<String, _>(1),
+                repo_id: &r.get::<String, _>(2),
+                connection_name: &r.get::<String, _>(3),
+                owner: &r.get::<String, _>(4),
+                repo: &r.get::<String, _>(5),
+                last_pushed_at: r.get(7),
+                last_status: &r.get::<String, _>(6),
+                last_error: &r.get::<String, _>(8),
+                last_op: &r.get::<String, _>(9),
+            }));
     }
     Ok(map)
 }
@@ -1743,17 +1732,19 @@ pub(crate) async fn variable_binds_map(
         std::collections::HashMap::new();
     for r in rows {
         let var_id: String = r.get(0);
-        map.entry(var_id).or_default().push(bind_row_json(
-            &r.get::<String, _>(1),
-            &r.get::<String, _>(2),
-            &r.get::<String, _>(3),
-            &r.get::<String, _>(4),
-            &r.get::<String, _>(5),
-            &r.get::<String, _>(6),
-            r.get(7),
-            &r.get::<String, _>(8),
-            &r.get::<String, _>(9),
-        ));
+        map.entry(var_id)
+            .or_default()
+            .push(bind_row_json(&BindView {
+                id: &r.get::<String, _>(1),
+                repo_id: &r.get::<String, _>(2),
+                connection_name: &r.get::<String, _>(3),
+                owner: &r.get::<String, _>(4),
+                repo: &r.get::<String, _>(5),
+                last_pushed_at: r.get(7),
+                last_status: &r.get::<String, _>(6),
+                last_error: &r.get::<String, _>(8),
+                last_op: &r.get::<String, _>(9),
+            }));
     }
     Ok(map)
 }
