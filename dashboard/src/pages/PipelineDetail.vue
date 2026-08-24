@@ -1788,20 +1788,24 @@ async function handleTrigger() {
                     <span v-else class="italic text-muted-foreground/50">—</span>
                     <span class="flex-1" />
                     <span
-                      v-if="inp.type"
-                      class="font-medium rounded-full px-2 py-0.5 tracking-wide shrink-0 bg-sky-500/10 text-sky-600 border border-sky-500/20"
-                      :title="typeHint(inp.type)"
-                    >{{ inp.type }}</span>
-                    <span
-                      v-if="inp.pattern"
-                      class="font-mono rounded-full px-2 py-0.5 tracking-wide shrink-0 bg-cyan-500/10 text-cyan-600 border border-cyan-500/20"
-                      title="Regex — validated at trigger"
-                    >/{{ inp.pattern }}/</span>
-                    <span
-                      v-if="inp.options?.length"
-                      class="font-medium rounded-full px-2 py-0.5 tracking-wide shrink-0 bg-teal-500/10 text-teal-600 border border-teal-500/20"
-                      title="Allowed values"
-                    >{{ inp.options.join(', ') }}</span>
+                      v-if="inp.type || inp.pattern || inp.options?.length"
+                      class="inline-flex items-center overflow-hidden rounded-full border border-sky-500/20 shrink-0 max-w-[20rem]"
+                    >
+                      <span
+                        class="px-2 py-0.5 font-medium bg-sky-500/10 text-sky-600"
+                        :title="typeHint(inp.type || '')"
+                      >{{ inp.type || 'any' }}</span>
+                      <span
+                        v-if="inp.pattern"
+                        class="px-2 py-0.5 font-mono text-[10px] bg-cyan-500/10 text-cyan-600 border-l border-cyan-500/20"
+                        :title="`Regex — validated at trigger: /${inp.pattern}/`"
+                      >/{{ inp.pattern }}/</span>
+                      <span
+                        v-if="inp.options?.length"
+                        class="px-2 py-0.5 font-mono text-[10px] bg-teal-500/10 text-teal-600 border-l border-teal-500/20"
+                        title="Allowed values"
+                      >{{ inp.options.join(', ') }}</span>
+                    </span>
                     <span
                       class="font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0"
                       :class="inp.required ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20' : 'bg-slate-500/10 text-slate-500 border border-slate-500/20'"
