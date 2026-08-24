@@ -37,3 +37,4 @@ docs/logs/
 
 # Local runner logs (may contain hostnames / runtime noise)
 example/logs/
+logs/
