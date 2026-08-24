@@ -4,7 +4,7 @@ Lightweight Cross-Network Orchestration Platform.
 
 **Single Binary, Unified Orchestration, Zero Trust.**
 
-Current version: **1.5.1** (workspace `Cargo.toml` + `dashboard/package.json`).
+Current version: **1.5.2** (workspace `Cargo.toml` + `dashboard/package.json`).
 
 ```bash
 buz-manager --version
