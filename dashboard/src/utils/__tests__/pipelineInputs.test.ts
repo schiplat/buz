@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   emptyInputDef,
+  findMissingRequiredInputs,
   normalizeInputDefsForForm,
   normalizeInputDefsForSave,
 } from '../pipelineInputs'
@@ -88,5 +89,27 @@ describe('normalizeInputDefsForForm', () => {
 describe('emptyInputDef', () => {
   it('starts with masking off', () => {
     expect(emptyInputDef().masking).toBe(false)
+  })
+})
+
+describe('findMissingRequiredInputs', () => {
+  it('flags required inputs with blank values', () => {
+    const missing = findMissingRequiredInputs([
+      { key: 'tag', value: '', required: true },
+      { key: 'host', value: '   ', required: true },
+      { key: 'env', value: '', required: false },
+      { key: 'ok', value: 'x', required: true },
+    ])
+    expect(missing).toEqual(['tag', 'host'])
+  })
+
+  it('ignores blank optional and filled required values', () => {
+    expect(
+      findMissingRequiredInputs([
+        { key: 'a', value: '', required: false },
+        { key: 'b', value: '0', required: true },
+        { key: 'c', value: undefined, required: false },
+      ]),
+    ).toEqual([])
   })
 })

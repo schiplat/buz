@@ -240,6 +240,53 @@ async fn missing_required_is_rejected_with_field() {
 }
 
 #[tokio::test]
+async fn required_empty_value_is_rejected() {
+    let (app, _pool) = test_app().await;
+    let pid = create_pipeline(&app, INPUT_DEFS_JSON).await;
+
+    // Blank string must count as "not filled" even though the key is present.
+    // `deploy_host` is required with no default, so a blank value is rejected.
+    let resp = trigger_with_inputs(&app, &pid, r#"{"tag":"1.2.3","deploy_host":""}"#).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let message = read_body(resp).await["message"]
+        .as_str()
+        .expect("message")
+        .to_string();
+    assert!(message.contains("deploy_host"), "host flagged: {message}");
+    assert!(message.contains("required"), "reason in message: {message}");
+}
+
+#[tokio::test]
+async fn empty_value_falls_back_to_declared_default() {
+    let (app, pool) = test_app().await;
+    let pid = create_pipeline(&app, INPUT_DEFS_JSON).await;
+
+    // `tag` is required but has a default → blank value merges the default
+    // instead of failing; `dry_run` likewise falls back to "false".
+    let resp = trigger_with_inputs(
+        &app,
+        &pid,
+        r#"{"tag":"","deploy_host":"prod-01","dry_run":""}"#,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "{:?}", read_body(resp).await);
+
+    let params: serde_json::Value = sqlx::query_scalar::<_, String>(
+        "SELECT trigger_params FROM jobs ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("job trigger_params")
+    .parse()
+    .expect("json");
+    assert_eq!(params["tag"], "0.1.0", "default merged for required blank");
+    assert_eq!(
+        params["dry_run"], "false",
+        "default merged for optional blank"
+    );
+}
+
+#[tokio::test]
 async fn pattern_violation_is_rejected() {
     let (app, _pool) = test_app().await;
     let pid = create_pipeline(&app, INPUT_DEFS_JSON).await;

@@ -486,6 +486,17 @@ pub fn validate_input_values(
         };
 
         let value = raw.trim();
+        if value.is_empty() {
+            // Empty value == not provided: required fields are flagged, optional
+            // fields skip type/pattern checks (defaults are merged upstream).
+            if def.required.unwrap_or(false) {
+                errors.push(InputFieldError {
+                    name: def.name.clone(),
+                    message: "required input is missing".into(),
+                });
+            }
+            continue;
+        }
 
         // `choice` needs its options declared; `options` without `choice` is ignored.
         if kind == InputTypeKind::Choice {
@@ -520,13 +531,11 @@ pub fn validate_input_values(
                     message: "must be true or false".into(),
                 });
             }
-        } else if kind == InputTypeKind::Host {
-            if value.is_empty() || !host_exists(value) {
-                errors.push(InputFieldError {
-                    name: def.name.clone(),
-                    message: format!("host '{value}' is not registered"),
-                });
-            }
+        } else if kind == InputTypeKind::Host && !host_exists(value) {
+            errors.push(InputFieldError {
+                name: def.name.clone(),
+                message: format!("host '{value}' is not registered"),
+            });
         }
 
         if let Some(pat) = def.pattern.as_deref() {

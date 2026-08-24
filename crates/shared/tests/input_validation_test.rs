@@ -176,3 +176,34 @@ fn number_with_pattern_applies_both() {
     let err = validate_input_values(&defs, &too_long, |_| false).unwrap_err();
     assert!(err[0].message.contains("does not match"));
 }
+
+#[test]
+fn required_empty_value_is_rejected() {
+    // Empty value == not provided: a required field with a blank string must be
+    // flagged even though the key is present.
+    let defs = vec![def("version", true)];
+    for raw in ["", "   "] {
+        let inputs = HashMap::from([("version".to_string(), raw.to_string())]);
+        let err = validate_input_values(&defs, &inputs, |_| false).unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert_eq!(err[0].name, "version");
+        assert!(err[0].message.contains("required"), "raw={raw:?}");
+    }
+}
+
+#[test]
+fn optional_empty_value_skips_type_checks() {
+    // Blank optional inputs are treated as "not provided" and skip type/pattern
+    // enforcement, so leaving the dialog field empty never fails validation.
+    let mut d = def("replicas", false);
+    d.input_type = Some("number".into());
+    let defs = vec![d];
+
+    let blank = HashMap::from([("replicas".to_string(), "".to_string())]);
+    assert!(validate_input_values(&defs, &blank, |_| false).is_ok());
+
+    let mut d2 = def("tag", false);
+    d2.pattern = Some("^[0-9]+$".into());
+    let blank2 = HashMap::from([("tag".to_string(), "  ".to_string())]);
+    assert!(validate_input_values(&[d2], &blank2, |_| false).is_ok());
+}

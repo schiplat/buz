@@ -20,7 +20,7 @@ import {
   parseDurationToSeconds,
   yamlStepsToDefTasks,
 } from '@/utils/pipelineDefinitionView'
-import { normalizeInputDefsForForm } from '@/utils/pipelineInputs'
+import { findMissingRequiredInputs, normalizeInputDefsForForm } from '@/utils/pipelineInputs'
 import { formatConfigRenderSummary } from '@/utils/configForm'
 import { secretsApi } from '@/api/secrets'
 import { variablesApi } from '@/api/variables'
@@ -389,6 +389,9 @@ const definitionView = computed(() => {
         required: !!i.required,
         default: i.default || undefined,
         masking: !!i.masking,
+        type: i.type || undefined,
+        pattern: i.pattern || undefined,
+        options: i.options || undefined,
       })),
       tasks: yamlStepsToDefTasks(parsed.steps || []),
       concurrency: concurrencyFromYaml(parsed),
@@ -453,6 +456,23 @@ function formatConcurrencyTimeout(sec: number | null): string {
   if (sec % 3600 === 0) return `${sec / 3600}h`
   if (sec % 60 === 0) return `${sec / 60}m`
   return `${sec}s`
+}
+
+function typeHint(t: string): string {
+  switch (t) {
+    case 'string':
+      return 'Free-form text (default type)'
+    case 'number':
+      return 'Must be an integer'
+    case 'boolean':
+      return 'Must be true or false'
+    case 'host':
+      return 'Must reference a registered Host name'
+    case 'choice':
+      return 'Must be one of the declared options'
+    default:
+      return 'Declared value constraint'
+  }
 }
 
 function pipelineConcurrencyHint(configured: boolean, mode: string | null): string {
@@ -859,12 +879,24 @@ function removeInputPair(idx: number) {
 
 async function handleTrigger() {
   if (!pipeline.value || triggering.value) return
+  // Client-side required check: empty value == not filled. Blocks submission
+  // before the request so the dialog can highlight the offending fields.
+  const missing = findMissingRequiredInputs(inputPairs.value)
+  if (missing.length > 0) {
+    triggerError.value = {
+      title: 'Invalid inputs',
+      summary: 'Fill in the required fields highlighted below, then trigger again.',
+      items: missing.map((name) => ({ field: name, message: 'required input is missing' })),
+    }
+    return
+  }
   triggering.value = true
   triggerError.value = null
   try {
     const inputs: Record<string, string> = {}
     for (const pair of inputPairs.value) {
-      if (pair.key.trim()) inputs[pair.key.trim()] = pair.value
+      // Empty values are not sent so the backend merges declared defaults.
+      if (pair.key.trim() && (pair.value ?? '').trim()) inputs[pair.key.trim()] = pair.value
     }
     const result = await pipelinesApi.trigger(pipelineId.value, inputs, triggerDebug.value, triggerVerbose.value)
     showTriggerDialog.value = false
@@ -942,11 +974,16 @@ async function handleTrigger() {
 
           <!-- Declared inputs -->
           <div v-if="hasInputDefs" class="space-y-2 mb-4">
-            <div v-for="(pair, idx) in inputPairs" :key="idx" class="flex items-center gap-2">
-              <div class="flex-1 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground select-none flex items-center gap-1.5 flex-wrap">
-                {{ pair.key }}
-                <span v-if="pair.required" class="text-red-500 text-sm font-sans leading-none">*</span>
-                <span v-else class="text-xs text-muted-foreground/50 font-sans">(optional)</span>
+            <div
+              v-for="(pair, idx) in inputPairs"
+              :key="idx"
+              class="rounded-md border px-3 py-2.5 transition-colors"
+              :class="errorFields.has(pair.key) ? 'border-destructive/60 bg-destructive/5' : 'border-border/40 bg-card/40'"
+            >
+              <div class="flex items-center gap-1.5 flex-wrap mb-2">
+                <span class="text-sm font-mono font-semibold text-foreground">{{ pair.key }}</span>
+                <span v-if="pair.required" class="text-red-500 text-sm font-sans leading-none" title="required">*</span>
+                <span v-else class="text-xs text-muted-foreground/60 font-sans">(optional)</span>
                 <span
                   v-if="pair.masking"
                   class="text-[10px] font-medium uppercase tracking-wide rounded px-1.5 py-0.5 bg-violet-500/10 text-violet-600 border border-violet-500/20 font-sans"
@@ -960,7 +997,7 @@ async function handleTrigger() {
               <select
                 v-if="pair.type === 'choice' || pair.type === 'boolean'"
                 v-model="pair.value"
-                class="flex-[2] rounded-md border bg-muted/50 px-3 py-2 text-sm"
+                class="w-full rounded-md border bg-muted/50 px-3 py-2 text-sm"
                 :class="errorFields.has(pair.key) ? 'border-destructive' : 'border-border'"
                 :disabled="triggering"
               >
@@ -979,7 +1016,7 @@ async function handleTrigger() {
                 v-model="pair.value"
                 :type="pair.masking ? 'password' : pair.type === 'number' ? 'number' : 'text'"
                 :placeholder="pair.required ? 'required' : 'enter value (leave empty for default)'"
-                class="flex-[2] rounded-md border bg-muted/50 px-3 py-2 text-sm"
+                class="w-full rounded-md border bg-muted/50 px-3 py-2 text-sm"
                 :class="errorFields.has(pair.key) ? 'border-destructive' : 'border-border'"
                 :disabled="triggering"
                 :autocomplete="pair.masking ? 'new-password' : 'off'"
@@ -1751,6 +1788,21 @@ async function handleTrigger() {
                     <span v-else class="italic text-muted-foreground/50">—</span>
                     <span class="flex-1" />
                     <span
+                      v-if="inp.type"
+                      class="font-medium rounded-full px-2 py-0.5 tracking-wide shrink-0 bg-sky-500/10 text-sky-600 border border-sky-500/20"
+                      :title="typeHint(inp.type)"
+                    >{{ inp.type }}</span>
+                    <span
+                      v-if="inp.pattern"
+                      class="font-mono rounded-full px-2 py-0.5 tracking-wide shrink-0 bg-cyan-500/10 text-cyan-600 border border-cyan-500/20"
+                      title="Regex — validated at trigger"
+                    >/{{ inp.pattern }}/</span>
+                    <span
+                      v-if="inp.options?.length"
+                      class="font-medium rounded-full px-2 py-0.5 tracking-wide shrink-0 bg-teal-500/10 text-teal-600 border border-teal-500/20"
+                      title="Allowed values"
+                    >{{ inp.options.join(', ') }}</span>
+                    <span
                       class="font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0"
                       :class="inp.required ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20' : 'bg-slate-500/10 text-slate-500 border border-slate-500/20'"
                     >{{ inp.required ? 'required' : 'optional' }}</span>
@@ -2073,7 +2125,7 @@ async function handleTrigger() {
                 </table>
               </div>
               <div
-                v-if="triggerEventsTotal > triggerEventsPageSize"
+                v-if="triggerEventsTotal > 0"
                 class="px-4 py-3 border-t border-border/30 flex items-center justify-end gap-2 text-xs"
               >
                 <button

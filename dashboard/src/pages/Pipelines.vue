@@ -13,7 +13,7 @@ import {
   type Pipeline,
   type PipelineInputDef,
 } from '@/api/pipelines'
-import { normalizeInputDefsForForm } from '@/utils/pipelineInputs'
+import { findMissingRequiredInputs, normalizeInputDefsForForm } from '@/utils/pipelineInputs'
 import { parseApiError, type FormattedApiError } from '@/utils/error'
 import { jobsApi, type Job } from '@/api/jobs'
 import { cn } from '@/lib/utils'
@@ -286,12 +286,24 @@ function removeTriggerInputPair(idx: number) {
 
 async function doTrigger(p: Pipeline) {
   if (triggeringId.value) return
+  // Client-side required check: empty value == not filled. Blocks submission
+  // before the request so the dialog can highlight the offending fields.
+  const missing = findMissingRequiredInputs(triggerInputPairs.value)
+  if (missing.length > 0) {
+    triggerError.value = {
+      title: 'Invalid inputs',
+      summary: 'Fill in the required fields highlighted below, then trigger again.',
+      items: missing.map((name) => ({ field: name, message: 'required input is missing' })),
+    }
+    return
+  }
   triggeringId.value = p.id
   triggerError.value = null
   try {
     const inputs: Record<string, string> = {}
     for (const pair of triggerInputPairs.value) {
-      if (pair.key.trim()) inputs[pair.key.trim()] = pair.value
+      // Empty values are not sent so the backend merges declared defaults.
+      if (pair.key.trim() && (pair.value ?? '').trim()) inputs[pair.key.trim()] = pair.value
     }
     const result = await pipelinesApi.trigger(p.id, inputs, triggerDebug.value, triggerVerbose.value)
     triggerTarget.value = null
@@ -716,14 +728,13 @@ async function handleToggleActive(p: Pipeline) {
             <div
               v-for="(pair, idx) in triggerInputPairs"
               :key="idx"
-              class="flex items-center gap-2"
+              class="rounded-md border px-3 py-2.5 transition-colors"
+              :class="triggerErrorFields.has(pair.key) ? 'border-destructive/60 bg-destructive/5' : 'border-border/40 bg-card/40'"
             >
-              <div
-                class="flex-1 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground select-none flex items-center gap-1.5 flex-wrap"
-              >
-                {{ pair.key }}
-                <span v-if="pair.required" class="text-red-500 text-sm font-sans leading-none">*</span>
-                <span v-else class="text-xs text-muted-foreground/50 font-sans">(optional)</span>
+              <div class="flex items-center gap-1.5 flex-wrap mb-2">
+                <span class="text-sm font-mono font-semibold text-foreground">{{ pair.key }}</span>
+                <span v-if="pair.required" class="text-red-500 text-sm font-sans leading-none" title="required">*</span>
+                <span v-else class="text-xs text-muted-foreground/60 font-sans">(optional)</span>
                 <span
                   v-if="pair.masking"
                   class="text-[10px] font-medium uppercase tracking-wide rounded px-1.5 py-0.5 bg-violet-500/10 text-violet-600 border border-violet-500/20 font-sans"
@@ -736,7 +747,7 @@ async function handleToggleActive(p: Pipeline) {
               <select
                 v-if="pair.type === 'choice' || pair.type === 'boolean'"
                 v-model="pair.value"
-                class="flex-[2] rounded-md border bg-muted/50 px-3 py-2 text-sm"
+                class="w-full rounded-md border bg-muted/50 px-3 py-2 text-sm"
                 :class="triggerErrorFields.has(pair.key) ? 'border-destructive' : 'border-border'"
                 :disabled="triggeringId !== null"
               >
@@ -754,7 +765,7 @@ async function handleToggleActive(p: Pipeline) {
                 v-model="pair.value"
                 :type="pair.masking ? 'password' : pair.type === 'number' ? 'number' : 'text'"
                 :placeholder="pair.required ? 'required' : 'enter value (leave empty for default)'"
-                class="flex-[2] rounded-md border border-border bg-muted/50 px-3 py-2 text-sm"
+                class="w-full rounded-md border border-border bg-muted/50 px-3 py-2 text-sm"
                 :class="triggerErrorFields.has(pair.key) ? 'border-destructive' : 'border-border'"
                 :disabled="triggeringId !== null"
                 :autocomplete="pair.masking ? 'new-password' : 'off'"

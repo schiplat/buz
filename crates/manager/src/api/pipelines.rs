@@ -749,7 +749,11 @@ pub(crate) async fn do_trigger(
     // point at the offending input.
     let mut resolved_inputs = inputs.clone();
     for def in &input_defs {
-        if !resolved_inputs.contains_key(&def.name) {
+        let present = resolved_inputs
+            .get(&def.name)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+        if !present {
             if let Some(d) = def.default.as_deref() {
                 resolved_inputs.insert(def.name.clone(), d.to_string());
             }

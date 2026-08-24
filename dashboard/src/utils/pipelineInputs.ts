@@ -44,3 +44,16 @@ export function normalizeInputDefsForForm(
 export function emptyInputDef(): PipelineInputDef {
   return { name: '', description: '', required: false, default: '', masking: false }
 }
+
+/**
+ * Keys of required inputs whose value is blank. Blank == not filled, so
+ * required fields are flagged client-side before submission; blank optional
+ * values are simply not sent (backend merges declared defaults).
+ */
+export function findMissingRequiredInputs(
+  pairs: { key: string; value?: string; required?: boolean }[],
+): string[] {
+  return pairs
+    .filter((p) => p.required && !(p.value ?? '').trim())
+    .map((p) => p.key)
+}
