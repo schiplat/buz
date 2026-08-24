@@ -85,6 +85,15 @@ on:
 - `pattern` works with any `type` (e.g. a `number` with a `^[0-9]{1,5}$` length guard).
 - `options` without `type: choice` is ignored.
 
+### YAML editor reminders
+
+The YAML validation endpoint (`POST /api/v1/pipelines/validate`) emits **warnings** (non-blocking) for inputs whose `type` is not declared, so authors are nudged toward an explicit type while existing pipelines keep validating fine:
+
+- `on.manual.inputs.<name>` with **no `type`** → warning: *"no 'type' declared — defaults to 'string'; declare 'type:' to enable number/boolean/host/choice validation and matching UI control"* (positioned on the input key line).
+- `options` present but `type` is **not** `choice` → warning: *"'options' requires 'type: choice' to take effect — currently ignored"*.
+
+These are **warnings, not errors** — pipelines that omit `type` still parse, import, and trigger exactly as before.
+
 ---
 
 ## Validation timing (fail-fast)
@@ -146,5 +155,7 @@ on:
 ## Tests
 
 - `crates/shared/tests/input_validation_test.rs` — unit tests for every constraint kind, aggregation, and definition errors.
+- `crates/shared/tests/pipeline_yaml_test.rs` — YAML lint warning tests for missing / inconsistent `type` declarations (plus existing parse coverage).
 - `crates/manager/src/api/tests/input_validation_trigger_tests.rs` — API tests: valid inputs pass, missing-required / pattern / choice / host / number / boolean violations return 422, no job is created on failure, defaults are merged, and the webhook path enforces the same rules.
 - `dashboard/src/utils/__tests__/pipelineInputs.test.ts` + `error.test.ts` — form normalization and field-error parsing.
+- `dashboard/src/utils/__tests__/pipelineYamlLint.test.ts` — warning positioning: field-scoped warnings land on the input key, global warnings stay at the top.

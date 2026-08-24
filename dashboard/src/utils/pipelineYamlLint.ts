@@ -217,15 +217,33 @@ export function diagnosticsFromValidation(
     })
   }
   for (const w of result.warnings || []) {
+    const { field, message } = splitWarningField(w)
+    const pos = field
+      ? positionForDiagnostic(doc, field, message)
+      : { from: 0, to: Math.min(doc.length, doc.split('\n')[0]?.length || 1) }
     out.push({
-      from: 0,
-      to: Math.min(doc.length, doc.split('\n')[0]?.length || 1),
+      from: pos.from,
+      to: Math.max(pos.to, pos.from + 1),
       severity: 'warning',
-      message: w,
+      message: message,
       markClass: 'cm-buz-lint-warning',
     })
   }
   return out
+}
+
+/**
+ * Field-specific warnings are encoded as `<field>: <message>` (e.g.
+ * `on.manual.inputs.tag: no 'type' declared …`). Global warnings
+ * (e.g. "Multiple trigger types defined …") have no leading field.
+ */
+export function splitWarningField(w: string): { field: string | null; message: string } {
+  const m = w.match(/^([^:]+): (.*)$/s)
+  if (m && /[.[]/.test(m[1])) {
+    const field = m[1].trim()
+    return { field, message: w }
+  }
+  return { field: null, message: w }
 }
 
 function formatMsg(err: YamlValidationError): string {

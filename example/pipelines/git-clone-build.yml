@@ -33,10 +33,12 @@ on:
         description: Git SSH URL (e.g. git@github.com:org/private-repo.git)
         default: git@github.com:example/hello-world.git
         required: true
+        type: string
       BUILD_CMD:
         description: Build command after clone
         default: make
         required: false
+        type: string
 
 runner:
   labels: [linux-x64]

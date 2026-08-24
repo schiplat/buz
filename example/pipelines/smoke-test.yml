@@ -23,10 +23,12 @@ on:
         description: Deployment environment
         required: true
         default: staging
+        type: string
       version:
         description: App version tag
         required: false
         default: latest
+        type: string
 
 runner:
   labels: [linux-x64]

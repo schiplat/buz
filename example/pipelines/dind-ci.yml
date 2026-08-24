@@ -22,10 +22,12 @@ on:
       version:
         description: Version tag for the image
         required: true
+        type: string
       target:
         description: Target host name for deployment (must exist in Hosts)
         required: false
         default: staging
+        type: string
 
 runner:
   labels: [linux-x64]

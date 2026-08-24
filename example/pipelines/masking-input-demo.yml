@@ -28,14 +28,17 @@ on:
         description: Release version (visible in logs)
         required: true
         default: "1.0.0"
+        type: string
       deploy_token:
         description: One-time deploy token (masked)
         required: true
         masking: true
+        type: string
       target:
         description: Deploy target label
         required: false
         default: staging
+        type: string
 
 runner:
   labels: [linux-x64]

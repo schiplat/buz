@@ -14,6 +14,7 @@ on:
       version:
         description: Version to deploy
         required: true
+        type: string
 
 runner:
   labels: [linux-x64]

@@ -31,3 +31,26 @@ describe('serializePipelineFormToYaml team', () => {
     expect(yaml).not.toMatch(/^team:/m)
   })
 })
+
+describe('serializePipelineFormToYaml input constraints', () => {
+  it('emits type / pattern / options and omits blanks', () => {
+    const yaml = serializePipelineFormToYaml({
+      ...base,
+      input_defs: [
+        {
+          name: 'tag',
+          required: true,
+          type: 'string',
+          pattern: '^[A-Za-z0-9._-]+$',
+        },
+        { name: 'env', type: 'choice', options: ['staging', 'production'] },
+        { name: 'plain' },
+      ],
+    })
+    expect(yaml).toContain('type: string')
+    expect(yaml).toContain('pattern: "^[A-Za-z0-9._-]+$"')
+    expect(yaml).toContain('type: choice')
+    expect(yaml).toContain('options: [staging, production]')
+    expect(yaml).not.toContain('masking:')
+  })
+})

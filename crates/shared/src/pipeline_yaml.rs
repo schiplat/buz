@@ -975,6 +975,30 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
     }
 
+    // 3b. Manual trigger inputs — remind to declare an explicit `type` so the
+    // trigger dialog renders a dedicated control and constraints are enforced.
+    // `options` only takes effect with `type: choice`; flag it specifically.
+    if let Some(ref on) = parsed.on {
+        if let Some(ref manual) = on.manual {
+            if let Some(ref inputs) = manual.inputs {
+                for (name, def) in inputs {
+                    let ty = def.r#type.as_deref().unwrap_or("").trim();
+                    let has_options = def.options.as_deref().is_some_and(|o| !o.is_empty());
+                    let field = format!("on.manual.inputs.{name}");
+                    if has_options && ty != "choice" {
+                        warnings.push(format!(
+                            "{field}: 'options' requires 'type: choice' to take effect — currently ignored"
+                        ));
+                    } else if ty.is_empty() {
+                        warnings.push(format!(
+                            "{field}: no 'type' declared — defaults to 'string'; declare 'type:' to enable number/boolean/host/choice validation and matching UI control"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     // 4. Detect trigger type (single source of truth for UI auto-fill)
     if let Some(ref on) = parsed.on {
         let trigger_count = [on.manual.is_some(), on.webhook.is_some(), on.cron.is_some()]

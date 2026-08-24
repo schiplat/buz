@@ -184,6 +184,10 @@ export interface YamlInputData {
   required?: boolean | null
   default?: string | null
   masking?: boolean | null
+  /** Declared constraint kind: string / number / boolean / host / choice. */
+  type?: string | null
+  pattern?: string | null
+  options?: string[] | null
 }
 
 export interface YamlRunnerConfig {

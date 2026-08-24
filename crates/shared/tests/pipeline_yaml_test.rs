@@ -1440,3 +1440,98 @@ fn notify_should_send_helpers() {
     let on = vec!["cancelled".into()];
     assert!(notify_should_send(Some(&on), "cancelled"));
 }
+
+// ── Manual input type reminders ──────────────────────────────────────
+
+fn warnings_for(yaml: &str) -> Vec<String> {
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    r.warnings
+}
+
+#[test]
+fn input_without_type_gets_reminder_warning() {
+    let yaml = r#"
+name: remind
+steps:
+  - name: run
+    uses: shell
+    run: echo hi
+on:
+  manual:
+    inputs:
+      tag:
+        description: ACR tag
+      replicas:
+        type: number
+"#;
+    let warnings = warnings_for(yaml);
+    let tag = warnings
+        .iter()
+        .find(|w| w.starts_with("on.manual.inputs.tag:"))
+        .expect("tag warning");
+    assert!(tag.contains("no 'type' declared"), "warning: {tag}");
+    assert!(
+        !warnings.iter().any(|w| w.contains("replicas")),
+        "typed input must not warn: {warnings:?}"
+    );
+}
+
+#[test]
+fn options_without_choice_gets_specific_warning() {
+    let yaml = r#"
+name: remind-choice
+steps:
+  - name: run
+    uses: shell
+    run: echo hi
+on:
+  manual:
+    inputs:
+      env:
+        options: [staging, production]
+      dry_run:
+        type: boolean
+"#;
+    let warnings = warnings_for(yaml);
+    let env = warnings
+        .iter()
+        .find(|w| w.starts_with("on.manual.inputs.env:"))
+        .expect("env warning");
+    assert!(
+        env.contains("requires 'type: choice'"),
+        "options-specific message: {env}"
+    );
+    assert!(
+        !env.contains("no 'type' declared"),
+        "options case must not also emit the generic reminder: {env}"
+    );
+    assert!(
+        !warnings.iter().any(|w| w.contains("dry_run")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn choice_with_options_is_quiet() {
+    let yaml = r#"
+name: quiet
+steps:
+  - name: run
+    uses: shell
+    run: echo hi
+on:
+  manual:
+    inputs:
+      env:
+        type: choice
+        options: [staging, production]
+      replicas:
+        type: number
+"#;
+    let warnings = warnings_for(yaml);
+    assert!(
+        warnings.iter().all(|w| !w.contains("on.manual.inputs.")),
+        "typed inputs must not warn: {warnings:?}"
+    );
+}

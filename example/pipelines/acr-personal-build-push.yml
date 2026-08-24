@@ -26,6 +26,7 @@ on:
         description: Image tag to build and push
         required: true
         default: "1.0"
+        type: string
 
 runner:
   labels: [linux-x64]

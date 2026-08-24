@@ -22,6 +22,7 @@ import {
   severityWordClass,
   splitDiagnosticSegments,
 } from '@/utils/severityHighlight'
+import { splitWarningField } from '@/utils/pipelineYamlLint'
 import PipelineYamlCodeEditor from '@/components/pipeline/PipelineYamlCodeEditor.vue'
 import { cn } from '@/lib/utils'
 
@@ -285,6 +286,11 @@ function reopenFloat() {
   floatDismissedKey.value = null
   ensureFloatPos()
   floatVisible.value = hasFloatIssues.value
+}
+
+/** Scroll the YAML editor to the offending line for an error/warning entry. */
+function jumpToIssue(field: string | null | undefined, message: string) {
+  codeEditorRef.value?.revealDiagnostic(field || '', message || '')
 }
 
 async function loadNameMaps() {
@@ -1074,7 +1080,9 @@ steps:
             <li
               v-for="(e, i) in floatErrors"
               :key="'fe'+i"
-              class="flex items-start gap-2 text-xs leading-relaxed"
+              class="flex items-start gap-2 text-xs leading-relaxed cursor-pointer rounded-md px-1 -mx-1 py-1 transition-colors hover:bg-destructive/10"
+              title="Click to jump to this line"
+              @click="jumpToIssue(e.field, e.message)"
             >
               <span
                 :class="
@@ -1103,7 +1111,9 @@ steps:
             <li
               v-for="(w, i) in floatWarnings"
               :key="'fw'+i"
-              class="flex items-start gap-2 text-xs leading-relaxed"
+              class="flex items-start gap-2 text-xs leading-relaxed cursor-pointer rounded-md px-1 -mx-1 py-1 transition-colors hover:bg-amber-500/10"
+              title="Click to jump to this line"
+              @click="jumpToIssue(splitWarningField(w).field, splitWarningField(w).message)"
             >
               <span
                 :class="

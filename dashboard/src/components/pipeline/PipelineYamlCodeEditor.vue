@@ -9,7 +9,7 @@ import { linter, lintGutter, type Diagnostic } from '@codemirror/lint'
 import { bracketMatching, foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
 import { pipelinesApi, type YamlValidationResult } from '@/api/pipelines'
 import { createPipelineYamlCompletionSource } from '@/utils/pipelineYamlCompletions'
-import { diagnosticsFromValidation } from '@/utils/pipelineYamlLint'
+import { diagnosticsFromValidation, positionForDiagnostic } from '@/utils/pipelineYamlLint'
 
 const props = withDefaults(
   defineProps<{
@@ -259,7 +259,23 @@ function focus() {
   view?.focus()
 }
 
-defineExpose({ validateNow, focus })
+/**
+ * Reveal the document position for a diagnostic (field + message) and focus
+ * the editor. Used by the float panel to jump to the offending YAML line.
+ * Falls back to the top of the document when nothing matches.
+ */
+function revealDiagnostic(field: string, message: string) {
+  if (!view) return
+  const doc = view.state.doc.toString()
+  const pos = positionForDiagnostic(doc, field, message)
+  view.dispatch({
+    selection: { anchor: pos.from },
+    effects: EditorView.scrollIntoView(pos.from, { y: 'center' }),
+  })
+  view.focus()
+}
+
+defineExpose({ validateNow, focus, revealDiagnostic })
 </script>
 
 <template>

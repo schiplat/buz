@@ -58,6 +58,9 @@ type FormLike = {
     required?: boolean
     default?: string
     masking?: boolean
+    type?: string
+    pattern?: string
+    options?: string[]
   }>
 }
 
@@ -128,6 +131,9 @@ export function serializePipelineFormToYaml(
       if (d.required) lines.push('        required: true')
       if (d.default) lines.push(`        default: ${esc(d.default)}`)
       if (d.masking) lines.push('        masking: true')
+      if (d.type) lines.push(`        type: ${esc(d.type)}`)
+      if (d.pattern) lines.push(`        pattern: ${esc(d.pattern)}`)
+      if (d.options?.length) lines.push(`        options: [${d.options.map(esc).join(', ')}]`)
     }
   }
 

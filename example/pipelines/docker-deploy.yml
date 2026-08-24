@@ -17,14 +17,17 @@ on:
       service:
         description: Service name to deploy
         required: true
+        type: string  
       tag:
         description: Image tag (e.g. 1.2.0)
         required: true
         default: latest
+        type: string
       target:
         description: Target host name (must exist in Hosts)
         required: false
         default: staging
+        type: string
 
 runner:
   labels: [linux-x64]
