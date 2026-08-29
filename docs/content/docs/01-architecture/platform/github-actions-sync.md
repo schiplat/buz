@@ -268,6 +268,10 @@ Push semantics:
 - Variables: read the platform var, `POST`/`PATCH` accordingly.
 - Per-binding result `{bind_id, owner, repo, status: "ok"|"failed", error?}`;
   a failed binding does not block the rest.
+- **Dashboard Push All** calls `?bind_id=…` **once per bind** (sequential), with
+  a 30s per-request timeout, so a slow GitHub round-trip cannot abort the whole
+  fan-out under the global 8s axios default. The dialog shows `Pushing N/M…`
+  and highlights the bind in flight.
 - On success the bind row's `last_status/last_pushed_at/last_error` is updated
   and `last_op` is set to `push`, so the UI can show state and whether the
   latest action was a bind, a push, or a failed unbind.

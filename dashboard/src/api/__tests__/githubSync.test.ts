@@ -79,33 +79,36 @@ describe('githubSyncApi', () => {
     await githubSyncApi.pushSecretBinds('sec-1', { bind_id: 'b1' })
     expect(mockClient.post).toHaveBeenCalledWith('/secrets/sec-1/github-binds/push', null, {
       params: { bind_id: 'b1' },
+      timeout: 30_000,
     })
 
     mockClient.post.mockResolvedValue(ok({ results: [] }))
     await githubSyncApi.pushSecretBinds('sec-1')
     expect(mockClient.post).toHaveBeenLastCalledWith('/secrets/sec-1/github-binds/push', null, {
       params: undefined,
+      timeout: 30_000,
     })
   })
 
   it('fetches repos from an owner', async () => {
     mockClient.post.mockResolvedValue(ok({ added: 3, existing: 1 }))
     const res = await githubSyncApi.fetchRepos({ connection_id: 'c1', owner: 'myorg' })
-    expect(mockClient.post).toHaveBeenCalledWith('/github-sync/repos/fetch', {
-      connection_id: 'c1',
-      owner: 'myorg',
-    })
+    expect(mockClient.post).toHaveBeenCalledWith(
+      '/github-sync/repos/fetch',
+      { connection_id: 'c1', owner: 'myorg' },
+      { timeout: 60_000 },
+    )
     expect(res.added).toBe(3)
   })
 
   it('tests a connection', async () => {
     mockClient.post.mockResolvedValue(ok({ ok: true }))
     const res = await githubSyncApi.testConnection({ connection_id: 'c1', owner: 'myorg', repo: 'alpha' })
-    expect(mockClient.post).toHaveBeenCalledWith('/github-sync/test', {
-      connection_id: 'c1',
-      owner: 'myorg',
-      repo: 'alpha',
-    })
+    expect(mockClient.post).toHaveBeenCalledWith(
+      '/github-sync/test',
+      { connection_id: 'c1', owner: 'myorg', repo: 'alpha' },
+      { timeout: 30_000 },
+    )
     expect(res.ok).toBe(true)
   })
 

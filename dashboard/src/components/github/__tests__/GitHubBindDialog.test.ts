@@ -10,6 +10,8 @@ vi.mock('@/api/githubSync', () => ({
     listRepos: vi.fn(),
     addSecretBind: vi.fn(),
     addVariableBind: vi.fn(),
+    pushSecretBinds: vi.fn(),
+    pushVariableBinds: vi.fn(),
   },
 }))
 
@@ -124,6 +126,48 @@ describe('GitHubBindDialog multi-select', () => {
     expect(vi.mocked(githubSyncApi.addSecretBind)).toHaveBeenCalledTimes(2)
     expect(document.body.textContent).toContain('Bind failed for')
     expect(document.body.textContent).toContain('myorg/beta')
+    unmount()
+  })
+})
+
+const bindRow = (id: string, owner: string, name: string) => ({
+  id,
+  repo_id: `repo-${name}`,
+  connection_name: 'gh',
+  owner,
+  repo: name,
+  last_pushed_at: null,
+  last_status: 'pending' as const,
+  last_error: '',
+  last_op: 'bind' as const,
+})
+
+describe('GitHubBindDialog Push All', () => {
+  it('pushes each bind with bind_id sequentially', async () => {
+    vi.mocked(githubSyncApi.listSecretBinds).mockResolvedValue([
+      bindRow('b1', 'myorg', 'alpha'),
+      bindRow('b2', 'myorg', 'beta'),
+    ])
+    vi.mocked(githubSyncApi.pushSecretBinds)
+      .mockResolvedValueOnce({ results: [{ bind_id: 'b1', owner: 'myorg', repo: 'alpha', status: 'ok' }] })
+      .mockResolvedValueOnce({ results: [{ bind_id: 'b2', owner: 'myorg', repo: 'beta', status: 'ok' }] })
+
+    const { unmount } = await mountAndLoad()
+    const pushAll = [...document.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
+      b.textContent?.includes('Push All'),
+    )
+    expect(pushAll).toBeTruthy()
+    pushAll!.click()
+    await flush()
+    await flush()
+
+    expect(vi.mocked(githubSyncApi.pushSecretBinds)).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(githubSyncApi.pushSecretBinds)).toHaveBeenNthCalledWith(1, 'secret-1', { bind_id: 'b1' })
+    expect(vi.mocked(githubSyncApi.pushSecretBinds)).toHaveBeenNthCalledWith(2, 'secret-1', { bind_id: 'b2' })
+    // Never a bulk push without bind_id.
+    for (const call of vi.mocked(githubSyncApi.pushSecretBinds).mock.calls) {
+      expect(call[1]?.bind_id).toBeTruthy()
+    }
     unmount()
   })
 })

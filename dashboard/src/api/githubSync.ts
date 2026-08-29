@@ -122,7 +122,8 @@ export const githubSyncApi = {
     await apiClient.delete(`/github-sync/repos/${id}`)
   },
   async fetchRepos(data: { connection_id: string; owner: string }): Promise<FetchReposResult> {
-    const resp = await apiClient.post('/github-sync/repos/fetch', data)
+    // Paginated GitHub list — can exceed the default 8s client timeout.
+    const resp = await apiClient.post('/github-sync/repos/fetch', data, { timeout: 60_000 })
     return resp.data as FetchReposResult
   },
   async testConnection(data: {
@@ -130,7 +131,7 @@ export const githubSyncApi = {
     owner?: string
     repo?: string
   }): Promise<{ ok: boolean; login?: string }> {
-    const resp = await apiClient.post('/github-sync/test', data)
+    const resp = await apiClient.post('/github-sync/test', data, { timeout: 30_000 })
     return resp.data as { ok: boolean; login?: string }
   },
 
@@ -150,8 +151,12 @@ export const githubSyncApi = {
     secretId: string,
     opts?: { bind_id?: string },
   ): Promise<{ results: GitHubPushResult[] }> {
+    // Single-bind push talks to GitHub (public key + put); 30s covers slow links.
+    // Push All should call this once per bind — do not rely on bulk push with the
+    // global 8s axios timeout.
     const resp = await apiClient.post(`/secrets/${secretId}/github-binds/push`, null, {
       params: opts?.bind_id ? { bind_id: opts.bind_id } : undefined,
+      timeout: 30_000,
     })
     return resp.data as { results: GitHubPushResult[] }
   },
@@ -174,6 +179,7 @@ export const githubSyncApi = {
   ): Promise<{ results: GitHubPushResult[] }> {
     const resp = await apiClient.post(`/variables/${varId}/github-binds/push`, null, {
       params: opts?.bind_id ? { bind_id: opts.bind_id } : undefined,
+      timeout: 30_000,
     })
     return resp.data as { results: GitHubPushResult[] }
   },

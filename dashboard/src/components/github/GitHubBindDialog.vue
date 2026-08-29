@@ -4,6 +4,7 @@ import UiButton from '@/components/ui/UiButton.vue'
 import { Loader2, RefreshCw, Trash2, GitPullRequestArrow, X } from '@lucide/vue'
 import { githubSyncApi, type GitHubBind, type GitHubRepo, type GitHubPushResult } from '@/api/githubSync'
 import { formatLocalDateTime } from '@/utils/time'
+import { pushBindsSequentially, type PushProgress } from '@/utils/githubPushSequential'
 
 const props = defineProps<{
   show: boolean
@@ -21,6 +22,7 @@ const binds = ref<GitHubBind[]>([])
 const repos = ref<GitHubRepo[]>([])
 const loading = ref(false)
 const pushing = ref(false)
+const pushProgress = ref<PushProgress | null>(null)
 const error = ref('')
 const selectedRepoIds = ref<string[]>([])
 const repoSearch = ref('')
@@ -40,6 +42,14 @@ const filteredAvailableRepos = computed(() => {
   return list
 })
 
+const pushLabel = computed(() => {
+  const p = pushProgress.value
+  if (!p) return 'Push All'
+  // Show 1-based "current of total" while a bind is in flight.
+  const current = Math.min(p.done + 1, p.total)
+  return `Pushing ${current}/${p.total}…`
+})
+
 function repoById(id: string): GitHubRepo | undefined {
   return repos.value.find((r) => r.id === id)
 }
@@ -56,6 +66,7 @@ function removeSelectedRepo(id: string) {
 const hasFailed = computed(() => binds.value.some((b) => b.last_status === 'failed'))
 
 function close() {
+  if (pushing.value) return
   emit('update:show', false)
 }
 
@@ -128,24 +139,50 @@ async function handleRemove(bind: GitHubBind) {
   }
 }
 
+async function pushOneBind(bind: { id: string; owner: string; repo: string }) {
+  const resp =
+    props.resourceKind === 'secret'
+      ? await githubSyncApi.pushSecretBinds(props.resourceId, { bind_id: bind.id })
+      : await githubSyncApi.pushVariableBinds(props.resourceId, { bind_id: bind.id })
+  const first: GitHubPushResult | undefined = resp.results[0]
+  return (
+    first ?? {
+      bind_id: bind.id,
+      owner: bind.owner,
+      repo: bind.repo,
+      status: 'failed' as const,
+      error: 'empty push response',
+    }
+  )
+}
+
+/**
+ * Push one bind, or every bind sequentially (Push All). Each HTTP call covers a
+ * single GitHub round-trip so the 30s per-request timeout stays meaningful.
+ */
 async function handlePush(bind?: GitHubBind) {
+  const targets = bind ? [bind] : [...binds.value]
+  if (targets.length === 0) return
   pushing.value = true
   error.value = ''
+  pushProgress.value = {
+    index: 0,
+    total: targets.length,
+    currentId: targets[0].id,
+    done: 0,
+  }
   try {
-    const resp: { results: GitHubPushResult[] } =
-      props.resourceKind === 'secret'
-        ? await githubSyncApi.pushSecretBinds(props.resourceId, bind ? { bind_id: bind.id } : undefined)
-        : await githubSyncApi.pushVariableBinds(props.resourceId, bind ? { bind_id: bind.id } : undefined)
-    const failed = resp.results.filter((r) => r.status === 'failed')
-    if (failed.length > 0) {
-      error.value = `Push failed for: ${failed.map((f) => `${f.owner}/${f.repo ?? ''} — ${f.error || 'unknown'}`).join('; ')}`
+    const { failures } = await pushBindsSequentially(targets, pushOneBind, (p) => {
+      pushProgress.value = p
+    })
+    if (failures.length > 0) {
+      error.value = `Push failed for: ${failures.join('; ')}`
     }
     emit('changed')
     await load()
-  } catch (e: any) {
-    error.value = e?.response?.data?.message || e?.message || 'Push failed'
   } finally {
     pushing.value = false
+    pushProgress.value = null
   }
 }
 
@@ -161,7 +198,11 @@ watch(
 <template>
   <Teleport to="body">
     <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="close" />
+      <div
+        class="absolute inset-0 bg-black/30 backdrop-blur-sm"
+        :class="{ 'pointer-events-none': pushing }"
+        @click="close"
+      />
       <div class="relative z-10 w-full max-w-lg mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
         <h3 class="shrink-0 text-[15px] font-semibold px-6 pt-6 pb-4 flex items-center gap-2">
           <GitPullRequestArrow class="h-4 w-4 text-muted-foreground" />
@@ -186,7 +227,16 @@ watch(
           </div>
 
           <div v-else class="space-y-2">
-            <div v-for="b in binds" :key="b.id" class="rounded-xl border border-border/50 bg-muted/20 p-3">
+            <div
+              v-for="b in binds"
+              :key="b.id"
+              class="rounded-xl border bg-muted/20 p-3 transition-colors"
+              :class="
+                pushProgress?.currentId === b.id && pushProgress.done < pushProgress.total
+                  ? 'border-primary/50 ring-1 ring-primary/20'
+                  : 'border-border/50'
+              "
+            >
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="font-mono text-[13px] font-semibold">{{ b.owner }}/{{ b.repo }}</span>
                 <span
@@ -207,6 +257,10 @@ watch(
                         : b.last_status
                   }}
                 </span>
+                <Loader2
+                  v-if="pushProgress?.currentId === b.id && pushProgress.done < pushProgress.total"
+                  class="h-3 w-3 animate-spin text-primary"
+                />
                 <span class="text-[10px] text-muted-foreground ml-auto">{{ b.connection_name }}</span>
               </div>
               <p v-if="b.last_error" class="mt-1.5 text-[11px] text-red-600 dark:text-red-400 break-words">{{ b.last_error }}</p>
@@ -217,7 +271,7 @@ watch(
                 <UiButton size="sm" variant="outline" :disabled="pushing" @click="handlePush(b)">
                   <RefreshCw class="h-3 w-3" /> Push
                 </UiButton>
-                <UiButton size="sm" variant="ghost" @click="handleRemove(b)" title="Unbind">
+                <UiButton size="sm" variant="ghost" :disabled="pushing" @click="handleRemove(b)" title="Unbind">
                   <Trash2 class="h-3 w-3 text-red-500" /> Unbind
                 </UiButton>
               </div>
@@ -264,7 +318,7 @@ watch(
               </span>
             </div>
             <div class="mt-2">
-              <UiButton size="sm" :disabled="selectedRepoIds.length === 0 || adding" @click="handleAdd">
+              <UiButton size="sm" :disabled="selectedRepoIds.length === 0 || adding || pushing" @click="handleAdd">
                 {{ adding ? 'Binding…' : selectedRepoIds.length > 0 ? `Bind ${selectedRepoIds.length} repo${selectedRepoIds.length > 1 ? 's' : ''}` : 'Bind' }}
               </UiButton>
             </div>
@@ -276,14 +330,20 @@ watch(
         </div>
 
         <div class="shrink-0 flex items-center gap-3 px-6 py-5 border-t border-border/30">
-          <UiButton v-if="canManage && binds.length > 0" size="sm" :disabled="pushing" title="Push all bound repos" @click="handlePush()">
+          <UiButton
+            v-if="canManage && binds.length > 0"
+            size="sm"
+            :disabled="pushing"
+            title="Push each bound repo one-by-one"
+            @click="handlePush()"
+          >
             <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': pushing }" />
-            {{ pushing ? 'Pushing…' : 'Push All' }}
+            {{ pushing ? pushLabel : 'Push All' }}
           </UiButton>
-          <span v-if="hasFailed" class="text-[10px] text-red-500">
+          <span v-if="hasFailed && !pushing" class="text-[10px] text-red-500">
             Some pushes failed — check the connection / repo and retry.
           </span>
-          <UiButton variant="ghost" size="sm" class="ml-auto" @click="close">Close</UiButton>
+          <UiButton variant="ghost" size="sm" class="ml-auto" :disabled="pushing" @click="close">Close</UiButton>
         </div>
       </div>
     </div>
