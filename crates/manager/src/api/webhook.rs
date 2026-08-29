@@ -52,7 +52,18 @@ pub async fn handle(
         inputs
     );
 
-    super::pipelines::do_trigger(&state, &pipeline_id, "webhook", &inputs, false, false).await
+    super::pipelines::do_trigger(
+        &state,
+        &pipeline_id,
+        "webhook",
+        &inputs,
+        false,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Merge query params with JSON body. Body keys override query params.

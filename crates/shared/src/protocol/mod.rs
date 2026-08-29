@@ -578,6 +578,11 @@ pub struct TriggerPipelineRequest {
     /// secret redaction intact.
     #[serde(default)]
     pub verbose: Option<bool>,
+    /// Optional platform Environment slug (or id). When set, Variable defaults
+    /// are overlaid with that environment's overrides at claim time.
+    /// Omit / empty = shared defaults only (legacy behavior).
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

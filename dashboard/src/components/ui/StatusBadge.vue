@@ -17,6 +17,8 @@ const tone = computed(() => {
     case 'cancelled' : return 'bg-muted text-muted-foreground'
     case 'timeout'   : return 'bg-warning/12 text-warning'
     case 'pending'   : return 'bg-muted text-muted-foreground'
+    case 'queued'    : return 'bg-info/12 text-info'
+    case 'waiting_approval': return 'bg-warning/12 text-warning'
     default: return 'bg-muted text-muted-foreground'
   }
 })

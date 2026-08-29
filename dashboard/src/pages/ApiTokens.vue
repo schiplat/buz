@@ -7,9 +7,11 @@ import UiButton from '@/components/ui/UiButton.vue'
 import { apiTokensApi, type ApiToken } from '@/api/apiTokens'
 import { useAuthStore } from '@/stores/auth'
 import { copyText } from '@/utils/copyText'
+import { useAppDialog } from '@/composables/useAppDialog'
 
 const auth = useAuthStore()
 const router = useRouter()
+const dialog = useAppDialog()
 
 const loading = ref(true)
 const tokens = ref<ApiToken[]>([])
@@ -64,7 +66,11 @@ async function handleCopy() {
 }
 
 async function handleRevoke(t: ApiToken) {
-  if (!confirm(`Revoke API token "${t.name}"? This cannot be undone.`)) return
+  if (!(await dialog.confirm(`Revoke API token "${t.name}"? This cannot be undone.`, {
+    title: 'Revoke token',
+    confirmLabel: 'Revoke',
+    danger: true,
+  }))) return
   await apiTokensApi.revoke(t.id)
   await load()
 }

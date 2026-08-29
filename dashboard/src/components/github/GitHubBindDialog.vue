@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, reactive } from 'vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import { Loader2, RefreshCw, Trash2, GitPullRequestArrow, X } from '@lucide/vue'
 import { githubSyncApi, type GitHubBind, type GitHubRepo, type GitHubPushResult } from '@/api/githubSync'
 import { formatLocalDateTime } from '@/utils/time'
 import { pushBindsSequentially, type PushProgress } from '@/utils/githubPushSequential'
+import { useAppDialog } from '@/composables/useAppDialog'
 
 const props = defineProps<{
   show: boolean
@@ -12,12 +13,15 @@ const props = defineProps<{
   resourceKind: 'secret' | 'variable'
   resourceId: string
   resourceName: string
+  /** Platform Variable default value (shown for Inherit on variable binds). */
+  defaultValue?: string
   /** Platform admin (variables) or secret manager (owner/maintainer/admin). */
   canManage: boolean
 }>()
 
 const emit = defineEmits<{ 'update:show': [value: boolean]; changed: [] }>()
 
+const dialog = useAppDialog()
 const binds = ref<GitHubBind[]>([])
 const repos = ref<GitHubRepo[]>([])
 const loading = ref(false)
@@ -27,6 +31,15 @@ const error = ref('')
 const selectedRepoIds = ref<string[]>([])
 const repoSearch = ref('')
 const adding = ref(false)
+/** Per-bind UI draft: mode + draft text. */
+const overrideDraft = reactive<Record<string, { mode: 'inherit' | 'custom'; text: string; saving: boolean }>>({})
+
+const isVariable = computed(() => props.resourceKind === 'variable')
+const isSecret = computed(() => props.resourceKind === 'secret')
+
+function bindHasOverride(b: GitHubBind): boolean {
+  return b.has_override === true || b.override_value != null
+}
 
 const availableRepos = computed(() => {
   const boundRepoIds = new Set(binds.value.map((b) => b.repo_id))
@@ -70,6 +83,35 @@ function close() {
   emit('update:show', false)
 }
 
+function syncOverrideDrafts(list: GitHubBind[]) {
+  for (const key of Object.keys(overrideDraft)) {
+    delete overrideDraft[key]
+  }
+  for (const b of list) {
+    const custom = bindHasOverride(b)
+    overrideDraft[b.id] = {
+      mode: custom ? 'custom' : 'inherit',
+      // Secrets never echo override plaintext; variables prefill the stored override.
+      text: isVariable.value && custom ? String(b.override_value ?? '') : '',
+      saving: false,
+    }
+  }
+}
+
+function isOverrideDirty(b: GitHubBind): boolean {
+  const d = overrideDraft[b.id]
+  if (!d) return false
+  const savedCustom = bindHasOverride(b)
+  if (d.mode === 'inherit') return savedCustom
+  if (isSecret.value) {
+    // Empty field: keep existing override, or nothing to save yet for a new custom.
+    if (!d.text) return false
+    return true
+  }
+  if (!savedCustom) return true
+  return d.text !== String(b.override_value ?? '')
+}
+
 async function load() {
   if (!props.show) return
   loading.value = true
@@ -83,6 +125,7 @@ async function load() {
     ])
     binds.value = bindList
     repos.value = repoList
+    syncOverrideDrafts(bindList)
     selectedRepoIds.value = []
     repoSearch.value = ''
   } catch (e: any) {
@@ -124,7 +167,10 @@ async function handleAdd() {
 }
 
 async function handleRemove(bind: GitHubBind) {
-  if (!confirm(`Unbind from ${bind.owner}/${bind.repo}? The value is removed from GitHub Actions and the local binding is deleted.`)) return
+  if (!(await dialog.confirm(
+    `Unbind from ${bind.owner}/${bind.repo}? The value is removed from GitHub Actions and the local binding is deleted.`,
+    { title: 'Unbind', confirmLabel: 'Unbind', danger: true },
+  ))) return
   error.value = ''
   try {
     if (props.resourceKind === 'secret') {
@@ -136,6 +182,59 @@ async function handleRemove(bind: GitHubBind) {
     await load()
   } catch (e: any) {
     error.value = e?.response?.data?.message || e?.message || 'Failed to unbind'
+  }
+}
+
+async function applyOverride(bind: GitHubBind) {
+  const d = overrideDraft[bind.id]
+  if (!d) return
+  d.saving = true
+  error.value = ''
+  try {
+    if (d.mode === 'inherit') {
+      if (isSecret.value) {
+        await githubSyncApi.patchSecretBind(props.resourceId, bind.id, { override_value: null })
+      } else {
+        await githubSyncApi.patchVariableBind(props.resourceId, bind.id, { override_value: null })
+      }
+    } else if (isSecret.value) {
+      if (!d.text) {
+        if (bindHasOverride(bind)) {
+          // Keep existing encrypted override — nothing to PATCH.
+          return
+        }
+        error.value = 'Enter a non-empty per-repo secret value (or choose Inherit default)'
+        return
+      }
+      await githubSyncApi.patchSecretBind(props.resourceId, bind.id, { override_value: d.text })
+    } else {
+      await githubSyncApi.patchVariableBind(props.resourceId, bind.id, { override_value: d.text })
+    }
+    emit('changed')
+    await load()
+  } catch (e: any) {
+    error.value = e?.response?.data?.message || e?.message || 'Failed to update override'
+  } finally {
+    if (overrideDraft[bind.id]) overrideDraft[bind.id].saving = false
+  }
+}
+
+async function setOverrideMode(bind: GitHubBind, mode: 'inherit' | 'custom') {
+  const d = overrideDraft[bind.id]
+  if (!d) return
+  d.mode = mode
+  if (mode === 'custom' && isVariable.value && !bindHasOverride(bind) && !d.text) {
+    d.text = props.defaultValue ?? ''
+  }
+  if (mode === 'inherit' && bindHasOverride(bind)) {
+    if (!(await dialog.confirm(
+      `Clear per-repo value for ${bind.owner}/${bind.repo} and inherit the Default?`,
+      { title: 'Clear override', confirmLabel: 'Clear', danger: true },
+    ))) {
+      d.mode = 'custom'
+      return
+    }
+    await applyOverride(bind)
   }
 }
 
@@ -159,19 +258,28 @@ async function pushOneBind(bind: { id: string; owner: string; repo: string }) {
 /**
  * Push one bind, or every bind sequentially (Push All). Each HTTP call covers a
  * single GitHub round-trip so the 30s per-request timeout stays meaningful.
+ * Dirty variable overrides are saved before push so GitHub receives the draft.
  */
 async function handlePush(bind?: GitHubBind) {
   const targets = bind ? [bind] : [...binds.value]
   if (targets.length === 0) return
   pushing.value = true
   error.value = ''
-  pushProgress.value = {
-    index: 0,
-    total: targets.length,
-    currentId: targets[0].id,
-    done: 0,
-  }
   try {
+    if (isVariable.value || isSecret.value) {
+      for (const t of targets) {
+        if (isOverrideDirty(t)) {
+          await applyOverride(t)
+          if (error.value) return
+        }
+      }
+    }
+    pushProgress.value = {
+      index: 0,
+      total: targets.length,
+      currentId: targets[0].id,
+      done: 0,
+    }
     const { failures } = await pushBindsSequentially(targets, pushOneBind, (p) => {
       pushProgress.value = p
     })
@@ -203,11 +311,24 @@ watch(
         :class="{ 'pointer-events-none': pushing }"
         @click="close"
       />
-      <div class="relative z-10 w-full max-w-lg mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
-        <h3 class="shrink-0 text-[15px] font-semibold px-6 pt-6 pb-4 flex items-center gap-2">
-          <GitPullRequestArrow class="h-4 w-4 text-muted-foreground" />
-          GitHub Sync — <span class="font-mono">{{ resourceName }}</span>
-        </h3>
+      <div class="relative z-10 w-full max-w-xl mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
+        <div class="shrink-0 px-6 pt-6 pb-4 space-y-2">
+          <h3 class="text-[15px] font-semibold flex items-center gap-2">
+            <GitPullRequestArrow class="h-4 w-4 text-muted-foreground" />
+            GitHub Sync — <span class="font-mono">{{ resourceName }}</span>
+          </h3>
+          <p v-if="isVariable" class="text-[11px] text-muted-foreground leading-relaxed">
+            Default (Buz):
+            <span class="font-mono text-foreground break-all">{{ defaultValue || '(empty)' }}</span>
+            <br />
+            Push sends this name to each repo; value = per-repo override or Default.
+          </p>
+          <p v-else class="text-[11px] text-muted-foreground leading-relaxed">
+            Default (Buz): the secret's stored value (never shown here).
+            <br />
+            Push sends this name to each repo; value = per-repo override or Default. Overrides are encrypted at rest.
+          </p>
+        </div>
 
         <div v-if="loading" class="flex items-center justify-center gap-2 py-12 text-muted-foreground text-sm">
           <Loader2 class="h-4 w-4 animate-spin" /> Loading…
@@ -263,6 +384,60 @@ watch(
                 />
                 <span class="text-[10px] text-muted-foreground ml-auto">{{ b.connection_name }}</span>
               </div>
+
+              <div v-if="overrideDraft[b.id]" class="mt-2 space-y-1.5">
+                <p class="text-[10px] font-medium text-muted-foreground">Value</p>
+                <div class="flex flex-wrap items-center gap-3 text-[11px]">
+                  <label class="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      class="accent-primary"
+                      :checked="overrideDraft[b.id].mode === 'inherit'"
+                      :disabled="!canManage || pushing || overrideDraft[b.id].saving"
+                      @change="setOverrideMode(b, 'inherit')"
+                    />
+                    Inherit default
+                  </label>
+                  <label class="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      class="accent-primary"
+                      :checked="overrideDraft[b.id].mode === 'custom'"
+                      :disabled="!canManage || pushing || overrideDraft[b.id].saving"
+                      @change="setOverrideMode(b, 'custom')"
+                    />
+                    Custom
+                  </label>
+                </div>
+                <div class="flex items-center gap-2">
+                  <input
+                    v-model="overrideDraft[b.id].text"
+                    :type="isSecret ? 'password' : 'text'"
+                    autocomplete="off"
+                    class="flex-1 min-w-0 rounded-lg border border-border/60 bg-background px-2.5 py-1.5 font-mono text-[11px] outline-none transition-colors focus:border-primary/50 disabled:opacity-60"
+                    :disabled="!canManage || overrideDraft[b.id].mode === 'inherit' || pushing || overrideDraft[b.id].saving"
+                    :placeholder="
+                      overrideDraft[b.id].mode === 'inherit'
+                        ? isSecret
+                          ? '(uses secret default)'
+                          : defaultValue || '(empty default)'
+                        : isSecret && bindHasOverride(b)
+                          ? 'Leave empty to keep current override'
+                          : 'Per-repo value'
+                    "
+                  />
+                  <UiButton
+                    v-if="canManage && isOverrideDirty(b)"
+                    size="sm"
+                    variant="outline"
+                    :disabled="pushing || overrideDraft[b.id].saving"
+                    @click="applyOverride(b)"
+                  >
+                    {{ overrideDraft[b.id].saving ? 'Saving…' : 'Apply' }}
+                  </UiButton>
+                </div>
+              </div>
+
               <p v-if="b.last_error" class="mt-1.5 text-[11px] text-red-600 dark:text-red-400 break-words">{{ b.last_error }}</p>
               <p v-else-if="b.last_pushed_at" class="mt-1.5 text-[11px] text-muted-foreground">
                 Last pushed {{ formatLocalDateTime(b.last_pushed_at) }}

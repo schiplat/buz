@@ -26,10 +26,12 @@ pub enum JobStatus {
     Failed,
     Cancelled,
     Timeout,
+    /// Protected Environment: waiting for human approval before concurrency/claim.
+    WaitingApproval,
 }
 
 impl JobStatus {
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             JobStatus::Pending => "pending",
             JobStatus::Running => "running",
@@ -37,6 +39,7 @@ impl JobStatus {
             JobStatus::Failed => "failed",
             JobStatus::Cancelled => "cancelled",
             JobStatus::Timeout => "timeout",
+            JobStatus::WaitingApproval => "waiting_approval",
         }
     }
 }

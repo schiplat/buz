@@ -22,7 +22,9 @@ Related: [Secrets Access Control](/docs/01-architecture/platform/secrets-access-
 - Four team roles with a clear permission matrix
 - List APIs filter by membership from day one (no “login = see everything” interim)
 
-Out of scope for Phase 2 (defer to Phase 3): SSO/OIDC, user API tokens, approval flows, per-step secret ACL, cross-team grant tables.
+Out of scope for Phase 2 (defer to Phase 3): SSO/OIDC, user API tokens, per-step secret ACL, cross-team grant tables.
+
+Environment approval gates (方案 B) use team role thresholds (`min_trigger_role` / `min_approve_role`) with append-only `job_approvals` — see [Environment Approval Gates](./environment-approvals/).
 
 Platform-admin **Audit logs** UI/API (mutation before/after with redaction) is available — see [Admin Audit Logs](/docs/01-architecture/platform/admin-audit-logs/).
 
@@ -79,6 +81,8 @@ Runners and Manager config remain **global infrastructure** — Platform Admin o
 |------------|:-----:|:----------:|:---------:|:------:|
 | View pipelines / jobs / logs | ✓ | ✓ | ✓ | ✓ |
 | Trigger pipeline | ✓ | ✓ | ✓ | ✗ |
+| Trigger **protected** Environment | role ≥ env `min_trigger_role` (default developer) | same | same | ✗ |
+| Approve / reject protected deploy | role ≥ env `min_approve_role` (default maintainer); self-approve forbidden by default | same | same* | ✗ |
 | Create / edit pipeline + variables | ✓ | ✓ | ✓ | ✗ |
 | Delete pipeline | ✓ | ✓ | ✗ | ✗ |
 | View secret metadata (name, team) | ✓ | ✓ | ✓ | ✓ |
@@ -91,7 +95,9 @@ Runners and Manager config remain **global infrastructure** — Platform Admin o
 
 \*Viewer may see host **names** used by pipelines they can view, but not credential fields (same as today: credentials never returned to UI).
 
-**Webhook / cron**: still fire without a user session; authorization is “pipeline exists and is active.” Job records store `trigger_by` as today (`webhook` / `cron` / username).
+\*Approve/reject: Developer may approve only when the Environment sets `min_approve_role=developer`. Default is Maintainer+. See [Environment Approval Gates](./environment-approvals/).
+
+**Webhook / cron**: still fire without a user session for unprotected paths; **protected Environments reject automated triggers**. Job records store `trigger_by` as today (`webhook` / `cron` / username).
 
 ---
 
@@ -216,6 +222,7 @@ Cross-team secret use: forbidden in Phase 2 (future Phase 3 grant). Binding UI l
 | Hosts | Filter: admin all; members see shared (`NULL`) + own teams |
 | Runners | Platform admin only |
 | Variables | Any user can list; create/update/delete platform admin |
+| Environments | Any user can list (Trigger dropdown); create/update/delete + overrides + protection platform admin; approve/reject gated by env `min_approve_role` |
 
 Error codes: keep `1002` auth, `1003` forbidden (insufficient permissions).
 

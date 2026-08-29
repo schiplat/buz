@@ -709,6 +709,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
             last_status TEXT NOT NULL DEFAULT 'pending',
             last_error TEXT NOT NULL DEFAULT '',
             last_op TEXT NOT NULL DEFAULT 'push',
+            override_value TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(secret_id, repo_id)
@@ -726,6 +727,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
             last_status TEXT NOT NULL DEFAULT 'pending',
             last_error TEXT NOT NULL DEFAULT '',
             last_op TEXT NOT NULL DEFAULT 'push',
+            override_value TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(var_id, repo_id)
@@ -741,6 +743,145 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .await;
     let _ = sqlx::query(
         "ALTER TABLE variable_github_binds ADD COLUMN last_op TEXT NOT NULL DEFAULT 'push'",
+    )
+    .execute(pool)
+    .await;
+    // Per-repo push value: variables store plaintext; secrets store AES ciphertext.
+    // NULL = inherit platform_vars.value / secrets.value.
+    let _ = sqlx::query("ALTER TABLE variable_github_binds ADD COLUMN override_value TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE secret_github_binds ADD COLUMN override_value TEXT")
+        .execute(pool)
+        .await;
+
+    // ── Platform Environments (Variable + Secret per-env overrides) ──
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS environments (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            slug TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS environment_var_overrides (
+            environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+            var_id TEXT NOT NULL REFERENCES platform_vars(id) ON DELETE CASCADE,
+            value TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (environment_id, var_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_environment_var_overrides_var
+         ON environment_var_overrides(var_id)",
+    )
+    .execute(pool)
+    .await;
+
+    // Secret overrides: AES ciphertext (same scheme as secrets.value). Never return plaintext.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS environment_secret_overrides (
+            environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+            secret_id TEXT NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (environment_id, secret_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_environment_secret_overrides_secret
+         ON environment_secret_overrides(secret_id)",
+    )
+    .execute(pool)
+    .await;
+
+    // Job may optionally run under a platform Environment (NULL = defaults only).
+    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN environment_id TEXT REFERENCES environments(id) ON DELETE SET NULL")
+        .execute(pool)
+        .await;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_environment ON jobs(environment_id)")
+        .execute(pool)
+        .await;
+
+    // Trigger user id for self-approve checks (NULL for webhook/cron/git).
+    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN trigger_user_id TEXT")
+        .execute(pool)
+        .await;
+
+    // Environment protection / approval gates (方案 B).
+    let _ = sqlx::query(
+        "ALTER TABLE environments ADD COLUMN protection_enabled INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "ALTER TABLE environments ADD COLUMN min_trigger_role TEXT NOT NULL DEFAULT 'developer'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "ALTER TABLE environments ADD COLUMN min_approve_role TEXT NOT NULL DEFAULT 'maintainer'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "ALTER TABLE environments ADD COLUMN require_approvals INTEGER NOT NULL DEFAULT 1",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "ALTER TABLE environments ADD COLUMN forbid_self_approve INTEGER NOT NULL DEFAULT 1",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "ALTER TABLE environments ADD COLUMN approval_timeout_seconds INTEGER NOT NULL DEFAULT 86400",
+    )
+    .execute(pool)
+    .await;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS job_approvals (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL,
+            username TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL,
+            comment TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(job_id, user_id, action)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Durable display name even if the user row is later removed.
+    let _ = sqlx::query("ALTER TABLE job_approvals ADD COLUMN username TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
+
+    let _ =
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_approvals_job ON job_approvals(job_id)")
+            .execute(pool)
+            .await;
+
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_waiting_approval
+         ON jobs(status) WHERE status = 'waiting_approval'",
     )
     .execute(pool)
     .await;

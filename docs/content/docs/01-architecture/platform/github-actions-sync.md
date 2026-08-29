@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS secret_github_binds (
     last_pushed_at TEXT,
     last_status TEXT NOT NULL DEFAULT 'pending',            -- pending | ok | failed
     last_error TEXT NOT NULL DEFAULT '',
-    last_op TEXT NOT NULL DEFAULT 'push',                   -- bind | push | unbind
+    override_value TEXT,                                    -- NULL = inherit; secrets: ciphertext
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(secret_id, repo_id)
@@ -134,6 +134,7 @@ CREATE TABLE IF NOT EXISTS variable_github_binds (
     last_status TEXT NOT NULL DEFAULT 'pending',            -- pending | ok | failed
     last_error TEXT NOT NULL DEFAULT '',
     last_op TEXT NOT NULL DEFAULT 'push',                   -- bind | push | unbind
+    override_value TEXT,                                    -- NULL = inherit platform_vars.value
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(var_id, repo_id)
@@ -145,6 +146,27 @@ Separate tables for secrets and variables mirror the existing
 Bindings cascade-delete with their parent secret / variable / connection /
 repo. The connection and repo of a bind are resolved via `repo_id` at push
 time.
+
+### Variable / secret per-repo override (`override_value`)
+
+Platform Variables and Secrets still have a single shared **default**.
+For GitHub Actions sync, each bind row may set `override_value`:
+
+| Resource | Storage | API list / GET bind |
+|----------|---------|---------------------|
+| Variable | Plaintext in `override_value` | Returns `override_value` + `has_override` |
+| Secret | AES ciphertext in `override_value` | Returns `has_override` only (`override_value` always `null`) |
+
+| `override_value` column | Value pushed to that repo |
+|-------------------------|---------------------------|
+| `NULL` | Inherit platform default (same as v1) |
+| non-NULL | Push the override (secrets: decrypt then seal for GitHub) |
+
+GitHub Actions **name** is always the Buz resource name. Push never accepts a
+one-shot value in the request body; edit the bind (`PATCH`), then Push.
+Resolution: `effective = override ?? default`.
+
+This is **orthogonal** to platform [Environments](./environments/) (Buz job claim overlays).
 
 ## Backend design
 
@@ -243,12 +265,13 @@ POST   /api/v1/github-sync/test               → {connection_id, owner?, repo?}
 ```
 
 **Secret binds** — list is `TeamView` on the secret's team (read-only status);
-mutations (`add` / `delete` / `push`) are **PlatformAdmin-only** (they push with
+mutations (`add` / `patch` / `delete` / `push`) are **PlatformAdmin-only** (they push with
 a connection PAT):
 
 ```
-GET    /api/v1/secrets/{id}/github-binds                    → [{id, repo_id, connection_name, owner, repo, last_pushed_at, last_status, last_error, last_op}]   (TeamView)
-POST   /api/v1/secrets/{id}/github-binds                    → add {repo_id}        (PlatformAdmin)
+GET    /api/v1/secrets/{id}/github-binds                    → list (has_override; never override plaintext)  (TeamView)
+POST   /api/v1/secrets/{id}/github-binds                    → add {repo_id, override_value?}  (PlatformAdmin)
+PATCH  /api/v1/secrets/{id}/github-binds/{bind_id}          → {override_value: string|null}   (PlatformAdmin)
 DELETE /api/v1/secrets/{id}/github-binds/{bind_id}          → unbind              (PlatformAdmin)
 POST   /api/v1/secrets/{id}/github-binds/push               → push all binds (or ?bind_id=… for one)  (PlatformAdmin)
 ```
@@ -256,8 +279,9 @@ POST   /api/v1/secrets/{id}/github-binds/push               → push all binds (
 **Variable binds** (require `PlatformAdmin`, matching `platform_vars`):
 
 ```
-GET    /api/v1/variables/{id}/github-binds                  → list
-POST   /api/v1/variables/{id}/github-binds                  → add {repo_id}
+GET    /api/v1/variables/{id}/github-binds                  → list (includes override_value)
+POST   /api/v1/variables/{id}/github-binds                  → add {repo_id, override_value?}
+PATCH  /api/v1/variables/{id}/github-binds/{bind_id}        → {override_value: string|null}
 DELETE /api/v1/variables/{id}/github-binds/{bind_id}        → unbind
 POST   /api/v1/variables/{id}/github-binds/push             → push all binds (or ?bind_id=…)
 ```
@@ -265,7 +289,8 @@ POST   /api/v1/variables/{id}/github-binds/push             → push all binds (
 Push semantics:
 - Secrets: fetch a **fresh** public key per push (GitHub rotates keys — never
   cache across pushes), seal the plaintext, `PUT` the secret.
-- Variables: read the platform var, `POST`/`PATCH` accordingly.
+- Variables: resolve `effective = bind.override_value ?? platform_vars.value`,
+  then `POST`/`PATCH` that value under the Buz Variable **name**.
 - Per-binding result `{bind_id, owner, repo, status: "ok"|"failed", error?}`;
   a failed binding does not block the rest.
 - **Dashboard Push All** calls `?bind_id=…` **once per bind** (sequential), with

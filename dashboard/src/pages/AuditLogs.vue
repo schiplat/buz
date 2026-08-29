@@ -283,7 +283,7 @@ onMounted(load)
           @click="closeDetail"
         />
         <div
-          class="relative z-10 w-full max-w-lg h-full bg-background border-l border-border shadow-2xl overflow-y-auto transition-transform duration-300"
+          class="scrollbar-sidebar relative z-10 w-full max-w-lg h-full bg-background border-l border-border shadow-2xl overflow-y-auto transition-transform duration-300"
           :class="drawerOpen ? 'translate-x-0' : 'translate-x-full'"
         >
           <div class="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-6 py-4">

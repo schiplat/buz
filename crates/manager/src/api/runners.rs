@@ -603,7 +603,7 @@ pub async fn poll(
             "UPDATE jobs SET status = 'running', runner_id = ?, start_time = datetime('now'),
              updated_at = datetime('now')
              WHERE id = ? AND status = 'pending'
-             RETURNING id, pipeline_id, trigger_params",
+             RETURNING id, pipeline_id, trigger_params, environment_id",
         )
         .bind(&auth.runner_id)
         .bind(&job_id)
@@ -634,6 +634,7 @@ pub async fn poll(
     let job_id: String = row.get(0);
     let pipeline_id: String = row.get(1);
     let trigger_params_raw: Option<String> = row.get(2);
+    let job_environment_id: Option<String> = row.get(3);
     let trigger_params_stored: serde_json::Value = trigger_params_raw
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::json!({}));
@@ -703,6 +704,20 @@ pub async fn poll(
     let mut env: serde_json::Value = serde_json::json!({});
     let mut secret_env_keys: Vec<String> = Vec::new();
 
+    // Environment Secret overrides (name → plaintext). Applied only when the
+    // secret is already on the job allowlist (bound / team_shared / implied).
+    let env_secret_overrides: std::collections::HashMap<String, String> =
+        if let Some(ref env_id) = job_environment_id {
+            super::environments::load_secret_override_plaintexts(
+                &state.pool,
+                env_id,
+                &state.config.auth.jwt_secret,
+            )
+            .await?
+        } else {
+            std::collections::HashMap::new()
+        };
+
     // ── Explicit secret bindings (pipeline_secrets table) ──
     // Same-team only: ignore stale/cross-team rows if any slipped into the table.
     let explicit_rows = sqlx::query(
@@ -719,7 +734,11 @@ pub async fn poll(
         let name: String = sr.get(0);
         let stored: String = sr.get(1);
         match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
-            Ok(value) => {
+            Ok(decrypted) => {
+                let value = env_secret_overrides
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or(decrypted);
                 if let Some(obj) = secrets.as_object_mut() {
                     obj.insert(name.clone(), serde_json::Value::String(value.clone()));
                 }
@@ -747,7 +766,11 @@ pub async fn poll(
         let name: String = sr.get(0);
         let stored: String = sr.get(1);
         match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
-            Ok(value) => {
+            Ok(decrypted) => {
+                let value = env_secret_overrides
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or(decrypted);
                 if let Some(obj) = secrets.as_object_mut() {
                     obj.entry(name.clone())
                         .or_insert(serde_json::Value::String(value.clone()));
@@ -761,6 +784,24 @@ pub async fn poll(
                 tracing::error!("Failed to decrypt team secret '{name}': {e}");
             }
         }
+    }
+
+    if !env_secret_overrides.is_empty() {
+        let applied = secrets_by_name
+            .as_object()
+            .map(|o| {
+                env_secret_overrides
+                    .keys()
+                    .filter(|k| o.contains_key(k.as_str()))
+                    .count()
+            })
+            .unwrap_or(0);
+        tracing::info!(
+            job = %job_id,
+            environment_id = job_environment_id.as_deref().unwrap_or(""),
+            applied,
+            "claim: applied environment secret overrides"
+        );
     }
 
     // ── Explicit variable bindings (pipeline_vars table) — not secrets ──
@@ -779,6 +820,36 @@ pub async fn poll(
         if let Some(obj) = env.as_object_mut() {
             obj.insert(name, serde_json::Value::String(value));
         }
+    }
+
+    // Environment Variable overrides (same keys only — does not inject unbound vars).
+    if let Some(ref env_id) = job_environment_id {
+        let override_rows = sqlx::query(
+            "SELECT pv.name, o.value
+             FROM environment_var_overrides o
+             JOIN platform_vars pv ON pv.id = o.var_id
+             WHERE o.environment_id = ?",
+        )
+        .bind(env_id)
+        .fetch_all(&state.pool)
+        .await?;
+        let mut applied = 0u32;
+        for orow in &override_rows {
+            let name: String = orow.get(0);
+            let value: String = orow.get(1);
+            if let Some(obj) = env.as_object_mut() {
+                if obj.contains_key(&name) {
+                    obj.insert(name, serde_json::Value::String(value));
+                    applied += 1;
+                }
+            }
+        }
+        tracing::info!(
+            job = %job_id,
+            environment_id = %env_id,
+            applied,
+            "claim: applied environment variable overrides"
+        );
     }
 
     // ── Inline env vars (user-defined per pipeline, from `env:` YAML block or form) ──
@@ -815,6 +886,7 @@ pub async fn poll(
             &needed,
             &mut secrets_by_name,
             Some(&mut secrets),
+            &env_secret_overrides,
         )
         .await?;
     }
@@ -920,6 +992,7 @@ pub async fn poll(
                 &step_names,
                 &mut step_secrets_map,
                 None,
+                &env_secret_overrides,
             )
             .await?;
         }
@@ -959,6 +1032,7 @@ pub async fn poll(
                 &still_needed,
                 &mut step_secrets_map,
                 None,
+                &env_secret_overrides,
             )
             .await?;
         }
@@ -1569,6 +1643,7 @@ async fn merge_team_secrets_by_name(
     names: &[String],
     into_by_name: &mut serde_json::Value,
     mut into_parallel: Option<&mut serde_json::Value>,
+    env_secret_overrides: &std::collections::HashMap<String, String>,
 ) -> Result<(), AppError> {
     let needed: Vec<&str> = names
         .iter()
@@ -1595,7 +1670,11 @@ async fn merge_team_secrets_by_name(
         .map_err(|e| AppError::Internal(format!("failed to load secrets by name: {e}")))?;
     for (name, stored) in rows {
         match crypto::decrypt(&stored, jwt_secret) {
-            Ok(value) => {
+            Ok(decrypted) => {
+                let value = env_secret_overrides
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or(decrypted);
                 if let Some(obj) = into_by_name.as_object_mut() {
                     obj.entry(name.clone())
                         .or_insert(serde_json::Value::String(value.clone()));

@@ -4,7 +4,8 @@
 //! pipeline has no running/pending job. Uses a single-row `scheduler_lease`
 //! table for leader election so only one manager instance dispatches at a time.
 //!
-//! Also cleans up queued jobs that exceed their `queue_timeout`.
+//! Also cleans up queued jobs that exceed their `queue_timeout`, and cancels
+//! `waiting_approval` jobs whose environment approval timeout has expired.
 
 use sqlx::SqlitePool;
 use std::time::Duration;
@@ -31,6 +32,9 @@ pub fn start_scheduler(pool: SqlitePool) {
                     // Run one dispatch cycle
                     if let Err(e) = dispatch_queued_jobs(&pool).await {
                         tracing::error!("Scheduler dispatch error: {e}");
+                    }
+                    if let Err(e) = expire_approval_timeouts(&pool).await {
+                        tracing::error!("Scheduler approval-timeout error: {e}");
                     }
                 }
                 Ok(false) => {
@@ -155,4 +159,106 @@ async fn dispatch_queued_jobs(pool: &SqlitePool) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Cancel `waiting_approval` jobs whose per-environment approval timeout elapsed.
+async fn expire_approval_timeouts(pool: &SqlitePool) -> anyhow::Result<()> {
+    use sqlx::Row;
+
+    tracing::debug!("environments: approval timeout scan started");
+
+    let rows =
+        sqlx::query("SELECT id, snapshot, created_at FROM jobs WHERE status = 'waiting_approval'")
+            .fetch_all(pool)
+            .await?;
+
+    let now = chrono::Utc::now();
+    let mut cancelled = 0i64;
+
+    for row in rows {
+        let job_id: String = row.get(0);
+        let snapshot_raw: String = row.get(1);
+        let created_at_raw: String = row.get(2);
+
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&snapshot_raw).unwrap_or(serde_json::json!({}));
+        let timeout_secs = snapshot
+            .get("protection")
+            .and_then(|p| p.get("approval_timeout_seconds"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(86400)
+            .max(1);
+
+        let created = parse_sqlite_datetime(&created_at_raw).unwrap_or(now);
+        let age = (now - created).num_seconds();
+        if age < timeout_secs {
+            continue;
+        }
+
+        let mut snapshot = snapshot;
+        let received = snapshot
+            .get("approval")
+            .and_then(|a| a.get("received"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if let Some(map) = snapshot.as_object_mut() {
+            map.insert(
+                "approval".into(),
+                serde_json::json!({
+                    "required": true,
+                    "received": received,
+                    "outcome": "timeout",
+                }),
+            );
+        }
+        let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
+
+        let result = sqlx::query(
+            "UPDATE jobs SET status = 'cancelled', snapshot = ?,
+                    end_time = datetime('now'), updated_at = datetime('now')
+             WHERE id = ? AND status = 'waiting_approval'",
+        )
+        .bind(&snapshot_str)
+        .bind(&job_id)
+        .execute(pool)
+        .await?;
+
+        if result.rows_affected() > 0 {
+            cancelled += 1;
+            let _ = sqlx::query(
+                "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
+                 VALUES (?, ?, 'system', 'system', 'timeout', 'approval timeout')",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&job_id)
+            .execute(pool)
+            .await;
+            tracing::info!(
+                job_id = %job_id,
+                timeout_secs,
+                age_secs = age,
+                "environments: approval timed out"
+            );
+        }
+    }
+
+    if cancelled > 0 {
+        tracing::info!(cancelled, "environments: approval timeout scan finished");
+    } else {
+        tracing::debug!("environments: approval timeout scan finished (none expired)");
+    }
+
+    Ok(())
+}
+
+fn parse_sqlite_datetime(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    // SQLite datetime('now') → "YYYY-MM-DD HH:MM:SS"
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|ndt| ndt.and_utc())
+        .or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+        })
 }

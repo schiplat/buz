@@ -9,9 +9,11 @@ import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
+import { useAppDialog } from '@/composables/useAppDialog'
 
 const auth = useAuthStore()
 const router = useRouter()
+const dialog = useAppDialog()
 const users = ref<User[]>([])
 const loading = ref(true)
 const searchQuery = ref('')
@@ -67,7 +69,7 @@ async function load() {
 
 async function createUser() {
   if (!formUsername.value.trim() || !formPassword.value) {
-    alert('Username and password are required')
+    await dialog.alert('Username and password are required')
     return
   }
   saving.value = true
@@ -98,13 +100,21 @@ async function toggleActive(u: User) {
 
 async function toggleSuper(u: User) {
   const action = u.is_super_admin ? 'demote from super admin' : 'promote to super admin'
-  if (!confirm(`${action[0].toUpperCase() + action.slice(1)} "${u.username}"?`)) return
+  if (!(await dialog.confirm(`${action[0].toUpperCase() + action.slice(1)} "${u.username}"?`, {
+    title: 'Change role',
+    confirmLabel: 'Confirm',
+    danger: true,
+  }))) return
   await usersApi.update(u.id, { is_super_admin: !u.is_super_admin })
   await load()
 }
 
 async function deleteUser(u: User) {
-  if (!confirm(`Delete user "${u.username}"?`)) return
+  if (!(await dialog.confirm(`Delete user "${u.username}"?`, {
+    title: 'Delete user',
+    confirmLabel: 'Delete',
+    danger: true,
+  }))) return
   await usersApi.delete(u.id)
   await load()
 }

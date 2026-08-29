@@ -16,6 +16,7 @@ pub(crate) use pipelines::{
 };
 mod api_tokens;
 mod audit_logs;
+mod environments;
 mod git_hooks;
 mod git_webhook;
 mod github_sync;
@@ -103,6 +104,8 @@ pub fn router(state: AppState) -> Router {
         .route("/jobs", get(jobs::list))
         .route("/jobs/{id}", get(jobs::get_one).delete(jobs::delete))
         .route("/jobs/{id}/cancel", post(jobs::cancel))
+        .route("/jobs/{id}/approve", post(jobs::approve))
+        .route("/jobs/{id}/reject", post(jobs::reject))
         .route("/jobs/{id}/status-check", get(jobs::status_check))
         .route("/jobs/{id}/claim", post(jobs::claim))
         .route("/jobs/{id}/status", patch(jobs::update_status))
@@ -129,6 +132,32 @@ pub fn router(state: AppState) -> Router {
             get(variables::get_one)
                 .put(variables::update)
                 .delete(variables::delete),
+        )
+        .route(
+            "/environments",
+            get(environments::list).post(environments::create),
+        )
+        .route(
+            "/environments/{id}",
+            get(environments::get_one)
+                .put(environments::update)
+                .delete(environments::delete),
+        )
+        .route(
+            "/environments/{id}/overrides",
+            get(environments::list_overrides).put(environments::upsert_override),
+        )
+        .route(
+            "/environments/{id}/overrides/{var_id}",
+            delete(environments::delete_override),
+        )
+        .route(
+            "/environments/{id}/secret-overrides",
+            get(environments::list_secret_overrides).put(environments::upsert_secret_override),
+        )
+        .route(
+            "/environments/{id}/secret-overrides/{secret_id}",
+            delete(environments::delete_secret_override),
         )
         // Audit logs (platform admin; super admin sees all, others only their own)
         .route("/audit-logs", get(audit_logs::list))
@@ -161,7 +190,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/secrets/{id}/github-binds/{bind_id}",
-            delete(github_sync::delete_secret_bind),
+            patch(github_sync::patch_secret_bind).delete(github_sync::delete_secret_bind),
         )
         .route(
             "/variables/{id}/github-binds",
@@ -173,7 +202,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/variables/{id}/github-binds/{bind_id}",
-            delete(github_sync::delete_variable_bind),
+            patch(github_sync::patch_variable_bind).delete(github_sync::delete_variable_bind),
         )
         // API tokens (platform admin; super admin sees all)
         .route(
@@ -242,3 +271,11 @@ mod github_sync_integration_tests;
 #[cfg(test)]
 #[path = "tests/input_validation_trigger_tests.rs"]
 mod input_validation_trigger_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/environments_tests.rs"]
+mod environments_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/environment_approval_tests.rs"]
+mod environment_approval_integration_tests;

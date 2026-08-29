@@ -223,6 +223,7 @@ repo, plus the last operation state.
 | last_status | TEXT | `pending` \| `ok` \| `failed` |
 | last_error | TEXT | Failure message; empty when ok |
 | last_op | TEXT | Last operation: `bind` (added) \| `push` (value pushed) \| `unbind` (remote cleanup failed, row kept) |
+| override_value | TEXT NULL | Per-repo Actions value when pushing. **Variables**: plaintext; `NULL` = inherit `platform_vars.value`. **Secrets**: AES-256-GCM ciphertext (same scheme as `secrets.value`); `NULL` = inherit secret default. API never returns secret override plaintext (`has_override` only). |
 | created_at, updated_at | TEXT | Auto-managed |
 | UNIQUE(secret_id, repo_id) / UNIQUE(var_id, repo_id) | | One bind per resource per repo |
 
@@ -282,9 +283,34 @@ Runner lifecycle event log. Records registration, heartbeat, freeze/unfreeze, an
 
 Index: `idx_runner_events_runner` on `runner_id`.
 
+### environments / environment_var_overrides / environment_secret_overrides
+
+Named platform scopes (`staging`, `production`, …) that overlay **bound** Variable
+and **allowlisted** Secret defaults at job claim when the operator selects an
+Environment at Trigger.
+
+| Column | Notes |
+|--------|--------|
+| `environments.id/name/slug` | `slug` unique; lowercase letters, digits, `-`, `_` |
+| `environments.protection_enabled` | INTEGER 0/1 — approval gate |
+| `environments.min_trigger_role` / `min_approve_role` | owner \| maintainer \| developer |
+| `environments.require_approvals` | ≥ 1 |
+| `environments.forbid_self_approve` | INTEGER 0/1 |
+| `environments.approval_timeout_seconds` | default 86400 |
+| `environment_var_overrides.(environment_id, var_id)` | PK; `value` plaintext |
+| `environment_secret_overrides.(environment_id, secret_id)` | PK; `value` AES ciphertext (never returned by API) |
+| `jobs.environment_id` | nullable FK → `environments(id)` ON DELETE SET NULL |
+| `jobs.trigger_user_id` | nullable; set for manual triggers (self-approve checks) |
+| `job_approvals` | Append-only: `approve` \| `reject` \| `cancel` \| `timeout`; stores `username`; UNIQUE `(job_id, user_id, action)` |
+
+Claim merge: platform vars → env var overrides (same keys) → pipeline `env:` →
+inputs; secrets allowlist → env secret overrides (same names). See
+[Environments](/docs/01-architecture/platform/environments/) and
+[Environment Approval Gates](/docs/01-architecture/platform/environment-approvals/).
+
 ### jobs
 
-Job execution records. Includes `trigger_params` (JSON) for manual trigger inputs and `snapshot` (JSON) for the frozen pipeline definition at trigger time.
+Job execution records. Includes `trigger_params` (JSON) for manual trigger inputs, `snapshot` (JSON) for the frozen pipeline definition at trigger time (may include `environment` slug, `protection`, `approval`), optional `environment_id`, and `trigger_user_id`. Status may be `waiting_approval` until Environment approval gates pass. `GET /jobs/:id` returns `approvals[]` from `job_approvals`.
 
 ### job_logs
 

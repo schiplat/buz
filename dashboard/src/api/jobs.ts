@@ -21,6 +21,19 @@ export interface Job {
   debug_unredact?: boolean
   /** Verbose execution mode: extra per-step detail in logs, redaction intact. */
   verbose_logs?: boolean
+  /** Manual trigger user id (null for webhook/cron/git). */
+  trigger_user_id?: string | null
+  /** Append-only approval trail (approve/reject/cancel/timeout). */
+  approvals?: JobApprovalRecord[]
+}
+
+export interface JobApprovalRecord {
+  id: string
+  user_id: string
+  username: string
+  action: 'approve' | 'reject' | 'cancel' | 'timeout' | string
+  comment: string
+  created_at?: string | null
 }
 
 export interface StepStatus {
@@ -50,6 +63,26 @@ export interface JobSnapshot {
   masking_input_keys?: string[] | null
   triggered_by: string
   triggered_at: string
+  /** Platform Environment slug selected at trigger (Variable overlays). */
+  environment?: string | null
+  /** Frozen Environment protection policy (when protected). */
+  protection?: {
+    enabled?: boolean
+    min_trigger_role?: string
+    min_approve_role?: string
+    require_approvals?: number
+    forbid_self_approve?: boolean
+    approval_timeout_seconds?: number
+  } | null
+  /** Approval progress when status is waiting_approval. */
+  approval?: {
+    required?: boolean
+    received?: number
+    outcome?: string
+    by?: string
+    at?: string
+    reason?: string
+  } | null
 }
 
 export interface SnapshotTask {
@@ -89,6 +122,16 @@ export const jobsApi = {
 
   async cancel(id: string): Promise<void> {
     await apiClient.post(`/jobs/${id}/cancel`)
+  },
+
+  async approve(id: string, comment?: string): Promise<{ status: string; approvals?: number }> {
+    const resp = await apiClient.post(`/jobs/${id}/approve`, { comment: comment || '' })
+    return resp.data
+  },
+
+  async reject(id: string, comment?: string): Promise<{ status: string }> {
+    const resp = await apiClient.post(`/jobs/${id}/reject`, { comment: comment || '' })
+    return resp.data
   },
 
   async delete(id: string): Promise<void> {

@@ -9,7 +9,9 @@ import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
 import { formatLocalDateTime } from '@/utils/time'
 import { autoFetchStatus } from '@/utils/githubAutoFetch'
+import { useAppDialog } from '@/composables/useAppDialog'
 
+const dialog = useAppDialog()
 const connections = ref<GitHubConnection[]>([])
 const repos = ref<GitHubRepo[]>([])
 const loading = ref(true)
@@ -132,18 +134,18 @@ function openEditConn(c: GitHubConnection) {
 
 async function saveConn() {
   if (!connName.value.trim()) {
-    alert('Name is required')
+    await dialog.alert('Name is required')
     return
   }
   if (!editingConn.value && !connToken.value.trim()) {
-    alert('Token is required')
+    await dialog.alert('Token is required')
     return
   }
   // `type="number"` v-model yields null when the field is cleared, not "".
   const intervalRaw = connFetchIntervalInput.value
   const fetchInterval = intervalRaw == null || String(intervalRaw).trim() === '' ? null : Number(intervalRaw)
   if (fetchInterval !== null && (!Number.isInteger(fetchInterval) || fetchInterval <= 0)) {
-    alert('Fetch interval must be a positive whole number, or leave empty to disable')
+    await dialog.alert('Fetch interval must be a positive whole number, or leave empty to disable')
     return
   }
   connSaving.value = true
@@ -168,19 +170,22 @@ async function saveConn() {
     showConnDialog.value = false
     await loadAll()
   } catch (e: any) {
-    alert(e?.response?.data?.message || e?.message || 'Failed to save connection')
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to save connection')
   } finally {
     connSaving.value = false
   }
 }
 
 async function deleteConn(c: GitHubConnection) {
-  if (!confirm(`Delete connection "${c.name}"? Its registered repos and all bindings will be removed.`)) return
+  if (!(await dialog.confirm(
+    `Delete connection "${c.name}"? Its registered repos and all bindings will be removed.`,
+    { title: 'Delete connection', confirmLabel: 'Delete', danger: true },
+  ))) return
   try {
     await githubSyncApi.deleteConnection(c.id)
     await loadAll()
   } catch (e: any) {
-    alert(e?.response?.data?.message || e?.message || 'Failed to delete connection')
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to delete connection')
   }
 }
 
@@ -210,7 +215,7 @@ function openEditRepo(r: GitHubRepo) {
 
 async function saveRepo() {
   if (!repoOwner.value.trim() || !repoName.value.trim()) {
-    alert('Owner and repo are required')
+    await dialog.alert('Owner and repo are required')
     return
   }
   repoSaving.value = true
@@ -230,19 +235,22 @@ async function saveRepo() {
     showRepoDialog.value = false
     await loadAll()
   } catch (e: any) {
-    alert(e?.response?.data?.message || e?.message || 'Failed to save repo')
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to save repo')
   } finally {
     repoSaving.value = false
   }
 }
 
 async function deleteRepo(r: GitHubRepo) {
-  if (!confirm(`Unregister ${r.owner}/${r.repo}? Existing bindings to it are removed.`)) return
+  if (!(await dialog.confirm(
+    `Unregister ${r.owner}/${r.repo}? Existing bindings to it are removed.`,
+    { title: 'Unregister repo', confirmLabel: 'Unregister', danger: true },
+  ))) return
   try {
     await githubSyncApi.deleteRepo(r.id)
     await loadAll()
   } catch (e: any) {
-    alert(e?.response?.data?.message || e?.message || 'Failed to delete repo')
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to delete repo')
   }
 }
 
@@ -262,7 +270,7 @@ function openFetch() {
 
 async function doFetch() {
   if (!fetchOwner.value.trim()) {
-    alert('Owner (org or user) is required')
+    await dialog.alert('Owner (org or user) is required')
     return
   }
   fetchBusy.value = true
@@ -274,7 +282,7 @@ async function doFetch() {
     })
     await loadAll()
   } catch (e: any) {
-    alert(e?.response?.data?.message || e?.message || 'Fetch failed')
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Fetch failed')
   } finally {
     fetchBusy.value = false
   }

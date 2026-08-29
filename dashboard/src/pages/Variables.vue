@@ -10,8 +10,10 @@ import GitHubBindDialog from '@/components/github/GitHubBindDialog.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
+import { useAppDialog } from '@/composables/useAppDialog'
 
 const auth = useAuthStore()
+const dialog = useAppDialog()
 
 const variables = ref<Variable[]>([])
 const loading = ref(true)
@@ -96,19 +98,23 @@ async function handleSave() {
   } catch (e: any) {
     // Surface the backend's message instead of letting the unhandled rejection
     // crash the page via ErrorBoundary (same pattern as Secrets.vue).
-    alert(e?.response?.data?.message || e?.message || 'Failed to save variable')
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to save variable')
   } finally {
     saving.value = false
   }
 }
 
 async function handleDelete(v: Variable) {
-  if (!confirm(`Delete variable "${v.name}"?`)) return
+  if (!(await dialog.confirm(`Delete variable "${v.name}"?`, {
+    title: 'Delete variable',
+    confirmLabel: 'Delete',
+    danger: true,
+  }))) return
   try {
     await variablesApi.delete(v.id)
     await loadVars()
   } catch (e: any) {
-    alert(e?.response?.data?.message || e?.message || 'Failed to delete variable')
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to delete variable')
   }
 }
 
@@ -129,7 +135,7 @@ onMounted(loadVars)
   <div class="space-y-6">
     <PageHeader
       title="Variables"
-      description="Non-sensitive platform config. Bind to a pipeline via Advanced → Variables; available as $NAME in every step. Never store passwords here."
+      description="Non-sensitive platform config (shared Default). Override per run via Environments, or per GitHub repo via Sync. Bind to a pipeline via Advanced → Variables; available as $NAME in every step. Never store passwords here."
     >
       <template #actions>
         <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> Add Variable</UiButton>
@@ -171,7 +177,7 @@ onMounted(loadVars)
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('value')">
-                    Value
+                    Default
                     <span class="font-mono text-xs">{{ sortIndicator('value') || '↕' }}</span>
                   </button>
                 </th>
@@ -238,7 +244,7 @@ onMounted(loadVars)
             </div>
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">
-                Value <span class="text-red-500">*</span>
+                Default value <span class="text-red-500">*</span>
                 <span v-if="editing" class="text-muted-foreground font-normal ml-1">(leave empty to keep current)</span>
               </label>
               <textarea
@@ -264,6 +270,7 @@ onMounted(loadVars)
       resource-kind="variable"
       :resource-id="githubTarget?.id || ''"
       :resource-name="githubTarget?.name || ''"
+      :default-value="githubTarget?.value || ''"
       :can-manage="auth.isPlatformAdmin"
       @changed="onGithubChanged"
     />

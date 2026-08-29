@@ -335,7 +335,7 @@ Request:
 
 ### POST /pipelines/:id/trigger — Trigger Run
 
-Body may include `inputs`, `verbose`, `debug` (`debug` rejected for non–platform-admin).
+Body may include `inputs`, `verbose`, `debug` (`debug` rejected for non–platform-admin), and optional `environment` (slug or id). Omit / empty → Variable defaults only. Unknown slug → `404`. See [Environments](./environments/).
 
 Response:
 ```json
@@ -345,15 +345,21 @@ Response:
 }
 ```
 
+Job `snapshot.environment` records the selected slug when set.
+
 ## Jobs
 
 | Method | Path | Auth |
 |--------|------|------|
 | GET | `/api/v1/jobs` | JWT |
 | GET | `/api/v1/jobs/:id` | JWT |
-| POST | `/api/v1/jobs/:id/cancel` | JWT |
+| POST | `/api/v1/jobs/:id/cancel` | JWT (`pending` / `running` / `queued` / `waiting_approval`) |
+| POST | `/api/v1/jobs/:id/approve` | JWT ≥ env `min_approve_role` (optional `{ comment }`) |
+| POST | `/api/v1/jobs/:id/reject` | JWT ≥ env `min_approve_role` (optional `{ comment }`) |
 | POST | `/api/v1/jobs/:id/claim` | Runner Token |
 | PATCH | `/api/v1/jobs/:id/status` | Runner Token |
+
+List/get include `trigger_user_id` when set. `GET /jobs/:id` returns append-only `approvals[]` (`approve` \| `reject` \| `cancel` \| `timeout`). Protected Environment triggers create `waiting_approval` jobs (`approval_required: true` on trigger response) until approve — see [Environment Approval Gates](./environment-approvals/).
 
 List items include `team_id` (from the owning pipeline) so the UI team switcher can filter Jobs client-side. Visibility still follows membership / platform-admin rules via `team_in_clause`.
 
@@ -432,6 +438,26 @@ Response:
 | PUT | `/api/v1/variables/:id` | JWT |
 | DELETE | `/api/v1/variables/:id` | JWT |
 
+Shared **Default** lives in `platform_vars.value`. Per-run overlays: [Environments](./environments/) (Variables + Secrets). Per-repo GitHub push overlays: bind `override_value` (see Sync below).
+
+## Environments
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/api/v1/environments` | JWT |
+| POST | `/api/v1/environments` | PlatformAdmin (optional protection fields) |
+| GET | `/api/v1/environments/:id` | JWT |
+| PUT | `/api/v1/environments/:id` | PlatformAdmin (optional protection fields) |
+| DELETE | `/api/v1/environments/:id` | PlatformAdmin |
+| GET | `/api/v1/environments/:id/overrides` | JWT |
+| PUT | `/api/v1/environments/:id/overrides` | PlatformAdmin `{var_id, value}` |
+| DELETE | `/api/v1/environments/:id/overrides/:var_id` | PlatformAdmin |
+| GET | `/api/v1/environments/:id/secret-overrides` | JWT (`has_override` only — never plaintext) |
+| PUT | `/api/v1/environments/:id/secret-overrides` | PlatformAdmin `{secret_id, value}` |
+| DELETE | `/api/v1/environments/:id/secret-overrides/:secret_id` | PlatformAdmin |
+
+Protection fields: `protection_enabled`, `min_trigger_role`, `min_approve_role`, `require_approvals`, `forbid_self_approve`, `approval_timeout_seconds`. Full merge order: [Environments](./environments/). Approval gates + records: [Environment Approval Gates](./environment-approvals/).
+
 ## GitHub Actions Sync
 
 See [GitHub Actions Secrets/Variables Sync](/docs/01-architecture/platform/github-actions-sync/).
@@ -476,6 +502,7 @@ when both are omitted it validates the token alone via `GET /user` and returns
 |--------|------|------|
 | GET | `/api/v1/secrets/:id/github-binds` | TeamView |
 | POST | `/api/v1/secrets/:id/github-binds` | PlatformAdmin |
+| PATCH | `/api/v1/secrets/:id/github-binds/:bindId` | PlatformAdmin |
 | DELETE | `/api/v1/secrets/:id/github-binds/:bindId` | PlatformAdmin |
 | POST | `/api/v1/secrets/:id/github-binds/push` | PlatformAdmin |
 
@@ -485,9 +512,16 @@ when both are omitted it validates the token alone via `GET /user` and returns
 |--------|------|------|
 | GET | `/api/v1/variables/:id/github-binds` | PlatformAdmin |
 | POST | `/api/v1/variables/:id/github-binds` | PlatformAdmin |
+| PATCH | `/api/v1/variables/:id/github-binds/:bindId` | PlatformAdmin |
 | DELETE | `/api/v1/variables/:id/github-binds/:bindId` | PlatformAdmin |
 | POST | `/api/v1/variables/:id/github-binds/push` | PlatformAdmin |
 
+- Variable / secret bind body may include optional `override_value` (omit/`null` =
+  inherit platform default; string = per-repo Actions value). `PATCH` sets
+  `{ "override_value": string | null }` (`null` clears to inherit). Secret
+  overrides are encrypted at rest; list responses expose `has_override` only
+  (never plaintext). Push resolves `effective = override ?? default` per bind —
+  no value in the push request body.
 - Secret pushes seal the plaintext with libsodium `crypto_box_seal` (fresh key
   per push) and `PUT` to GitHub Actions; variable pushes `POST`/`PATCH` the
   value. Per-repo results are returned and persisted to the bind row.

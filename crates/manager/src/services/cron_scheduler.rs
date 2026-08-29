@@ -126,6 +126,9 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                     &HashMap::new(),
                     false,
                     false,
+                    None,
+                    None,
+                    None,
                 )
                 .await
                 {

@@ -666,6 +666,9 @@ pub async fn trigger(
         &body.inputs,
         debug_unredact,
         verbose,
+        body.environment.as_deref(),
+        Some(auth.id.as_str()),
+        Some(&auth),
     )
     .await?;
     let name: String = sqlx::query_scalar("SELECT name FROM pipelines WHERE id = ?")
@@ -700,13 +703,103 @@ pub async fn trigger(
                 "inputs": audit_inputs,
                 "debug_unredact": debug_unredact,
                 "verbose": verbose,
+                "environment": body.environment,
             }))),
     )
     .await;
     Ok(result)
 }
 
+/// Resolve concurrency into initial job status (`pending` / `queued`).
+/// May cancel queued jobs when mode is `discard-old`.
+/// Returns `Conflict` when discard-new blocks or the queue is full.
+pub(crate) async fn resolve_concurrency_status(
+    pool: &sqlx::SqlitePool,
+    pipeline_id: &str,
+    concurrency_group: Option<&str>,
+    concurrency_mode: &str,
+    concurrency_max_queue: i64,
+) -> Result<&'static str, AppError> {
+    let Some(group) = concurrency_group.filter(|g| !g.is_empty()) else {
+        return Ok("pending");
+    };
+
+    let mode = if concurrency_mode.is_empty() {
+        "discard-new"
+    } else {
+        concurrency_mode
+    };
+
+    match mode {
+        "discard-new" => {
+            let running = sqlx::query(
+                "SELECT COUNT(*) as cnt FROM jobs
+                 WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued')",
+            )
+            .bind(pipeline_id)
+            .fetch_one(pool)
+            .await?;
+            let count: i64 = running.get(0);
+            if count > 0 {
+                return Err(AppError::Conflict(format!(
+                    "concurrency group '{group}' has {count} active/queued job(s)"
+                )));
+            }
+            Ok("pending")
+        }
+
+        "discard-old" => {
+            sqlx::query(
+                "UPDATE jobs SET status = 'cancelled', updated_at = datetime('now')
+                 WHERE pipeline_id = ? AND status = 'queued'",
+            )
+            .bind(pipeline_id)
+            .execute(pool)
+            .await?;
+            Ok("pending")
+        }
+
+        "queue" => {
+            let queued_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM jobs
+                 WHERE pipeline_id = ? AND status = 'queued'",
+            )
+            .bind(pipeline_id)
+            .fetch_one(pool)
+            .await?;
+
+            if queued_count >= concurrency_max_queue {
+                return Err(AppError::Conflict(format!(
+                    "queue full: {queued_count} jobs already queued (max {concurrency_max_queue})"
+                )));
+            }
+
+            let running_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM jobs
+                 WHERE pipeline_id = ? AND status IN ('pending', 'running')",
+            )
+            .bind(pipeline_id)
+            .fetch_one(pool)
+            .await?;
+
+            if running_count == 0 {
+                Ok("pending")
+            } else {
+                Ok("queued")
+            }
+        }
+
+        _ => Err(AppError::ValidationFailed(format!(
+            "unknown concurrency mode '{mode}'"
+        ))),
+    }
+}
+
 /// Shared trigger logic — used by admin trigger, webhooks, and cron scheduler.
+///
+/// `trigger_user_id` / `auth` are `Some` for manual UI triggers (ACL + self-approve);
+/// automated sources (webhook / cron / git) pass `None`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn do_trigger(
     state: &AppState,
     pipeline_id: &str,
@@ -714,6 +807,9 @@ pub(crate) async fn do_trigger(
     inputs: &std::collections::HashMap<String, String>,
     debug_unredact: bool,
     verbose: bool,
+    environment: Option<&str>,
+    trigger_user_id: Option<&str>,
+    auth: Option<&AuthUser>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     // File-backed pipelines: re-validate on-disk YAML and refresh DB projection
     // so a broken/stale file cannot silently run the previous good snapshot.
@@ -726,7 +822,7 @@ pub(crate) async fn do_trigger(
 
     let pipeline = sqlx::query(
         "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
-                concurrency_max_queue, concurrency_queue_timeout_seconds, input_defs
+                concurrency_max_queue, concurrency_queue_timeout_seconds, input_defs, team_id
          FROM pipelines WHERE id = ? AND is_active = 1",
     )
     .bind(pipeline_id)
@@ -739,6 +835,7 @@ pub(crate) async fn do_trigger(
     let concurrency_max_queue: i64 = pipeline.get(5);
     let concurrency_queue_timeout: i64 = pipeline.get(6);
     let input_defs_raw: String = pipeline.get(7);
+    let team_id: String = pipeline.get(8);
     let input_defs: Vec<PipelineInputDef> =
         serde_json::from_str(&input_defs_raw).unwrap_or_default();
     let masking_keys = masking_input_names(&input_defs);
@@ -796,86 +893,40 @@ pub(crate) async fn do_trigger(
             }
         });
 
-    // ── Concurrency logic ──
-    let job_status: &str = if let Some(ref group) = concurrency_group {
-        if group.is_empty() {
-            "pending"
-        } else {
-            let mode = effective_concurrency_mode
-                .as_deref()
-                .unwrap_or("discard-new");
+    let env_resolved = super::environments::resolve_environment(&state.pool, environment).await?;
+    let (environment_id, environment_slug, env_protection) = match &env_resolved {
+        Some(e) => (
+            Some(e.id.as_str()),
+            Some(e.slug.as_str()),
+            Some(&e.protection),
+        ),
+        None => (None, None, None),
+    };
 
-            match mode {
-                "discard-new" => {
-                    let running = sqlx::query(
-                        "SELECT COUNT(*) as cnt FROM jobs
-                         WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued')",
-                    )
-                    .bind(pipeline_id)
-                    .fetch_one(&state.pool)
-                    .await?;
-                    let count: i64 = running.get(0);
-                    if count > 0 {
-                        return Err(AppError::Conflict(format!(
-                            "concurrency group '{group}' has {count} active/queued job(s)"
-                        )));
-                    }
-                    "pending"
-                }
-
-                "discard-old" => {
-                    // Cancel all queued jobs in this group
-                    sqlx::query(
-                        "UPDATE jobs SET status = 'cancelled', updated_at = datetime('now')
-                         WHERE pipeline_id = ? AND status = 'queued'",
-                    )
-                    .bind(pipeline_id)
-                    .execute(&state.pool)
-                    .await?;
-                    "pending"
-                }
-
-                "queue" => {
-                    // Check queue depth
-                    let queued_count: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM jobs
-                         WHERE pipeline_id = ? AND status = 'queued'",
-                    )
-                    .bind(pipeline_id)
-                    .fetch_one(&state.pool)
-                    .await?;
-
-                    if queued_count >= concurrency_max_queue {
-                        return Err(AppError::Conflict(format!(
-                            "queue full: {queued_count} jobs already queued (max {concurrency_max_queue})"
-                        )));
-                    }
-
-                    // Check if any job is running — if not, dispatch immediately
-                    let running_count: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM jobs
-                         WHERE pipeline_id = ? AND status IN ('pending', 'running')",
-                    )
-                    .bind(pipeline_id)
-                    .fetch_one(&state.pool)
-                    .await?;
-
-                    if running_count == 0 {
-                        "pending"
-                    } else {
-                        "queued"
-                    }
-                }
-
-                _ => {
-                    return Err(AppError::ValidationFailed(format!(
-                        "unknown concurrency mode '{mode}'"
-                    )));
-                }
+    // ── Protection gate: waiting_approval skips concurrency until approved ──
+    let needs_approval = env_protection.map(|p| p.enabled).unwrap_or(false);
+    let job_status: &str = if needs_approval {
+        let protection = env_protection.expect("checked above");
+        match auth {
+            None => {
+                return Err(AppError::Unauthorized(
+                    "protected environment rejects automated triggers".into(),
+                ));
+            }
+            Some(user) => {
+                user.check_team_role(&team_id, protection.min_trigger_role)?;
             }
         }
+        "waiting_approval"
     } else {
-        "pending"
+        resolve_concurrency_status(
+            &state.pool,
+            pipeline_id,
+            concurrency_group.as_deref(),
+            &concurrency_mode,
+            concurrency_max_queue,
+        )
+        .await?
     };
 
     // ── Freeze snapshot ──
@@ -968,7 +1019,7 @@ pub(crate) async fn do_trigger(
     )
     .await;
 
-    let snapshot = serde_json::json!({
+    let mut snapshot = serde_json::json!({
         "pipeline": pipeline_snapshot,
         "runner_labels": serde_json::from_str::<Vec<String>>(&runner_labels).unwrap_or_default(),
         "concurrency_group": concurrency_group,
@@ -988,7 +1039,21 @@ pub(crate) async fn do_trigger(
         "triggered_by": triggered_by,
         "triggered_at": chrono::Utc::now().to_rfc3339(),
         "notify": notify_snapshot,
+        "environment": environment_slug,
     });
+    if let Some(protection) = env_protection {
+        if let Some(map) = snapshot.as_object_mut() {
+            map.insert("protection".into(), protection.to_snapshot_json());
+        }
+    }
+    if job_status == "waiting_approval" {
+        if let Some(map) = snapshot.as_object_mut() {
+            map.insert(
+                "approval".into(),
+                serde_json::json!({ "required": true, "received": 0 }),
+            );
+        }
+    }
 
     // Masking input values encrypted at rest (buzenc:v1:…); claim decrypts for Runner.
     let sealed = crypto::seal_trigger_params(inputs, &masking_keys, &state.config.auth.jwt_secret)
@@ -996,8 +1061,10 @@ pub(crate) async fn do_trigger(
     let trigger_params_json = serde_json::to_string(&sealed).unwrap_or_else(|_| "{}".into());
 
     sqlx::query(
-        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot, debug_unredact, verbose_logs, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot,
+                           debug_unredact, verbose_logs, environment_id, trigger_user_id,
+                           created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
     )
     .bind(&job_id)
     .bind(pipeline_id)
@@ -1007,6 +1074,8 @@ pub(crate) async fn do_trigger(
     .bind(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
     .bind(if debug_unredact { 1 } else { 0 })
     .bind(if verbose { 1 } else { 0 })
+    .bind(environment_id)
+    .bind(trigger_user_id)
     .execute(&state.pool)
     .await?;
 
@@ -1029,12 +1098,19 @@ pub(crate) async fn do_trigger(
         .await;
     }
 
-    Ok(Json(ApiResponse::success(serde_json::json!({
+    let mut resp = serde_json::json!({
         "job_id": job_id,
         "pipeline_id": pipeline_id,
         "pipeline_name": pipeline_name,
         "status": job_status,
-    }))))
+    });
+    if job_status == "waiting_approval" {
+        if let Some(map) = resp.as_object_mut() {
+            map.insert("approval_required".into(), serde_json::json!(true));
+        }
+    }
+
+    Ok(Json(ApiResponse::success(resp)))
 }
 
 // --- helpers ---

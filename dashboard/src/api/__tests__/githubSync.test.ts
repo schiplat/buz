@@ -5,6 +5,7 @@ const { mockClient } = vi.hoisted(() => ({
     get: vi.fn(),
     post: vi.fn(),
     put: vi.fn(),
+    patch: vi.fn(),
     delete: vi.fn(),
   },
 }))
@@ -118,8 +119,36 @@ describe('githubSyncApi', () => {
     expect(mockClient.post).toHaveBeenCalledWith('/variables/var-1/github-binds', { repo_id: 'repo-2' })
     expect(bind.id).toBe('bind-9')
 
+    mockClient.post.mockResolvedValue(ok({ id: 'bind-10' }))
+    await githubSyncApi.addVariableBind('var-1', 'repo-3', { override_value: 'per-repo' })
+    expect(mockClient.post).toHaveBeenCalledWith('/variables/var-1/github-binds', {
+      repo_id: 'repo-3',
+      override_value: 'per-repo',
+    })
+
+    mockClient.patch.mockResolvedValue(ok({ id: 'bind-9', override_value: null }))
+    await githubSyncApi.patchVariableBind('var-1', 'bind-9', { override_value: null })
+    expect(mockClient.patch).toHaveBeenCalledWith('/variables/var-1/github-binds/bind-9', {
+      override_value: null,
+    })
+
     mockClient.delete.mockResolvedValue(ok(null))
     await githubSyncApi.deleteVariableBind('var-1', 'bind-9')
     expect(mockClient.delete).toHaveBeenCalledWith('/variables/var-1/github-binds/bind-9')
+  })
+
+  it('manages secret binds with optional override_value', async () => {
+    mockClient.post.mockResolvedValue(ok({ id: 'bind-s', has_override: true }))
+    await githubSyncApi.addSecretBind('sec-1', 'repo-2', { override_value: 'repo-secret' })
+    expect(mockClient.post).toHaveBeenCalledWith('/secrets/sec-1/github-binds', {
+      repo_id: 'repo-2',
+      override_value: 'repo-secret',
+    })
+
+    mockClient.patch.mockResolvedValue(ok({ id: 'bind-s', has_override: false, override_value: null }))
+    await githubSyncApi.patchSecretBind('sec-1', 'bind-s', { override_value: null })
+    expect(mockClient.patch).toHaveBeenCalledWith('/secrets/sec-1/github-binds/bind-s', {
+      override_value: null,
+    })
   })
 })

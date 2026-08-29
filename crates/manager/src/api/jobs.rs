@@ -2,13 +2,16 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use serde::Deserialize;
 use shared::error::AppError;
 use shared::protocol::redact_input_map;
 use shared::protocol::response::ApiResponse;
-use shared::rbac::Perm;
+use shared::rbac::{Perm, TeamRole};
 use sqlx::Row;
 use std::collections::HashMap;
+use uuid::Uuid;
 
+use crate::audit::{self, AuditEvent};
 use crate::middleware::{AuthUser, RunnerClaims};
 use crate::rbac::{pipeline_team_id, team_in_clause};
 use crate::state::AppState;
@@ -54,7 +57,7 @@ pub async fn list(
                 j.status, j.trigger_by, j.retry_times,
                 j.step_statuses, j.snapshot,
                 j.start_time, j.end_time, j.created_at, j.updated_at,
-                p.team_id, j.verbose_logs, j.debug_unredact
+                p.team_id, j.verbose_logs, j.debug_unredact, j.trigger_user_id
          FROM jobs j
          JOIN pipelines p ON j.pipeline_id = p.id
          WHERE 1=1";
@@ -112,6 +115,7 @@ pub async fn list(
                 "team_id": r.get::<String, _>(13),
                 "verbose_logs": r.get::<i64, _>(14) != 0,
                 "debug_unredact": r.get::<i64, _>(15) != 0,
+                "trigger_user_id": r.get::<Option<String>, _>(16),
             })
         })
         .collect();
@@ -127,7 +131,8 @@ pub async fn get_one(
     let r = sqlx::query(
         "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
                 j.status, j.trigger_by, j.trigger_params, j.snapshot, j.step_statuses, j.retry_times,
-                j.start_time, j.end_time, j.created_at, j.updated_at, j.debug_unredact, j.verbose_logs
+                j.start_time, j.end_time, j.created_at, j.updated_at, j.debug_unredact, j.verbose_logs,
+                j.trigger_user_id
          FROM jobs j
          LEFT JOIN pipelines p ON j.pipeline_id = p.id
          WHERE j.id = ?",
@@ -160,6 +165,7 @@ pub async fn get_one(
         .unwrap_or_default();
 
     let trigger_params_safe = redact_trigger_params_for_api(trigger_params.as_deref(), &snapshot);
+    let approvals = list_job_approvals_json(&state.pool, &id).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": r.get::<String, _>(0),
@@ -178,6 +184,9 @@ pub async fn get_one(
         "updated_at": r.get::<Option<String>, _>(13),
         "debug_unredact": r.get::<i64, _>(14) != 0,
         "verbose_logs": r.get::<i64, _>(15) != 0,
+        "trigger_user_id": r.get::<Option<String>, _>(16),
+        "team_id": team_id,
+        "approvals": approvals,
     }))))
 }
 
@@ -226,7 +235,7 @@ pub async fn cancel(
 
     let result = sqlx::query(
         "UPDATE jobs SET status = 'cancelled', end_time = datetime('now'), updated_at = datetime('now')
-         WHERE id = ? AND status IN ('pending', 'running')",
+         WHERE id = ? AND status IN ('pending', 'running', 'queued', 'waiting_approval')",
     )
     .bind(&id)
     .execute(&state.pool)
@@ -243,6 +252,40 @@ pub async fn cancel(
         return Err(AppError::NotFound(
             "job not found or already finished".into(),
         ));
+    }
+
+    // Append-only approval trail when cancelling a protected-env wait.
+    if old_status == "waiting_approval" {
+        if let Err(e) =
+            record_job_approval(&state.pool, &id, &auth.id, &auth.username, "cancel", "").await
+        {
+            tracing::warn!(
+                job_id = %id,
+                error = %e,
+                "environments: failed to record cancel approval event"
+            );
+        }
+        // Best-effort snapshot outcome for Job Detail summary.
+        if let Ok(Some(snap_row)) = sqlx::query("SELECT snapshot FROM jobs WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&state.pool)
+            .await
+        {
+            let raw: String = snap_row.get(0);
+            let mut snapshot: serde_json::Value =
+                serde_json::from_str(&raw).unwrap_or(serde_json::json!({}));
+            let received = snapshot
+                .get("approval")
+                .and_then(|a| a.get("received"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            set_snapshot_approval(&mut snapshot, received, Some("cancelled"));
+            let _ = sqlx::query("UPDATE jobs SET snapshot = ? WHERE id = ?")
+                .bind(serde_json::to_string(&snapshot).unwrap_or_default())
+                .bind(&id)
+                .execute(&state.pool)
+                .await;
+        }
     }
 
     // Update step_statuses if we flipped a running step
@@ -297,6 +340,415 @@ pub async fn cancel(
     }
 
     Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ApprovalCommentRequest {
+    #[serde(default)]
+    pub comment: String,
+}
+
+fn parse_min_approve_role(snapshot: &serde_json::Value) -> TeamRole {
+    snapshot
+        .get("protection")
+        .and_then(|p| p.get("min_approve_role"))
+        .and_then(|v| v.as_str())
+        .and_then(TeamRole::parse)
+        .unwrap_or(TeamRole::Maintainer)
+}
+
+fn protection_require_approvals(snapshot: &serde_json::Value) -> i64 {
+    snapshot
+        .get("protection")
+        .and_then(|p| p.get("require_approvals"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn protection_forbid_self_approve(snapshot: &serde_json::Value) -> bool {
+    snapshot
+        .get("protection")
+        .and_then(|p| p.get("forbid_self_approve"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+fn set_snapshot_approval(snapshot: &mut serde_json::Value, received: i64, outcome: Option<&str>) {
+    let mut approval = serde_json::json!({
+        "required": true,
+        "received": received,
+    });
+    if let Some(o) = outcome {
+        if let Some(map) = approval.as_object_mut() {
+            map.insert("outcome".into(), serde_json::json!(o));
+        }
+    }
+    if let Some(map) = snapshot.as_object_mut() {
+        map.insert("approval".into(), approval);
+    }
+}
+
+/// Append-only approval event. `user_id` / `username` are `"system"` for timeout.
+async fn record_job_approval(
+    pool: &sqlx::SqlitePool,
+    job_id: &str,
+    user_id: &str,
+    username: &str,
+    action: &str,
+    comment: &str,
+) -> Result<String, AppError> {
+    let id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(job_id)
+    .bind(user_id)
+    .bind(username)
+    .bind(action)
+    .bind(comment)
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(db) = &e {
+            if db.message().contains("UNIQUE") {
+                return AppError::Conflict(format!(
+                    "duplicate approval action '{action}' for this user on job {job_id}"
+                ));
+            }
+        }
+        AppError::from(e)
+    })?;
+    Ok(id)
+}
+
+async fn list_job_approvals_json(
+    pool: &sqlx::SqlitePool,
+    job_id: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let rows = sqlx::query(
+        "SELECT id, user_id, username, action, comment, created_at
+         FROM job_approvals
+         WHERE job_id = ?
+         ORDER BY created_at ASC, id ASC",
+    )
+    .bind(job_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.get::<String, _>(0),
+                "user_id": r.get::<String, _>(1),
+                "username": r.get::<String, _>(2),
+                "action": r.get::<String, _>(3),
+                "comment": r.get::<String, _>(4),
+                "created_at": r.get::<Option<String>, _>(5),
+            })
+        })
+        .collect())
+}
+
+fn broadcast_job_status(state: &AppState, job_id: &str, pipeline_id: &str, status: &str) {
+    let payload = serde_json::json!({
+        "id": job_id,
+        "status": status,
+        "end_time": if status == "cancelled" {
+            Some(now_utc())
+        } else {
+            None
+        },
+    });
+    state.log_broadcast.broadcast_status(
+        job_id,
+        pipeline_id,
+        &serde_json::to_string(&payload).unwrap_or_default(),
+    );
+}
+
+/// POST /jobs/{id}/approve — record an approval; promote when threshold met.
+pub async fn approve(
+    auth: AuthUser,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    body: Option<Json<ApprovalCommentRequest>>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let comment = body
+        .map(|Json(b)| b.comment.trim().to_string())
+        .unwrap_or_default();
+
+    tracing::info!(job_id = %id, actor = %auth.username, "environments: approve started");
+
+    let row = sqlx::query(
+        "SELECT j.status, j.pipeline_id, j.snapshot, j.trigger_user_id, p.team_id, p.name,
+                p.concurrency_group, p.concurrency_mode, p.concurrency_max_queue
+         FROM jobs j
+         JOIN pipelines p ON p.id = j.pipeline_id
+         WHERE j.id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+
+    let status: String = row.get(0);
+    if status != "waiting_approval" {
+        return Err(AppError::Conflict(format!(
+            "job is not waiting for approval (status={status})"
+        )));
+    }
+
+    let pipeline_id: String = row.get(1);
+    let snapshot_raw: String = row.get(2);
+    let trigger_user_id: Option<String> = row.get(3);
+    let team_id: String = row.get(4);
+    let pipeline_name: String = row.get(5);
+    let concurrency_group: Option<String> = row.get(6);
+    let concurrency_mode: String = row.get(7);
+    let concurrency_max_queue: i64 = row.get(8);
+
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(&snapshot_raw).unwrap_or(serde_json::json!({}));
+    let min_approve = parse_min_approve_role(&snapshot);
+    auth.check_team_role(&team_id, min_approve)?;
+
+    if !auth.is_platform_admin
+        && protection_forbid_self_approve(&snapshot)
+        && trigger_user_id.as_deref() == Some(auth.id.as_str())
+    {
+        return Err(AppError::Unauthorized(
+            "self-approval is forbidden for this environment".into(),
+        ));
+    }
+
+    let approval_id = Uuid::new_v4().to_string();
+    let insert = sqlx::query(
+        "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
+         VALUES (?, ?, ?, ?, 'approve', ?)",
+    )
+    .bind(&approval_id)
+    .bind(&id)
+    .bind(&auth.id)
+    .bind(&auth.username)
+    .bind(&comment)
+    .execute(&state.pool)
+    .await;
+
+    if let Err(e) = insert {
+        if let sqlx::Error::Database(db) = &e {
+            if db.message().contains("UNIQUE") {
+                return Err(AppError::Conflict(
+                    "you have already approved this job".into(),
+                ));
+            }
+        }
+        return Err(e.into());
+    }
+
+    let received: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM job_approvals WHERE job_id = ? AND action = 'approve'",
+    )
+    .bind(&id)
+    .fetch_one(&state.pool)
+    .await?;
+
+    let required = protection_require_approvals(&snapshot);
+    let mut new_status = status.clone();
+
+    if received >= required {
+        match super::pipelines::resolve_concurrency_status(
+            &state.pool,
+            &pipeline_id,
+            concurrency_group.as_deref(),
+            &concurrency_mode,
+            concurrency_max_queue,
+        )
+        .await
+        {
+            Ok(next) => {
+                set_snapshot_approval(&mut snapshot, received, Some("approved"));
+                let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
+                sqlx::query(
+                    "UPDATE jobs SET status = ?, snapshot = ?, updated_at = datetime('now')
+                     WHERE id = ? AND status = 'waiting_approval'",
+                )
+                .bind(next)
+                .bind(&snapshot_str)
+                .bind(&id)
+                .execute(&state.pool)
+                .await?;
+                new_status = next.to_string();
+                broadcast_job_status(&state, &id, &pipeline_id, next);
+            }
+            Err(AppError::Conflict(msg)) => {
+                // Keep waiting_approval; approval is recorded but concurrency blocked.
+                set_snapshot_approval(&mut snapshot, received, None);
+                let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
+                sqlx::query(
+                    "UPDATE jobs SET snapshot = ?, updated_at = datetime('now') WHERE id = ?",
+                )
+                .bind(&snapshot_str)
+                .bind(&id)
+                .execute(&state.pool)
+                .await?;
+                tracing::warn!(
+                    job_id = %id,
+                    pipeline = %pipeline_name,
+                    error = %msg,
+                    "environments: approve recorded but concurrency blocked"
+                );
+                return Err(AppError::Conflict(msg));
+            }
+            Err(e) => return Err(e),
+        }
+    } else {
+        set_snapshot_approval(&mut snapshot, received, None);
+        let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
+        sqlx::query("UPDATE jobs SET snapshot = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(&snapshot_str)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+    }
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "job.approve")
+            .resource("job", &id, &pipeline_name)
+            .team(Some(team_id))
+            .after(Some(serde_json::json!({
+                "received": received,
+                "required": required,
+                "status": new_status,
+            }))),
+    )
+    .await;
+
+    tracing::info!(
+        job_id = %id,
+        actor = %auth.username,
+        received,
+        required,
+        status = %new_status,
+        "environments: approve complete"
+    );
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "job_id": id,
+        "status": new_status,
+        "approvals_received": received,
+        "approvals_required": required,
+    }))))
+}
+
+/// POST /jobs/{id}/reject — reject a waiting_approval job → cancelled.
+pub async fn reject(
+    auth: AuthUser,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    body: Option<Json<ApprovalCommentRequest>>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let comment = body
+        .map(|Json(b)| b.comment.trim().to_string())
+        .unwrap_or_default();
+
+    tracing::info!(job_id = %id, actor = %auth.username, "environments: reject started");
+
+    let row = sqlx::query(
+        "SELECT j.status, j.pipeline_id, j.snapshot, j.trigger_user_id, p.team_id, p.name
+         FROM jobs j
+         JOIN pipelines p ON p.id = j.pipeline_id
+         WHERE j.id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+
+    let status: String = row.get(0);
+    if status != "waiting_approval" {
+        return Err(AppError::Conflict(format!(
+            "job is not waiting for approval (status={status})"
+        )));
+    }
+
+    let pipeline_id: String = row.get(1);
+    let snapshot_raw: String = row.get(2);
+    let trigger_user_id: Option<String> = row.get(3);
+    let team_id: String = row.get(4);
+    let pipeline_name: String = row.get(5);
+
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(&snapshot_raw).unwrap_or(serde_json::json!({}));
+    let min_approve = parse_min_approve_role(&snapshot);
+    auth.check_team_role(&team_id, min_approve)?;
+
+    if !auth.is_platform_admin
+        && protection_forbid_self_approve(&snapshot)
+        && trigger_user_id.as_deref() == Some(auth.id.as_str())
+    {
+        return Err(AppError::Unauthorized(
+            "self-approval is forbidden for this environment".into(),
+        ));
+    }
+
+    let approval_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
+         VALUES (?, ?, ?, ?, 'reject', ?)",
+    )
+    .bind(&approval_id)
+    .bind(&id)
+    .bind(&auth.id)
+    .bind(&auth.username)
+    .bind(&comment)
+    .execute(&state.pool)
+    .await?;
+
+    let received: i64 = snapshot
+        .get("approval")
+        .and_then(|a| a.get("received"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    set_snapshot_approval(&mut snapshot, received, Some("rejected"));
+    let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
+
+    sqlx::query(
+        "UPDATE jobs SET status = 'cancelled', snapshot = ?,
+                end_time = datetime('now'), updated_at = datetime('now')
+         WHERE id = ? AND status = 'waiting_approval'",
+    )
+    .bind(&snapshot_str)
+    .bind(&id)
+    .execute(&state.pool)
+    .await?;
+
+    broadcast_job_status(&state, &id, &pipeline_id, "cancelled");
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "job.reject")
+            .resource("job", &id, &pipeline_name)
+            .team(Some(team_id))
+            .after(Some(
+                serde_json::json!({ "status": "cancelled", "outcome": "rejected" }),
+            )),
+    )
+    .await;
+
+    tracing::info!(
+        job_id = %id,
+        actor = %auth.username,
+        "environments: reject complete"
+    );
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "job_id": id,
+        "status": "cancelled",
+    }))))
 }
 
 pub async fn delete(

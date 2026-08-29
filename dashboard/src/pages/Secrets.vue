@@ -12,8 +12,10 @@ import { useAuthStore } from '@/stores/auth'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
 import { formatLocalDateTime } from '@/utils/time'
+import { useAppDialog } from '@/composables/useAppDialog'
 
 const auth = useAuthStore()
+const dialog = useAppDialog()
 const secrets = ref<Secret[]>([])
 const teams = ref<Team[]>([])
 const loading = ref(true)
@@ -119,8 +121,11 @@ const valuePlaceholder = computed(() => {
   return 'Paste secret value…'
 })
 
-function insertRegistrySample() {
-  if (formValue.value.trim() && !confirm('Replace the current Value with the ACR sample JSON?')) {
+async function insertRegistrySample() {
+  if (formValue.value.trim() && !(await dialog.confirm('Replace the current Value with the ACR sample JSON?', {
+    title: 'Replace value',
+    confirmLabel: 'Replace',
+  }))) {
     return
   }
   formValue.value = ACR_REGISTRY_SAMPLE
@@ -128,8 +133,11 @@ function insertRegistrySample() {
   showValue.value = true
 }
 
-function insertOssSample() {
-  if (formValue.value.trim() && !confirm('Replace the current Value with the OSS sample JSON?')) {
+async function insertOssSample() {
+  if (formValue.value.trim() && !(await dialog.confirm('Replace the current Value with the OSS sample JSON?', {
+    title: 'Replace value',
+    confirmLabel: 'Replace',
+  }))) {
     return
   }
   formValue.value = OSS_AUTH_SAMPLE
@@ -172,7 +180,7 @@ function onNameInput(e: Event) {
 
 async function handleSave() {
   if (!formTeamId.value) {
-    alert('Team is required')
+    await dialog.alert('Team is required')
     return
   }
   if (!editing.value) {
@@ -183,17 +191,17 @@ async function handleSave() {
     const name = formName.value.trim().toUpperCase()
     const nameErr = validateSecretName(name)
     if (nameErr) {
-      alert(nameErr)
+      await dialog.alert(nameErr)
       return
     }
     formName.value = name
   }
   if (editing.value?.reencrypt_required && !formValue.value) {
-    alert('This secret must be re-saved with a new value (plaintext storage is no longer accepted).')
+    await dialog.alert('This secret must be re-saved with a new value (plaintext storage is no longer accepted).')
     return
   }
   if (!editing.value && !formValue.value) {
-    alert('Value is required')
+    await dialog.alert('Value is required')
     return
   }
   saving.value = true
@@ -219,19 +227,23 @@ async function handleSave() {
   } catch (e: any) {
     // Show the backend's message (e.g. validation failures) instead of letting
     // the unhandled rejection crash the page via ErrorBoundary.
-    alert(e?.response?.data?.message || e?.message || 'Failed to save secret')
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to save secret')
   } finally {
     saving.value = false
   }
 }
 
 async function handleDelete(s: Secret) {
-  if (!confirm(`Delete secret "${s.name}"? This cannot be undone.`)) return
+  if (!(await dialog.confirm(`Delete secret "${s.name}"? This cannot be undone.`, {
+    title: 'Delete secret',
+    confirmLabel: 'Delete',
+    danger: true,
+  }))) return
   try {
     await secretsApi.delete(s.id)
     await loadSecrets()
   } catch (e: any) {
-    alert(e?.response?.data?.message || e?.message || 'Failed to delete secret')
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to delete secret')
   }
 }
 

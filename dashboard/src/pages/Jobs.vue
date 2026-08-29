@@ -95,7 +95,7 @@ async function handleCancel(jobId: string) {
               <td class="text-xs text-muted-foreground">{{ j.end_time || '—' }}</td>
               <td class="text-right">
                 <div class="flex items-center justify-end gap-1">
-                  <UiButton v-if="j.status === 'running' || j.status === 'pending'" variant="ghost" size="sm" @click="handleCancel(j.id)">
+                  <UiButton v-if="j.status === 'running' || j.status === 'pending' || j.status === 'waiting_approval' || j.status === 'queued'" variant="ghost" size="sm" @click="handleCancel(j.id)">
                     <XCircle class="h-3.5 w-3.5 text-red-500" />
                     Cancel
                   </UiButton>

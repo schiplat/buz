@@ -6,8 +6,10 @@ import { Plus, Trash2, Users } from '@lucide/vue'
 import { teamsApi, type Team, type TeamMember } from '@/api/teams'
 import { usersApi, type User } from '@/api/users'
 import { useAuthStore } from '@/stores/auth'
+import { useAppDialog } from '@/composables/useAppDialog'
 
 const auth = useAuthStore()
+const dialog = useAppDialog()
 const teams = ref<Team[]>([])
 const users = ref<User[]>([])
 const loading = ref(true)
@@ -43,7 +45,7 @@ async function openTeam(t: Team) {
 
 async function createTeam() {
   if (!formName.value.trim() || !formSlug.value.trim()) {
-    alert('Name and slug are required')
+    await dialog.alert('Name and slug are required')
     return
   }
   saving.value = true
@@ -64,7 +66,11 @@ async function createTeam() {
 }
 
 async function removeTeam(t: Team) {
-  if (!confirm(`Delete team "${t.name}"?`)) return
+  if (!(await dialog.confirm(`Delete team "${t.name}"?`, {
+    title: 'Delete team',
+    confirmLabel: 'Delete',
+    danger: true,
+  }))) return
   await teamsApi.delete(t.id)
   if (selected.value?.id === t.id) selected.value = null
   await load()
@@ -81,7 +87,11 @@ async function addMember() {
 
 async function removeMember(m: TeamMember) {
   if (!selected.value) return
-  if (!confirm(`Remove ${m.username} from team?`)) return
+  if (!(await dialog.confirm(`Remove ${m.username} from team?`, {
+    title: 'Remove member',
+    confirmLabel: 'Remove',
+    danger: true,
+  }))) return
   await teamsApi.removeMember(selected.value.id, m.user_id)
   await openTeam(selected.value)
 }

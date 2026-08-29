@@ -10,7 +10,9 @@ import { formatLocalDateTime } from '@/utils/time'
 import { copyText } from '@/utils/copyText'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
+import { useAppDialog } from '@/composables/useAppDialog'
 
+const dialog = useAppDialog()
 const runners = ref<Runner[]>([])
 const loading = ref(true)
 const searchQuery = ref('')
@@ -179,7 +181,7 @@ async function handleCreate() {
     })
     createdToken.value = resp.register_token
     await loadRunners()
-  } catch (e) { console.error(e); alert('Failed to create runner') }
+  } catch (e) { console.error(e); await dialog.alert('Failed to create runner') }
   finally { creating.value = false }
 }
 
@@ -223,7 +225,7 @@ async function savePolicy() {
     editLabels.value = (updated.labels || []).join(', ')
     const idx = runners.value.findIndex(r => r.id === activeRunner.value!.id)
     if (idx >= 0) runners.value[idx] = { ...runners.value[idx], ...updated }
-  } catch (e) { console.error(e); alert('Failed to update runner policy') }
+  } catch (e) { console.error(e); await dialog.alert('Failed to update runner policy') }
   finally { savingPolicy.value = false }
 }
 
@@ -234,7 +236,7 @@ async function copyToken() {
     copied.value = true
     setTimeout(() => (copied.value = false), 2000)
   } else {
-    alert('Copy failed — your browser blocks clipboard access on plain HTTP. Use HTTPS or copy manually.')
+    await dialog.alert('Copy failed — your browser blocks clipboard access on plain HTTP. Use HTTPS or copy manually.')
   }
 }
 
@@ -258,28 +260,33 @@ async function handleToggleFreeze(r: Runner) {
 
 async function handleRestart(r: Runner) {
   const running = r.running_jobs ?? 0
-  if (!confirm(
+  if (!(await dialog.confirm(
     `Restart runner "${r.name}"?\n\n` +
     (running > 0
       ? `It has ${running} running job(s) — restart will be refused until they finish.`
-      : `The runner will finish any in-flight work, exit cleanly, and be restarted by its supervisor (Docker/systemd).`)
-  )) return
+      : `The runner will finish any in-flight work, exit cleanly, and be restarted by its supervisor (Docker/systemd).`),
+    { title: 'Restart runner', confirmLabel: 'Restart' },
+  ))) return
   try {
     await runnersApi.restart(r.id)
-    alert(`Restart requested for "${r.name}". The runner will restart within ~30s.`)
+    await dialog.alert(`Restart requested for "${r.name}". The runner will restart within ~30s.`)
   } catch (e: any) {
     console.error(e)
     const detail = e?.response?.data?.message || e?.message || 'Failed to restart runner'
-    alert(detail)
+    await dialog.alert(detail)
   }
 }
 
 async function handleDeleteRunner(r: Runner) {
-  if (!confirm(`Delete runner "${r.name}"? This cannot be undone.`)) return
+  if (!(await dialog.confirm(`Delete runner "${r.name}"? This cannot be undone.`, {
+    title: 'Delete runner',
+    confirmLabel: 'Delete',
+    danger: true,
+  }))) return
   try {
     await runnersApi.delete(r.id)
     await loadRunners()
-  } catch (e) { console.error(e); alert('Failed to delete runner') }
+  } catch (e) { console.error(e); await dialog.alert('Failed to delete runner') }
 }
 
 // Formatters
@@ -448,7 +455,7 @@ const eventBadge = (t: string) => {
       >
         <div class="absolute inset-0 transition-all duration-300" :class="drawerOpen ? 'bg-black/40' : 'bg-transparent'" @click="closeDetail"></div>
 
-        <div class="relative z-10 w-full max-w-lg h-full bg-background border-l border-border shadow-2xl overflow-y-auto transition-transform duration-300" :class="drawerOpen ? 'translate-x-0' : 'translate-x-full'">
+        <div class="scrollbar-sidebar relative z-10 w-full max-w-lg h-full bg-background border-l border-border shadow-2xl overflow-y-auto transition-transform duration-300" :class="drawerOpen ? 'translate-x-0' : 'translate-x-full'">
           <!-- Header -->
           <div class="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-6 py-4">
             <div class="flex items-center gap-3 min-w-0">

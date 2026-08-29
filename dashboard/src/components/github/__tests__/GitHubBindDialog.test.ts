@@ -10,6 +10,8 @@ vi.mock('@/api/githubSync', () => ({
     listRepos: vi.fn(),
     addSecretBind: vi.fn(),
     addVariableBind: vi.fn(),
+    patchVariableBind: vi.fn(),
+    patchSecretBind: vi.fn(),
     pushSecretBinds: vi.fn(),
     pushVariableBinds: vi.fn(),
   },

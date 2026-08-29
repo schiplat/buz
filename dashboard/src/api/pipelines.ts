@@ -273,11 +273,13 @@ export const pipelinesApi = {
     inputs?: Record<string, string>,
     debug?: boolean,
     verbose?: boolean,
+    environment?: string | null,
   ): Promise<{ job_id: string }> {
     const resp = await apiClient.post(`/pipelines/${id}/trigger`, {
       inputs: inputs || {},
       debug: debug ?? false,
       verbose: verbose ?? false,
+      ...(environment ? { environment } : {}),
     })
     return resp.data
   },

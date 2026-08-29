@@ -9,8 +9,10 @@ import { teamsApi, type Team } from '@/api/teams'
 import { useAuthStore } from '@/stores/auth'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
+import { useAppDialog } from '@/composables/useAppDialog'
 
 const auth = useAuthStore()
+const dialog = useAppDialog()
 const hosts = ref<Host[]>([])
 const availableTeams = ref<Team[]>([])
 const loading = ref(true)
@@ -130,7 +132,7 @@ async function handleSave() {
         form.value.credential_type !== 'agent' &&
         !form.value.credential_data.trim()
       ) {
-        alert(
+        await dialog.alert(
           form.value.credential_type === 'key_path'
             ? 'Private key is required'
             : 'Password is required',
@@ -194,7 +196,11 @@ async function handleTest() {
 }
 
 async function handleDelete(h: Host) {
-  if (!confirm(`Delete host "${h.name}"? This cannot be undone.`)) return
+  if (!(await dialog.confirm(`Delete host "${h.name}"? This cannot be undone.`, {
+    title: 'Delete host',
+    confirmLabel: 'Delete',
+    danger: true,
+  }))) return
   await hostsApi.delete(h.id)
   await loadHosts()
 }

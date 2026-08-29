@@ -2,7 +2,7 @@
 
 export type RunnerStatus = 'online' | 'offline' | 'busy'
 export type TriggerType = 'manual' | 'webhook' | 'cron'
-export type JobStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled' | 'timeout'
+export type JobStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled' | 'timeout' | 'queued' | 'waiting_approval'
 export type ExecType = 'local' | 'ssh' | 'docker' | 'wasm'
 
 export interface Runner {

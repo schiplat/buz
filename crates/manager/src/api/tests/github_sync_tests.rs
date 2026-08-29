@@ -199,6 +199,30 @@ async fn put_json(
     (status, body)
 }
 
+async fn patch_json(
+    app: &Router,
+    token: &str,
+    uri: &str,
+    payload: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(uri)
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .expect("build request"),
+        )
+        .await
+        .expect("send request");
+    let status = resp.status();
+    let body = read_body(resp).await;
+    (status, body)
+}
+
 // ─────────────────────────── mock GitHub server ───────────────────────────
 
 #[derive(Debug, Clone)]
@@ -265,6 +289,10 @@ impl MockGitHub {
 
     fn snapshot(&self) -> Vec<MockRequest> {
         self.requests.lock().expect("lock").clone()
+    }
+
+    fn clear_requests(&self) {
+        self.requests.lock().expect("lock").clear();
     }
 
     fn unseal_b64(&self, b64: &str) -> String {
@@ -623,6 +651,110 @@ async fn push_secret_to_repo_uses_sealed_value() {
     assert!(body["data"][0]["last_pushed_at"].is_string());
 }
 
+/// Per-repo secret override is encrypted at rest and sealed to GitHub on push.
+#[tokio::test]
+async fn push_secret_uses_bind_override_value() {
+    let app = test_app().await;
+    let token = admin_jwt();
+    let mock = MockGitHub::start().await;
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/github-sync/connections",
+        serde_json::json!({ "name": "gh", "api_base_url": mock.base_url(), "token": "pat" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let conn_id = body["data"]["id"].as_str().expect("conn id").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/github-sync/repos",
+        serde_json::json!({ "connection_id": conn_id, "owner": "myorg", "repo": "alpha-repo" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let repo_id = body["data"]["id"].as_str().expect("repo id").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/secrets",
+        serde_json::json!({ "name": "ACR_TOKEN", "value": "shared-default-secret", "team_id": "team-1" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let secret_id = body["data"]["id"].as_str().expect("secret id").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}/github-binds"),
+        serde_json::json!({ "repo_id": repo_id, "override_value": "per-repo-secret" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["has_override"], true);
+    assert!(body["data"]["override_value"].is_null(), "{body}");
+    let bind_id = body["data"]["id"].as_str().expect("bind id").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}/github-binds/push?bind_id={bind_id}"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["results"][0]["status"], "ok", "{body}");
+
+    let reqs = mock.snapshot();
+    let put = reqs
+        .iter()
+        .find(|r| r.method == "PUT" && r.path.contains("/actions/secrets/"))
+        .expect("secret PUT seen");
+    let wire: serde_json::Value = serde_json::from_str(&put.body).expect("put body json");
+    assert_eq!(
+        mock.unseal_b64(wire["encrypted_value"].as_str().expect("enc")),
+        "per-repo-secret"
+    );
+
+    // Clear override → push default again.
+    let (status, body) = patch_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}/github-binds/{bind_id}"),
+        serde_json::json!({ "override_value": null }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["has_override"], false);
+
+    mock.clear_requests();
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}/github-binds/push?bind_id={bind_id}"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["results"][0]["status"], "ok", "{body}");
+
+    let reqs = mock.snapshot();
+    let put = reqs
+        .iter()
+        .find(|r| r.method == "PUT" && r.path.contains("/actions/secrets/"))
+        .expect("secret PUT after inherit");
+    let wire: serde_json::Value = serde_json::from_str(&put.body).expect("put body json");
+    assert_eq!(
+        mock.unseal_b64(wire["encrypted_value"].as_str().expect("enc")),
+        "shared-default-secret"
+    );
+}
+
 /// Variable flow: create → bind → push → POST (create) variable on GitHub.
 #[tokio::test]
 async fn push_variable_creates_on_github_when_missing() {
@@ -698,6 +830,105 @@ async fn push_variable_creates_on_github_when_missing() {
     let wire: serde_json::Value = serde_json::from_str(&created.body).expect("json");
     assert_eq!(wire["name"], "MY_VAR");
     assert_eq!(wire["value"], "var-value");
+}
+
+/// Per-repo override_value is pushed instead of the platform default.
+#[tokio::test]
+async fn push_variable_uses_bind_override_value() {
+    let app = test_app().await;
+    let token = admin_jwt();
+    let mock = MockGitHub::start().await;
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/github-sync/connections",
+        serde_json::json!({ "name": "gh", "api_base_url": mock.base_url(), "token": "pat" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let conn_id = body["data"]["id"].as_str().expect("conn id").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/github-sync/repos",
+        serde_json::json!({ "connection_id": conn_id, "owner": "myorg", "repo": "alpha-repo" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let repo_id = body["data"]["id"].as_str().expect("repo id").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/variables",
+        serde_json::json!({ "name": "ACR_REPOSITORY", "value": "shared-default" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let var_id = body["data"]["id"].as_str().expect("var id").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/variables/{var_id}/github-binds"),
+        serde_json::json!({ "repo_id": repo_id, "override_value": "example/alpha" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["override_value"], "example/alpha");
+    let bind_id = body["data"]["id"].as_str().expect("bind id").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/variables/{var_id}/github-binds/push?bind_id={bind_id}"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["results"][0]["status"], "ok", "{body}");
+
+    let reqs = mock.snapshot();
+    let created = reqs
+        .iter()
+        .find(|r| r.method == "POST" && r.path.ends_with("/actions/variables"))
+        .expect("variable POST seen");
+    let wire: serde_json::Value = serde_json::from_str(&created.body).expect("json");
+    assert_eq!(wire["name"], "ACR_REPOSITORY");
+    assert_eq!(wire["value"], "example/alpha");
+
+    // Clear override → inherit default on next push.
+    // Mock always 404s GET-by-name, so upsert uses POST again — value must be the default.
+    let (status, body) = patch_json(
+        &app,
+        &token,
+        &format!("/api/v1/variables/{var_id}/github-binds/{bind_id}"),
+        serde_json::json!({ "override_value": null }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["override_value"].is_null(), "{body}");
+
+    mock.clear_requests();
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/variables/{var_id}/github-binds/push?bind_id={bind_id}"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["results"][0]["status"], "ok", "{body}");
+
+    let reqs = mock.snapshot();
+    let created = reqs
+        .iter()
+        .find(|r| r.method == "POST" && r.path.ends_with("/actions/variables"))
+        .expect("variable POST seen after inherit");
+    let wire: serde_json::Value = serde_json::from_str(&created.body).expect("json");
+    assert_eq!(wire["value"], "shared-default");
 }
 
 /// Fetch repos from an org and test-connection round-trips.

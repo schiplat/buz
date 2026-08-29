@@ -57,7 +57,7 @@ async fn create_runner_record_returns_register_token() {
     let req = CreateRunnerRequest {
         name: "cli-runner-1".into(),
         labels: Some(vec!["linux-x64".into(), "docker".into()]),
-        version: Some("1.5.2".into()),
+        version: Some("1.5.3".into()),
         max_concurrent_jobs: None,
         clean_workspace_after_job: None,
         shell_enabled: None,

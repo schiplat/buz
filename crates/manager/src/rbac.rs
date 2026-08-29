@@ -52,6 +52,24 @@ impl AuthUser {
         }
     }
 
+    /// Require team membership with role ≥ `required` (platform admin bypasses).
+    pub fn check_team_role(&self, team_id: &str, required: TeamRole) -> Result<(), AppError> {
+        if self.is_platform_admin {
+            return Ok(());
+        }
+        let Some(role) = self.role_in(team_id) else {
+            return Err(AppError::Unauthorized("not a member of this team".into()));
+        };
+        if role.at_least(required) {
+            Ok(())
+        } else {
+            Err(AppError::Unauthorized(format!(
+                "requires team role >= {}",
+                required.as_str()
+            )))
+        }
+    }
+
     pub fn require_platform_admin(&self) -> Result<(), AppError> {
         if self.is_platform_admin {
             Ok(())

@@ -17,6 +17,13 @@ export interface GitHubBind {
   last_error: string
   /** Last operation: 'bind' (added), 'push' (value pushed), 'unbind' (remote cleanup failed). */
   last_op: GitHubBindOp
+  /**
+   * Variable binds: plaintext per-repo value, or `null` to inherit default.
+   * Secret binds: always `null` in API responses (never expose override plaintext).
+   */
+  override_value?: string | null
+  /** True when a per-repo override is stored (use for Inherit/Custom UI on secrets). */
+  has_override?: boolean
 }
 
 export interface GitHubConnection {
@@ -140,8 +147,23 @@ export const githubSyncApi = {
     const resp = await apiClient.get(`/secrets/${secretId}/github-binds`)
     return resp.data as GitHubBind[]
   },
-  async addSecretBind(secretId: string, repoId: string): Promise<GitHubBind> {
-    const resp = await apiClient.post(`/secrets/${secretId}/github-binds`, { repo_id: repoId })
+  async addSecretBind(
+    secretId: string,
+    repoId: string,
+    opts?: { override_value?: string | null },
+  ): Promise<GitHubBind> {
+    const resp = await apiClient.post(`/secrets/${secretId}/github-binds`, {
+      repo_id: repoId,
+      ...(opts?.override_value !== undefined ? { override_value: opts.override_value } : {}),
+    })
+    return resp.data as GitHubBind
+  },
+  async patchSecretBind(
+    secretId: string,
+    bindId: string,
+    data: { override_value: string | null },
+  ): Promise<GitHubBind> {
+    const resp = await apiClient.patch(`/secrets/${secretId}/github-binds/${bindId}`, data)
     return resp.data as GitHubBind
   },
   async deleteSecretBind(secretId: string, bindId: string): Promise<void> {
@@ -166,8 +188,23 @@ export const githubSyncApi = {
     const resp = await apiClient.get(`/variables/${varId}/github-binds`)
     return resp.data as GitHubBind[]
   },
-  async addVariableBind(varId: string, repoId: string): Promise<GitHubBind> {
-    const resp = await apiClient.post(`/variables/${varId}/github-binds`, { repo_id: repoId })
+  async addVariableBind(
+    varId: string,
+    repoId: string,
+    opts?: { override_value?: string | null },
+  ): Promise<GitHubBind> {
+    const resp = await apiClient.post(`/variables/${varId}/github-binds`, {
+      repo_id: repoId,
+      ...(opts?.override_value !== undefined ? { override_value: opts.override_value } : {}),
+    })
+    return resp.data as GitHubBind
+  },
+  async patchVariableBind(
+    varId: string,
+    bindId: string,
+    data: { override_value: string | null },
+  ): Promise<GitHubBind> {
+    const resp = await apiClient.patch(`/variables/${varId}/github-binds/${bindId}`, data)
     return resp.data as GitHubBind
   },
   async deleteVariableBind(varId: string, bindId: string): Promise<void> {

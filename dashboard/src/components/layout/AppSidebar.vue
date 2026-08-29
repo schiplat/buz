@@ -4,6 +4,7 @@ import {
   EyeOff,
   Globe,
   KeyRound,
+  Layers,
   PanelLeft,
   ScrollText,
   Server,
@@ -45,6 +46,7 @@ const allEntries: NavEntry[] = [
   { kind: 'section', label: 'Infrastructure' },
   { kind: 'link', name: 'runners', label: 'Runners', icon: Server, to: '/runners', adminOnly: true },
   { kind: 'link', name: 'hosts', label: 'Hosts', icon: Globe, to: '/hosts' },
+  { kind: 'link', name: 'environments', label: 'Environments', icon: Layers, to: '/environments' },
   { kind: 'link', name: 'secrets-variables', label: 'Secrets & Variables', icon: EyeOff, to: '/secrets-variables' },
   { kind: 'section', label: 'Automation' },
   { kind: 'link', name: 'pipelines', label: 'Pipelines', icon: Box, to: '/pipelines' },
@@ -157,7 +159,7 @@ function onLogoClick(e: MouseEvent) {
     </div>
 
     <!-- Navigation -->
-    <nav class="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2.5 pt-4 pb-3">
+    <nav class="scrollbar-sidebar flex flex-1 flex-col gap-0.5 overflow-y-auto px-2.5 pt-4 pb-3">
       <template
         v-for="(entry, idx) in entries"
         :key="entry.kind === 'section' ? `s-${entry.label}` : entry.name"

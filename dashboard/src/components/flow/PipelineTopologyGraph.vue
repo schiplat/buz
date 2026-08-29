@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, markRaw, computed, onMounted, onUnmounted } from 'vue'
-import { VueFlow, useVueFlow } from '@vue-flow/core'
+import { VueFlow, useVueFlow, type NodeMouseEvent } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { Maximize2, Minimize2 } from '@lucide/vue'
@@ -8,10 +8,13 @@ import dagre from 'dagre'
 import { useDark } from '@vueuse/core'
 import StepNode from '@/components/flow/StepNode.vue'
 import type { StepNodeData } from '@/components/flow/StepNode.vue'
+import { STEP_NODE_HEIGHT, STEP_NODE_WIDTH } from '@/components/flow/stepNodeSize'
 
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
+
+const FLOW_ID = 'pipeline-topology'
 
 const props = defineProps<{
   tasks: { name: string; exec_type: string }[]
@@ -19,13 +22,15 @@ const props = defineProps<{
   fmtDuration: (idx: number, ss: any[] | null) => string
 }>()
 
+const selectedStep = defineModel<number | null>('selectedStep', { default: null })
+
 const emit = defineEmits<{
-  (e: 'step-click', payload: { stepIndex: number; jobId: string }): void
+  (e: 'step-click', payload: { stepIndex: number }): void
 }>()
 
 const isDark = useDark({ selector: 'html', attribute: 'class', valueDark: 'dark', valueLight: 'light' })
 
-const { fitView, onNodeClick } = useVueFlow()
+const { fitView, setCenter } = useVueFlow({ id: FLOW_ID })
 
 const nodeTypes = {
   'step-node': markRaw(StepNode),
@@ -44,7 +49,6 @@ const filterOptions: { key: FilterKey; label: string; dot: string }[] = [
 const nodes = ref<any[]>([])
 const edges = ref<any[]>([])
 
-// Fullscreen
 const graphRoot = ref<HTMLElement | null>(null)
 const isFullscreen = ref(false)
 
@@ -70,8 +74,8 @@ onUnmounted(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange)
 })
 
-const NODE_WIDTH = 170
-const NODE_HEIGHT = 90
+const NODE_WIDTH = STEP_NODE_WIDTH
+const NODE_HEIGHT = STEP_NODE_HEIGHT
 const PADDING_X = 40
 const PADDING_Y = 40
 
@@ -81,7 +85,6 @@ function getStepStatus(stepIndex: number, stepStatuses: any[] | null): string {
   return found?.status || 'pending'
 }
 
-// Filter counts
 const filterCounts = computed(() => {
   const counts: Record<FilterKey, number> = { all: props.tasks.length, success: 0, failed: 0, pending: 0 }
   props.tasks.forEach((_, idx) => {
@@ -99,6 +102,8 @@ function buildGraph() {
 
   const ss = props.stepStatuses
   const filter = activeFilter.value
+  const focus = selectedStep.value
+  const hasFocus = focus != null
 
   const filteredIndices = new Set<number>()
   props.tasks.forEach((_, idx) => {
@@ -117,6 +122,7 @@ function buildGraph() {
   props.tasks.forEach((task, idx) => {
     const status = getStepStatus(idx, ss)
     const visible = filteredIndices.has(idx)
+    const isSelected = focus === idx
 
     rawNodes.push({
       id: `step-${idx}`,
@@ -127,9 +133,13 @@ function buildGraph() {
         execType: task.exec_type,
         status,
         duration: props.fmtDuration(idx, ss),
+        selected: isSelected,
+        dimmed: hasFocus && !isSelected,
       } as StepNodeData,
       position: { x: 0, y: 0 },
       hidden: !visible,
+      // Fixed size so Vue Flow wrapper matches StepNode card
+      style: { width: `${NODE_WIDTH}px`, height: `${NODE_HEIGHT}px` },
     })
 
     if (idx > 0 && visible && filteredIndices.has(idx - 1)) {
@@ -149,12 +159,12 @@ function buildGraph() {
                 ? '#fbbf24'
                 : isDark.value ? '#52525b' : '#d4d4d8',
           strokeWidth: 1.5,
+          opacity: hasFocus && focus !== idx && focus !== idx - 1 ? 0.25 : 1,
         },
       })
     }
   })
 
-  // dagre layout (LR = left-to-right)
   const dagreGraph = new dagre.graphlib.Graph()
   dagreGraph.setDefaultEdgeLabel(() => ({}))
   dagreGraph.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 40 })
@@ -168,7 +178,7 @@ function buildGraph() {
 
   dagre.layout(dagreGraph)
 
-  const layouted = rawNodes.map(n => {
+  nodes.value = rawNodes.map(n => {
     const pos = dagreGraph.node(n.id)
     return {
       ...n,
@@ -178,20 +188,35 @@ function buildGraph() {
       },
     }
   })
-
-  nodes.value = layouted
   edges.value = rawEdges
 
   nextTick(() => {
-    fitView({ padding: 0.15, duration: 200 })
+    if (focus != null) {
+      focusCamera(focus)
+    } else {
+      fitView({ padding: 0.15, duration: 200 })
+    }
   })
 }
 
-onNodeClick(({ node }) => {
-  const data = node.data as StepNodeData
-  if (data.status === 'pending') return
-  emit('step-click', { stepIndex: data.stepIndex, jobId: '' })
-})
+function focusCamera(stepIndex: number) {
+  const n = nodes.value.find((node) => node.id === `step-${stepIndex}`)
+  if (!n) {
+    fitView({ padding: 0.15, duration: 200 })
+    return
+  }
+  const x = n.position.x + NODE_WIDTH / 2
+  const y = n.position.y + NODE_HEIGHT / 2
+  setCenter(x, y, { zoom: 1.15, duration: 280 })
+}
+
+function onNodeClick(event: NodeMouseEvent) {
+  const data = event.node.data as StepNodeData | undefined
+  if (!data || typeof data.stepIndex !== 'number') return
+  const next = selectedStep.value === data.stepIndex ? null : data.stepIndex
+  selectedStep.value = next
+  emit('step-click', { stepIndex: data.stepIndex })
+}
 
 function setFilter(key: FilterKey) {
   activeFilter.value = key
@@ -199,7 +224,7 @@ function setFilter(key: FilterKey) {
 }
 
 watch(
-  () => [props.tasks, props.stepStatuses],
+  () => [props.tasks, props.stepStatuses, selectedStep.value] as const,
   () => buildGraph(),
   { deep: true, immediate: true },
 )
@@ -216,7 +241,6 @@ defineExpose({ refresh: buildGraph })
     class="pipeline-topology h-[360px] w-full rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm relative"
     :class="{ 'pipeline-topology--fullscreen': isFullscreen }"
   >
-    <!-- Filter toolbar -->
     <div
       v-if="tasks.length > 0"
       class="absolute top-3 left-3 z-10 flex items-center gap-1.5 rounded-lg bg-card/95 border border-border/50 px-2 py-1.5 shadow-sm backdrop-blur"
@@ -236,12 +260,11 @@ defineExpose({ refresh: buildGraph })
       </button>
     </div>
 
-    <!-- Fullscreen toggle -->
     <button
       v-if="tasks.length > 0"
       class="absolute top-3 right-3 z-10 flex items-center justify-center w-7 h-7 rounded-lg bg-card/95 border border-border/50 shadow-sm backdrop-blur text-muted-foreground hover:text-foreground transition-colors"
-      @click="toggleFullscreen"
       :title="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'"
+      @click="toggleFullscreen"
     >
       <Minimize2 v-if="isFullscreen" class="w-3.5 h-3.5" />
       <Maximize2 v-else class="w-3.5 h-3.5" />
@@ -252,6 +275,7 @@ defineExpose({ refresh: buildGraph })
     </div>
     <VueFlow
       v-else
+      :id="FLOW_ID"
       v-model:nodes="nodes"
       v-model:edges="edges"
       :node-types="nodeTypes as any"
@@ -260,8 +284,10 @@ defineExpose({ refresh: buildGraph })
       :max-zoom="2"
       :nodes-draggable="false"
       :nodes-connectable="false"
-      :elements-selectable="false"
+      :elements-selectable="true"
+      :select-nodes-on-drag="false"
       fit-view-on-init
+      @node-click="onNodeClick"
     >
       <Background :pattern-color="isDark ? '#3f3f46' : '#e4e4e7'" :gap="20" :size="1" />
       <Controls class="!bg-card !border-border !shadow-lg !m-4 !rounded-lg overflow-hidden !bottom-4 !left-4" />
@@ -271,16 +297,17 @@ defineExpose({ refresh: buildGraph })
 
 <style>
 .pipeline-topology .vue-flow__node-step-node {
-  width: auto !important;
-  height: auto !important;
+  width: 170px !important;
+  height: 88px !important;
   padding: 0 !important;
   border: none !important;
   background: transparent !important;
   box-shadow: none !important;
+  overflow: visible !important;
 }
 
 .pipeline-topology .vue-flow__edge-path {
-  transition: stroke 0.3s;
+  transition: stroke 0.3s, opacity 0.3s;
 }
 
 .pipeline-topology:fullscreen,

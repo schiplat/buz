@@ -25,11 +25,13 @@ import {
 import { splitWarningField } from '@/utils/pipelineYamlLint'
 import PipelineYamlCodeEditor from '@/components/pipeline/PipelineYamlCodeEditor.vue'
 import { cn } from '@/lib/utils'
+import { useAppDialog } from '@/composables/useAppDialog'
 
 const emit = defineEmits<{
   saved: [payload: { pipelineId: string | null }]
 }>()
 
+const dialog = useAppDialog()
 /** First-visit coachmark for New Pipeline → Quick YAML Reference. */
 const REF_GUIDE_KEY = 'buz_guide_new_pipeline_yaml_ref'
 
@@ -430,7 +432,7 @@ async function openEdit(p: Pick<Pipeline, 'id' | 'name' | 'source'> & { yaml_pat
     yamlFileLocked.value = false
   } catch (e: any) {
     console.error('Failed to load pipeline for YAML edit', e)
-    alert(e?.response?.data?.message || e?.message || 'Failed to load pipeline')
+    await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to load pipeline')
   }
 }
 
@@ -452,10 +454,11 @@ async function saveFromYaml() {
     const detail = (yamlResult.value?.errors || [])
       .map((e) => `${e.field}: ${e.message}`)
       .join('\n')
-    alert(
+    await dialog.alert(
       detail
         ? `YAML validation failed — fix errors before saving:\n\n${detail}`
         : 'YAML is invalid — fix errors before saving.',
+      { title: 'Validation failed' },
     )
     return
   }
@@ -465,12 +468,12 @@ async function saveFromYaml() {
     : suggestYamlFilename(yamlResult.value.name || 'pipeline')
   yamlFilename.value = filename
   if (!/\.(yml|yaml)$/i.test(filename)) {
-    alert('Filename must end with .yml or .yaml')
+    await dialog.alert('Filename must end with .yml or .yaml')
     return
   }
   if (filenameConflict.value) {
     const other = filenameConflict.value.pipeline_name || filenameConflict.value.filename
-    alert(`Filename conflicts with existing orchestration file "${other}". Choose another name.`)
+    await dialog.alert(`Filename conflicts with existing orchestration file "${other}". Choose another name.`)
     return
   }
 
@@ -504,9 +507,9 @@ async function saveFromYaml() {
     const status = e?.response?.status
     const msg = e?.response?.data?.message || e?.message || 'Save failed'
     if (status === 409 && /If-Match|etag|modified/i.test(String(msg))) {
-      alert(`${msg}\n\nReload the YAML from disk and re-apply your edits before saving again.`)
+      await dialog.alert(`${msg}\n\nReload the YAML from disk and re-apply your edits before saving again.`)
     } else {
-      alert(msg)
+      await dialog.alert(msg)
     }
   } finally {
     saving.value = false

@@ -4,8 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, XCircle, Trash2, Loader2, MinusCircle, AlertTriangle, Info, Lock, CircleHelp, Clock } from '@lucide/vue'
-import { jobsApi, type Job, type LogChunk } from '@/api/jobs'
+import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, XCircle, Trash2, Loader2, MinusCircle, AlertTriangle, Info, Lock, CircleHelp, Clock, CheckCircle2, ScrollText } from '@lucide/vue'
+import { jobsApi, type Job, type JobApprovalRecord, type LogChunk } from '@/api/jobs'
 import { parseUtc, formatLogClock, formatLocalDateTime } from '@/utils/time'
 import { formatLogChunkForTerminal } from '@/utils/logFormat'
 import { createManagedWebSocket, type ManagedWebSocket } from '@/utils/ws'
@@ -13,9 +13,14 @@ import { navLog } from '@/utils/navigation'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { useAuthStore } from '@/stores/auth'
+import { useAppDialog } from '@/composables/useAppDialog'
+import { formatApiError } from '@/utils/error'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
+const dialog = useAppDialog()
 const jobId = route.params.id as string
 
 const job = ref<Job | null>(null)
@@ -72,7 +77,7 @@ function countStepLogLines(stepOrder: number): number {
 
 function isJobLive(): boolean {
   const s = job.value?.status
-  return s === 'running' || s === 'pending'
+  return s === 'running' || s === 'pending' || s === 'waiting_approval' || s === 'queued'
 }
 
 const showConcurrencyHelp = ref(false)
@@ -631,8 +636,120 @@ async function handleCancel() {
   try { clearRefreshTimer(); await jobsApi.cancel(jobId); await loadJob() } catch (e) { console.error(e) }
 }
 
+const approvalBusy = ref(false)
+
+const ROLE_RANK: Record<string, number> = {
+  viewer: 1,
+  developer: 2,
+  maintainer: 3,
+  owner: 4,
+}
+
+function roleRank(role: string | undefined | null): number {
+  if (!role) return 0
+  return ROLE_RANK[role.toLowerCase()] ?? 0
+}
+
+const canApprove = computed(() => {
+  const j = job.value
+  if (!j || j.status !== 'waiting_approval') return false
+  const protection = j.snapshot?.protection
+  // Platform admin may approve/reject even when they triggered the job.
+  if (!auth.isPlatformAdmin) {
+    if (protection?.forbid_self_approve !== false && j.trigger_user_id && j.trigger_user_id === auth.userId) {
+      return false
+    }
+  }
+  if (auth.isPlatformAdmin) return true
+  const minRole = protection?.min_approve_role || 'maintainer'
+  if (!j.team_id) return false
+  const membership = auth.teams.find((t) => t.id === j.team_id)
+  if (!membership) return false
+  return roleRank(membership.role) >= roleRank(minRole)
+})
+
+const canCancelJob = computed(() => {
+  const s = job.value?.status
+  return s === 'running' || s === 'pending' || s === 'waiting_approval' || s === 'queued'
+})
+
+const approvalsReceived = computed(() => job.value?.snapshot?.approval?.received ?? 0)
+const approvalsRequired = computed(
+  () => job.value?.snapshot?.protection?.require_approvals ?? 1,
+)
+
+const approvalList = computed<JobApprovalRecord[]>(() => job.value?.approvals ?? [])
+const showApprovalSidebar = computed(
+  () => approvalList.value.length > 0 || job.value?.status === 'waiting_approval',
+)
+
+function approvalActionClass(action: string): string {
+  switch (action) {
+    case 'approve':
+      return 'bg-emerald-500/10 text-emerald-700 border-emerald-500/25'
+    case 'reject':
+      return 'bg-red-500/10 text-red-700 border-red-500/25'
+    case 'cancel':
+      return 'bg-slate-500/10 text-slate-600 border-slate-500/25'
+    case 'timeout':
+      return 'bg-amber-500/10 text-amber-700 border-amber-500/25'
+    default:
+      return 'bg-muted text-muted-foreground border-border/50'
+  }
+}
+
+async function handleApprove() {
+  if (!canApprove.value || approvalBusy.value) return
+  const comment = await dialog.prompt('Optional note recorded on this approval.', {
+    title: 'Approve job',
+    label: 'Comment',
+    placeholder: 'Optional',
+    confirmLabel: 'Approve',
+    multiline: true,
+  })
+  if (comment === null) return
+  approvalBusy.value = true
+  try {
+    clearRefreshTimer()
+    await jobsApi.approve(jobId, comment)
+    await loadJob()
+  } catch (e) {
+    console.error(e)
+    await dialog.alert(formatApiError(e, 'Failed to approve job'), { title: 'Approve failed' })
+  } finally {
+    approvalBusy.value = false
+  }
+}
+
+async function handleReject() {
+  if (!canApprove.value || approvalBusy.value) return
+  const reason = await dialog.prompt('Optional reason recorded on this rejection.', {
+    title: 'Reject job',
+    label: 'Reason',
+    placeholder: 'Optional',
+    confirmLabel: 'Reject',
+    multiline: true,
+  })
+  if (reason === null) return
+  approvalBusy.value = true
+  try {
+    clearRefreshTimer()
+    await jobsApi.reject(jobId, reason)
+    await loadJob()
+  } catch (e) {
+    console.error(e)
+    await dialog.alert(formatApiError(e, 'Failed to reject job'), { title: 'Reject failed' })
+  } finally {
+    approvalBusy.value = false
+  }
+}
+
 async function handleDelete() {
-  if (!window.confirm('Permanently delete this job and all its logs?')) return
+  if (!(await dialog.confirm('Permanently delete this job and all its logs?', {
+    title: 'Delete job',
+    confirmLabel: 'Delete',
+    danger: true,
+  }))) return
   try { clearRefreshTimer(); managedWs?.close(); await jobsApi.delete(jobId); router.push(`/pipelines/${job.value?.pipeline_id}/history`) } catch (e) { console.error(e) }
 }
 
@@ -682,7 +799,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
       </button>
       <PageHeader :title="`Job ${jobId}`" :description="job?.pipeline_name || 'Loading...'">
         <template #actions>
-          <UiButton v-if="job?.status === 'running' || job?.status === 'pending'" variant="outline" size="sm" class="border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs px-3 py-1.5" @click="handleCancel">
+          <UiButton v-if="canCancelJob" variant="outline" size="sm" class="border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs px-3 py-1.5" @click="handleCancel">
             <XCircle class="h-3.5 w-3.5" /> Cancel
           </UiButton>
           <UiButton variant="outline" size="sm" class="border-red-500/20 text-red-500 hover:bg-red-500/10 text-xs px-3 py-1.5" @click="handleDelete">
@@ -703,6 +820,21 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
     </div>
 
     <template v-else-if="job">
+      <div class="flex flex-col lg:flex-row gap-5 items-start">
+        <div class="min-w-0 flex-1">
+      <!-- Environment used for Variable overrides -->
+      <div
+        v-if="job.snapshot?.environment"
+        class="mb-4 flex items-start gap-2 rounded-xl border border-border/60 bg-muted/30 px-4 py-3 text-sm"
+      >
+        <span class="text-muted-foreground">
+          <span class="font-semibold text-foreground">Environment</span>
+          —
+          <code class="mono-chip text-xs">{{ job.snapshot.environment }}</code>
+          (Variable / Secret defaults overlaid for this run)
+        </span>
+      </div>
+
       <!-- Verbose-mode notice: extra detail, redaction intact -->
       <div
         v-if="job.verbose_logs"
@@ -726,6 +858,60 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
           secret values may appear). They are visible to platform admins only and are
           <span class="font-semibold">automatically purged 24 hours</span> after the job was created.
         </span>
+      </div>
+
+      <!-- Waiting for environment approval -->
+      <div
+        v-if="job.status === 'waiting_approval'"
+        class="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm"
+      >
+        <div class="flex items-start gap-2">
+          <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+          <div class="flex-1 min-w-0">
+            <p class="text-amber-900 dark:text-amber-200">
+              <span class="font-semibold">Waiting for approval</span>
+              —
+              environment
+              <code class="mono-chip text-xs mx-0.5">{{ job.snapshot?.environment || '—' }}</code>
+              requires
+              <span class="font-semibold tabular-nums">{{ approvalsReceived }} / {{ approvalsRequired }}</span>
+              approval(s) before this job can run.
+              <template v-if="job.snapshot?.protection?.min_approve_role">
+                Min approve role:
+                <span class="font-medium">{{ job.snapshot.protection.min_approve_role }}</span>.
+              </template>
+            </p>
+            <div v-if="canApprove" class="mt-3 flex flex-wrap gap-2">
+              <UiButton
+                size="sm"
+                class="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-600/90 text-white"
+                :disabled="approvalBusy"
+                @click="handleApprove"
+              >
+                <CheckCircle2 class="h-3.5 w-3.5" />
+                {{ approvalBusy ? 'Working…' : 'Approve' }}
+              </UiButton>
+              <UiButton
+                variant="outline"
+                size="sm"
+                class="border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs px-3 py-1.5"
+                :disabled="approvalBusy"
+                @click="handleReject"
+              >
+                <XCircle class="h-3.5 w-3.5" /> Reject
+              </UiButton>
+            </div>
+            <p
+              v-else
+              class="mt-2 text-[12px] text-amber-800/80 dark:text-amber-300/80"
+            >
+              You do not have permission to approve this job
+              <template v-if="!auth.isPlatformAdmin && job.snapshot?.protection?.forbid_self_approve !== false && job.trigger_user_id === auth.userId">
+                (self-approve is forbidden)
+              </template>.
+            </p>
+          </div>
+        </div>
       </div>
 
       <!-- Queued: waiting for an earlier job in the concurrency group -->
@@ -1026,6 +1212,55 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
 
       <div v-else class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-sm p-12 text-center">
         <p class="text-sm text-muted-foreground">No snapshot data</p>
+      </div>
+        </div>
+
+        <!-- Approval history — right sidebar (no pagination: few events per job) -->
+        <aside
+          v-if="showApprovalSidebar"
+          class="w-full lg:w-[22rem] xl:w-96 shrink-0 lg:sticky lg:top-4 rounded-2xl border border-border/50 bg-card shadow-sm overflow-hidden flex flex-col max-h-[min(70vh,40rem)]"
+        >
+          <div class="px-4 py-3 border-b border-border/30 shrink-0">
+            <div class="flex items-center gap-2">
+              <ScrollText class="h-3.5 w-3.5 text-muted-foreground" />
+              <p class="text-[12px] font-medium">Approval history</p>
+              <span
+                v-if="approvalList.length > 0"
+                class="ml-auto text-[10px] font-mono tabular-nums text-muted-foreground bg-muted rounded-md px-1.5 py-0.5"
+              >{{ approvalList.length }}</span>
+            </div>
+            <p class="text-[11px] text-muted-foreground mt-1">
+              Append-only trail (approve / reject / cancel / timeout).
+            </p>
+          </div>
+          <div class="scrollbar-sidebar flex-1 overflow-y-auto min-h-0">
+            <div v-if="approvalList.length === 0" class="px-4 py-8 text-center text-[12px] text-muted-foreground">
+              No approval events yet.
+            </div>
+            <ul v-else class="divide-y divide-border/20">
+              <li
+                v-for="a in approvalList"
+                :key="a.id"
+                class="px-4 py-3 hover:bg-muted/5"
+              >
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span
+                    class="inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                    :class="approvalActionClass(a.action)"
+                  >{{ a.action }}</span>
+                  <span class="text-[12px] font-medium truncate">{{ a.username || a.user_id || '—' }}</span>
+                  <span class="ml-auto text-[10px] font-mono text-muted-foreground whitespace-nowrap">
+                    {{ a.created_at ? formatLocalDateTime(a.created_at) : '—' }}
+                  </span>
+                </div>
+                <p
+                  v-if="a.comment"
+                  class="mt-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap break-words"
+                >{{ a.comment }}</p>
+              </li>
+            </ul>
+          </div>
+        </aside>
       </div>
     </template>
 
