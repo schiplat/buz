@@ -123,7 +123,7 @@ invalid trigger inputs — tag: value does not match pattern '^[A-Za-z0-9._-]+$'
 
 ## Example migration
 
-`example/pipelines/demo-app-deploy.yml` previously shipped a `Validate inputs` shell step. It was replaced by declarations:
+`example/pipelines/p0_cella-deploy-host-a.yml` previously shipped a `Validate inputs` shell step. It was replaced by declarations:
 
 ```yaml
 on:
