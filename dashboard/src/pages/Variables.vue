@@ -135,7 +135,7 @@ onMounted(loadVars)
   <div class="space-y-6">
     <PageHeader
       title="Variables"
-      description="Non-sensitive platform config (shared Default). Override per run via Environments, or per GitHub repo via Sync. Bind to a pipeline via Advanced → Variables; available as $NAME in every step. Never store passwords here."
+      description="Non-sensitive shared config as $NAME in steps. Override via Environments or GitHub Sync. Do not store secrets here."
     >
       <template #actions>
         <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> Add Variable</UiButton>
