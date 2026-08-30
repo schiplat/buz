@@ -125,7 +125,10 @@ onMounted(load)
             @click="openTeam(t)"
           >
             <div>
-              <div class="font-semibold text-sm">{{ t.name }}</div>
+              <div
+                class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
+                :title="t.name"
+              >{{ t.name }}</div>
               <div class="text-xs text-muted-foreground font-mono">{{ t.slug }} · {{ t.my_role || 'admin' }}</div>
             </div>
             <UiButton

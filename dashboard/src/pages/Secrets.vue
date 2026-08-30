@@ -296,46 +296,40 @@ onMounted(loadSecrets)
           <table class="w-full text-[13px]">
             <thead>
               <tr class="border-b border-border/30 bg-muted/10">
-                <th class="text-left px-5 py-2.5">
+                <th class="text-left px-4 py-2.5 w-44 min-w-[9rem]">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
                     Name
-                    <span class="font-mono text-xs">{{ sortIndicator('name') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('name') }}</span>
                   </button>
                 </th>
-                <th class="text-left px-5 py-2.5">
+                <th class="text-left px-5 py-2.5 min-w-[20rem] w-[42%]">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('value')">
                     Value
-                    <span class="font-mono text-xs">{{ sortIndicator('value') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('value') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('team')">
                     Team
-                    <span class="font-mono text-xs">{{ sortIndicator('team') || '↕' }}</span>
-                  </button>
-                </th>
-                <th class="text-left px-5 py-2.5">
-                  <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('kind')">
-                    Kind
-                    <span class="font-mono text-xs">{{ sortIndicator('kind') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('team') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('team_shared')">
                     Share
-                    <span class="font-mono text-xs">{{ sortIndicator('team_shared') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('team_shared') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('github_status')">
                     GitHub Sync
-                    <span class="font-mono text-xs">{{ sortIndicator('github_status') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('github_status') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('updated_at')">
                     Updated
-                    <span class="font-mono text-xs">{{ sortIndicator('updated_at') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('updated_at') }}</span>
                   </button>
                 </th>
                 <th class="text-right px-5 py-2.5 w-20" />
@@ -343,13 +337,31 @@ onMounted(loadSecrets)
             </thead>
             <tbody class="divide-y divide-border/20">
               <tr v-for="s in pageItems" :key="s.id" class="hover:bg-muted/5 transition-colors">
-                <td class="px-5 py-3 whitespace-nowrap">
-                  <div class="flex flex-col">
-                    <span class="font-mono text-sm font-semibold">{{ s.name }}</span>
+                <td class="px-4 py-3 w-44 min-w-[9rem]">
+                  <div class="flex flex-col gap-1 min-w-0">
+                    <span
+                      class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
+                      :title="s.name"
+                    >{{ s.name }}</span>
+                    <span
+                      v-if="s.kind === 'registry'"
+                      class="inline-flex w-fit items-center rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
+                      title="Registry credentials for registry_secret / docker login"
+                    >Registry</span>
+                    <span
+                      v-else-if="s.kind === 'aliyun_oss_auth'"
+                      class="inline-flex w-fit items-center rounded-md bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-medium text-orange-700 dark:text-orange-400"
+                      title="Aliyun OSS read-only credentials for config_source / signed-URL downloads"
+                    >Aliyun OSS</span>
+                    <span
+                      v-else
+                      class="inline-flex w-fit items-center rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                      title="Generic secret (env inject)"
+                    >Generic</span>
                   </div>
                 </td>
-                <td class="px-5 py-3">
-                  <div class="flex flex-col gap-1 min-w-0 max-w-md">
+                <td class="px-5 py-3 min-w-[20rem] w-[42%]">
+                  <div class="flex flex-col gap-1 min-w-0">
                     <code class="mono-chip text-xs select-all break-all whitespace-pre-wrap">{{ s.value }}</code>
                     <span
                       v-if="s.reencrypt_required"
@@ -360,19 +372,6 @@ onMounted(loadSecrets)
                   </div>
                 </td>
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ s.owner_group || s.team_id || '—' }}</td>
-                <td class="px-5 py-3 text-xs whitespace-nowrap">
-                  <span
-                    v-if="s.kind === 'registry'"
-                    class="inline-flex items-center rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
-                    title="Registry credentials for registry_secret / docker login"
-                  >Registry</span>
-                  <span
-                    v-else-if="s.kind === 'aliyun_oss_auth'"
-                    class="inline-flex items-center rounded-md bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-medium text-orange-700 dark:text-orange-400"
-                    title="Aliyun OSS read-only credentials for config_source / signed-URL downloads"
-                  >Aliyun OSS</span>
-                  <span v-else class="text-muted-foreground/70" title="Generic secret (env inject)">Generic</span>
-                </td>
                 <td class="px-5 py-3 text-xs whitespace-nowrap">
                   <span
                     v-if="s.team_shared"

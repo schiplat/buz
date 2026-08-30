@@ -172,25 +172,25 @@ onMounted(loadVars)
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
                     Name
-                    <span class="font-mono text-xs">{{ sortIndicator('name') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('name') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('value')">
                     Default
-                    <span class="font-mono text-xs">{{ sortIndicator('value') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('value') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('github_status')">
                     GitHub Sync
-                    <span class="font-mono text-xs">{{ sortIndicator('github_status') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('github_status') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('updated_at')">
                     Updated
-                    <span class="font-mono text-xs">{{ sortIndicator('updated_at') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('updated_at') }}</span>
                   </button>
                 </th>
                 <th class="text-right px-5 py-2.5 w-20" />
@@ -198,7 +198,12 @@ onMounted(loadVars)
             </thead>
             <tbody class="divide-y divide-border/20">
               <tr v-for="v in pageItems" :key="v.id" class="hover:bg-muted/5 transition-colors">
-                <td class="px-5 py-3 font-mono text-sm font-semibold whitespace-nowrap">{{ v.name }}</td>
+                <td class="px-5 py-3">
+                  <span
+                    class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
+                    :title="v.name"
+                  >{{ v.name }}</span>
+                </td>
                 <td class="px-5 py-3">
                   <code class="mono-chip text-xs">{{ v.value }}</code>
                 </td>

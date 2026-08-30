@@ -104,8 +104,10 @@ append-only row in `job_approvals` (exposed on `GET /jobs/{id}` as `approvals`).
 
 ## UI
 
-- Infrastructure → **Environments**: CRUD (platform admin); Variable / Secret
-  overrides; Protection card
+- Infrastructure → **Environments** (`/environments`): list + create
+- Environment detail (`/environments/{id}`): env info + protection on top
+  (inline edit); Variable / Secret overrides below in a left/right split,
+  each with its own pagination. List and detail use separate routes.
 - Trigger dialog: Environment dropdown; protected envs labeled
 - Job Detail: Approve / Reject + **Approval history** trail
 

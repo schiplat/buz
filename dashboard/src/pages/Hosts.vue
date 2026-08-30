@@ -3,13 +3,14 @@ import { ref, computed, onMounted } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
-import { Plus, Pencil, Trash2, Server, Loader2 } from '@lucide/vue'
+import { Plus, Pencil, Trash2, Server, Loader2, Copy, Check } from '@lucide/vue'
 import { hostsApi, type Host } from '@/api/hosts'
 import { teamsApi, type Team } from '@/api/teams'
 import { useAuthStore } from '@/stores/auth'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
 import { useAppDialog } from '@/composables/useAppDialog'
+import { copyText } from '@/utils/copyText'
 
 const auth = useAuthStore()
 const dialog = useAppDialog()
@@ -18,6 +19,7 @@ const availableTeams = ref<Team[]>([])
 const loading = ref(true)
 const searchQuery = ref('')
 const filterCredentialType = ref('')
+const copiedHostId = ref<string | null>(null)
 
 const filteredHosts = computed(() => {
   let source = hosts.value.filter((h) => auth.matchesActiveTeam(h.team_id, { includeShared: true }))
@@ -195,6 +197,19 @@ async function handleTest() {
   }
 }
 
+async function copyHostAddress(h: Host, e?: Event) {
+  e?.stopPropagation()
+  const ok = await copyText(h.host)
+  if (ok) {
+    copiedHostId.value = h.id
+    setTimeout(() => {
+      if (copiedHostId.value === h.id) copiedHostId.value = null
+    }, 1500)
+  } else {
+    await dialog.alert('Copy failed — your browser blocks clipboard access on plain HTTP. Use HTTPS or copy manually.')
+  }
+}
+
 async function handleDelete(h: Host) {
   if (!(await dialog.confirm(`Delete host "${h.name}"? This cannot be undone.`, {
     title: 'Delete host',
@@ -268,37 +283,37 @@ onMounted(async () => {
               <th class="text-left px-5 py-2.5">
                 <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
                   Name
-                  <span class="font-mono text-xs">{{ sortIndicator('name') || '↕' }}</span>
+                  <span class="font-mono text-xs">{{ sortIndicator('name') }}</span>
                 </button>
               </th>
               <th class="text-left px-5 py-2.5">
                 <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('host')">
                   Host
-                  <span class="font-mono text-xs">{{ sortIndicator('host') || '↕' }}</span>
+                  <span class="font-mono text-xs">{{ sortIndicator('host') }}</span>
                 </button>
               </th>
               <th class="text-left px-5 py-2.5">
                 <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('port')">
                   Port
-                  <span class="font-mono text-xs">{{ sortIndicator('port') || '↕' }}</span>
+                  <span class="font-mono text-xs">{{ sortIndicator('port') }}</span>
                 </button>
               </th>
               <th class="text-left px-5 py-2.5">
                 <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('username')">
                   User
-                  <span class="font-mono text-xs">{{ sortIndicator('username') || '↕' }}</span>
+                  <span class="font-mono text-xs">{{ sortIndicator('username') }}</span>
                 </button>
               </th>
               <th class="text-left px-5 py-2.5">
                 <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('credential_type')">
                   Auth
-                  <span class="font-mono text-xs">{{ sortIndicator('credential_type') || '↕' }}</span>
+                  <span class="font-mono text-xs">{{ sortIndicator('credential_type') }}</span>
                 </button>
               </th>
               <th class="text-left px-5 py-2.5">
                 <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('team')">
                   Team
-                  <span class="font-mono text-xs">{{ sortIndicator('team') || '↕' }}</span>
+                  <span class="font-mono text-xs">{{ sortIndicator('team') }}</span>
                 </button>
               </th>
               <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Labels</th>
@@ -307,8 +322,26 @@ onMounted(async () => {
           </thead>
           <tbody class="divide-y divide-border/20">
             <tr v-for="h in pageItems" :key="h.id" class="hover:bg-muted/5 transition-colors">
-              <td class="px-5 py-3 font-semibold whitespace-nowrap">{{ h.name }}</td>
-              <td class="px-5 py-3 font-mono text-xs text-muted-foreground whitespace-nowrap">{{ h.host }}</td>
+              <td class="px-5 py-3">
+                <span
+                  class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
+                  :title="h.name"
+                >{{ h.name }}</span>
+              </td>
+              <td class="px-5 py-3 whitespace-nowrap">
+                <div class="inline-flex items-center gap-1.5 max-w-full">
+                  <span class="font-mono text-xs text-muted-foreground" :title="h.host">{{ h.host }}</span>
+                  <button
+                    type="button"
+                    class="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 hover:bg-muted hover:text-foreground transition-colors"
+                    title="Copy address"
+                    @click="copyHostAddress(h, $event)"
+                  >
+                    <Check v-if="copiedHostId === h.id" class="h-3 w-3 text-emerald-500" />
+                    <Copy v-else class="h-3 w-3" />
+                  </button>
+                </div>
+              </td>
               <td class="px-5 py-3 font-mono text-xs text-muted-foreground whitespace-nowrap">{{ h.port }}</td>
               <td class="px-5 py-3 whitespace-nowrap">{{ h.username }}</td>
               <td class="px-5 py-3 whitespace-nowrap">

@@ -86,11 +86,13 @@ onMounted(async () => {
 
 function isActive(name: string) {
   if (name === 'pipelines') return route.name === 'pipelines' || route.name === 'pipeline-detail'
+  if (name === 'environments') return route.name === 'environments' || route.name === 'environment-detail'
   if (name === 'secrets-variables') {
     return (
       route.name === 'secrets-variables' ||
       route.name === 'secrets' ||
-      route.name === 'variables'
+      route.name === 'variables' ||
+      route.name === 'github-sync'
     )
   }
   return route.name === name

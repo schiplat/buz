@@ -46,9 +46,14 @@ export function useClientSort<T>(
     }
   }
 
-  function sortIndicator(key: string): '' | 'asc' | 'desc' {
-    if (sortKey.value !== key) return ''
-    return sortDir.value
+  /**
+   * Icon-only sort glyph for table headers.
+   * Active column: ↑ (asc) / ↓ (desc). Inactive: ↕.
+   * Never returns the words "asc" / "desc".
+   */
+  function sortIndicator(key: string): '↑' | '↓' | '↕' {
+    if (sortKey.value !== key) return '↕'
+    return sortDir.value === 'asc' ? '↑' : '↓'
   }
 
   return { sortKey, sortDir, sorted, toggleSort, sortIndicator }

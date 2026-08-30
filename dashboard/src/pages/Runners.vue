@@ -356,13 +356,13 @@ const eventBadge = (t: string) => {
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
                     Name
-                    <span class="font-mono text-xs">{{ sortIndicator('name') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('name') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('hostname')">
                     Hostname
-                    <span class="font-mono text-xs">{{ sortIndicator('hostname') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('hostname') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">IP</th>
@@ -371,19 +371,19 @@ const eventBadge = (t: string) => {
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('status')">
                     Status
-                    <span class="font-mono text-xs">{{ sortIndicator('status') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('status') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('version')">
                     Version
-                    <span class="font-mono text-xs">{{ sortIndicator('version') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('version') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('last_seen')">
                     Last Seen
-                    <span class="font-mono text-xs">{{ sortIndicator('last_seen') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('last_seen') }}</span>
                   </button>
                 </th>
                 <th class="text-right px-5 py-2.5 w-20" />
@@ -395,7 +395,7 @@ const eventBadge = (t: string) => {
                   <div class="inline-flex items-center gap-1.5 max-w-full">
                     <button
                       type="button"
-                      class="font-mono text-sm font-semibold text-primary hover:underline truncate"
+                      class="font-mono text-[12px] font-medium leading-snug text-primary hover:underline truncate max-w-full"
                       :title="`Open ${r.name}`"
                       @click="openDetail(r)"
                     >{{ r.name }}</button>

@@ -385,12 +385,12 @@ onMounted(loadAll)
               <tr class="border-b border-border/30 bg-muted/10">
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleConnSort('name')">
-                    Name <span class="font-mono text-xs">{{ connSortIndicator('name') || '↕' }}</span>
+                    Name <span class="font-mono text-xs">{{ connSortIndicator('name') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleConnSort('api_base_url')">
-                    API Base URL <span class="font-mono text-xs">{{ connSortIndicator('api_base_url') || '↕' }}</span>
+                    API Base URL <span class="font-mono text-xs">{{ connSortIndicator('api_base_url') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
@@ -405,7 +405,12 @@ onMounted(loadAll)
             </thead>
             <tbody class="divide-y divide-border/20">
               <tr v-for="c in connPageItems" :key="c.id" class="hover:bg-muted/5 transition-colors">
-                <td class="px-5 py-3 font-medium whitespace-nowrap">{{ c.name }}</td>
+                <td class="px-5 py-3">
+                  <span
+                    class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
+                    :title="c.name"
+                  >{{ c.name }}</span>
+                </td>
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ c.api_base_url }}</td>
                 <td class="px-5 py-3">
                   <span v-if="c.has_token" class="inline-flex items-center rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">Set</span>
@@ -471,12 +476,12 @@ onMounted(loadAll)
               <tr class="border-b border-border/30 bg-muted/10">
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleRepoSort('connection')">
-                    Connection <span class="font-mono text-xs">{{ repoSortIndicator('connection') || '↕' }}</span>
+                    Connection <span class="font-mono text-xs">{{ repoSortIndicator('connection') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleRepoSort('repo')">
-                    Repo <span class="font-mono text-xs">{{ repoSortIndicator('repo') || '↕' }}</span>
+                    Repo <span class="font-mono text-xs">{{ repoSortIndicator('repo') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5"><span class="text-[11px] uppercase text-muted-foreground">Bound</span></th>
@@ -487,16 +492,16 @@ onMounted(loadAll)
             <tbody class="divide-y divide-border/20">
               <tr v-for="r in repoPageItems" :key="r.id" class="hover:bg-muted/5 transition-colors">
                 <td class="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{{ r.connection_name }}</td>
-                <td class="px-5 py-3 whitespace-nowrap">
+                <td class="px-5 py-3">
                   <a
                     :href="r.url"
                     target="_blank"
                     rel="noopener noreferrer"
-                    class="inline-flex items-center gap-1.5 font-mono text-[13px] font-semibold text-foreground hover:text-primary transition-colors"
+                    class="inline-flex items-center gap-1.5 font-mono text-[12px] font-medium leading-snug text-foreground/90 hover:text-primary transition-colors break-all"
                     :title="`Open ${r.owner}/${r.repo} on GitHub`"
                   >
                     {{ r.owner }}/{{ r.repo }}
-                    <ExternalLink class="h-3 w-3 text-muted-foreground/50" />
+                    <ExternalLink class="h-3 w-3 shrink-0 text-muted-foreground/50" />
                   </a>
                 </td>
                 <td class="px-5 py-3">

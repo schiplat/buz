@@ -34,6 +34,29 @@ const routes: RouteRecordRaw[] = [
       { path: 'hosts', name: 'hosts', component: () => import('@/pages/Hosts.vue'), meta: { title: 'Hosts' } },
       { path: 'environments', name: 'environments', component: () => import('@/pages/Environments.vue'), meta: { title: 'Environments' } },
       {
+        path: 'environments/:id',
+        name: 'environment-detail',
+        component: () => import('@/pages/EnvironmentDetail.vue'),
+        meta: { title: 'Environment Detail' },
+      },
+      // Backwards-compatible aliases for previous tabbed detail URLs.
+      {
+        path: 'environments/:id/protection',
+        redirect: (to) => ({ name: 'environment-detail', params: { id: to.params.id } }),
+      },
+      {
+        path: 'environments/:id/overrides',
+        redirect: (to) => ({ name: 'environment-detail', params: { id: to.params.id } }),
+      },
+      {
+        path: 'environments/:id/variables',
+        redirect: (to) => ({ name: 'environment-detail', params: { id: to.params.id } }),
+      },
+      {
+        path: 'environments/:id/secrets',
+        redirect: (to) => ({ name: 'environment-detail', params: { id: to.params.id } }),
+      },
+      {
         path: 'secrets-variables',
         name: 'secrets-variables',
         component: () => import('@/pages/SecretsVariables.vue'),

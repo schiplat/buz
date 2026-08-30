@@ -570,32 +570,32 @@ async function handleToggleActive(p: Pipeline) {
                 <th>
                   <button type="button" class="inline-flex items-center gap-1 hover:text-foreground transition-colors" @click="toggleSort('name')">
                     Name
-                    <span class="font-mono text-xs opacity-50">{{ sortIndicator('name') || '↕' }}</span>
+                    <span class="font-mono text-xs opacity-50">{{ sortIndicator('name') }}</span>
                   </button>
                 </th>
                 <th>
                   <button type="button" class="inline-flex items-center gap-1 hover:text-foreground transition-colors" @click="toggleSort('trigger_type')">
                     Trigger
-                    <span class="font-mono text-xs opacity-50">{{ sortIndicator('trigger_type') || '↕' }}</span>
+                    <span class="font-mono text-xs opacity-50">{{ sortIndicator('trigger_type') }}</span>
                   </button>
                 </th>
                 <th>R-Labels</th>
                 <th>
                   <button type="button" class="inline-flex items-center gap-1 hover:text-foreground transition-colors" @click="toggleSort('last_build')">
                     Last Build
-                    <span class="font-mono text-xs opacity-50">{{ sortIndicator('last_build') || '↕' }}</span>
+                    <span class="font-mono text-xs opacity-50">{{ sortIndicator('last_build') }}</span>
                   </button>
                 </th>
                 <th>
                   <button type="button" class="inline-flex items-center gap-1 hover:text-foreground transition-colors" @click="toggleSort('success_rate')" title="Successful jobs ÷ total builds">
                     Rate
-                    <span class="font-mono text-xs opacity-50">{{ sortIndicator('success_rate') || '↕' }}</span>
+                    <span class="font-mono text-xs opacity-50">{{ sortIndicator('success_rate') }}</span>
                   </button>
                 </th>
                 <th>
                   <button type="button" class="inline-flex items-center gap-1 hover:text-foreground transition-colors" @click="toggleSort('is_active')">
                     Active
-                    <span class="font-mono text-xs opacity-50">{{ sortIndicator('is_active') || '↕' }}</span>
+                    <span class="font-mono text-xs opacity-50">{{ sortIndicator('is_active') }}</span>
                   </button>
                 </th>
                 <th class="text-right">Actions</th>
@@ -606,7 +606,8 @@ async function handleToggleActive(p: Pipeline) {
                 <td>
                   <div class="flex items-center gap-2">
                     <button
-                      class="font-medium text-left hover:text-primary hover:underline underline-offset-2 transition-colors cursor-pointer"
+                      class="font-mono text-[12px] font-medium leading-snug text-foreground/90 text-left hover:text-primary hover:underline underline-offset-2 transition-colors cursor-pointer break-all"
+                      :title="p.name"
                       @click="router.push(`/pipelines/${p.id}/stage`)"
                     >{{ p.name }}</button>
                     <span

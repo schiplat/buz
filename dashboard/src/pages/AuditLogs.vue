@@ -230,8 +230,8 @@ onMounted(load)
                 <td class="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
                   {{ formatTime(row.created_at) }}
                 </td>
-                <td class="font-medium whitespace-nowrap">
-                  {{ row.actor_username || '—' }}
+                <td class="whitespace-nowrap">
+                  <span class="font-mono text-[12px] font-medium leading-snug text-foreground/90">{{ row.actor_username || '—' }}</span>
                 </td>
                 <td>
                   <div
@@ -244,7 +244,10 @@ onMounted(load)
                   </div>
                 </td>
                 <td>
-                  <div class="font-medium truncate max-w-[18rem]" :title="row.resource_name || row.resource_id || undefined">
+                  <div
+                    class="font-mono text-[12px] font-medium leading-snug text-foreground/90 truncate max-w-[18rem]"
+                    :title="row.resource_name || row.resource_id || undefined"
+                  >
                     {{ row.resource_name || row.resource_id || '—' }}
                   </div>
                   <div v-if="row.resource_type" class="type-meta mt-0.5">

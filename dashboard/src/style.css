@@ -167,6 +167,12 @@
     @apply px-3.5 py-3 align-middle text-sm;
   }
 
+  /* All dashboard tables: row content vertically centered */
+  table th,
+  table td {
+    @apply align-middle;
+  }
+
   .data-table tbody tr { @apply transition-colors; }
   .data-table tbody tr + tr td { @apply border-0; }
   

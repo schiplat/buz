@@ -120,7 +120,12 @@ onMounted(load)
             </thead>
             <tbody class="divide-y divide-border/20">
               <tr v-for="t in tokens" :key="t.id" class="hover:bg-muted/5">
-                <td class="px-5 py-3 font-semibold">{{ t.name }}</td>
+                <td class="px-5 py-3">
+                  <span
+                    class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
+                    :title="t.name"
+                  >{{ t.name }}</span>
+                </td>
                 <td v-if="auth.isSuperAdmin" class="px-5 py-3 text-xs text-muted-foreground">{{ t.username || '—' }}</td>
                 <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ t.prefix }}</td>
                 <td class="px-5 py-3 text-xs">{{ t.created_at?.slice(0, 19) || '—' }}</td>

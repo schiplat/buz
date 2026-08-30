@@ -153,19 +153,19 @@ onMounted(load)
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('username')">
                     Username
-                    <span class="font-mono text-xs">{{ sortIndicator('username') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('username') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('role')">
                     Role
-                    <span class="font-mono text-xs">{{ sortIndicator('role') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('role') }}</span>
                   </button>
                 </th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('status')">
                     Status
-                    <span class="font-mono text-xs">{{ sortIndicator('status') || '↕' }}</span>
+                    <span class="font-mono text-xs">{{ sortIndicator('status') }}</span>
                   </button>
                 </th>
                 <th class="text-right px-5 py-2.5 w-28" />
@@ -173,7 +173,12 @@ onMounted(load)
             </thead>
             <tbody class="divide-y divide-border/20">
               <tr v-for="u in pageItems" :key="u.id" class="hover:bg-muted/5">
-                <td class="px-5 py-3 font-semibold">{{ u.username }}</td>
+                <td class="px-5 py-3">
+                  <span
+                    class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
+                    :title="u.username"
+                  >{{ u.username }}</span>
+                </td>
                 <td class="px-5 py-3 text-xs">
                   <span v-if="u.is_super_admin" class="font-semibold text-amber-500">super admin</span>
                   <span v-else-if="u.is_platform_admin">platform admin</span>
