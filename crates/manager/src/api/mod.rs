@@ -102,6 +102,8 @@ pub fn router(state: AppState) -> Router {
             delete(git_hooks::delete_hook),
         )
         .route("/jobs", get(jobs::list))
+        .route("/jobs/stats/trend", get(jobs::stats_trend))
+        .route("/jobs/recent", get(jobs::recent))
         .route("/jobs/{id}", get(jobs::get_one).delete(jobs::delete))
         .route("/jobs/{id}/cancel", post(jobs::cancel))
         .route("/jobs/{id}/approve", post(jobs::approve))
@@ -279,3 +281,7 @@ mod environments_integration_tests;
 #[cfg(test)]
 #[path = "tests/environment_approval_tests.rs"]
 mod environment_approval_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/jobs_stats_tests.rs"]
+mod jobs_stats_integration_tests;

@@ -109,9 +109,51 @@ export interface LogChunk {
   created_at?: string | null
 }
 
+/** One day of the Overview build-trend chart (zero-filled by the backend). */
+export interface DailyBuildPoint {
+  date: string
+  total: number
+  success: number
+  failed: number
+  cancelled: number
+  other: number
+}
+
+export interface JobTrend {
+  days: number
+  points: DailyBuildPoint[]
+}
+
+/** Lightweight entry for the Overview build stream (no snapshot/logs). */
+export interface RecentJob {
+  id: string
+  pipeline_id: string
+  pipeline_name: string | null
+  status: string
+  trigger_by: string
+  team_id: string
+  created_at: string | null
+}
+
 export const jobsApi = {
   async list(): Promise<Job[]> {
     const resp = await apiClient.get('/jobs')
+    return resp.data
+  },
+
+  /** Daily build counts for the last 7/15/30 days, team- and role-scoped. */
+  async trend(opts?: { days?: number; teamId?: string }): Promise<JobTrend> {
+    const params: Record<string, string | number> = { days: opts?.days ?? 7 }
+    if (opts?.teamId) params.team_id = opts.teamId
+    const resp = await apiClient.get('/jobs/stats/trend', { params })
+    return resp.data
+  },
+
+  /** Recent builds for the Overview sidebar stream. */
+  async recent(opts?: { limit?: number; teamId?: string }): Promise<RecentJob[]> {
+    const params: Record<string, string | number> = { limit: opts?.limit ?? 10 }
+    if (opts?.teamId) params.team_id = opts.teamId
+    const resp = await apiClient.get('/jobs/recent', { params })
     return resp.data
   },
 

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
 use serde::Deserialize;
@@ -119,6 +119,213 @@ pub async fn list(
             })
         })
         .collect();
+
+    Ok(Json(ApiResponse::success(jobs)))
+}
+
+// Dashboard stats endpoints ------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+pub struct TrendQuery {
+    #[serde(default)]
+    pub days: Option<i64>,
+    #[serde(default)]
+    pub team_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct RecentQuery {
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub team_id: Option<String>,
+}
+
+/// Team scope for dashboard stats. An explicit `team_id` query param must be a
+/// team the caller can view (403 otherwise); when absent, all the caller's
+/// visible teams are used (platform admin = every team).
+fn dashboard_team_scope(
+    auth: &AuthUser,
+    team_id: Option<&str>,
+) -> Result<Option<(String, Vec<String>)>, AppError> {
+    if let Some(tid) = team_id.map(str::trim).filter(|s| !s.is_empty()) {
+        auth.check_team(tid, Perm::TeamView)?;
+        return Ok(Some((
+            "AND p.team_id = ?".to_string(),
+            vec![tid.to_string()],
+        )));
+    }
+    Ok(team_in_clause(auth, "p.team_id"))
+}
+
+/// Debug (unredacted) jobs are admin-only records — hidden from every stats
+/// endpoint for non-admins, matching the job list/get handlers.
+fn dashboard_debug_filter(auth: &AuthUser) -> &'static str {
+    if auth.is_platform_admin {
+        ""
+    } else {
+        "AND j.debug_unredact = 0"
+    }
+}
+
+/// Assemble a zero-filled daily series covering the last `days` days (UTC),
+/// overlaying the aggregated `counts` (day → status → count).
+fn build_trend_points(
+    counts: &HashMap<String, HashMap<String, i64>>,
+    days: i64,
+) -> Vec<serde_json::Value> {
+    let today = chrono::Utc::now().date_naive();
+    let mut points = Vec::with_capacity(days as usize);
+    for offset in (0..days).rev() {
+        let date = today - chrono::Duration::days(offset);
+        let key = date.format("%Y-%m-%d").to_string();
+        let day_counts = counts.get(&key).cloned().unwrap_or_default();
+        let total: i64 = day_counts.values().sum();
+        let success = day_counts.get("success").copied().unwrap_or(0);
+        let failed = day_counts.get("failed").copied().unwrap_or(0);
+        let cancelled = day_counts.get("cancelled").copied().unwrap_or(0);
+        points.push(serde_json::json!({
+            "date": key,
+            "total": total,
+            "success": success,
+            "failed": failed,
+            "cancelled": cancelled,
+            "other": total - success - failed - cancelled,
+        }));
+    }
+    points
+}
+
+/// GET /jobs/stats/trend?days=7&team_id=… — daily build counts (by status) for
+/// the last 7/15/30 days, team- and role-scoped like every other job view.
+pub async fn stats_trend(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Query(q): Query<TrendQuery>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let days = q.days.unwrap_or(7).clamp(1, 90);
+    let cutoff = chrono::Utc::now()
+        .checked_sub_signed(chrono::Duration::days(days))
+        .map(|d| d.format("%Y-%m-%d 00:00:00").to_string())
+        .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
+    let debug_filter = dashboard_debug_filter(&auth);
+    let team_scope = dashboard_team_scope(&auth, q.team_id.as_deref())?;
+
+    let empty = serde_json::json!({
+        "days": days,
+        "points": build_trend_points(&HashMap::new(), days),
+    });
+
+    let sql = match &team_scope {
+        None => format!(
+            "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt
+             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
+             WHERE j.created_at >= ? {debug_filter}
+             GROUP BY date(j.created_at), j.status"
+        ),
+        Some((clause, _)) if clause == "AND 1=0" => {
+            return Ok(Json(ApiResponse::success(empty)));
+        }
+        Some((clause, _)) => format!(
+            "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt
+             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
+             WHERE j.created_at >= ? {clause} {debug_filter}
+             GROUP BY date(j.created_at), j.status"
+        ),
+    };
+
+    let mut q2 = sqlx::query(&sql).bind(&cutoff);
+    if let Some((_, ids)) = &team_scope {
+        for id in ids {
+            q2 = q2.bind(id);
+        }
+    }
+    let rows = q2.fetch_all(&state.pool).await?;
+
+    let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
+    for r in rows {
+        let day: String = r.get(0);
+        let status: String = r.get(1);
+        let cnt: i64 = r.get(2);
+        counts.entry(day).or_default().insert(status, cnt);
+    }
+
+    tracing::info!(
+        user = %auth.username,
+        days,
+        team = ?q.team_id,
+        "jobs: dashboard build trend computed",
+    );
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "days": days,
+        "points": build_trend_points(&counts, days),
+    }))))
+}
+
+/// GET /jobs/recent?limit=10&team_id=… — lightweight build stream for the
+/// Overview sidebar, team- and role-scoped.
+pub async fn recent(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Query(q): Query<RecentQuery>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    let limit = q.limit.unwrap_or(10).clamp(1, 50);
+    let debug_filter = dashboard_debug_filter(&auth);
+    let team_scope = dashboard_team_scope(&auth, q.team_id.as_deref())?;
+
+    let sql = match &team_scope {
+        None => format!(
+            "SELECT j.id, j.pipeline_id, p.name AS pipeline_name, j.status,
+                    j.trigger_by, p.team_id, j.created_at
+             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
+             WHERE 1=1 {debug_filter}
+             ORDER BY j.created_at DESC, j.id DESC
+             LIMIT ?"
+        ),
+        Some((clause, _)) if clause == "AND 1=0" => {
+            return Ok(Json(ApiResponse::success(vec![])));
+        }
+        Some((clause, _)) => format!(
+            "SELECT j.id, j.pipeline_id, p.name AS pipeline_name, j.status,
+                    j.trigger_by, p.team_id, j.created_at
+             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
+             WHERE 1=1 {clause} {debug_filter}
+             ORDER BY j.created_at DESC, j.id DESC
+             LIMIT ?"
+        ),
+    };
+
+    let mut q2 = sqlx::query(&sql);
+    if let Some((_, ids)) = &team_scope {
+        for id in ids {
+            q2 = q2.bind(id);
+        }
+    }
+    q2 = q2.bind(limit);
+    let rows = q2.fetch_all(&state.pool).await?;
+
+    let jobs: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.get::<String, _>(0),
+                "pipeline_id": r.get::<String, _>(1),
+                "pipeline_name": r.get::<Option<String>, _>(2),
+                "status": r.get::<String, _>(3),
+                "trigger_by": r.get::<String, _>(4),
+                "team_id": r.get::<String, _>(5),
+                "created_at": r.get::<Option<String>, _>(6),
+            })
+        })
+        .collect();
+
+    tracing::info!(
+        user = %auth.username,
+        count = jobs.len(),
+        team = ?q.team_id,
+        "jobs: dashboard build stream fetched",
+    );
 
     Ok(Json(ApiResponse::success(jobs)))
 }
