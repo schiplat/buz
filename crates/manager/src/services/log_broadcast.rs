@@ -168,6 +168,16 @@ impl LogBroadcaster {
         let mut map = self.pipeline_sinks.write().unwrap();
         map.remove(pipeline_id);
     }
+
+    /// Number of active job-level log sinks (health/observability signal).
+    pub fn job_sink_count(&self) -> usize {
+        self.sinks.read().unwrap().len()
+    }
+
+    /// Number of active pipeline-level status sinks (health/observability signal).
+    pub fn pipeline_sink_count(&self) -> usize {
+        self.pipeline_sinks.read().unwrap().len()
+    }
 }
 
 #[cfg(test)]

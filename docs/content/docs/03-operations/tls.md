@@ -107,10 +107,10 @@ export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
 ```bash
 # Self-signed: -k skips verify for this smoke test only
 curl -k -sS -o /dev/null -w "%{http_code}\n" https://127.0.0.1:8080/
-curl -k -sS https://127.0.0.1:8080/api/v1/health
+curl -k -sS https://127.0.0.1:8080/health
 
 # With a trusted cert (no -k):
-# curl -sS https://buz.example.com:8080/api/v1/health
+# curl -sS https://buz.example.com:8080/health
 ```
 
 Browser: open `https://<host>:8080` → `/setup` or `/login`. Expect a warning for self-signed certs until the OS/browser trusts the CA/cert.
@@ -168,7 +168,7 @@ tls_key  = "certs/key.pem"
 export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
 docker compose up -d manager
 docker logs -f "$(docker compose ps -q manager)"
-curl -k -sS https://127.0.0.1:8080/api/v1/health
+curl -k -sS https://127.0.0.1:8080/health
 ```
 
 Runner on the same compose network:
@@ -199,7 +199,7 @@ port = 8080
 
 ```bash
 ./bin/buz-manager -c conf/manager.toml
-curl -sS http://127.0.0.1:8080/api/v1/health
+curl -sS http://127.0.0.1:8080/health
 ```
 
 ### B2. Caddy example
@@ -213,7 +213,7 @@ buz.example.com {
 
 ```bash
 sudo systemctl reload caddy
-curl -sS https://buz.example.com/api/v1/health
+curl -sS https://buz.example.com/health
 ```
 
 ### B3. Nginx example
@@ -275,7 +275,7 @@ server {
 ```
 
 ```bash
-curl -sS https://buz.example.com/api/v1/health
+curl -sS https://buz.example.com/health
 ```
 
 ### B4. Runner behind reverse proxy
@@ -343,7 +343,7 @@ HTTPS is **not** configured at `cargo build` / Release / Docker **image build** 
 openssl x509 -in certs/cert.pem -noout -ext subjectAltName
 
 # 2) Manager up on HTTPS
-curl -k -sS -o /dev/null -w "%{http_code}\n" https://<manager-host>:8080/api/v1/health
+curl -k -sS -o /dev/null -w "%{http_code}\n" https://<manager-host>:8080/health
 # expect 200
 
 # 3) UI

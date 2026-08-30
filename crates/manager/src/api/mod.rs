@@ -28,7 +28,7 @@ mod teams;
 mod trigger_events;
 mod users;
 mod variables;
-mod version;
+pub(crate) mod version;
 mod webhook;
 
 pub fn router(state: AppState) -> Router {
@@ -40,8 +40,6 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/verify", get(auth::verify))
         .route("/auth/me", get(auth::me))
         .route("/auth/change-password", post(auth::change_password))
-        // Public health (includes version)
-        .route("/health", get(version::health))
         // Users (platform admin)
         .route("/users", get(users::list).post(users::create))
         .route("/users/{id}", put(users::update).delete(users::delete))

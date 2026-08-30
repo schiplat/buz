@@ -95,15 +95,31 @@ Rules: both fields required; `new_password` ≥ 6 characters and must differ fro
 
 | Method | Path | Auth |
 |--------|------|------|
-| GET | `/api/v1/health` | None |
+| GET | `/health` | None |
 
 ### GET /health
 
-Returns liveness plus package version (no separate `/version` endpoint).
+Liveness probe (no auth). Returns version plus runtime health signals:
+uptime, database connectivity with latency and pool usage, non-terminal job
+backlog, and WebSocket broadcast sink counts.
 
 ```json
-{ "status": "ok", "name": "Buz", "version": "1.3.0", "component": "manager" }
+{
+  "status": "ok",
+  "name": "Buz",
+  "version": "1.5.4",
+  "component": "manager",
+  "uptime_seconds": 3600,
+  "started_at": "2026-08-30T12:00:00Z",
+  "database": { "status": "ok", "latency_ms": 1.2, "pool": { "max": 8, "idle": 6, "in_use": 2 } },
+  "jobs": { "pending": 0, "running": 1, "queued": 0, "waiting_approval": 0 },
+  "ws": { "job_sinks": 1, "pipeline_sinks": 0 }
+}
 ```
+
+Semantics: default is **liveness** — HTTP 200 while the process responds. Pass
+`?readiness=true` for a **readiness** probe that returns HTTP 503 when the
+database is unavailable (`status` becomes `"degraded"`).
 
 Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`) and mirrored in `dashboard/package.json`. CLI: `buz-manager --version` / `buz-runner --version`.
 

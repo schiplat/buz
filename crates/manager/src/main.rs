@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use axum::Router;
+use axum::{routing::get, Router};
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -86,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
     db::run_migrations(&db_pool, &config.auth.jwt_secret).await?;
     rbac::bootstrap(&db_pool).await?;
     api::runners::ensure_standalone_auto_approve(&db_pool, &config).await?;
+    api::version::mark_started();
 
     tracing::info!(
         host = %config.server.host,
@@ -131,6 +132,8 @@ async fn main() -> anyhow::Result<()> {
         Some(dir) => {
             tracing::info!(path = %dir, "serving UI from disk");
             Router::new()
+                .route("/health", get(api::version::health))
+                .with_state(app_state.clone())
                 .nest("/api/v1", api::router(app_state.clone()))
                 .fallback_service(frontend::disk_fallback(dir))
                 .layer(TraceLayer::new_for_http())
@@ -142,6 +145,8 @@ async fn main() -> anyhow::Result<()> {
                 "serving UI from embedded assets"
             );
             Router::new()
+                .route("/health", get(api::version::health))
+                .with_state(app_state.clone())
                 .nest("/api/v1", api::router(app_state.clone()))
                 .fallback(frontend::embedded_handler)
                 .layer(TraceLayer::new_for_http())
