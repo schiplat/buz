@@ -116,6 +116,7 @@ export interface DailyBuildPoint {
   success: number
   failed: number
   cancelled: number
+  pending: number
   other: number
 }
 

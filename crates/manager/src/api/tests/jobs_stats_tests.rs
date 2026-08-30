@@ -111,7 +111,7 @@ async fn test_app() -> Router {
         format!("{} 10:00:00", d.format("%Y-%m-%d"))
     };
 
-    // team-1 (visible to the developer): 3 today + 1 yesterday + 1 debug today.
+    // team-1 (visible to the developer): 4 today (incl. pending + approval) + 1 yesterday + 1 debug today.
     // team-2 (hidden from the developer): 1 today.
     let jobs: &[(&str, &str, &str, &str, &str, i64)] = &[
         ("j1", "p1", "success", "manual", &today("10:00:00"), 0),
@@ -120,6 +120,15 @@ async fn test_app() -> Router {
         ("j4", "p1", "success", "manual", &yesterday, 0),
         ("j5", "p1", "failed", "manual", &today("13:00:00"), 1),
         ("j6", "p2", "success", "manual", &today("14:00:00"), 0),
+        ("j7", "p1", "pending", "manual", &today("09:00:00"), 0),
+        (
+            "j8",
+            "p1",
+            "waiting_approval",
+            "cron",
+            &today("08:00:00"),
+            0,
+        ),
     ];
     for (id, pipeline, status, trigger_by, created_at, debug) in jobs {
         sqlx::query(
@@ -213,11 +222,14 @@ async fn admin_trend_includes_all_teams_and_debug_jobs() {
     assert_eq!(points.len(), 7, "zero-filled for every day in range");
 
     let today = point_for(points, &today_str());
-    // 4 team-1 (incl. debug) + 1 team-2 = 5; success = j1,j2,j6 = 3; failed = j3,j5 = 2
-    assert_eq!(today["total"], 5);
+    // 5 team-1 (incl. debug, pending, approval) + 1 team-2 = 7;
+    // success = j1,j2,j6 = 3; failed = j3,j5 = 2; pending = j7,j8 = 2
+    assert_eq!(today["total"], 7);
     assert_eq!(today["success"], 3);
     assert_eq!(today["failed"], 2);
     assert_eq!(today["cancelled"], 0);
+    assert_eq!(today["pending"], 2);
+    assert_eq!(today["other"], 0);
 
     let yesterday = point_for(points, &yesterday_str());
     assert_eq!(yesterday["total"], 1);
@@ -237,10 +249,11 @@ async fn non_admin_trend_is_team_scoped_and_hides_debug_jobs() {
 
     let points = body["data"]["points"].as_array().expect("points");
     let today = point_for(points, &today_str());
-    // team-1 only, debug job hidden: success = j1,j2 = 2; failed = j3 = 1
-    assert_eq!(today["total"], 3);
+    // team-1 only, debug job hidden: success = j1,j2 = 2; failed = j3 = 1; pending = j7,j8 = 2
+    assert_eq!(today["total"], 5);
     assert_eq!(today["success"], 2);
     assert_eq!(today["failed"], 1);
+    assert_eq!(today["pending"], 2);
 
     let yesterday = point_for(points, &yesterday_str());
     assert_eq!(yesterday["total"], 1);
@@ -275,7 +288,8 @@ async fn trend_respects_days_range_and_zero_fills() {
 async fn trend_team_param_scopes_for_admin_and_forbids_non_members() {
     let app = test_app().await;
 
-    // Admin scoping to team-1 sees the debug job too: total 4, success 2, failed 2.
+    // Admin scoping to team-1 sees the debug/pending jobs too:
+    // total 6 (j1,j2,j3,j5,j7,j8), success 2, failed 2, pending 2.
     let (status, body) = get_json(
         &app,
         &format!("/api/v1/jobs/stats/trend?days=7&team_id=team-1"),
@@ -287,8 +301,10 @@ async fn trend_team_param_scopes_for_admin_and_forbids_non_members() {
         body["data"]["points"].as_array().expect("points"),
         &today_str(),
     );
-    assert_eq!(today["total"], 4);
+    assert_eq!(today["total"], 6);
+    assert_eq!(today["success"], 2);
     assert_eq!(today["failed"], 2);
+    assert_eq!(today["pending"], 2);
 
     // Developer asking for another team is rejected.
     let (status, _) = get_json(
@@ -304,26 +320,26 @@ async fn trend_team_param_scopes_for_admin_and_forbids_non_members() {
 async fn recent_stream_is_lightweight_and_scoped() {
     let app = test_app().await;
 
-    // Admin sees all 6 jobs, newest first (j6 … j4).
+    // Admin sees all 8 jobs, newest first (j6 … j4).
     let (status, body) =
         get_json(&app, "/api/v1/jobs/recent?limit=10", bearer(ADMIN_ID, true)).await;
     assert_eq!(status, StatusCode::OK);
     let admin_jobs = body["data"].as_array().expect("recent jobs");
     let ids: Vec<&str> = admin_jobs.iter().filter_map(|j| j["id"].as_str()).collect();
-    assert_eq!(ids, vec!["j6", "j5", "j3", "j2", "j1", "j4"]);
+    assert_eq!(ids, vec!["j6", "j5", "j3", "j2", "j1", "j7", "j8", "j4"]);
     let first = &admin_jobs[0];
     assert_eq!(first["pipeline_name"], "beta-pipe");
     assert_eq!(first["status"], "success");
     assert_eq!(first["trigger_by"], "manual");
     assert!(first.get("snapshot").is_none(), "stream stays lightweight");
 
-    // Developer sees only team-1 non-debug jobs, newest first (j3, j2, j1, j4).
+    // Developer sees only team-1 non-debug jobs, newest first (j3, j2, j1, j7, j8, j4).
     let (status, body) =
         get_json(&app, "/api/v1/jobs/recent?limit=10", bearer(USER_ID, false)).await;
     assert_eq!(status, StatusCode::OK);
     let dev_jobs = body["data"].as_array().expect("recent jobs");
     let ids: Vec<&str> = dev_jobs.iter().filter_map(|j| j["id"].as_str()).collect();
-    assert_eq!(ids, vec!["j3", "j2", "j1", "j4"]);
+    assert_eq!(ids, vec!["j3", "j2", "j1", "j7", "j8", "j4"]);
     assert!(
         dev_jobs.iter().all(|j| j["team_id"] == "team-1"),
         "developer only sees own team"
@@ -350,7 +366,7 @@ async fn recent_respects_limit_and_team_param() {
     .await;
     let jobs = body["data"].as_array().expect("recent jobs");
     let ids: Vec<&str> = jobs.iter().filter_map(|j| j["id"].as_str()).collect();
-    assert_eq!(ids, vec!["j5", "j3", "j2", "j1", "j4"]);
+    assert_eq!(ids, vec!["j5", "j3", "j2", "j1", "j7", "j8", "j4"]);
 
     // Non-member team still forbidden.
     let (status, _) = get_json(

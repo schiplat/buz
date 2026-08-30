@@ -38,17 +38,62 @@ function niceCeil(v: number): number {
   return 10 * pow
 }
 
-const maxTotal = computed(() =>
-  props.points.reduce((acc, p) => Math.max(acc, p.total), 0),
-)
-const niceMax = computed(() => niceCeil(maxTotal.value))
+const SERIES_ORDER = ['success', 'failed', 'pending', 'cancelled', 'other'] as const
+type SeriesKey = (typeof SERIES_ORDER)[number]
+
+const SERIES_COLORS: Record<SeriesKey, string> = {
+  success: '#10b981',
+  failed: '#ef4444',
+  pending: '#f59e0b',
+  cancelled: '#3b82f6',
+  other: '#a855f7',
+}
+
+const SERIES_LABELS: Record<SeriesKey, string> = {
+  success: 'Success',
+  failed: 'Failed',
+  pending: 'Pending',
+  cancelled: 'Cancelled',
+  other: 'Other',
+}
+
+/** Series hidden via legend clicks — kept out of the chart. */
+const hiddenSeries = ref<Set<SeriesKey>>(new Set())
+
+function isHidden(key: SeriesKey): boolean {
+  return hiddenSeries.value.has(key)
+}
+
+function toggleSeries(key: SeriesKey) {
+  const next = new Set(hiddenSeries.value)
+  if (next.has(key)) {
+    next.delete(key)
+  } else {
+    next.add(key)
+  }
+  hiddenSeries.value = next
+}
+
+const visibleSeries = computed(() => SERIES_ORDER.filter((k) => !hiddenSeries.value.has(k)))
+const allHidden = computed(() => visibleSeries.value.length === 0)
+
+/** Y-axis ceiling from the visible series only — a hidden series cannot stretch it. */
+const visibleMax = computed(() => {
+  let m = 0
+  for (const p of props.points) {
+    for (const k of visibleSeries.value) {
+      m = Math.max(m, p[k] || 0)
+    }
+  }
+  return m
+})
+const niceMax = computed(() => niceCeil(visibleMax.value))
 
 function yScale(v: number): number {
   return PAD.top + innerH.value * (1 - v / niceMax.value)
 }
 
 const slotW = computed(() => innerW.value / Math.max(1, props.points.length))
-const barW = computed(() => Math.min(22, Math.max(3, slotW.value * 0.55)))
 
 function xFor(i: number): number {
   return PAD.left + slotW.value * i + slotW.value / 2
@@ -56,9 +101,7 @@ function xFor(i: number): number {
 
 const GRID_TICKS = [0, 0.25, 0.5, 0.75, 1] as const
 
-const labelStep = computed(() =>
-  Math.max(1, Math.ceil(props.points.length / 6)),
-)
+const labelStep = computed(() => Math.max(1, Math.ceil(props.points.length / 6)))
 
 function showXLabel(i: number): boolean {
   return i % labelStep.value === 0 || i === props.points.length - 1
@@ -69,82 +112,44 @@ function shortDate(date: string): string {
   return `${m}-${d}`
 }
 
-const SEGMENT_ORDER = ['success', 'failed', 'cancelled', 'other'] as const
-
-const SEGMENT_COLORS: Record<(typeof SEGMENT_ORDER)[number], string> = {
-  success: 'hsl(var(--success))',
-  failed: 'hsl(var(--destructive))',
-  cancelled: 'hsl(var(--muted-foreground) / 0.5)',
-  other: 'hsl(var(--secondary-foreground) / 0.14)',
-}
-
-const SEGMENT_LABELS: Record<(typeof SEGMENT_ORDER)[number], string> = {
-  success: 'Success',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-  other: 'Other',
-}
-
-interface Segment {
-  key: (typeof SEGMENT_ORDER)[number]
-  value: number
-  y0: number
-  y1: number
-  color: string
-}
-
-/** Series hidden via legend clicks — kept out of the stacked bars. */
-const hiddenSegments = ref<Set<(typeof SEGMENT_ORDER)[number]>>(new Set())
-
-function isHidden(key: (typeof SEGMENT_ORDER)[number]): boolean {
-  return hiddenSegments.value.has(key)
-}
-
-function toggleSegment(key: (typeof SEGMENT_ORDER)[number]) {
-  const next = new Set(hiddenSegments.value)
-  if (next.has(key)) {
-    next.delete(key)
-  } else {
-    next.add(key)
-  }
-  hiddenSegments.value = next
-}
-
-const allHidden = computed(() => SEGMENT_ORDER.every((k) => hiddenSegments.value.has(k)))
-
-function barSegments(p: DailyBuildPoint): Segment[] {
-  let acc = 0
-  const segs: Segment[] = []
-  for (const key of SEGMENT_ORDER) {
-    if (hiddenSegments.value.has(key)) continue
-    const value = Math.max(0, p[key] || 0)
-    const y0 = yScale(acc)
-    acc += value
-    const y1 = yScale(acc)
-    if (value > 0) {
-      segs.push({ key, value, y0, y1, color: SEGMENT_COLORS[key] })
+/** Catmull-Rom → cubic Bézier smooth curve through every daily point, giving
+ *  rounded transitions at the inflection points. Zero-value points stay sharp:
+ *  segments touching a zero are straight lines, so no rounded corner forms at
+ *  the bottom of the chart. */
+function seriesPath(key: SeriesKey): string {
+  const pts = props.points.map((p, i) => ({
+    x: xFor(i),
+    y: yScale(p[key] || 0),
+    value: p[key] || 0,
+  }))
+  if (pts.length === 0) return ''
+  if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`
+  let d = `M ${pts[0].x} ${pts[0].y}`
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)]
+    const p1 = pts[i]
+    const p2 = pts[i + 1]
+    const p3 = pts[Math.min(pts.length - 1, i + 2)]
+    if (p1.value === 0 || p2.value === 0) {
+      d += ` L ${p2.x} ${p2.y}`
+    } else {
+      const c1x = p1.x + (p2.x - p0.x) / 6
+      const c1y = p1.y + (p2.y - p0.y) / 6
+      const c2x = p2.x - (p3.x - p1.x) / 6
+      const c2y = p2.y - (p3.y - p1.y) / 6
+      d += ` C ${c1x} ${c1y}, ${c2x} ${c2y}, ${p2.x} ${p2.y}`
     }
   }
-  return segs
+  return d
 }
 
-/** Sum of the visible series only — matches the stacked bar height. */
-function visibleTotal(p: DailyBuildPoint): number {
-  return SEGMENT_ORDER.reduce((acc, key) => {
-    if (hiddenSegments.value.has(key)) return acc
-    return acc + Math.max(0, p[key] || 0)
-  }, 0)
-}
-
-function tooltip(p: DailyBuildPoint): string {
-  return [
-    `${p.date} · ${p.total} build${p.total === 1 ? '' : 's'}`,
-    p.success > 0 ? `${p.success} success` : '',
-    p.failed > 0 ? `${p.failed} failed` : '',
-    p.cancelled > 0 ? `${p.cancelled} cancelled` : '',
-  ]
-    .filter(Boolean)
-    .join(' · ')
+function pointTooltip(p: DailyBuildPoint): string {
+  const parts = [`${p.date} · ${p.total} build${p.total === 1 ? '' : 's'}`]
+  for (const k of visibleSeries.value) {
+    const v = p[k] || 0
+    if (v > 0) parts.push(`${v} ${SERIES_LABELS[k].toLowerCase()}`)
+  }
+  return parts.join(' · ')
 }
 </script>
 
@@ -210,37 +215,34 @@ function tooltip(p: DailyBuildPoint): string {
           </text>
         </template>
 
-        <!-- Stacked bars -->
-        <g v-for="(p, i) in points" :key="p.date">
-          <g
-            v-for="seg in barSegments(p)"
-            :key="seg.key"
-            :transform="`translate(${xFor(i) - barW / 2} 0)`"
-          >
-            <rect
-              :x="0"
-              :y="seg.y0"
-              :width="barW"
-              :height="Math.max(0, seg.y1 - seg.y0)"
-              :rx="i === points.length - 1 ? 2 : 1.5"
-              :fill="seg.color"
-              :fill-opacity="seg.key === 'other' ? 1 : 0.95"
+        <!-- Series lines + points -->
+        <g v-for="key in visibleSeries" :key="key">
+          <path
+            :d="seriesPath(key)"
+            fill="none"
+            :stroke="SERIES_COLORS[key]"
+            stroke-width="2.25"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            :opacity="key === 'other' ? 0.75 : 1"
+          />
+          <g v-for="(p, i) in points" :key="p.date">
+            <circle
+              v-if="(p[key] || 0) > 0"
+              :cx="xFor(i)"
+              :cy="yScale(p[key] || 0)"
+              r="3.5"
+              :fill="SERIES_COLORS[key]"
+              stroke="hsl(var(--card))"
+              stroke-width="1.5"
             >
-              <title>{{ tooltip(p) }}</title>
-            </rect>
+              <title>{{ pointTooltip(p) }}</title>
+            </circle>
           </g>
-          <!-- Total count above bar for short ranges -->
-          <text
-            v-if="points.length <= 7 && visibleTotal(p) > 0"
-            :x="xFor(i)"
-            :y="yScale(visibleTotal(p)) - 5"
-            text-anchor="middle"
-            class="fill-muted-foreground"
-            style="font-size: 10px; font-family: inherit"
-          >
-            {{ visibleTotal(p) }}
-          </text>
-          <!-- X labels -->
+        </g>
+
+        <!-- X labels -->
+        <g v-for="(p, i) in points" :key="p.date">
           <text
             v-if="showXLabel(i)"
             :x="xFor(i)"
@@ -257,21 +259,21 @@ function tooltip(p: DailyBuildPoint): string {
 
     <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5">
       <button
-        v-for="key in SEGMENT_ORDER"
+        v-for="key in SERIES_ORDER"
         :key="key"
         type="button"
         class="inline-flex items-center gap-1.5 text-[11px] font-medium transition-opacity"
         :class="isHidden(key) ? 'text-muted-foreground/45' : 'text-muted-foreground hover:text-foreground'"
-        :title="isHidden(key) ? `Show ${SEGMENT_LABELS[key]}` : `Hide ${SEGMENT_LABELS[key]}`"
-        @click="toggleSegment(key)"
+        :title="isHidden(key) ? `Show ${SERIES_LABELS[key]}` : `Hide ${SERIES_LABELS[key]}`"
+        @click="toggleSeries(key)"
       >
         <span
           class="h-2 w-2 rounded-full transition-opacity"
           :class="isHidden(key) && 'opacity-40'"
-          :style="{ background: SEGMENT_COLORS[key] }"
+          :style="{ background: SERIES_COLORS[key] }"
         />
         <span :class="isHidden(key) && 'line-through decoration-muted-foreground/40'">
-          {{ SEGMENT_LABELS[key] }}
+          {{ SERIES_LABELS[key] }}
         </span>
       </button>
     </div>

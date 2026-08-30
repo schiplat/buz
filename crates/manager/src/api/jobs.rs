@@ -184,13 +184,20 @@ fn build_trend_points(
         let success = day_counts.get("success").copied().unwrap_or(0);
         let failed = day_counts.get("failed").copied().unwrap_or(0);
         let cancelled = day_counts.get("cancelled").copied().unwrap_or(0);
+        // Jobs created but not yet executed (pending / queued / waiting for
+        // approval) are surfaced as their own series.
+        let pending: i64 = ["pending", "queued", "waiting_approval"]
+            .iter()
+            .filter_map(|s| day_counts.get(*s))
+            .sum();
         points.push(serde_json::json!({
             "date": key,
             "total": total,
             "success": success,
             "failed": failed,
             "cancelled": cancelled,
-            "other": total - success - failed - cancelled,
+            "pending": pending,
+            "other": total - success - failed - cancelled - pending,
         }));
     }
     points
