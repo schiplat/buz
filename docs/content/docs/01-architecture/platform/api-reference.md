@@ -107,7 +107,7 @@ backlog, and WebSocket broadcast sink counts.
 {
   "status": "ok",
   "name": "Buz",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "component": "manager",
   "uptime_seconds": 3600,
   "started_at": "2026-08-30T12:00:00Z",
