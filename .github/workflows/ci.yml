@@ -8,37 +8,59 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  # Fail on warnings; skip debuginfo in CI — faster links + less disk than default test/dev profiles.
+  RUSTFLAGS: "-D warnings -C debuginfo=0"
+  CARGO_INCREMENTAL: "0"
 
 jobs:
-  # ── Backend ────────────────────────────────────────
-  backend:
-    name: Rust ${{ matrix.toolchain }}
+  # Lightweight + parallel with backend/dashboard: fail-fast on style without waiting
+  # for disk cleanup or a full compile.
+  fmt:
+    name: Rust fmt
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        toolchain: [stable]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.toolchain }}
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
+          components: rustfmt
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Check compilation
-        run: cargo check --all
+  # ── Backend ────────────────────────────────────────
+  backend:
+    name: Rust test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
+      # Lean cleanup (~30–60s) vs free-disk-space action (often several minutes).
+      # Biggest reclaim: Android SDK + .NET + GHC + tool-cache + Docker images.
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          echo "::group::disk before"
+          df -h /
+          echo "::endgroup::"
+          sudo rm -rf /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune -af || true
+          echo "::group::disk after"
+          df -h /
+          echo "::endgroup::"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Bounded cache (prunes workspace crates / incremental before save).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-backend-stable
+
+      # `cargo test --all` typechecks + builds; no separate `cargo check`.
       - name: Run tests
         run: cargo test --all
 
