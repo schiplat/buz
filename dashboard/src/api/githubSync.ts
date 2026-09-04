@@ -1,7 +1,7 @@
 import apiClient from './client'
 
 /** Push state of a secret/variable → repo binding (metadata only — never values). */
-export type GitHubPushStatus = 'pending' | 'ok' | 'failed'
+export type GitHubPushStatus = 'pending' | 'ok' | 'failed' | 'stale'
 
 /** Most recent operation performed on the binding. */
 export type GitHubBindOp = 'bind' | 'push' | 'unbind'

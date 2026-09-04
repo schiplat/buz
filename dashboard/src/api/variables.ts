@@ -26,8 +26,12 @@ export const variablesApi = {
     return resp.data as Variable
   },
 
-  async update(id: string, data: { value: string }): Promise<void> {
-    await apiClient.put(`/variables/${id}`, data)
+  async update(
+    id: string,
+    data: { value: string },
+  ): Promise<{ id: string; updated: boolean; github_binds_stale?: number }> {
+    const resp = await apiClient.put(`/variables/${id}`, data)
+    return resp.data as { id: string; updated: boolean; github_binds_stale?: number }
   },
 
   async delete(id: string): Promise<void> {

@@ -349,6 +349,30 @@ pub async fn update(
         .await?;
     }
 
+    // Dirty-mark inherit GitHub binds when the platform default value actually changed.
+    // Custom-override binds are intentionally left alone (their effective push value
+    // does not depend on the platform default).
+    let mut github_binds_stale: u64 = 0;
+    if !req.value.is_empty() {
+        let value_changed = match crypto::decrypt(&current_value, &state.config.auth.jwt_secret) {
+            Ok(plain) => plain != req.value,
+            Err(_) => true, // corrupt / legacy plaintext — treat as a real change
+        };
+        if value_changed {
+            github_binds_stale =
+                super::github_sync::mark_secret_binds_stale_on_default_change(&state.pool, &id)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            secret_id = %id,
+                            error = %e,
+                            "github-sync: failed to mark secret binds stale"
+                        );
+                        0
+                    });
+        }
+    }
+
     let after = secret_snapshot(
         &id,
         &before_name,
@@ -373,6 +397,7 @@ pub async fn update(
         "team_id": new_team_id,
         "team_shared": team_shared_i != 0,
         "kind": kind,
+        "github_binds_stale": github_binds_stale,
     }))))
 }
 

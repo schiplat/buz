@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS secret_github_binds (
     secret_id TEXT NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
     repo_id TEXT NOT NULL REFERENCES github_repos(id) ON DELETE CASCADE,
     last_pushed_at TEXT,
-    last_status TEXT NOT NULL DEFAULT 'pending',            -- pending | ok | failed
+    last_status TEXT NOT NULL DEFAULT 'pending',            -- pending | ok | failed | stale
     last_error TEXT NOT NULL DEFAULT '',
     override_value TEXT,                                    -- NULL = inherit; secrets: ciphertext
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS variable_github_binds (
     var_id TEXT NOT NULL REFERENCES platform_vars(id) ON DELETE CASCADE,
     repo_id TEXT NOT NULL REFERENCES github_repos(id) ON DELETE CASCADE,
     last_pushed_at TEXT,
-    last_status TEXT NOT NULL DEFAULT 'pending',            -- pending | ok | failed
+    last_status TEXT NOT NULL DEFAULT 'pending',            -- pending | ok | failed | stale
     last_error TEXT NOT NULL DEFAULT '',
     last_op TEXT NOT NULL DEFAULT 'push',                   -- bind | push | unbind
     override_value TEXT,                                    -- NULL = inherit platform_vars.value
@@ -146,6 +146,25 @@ Separate tables for secrets and variables mirror the existing
 Bindings cascade-delete with their parent secret / variable / connection /
 repo. The connection and repo of a bind are resolved via `repo_id` at push
 time.
+
+### Dirty marking (`stale`) — value drift without auto-push
+
+Push stays **manual**. When the effective push value changes locally, previously
+successful binds are marked `stale` so the UI can show **needs push**; nothing
+is written to GitHub until an operator runs Push / Push All.
+
+| Event | Which binds | Result |
+|-------|-------------|--------|
+| Platform Secret/Variable **default value** changes | Only binds with `override_value IS NULL` (inherit) and `last_status = 'ok'` | → `stale` |
+| Platform value change | Binds with a **custom override** | Unchanged (effective value does not depend on the default) |
+| Metadata-only secret update (empty `value`) | — | No dirty mark |
+| `PATCH` bind override (inherit ↔ custom / custom value) | That bind, if it was `ok` | → `stale` |
+| Already `pending` / `failed` / `stale` | — | Left alone (still needs attention) |
+
+`PUT /secrets/{id}` and `PUT /variables/{id}` responses include
+`github_binds_stale: N` (count of rows marked). The dashboard prompts
+**Push now** / **Later** when `N > 0`. There is **no** automatic async push
+after save.
 
 ### Variable / secret per-repo override (`override_value`)
 
@@ -451,6 +470,7 @@ a small **status chip**:
 | last_status | Chip | Meaning |
 |-------------|------|---------|
 | `pending`   | amber dot + `owner/repo` | bound, **not pushed yet** |
+| `stale`     | amber dot + `owner/repo` | **needs push** — local value changed since last successful push |
 | `ok`        | emerald dot + `owner/repo` | pushed; hover shows last-pushed time |
 | `failed` + `last_op='push'` | red dot + `owner/repo` | last push failed; hover shows error |
 | `failed` + `last_op='unbind'` | red dot + `owner/repo` | **unbind failed** (remote cleanup failed, row kept); hover shows error |
@@ -458,8 +478,12 @@ a small **status chip**:
 - Multiple bindings render as a wrap of chips; empty column shows a muted "—".
 - The chips are **clickable** and open the same per-resource GitHub Sync bind
   dialog (rows are also reachable via a GitHub icon in the row actions).
-- An extra sortable summary key (e.g. `github_status` = pushed/failed/pending/
-  none) lets the operator filter/sort rows by sync state.
+- An extra sortable summary key (e.g. `github_status` = failed/stale/pending/ok/
+  none) lets the operator sort rows by sync state.
+- A list filter **Needs push** shows rows whose binds are `pending`, `stale`, or
+  `failed` (cross-resource bulk push remains out of scope).
+- After saving a value that dirty-marks inherit binds, the UI offers
+  **Push now** / **Later** (opens the bind dialog when chosen).
 - Values are never rendered — only `owner/repo` + status metadata.
 
 ### Form conventions

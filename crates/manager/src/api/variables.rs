@@ -127,6 +127,22 @@ pub async fn update(
         .execute(&state.pool)
         .await?;
 
+    // Dirty-mark inherit GitHub binds when the platform default value changed.
+    let mut github_binds_stale: u64 = 0;
+    if old_value != req.value {
+        github_binds_stale =
+            super::github_sync::mark_variable_binds_stale_on_default_change(&state.pool, &id)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        var_id = %id,
+                        error = %e,
+                        "github-sync: failed to mark variable binds stale"
+                    );
+                    0
+                });
+    }
+
     tracing::info!("Variable updated: {name} ({id})");
 
     audit::record(
@@ -145,6 +161,7 @@ pub async fn update(
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
         "updated": true,
+        "github_binds_stale": github_binds_stale,
     }))))
 }
 

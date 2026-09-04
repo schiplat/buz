@@ -1623,3 +1623,288 @@ async fn list_repos_includes_bound_resources() {
         "values must never leak: {row}"
     );
 }
+
+/// After a successful push, changing the platform default value marks inherit
+/// binds as `stale` and leaves custom-override binds alone.
+#[tokio::test]
+async fn updating_secret_value_marks_inherit_binds_stale_not_overrides() {
+    let app = test_app().await;
+    let token = admin_jwt();
+    let mock = MockGitHub::start().await;
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/github-sync/connections",
+        serde_json::json!({ "name": "gh", "api_base_url": mock.base_url(), "token": "pat" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let conn_id = body["data"]["id"].as_str().expect("conn id").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/github-sync/repos",
+        serde_json::json!({ "connection_id": conn_id, "owner": "myorg", "repo": "alpha" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let repo_a = body["data"]["id"].as_str().expect("repo a").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/github-sync/repos",
+        serde_json::json!({ "connection_id": conn_id, "owner": "myorg", "repo": "beta" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let repo_b = body["data"]["id"].as_str().expect("repo b").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/secrets",
+        serde_json::json!({ "name": "STALE_SECRET", "value": "v1", "team_id": "team-1" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let secret_id = body["data"]["id"].as_str().expect("secret id").to_string();
+
+    // Inherit bind (alpha) + custom-override bind (beta).
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}/github-binds"),
+        serde_json::json!({ "repo_id": repo_a }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let inherit_id = body["data"]["id"].as_str().expect("inherit").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}/github-binds"),
+        serde_json::json!({ "repo_id": repo_b, "override_value": "custom-only" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let override_id = body["data"]["id"].as_str().expect("override").to_string();
+
+    // Push both to ok.
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}/github-binds/push"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["results"][0]["status"], "ok");
+    assert_eq!(body["data"]["results"][1]["status"], "ok");
+
+    // Change platform default value → only inherit bind becomes stale.
+    let (status, body) = put_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}"),
+        serde_json::json!({ "value": "v2", "team_id": "team-1" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["github_binds_stale"], 1, "{body}");
+
+    let (status, body) = get_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}/github-binds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let binds = body["data"].as_array().expect("binds");
+    let inherit = binds
+        .iter()
+        .find(|b| b["id"] == inherit_id)
+        .expect("inherit");
+    let overr = binds
+        .iter()
+        .find(|b| b["id"] == override_id)
+        .expect("override");
+    assert_eq!(inherit["last_status"], "stale");
+    assert_eq!(overr["last_status"], "ok");
+}
+
+/// Metadata-only secret update (empty value) must not dirty-mark binds.
+#[tokio::test]
+async fn metadata_only_secret_update_does_not_mark_stale() {
+    let app = test_app().await;
+    let token = admin_jwt();
+    let mock = MockGitHub::start().await;
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/github-sync/connections",
+        serde_json::json!({ "name": "gh", "api_base_url": mock.base_url(), "token": "pat" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let conn_id = body["data"]["id"].as_str().expect("conn id").to_string();
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/github-sync/repos",
+        serde_json::json!({ "connection_id": conn_id, "owner": "myorg", "repo": "alpha" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let repo_id = body["data"]["id"].as_str().expect("repo").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/secrets",
+        serde_json::json!({ "name": "META_SECRET", "value": "v1", "team_id": "team-1" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let secret_id = body["data"]["id"].as_str().expect("secret id").to_string();
+
+    let (status, _) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}/github-binds"),
+        serde_json::json!({ "repo_id": repo_id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}/github-binds/push"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["results"][0]["status"], "ok");
+
+    let (status, body) = put_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}"),
+        serde_json::json!({ "value": "", "team_id": "team-1", "team_shared": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["github_binds_stale"], 0, "{body}");
+
+    let (status, body) = get_json(
+        &app,
+        &token,
+        &format!("/api/v1/secrets/{secret_id}/github-binds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"][0]["last_status"], "ok");
+}
+
+/// Patching a bind override marks a previously-ok bind as stale.
+#[tokio::test]
+async fn patching_bind_override_marks_ok_bind_stale() {
+    let app = test_app().await;
+    let token = admin_jwt();
+    let mock = MockGitHub::start().await;
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/github-sync/connections",
+        serde_json::json!({ "name": "gh", "api_base_url": mock.base_url(), "token": "pat" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let conn_id = body["data"]["id"].as_str().expect("conn id").to_string();
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/github-sync/repos",
+        serde_json::json!({ "connection_id": conn_id, "owner": "myorg", "repo": "alpha" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let repo_id = body["data"]["id"].as_str().expect("repo").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        "/api/v1/variables",
+        serde_json::json!({ "name": "STALE_VAR", "value": "default-v1" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let var_id = body["data"]["id"].as_str().expect("var id").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/variables/{var_id}/github-binds"),
+        serde_json::json!({ "repo_id": repo_id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let bind_id = body["data"]["id"].as_str().expect("bind").to_string();
+
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/variables/{var_id}/github-binds/push"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["results"][0]["status"], "ok");
+
+    // Changing the platform default marks inherit bind stale.
+    let (status, body) = put_json(
+        &app,
+        &token,
+        &format!("/api/v1/variables/{var_id}"),
+        serde_json::json!({ "value": "default-v2" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["github_binds_stale"], 1, "{body}");
+
+    let (status, body) = get_json(
+        &app,
+        &token,
+        &format!("/api/v1/variables/{var_id}/github-binds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"][0]["last_status"], "stale");
+
+    // Push back to ok, then patch override → stale again.
+    let (status, body) = post_json(
+        &app,
+        &token,
+        &format!("/api/v1/variables/{var_id}/github-binds/push?bind_id={bind_id}"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["results"][0]["status"], "ok");
+
+    let (status, body) = patch_json(
+        &app,
+        &token,
+        &format!("/api/v1/variables/{var_id}/github-binds/{bind_id}"),
+        serde_json::json!({ "override_value": "custom-v" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["last_status"], "stale");
+    assert!(body["data"]["has_override"].as_bool().unwrap_or(false));
+}

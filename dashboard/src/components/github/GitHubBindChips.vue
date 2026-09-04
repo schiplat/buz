@@ -16,6 +16,8 @@ function chipClass(status: string) {
       return 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20'
     case 'failed':
       return 'bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20'
+    case 'stale':
+      return 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20'
     default:
       return 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20'
   }
@@ -27,6 +29,8 @@ function dotClass(status: string) {
       return 'bg-emerald-500'
     case 'failed':
       return 'bg-red-500'
+    case 'stale':
+      return 'bg-amber-500'
     default:
       return 'bg-amber-500'
   }
@@ -40,6 +44,8 @@ function chipTitle(b: GitHubBind): string {
       return b.last_op === 'unbind'
         ? `Unbind from ${b.owner}/${b.repo} failed: ${b.last_error || 'unknown error'}`
         : `Push to ${b.owner}/${b.repo} failed: ${b.last_error || 'unknown error'}`
+    case 'stale':
+      return `${b.owner}/${b.repo} — needs push (local value changed since last push)`
     default:
       return `${b.owner}/${b.repo} — bound, not pushed yet`
   }

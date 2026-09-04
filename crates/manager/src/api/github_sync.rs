@@ -1152,6 +1152,11 @@ pub async fn patch_secret_bind(
     .execute(&state.pool)
     .await?;
 
+    // Override change changes the effective push value — mark previously-ok binds stale.
+    let marked = mark_secret_bind_stale_if_ok(&state.pool, &bind_id)
+        .await
+        .unwrap_or(false);
+
     let secret_name: String = sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
         .bind(&secret_id)
         .fetch_one(&state.pool)
@@ -1161,8 +1166,12 @@ pub async fn patch_secret_bind(
     let owner: String = row.get(3);
     let repo_name: String = row.get(4);
     let last_pushed_at: Option<String> = row.get(5);
-    let last_status: String = row.get(6);
-    let last_error: String = row.get(7);
+    let last_status: String = if marked {
+        "stale".to_string()
+    } else {
+        row.get(6)
+    };
+    let last_error: String = if marked { String::new() } else { row.get(7) };
     let last_op: String = row.get(8);
 
     audit::record(
@@ -1174,6 +1183,7 @@ pub async fn patch_secret_bind(
                 "repo": format!("{owner}/{repo_name}"),
                 "connection": &conn_name,
                 "has_override": override_cipher.is_some(),
+                "last_status": &last_status,
             }))),
     )
     .await;
@@ -1182,6 +1192,7 @@ pub async fn patch_secret_bind(
         secret = %secret_name,
         repo = %format!("{owner}/{repo_name}"),
         has_override = override_cipher.is_some(),
+        last_status = %last_status,
         "github-sync: secret bind override updated"
     );
 
@@ -1643,6 +1654,10 @@ pub async fn patch_variable_bind(
     .execute(&state.pool)
     .await?;
 
+    let marked = mark_variable_bind_stale_if_ok(&state.pool, &bind_id)
+        .await
+        .unwrap_or(false);
+
     let var_name: String = sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
         .bind(&var_id)
         .fetch_one(&state.pool)
@@ -1652,8 +1667,12 @@ pub async fn patch_variable_bind(
     let owner: String = row.get(3);
     let repo_name: String = row.get(4);
     let last_pushed_at: Option<String> = row.get(5);
-    let last_status: String = row.get(6);
-    let last_error: String = row.get(7);
+    let last_status: String = if marked {
+        "stale".to_string()
+    } else {
+        row.get(6)
+    };
+    let last_error: String = if marked { String::new() } else { row.get(7) };
     let last_op: String = row.get(8);
     audit::record(
         &state.pool,
@@ -1663,6 +1682,7 @@ pub async fn patch_variable_bind(
                 "repo": format!("{owner}/{repo_name}"),
                 "connection": &conn_name,
                 "has_override": req.override_value.is_some(),
+                "last_status": &last_status,
             }))),
     )
     .await;
@@ -1671,6 +1691,7 @@ pub async fn patch_variable_bind(
         variable = %var_name,
         repo = %format!("{owner}/{repo_name}"),
         has_override = req.override_value.is_some(),
+        last_status = %last_status,
         "github-sync: variable bind override updated"
     );
 
@@ -1912,6 +1933,88 @@ pub async fn push_variable_binds(
 // Re-export helper for the resource list enrichment in secrets.rs / variables.rs.
 pub(crate) fn bind_row_json(b: &BindView<'_>) -> serde_json::Value {
     bind_view(b)
+}
+
+/// After the platform default secret value changes, mark inherit binds (`override_value IS NULL`)
+/// that were successfully pushed as `stale`. Custom-override binds are left alone.
+/// Returns how many rows were marked.
+pub(crate) async fn mark_secret_binds_stale_on_default_change(
+    pool: &sqlx::SqlitePool,
+    secret_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE secret_github_binds
+         SET last_status = 'stale', last_error = '', updated_at = datetime('now')
+         WHERE secret_id = ? AND override_value IS NULL AND last_status = 'ok'",
+    )
+    .bind(secret_id)
+    .execute(pool)
+    .await?;
+    let n = result.rows_affected();
+    if n > 0 {
+        tracing::info!(
+            secret_id = %secret_id,
+            marked = n,
+            "github-sync: marked inherit secret binds stale after default value change"
+        );
+    }
+    Ok(n)
+}
+
+/// After the platform default variable value changes, mark inherit binds as `stale`.
+pub(crate) async fn mark_variable_binds_stale_on_default_change(
+    pool: &sqlx::SqlitePool,
+    var_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE variable_github_binds
+         SET last_status = 'stale', last_error = '', updated_at = datetime('now')
+         WHERE var_id = ? AND override_value IS NULL AND last_status = 'ok'",
+    )
+    .bind(var_id)
+    .execute(pool)
+    .await?;
+    let n = result.rows_affected();
+    if n > 0 {
+        tracing::info!(
+            var_id = %var_id,
+            marked = n,
+            "github-sync: marked inherit variable binds stale after default value change"
+        );
+    }
+    Ok(n)
+}
+
+/// After a bind override is patched, mark that bind `stale` if it was previously `ok`
+/// (effective push value changed). Already-pending/failed/stale rows are left alone.
+pub(crate) async fn mark_secret_bind_stale_if_ok(
+    pool: &sqlx::SqlitePool,
+    bind_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE secret_github_binds
+         SET last_status = 'stale', last_error = '', updated_at = datetime('now')
+         WHERE id = ? AND last_status = 'ok'",
+    )
+    .bind(bind_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub(crate) async fn mark_variable_bind_stale_if_ok(
+    pool: &sqlx::SqlitePool,
+    bind_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE variable_github_binds
+         SET last_status = 'stale', last_error = '', updated_at = datetime('now')
+         WHERE id = ? AND last_status = 'ok'",
+    )
+    .bind(bind_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Batch-load secret → binds map for list enrichment (single query, no N+1).

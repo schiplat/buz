@@ -85,8 +85,9 @@ export const secretsApi = {
       team_shared?: boolean
       kind?: SecretKind
     },
-  ): Promise<void> {
-    await apiClient.put(`/secrets/${id}`, data)
+  ): Promise<{ id: string; updated: boolean; github_binds_stale?: number }> {
+    const resp = await apiClient.put(`/secrets/${id}`, data)
+    return resp.data as { id: string; updated: boolean; github_binds_stale?: number }
   },
 
   async delete(id: string): Promise<void> {

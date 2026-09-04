@@ -21,10 +21,15 @@ const teams = ref<Team[]>([])
 const loading = ref(true)
 const searchQuery = ref('')
 const filterTeam = ref('')
+/** '' | 'needs_push' — pending / stale / failed binds. */
+const filterGithub = ref('')
 
 const filteredSecrets = computed(() => {
   let source = secrets.value.filter((s) => auth.matchesActiveTeam(s.team_id))
   if (filterTeam.value) source = source.filter((s) => s.team_id === filterTeam.value)
+  if (filterGithub.value === 'needs_push') {
+    source = source.filter((s) => needsGithubPush(s))
+  }
   const q = searchQuery.value.trim().toLowerCase()
   if (!q) return source
   return source.filter((s) => {
@@ -59,12 +64,19 @@ const { page, pageSize, pageCount, total, pageItems, rangeLabel } = useClientPag
 const showGithubDialog = ref(false)
 const githubTarget = ref<Secret | null>(null)
 
-/** Sorting summary for the GitHub Sync column: none < failed < pending < ok. */
+/** Sorting summary: none < failed < stale < pending < ok. */
 function githubStatusValue(s: Secret): string {
   if (!s.github_binds?.length) return ''
   if (s.github_binds.some((b) => b.last_status === 'failed')) return 'failed'
+  if (s.github_binds.some((b) => b.last_status === 'stale')) return 'stale'
   if (s.github_binds.some((b) => b.last_status === 'pending')) return 'pending'
   return 'ok'
+}
+
+function needsGithubPush(s: Secret): boolean {
+  return !!s.github_binds?.some(
+    (b) => b.last_status === 'pending' || b.last_status === 'stale' || b.last_status === 'failed',
+  )
 }
 
 /** Secret binds need SecretManage: platform admin or owner/maintainer in the team. */
@@ -207,12 +219,26 @@ async function handleSave() {
   saving.value = true
   try {
     if (editing.value) {
-      await secretsApi.update(editing.value.id, {
+      const target = editing.value
+      const res = await secretsApi.update(editing.value.id, {
         value: formValue.value,
         team_id: formTeamId.value,
         team_shared: formTeamShared.value,
         kind: formKind.value,
       })
+      showDialog.value = false
+      await loadSecrets()
+      const stale = res.github_binds_stale ?? 0
+      if (stale > 0 && auth.isPlatformAdmin) {
+        const go = await dialog.confirm(
+          `${stale} GitHub bind${stale === 1 ? '' : 's'} marked as needs push (inherit only; custom overrides unchanged). Push now?`,
+          { title: 'GitHub sync', confirmLabel: 'Push now', cancelLabel: 'Later' },
+        )
+        if (go) {
+          const refreshed = secrets.value.find((s) => s.id === target.id) || target
+          openGithub(refreshed)
+        }
+      }
     } else {
       await secretsApi.create({
         name: formName.value.trim().toUpperCase(),
@@ -221,9 +247,9 @@ async function handleSave() {
         team_shared: formTeamShared.value,
         kind: formKind.value,
       })
+      showDialog.value = false
+      await loadSecrets()
     }
-    showDialog.value = false
-    await loadSecrets()
   } catch (e: any) {
     // Show the backend's message (e.g. validation failures) instead of letting
     // the unhandled rejection crash the page via ErrorBoundary.
@@ -286,6 +312,10 @@ onMounted(loadSecrets)
         <select v-model="filterTeam" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
           <option value="">All teams</option>
           <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }}</option>
+        </select>
+        <select v-model="filterGithub" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50" title="Filter by GitHub sync status">
+          <option value="">All GitHub status</option>
+          <option value="needs_push">Needs push</option>
         </select>
         <span v-if="filteredSecrets.length !== secrets.length" class="text-[10px] text-muted-foreground ml-auto">
           {{ filteredSecrets.length }} of {{ secrets.length }}

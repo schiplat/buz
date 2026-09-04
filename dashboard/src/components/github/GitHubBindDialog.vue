@@ -375,7 +375,9 @@ watch(
                       ? 'unbind failed'
                       : b.last_status === 'pending'
                         ? 'not pushed'
-                        : b.last_status
+                        : b.last_status === 'stale'
+                          ? 'needs push'
+                          : b.last_status
                   }}
                 </span>
                 <Loader2

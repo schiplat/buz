@@ -18,11 +18,17 @@ const dialog = useAppDialog()
 const variables = ref<Variable[]>([])
 const loading = ref(true)
 const searchQuery = ref('')
+/** '' | 'needs_push' — pending / stale / failed binds. */
+const filterGithub = ref('')
 
 const filteredVars = computed(() => {
+  let source = variables.value
+  if (filterGithub.value === 'needs_push') {
+    source = source.filter((v) => needsGithubPush(v))
+  }
   const q = searchQuery.value.trim().toLowerCase()
-  if (!q) return variables.value
-  return variables.value.filter((v) => {
+  if (!q) return source
+  return source.filter((v) => {
     return [v.name, v.value].filter(Boolean).join(' ').toLowerCase().includes(q)
   })
 })
@@ -47,12 +53,19 @@ const { page, pageSize, pageCount, total, pageItems, rangeLabel } = useClientPag
 const showGithubDialog = ref(false)
 const githubTarget = ref<Variable | null>(null)
 
-/** Sorting summary for the GitHub Sync column: none < failed < pending < ok. */
+/** Sorting summary: none < failed < stale < pending < ok. */
 function githubStatusValue(v: Variable): string {
   if (!v.github_binds?.length) return ''
   if (v.github_binds.some((b) => b.last_status === 'failed')) return 'failed'
+  if (v.github_binds.some((b) => b.last_status === 'stale')) return 'stale'
   if (v.github_binds.some((b) => b.last_status === 'pending')) return 'pending'
   return 'ok'
+}
+
+function needsGithubPush(v: Variable): boolean {
+  return !!v.github_binds?.some(
+    (b) => b.last_status === 'pending' || b.last_status === 'stale' || b.last_status === 'failed',
+  )
 }
 
 function openGithub(v: Variable) {
@@ -89,12 +102,26 @@ async function handleSave() {
   saving.value = true
   try {
     if (editing.value) {
-      await variablesApi.update(editing.value.id, { value: formValue.value })
+      const target = editing.value
+      const res = await variablesApi.update(editing.value.id, { value: formValue.value })
+      showDialog.value = false
+      await loadVars()
+      const stale = res.github_binds_stale ?? 0
+      if (stale > 0 && auth.isPlatformAdmin) {
+        const go = await dialog.confirm(
+          `${stale} GitHub bind${stale === 1 ? '' : 's'} marked as needs push (inherit only; custom overrides unchanged). Push now?`,
+          { title: 'GitHub sync', confirmLabel: 'Push now', cancelLabel: 'Later' },
+        )
+        if (go) {
+          const refreshed = variables.value.find((v) => v.id === target.id) || target
+          openGithub(refreshed)
+        }
+      }
     } else {
       await variablesApi.create({ name: formName.value.trim(), value: formValue.value })
+      showDialog.value = false
+      await loadVars()
     }
-    showDialog.value = false
-    await loadVars()
   } catch (e: any) {
     // Surface the backend's message instead of letting the unhandled rejection
     // crash the page via ErrorBoundary (same pattern as Secrets.vue).
@@ -154,13 +181,17 @@ onMounted(loadVars)
       </div>
       <template v-else>
         <!-- Filter bar -->
-        <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3">
+        <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
           <input
             v-model="searchQuery"
             type="text"
             placeholder="Search variables…"
             class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
           />
+          <select v-model="filterGithub" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50" title="Filter by GitHub sync status">
+            <option value="">All GitHub status</option>
+            <option value="needs_push">Needs push</option>
+          </select>
           <span v-if="filteredVars.length !== variables.length" class="text-[10px] text-muted-foreground ml-auto">
             {{ filteredVars.length }} of {{ variables.length }}
           </span>
