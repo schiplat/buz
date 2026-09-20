@@ -63,26 +63,30 @@ async fn jobs_backlog(pool: &sqlx::SqlitePool) -> serde_json::Value {
 
 /// Clock-skew guard state: a Manager clock behind real time signs config URLs
 /// that are already expired when a Runner downloads them.
+///
+/// `/health` is unauthenticated, so this deliberately exposes only the verdict
+/// and the measured offset: the probe source URL (`https://{bucket}.{endpoint}/`)
+/// and raw probe errors would disclose internal OSS endpoints and hostnames to
+/// anonymous callers. Operators get the full detail from the Manager logs.
 fn clock_health() -> serde_json::Value {
     let guard = crate::services::clock::global();
     let warn_threshold = guard.config().warn_threshold_seconds;
+    let probe_failed = guard.last_error().is_some();
 
     match guard.latest() {
         Some(sample) => serde_json::json!({
             "status": if sample.is_skewed(warn_threshold) { "skewed" } else { "ok" },
             "skew_seconds": sample.skew_secs,
             "behind_seconds": sample.local_behind_secs(),
-            "source": sample.source,
             "checked_at": sample.checked_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "error": guard.last_error(),
+            "probe_failed": probe_failed,
         }),
         None => serde_json::json!({
             "status": "unknown",
             "skew_seconds": serde_json::Value::Null,
             "behind_seconds": serde_json::Value::Null,
-            "source": serde_json::Value::Null,
             "checked_at": serde_json::Value::Null,
-            "error": guard.last_error(),
+            "probe_failed": probe_failed,
         }),
     }
 }

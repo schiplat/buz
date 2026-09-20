@@ -124,3 +124,24 @@ async fn health_degraded_with_503_when_db_unavailable_in_readiness_mode() {
     assert_eq!(body["status"], "degraded");
     assert_eq!(body["database"]["status"], "error");
 }
+
+/// `/health` is unauthenticated: the clock section must expose the verdict only.
+/// The probe source (`https://{bucket}.{endpoint}/`) and raw probe errors would
+/// disclose internal OSS endpoints / hostnames to anonymous callers.
+#[tokio::test]
+async fn health_clock_section_leaks_no_internal_endpoint() {
+    let state = test_state().await;
+    let (_, Json(body)) = health(State(state), Query(HealthQuery::default())).await;
+
+    let clock = &body["clock"];
+    assert!(clock.is_object(), "clock section present: {body}");
+    for key in ["source", "error", "url"] {
+        assert!(
+            clock.get(key).is_none(),
+            "unauthenticated /health must not expose `{key}`: {clock}"
+        );
+    }
+    for key in ["status", "skew_seconds", "behind_seconds", "probe_failed"] {
+        assert!(clock.get(key).is_some(), "clock.{key} missing: {clock}");
+    }
+}

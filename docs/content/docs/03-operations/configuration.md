@@ -34,6 +34,7 @@ yaml_scan_interval_seconds = 30
 enabled = true                 # probe remote clock before signing config URLs
 warn_threshold_seconds = 60    # log-only warning threshold
 cache_ttl_seconds = 300        # reuse a probe result for this long
+# allowed_hosts = ["*.aliyuncs.com"]   # hosts the guard may probe (SSRF allowlist)
 
 # Dev / single-container only — leave disabled in production (default)
 # [standalone]
@@ -58,6 +59,7 @@ level = "info"                 # error | warn | info | debug | trace
 | `clock` | `enabled` | Default `true`. Probe the OSS endpoint's `Date` header before signing `config.source` URLs — see [Clock skew](#clock-skew) |
 | `clock` | `warn_threshold_seconds` | Default `60`. Log a `warn` when the Manager clock is at least this far behind remote time. `0` disables the warning |
 | `clock` | `cache_ttl_seconds` | Default `300`. Reuse a probe result for this long; `0` probes on every dispatch |
+| `clock` | `allowed_hosts` | Default `["*.aliyuncs.com"]`. Hosts the guard may probe. The probe target is derived from a team-scoped `config_source` secret, so this is the **SSRF allowlist**: a host outside it is never contacted (the guard is skipped for that endpoint). Extend it for S3-compatible endpoints (MinIO etc.); name a port explicitly (`minio.internal:9000`) to allow a non-443 endpoint. An empty list disables probing. Redirects are never followed |
 | `standalone` | `enabled` | Default `false`. When `true`, allow **loopback** Runner register without `register_token` for names in `auto_approve` (or pre-created in UI). Non-loopback register is **rejected**. Dev / `buz-standalone` only — see [Standalone mode](#standalone-mode) |
 | `standalone` | `auto_approve` | Runner names created at Manager boot if missing. Default `["standalone-runner"]` |
 | `logging` | `level` | Default `info`. Overridden by `RUST_LOG` if set |
@@ -244,14 +246,29 @@ response header (present even on a `403`), then compares it with the local clock
 | Skew at/above `warn_threshold_seconds` | `warn` log naming the source, URL still signed |
 | Skew so large the URL would arrive expired (≈ TTL minus a 300s margin) | URL **not** signed; the step fails with an actionable `config_auth_error` naming the clock, the measured skew and the NTP command |
 | Probe fails (DNS/TLS/timeout) | `warn` log, URL signed (the guard never blocks dispatch on its own failure) |
+| Target host not in `clock.allowed_hosts` | Probe **not attempted** (`debug` log), URL signed — the guard is skipped |
+| Target port is neither 443 nor named in `clock.allowed_hosts` | Probe **not attempted**, URL signed — an allowlisted host must not become a port scanner |
+
+**The target host is attacker-influenced**, so the guard treats it as untrusted input: it comes from
+a team-scoped `config_source` secret (`https://{bucket}.{endpoint}/`), and any user who can manage a
+secret in their team could otherwise aim the Manager's HTTP client at an internal host or a cloud
+metadata endpoint. Therefore the guard dials **only** hosts matching `clock.allowed_hosts`
+(default `*.aliyuncs.com`), only on port 443 unless an entry names another port (e.g.
+`minio.internal:9000`), never follows redirects, and rejects a source carrying userinfo
+(`user@host`), a path or non-DNS characters before any request is made. Endpoints outside the
+allowlist simply lose the clock guard — add them to get it back.
 
 `/health` reports the last probe:
 
 ```json
-"clock": { "status": "ok", "skew_seconds": 0, "behind_seconds": 0, "source": "https://…/", "checked_at": "…", "error": null }
+"clock": { "status": "ok", "skew_seconds": 0, "behind_seconds": 0, "checked_at": "…", "probe_failed": false }
 ```
 
 `status` is `ok` | `skewed` | `unknown` (`unknown` = no probe yet, e.g. nothing signed since boot).
+
+`/health` is **unauthenticated**, so this payload deliberately omits the probe source
+(`https://{bucket}.{endpoint}/`) and the raw probe error: both would disclose internal OSS endpoints
+and hostnames to anonymous callers. Operators get that detail from the Manager logs.
 
 ### Fix
 

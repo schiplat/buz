@@ -45,6 +45,13 @@ yaml_scan_interval_seconds = 30
 # enabled = true
 # warn_threshold_seconds = 60
 # cache_ttl_seconds = 300
+# Hosts the guard may probe. The target comes from a team-scoped config_source
+# secret (https://{bucket}.{endpoint}/), so this allowlist is what stops a
+# secret owner from aiming the Manager's HTTP client at an internal host
+# (SSRF). Hosts outside it are never contacted (guard skipped); port 443 is
+# implied unless an entry names one ("minio.internal:9000"); an empty list
+# disables probing. Redirects are never followed.
+# allowed_hosts = ["*.aliyuncs.com"]
 
 [logging]
 level = "info"

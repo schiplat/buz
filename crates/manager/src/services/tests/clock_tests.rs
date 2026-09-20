@@ -1,6 +1,6 @@
 use super::{
-    expiry_error_message, expiry_margin_secs, guard_signing, oss_source_url, url_born_expired,
-    ClockGuard,
+    expiry_error_message, expiry_margin_secs, guard_signing, host_allowed, oss_source_url,
+    port_allowed, probe_target, url_born_expired, ClockGuard,
 };
 use crate::config::ClockConfig;
 use chrono::{Duration as ChronoDuration, Utc};
@@ -10,11 +10,13 @@ use tokio::io::AsyncWriteExt;
 
 const TTL: i64 = 3600;
 
+/// Probe tests target a loopback HTTP server, so the allowlist mirrors that.
 fn cfg(enabled: bool, cache_ttl_seconds: u64) -> ClockConfig {
     ClockConfig {
         enabled,
         warn_threshold_seconds: 60,
         cache_ttl_seconds,
+        allowed_hosts: vec!["127.0.0.1".to_string(), "*.aliyuncs.com".to_string()],
     }
 }
 
@@ -54,6 +56,34 @@ async fn spawn_probe_server(
                 resp.push_str(&format!("Date: {d}\r\n"));
             }
             resp.push_str("\r\n");
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.flush().await;
+            let _ = sock.shutdown().await;
+        }
+    });
+
+    (format!("http://{addr}/"), hits)
+}
+
+/// Minimal server answering `302` with `Location: {target}` (no `Date` header),
+/// used to prove the guard does not chase redirects.
+async fn spawn_redirector(target: String) -> (String, Arc<AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind redirector");
+    let addr = listener.local_addr().expect("redirector addr");
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            counter.fetch_add(1, Ordering::SeqCst);
+            let resp = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
             let _ = sock.write_all(resp.as_bytes()).await;
             let _ = sock.flush().await;
             let _ = sock.shutdown().await;
@@ -109,6 +139,223 @@ fn expiry_message_names_source_skew_and_fix() {
     );
     assert!(msg.contains("Request has expired"), "{msg}");
     assert!(msg.contains("timedatectl set-ntp true"), "{msg}");
+}
+
+// -- probe target validation (SSRF gate) --
+
+#[test]
+fn probe_target_extracts_and_normalises_the_host() {
+    assert_eq!(
+        probe_target("https://example-bucket.oss-cn-hongkong.aliyuncs.com/").unwrap(),
+        (
+            "example-bucket.oss-cn-hongkong.aliyuncs.com".to_string(),
+            None
+        )
+    );
+    // Case and a path/query tail do not change the host.
+    assert_eq!(
+        probe_target("https://OSS.Example.COM/health?x=1#f").unwrap(),
+        ("oss.example.com".to_string(), None)
+    );
+}
+
+#[test]
+fn probe_target_rejects_hosts_that_hide_a_different_target() {
+    // `user@169.254.169.254` would connect to the IP, not to `a.x`.
+    let err = probe_target("https://a.x@169.254.169.254:80/").expect_err("userinfo rejected");
+    assert!(err.contains("embedded credentials"), "{err}");
+
+    for bad in [
+        "http://oss.example.com/",          // plain http (non-loopback)
+        "ftp://oss.example.com/",           // unsupported scheme
+        "https:///",                        // no host
+        "oss.example.com/",                 // missing scheme
+        "https://oss example.com/",         // whitespace in host
+        "https://oss%2eexample.com/",       // percent-encoded host
+        "http://metadata.google.internal/", // http to a non-loopback host
+        "http://169.254.169.254/latest/",   // http metadata endpoint
+    ] {
+        assert!(probe_target(bad).is_err(), "{bad} must be refused");
+    }
+}
+
+#[test]
+fn host_allowed_supports_wildcards_exact_and_rejects_catch_all() {
+    let patterns = vec![
+        "*.aliyuncs.com".to_string(),
+        "oss.internal.example".to_string(),
+    ];
+
+    assert!(host_allowed(
+        "example-bucket.oss-cn-hongkong.aliyuncs.com",
+        &patterns
+    ));
+    assert!(host_allowed("aliyuncs.com", &patterns));
+    assert!(host_allowed("oss.internal.example", &patterns));
+    // Case / trailing dot normalisation.
+    assert!(host_allowed("OSS-CN-Hongkong.AliYunCs.CoM.", &patterns));
+
+    assert!(!host_allowed("aliyuncs.com.attacker.example", &patterns));
+    assert!(!host_allowed("evil-aliyuncs.com", &patterns));
+    assert!(!host_allowed("169.254.169.254", &patterns));
+    assert!(!host_allowed(
+        "oss.internal.example.attacker.example",
+        &patterns
+    ));
+
+    // A `*` pattern would allow anything → ignored, and an empty list denies all.
+    assert!(!host_allowed("anything.example", &["*".to_string()]));
+    assert!(!host_allowed("oss-cn-hongkong.aliyuncs.com", &[]));
+}
+
+#[tokio::test]
+async fn sample_refuses_hosts_outside_the_allowlist() {
+    let guard = guard(true, 300);
+
+    for blocked in [
+        "https://attacker.example/",
+        "https://a.x@169.254.169.254:80/",
+        "http://169.254.169.254/latest/",
+    ] {
+        let err = guard
+            .sample(blocked)
+            .await
+            .expect_err("non-allowlisted target must not be dialed");
+        assert!(
+            err.contains("clock probe refused") || err.contains("not in clock.allowed_hosts"),
+            "{blocked}: {err}"
+        );
+    }
+    assert_eq!(guard.latest(), None);
+}
+
+#[tokio::test]
+async fn sample_refuses_everything_when_the_allowlist_is_empty() {
+    let guard = ClockGuard::new(ClockConfig {
+        allowed_hosts: vec![],
+        ..cfg(true, 300)
+    });
+    let err = guard
+        .sample("https://example-bucket.oss-cn-hongkong.aliyuncs.com/")
+        .await
+        .expect_err("empty allowlist disables probing");
+    assert!(err.contains("clock.allowed_hosts is empty"), "{err}");
+}
+
+#[tokio::test]
+async fn guard_signing_fails_open_for_non_allowlisted_sources() {
+    // The guard is a diagnostic, not a gate: an endpoint outside the allowlist
+    // must not block dispatch, and must not be contacted either.
+    let guard = guard(true, 300);
+    assert_eq!(
+        guard_signing(&guard, "https://attacker.example/", TTL).await,
+        None
+    );
+}
+
+#[test]
+fn probe_target_reports_explicit_ports_only_when_valid() {
+    assert_eq!(
+        probe_target("https://oss.example.com/").unwrap(),
+        ("oss.example.com".to_string(), None)
+    );
+    assert_eq!(
+        probe_target("https://oss.example.com:443/").unwrap(),
+        ("oss.example.com".to_string(), Some(443))
+    );
+    assert_eq!(
+        probe_target("https://OSS.Example.com:9000/path").unwrap(),
+        ("oss.example.com".to_string(), Some(9000))
+    );
+
+    for bad in [
+        "https://oss.example.com:abc/",
+        "https://oss.example.com:/",
+        "https://oss.example.com:9000:80/",
+        "https://[::1]:443/",
+    ] {
+        assert!(probe_target(bad).is_err(), "{bad} must be refused");
+    }
+}
+
+#[test]
+fn port_allowed_requires_an_explicit_allowlist_entry() {
+    let patterns = vec![
+        "*.aliyuncs.com".to_string(),
+        "minio.internal:9000".to_string(),
+    ];
+
+    // The scheme default is always fine.
+    assert!(port_allowed("oss-cn-hongkong.aliyuncs.com", 443, &patterns));
+    // Any other port needs to be named by a matching allowlist entry.
+    assert!(!port_allowed(
+        "oss-cn-hongkong.aliyuncs.com",
+        8443,
+        &patterns
+    ));
+    assert!(!port_allowed("minio.internal", 9001, &patterns));
+    assert!(port_allowed("minio.internal", 9000, &patterns));
+    // Named port on the wrong host stays refused, and wildcards carry over.
+    assert!(!port_allowed("evil.internal", 9000, &patterns));
+    assert!(port_allowed(
+        "minio.internal",
+        9000,
+        &["*.internal:9000".to_string()]
+    ));
+    // A port-named entry still matches its host for the allowlist itself.
+    assert!(host_allowed(
+        "minio.internal",
+        &["minio.internal:9000".to_string()]
+    ));
+}
+
+#[tokio::test]
+async fn sample_refuses_non_default_ports_on_allowlisted_hosts() {
+    let guard = guard(true, 300);
+
+    // Allowlisted host, but the endpoint points at another port — the guard
+    // must not become a port scanner.
+    let err = guard
+        .sample("https://127.0.0.1:8443/")
+        .await
+        .expect_err("non-default port must not be probed");
+    assert!(err.contains("port 8443"), "{err}");
+    assert!(err.contains("clock.allowed_hosts"), "{err}");
+
+    // Naming the port in the allowlist restores the guard (probe then runs).
+    let guard = ClockGuard::new(ClockConfig {
+        allowed_hosts: vec!["buz.oss.internal:9000".to_string()],
+        ..cfg(true, 300)
+    });
+    let err = guard
+        .sample("https://buz.oss.internal:9000/")
+        .await
+        .expect_err("allowlisted target is dialed (and unreachable here)");
+    assert!(
+        !err.contains("clock probe refused"),
+        "the port gate must not fire: {err}"
+    );
+}
+
+#[tokio::test]
+async fn probe_does_not_follow_redirects() {
+    // A redirect is the other way an allowlisted host could steer the Manager
+    // at an arbitrary target (and downgrade to http) — it must be returned,
+    // not chased.
+    let (victim_url, victim_hits) = spawn_probe_server(Some(http_date(0)), "200 OK").await;
+    let (redirect_url, _) = spawn_redirector(victim_url).await;
+    let guard = guard(true, 300);
+
+    let err = guard
+        .sample(&redirect_url)
+        .await
+        .expect_err("302 response carries no Date header");
+    assert!(err.contains("no Date header"), "{err}");
+    assert_eq!(
+        victim_hits.load(Ordering::SeqCst),
+        0,
+        "the redirect target must never be contacted"
+    );
 }
 
 // -- probing --

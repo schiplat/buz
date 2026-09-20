@@ -56,6 +56,10 @@ impl ClockGuard {
         let client = reqwest::Client::builder()
             .user_agent(concat!("buz-manager/", env!("CARGO_PKG_VERSION")))
             .timeout(PROBE_TIMEOUT)
+            // Redirects are refused: the probe target is derived from a
+            // team-scoped secret, and a followed `Location` would let that
+            // secret aim the Manager at any host (SSRF), including plain HTTP.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client build cannot fail");
         Self {
@@ -96,7 +100,22 @@ impl ClockGuard {
 
     /// Measure the skew against `source`, reusing a cached probe when it is
     /// still fresh (`clock.cache_ttl_seconds`).
+    ///
+    /// The target is validated first: the source URL is derived from a
+    /// team-scoped `config_source` secret, so an unvalidated host would turn
+    /// the Manager into a request proxy for any secret owner (SSRF). Skipped
+    /// targets are reported as a probe failure — the guard is optional, the
+    /// request is not optional to skip.
     pub async fn sample(&self, source: &str) -> Result<SkewSample, String> {
+        if let Err(reason) = self.check_probe_target(source) {
+            tracing::debug!(
+                source = %source,
+                reason = %reason,
+                "clock: probe skipped — target host not allowed"
+            );
+            return Err(reason);
+        }
+
         if let Some(entry) = self.fresh_entry(source) {
             return match entry.probe {
                 Probe::Sample(s) => Ok(s),
@@ -121,6 +140,36 @@ impl ClockGuard {
         match probe {
             Probe::Sample(s) => Ok(s),
             Probe::Failed(e) => Err(e),
+        }
+    }
+
+    /// Gate the probe target: only `https` URLs whose host matches
+    /// `clock.allowed_hosts` (and whose port is the default or explicitly
+    /// allowlisted) may be dialed.
+    fn check_probe_target(&self, source: &str) -> Result<(), String> {
+        let (host, port) = probe_target(source)?;
+        if self.config.allowed_hosts.is_empty() {
+            return Err("clock probe disabled: clock.allowed_hosts is empty".into());
+        }
+        if !host_allowed(&host, &self.config.allowed_hosts) {
+            return Err(format!(
+                "clock probe refused: host '{host}' is not in clock.allowed_hosts \
+                 (the config_source endpoint is not a trusted time source)"
+            ));
+        }
+        // An allowlisted host must not become an arbitrary-port scanner. The
+        // guard's own tests probe a plain-HTTP loopback server on an ephemeral
+        // port, which is the one target the port rule cannot cover.
+        let test_loopback = cfg!(test) && !source.starts_with("https://");
+        match port {
+            Some(p) if !test_loopback && !port_allowed(&host, p, &self.config.allowed_hosts) => {
+                Err(format!(
+                    "clock probe refused: port {p} on '{host}' is not allowed — name it \
+                     explicitly in clock.allowed_hosts (e.g. \"{host}:{p}\") if it is a \
+                     trusted S3-compatible endpoint"
+                ))
+            }
+            _ => Ok(()),
         }
     }
 
@@ -186,6 +235,9 @@ pub fn expiry_error_message(source: &str, behind_secs: i64, ttl_secs: i64) -> St
 }
 
 /// Base URL used to sample the OSS server clock: `https://{bucket}.{endpoint}/`.
+///
+/// Formatting only — the result must pass [`probe_host`] + [`host_allowed`]
+/// before it is dialed (see `ClockGuard::check_probe_target`).
 pub fn oss_source_url(bucket: &str, endpoint: &str) -> String {
     let host = endpoint
         .trim()
@@ -193,6 +245,125 @@ pub fn oss_source_url(bucket: &str, endpoint: &str) -> String {
         .trim_start_matches("http://")
         .trim_end_matches('/');
     format!("https://{}.{}/", bucket.trim(), host)
+}
+
+/// Extract the host from a probe source URL, rejecting anything that could be
+/// used to reach a different target than the one shown.
+///
+/// Rejects: non-`https` schemes, embedded credentials (`user@host`), paths,
+/// queries, fragments and characters that are not valid in a DNS name — all of
+/// which are ways to smuggle a different authority past a naive prefix check.
+/// An explicit port is only accepted when the allowlist names it
+/// (see [`port_allowed`]).
+///
+/// `oss_source_url` always builds `https://`, so plain `http` can only come
+/// from a hand-written source; the guard's own tests run against a plain-HTTP
+/// loopback server, hence the test-only tolerance for loopback hosts.
+pub fn probe_target(source: &str) -> Result<(String, Option<u16>), String> {
+    let is_https = source.starts_with("https://");
+    let rest = match source.strip_prefix("https://") {
+        Some(rest) => rest,
+        None if cfg!(test) => source
+            .strip_prefix("http://")
+            .ok_or_else(|| format!("clock probe refused: '{source}' is not an https URL"))?,
+        None => {
+            return Err(format!(
+                "clock probe refused: '{source}' is not an https URL"
+            ))
+        }
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return Err(format!("clock probe refused: '{source}' has no host"));
+    }
+    if authority.contains('@') {
+        return Err(
+            "clock probe refused: URL carries embedded credentials (userinfo) — refusing to \
+             resolve the host it would actually connect to"
+                .into(),
+        );
+    }
+    let (host_part, port_part) = match authority.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    let host = host_part.to_ascii_lowercase();
+    if host.is_empty() {
+        return Err(format!("clock probe refused: '{source}' has no host"));
+    }
+    if !host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        return Err(format!(
+            "clock probe refused: host '{host}' contains characters that are not valid in a DNS name"
+        ));
+    }
+    let port =
+        match port_part {
+            None => None,
+            Some("") => return Err(format!("clock probe refused: '{source}' has an empty port")),
+            Some(p) => Some(p.parse::<u16>().map_err(|_| {
+                format!("clock probe refused: '{source}' has an invalid port '{p}'")
+            })?),
+        };
+    if cfg!(test) && !is_https && !is_loopback_host(&host) {
+        return Err(format!(
+            "clock probe refused: plain http is only acceptable for a loopback test server, \
+             got host '{host}'"
+        ));
+    }
+    Ok((host, port))
+}
+
+/// True for loopback authorities (`localhost`, `127.0.0.0/8`, `::1`).
+fn is_loopback_host(host: &str) -> bool {
+    host == "localhost" || host == "::1" || host == "[::1]" || host.starts_with("127.")
+}
+
+/// True when `port` on an allowlisted `host` may be probed.
+///
+/// HTTPS defaults to 443; any other port has to be named explicitly by an
+/// allowlist entry (`minio.internal:9000`), so an allowlisted host cannot be
+/// turned into an arbitrary-port scanner.
+pub fn port_allowed(host: &str, port: u16, patterns: &[String]) -> bool {
+    if port == 443 {
+        return true;
+    }
+    patterns.iter().any(|raw| {
+        raw.trim()
+            .rsplit_once(':')
+            .is_some_and(|(pat_host, pat_port)| {
+                pat_port.trim().parse::<u16>() == Ok(port)
+                    && host_allowed(host, &[pat_host.to_string()])
+            })
+    })
+}
+
+/// True when `host` matches any allowlist pattern.
+///
+/// Patterns are exact (`oss.example.com`) or single-wildcard prefixes
+/// (`*.aliyuncs.com`, which also matches the bare `aliyuncs.com`). An entry may
+/// carry a port (`minio.internal:9000`) — only its host part is matched here,
+/// the port is enforced by [`port_allowed`]. A pattern of `*` would allow
+/// everything and is therefore ignored.
+pub fn host_allowed(host: &str, patterns: &[String]) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    patterns.iter().any(|raw| {
+        let raw = raw.trim();
+        let pat = match raw.rsplit_once(':') {
+            Some((h, p)) if p.trim().parse::<u16>().is_ok() => h.trim(),
+            _ => raw,
+        };
+        let pat = pat.trim_end_matches('.').to_ascii_lowercase();
+        if pat.is_empty() || pat == "*" {
+            return false;
+        }
+        match pat.strip_prefix("*.") {
+            Some(base) => host == base || host.ends_with(&format!(".{base}")),
+            None => host == pat,
+        }
+    })
 }
 
 static GUARD: OnceLock<ClockGuard> = OnceLock::new();

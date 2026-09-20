@@ -167,6 +167,16 @@ pub struct ClockConfig {
     /// Reuse a probe result for this long (seconds). `0` probes every dispatch.
     #[serde(default = "default_clock_cache_ttl")]
     pub cache_ttl_seconds: u64,
+    /// Hosts the guard is allowed to probe, e.g. `["*.aliyuncs.com"]`.
+    ///
+    /// The probe target is derived from a team-scoped `config_source` secret
+    /// (`https://{bucket}.{endpoint}/`), so without an allowlist any secret
+    /// owner could aim the Manager's HTTP client at an arbitrary internal host
+    /// (SSRF). A derived host that matches none of these patterns is **never
+    /// dialed**; the guard is skipped and signing proceeds unguarded. Empty
+    /// list disables probing entirely.
+    #[serde(default = "default_clock_allowed_hosts")]
+    pub allowed_hosts: Vec<String>,
 }
 
 impl Default for ClockConfig {
@@ -175,6 +185,7 @@ impl Default for ClockConfig {
             enabled: default_clock_enabled(),
             warn_threshold_seconds: default_clock_warn_threshold(),
             cache_ttl_seconds: default_clock_cache_ttl(),
+            allowed_hosts: default_clock_allowed_hosts(),
         }
     }
 }
@@ -216,6 +227,10 @@ fn default_clock_warn_threshold() -> i64 {
 }
 fn default_clock_cache_ttl() -> u64 {
     300
+}
+/// Default probe allowlist: Aliyun OSS domains only (`*.aliyuncs.com`).
+fn default_clock_allowed_hosts() -> Vec<String> {
+    vec!["*.aliyuncs.com".to_string()]
 }
 fn default_standalone_auto_approve() -> Vec<String> {
     vec!["standalone-runner".into()]
