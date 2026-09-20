@@ -35,6 +35,7 @@ fn test_config(scan_dir: &str) -> Config {
             yaml_scan_interval_seconds: 3600,
         },
         standalone: Default::default(),
+        clock: Default::default(),
         logging: Default::default(),
     }
 }

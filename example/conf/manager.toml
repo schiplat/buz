@@ -36,6 +36,16 @@ heartbeat_timeout_seconds = 90
 yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30
 
+[clock]
+# Signed config URLs (config.source → OSS) embed an absolute expiry, so a slow
+# Manager clock signs URLs that are already expired on arrival
+# (OSS: 403 AccessDenied "Request has expired"). The Manager probes the OSS
+# endpoint's Date header before signing and refuses with an actionable error.
+# Real fix: sync the host clock (NTP).
+# enabled = true
+# warn_threshold_seconds = 60
+# cache_ttl_seconds = 300
+
 [logging]
 level = "info"
 # file = "./logs/manager.log"

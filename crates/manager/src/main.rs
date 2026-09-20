@@ -95,6 +95,16 @@ async fn main() -> anyhow::Result<()> {
         shared::version::long_version("manager"),
     );
 
+    // Clock-skew guard for signed config URLs: a slow Manager clock produces
+    // URLs that are already expired when the Runner downloads them.
+    services::clock::init(&config.clock);
+    tracing::info!(
+        enabled = config.clock.enabled,
+        warn_threshold_seconds = config.clock.warn_threshold_seconds,
+        cache_ttl_seconds = config.clock.cache_ttl_seconds,
+        "clock: skew guard configured (probes the OSS endpoint Date header before signing config URLs)"
+    );
+
     services::runner_monitor::spawn_monitor(db_pool.clone(), config.runner.clone());
 
     // Shared log broadcaster: cleanup needs the same instance the log upload

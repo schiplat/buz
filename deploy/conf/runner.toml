@@ -18,6 +18,16 @@ workspace_dir = "./workspace"
 [engine]
 # ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"
 
+[clock]
+# The Runner must stay consistent with the Manager clock: it is validated on
+# startup against the Manager's Date header (and re-checked on every heartbeat).
+# A gross skew refuses to start — fix the host clock (NTP) rather than relaxing
+# these thresholds. Labs only: fail_on_skew = false.
+enabled = true
+warn_threshold_seconds = 60
+max_skew_seconds = 300
+# fail_on_skew = true
+
 [logging]
 level = "info"
 file = "./logs/runner.log"

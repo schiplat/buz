@@ -39,6 +39,7 @@ fn base_config(standalone: bool) -> Config {
             enabled: standalone,
             auto_approve: vec!["standalone-runner".into()],
         },
+        clock: Default::default(),
         logging: Default::default(),
     }
 }

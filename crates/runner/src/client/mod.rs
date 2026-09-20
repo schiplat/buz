@@ -1,3 +1,4 @@
+pub mod clock;
 pub mod config_source;
 pub mod env_render;
 pub mod heartbeat;

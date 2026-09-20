@@ -52,6 +52,111 @@ fn oss_error_detail_falls_back_to_snippet() {
 }
 
 #[test]
+fn download_failure_reports_oss_time_and_clock_skew() {
+    let sent = at(1_700_000_000);
+    let received = at(1_700_002); // 2s round-trip
+    let raw = http_date(1_700_000_100); // OSS clock 100s ahead of the local midpoint
+    let remote = shared::clock::parse_http_date(&raw).expect("parse");
+
+    let msg = describe_download_failure(
+        reqwest::StatusCode::FORBIDDEN,
+        Some(&raw),
+        sent,
+        received,
+        "AccessDenied: Request has expired.",
+    );
+    assert!(
+        msg.starts_with("config bundle download returned HTTP 403 Forbidden: AccessDenied: Request has expired."),
+        "{msg}"
+    );
+    assert!(
+        msg.contains(&shared::clock::format_utc(remote.timestamp())),
+        "OSS time must be shown: {msg}"
+    );
+    assert!(
+        msg.contains(&shared::clock::format_utc(received.timestamp())),
+        "local time must be shown: {msg}"
+    );
+    let expected_skew = shared::clock::skew_from_http_date(sent, received, remote);
+    assert!(expected_skew > 0, "sanity: OSS ahead of local");
+    assert!(
+        msg.contains(&shared::clock::describe_skew(expected_skew)),
+        "skew must be quantified: {msg}"
+    );
+    assert!(
+        msg.contains("behind OSS") && msg.contains("NTP"),
+        "verdict must say which side is off: {msg}"
+    );
+}
+
+#[test]
+fn download_failure_says_aligned_clocks_mean_a_stale_url() {
+    // Same instant on both sides: the URL itself was minted with a past expiry.
+    let sent = at(1_700_000_000);
+    let received = at(1_700_000_000);
+    let raw = http_date(1_700_000_000);
+
+    let msg = describe_download_failure(
+        reqwest::StatusCode::FORBIDDEN,
+        Some(&raw),
+        sent,
+        received,
+        "AccessDenied: Request has expired.",
+    );
+    assert!(msg.contains("clocks aligned"), "{msg}");
+    assert!(
+        msg.contains("signed_at"),
+        "must point at the URL window fields: {msg}"
+    );
+    assert!(
+        !msg.contains("NTP"),
+        "no NTP noise when clocks agree: {msg}"
+    );
+}
+
+#[test]
+fn download_failure_without_date_header_keeps_plain_message() {
+    let sent = at(1_700_000_000);
+    let msg = describe_download_failure(
+        reqwest::StatusCode::NOT_FOUND,
+        None,
+        sent,
+        sent,
+        "NoSuchKey: The specified key does not exist.",
+    );
+    assert_eq!(
+        msg,
+        "config bundle download returned HTTP 404 Not Found: NoSuchKey: The specified key does not exist."
+    );
+
+    // Unparsable Date header → no half-rendered clock block.
+    let msg = describe_download_failure(
+        reqwest::StatusCode::FORBIDDEN,
+        Some("garbage"),
+        sent,
+        sent,
+        "AccessDenied: Request has expired.",
+    );
+    assert!(!msg.contains("oss_time"), "{msg}");
+}
+
+fn at(secs: i64) -> chrono::DateTime<chrono::Utc> {
+    use chrono::TimeZone;
+    chrono::Utc
+        .timestamp_opt(secs, 0)
+        .single()
+        .expect("valid timestamp")
+}
+
+/// RFC 1123 `Date` header for an epoch, e.g. `Tue, 14 Nov 2023 22:13:20 GMT`.
+fn http_date(secs: i64) -> String {
+    chrono::DateTime::from_timestamp(secs, 0)
+        .expect("valid timestamp")
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string()
+}
+
+#[test]
 fn config_url_extracts_signed_url() {
     let step = serde_json::json!({ "config_auth": { "url": "https://oss.example.com/obj?Expires=1", "object_key": "config_tpl/a/1.0" } });
     assert_eq!(

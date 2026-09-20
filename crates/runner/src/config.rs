@@ -10,7 +10,44 @@ pub struct Config {
     #[serde(default)]
     pub engine: EngineConfig,
     #[serde(default)]
+    pub clock: ClockSection,
+    #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+/// `[clock]` — Runner↔Manager clock consistency.
+///
+/// The Runner must not drift from the Manager clock: it stamps local config
+/// backups and all its timing must line up with Manager-side job logs. At
+/// startup (and on every heartbeat) the Runner compares its clock with the
+/// Manager's `Date` header; a gross skew aborts startup instead of silently
+/// producing off-timeline output.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClockSection {
+    /// Run the startup check and keep re-checking on heartbeats.
+    #[serde(default = "default_clock_enabled")]
+    pub enabled: bool,
+    /// Warn when the Runner clock is at least this far behind the Manager.
+    #[serde(default = "default_clock_warn_threshold")]
+    pub warn_threshold_seconds: i64,
+    /// Hard limit: skew at or beyond this aborts startup (see `fail_on_skew`).
+    #[serde(default = "default_clock_max_skew")]
+    pub max_skew_seconds: i64,
+    /// `true` (default): refuse to start when the skew exceeds
+    /// `max_skew_seconds`. `false`: log an error and continue.
+    #[serde(default = "default_true")]
+    pub fail_on_skew: bool,
+}
+
+impl Default for ClockSection {
+    fn default() -> Self {
+        Self {
+            enabled: default_clock_enabled(),
+            warn_threshold_seconds: default_clock_warn_threshold(),
+            max_skew_seconds: default_clock_max_skew(),
+            fail_on_skew: true,
+        }
+    }
 }
 
 /// `[runner]` — name, Manager URL/token, workspace.
@@ -130,6 +167,15 @@ fn default_true() -> bool {
 }
 fn default_false() -> bool {
     false
+}
+fn default_clock_enabled() -> bool {
+    true
+}
+fn default_clock_warn_threshold() -> i64 {
+    60
+}
+fn default_clock_max_skew() -> i64 {
+    300
 }
 
 impl RunnerSection {

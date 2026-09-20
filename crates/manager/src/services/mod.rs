@@ -1,3 +1,4 @@
+pub mod clock;
 pub mod cron_scheduler;
 pub mod debug_log_cleanup;
 pub mod github_actions_sync;

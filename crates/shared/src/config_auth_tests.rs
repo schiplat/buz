@@ -168,3 +168,49 @@ fn sign_percent_encodes_spaces_in_key() {
     let url = sign_oss_get_url(&auth, "dir name/cfg.tar.gz", 3600).unwrap();
     assert!(url.contains("dir%20name/cfg.tar.gz"), "{url}");
 }
+
+#[test]
+fn sign_meta_reports_the_signed_window_matching_the_url() {
+    let auth = sample_auth();
+    let signed = sign_oss_get_url_meta(&auth, "config_tpl/x/configs.tar.gz", 3600)
+        .expect("sign should succeed");
+
+    // The reported window must match the `Expires` actually embedded in the URL.
+    let expires_in_url: i64 = signed
+        .url
+        .split("Expires=")
+        .nth(1)
+        .and_then(|s| s.split('&').next())
+        .and_then(|s| s.parse().ok())
+        .expect("Expires should parse");
+    assert_eq!(expires_in_url, signed.expires_epoch);
+    assert_eq!(signed.ttl_secs(), 3600);
+
+    // Signed-at is the Manager clock reading at signing: now, give or take a second.
+    let now = chrono::Utc::now().timestamp();
+    assert!(
+        (now - signed.signed_at_epoch).abs() <= 1,
+        "signed_at {} should be ~now {now}",
+        signed.signed_at_epoch
+    );
+
+    // Older callers keep getting the bare URL (same shape, no metadata).
+    let bare = sign_oss_get_url(&auth, "config_tpl/x/configs.tar.gz", 3600).unwrap();
+    assert!(bare.starts_with("https://example-bucket.oss-cn-guangzhou.aliyuncs.com/"));
+    assert!(bare.contains("Signature="));
+}
+
+#[test]
+fn sign_meta_ttl_is_floored_like_the_url() {
+    let auth = sample_auth();
+    let signed = sign_oss_get_url_meta(&auth, "a.tar.gz", 5).expect("sign");
+    assert_eq!(signed.ttl_secs(), 60, "TTL floor applies to the window too");
+    assert_eq!(signed.expires_epoch - signed.signed_at_epoch, 60);
+}
+
+#[test]
+fn sign_meta_propagates_input_errors() {
+    let auth = sample_auth();
+    let err = sign_oss_get_url_meta(&auth, "  ", 3600).expect_err("empty key rejected");
+    assert!(err.contains("object key is empty"), "{err}");
+}

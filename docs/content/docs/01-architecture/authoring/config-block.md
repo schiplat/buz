@@ -50,6 +50,62 @@ aliases:
 - One-step sugar (`source` + `key_path` + `dest` + `render`) may be accepted by
   the engine but must not appear in examples or Quick YAML Reference.
 
+### Signed URL lifetime (Manager clock)
+
+OSS deliver does not ship credentials: the Manager signs a short-lived GET URL
+(`ttl` 3600s, OSS Query String Authentication V1) and injects it as
+`$BUZ_CONFIG_URL`. The signature embeds an **absolute** `Expires`, so the URL is
+only valid if the **Manager host clock** is correct — a Manager clock behind
+real time signs URLs that are already expired when the Runner downloads them:
+
+```text
+config bundle download returned HTTP 403 Forbidden: AccessDenied: Request has expired.
+```
+
+The Manager therefore probes the OSS endpoint's `Date` header before signing and
+refuses to dispatch a doomed URL with an actionable error
+(`[clock]` guard — see
+[Configuration → Clock skew](/docs/03-operations/configuration/#clock-skew)).
+Runner and DB clocks are irrelevant to this check. Do **not** "fix" a slow
+Manager clock by raising the TTL — sync the host with NTP.
+
+#### Reading a 403 from the job log
+
+The signed window travels with the task, so a bad URL names its own cause:
+
+```text
+==> CONFIG PREP
+  object_key       config_tpl/demo-app/0.1.9/configs.tar.gz
+  expires_in       3600s
+  signed_at        2026-09-20 10:14:35 UTC
+  url_age          2s
+  url_remaining    3598s
+```
+
+- `signed_at` / `url_age` / `url_remaining` come from the Manager-stamped
+  `signed_at_epoch` / `expires_epoch` in `config_auth` (absent → older Manager).
+- A URL that arrives **already expired** also prints
+  `url_warning  signed Ns ago with a 3600s TTL — already expired before download`.
+  With `url_age` in seconds this separates the two causes immediately:
+  - small `url_age` + expired ⇒ the **Manager clock lagged** when it signed
+    (fix NTP on the Manager host);
+  - large `url_age` (≳ TTL) ⇒ the **task waited too long** between sign and
+    download (claim → execution latency), the clocks may be fine.
+
+Download failures additionally carry the OSS `Date` header, so the log shows
+which side of the exchange is off — no NTP guessing required:
+
+```text
+config bundle download returned HTTP 403 Forbidden: AccessDenied: Request has expired.
+  oss_time     2026-09-20 12:54:56 UTC
+  local_time   2026-09-20 11:14:37 UTC
+  clock_skew   6000s behind (this host is behind OSS — sync NTP on the runner host)
+```
+
+When the verdict reads `clocks aligned`, the local clock matches OSS and the URL
+was already stale when it was used — look at `signed_at` / `url_age` instead of
+touching NTP.
+
 ### Field reference
 
 | YAML | DB column | Meaning |

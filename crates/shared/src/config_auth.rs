@@ -146,6 +146,29 @@ pub fn parse_oss_secret_value(raw: &str) -> Result<OssConfigAuth, String> {
     })
 }
 
+/// A pre-signed OSS GET URL together with the absolute window it is valid for.
+///
+/// The window is expressed as Unix epoch seconds (UTC) so the Runner can report
+/// *how old* a URL already is when it arrives: a task that sat too long between
+/// signing and execution (or a Manager whose clock lagged at signing time)
+/// otherwise only shows up as an opaque `403 AccessDenied: Request has expired`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedOssUrl {
+    /// The pre-signed HTTPS GET URL.
+    pub url: String,
+    /// Instant the signature was minted (Manager clock, Unix seconds).
+    pub signed_at_epoch: i64,
+    /// Absolute expiry embedded in the URL (Unix seconds).
+    pub expires_epoch: i64,
+}
+
+impl SignedOssUrl {
+    /// Effective lifetime in seconds (`expires_epoch - signed_at_epoch`).
+    pub fn ttl_secs(&self) -> i64 {
+        self.expires_epoch - self.signed_at_epoch
+    }
+}
+
 /// Build a pre-signed OSS GET URL (Query String Authentication, V1).
 ///
 /// Returns an HTTPS URL valid for `ttl_secs` (min 60s). The signature only
@@ -155,6 +178,16 @@ pub fn sign_oss_get_url(
     object_key: &str,
     ttl_secs: i64,
 ) -> Result<String, String> {
+    sign_oss_get_url_meta(auth, object_key, ttl_secs).map(|signed| signed.url)
+}
+
+/// Same as [`sign_oss_get_url`] but also reports the signing instant and the
+/// absolute expiry, so callers can surface URL age / remaining lifetime.
+pub fn sign_oss_get_url_meta(
+    auth: &OssConfigAuth,
+    object_key: &str,
+    ttl_secs: i64,
+) -> Result<SignedOssUrl, String> {
     if auth.endpoint.trim().is_empty() || auth.bucket.trim().is_empty() {
         return Err("OSS config secret requires non-empty 'endpoint' and 'bucket'".into());
     }
@@ -169,7 +202,8 @@ pub fn sign_oss_get_url(
         return Err("OSS config object key is empty".into());
     }
 
-    let expires = chrono::Utc::now().timestamp() + ttl_secs.max(60);
+    let signed_at_epoch = chrono::Utc::now().timestamp();
+    let expires = signed_at_epoch + ttl_secs.max(60);
 
     // OSS V1 Query String Authentication:
     //   StringToSign = VERB \n Content-MD5 \n Content-Type \n Expires \n CanonicalizedResource
@@ -186,13 +220,19 @@ pub fn sign_oss_get_url(
     let sig_encoded = percent_encode_query_value(&signature);
     let key_encoded = percent_encode_path(object_key);
 
-    Ok(format!(
+    let url = format!(
         "https://{bucket}.{endpoint}/{key}?OSSAccessKeyId={ak}&Expires={expires}&Signature={sig_encoded}",
         bucket = auth.bucket.trim(),
         endpoint = auth.endpoint.trim(),
         key = key_encoded,
         ak = auth.access_key_id.trim(),
-    ))
+    );
+
+    Ok(SignedOssUrl {
+        url,
+        signed_at_epoch,
+        expires_epoch: expires,
+    })
 }
 
 /// Percent-encode bytes outside the unreserved set, keeping `/` for path segments.

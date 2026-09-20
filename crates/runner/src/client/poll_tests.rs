@@ -1,7 +1,7 @@
 use super::{
     build_config_prep_banner, build_login_banner, build_runner_banner, build_ssh_banner,
     build_ssh_env_command, build_step_echo, build_step_failure_message, build_verbose_step_config,
-    build_verbose_step_result, format_resolved_ssh_targets, merge_ssh_host_outputs,
+    build_verbose_step_result, config_url_age, format_resolved_ssh_targets, merge_ssh_host_outputs,
     step_failure_hint, step_log_base, wrap_remote_cmd_with_registry_login, LOG_ECHO, LOG_LOGIN,
     LOG_RUNNER_BANNER, LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP,
     LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
@@ -377,6 +377,88 @@ fn config_prep_banner_redacts_url_unless_debug() {
     assert!(
         debug.contains("Signature=secret"),
         "debug must show signed URL: {debug}"
+    );
+}
+
+#[test]
+fn config_url_age_reads_the_signed_window() {
+    let step = serde_json::json!({
+        "config_auth": {
+            "url": "https://bucket.oss.aliyuncs.com/a.tar.gz?Expires=1&Signature=s",
+            "expires_in_secs": 3600,
+            "signed_at_epoch": 1_000,
+            "expires_epoch": 4_600,
+        },
+    });
+
+    let age = config_url_age(&step, 1_102).expect("signed window present");
+    assert_eq!(age.signed_at_epoch, 1_000);
+    assert_eq!(age.expires_epoch, 4_600);
+    assert_eq!(age.age_secs, 102);
+    assert_eq!(age.remaining_secs, 3_498);
+    assert_eq!(age.ttl_secs(), 3_600);
+    assert!(!age.is_expired());
+    assert_eq!(age.remaining_label(), "3498s");
+
+    // Older Manager: no epoch fields → nothing to report.
+    let legacy = serde_json::json!({
+        "config_auth": { "url": "https://b/a.tar.gz", "expires_in_secs": 3600 },
+    });
+    assert!(config_url_age(&legacy, 1_102).is_none());
+    assert!(config_url_age(&serde_json::json!({}), 1_102).is_none());
+
+    // Past the deadline the label flips and the flag trips.
+    let expired = config_url_age(&step, 4_661).expect("still readable");
+    assert!(expired.is_expired());
+    assert_eq!(expired.remaining_label(), "EXPIRED (61s ago)");
+}
+
+#[test]
+fn config_prep_banner_reports_url_window_and_expiry() {
+    let step = serde_json::json!({
+        "config_source": "OSS_DEMO",
+        "config_auth": {
+            "url": "https://bucket.oss.aliyuncs.com/a.tar.gz?Signature=secret",
+            "object_key": "config_tpl/demo/v1/configs.tar.gz",
+            "expires_in_secs": 3600,
+            "signed_at_epoch": chrono::Utc::now().timestamp() - 30,
+            "expires_epoch": chrono::Utc::now().timestamp() + 3_570,
+        },
+    });
+    let fresh = build_config_prep_banner(&step, false);
+    assert!(fresh.contains("signed_at"), "{fresh}");
+    assert!(fresh.contains("url_age"), "{fresh}");
+    assert!(fresh.contains("url_remaining"), "{fresh}");
+    assert!(
+        fresh.contains(" UTC"),
+        "signed_at must carry an absolute UTC stamp: {fresh}"
+    );
+    assert!(
+        !fresh.contains("EXPIRED"),
+        "a fresh URL must not be flagged: {fresh}"
+    );
+    assert!(!fresh.contains("url_warning"), "{fresh}");
+
+    // Same step, but the Manager minted the URL an hour ago: already expired.
+    let stale_step = serde_json::json!({
+        "config_auth": {
+            "url": "https://bucket.oss.aliyuncs.com/a.tar.gz?Signature=secret",
+            "object_key": "config_tpl/demo/v1/configs.tar.gz",
+            "expires_in_secs": 3600,
+            "signed_at_epoch": chrono::Utc::now().timestamp() - 3_900,
+            "expires_epoch": chrono::Utc::now().timestamp() - 300,
+        },
+    });
+    let stale = build_config_prep_banner(&stale_step, false);
+    assert!(
+        stale.contains("url_remaining") && stale.contains("EXPIRED ("),
+        "expired URL must be visible in the banner: {stale}"
+    );
+    assert!(stale.contains("url_warning"), "{stale}");
+    assert!(stale.contains("already expired before download"), "{stale}");
+    assert!(
+        stale.contains("3600s TTL"),
+        "warning should name the granted TTL: {stale}"
     );
 }
 

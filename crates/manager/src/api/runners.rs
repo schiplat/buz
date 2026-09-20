@@ -1402,27 +1402,57 @@ pub async fn poll(
                                             Ok(auth) => {
                                                 let ttl =
                                             shared::config_auth::DEFAULT_CONFIG_URL_TTL_SECS;
-                                                match shared::config_auth::sign_oss_get_url(
-                                                    &auth, &key, ttl,
-                                                ) {
-                                                    Ok(url) => {
-                                                        tracing::info!(
-                                                            secret = %config_source_name.trim(),
-                                                            object_key = %key,
-                                                            ttl_secs = ttl,
-                                                            "Resolved config_source → signed OSS URL for job dispatch"
-                                                        );
-                                                        task_json["config_auth"] = serde_json::json!({
-                                                            "url": url,
-                                                            "object_key": key,
-                                                            "expires_in_secs": ttl,
-                                                        });
-                                                        // SecretClass::ConfigUrl
-                                                        log_mask_values.push(url.clone());
-                                                    }
-                                                    Err(e) => {
-                                                        task_json["config_auth_error"] =
-                                                            serde_json::Value::String(e);
+                                                // The signed Expires is absolute: a Manager clock
+                                                // behind real time yields a URL that is already
+                                                // expired on arrival (OSS `403 Request has
+                                                // expired`). Refuse with an actionable error.
+                                                let clock_source =
+                                                    crate::services::clock::oss_source_url(
+                                                        &auth.bucket,
+                                                        &auth.endpoint,
+                                                    );
+                                                let clock_error =
+                                                    crate::services::clock::guard_signing(
+                                                        crate::services::clock::global(),
+                                                        &clock_source,
+                                                        ttl,
+                                                    )
+                                                    .await;
+                                                if let Some(err) = clock_error {
+                                                    task_json["config_auth_error"] =
+                                                        serde_json::Value::String(err);
+                                                } else {
+                                                    match shared::config_auth::sign_oss_get_url_meta(
+                                                        &auth, &key, ttl,
+                                                    ) {
+                                                        Ok(signed) => {
+                                                            tracing::info!(
+                                                                secret = %config_source_name.trim(),
+                                                                object_key = %key,
+                                                                ttl_secs = signed.ttl_secs(),
+                                                                signed_at = signed.signed_at_epoch,
+                                                                expires_at = signed.expires_epoch,
+                                                                signed_at_utc = %shared::clock::format_utc(signed.signed_at_epoch),
+                                                                expires_at_utc = %shared::clock::format_utc(signed.expires_epoch),
+                                                                "Resolved config_source → signed OSS URL for job dispatch"
+                                                            );
+                                                            // Mask the URL itself; the URL-age
+                                                            // fields are the diagnostic surface
+                                                            // when OSS later rejects the download.
+                                                            log_mask_values
+                                                                .push(signed.url.clone());
+                                                            task_json["config_auth"] = serde_json::json!({
+                                                                "url": signed.url,
+                                                                "object_key": key,
+                                                                "expires_in_secs": signed.ttl_secs(),
+                                                                "signed_at_epoch": signed.signed_at_epoch,
+                                                                "expires_epoch": signed.expires_epoch,
+                                                            });
+                                                        }
+                                                        Err(e) => {
+                                                            task_json["config_auth_error"] =
+                                                                serde_json::Value::String(e);
+                                                        }
                                                     }
                                                 }
                                             }

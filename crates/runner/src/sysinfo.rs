@@ -10,6 +10,9 @@ pub struct SysInfoOpts {
     pub manager_url: String,
     /// Interface names whose addresses should be listed first (e.g. `["enp26s0"]`).
     pub prefer_interfaces: Vec<String>,
+    /// Last measured Runner↔Manager clock skew (`remote - local`); positive
+    /// means this Runner is behind. `None` when not measured yet.
+    pub clock_skew_seconds: Option<i64>,
 }
 
 /// Human-readable OS description for the startup banner, e.g. "Ubuntu 24.04.4 LTS".
@@ -142,6 +145,7 @@ pub fn collect_system_info(started_at: std::time::Instant, opts: &SysInfoOpts) -
         network_interfaces,
         ip_addresses,
         uptime_seconds: uptime,
+        clock_skew_seconds: opts.clock_skew_seconds,
     }
 }
 

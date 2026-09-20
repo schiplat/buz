@@ -265,20 +265,102 @@ fn oss_error_detail(body: &str) -> String {
     }
 }
 
+/// Failure message for a non-2xx config bundle download.
+///
+/// OSS answers an expired signature with `403 AccessDenied: Request has
+/// expired.`, which is indistinguishable from a clock problem or from a task
+/// that waited too long. The response `Date` header (present on `403` too) is
+/// therefore reported next to the local time so the job log itself shows which
+/// side is off:
+///
+/// - clocks aligned → the URL was already expired when it was used (Manager
+///   clock lagged at signing time, or the task sat too long before execution);
+/// - local behind/ahead of OSS → this host needs NTP.
+pub(crate) fn describe_download_failure(
+    status: reqwest::StatusCode,
+    date_header: Option<&str>,
+    sent_at: chrono::DateTime<chrono::Utc>,
+    received_at: chrono::DateTime<chrono::Utc>,
+    detail: &str,
+) -> String {
+    let mut msg = format!("config bundle download returned HTTP {status}: {detail}");
+    let Some(remote) = date_header.and_then(|raw| shared::clock::parse_http_date(raw).ok()) else {
+        return msg;
+    };
+    let skew = shared::clock::skew_from_http_date(sent_at, received_at, remote);
+    let verdict = if skew.abs() < 60 {
+        "clocks aligned — the signed URL was already expired when used; \
+         check the CONFIG PREP 'signed_at' / 'url_remaining' fields"
+    } else if skew > 0 {
+        "this host is behind OSS — sync NTP on the runner host"
+    } else {
+        "this host is ahead of OSS — sync NTP on the runner host"
+    };
+    msg.push_str(&format!(
+        "\n  oss_time     {}\n  local_time   {}\n  clock_skew   {} ({verdict})",
+        shared::clock::format_utc(remote.timestamp()),
+        shared::clock::format_utc(received_at.timestamp()),
+        shared::clock::describe_skew(skew),
+    ));
+    msg
+}
+
+/// Always-visible staging line describing the signed URL's absolute window.
+///
+/// Emitted whether or not verbose logging is on: a URL that arrives already
+/// expired (Manager clock lagged at signing, or the task waited too long) must
+/// be obvious in the job log instead of only resurfacing as an opaque OSS 403.
+fn push_url_window_log(logs: &mut Vec<PrepLogLine>, step: &serde_json::Value) {
+    let Some(age) = super::poll::config_url_age(step, chrono::Utc::now().timestamp()) else {
+        return;
+    };
+    let mut text = format!(
+        "  url_window      signed {}s ago, {}s TTL, {} left",
+        age.age_secs.max(0),
+        age.ttl_secs(),
+        age.remaining_label()
+    );
+    if age.is_expired() {
+        tracing::warn!(
+            signed_at = age.signed_at_epoch,
+            age_secs = age.age_secs,
+            ttl_secs = age.ttl_secs(),
+            "config-source: signed bundle URL arrived already expired"
+        );
+        text.push_str(
+            " — EXPIRED before download (Manager clock lagged at signing time, or the task waited too long)",
+        );
+    }
+    logs.push(PrepLogLine::info(text));
+}
+
 /// Download the signed OSS bundle, returning `(bytes, http_status, byte_len)`.
 async fn download(client: &Client, url: &str) -> anyhow::Result<(Vec<u8>, u16, usize)> {
+    let sent_at = chrono::Utc::now();
     let resp = client
         .get(url)
         .timeout(DOWNLOAD_TIMEOUT)
         .send()
         .await
         .map_err(|e| anyhow::anyhow!("config bundle download failed: {e}"))?;
+    let received_at = chrono::Utc::now();
     if !resp.status().is_success() {
         let status = resp.status();
+        let date_header = resp
+            .headers()
+            .get(reqwest::header::DATE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
         let body = resp.text().await.unwrap_or_default();
         bail!(
-            "config bundle download returned HTTP {status}: {}",
-            oss_error_detail(&body)
+            "{}",
+            describe_download_failure(
+                status,
+                date_header.as_deref(),
+                sent_at,
+                received_at,
+                &oss_error_detail(&body),
+            )
         );
     }
     let status = resp.status().as_u16();
@@ -695,6 +777,7 @@ pub async fn prepare_local(
     let archive = if has_config_auth(step) {
         let url = config_url(step)?;
         let label = archive_label(step);
+        push_url_window_log(&mut logs, step);
         let (tarball, status, len) = download(client, &url).await?;
         logs.push(PrepLogLine::info(format!(
             "  download        HTTP {status} ({})",
@@ -809,8 +892,9 @@ async fn prepare_ssh_deliver(
 ) -> anyhow::Result<ConfigPrep> {
     let url = config_url(step)?;
     let archive = archive_label(step);
-    let (tarball_bytes, status, len) = download(client, &url).await?;
     let mut logs: Vec<PrepLogLine> = Vec::new();
+    push_url_window_log(&mut logs, step);
+    let (tarball_bytes, status, len) = download(client, &url).await?;
     logs.push(PrepLogLine::info(format!(
         "  download        HTTP {status} ({})",
         format_bytes(len)

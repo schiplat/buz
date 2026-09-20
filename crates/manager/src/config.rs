@@ -15,6 +15,8 @@ pub struct Config {
     #[serde(default)]
     pub pipeline: PipelineConfig,
     #[serde(default)]
+    pub clock: ClockConfig,
+    #[serde(default)]
     pub logging: LoggingConfig,
     /// Dev-only: loopback tokenless register for pre-authorized runner names.
     /// Production must leave `enabled = false` (default).
@@ -146,6 +148,37 @@ impl Default for PipelineConfig {
     }
 }
 
+/// `[clock]` — Manager host clock-skew guard.
+///
+/// `config_source` URLs are signed with an **absolute** `Expires`, so a Manager
+/// clock that is behind real time produces URLs that are already expired when
+/// the Runner downloads them (OSS answers `403 AccessDenied: Request has
+/// expired`). The guard samples the OSS endpoint's `Date` header before signing
+/// and refuses with an actionable error instead of dispatching a doomed URL.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClockConfig {
+    /// Probe the remote time source before signing config URLs.
+    #[serde(default = "default_clock_enabled")]
+    pub enabled: bool,
+    /// Warn when the Manager clock is at least this many seconds behind remote
+    /// time. `0` disables the warning.
+    #[serde(default = "default_clock_warn_threshold")]
+    pub warn_threshold_seconds: i64,
+    /// Reuse a probe result for this long (seconds). `0` probes every dispatch.
+    #[serde(default = "default_clock_cache_ttl")]
+    pub cache_ttl_seconds: u64,
+}
+
+impl Default for ClockConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_clock_enabled(),
+            warn_threshold_seconds: default_clock_warn_threshold(),
+            cache_ttl_seconds: default_clock_cache_ttl(),
+        }
+    }
+}
+
 // -- default value functions --
 
 fn default_host() -> String {
@@ -174,6 +207,15 @@ fn default_yaml_scan_dir() -> String {
 }
 fn default_yaml_scan_interval() -> u64 {
     30
+}
+fn default_clock_enabled() -> bool {
+    true
+}
+fn default_clock_warn_threshold() -> i64 {
+    60
+}
+fn default_clock_cache_ttl() -> u64 {
+    300
 }
 fn default_standalone_auto_approve() -> Vec<String> {
     vec!["standalone-runner".into()]

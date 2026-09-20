@@ -248,6 +248,12 @@ pub struct SystemInfo {
     pub network_interfaces: Vec<NetworkInterfaceInfo>,
     pub ip_addresses: Vec<String>,
     pub uptime_seconds: u64,
+    /// Runner↔Manager clock skew in seconds (`Manager - Runner`); positive means
+    /// the Runner is behind. Measured against the Manager's `Date` header at
+    /// startup and refreshed on heartbeats — `None` when not measured yet or
+    /// when the check is disabled (`[clock] enabled = false`).
+    #[serde(default)]
+    pub clock_skew_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

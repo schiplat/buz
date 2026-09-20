@@ -14,6 +14,15 @@ workspace_dir = "/tmp/buz-runner"
 [engine]
 # ssh_known_hosts_path = "~/.ssh/known_hosts"
 
+[clock]
+# Startup check: this Runner's clock vs the Manager's (probed via the Manager
+# `Date` header, then re-checked on every heartbeat). Skew beyond
+# max_skew_seconds aborts startup — sync the host clock (NTP) instead of
+# relaxing it; labs only: fail_on_skew = false.
+# enabled = true
+# warn_threshold_seconds = 60
+# max_skew_seconds = 300
+
 [logging]
 level = "info"
 file = "./logs/runner.log"

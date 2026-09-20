@@ -267,6 +267,53 @@ pub(crate) fn build_verbose_step_config(
     out
 }
 
+/// URL age / remaining lifetime of a Manager-signed config bundle URL.
+///
+/// Populated from the `signed_at_epoch` / `expires_epoch` fields the Manager
+/// stamps into `config_auth`; absent when talking to an older Manager.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConfigUrlAge {
+    pub signed_at_epoch: i64,
+    pub expires_epoch: i64,
+    pub age_secs: i64,
+    pub remaining_secs: i64,
+}
+
+impl ConfigUrlAge {
+    /// True once OSS would reject the URL for being expired.
+    pub(crate) fn is_expired(&self) -> bool {
+        self.remaining_secs <= 0
+    }
+
+    /// Effective lifetime granted at signing time.
+    pub(crate) fn ttl_secs(&self) -> i64 {
+        self.expires_epoch - self.signed_at_epoch
+    }
+
+    /// `3598s` while valid, `EXPIRED (61s ago)` once past the deadline.
+    pub(crate) fn remaining_label(&self) -> String {
+        if self.remaining_secs > 0 {
+            format!("{}s", self.remaining_secs)
+        } else {
+            format!("EXPIRED ({}s ago)", -self.remaining_secs)
+        }
+    }
+}
+
+/// Read the signed-URL window out of `config_auth` against a caller-supplied
+/// `now` (kept explicit so tests are deterministic).
+pub(crate) fn config_url_age(step: &serde_json::Value, now_epoch: i64) -> Option<ConfigUrlAge> {
+    let auth = step.get("config_auth")?;
+    let signed_at_epoch = auth.get("signed_at_epoch").and_then(|v| v.as_i64())?;
+    let expires_epoch = auth.get("expires_epoch").and_then(|v| v.as_i64())?;
+    Some(ConfigUrlAge {
+        signed_at_epoch,
+        expires_epoch,
+        age_secs: now_epoch - signed_at_epoch,
+        remaining_secs: expires_epoch - now_epoch,
+    })
+}
+
 /// Banner for the config prepare stage (OSS deliver and/or `config_render`).
 ///
 /// Always safe for Verbose (URL redacted). In Debug mode the signed URL is
@@ -301,6 +348,24 @@ pub(crate) fn build_config_prep_banner(step: &serde_json::Value, debug_unredact:
                 push_field("url", url.to_string());
             } else {
                 push_field("url", "***".into());
+            }
+        }
+        // Absolute URL window: makes a stale (or born-expired) URL visible in
+        // the job log instead of only as an opaque OSS 403 further down.
+        if let Some(age) = config_url_age(step, chrono::Utc::now().timestamp()) {
+            push_field("signed_at", shared::clock::format_utc(age.signed_at_epoch));
+            push_field("url_age", format!("{}s", age.age_secs.max(0)));
+            push_field("url_remaining", age.remaining_label());
+            if age.is_expired() {
+                push_field(
+                    "url_warning",
+                    format!(
+                        "signed {}s ago with a {}s TTL — already expired before download; \
+                         either the Manager clock lagged at signing time or the task waited too long",
+                        age.age_secs.max(0),
+                        age.ttl_secs()
+                    ),
+                );
             }
         }
     } else if step.get("config_render").is_some_and(|v| !v.is_null()) {

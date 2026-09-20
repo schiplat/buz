@@ -7,6 +7,7 @@ import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw } from '@lucide/vue'
 import { runnersApi, type Runner } from '@/api/runners'
 import { formatLocalDateTime } from '@/utils/time'
+import { clockSkewInfo, clockToneClass } from '@/utils/runnerClock'
 import { copyText } from '@/utils/copyText'
 import { useClientSort } from '@/composables/useClientSort'
 import { useClientPagination } from '@/composables/useClientPagination'
@@ -301,6 +302,12 @@ const diskPct = (t: number, u: number) => t === 0 ? 0 : (u / t) * 100
 const fmtPct = (p: number) => `${p.toFixed(0)}%`
 const hasInfo = (r: Runner | null) => !!(r?.system_info?.hostname)
 
+/** Runner↔Manager clock skew chip (hidden until the Runner reports a measurement). */
+const clockChip = computed(() => {
+  const info = clockSkewInfo(activeRunner.value?.system_info?.clock_skew_seconds)
+  return info ? { ...info, cls: clockToneClass(info.tone) } : null
+})
+
 const eventBadge = (t: string) => {
   const m: Record<string, string> = {
     created: 'bg-slate-500/10 text-slate-600',
@@ -474,6 +481,11 @@ const eventBadge = (t: string) => {
               <span>Runner v{{ activeRunner.system_info!.runner_version }}</span>
               <span>{{ activeRunner.system_info!.cpu_arch }} · {{ activeRunner.system_info!.cpu_cores }} cores</span>
               <span>Uptime {{ fmtUptime(activeRunner.system_info!.uptime_seconds) }}</span>
+              <span
+                v-if="clockChip"
+                :class="clockChip.cls"
+                :title="clockChip.title"
+              >Clock {{ clockChip.text }} vs Manager</span>
             </div>
 
             <!-- Runner policy (UI-managed) -->

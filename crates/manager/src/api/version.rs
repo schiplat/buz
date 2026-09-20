@@ -61,6 +61,32 @@ async fn jobs_backlog(pool: &sqlx::SqlitePool) -> serde_json::Value {
     })
 }
 
+/// Clock-skew guard state: a Manager clock behind real time signs config URLs
+/// that are already expired when a Runner downloads them.
+fn clock_health() -> serde_json::Value {
+    let guard = crate::services::clock::global();
+    let warn_threshold = guard.config().warn_threshold_seconds;
+
+    match guard.latest() {
+        Some(sample) => serde_json::json!({
+            "status": if sample.is_skewed(warn_threshold) { "skewed" } else { "ok" },
+            "skew_seconds": sample.skew_secs,
+            "behind_seconds": sample.local_behind_secs(),
+            "source": sample.source,
+            "checked_at": sample.checked_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "error": guard.last_error(),
+        }),
+        None => serde_json::json!({
+            "status": "unknown",
+            "skew_seconds": serde_json::Value::Null,
+            "behind_seconds": serde_json::Value::Null,
+            "source": serde_json::Value::Null,
+            "checked_at": serde_json::Value::Null,
+            "error": guard.last_error(),
+        }),
+    }
+}
+
 /// Public health + version probe (no auth). Liveness semantics by default
 /// (HTTP 200 while the process responds); pass `?readiness=true` for a
 /// readiness probe that returns 503 when a dependency is unavailable.
@@ -114,6 +140,7 @@ pub async fn health(
             },
         },
         "jobs": jobs,
+        "clock": clock_health(),
         "ws": {
             "job_sinks": ws_job_sinks,
             "pipeline_sinks": ws_pipeline_sinks,

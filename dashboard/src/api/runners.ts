@@ -24,6 +24,12 @@ export interface SystemInfo {
   network_interfaces: NetworkInterfaceInfo[]
   ip_addresses: string[]
   uptime_seconds: number
+  /**
+   * Runner↔Manager clock skew in seconds (`Manager - Runner`); positive means
+   * the Runner is behind. `null`/absent when not measured yet. The Runner
+   * refuses to start when it exceeds its `[clock] max_skew_seconds`.
+   */
+  clock_skew_seconds?: number | null
 }
 
 /** UI-managed runner strategy (synced to the agent via register/heartbeat). */
