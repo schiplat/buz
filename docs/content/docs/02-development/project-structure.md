@@ -5,7 +5,7 @@ description: "Buz monorepo directory layout"
 ---
 
 ```
-buzproject/
+buz/
 ├── Cargo.toml              # Workspace root
 ├── conf/
 │   ├── manager.toml        # Manager default config

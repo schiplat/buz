@@ -58,7 +58,7 @@ Docs layout: **Quick Start → Architecture** (Authoring / Execution / Platform)
 ## Project Structure
 
 ```
-buzproject/
+buz/
 ├── Cargo.toml                 # Workspace (shared / manager / runner)
 ├── Makefile
 ├── crates/
