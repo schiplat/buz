@@ -12,7 +12,7 @@ to use `buz-manager` + `buz-runner` with normal `register_token` registration.
 
 | Item | Value |
 |------|--------|
-| Image | `registry.cn-hongkong.aliyuncs.com/example/buz-standalone` |
+| Image | `schiplat/buz-standalone` |
 | Arch | **linux/arm64** only |
 | Tags | `latest`, `vX.Y.Z`, `X.Y.Z`, plus `-arm64` suffixes |
 | Auth mode | Manager `[standalone]` on — loopback tokenless register for `standalone-runner` |
@@ -47,11 +47,11 @@ to use `buz-manager` + `buz-runner` with normal `register_token` registration.
 
 - Linux **arm64** host (Apple Silicon VM, Graviton, arm64 cloud VM, …)
 - Docker (or `sudo docker`) with compose v2 recommended
-- Outbound access to ACR (or a pre-pulled image)
-- ACR login if the registry is private:
+- Outbound access to Docker Hub (or a pre-pulled image)
+- `docker login` only if you hit Docker Hub rate limits (public image needs no login):
 
 ```bash
-docker login registry.cn-hongkong.aliyuncs.com
+docker login
 # or: sudo docker login …
 ```
 
@@ -93,7 +93,7 @@ Copy from the repo, or create `docker-compose.yml`:
 # /opt/buz-standalone/docker-compose.yml
 services:
   buz:
-    image: registry.cn-hongkong.aliyuncs.com/example/buz-standalone:${IMAGE_TAG:-latest}
+    image: schiplat/buz-standalone:${IMAGE_TAG:-latest}
     container_name: buz
     restart: unless-stopped
     ports:
@@ -156,7 +156,7 @@ export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
 # Save this value — required on every restart/upgrade
 echo "BUZ_JWT_SECRET=${BUZ_JWT_SECRET}" >> /opt/buz-standalone/.env
 
-docker pull registry.cn-hongkong.aliyuncs.com/example/buz-standalone:latest
+docker pull schiplat/buz-standalone:latest
 
 docker run -d --name buz --restart unless-stopped \
   -p 8080:8080 \
@@ -165,7 +165,7 @@ docker run -d --name buz --restart unless-stopped \
   -v /opt/buz-standalone/pipelines:/app/buz/pipelines \
   -v /opt/buz-standalone/workspace:/app/buz/workspace \
   -v /opt/buz-standalone/logs:/app/buz/logs \
-  registry.cn-hongkong.aliyuncs.com/example/buz-standalone:latest
+  schiplat/buz-standalone:latest
 ```
 
 Then complete `/setup` as above.
@@ -202,7 +202,7 @@ volumes under `./data` etc. are kept.
 cd /opt/buz-standalone
 set -a && source .env && set +a   # reload BUZ_JWT_SECRET
 
-docker pull registry.cn-hongkong.aliyuncs.com/example/buz-standalone:${IMAGE_TAG:-latest}
+docker pull schiplat/buz-standalone:${IMAGE_TAG:-latest}
 
 docker stop buz
 docker rm buz
@@ -214,7 +214,7 @@ docker run -d --name buz --restart unless-stopped \
   -v /opt/buz-standalone/pipelines:/app/buz/pipelines \
   -v /opt/buz-standalone/workspace:/app/buz/workspace \
   -v /opt/buz-standalone/logs:/app/buz/logs \
-  registry.cn-hongkong.aliyuncs.com/example/buz-standalone:${IMAGE_TAG:-latest}
+  schiplat/buz-standalone:${IMAGE_TAG:-latest}
 ```
 
 ### After upgrade checklist
@@ -303,7 +303,7 @@ docker compose restart
 `BUZ_JWT_SECRET` changed. Restore the old secret from backup `.env`, or re-enter
 Secrets/Hosts under the new secret.
 
-**Pull TLS timeout to ACR**
+**Pull TLS timeout to Docker Hub**
 
 ```bash
 # Retry later, or use a machine that already has the image:

@@ -9,7 +9,7 @@
 
 services:
   buz:
-    image: registry.cn-hongkong.aliyuncs.com/example/buz-standalone:${IMAGE_TAG:-latest}
+    image: schiplat/buz-standalone:${IMAGE_TAG:-latest}
     container_name: buz
     restart: unless-stopped
     ports:

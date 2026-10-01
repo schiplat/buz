@@ -1,6 +1,8 @@
-name: Docker / ACR
+name: Docker / ACR + Docker Hub
 
-# Build and push Manager + Runner images to Alibaba Cloud Container Registry (personal).
+# Build and push Manager + Runner images to two registries:
+#   1. Alibaba Cloud Container Registry (personal) — existing deploy channel.
+#   2. Docker Hub (official public channel, schiplat namespace).
 # Supports linux/amd64 + linux/arm64 (native builds on GitHub-hosted runners,
 # no QEMU emulation). Matrix jobs push platform-specific tags
 # (vX.Y.Z-amd64 / vX.Y.Z-arm64); a final `merge` job assembles the shared
@@ -12,13 +14,18 @@ name: Docker / ACR
 #   Secrets:
 #     ACR_USERNAME          — ACR login username
 #     ACR_PASSWORD          — ACR login password / temporary token
+#     DOCKERHUB_USERNAME    — (optional) Docker Hub login; set to ENABLE Docker Hub push
+#     DOCKERHUB_TOKEN        — (optional) Docker Hub access token
 #   Variables:
 #     ACR_REGISTRY          — e.g. registry.cn-hangzhou.aliyuncs.com
 #     ACR_NAMESPACE         — personal namespace
+#     DOCKERHUB_NAMESPACE   — (optional, default: schiplat)
 #
 # Images:
 #   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-manager:<tag>  (linux/amd64, linux/arm64)
 #   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-runner:<tag>   (linux/amd64, linux/arm64)
+#   ${DOCKERHUB_NAMESPACE}/buz-manager:<tag>            (only when DOCKERHUB_USERNAME is set)
+#   ${DOCKERHUB_NAMESPACE}/buz-runner:<tag>             (only when DOCKERHUB_USERNAME is set)
 
 on:
   push:
@@ -32,6 +39,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Workflow-level so step `if:` conditions and shell scripts can both probe it.
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
   push:
@@ -97,6 +106,28 @@ jobs:
             fi
           } > /tmp/tags-runner.txt
 
+          # Docker Hub tags are appended only when DOCKERHUB_USERNAME is set,
+          # so the workflow keeps working (ACR only) until the secrets exist.
+          DH_NAMESPACE="${{ vars.DOCKERHUB_NAMESPACE || 'schiplat' }}"
+          if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
+            DH_MANAGER="${DH_NAMESPACE}/buz-manager"
+            DH_RUNNER="${DH_NAMESPACE}/buz-runner"
+            {
+              echo "${DH_MANAGER}:${PRIMARY}-${SUFFIX}"
+              echo "${DH_MANAGER}:latest-${SUFFIX}"
+              if [[ "$PRIMARY" == v* ]]; then
+                echo "${DH_MANAGER}:${PRIMARY#v}-${SUFFIX}"
+              fi
+            } >> /tmp/tags-manager.txt
+            {
+              echo "${DH_RUNNER}:${PRIMARY}-${SUFFIX}"
+              echo "${DH_RUNNER}:latest-${SUFFIX}"
+              if [[ "$PRIMARY" == v* ]]; then
+                echo "${DH_RUNNER}:${PRIMARY#v}-${SUFFIX}"
+              fi
+            } >> /tmp/tags-runner.txt
+          fi
+
           # docker/build-push-action wants comma-separated or multiline via file
           echo "manager_tags<<EOF" >> "$GITHUB_OUTPUT"
           cat /tmp/tags-manager.txt >> "$GITHUB_OUTPUT"
@@ -118,6 +149,13 @@ jobs:
           registry: ${{ steps.meta.outputs.registry }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build & push buz-manager
         uses: docker/build-push-action@v6
@@ -168,6 +206,13 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Create multi-arch tags
         env:
           INPUT_TAG: ${{ github.event.inputs.tag }}
@@ -198,6 +243,19 @@ jobs:
                 "${REGISTRY}/${NAMESPACE}/${IMG}:${T}-arm64"
             done
           done
+
+          if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
+            DH_NAMESPACE="${{ vars.DOCKERHUB_NAMESPACE || 'schiplat' }}"
+            for IMG in buz-manager buz-runner; do
+              for T in "${TAGS[@]}"; do
+                echo "Merging ${DH_NAMESPACE}/${IMG}:${T}"
+                docker buildx imagetools create \
+                  --tag "${DH_NAMESPACE}/${IMG}:${T}" \
+                  "${DH_NAMESPACE}/${IMG}:${T}-amd64" \
+                  "${DH_NAMESPACE}/${IMG}:${T}-arm64"
+              done
+            done
+          fi
 
           echo "Merged manifests for ${REGISTRY}/${NAMESPACE}/buz-manager:${PRIMARY}:"
           docker buildx imagetools inspect \

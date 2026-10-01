@@ -1,4 +1,4 @@
-name: Docker Standalone / ACR
+name: Docker Standalone / ACR + Docker Hub
 
 # Build and push a single arm64 image that contains both Manager and Runner
 # (see Dockerfile.standalone). No multi-arch merge — arm64 only.
@@ -7,12 +7,16 @@ name: Docker Standalone / ACR
 #   Secrets:
 #     ACR_USERNAME          — ACR login username
 #     ACR_PASSWORD          — ACR login password / temporary token
+#     DOCKERHUB_USERNAME    — (optional) Docker Hub login; set to ENABLE Docker Hub push
+#     DOCKERHUB_TOKEN        — (optional) Docker Hub access token
 #   Variables:
-#     ACR_REGISTRY          — e.g. registry.cn-hongkong.aliyuncs.com
+#     ACR_REGISTRY          — e.g. registry.cn-hangzhou.aliyuncs.com
 #     ACR_NAMESPACE         — personal namespace
+#     DOCKERHUB_NAMESPACE   — (optional, default: schiplat)
 #
 # Image:
 #   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-standalone:<tag>  (linux/arm64)
+#   ${DOCKERHUB_NAMESPACE}/buz-standalone:<tag>            (only when DOCKERHUB_USERNAME is set)
 
 on:
   push:
@@ -20,12 +24,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag (default: latest, or git tag when on v*)"
+        description: "Image tag (default: latest, or git tag when v*)"
         required: false
         default: ""
 
 env:
   CARGO_TERM_COLOR: always
+  # Workflow-level so step `if:` conditions and shell scripts can both probe it.
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
   push:
@@ -72,6 +78,25 @@ jobs:
             fi
           } > /tmp/tags-standalone.txt
 
+          # Docker Hub tags are appended only when DOCKERHUB_USERNAME is set,
+          # so the workflow keeps working (ACR only) until the secrets exist.
+          DH_NAMESPACE="${{ vars.DOCKERHUB_NAMESPACE || 'schiplat' }}"
+          if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
+            DH_IMAGE="${DH_NAMESPACE}/buz-standalone"
+            {
+              echo "${DH_IMAGE}:${PRIMARY}"
+              echo "${DH_IMAGE}:latest"
+              if [[ "$PRIMARY" == v* ]]; then
+                echo "${DH_IMAGE}:${PRIMARY#v}"
+              fi
+              echo "${DH_IMAGE}:${PRIMARY}-arm64"
+              echo "${DH_IMAGE}:latest-arm64"
+              if [[ "$PRIMARY" == v* ]]; then
+                echo "${DH_IMAGE}:${PRIMARY#v}-arm64"
+              fi
+            } >> /tmp/tags-standalone.txt
+          fi
+
           echo "tags<<EOF" >> "$GITHUB_OUTPUT"
           cat /tmp/tags-standalone.txt >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -89,6 +114,13 @@ jobs:
           registry: ${{ steps.meta.outputs.registry }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build & push buz-standalone
         uses: docker/build-push-action@v6
