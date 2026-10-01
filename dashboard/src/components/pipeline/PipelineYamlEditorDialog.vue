@@ -896,7 +896,7 @@ steps:
     secrets: [OSS_CONFIG]                      # allowlist — does not inject $OSS_CONFIG
     config:
       source: ${secrets.OSS_CONFIG}            # OSS auth secret (purpose slot)
-      key_path: config_tpl/super-manager/v1.4.0  # dir prefix; trailing / optional
+      key_path: config_tpl/demo-app/v1.4.0  # dir prefix; trailing / optional
       dest: /opt/manager                       # → $BUZ_CONFIG_DIR
     run: |
       cd "$BUZ_CONFIG_DIR"

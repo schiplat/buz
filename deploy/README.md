@@ -7,7 +7,7 @@
 | `conf/runner.toml` | Same |
 | `conf/runner.standalone.toml` | Standalone image Runner conf (loopback, no token) |
 | `standalone/entrypoint.sh` | Starts Manager + Runner in one container |
-| `dev-deploy.sh` | One-shot deploy of Manager + Runner on a Linux VM (pull from ACR + compose) |
+| `dev-deploy.sh` | One-shot deploy of Manager + Runner on a Linux VM (pull from a container registry + compose) |
 | `nginx/buz-manager.conf` | Optional system Nginx reverse proxy (HTTP-only, non-Docker) |
 | `nginx/buz-manager-docker.conf` | Same, for `dev-deploy.sh` Docker deployments (HTTP-only) |
 | `nginx/buz-manager-ssl.conf` | Same, HTTPS (Let's Encrypt + HTTP→HTTPS redirect) |
@@ -50,8 +50,8 @@ docker compose up -d runner
 ### VM one-shot deploy (`dev-deploy.sh`)
 
 ```bash
-./dev-deploy.sh login   # docker login to ACR (or set ACR_USERNAME / ACR_PASSWORD)
-./dev-deploy.sh up      # pull buz-manager/buz-runner from ACR + start Manager
+./dev-deploy.sh login   # docker login (or set REGISTRY_USERNAME / REGISTRY_PASSWORD)
+./dev-deploy.sh up      # pull buz-manager/buz-runner from Docker Hub + start Manager
 # First login in the web UI (http://<vm>:8080) to create the platform admin,
 # then bootstrap the Runner on the same VM:
 ADMIN_USERNAME='<admin>' ADMIN_PASSWORD='<password>' ./dev-deploy.sh runner
@@ -76,7 +76,7 @@ disk, upgrade/runner strips `extra_hosts` and rewrites `manager_url` back.
 `workspace/`, `logs/` dirs are untouched. If verification still fails, re-run
 `./dev-deploy.sh runner` with admin credentials.
 
-`docker pull` always contacts ACR even when the tag already exists locally
+`docker pull` always contacts the registry even when the tag already exists locally
 (manifest refresh). On TLS/network timeouts, the script falls back to the local
 image when present. To skip the registry entirely:
 
@@ -88,8 +88,8 @@ sudo SKIP_PULL=1 IMAGE_TAG=v1.3.5 ./dev-deploy.sh upgrade
 ```
 
 Runs on a Linux VM with only Docker installed; images are pulled from
-`${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-{manager,runner}:${IMAGE_TAG}` (multi-arch,
-default `registry.cn-hongkong.aliyuncs.com/example`, tag `latest`). Compose +
+`${REGISTRY}/${NAMESPACE}/buz-{manager,runner}:${IMAGE_TAG}` (multi-arch,
+default `docker.io/schiplat`, tag `latest`; set REGISTRY/NAMESPACE to use a mirror or your own push target). Compose +
 configs land in `$DEPLOY_DIR` (default `/opt/buz`); `BUZ_JWT_SECRET` is generated
 on first `up` and persisted there. `render` previews generated files without
 touching Docker.

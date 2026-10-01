@@ -305,5 +305,5 @@ Cross-team secrets are forbidden. Details: [Secrets Access Control](../platform/
 
 ## See also
 
-- Example pipelines: `example/pipelines/oss-config-demo.yml`, `acr-personal-push.yml`, `git-clone-build.yml`, `super-manager-deploy.yml`
+- Example pipelines: `example/pipelines/oss-config-demo.yml`, `acr-personal-push.yml`, `git-clone-build.yml`, `demo-app-deploy.yml`
 - UI Quick YAML Reference tab inside **New / Edit Pipeline** dialog

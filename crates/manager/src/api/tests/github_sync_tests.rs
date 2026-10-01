@@ -874,11 +874,11 @@ async fn push_variable_uses_bind_override_value() {
         &app,
         &token,
         &format!("/api/v1/variables/{var_id}/github-binds"),
-        serde_json::json!({ "repo_id": repo_id, "override_value": "example/alpha" }),
+        serde_json::json!({ "repo_id": repo_id, "override_value": "myteam/alpha" }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"]["override_value"], "example/alpha");
+    assert_eq!(body["data"]["override_value"], "myteam/alpha");
     let bind_id = body["data"]["id"].as_str().expect("bind id").to_string();
 
     let (status, body) = post_json(
@@ -898,7 +898,7 @@ async fn push_variable_uses_bind_override_value() {
         .expect("variable POST seen");
     let wire: serde_json::Value = serde_json::from_str(&created.body).expect("json");
     assert_eq!(wire["name"], "ACR_REPOSITORY");
-    assert_eq!(wire["value"], "example/alpha");
+    assert_eq!(wire["value"], "myteam/alpha");
 
     // Clear override → inherit default on next push.
     // Mock always 404s GET-by-name, so upsert uses POST again — value must be the default.

@@ -83,13 +83,13 @@ fn looks_like_oss_secret_value_heuristic() {
 #[test]
 fn sign_url_shape_and_idempotence() {
     let auth = sample_auth();
-    let key = "config_tpl/super-manager/v1.4.0/configs.tar.gz";
+    let key = "config_tpl/demo-app/v1.4.0/configs.tar.gz";
 
     let url = sign_oss_get_url(&auth, key, 3600).expect("sign should succeed");
 
     // Host = bucket.endpoint, path = object key
     assert!(
-        url.starts_with("https://example-bucket.oss-cn-guangzhou.aliyuncs.com/config_tpl/super-manager/v1.4.0/configs.tar.gz?"),
+        url.starts_with("https://example-bucket.oss-cn-guangzhou.aliyuncs.com/config_tpl/demo-app/v1.4.0/configs.tar.gz?"),
         "unexpected URL: {url}"
     );
     assert!(url.contains("OSSAccessKeyId=LTAI_TEST_KEY_ID"), "{url}");

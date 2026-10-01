@@ -3,7 +3,7 @@
 # Strategy (labels, concurrency, engines, cleanup) → Manager UI → Runners.
 
 [runner]
-name = "macos-kit-01"
+name = "lab-runner-01"
 manager_url = "http://127.0.0.1:8080"
 # From Manager UI → Runners → New Runner (do not commit real tokens)
 register_token = "REPLACE_WITH_UI_REGISTER_TOKEN"

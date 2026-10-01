@@ -33,7 +33,7 @@ secrets:
 steps:
   - name: Run private image
     engine: docker
-    image: registry.cn-hongkong.aliyuncs.com/dadou/super-manager
+    image: registry.cn-hongkong.aliyuncs.com/myns/demo-app
     secrets: [ACR_PERSONAL]
     registry_secret: ${secrets.ACR_PERSONAL}
     run: |

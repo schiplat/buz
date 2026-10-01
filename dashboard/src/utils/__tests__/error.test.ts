@@ -53,13 +53,13 @@ describe('parseApiError', () => {
       response: {
         data: {
           message:
-            "ValidationFailed: YAML file 'super-manager-deploy-host-b.yml' failed validation — fix the file before triggering: secrets: secret 'FEISHU_WEBHOOK' not found; variables: unknown variable 'X'",
+            "ValidationFailed: YAML file 'demo-app-deploy-host-b.yml' failed validation — fix the file before triggering: secrets: secret 'FEISHU_WEBHOOK' not found; variables: unknown variable 'X'",
         },
       },
     }
     const parsed = parseApiError(err, 'Trigger failed')
     expect(parsed.title).toBe('YAML validation failed')
-    expect(parsed.summary).toBe('super-manager-deploy-host-b.yml')
+    expect(parsed.summary).toBe('demo-app-deploy-host-b.yml')
     expect(parsed.items).toEqual([
       { field: 'secrets', message: "secret 'FEISHU_WEBHOOK' not found" },
       { field: 'variables', message: "unknown variable 'X'" },

@@ -24,6 +24,6 @@ steps:
     registry_secret: ${secrets.ACR_PERSONAL}
     run: |
       # Image must already exist locally (build in a prior step).
-      docker tag myapp:local registry.cn-hongkong.aliyuncs.com/dadou/hello:1.0
-      docker push registry.cn-hongkong.aliyuncs.com/dadou/hello:1.0
+      docker tag myapp:local registry.cn-hongkong.aliyuncs.com/myns/hello:1.0
+      docker push registry.cn-hongkong.aliyuncs.com/myns/hello:1.0
     timeout: 15m

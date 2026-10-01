@@ -23,19 +23,19 @@ fn value_map(vars: &serde_json::Value) -> ValueMap {
 fn expands_bare_and_braced_refs() {
     let vars = json!({
         "tag": "1.4.0",
-        "project": "super-manager",
+        "project": "demo-app",
     });
     let m = value_map(&vars);
     assert_eq!(
         expand(
-            "config_tpl/super-manager/$tag",
+            "config_tpl/demo-app/$tag",
             &m,
             ExpandMode::Lenient,
             MissingPolicy::Blank
         )
         .unwrap()
         .content,
-        "config_tpl/super-manager/1.4.0"
+        "config_tpl/demo-app/1.4.0"
     );
     assert_eq!(
         expand(
@@ -46,7 +46,7 @@ fn expands_bare_and_braced_refs() {
         )
         .unwrap()
         .content,
-        "config_tpl/super-manager/1.4.0"
+        "config_tpl/demo-app/1.4.0"
     );
     assert_eq!(
         expand(
@@ -57,7 +57,7 @@ fn expands_bare_and_braced_refs() {
         )
         .unwrap()
         .content,
-        "config_tpl/super-manager/v1.4.0"
+        "config_tpl/demo-app/v1.4.0"
     );
 }
 
@@ -95,14 +95,14 @@ fn keeps_literal_plain_strings() {
     let m = value_map(&vars);
     assert_eq!(
         expand(
-            "config_tpl/super-manager/v1.4.0",
+            "config_tpl/demo-app/v1.4.0",
             &m,
             ExpandMode::Lenient,
             MissingPolicy::Blank
         )
         .unwrap()
         .content,
-        "config_tpl/super-manager/v1.4.0"
+        "config_tpl/demo-app/v1.4.0"
     );
     // Trailing/embedded `$` that is not a valid ref is kept as-is.
     assert_eq!(

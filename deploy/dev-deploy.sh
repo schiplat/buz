@@ -26,8 +26,8 @@
 #                                       # (persists BUZ_JWT_SECRET and data/ workspace)
 #
 # Environment overrides (all optional):
-#   ACR_REGISTRY    registry.cn-hongkong.aliyuncs.com
-#   ACR_NAMESPACE   example
+#   REGISTRY        docker.io (default; set to registry.cn-hongkong.aliyuncs.com etc. for a mirror)
+#   NAMESPACE       schiplat (default)
 #   IMAGE_TAG       latest  — multi-arch tag: Docker auto-selects the manifest
 #                   for the VM's architecture (arm64 or amd64). To pin a single
 #                   platform instead (e.g. while the merge job is still running,
@@ -54,18 +54,18 @@
 #                   (fails if the tag is not already present on the host).
 #
 # Notes:
-#   * ACR_USERNAME / ACR_PASSWORD may be set for non-interactive docker login.
+#   * REGISTRY_USERNAME / REGISTRY_PASSWORD may be set for non-interactive docker login.
 #   * BUZ_JWT_SECRET encrypts stored secrets/hosts credentials. It is generated
 #     once and reused on later runs; losing it means re-entering stored secrets.
 #   * To let Runner drive host Docker (`engine: docker` steps), uncomment the
 #     docker.sock mounts in the generated compose file.
 #   * `docker pull` always contacts the registry even when the tag exists locally.
-#     On ACR TLS/network blips, pull falls back to the local image when present.
+#     On registry TLS/network blips, pull falls back to the local image when present.
 set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-ACR_REGISTRY="${ACR_REGISTRY:-registry.cn-hongkong.aliyuncs.com}"
-ACR_NAMESPACE="${ACR_NAMESPACE:-example}"
+REGISTRY="${REGISTRY:-docker.io}"
+NAMESPACE="${NAMESPACE:-schiplat}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 MANAGER_PORT="${MANAGER_PORT:-8080}"
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/buz}"
@@ -75,8 +75,8 @@ DOCKER="${DOCKER:-}"
 BUZ_CONTAINER_UID="${BUZ_CONTAINER_UID:-10001}"
 SKIP_PULL="${SKIP_PULL:-0}"
 
-MANAGER_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-manager:${IMAGE_TAG}"
-RUNNER_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-runner:${IMAGE_TAG}"
+MANAGER_IMAGE="${REGISTRY}/${NAMESPACE}/buz-manager:${IMAGE_TAG}"
+RUNNER_IMAGE="${REGISTRY}/${NAMESPACE}/buz-runner:${IMAGE_TAG}"
 COMPOSE_FILE="${DEPLOY_DIR}/docker-compose.yml"
 ENV_FILE="${DEPLOY_DIR}/.env"
 RUNNER_CONF="${DEPLOY_DIR}/conf/runner.toml"
@@ -528,12 +528,12 @@ ensure_runner_token() {
 
 cmd_login() {
   require_docker
-  if [[ -n "${ACR_USERNAME:-}" && -n "${ACR_PASSWORD:-}" ]]; then
+  if [[ -n "${REGISTRY_USERNAME:-}" && -n "${REGISTRY_PASSWORD:-}" ]]; then
     # shellcheck disable=SC2086
-    echo "${ACR_PASSWORD}" | $DOCKER login "${ACR_REGISTRY}" -u "${ACR_USERNAME}" --password-stdin
+    echo "${REGISTRY_PASSWORD}" | $DOCKER login "${REGISTRY}" -u "${REGISTRY_USERNAME}" --password-stdin
   else
     # shellcheck disable=SC2086
-    $DOCKER login "${ACR_REGISTRY}"
+    $DOCKER login "${REGISTRY}"
   fi
 }
 
@@ -661,8 +661,8 @@ cmd_upgrade() {
   local ctmp
   ctmp="$(mktemp)"
   sed -E \
-    -e "s|image: ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-manager:.*|image: ${MANAGER_IMAGE}|" \
-    -e "s|image: ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-runner:.*|image: ${RUNNER_IMAGE}|" \
+    -e "s|image: ${REGISTRY}/${NAMESPACE}/buz-manager:.*|image: ${MANAGER_IMAGE}|" \
+    -e "s|image: ${REGISTRY}/${NAMESPACE}/buz-runner:.*|image: ${RUNNER_IMAGE}|" \
     "${COMPOSE_FILE}" > "${ctmp}"
   install_file "${ctmp}" "${COMPOSE_FILE}"
 

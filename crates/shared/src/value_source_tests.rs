@@ -11,8 +11,8 @@ fn map() -> ValueMap {
     m.secrets.insert("EMPTY_SECRET".into(), "".into());
     m.vars
         .insert("REGISTRY".into(), "registry.cn-hk.example.com".into());
-    m.vars.insert("NAMESPACE".into(), "dadou".into());
-    m.vars.insert("IMAGE_NAME".into(), "super-manager".into());
+    m.vars.insert("NAMESPACE".into(), "myns".into());
+    m.vars.insert("IMAGE_NAME".into(), "demo-app".into());
     m.vars.insert("INPUT_TAG".into(), "1.4.0".into());
     m
 }
@@ -36,7 +36,7 @@ fn strict_renders_secrets_and_vars() {
     assert_eq!(
         out,
         "MANAGER_AFDIAN_API_TOKEN=tok_123\n\
-         MANAGER_IMAGE=registry.cn-hk.example.com/dadou/super-manager:1.4.0\n\
+         MANAGER_IMAGE=registry.cn-hk.example.com/myns/demo-app:1.4.0\n\
          MANAGER_PATH_PREFIX=pi\n"
     );
 }
@@ -209,22 +209,22 @@ fn warn_does_not_fail() {
 fn lenient_expands_bare_refs_and_blank_on_missing() {
     let mut m = map();
     let out = expand(
-        "config_tpl/super-manager/$tag",
+        "config_tpl/demo-app/$tag",
         &m,
         ExpandMode::Lenient,
         MissingPolicy::Blank,
     )
     .unwrap();
-    assert_eq!(out.content, "config_tpl/super-manager/");
+    assert_eq!(out.content, "config_tpl/demo-app/");
     m.vars.insert("tag".into(), "1.4.0".into());
     let out = expand(
-        "config_tpl/super-manager/$tag",
+        "config_tpl/demo-app/$tag",
         &m,
         ExpandMode::Lenient,
         MissingPolicy::Blank,
     )
     .unwrap();
-    assert_eq!(out.content, "config_tpl/super-manager/1.4.0");
+    assert_eq!(out.content, "config_tpl/demo-app/1.4.0");
 }
 
 #[test]

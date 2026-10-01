@@ -315,7 +315,7 @@ fn verbose_step_config_renders_shape_without_secrets() {
         "fail_strategy": "stop",
         "work_dir": "/tmp/ws",
         "registry_secret": "acr_hk",
-        "config_source": "super-manager",
+        "config_source": "demo-app",
         "config_key_path": "v1.2.3",
         "config_dest": "/opt/manager",
         "config_render": [{ "template": "env.example", "output": ".env" }],
@@ -330,7 +330,7 @@ fn verbose_step_config_renders_shape_without_secrets() {
     assert!(cfg.contains("  work_dir         /tmp/ws"), "{cfg}");
     assert!(cfg.contains("  registry_secret  acr_hk"), "{cfg}");
     assert!(
-        cfg.contains("  config           super-manager (key: v1.2.3)"),
+        cfg.contains("  config           demo-app (key: v1.2.3)"),
         "{cfg}"
     );
     assert!(cfg.contains("  config_dest      /opt/manager"), "{cfg}");

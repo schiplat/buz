@@ -123,14 +123,14 @@ invalid trigger inputs — tag: value does not match pattern '^[A-Za-z0-9._-]+$'
 
 ## Example migration
 
-`example/pipelines/p0_cella-deploy-host-a.yml` previously shipped a `Validate inputs` shell step. It was replaced by declarations:
+A deploy pipeline previously shipped a `Validate inputs` shell step that hand-checked inputs for emptiness and format. It was replaced by declarations:
 
 ```yaml
 on:
   manual:
     inputs:
       tag:
-        description: ACR image tag
+        description: Image tag
         required: true
         default: "0.1.0"
         type: string
@@ -138,7 +138,7 @@ on:
       deploy_host:
         description: Buz Host name
         required: true
-        default: "192.0.2.10"
+        default: "lab-server-01"
         type: host
 ```
 

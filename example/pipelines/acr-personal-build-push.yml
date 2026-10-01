@@ -37,7 +37,7 @@ secrets:
 
 env:
   REGISTRY: registry.cn-hongkong.aliyuncs.com
-  NAMESPACE: dadou
+  NAMESPACE: myns
   IMAGE_NAME: hello
 
 steps:

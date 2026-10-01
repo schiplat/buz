@@ -1379,7 +1379,7 @@ pub async fn poll(
                         match object_key {
                             None => {
                                 task_json["config_auth_error"] = serde_json::Value::String(
-                                    "config_source requires a non-empty 'config_key_path' (e.g. config_tpl/super-manager/v1.4.0)"
+                                    "config_source requires a non-empty 'config_key_path' (e.g. config_tpl/demo-app/v1.4.0)"
                                         .into(),
                                 );
                             }

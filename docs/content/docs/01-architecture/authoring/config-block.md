@@ -201,10 +201,10 @@ defines host-`dest` + volume semantics.
 
 ## Sample A — OSS deploy (preferred two-step)
 
-Canonical shape for `super-manager-deploy-host-b` after 2b lands:
+Canonical shape for `demo-app-deploy-host-b` after 2b lands:
 
 ```yaml
-name: super-manager deploy host-b
+name: demo-app deploy host-b
 description: Deploy manager-server + postgres + redis (OSS config + render).
 team: default
 
@@ -249,7 +249,7 @@ steps:
     host: $deploy_host
     config:
       source: OSS_CONFIG
-      key_path: config_tpl/super-manager/$tag
+      key_path: config_tpl/demo-app/$tag
       dest: /opt/manager
     run: |
       ls -l "$BUZ_CONFIG_DIR/docker-compose.yml" "$BUZ_CONFIG_DIR/env.example"

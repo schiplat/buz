@@ -157,7 +157,7 @@ async fn environment_crud_and_override_roundtrip() {
         &jwt,
         Some(serde_json::json!({
             "name": "ACR_REPOSITORY",
-            "value": "example/default",
+            "value": "myteam/default",
         })),
     )
     .await;
@@ -172,7 +172,7 @@ async fn environment_crud_and_override_roundtrip() {
         &jwt,
         Some(serde_json::json!({
             "var_id": var_id,
-            "value": "example/prod",
+            "value": "myteam/prod",
         })),
     )
     .await;
@@ -190,7 +190,7 @@ async fn environment_crud_and_override_roundtrip() {
     let d = read_body(detail).await;
     let overrides = d["data"]["overrides"].as_array().expect("overrides");
     assert_eq!(overrides.len(), 1);
-    assert_eq!(overrides[0]["value"], "example/prod");
+    assert_eq!(overrides[0]["value"], "myteam/prod");
     assert_eq!(overrides[0]["var_name"], "ACR_REPOSITORY");
 
     let clear = json_req(
@@ -263,7 +263,7 @@ async fn claim_applies_environment_overrides_bound_keys_only() {
         &jwt,
         Some(serde_json::json!({
             "name": "ACR_REPOSITORY",
-            "value": "example/default",
+            "value": "myteam/default",
         })),
     )
     .await;
@@ -305,7 +305,7 @@ async fn claim_applies_environment_overrides_bound_keys_only() {
         .to_string();
 
     for (vid, val) in [
-        (&bound_id, "example/staging"),
+        (&bound_id, "myteam/staging"),
         (&unbound_id, "injected-bad"),
     ] {
         let r = json_req(
@@ -379,7 +379,7 @@ async fn claim_applies_environment_overrides_bound_keys_only() {
     let dispatch = read_body(poll).await;
     let env = &dispatch["data"]["env"];
     assert_eq!(
-        env["ACR_REPOSITORY"], "example/staging",
+        env["ACR_REPOSITORY"], "myteam/staging",
         "bound var overridden by environment: {env}"
     );
     assert_eq!(
