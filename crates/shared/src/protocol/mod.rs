@@ -669,8 +669,8 @@ pub struct TestHostResponse {
 pub struct StepDef {
     pub name: String,
     pub run: String,
-    pub uses: Option<String>,
-    /// Container image when `uses` is `docker`.
+    pub engine: Option<String>,
+    /// Container image when `engine` is `docker`.
     #[serde(default)]
     pub image: Option<String>,
     /// Extra host→container bind mounts ("host:container"), docker only.

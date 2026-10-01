@@ -150,7 +150,7 @@ async fn create_pipeline(app: &Router, input_defs_json: &str) -> String {
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
             "env": [],
-            "steps": [{{ "name": "echo", "run": "echo hi", "uses": "shell" }}],
+            "steps": [{{ "name": "echo", "run": "echo hi", "engine": "shell" }}],
             "input_defs": {input_defs_json}
         }}"#
     );
@@ -380,7 +380,7 @@ async fn webhook_path_enforces_required() {
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
             "env": [],
-            "steps": [{{ "name": "echo", "run": "echo hi", "uses": "shell" }}],
+            "steps": [{{ "name": "echo", "run": "echo hi", "engine": "shell" }}],
             "input_defs": {INPUT_DEFS_JSON}
         }}"#
     );

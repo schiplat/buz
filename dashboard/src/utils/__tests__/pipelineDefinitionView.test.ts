@@ -29,7 +29,7 @@ describe('yamlStepsToDefTasks', () => {
     const tasks = yamlStepsToDefTasks([
       {
         name: 'build',
-        uses: 'docker',
+        engine: 'docker',
         run: 'echo hi',
         image: 'alpine',
         volumes: '/a:/b, /c:/d',

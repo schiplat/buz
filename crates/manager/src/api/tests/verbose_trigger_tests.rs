@@ -144,7 +144,7 @@ const CREATE_PAYLOAD: &str = r#"{
     "team_id": "team-1",
     "env": [],
     "steps": [
-        { "name": "echo", "run": "echo hi", "uses": "shell" }
+        { "name": "echo", "run": "echo hi", "engine": "shell" }
     ]
 }"#;
 

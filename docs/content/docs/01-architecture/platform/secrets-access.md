@@ -42,14 +42,14 @@ steps:
       rm -f /tmp/key
 
   - name: Docker Push
-    uses: shell
+    engine: shell
     secrets: [ACR_PERSONAL]
     registry_secret: ${secrets.ACR_PERSONAL}
     run: |
       docker push example.com/ns/app:$INPUT_TAG
 
   - name: Deliver config
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     secrets: [OSS_CONFIG]
     config:
@@ -59,7 +59,7 @@ steps:
     run: ls "$BUZ_CONFIG_DIR"
 
   - name: Render env
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     secrets: [POSTGRES_PASSWORD]
     config:

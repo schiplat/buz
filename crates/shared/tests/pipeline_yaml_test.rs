@@ -77,12 +77,12 @@ steps:
 
 #[test]
 fn step_typo_ru_instead_of_run_rejected() {
-    // `uses: shell` previously satisfied "run or uses", while unknown `ru:` was ignored.
+    // `engine: shell` previously satisfied "run or uses", while unknown `ru:` was ignored.
     let yaml = r#"
 name: test
 steps:
   - name: Render env
-    uses: shell
+    engine: shell
     ru: |
       echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
 "#;
@@ -113,7 +113,7 @@ fn uses_shell_without_run_rejected() {
 name: test
 steps:
   - name: noop
-    uses: shell
+    engine: shell
 "#;
     let r = parse_and_validate(yaml);
     assert!(!r.valid);
@@ -231,7 +231,7 @@ fn unknown_config_key_rejected() {
 name: test
 steps:
   - name: a
-    uses: shell
+    engine: shell
     config:
       dest: /tmp/x
       renders:
@@ -249,7 +249,7 @@ fn unknown_config_render_key_rejected() {
 name: test
 steps:
   - name: a
-    uses: shell
+    engine: shell
     config:
       dest: /tmp/x
       render:
@@ -267,7 +267,7 @@ fn invalid_uses_engine_rejected() {
 name: test
 steps:
   - name: a
-    uses: shel
+    engine: shel
     run: echo hi
 "#;
     let r = parse_and_validate(yaml);
@@ -275,7 +275,7 @@ steps:
     assert!(
         r.errors
             .iter()
-            .any(|e| e.field.contains("uses") && e.message.contains("shel")),
+            .any(|e| e.field.contains("engine") && e.message.contains("shel")),
         "{:?}",
         r.errors
     );
@@ -304,7 +304,7 @@ fn ssh_without_host() {
 name: deploy
 steps:
   - name: push
-    uses: ssh
+    engine: ssh
     run: docker push
 "#;
     let r = parse_and_validate(yaml);
@@ -317,7 +317,7 @@ fn ssh_multi_host() {
 name: multi-deploy
 steps:
   - name: push
-    uses: ssh
+    engine: ssh
     host:
       - prod-01
       - prod-02
@@ -370,7 +370,7 @@ steps:
     run: docker build -t ${APP_NAME} .
     timeout: 10m
   - name: deploy
-    uses: ssh
+    engine: ssh
     host: prod-01
     run: docker-compose up -d
     retry: 1
@@ -451,7 +451,7 @@ fn host_labels_parsing() {
 name: Labeled Deploy
 steps:
   - name: deploy
-    uses: ssh
+    engine: ssh
     host_labels: [prod, web]
     run: deploy.sh
 "#;
@@ -468,7 +468,7 @@ fn hosts_strategy_chain_default_and_parallel_opt_in() {
 name: Multi
 steps:
   - name: deploy
-    uses: ssh
+    engine: ssh
     host: a
     run: true
 "#;
@@ -492,7 +492,7 @@ steps:
 name: Multi
 steps:
   - name: deploy
-    uses: ssh
+    engine: ssh
     host: a
     hosts_strategy: parallel
     run: true
@@ -510,7 +510,7 @@ steps:
 name: Multi
 steps:
   - name: deploy
-    uses: ssh
+    engine: ssh
     host: a
     hosts_strategy: chain
     run: true
@@ -531,7 +531,7 @@ fn hosts_strategy_rejects_invalid_and_non_ssh() {
 name: Bad
 steps:
   - name: d
-    uses: ssh
+    engine: ssh
     host: a
     hosts_strategy: zigzag
     run: true
@@ -550,7 +550,7 @@ steps:
 name: Shell
 steps:
   - name: s
-    uses: shell
+    engine: shell
     hosts_strategy: parallel
     run: true
 "#;
@@ -559,7 +559,7 @@ steps:
     assert!(
         r2.errors
             .iter()
-            .any(|e| e.message.contains("only valid for uses: ssh")),
+            .any(|e| e.message.contains("only valid for engine: ssh")),
         "{:?}",
         r2.errors
     );
@@ -618,14 +618,14 @@ fn docker_step_with_image_valid() {
 name: Docker Smoke
 steps:
   - name: hello
-    uses: docker
+    engine: docker
     image: alpine:3.20
     run: echo hi
 "#;
     let r = parse_and_validate(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     let parsed = r.parsed.unwrap();
-    assert_eq!(parsed.steps[0].uses.as_deref(), Some("docker"));
+    assert_eq!(parsed.steps[0].engine.as_deref(), Some("docker"));
     assert_eq!(parsed.steps[0].image.as_deref(), Some("alpine:3.20"));
 }
 
@@ -635,7 +635,7 @@ fn docker_step_missing_image_rejected() {
 name: Docker Bad
 steps:
   - name: hello
-    uses: docker
+    engine: docker
     run: echo hi
 "#;
     let r = parse_and_validate(yaml);
@@ -653,7 +653,7 @@ fn docker_step_with_host_rejected() {
 name: Docker Bad Host
 steps:
   - name: hello
-    uses: docker
+    engine: docker
     image: alpine:3.20
     host: prod-01
     run: echo hi
@@ -675,7 +675,7 @@ fn docker_step_with_privileged_valid() {
 name: privileged-docker
 steps:
   - name: dind
-    uses: docker
+    engine: docker
     image: docker:27-dind
     privileged: true
     run: dockerd &
@@ -690,7 +690,7 @@ fn non_docker_step_with_privileged_rejected() {
 name: bad-privileged
 steps:
   - name: shell-step
-    uses: shell
+    engine: shell
     privileged: true
     run: echo hi
 "#;
@@ -709,7 +709,7 @@ fn docker_step_with_registry_secret_valid() {
 name: pull-private
 steps:
   - name: run
-    uses: docker
+    engine: docker
     image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
     registry_secret: acr-personal
     run: echo ok
@@ -729,7 +729,7 @@ fn shell_step_with_registry_secret_valid() {
 name: push-private
 steps:
   - name: push
-    uses: shell
+    engine: shell
     registry_secret: acr-personal
     run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
 "#;
@@ -854,7 +854,7 @@ steps:
     run: docker build -t ${APP_NAME} .
     timeout: 10m
   - name: deploy
-    uses: ssh
+    engine: ssh
     host: prod-01
     run: docker-compose up -d
 "#;
@@ -896,7 +896,7 @@ fn config_oss_deliver_accepted() {
 name: oss-deliver
 steps:
   - name: deliver
-    uses: shell
+    engine: shell
     config:
       source: OSS_DEMO
       key_path: config_tpl/demo/v1
@@ -924,7 +924,7 @@ fn config_key_path_trailing_slash_ok_no_warning() {
 name: oss-slash
 steps:
   - name: deliver
-    uses: shell
+    engine: shell
     config:
       source: OSS_DEMO
       key_path: config_tpl/demo/v1/
@@ -946,7 +946,7 @@ fn config_key_path_rejects_archive_filename() {
 name: oss-archive
 steps:
   - name: deliver
-    uses: shell
+    engine: shell
     config:
       source: OSS_DEMO
       key_path: config_tpl/demo/v1/configs.tar.gz
@@ -970,7 +970,7 @@ fn config_render_only_accepted() {
 name: render-only
 steps:
   - name: render
-    uses: ssh
+    engine: ssh
     host: host-b
     config:
       dest: /opt/manager
@@ -1002,7 +1002,7 @@ fn config_render_list_normalizes_to_vec() {
 name: multi-render
 steps:
   - name: render
-    uses: shell
+    engine: shell
     config:
       dest: /opt/manager
       render:
@@ -1031,7 +1031,7 @@ fn config_sugar_deliver_plus_render_allowed() {
 name: sugar
 steps:
   - name: all-in-one
-    uses: shell
+    engine: shell
     config:
       source: OSS_CONFIG
       key_path: config_tpl/x/v1
@@ -1056,7 +1056,7 @@ fn config_rejects_legacy_flat_fields() {
 name: legacy
 steps:
   - name: old
-    uses: shell
+    engine: shell
     config_source: OSS_DEMO
     config_path: config_tpl/demo/v1
     run: echo hi
@@ -1076,7 +1076,7 @@ fn config_rejects_source_without_key_path() {
 name: bad-deliver
 steps:
   - name: x
-    uses: shell
+    engine: shell
     config:
       source: OSS_DEMO
       dest: /tmp/x
@@ -1099,7 +1099,7 @@ fn config_rejects_render_without_dest() {
 name: bad-render
 steps:
   - name: x
-    uses: shell
+    engine: shell
     config:
       render:
         template: env.example
@@ -1121,7 +1121,7 @@ fn config_rejects_dest_alone() {
 name: dest-only
 steps:
   - name: x
-    uses: shell
+    engine: shell
     config:
       dest: /opt/manager
     run: echo hi
@@ -1136,7 +1136,7 @@ fn config_rejects_render_missing_template() {
 name: no-template
 steps:
   - name: x
-    uses: shell
+    engine: shell
     config:
       dest: /opt/manager
       render:
@@ -1159,7 +1159,7 @@ fn config_rejects_bad_on_missing() {
 name: bad-om
 steps:
   - name: x
-    uses: shell
+    engine: shell
     config:
       dest: /opt/manager
       render:
@@ -1182,7 +1182,7 @@ fn config_render_not_allowed_on_docker() {
 name: docker-render
 steps:
   - name: x
-    uses: docker
+    engine: docker
     image: alpine:3
     config:
       dest: /opt/manager
@@ -1214,7 +1214,7 @@ steps:
       GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
     run: echo "$GIT_SSH_KEY" > /tmp/key
   - name: push
-    uses: shell
+    engine: shell
     secrets: [ACR_PERSONAL]
     registry_secret: ${secrets.ACR_PERSONAL}
     run: docker push example.com/app:1
@@ -1316,11 +1316,11 @@ steps:
       GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
     run: echo "$GIT_SSH_KEY"
   - name: push
-    uses: shell
+    engine: shell
     registry_secret: ${secrets.ACR_PERSONAL}
     run: docker push example.com/app:1
   - name: deliver
-    uses: ssh
+    engine: ssh
     host: box
     config:
       source: ${secrets.OSS_CONFIG}
@@ -1455,7 +1455,7 @@ fn input_without_type_gets_reminder_warning() {
 name: remind
 steps:
   - name: run
-    uses: shell
+    engine: shell
     run: echo hi
 on:
   manual:
@@ -1483,7 +1483,7 @@ fn options_without_choice_gets_specific_warning() {
 name: remind-choice
 steps:
   - name: run
-    uses: shell
+    engine: shell
     run: echo hi
 on:
   manual:
@@ -1518,7 +1518,7 @@ fn choice_with_options_is_quiet() {
 name: quiet
 steps:
   - name: run
-    uses: shell
+    engine: shell
     run: echo hi
 on:
   manual:

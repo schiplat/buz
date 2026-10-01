@@ -32,7 +32,7 @@ runner:
 steps:
   # ── Step 1: Remote identity check ─────────────────────────────
   - name: Who Am I
-    uses: ssh
+    engine: ssh
     host: r1-agent
     run: |
       echo "=== Identity ==="
@@ -43,7 +43,7 @@ steps:
 
   # ── Step 2: System resources ──────────────────────────────────
   - name: System Info
-    uses: ssh
+    engine: ssh
     host: r1-agent
     run: |
       echo "=== Resources ==="
@@ -59,7 +59,7 @@ steps:
 
   # ── Step 3: Write & read a temp file ──────────────────────────
   - name: File I/O
-    uses: ssh
+    engine: ssh
     host: r1-agent
     run: |
       echo "=== File Operations ==="

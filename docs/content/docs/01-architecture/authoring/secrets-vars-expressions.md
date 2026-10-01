@@ -126,7 +126,7 @@ on:
 
 steps:
   - name: Deploy
-    uses: ssh
+    engine: ssh
     host: $deploy_host          # field expansion — input name
     run: echo "host was $INPUT_DEPLOY_HOST"   # script — INPUT_ prefix
 ```
@@ -159,13 +159,13 @@ secrets:
 
 steps:
   - name: Push
-    uses: shell
+    engine: shell
     secrets: [ACR_PERSONAL]
     registry_secret: ${secrets.ACR_PERSONAL}   # ② slot
     run: docker push example.com/app:$INPUT_TAG
 
   - name: Deliver
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     secrets: [OSS_CONFIG]
     config:
@@ -185,7 +185,7 @@ steps:
 
 steps:
   - name: Render
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     secrets: [POSTGRES_PASSWORD]
     config:

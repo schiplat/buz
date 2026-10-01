@@ -8,7 +8,7 @@ type EnvRow = { name: string; value: string }
 type StepLike = {
   name?: string
   run?: string
-  uses?: string
+  engine?: string
   image?: string
   volumes?: unknown
   secrets?: string[]
@@ -188,9 +188,9 @@ export function serializePipelineFormToYaml(
   lines.push('steps:')
   for (const s of form.steps) {
     lines.push(`  - name: ${esc(s.name || 'unnamed')}`)
-    const uses = (s.uses || 'shell').trim()
-    if (uses && uses !== 'shell' && uses !== 'local') {
-      lines.push(`    uses: ${esc(uses)}`)
+    const engine = (s.engine || 'shell').trim()
+    if (engine && engine !== 'shell' && engine !== 'local') {
+      lines.push(`    engine: ${esc(engine)}`)
     }
     if (s.image) lines.push(`    image: ${esc(s.image)}`)
     const vols = volumesToYamlList(s.volumes)

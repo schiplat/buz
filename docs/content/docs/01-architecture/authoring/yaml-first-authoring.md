@@ -83,7 +83,7 @@ Filenames are bare basenames only (`^[A-Za-z0-9_-]+\.(yml|yaml)$`); the stem mus
 | Pipelines → row **Edit** | Same editor; `source=yaml` loads file; legacy API pipelines migrate on Save |
 | Pipeline Detail → **Edit YAML** | Opens editor in-place (no list navigation) |
 
-Editor: CodeMirror 6 — YAML syntax highlighting, debounced `parse_and_validate` gutter diagnostics, completions for keywords / `uses:` / `${secrets.` / `${vars.` / Manager secret & variable names.
+Editor: CodeMirror 6 — YAML syntax highlighting, debounced `parse_and_validate` gutter diagnostics, completions for keywords / `engine:` / `${secrets.` / `${vars.` / Manager secret & variable names.
 
 The Form authoring UI (step cards / Config Block form) has been **removed** from the frontend.
 

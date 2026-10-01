@@ -31,20 +31,20 @@ Rules:
 
 - Do **not** remove `deny_unknown_fields` or reintroduce untagged enums that hide unknown-key errors
 - Legal aliases must be explicit (`alias` / `rename`) — e.g. `work_dir`→`dir`, `max-queue`→`max_queue`, `owner_group`→`team`
-- Enum-like values (`uses`, `concurrency.mode`, …) must be validated in `parse_and_validate()` against an allowlist
+- Enum-like values (`engine`, `concurrency.mode`, …) must be validated in `parse_and_validate()` against an allowlist
 - After schema registration, still wire storage / claim / runner / FE types / examples / docs (project checklist)
 
 ```yaml
 # Rejected — `ru` is not a registered step key
 steps:
   - name: x
-    uses: shell
+    engine: shell
     ru: echo hi
 
 # OK — registered key `run`
 steps:
   - name: x
-    uses: shell
+    engine: shell
     run: echo hi
 ```
 
@@ -120,7 +120,7 @@ steps:                                 # required — at least one; each step ne
     retry: 2
 
   - name: Deploy
-    uses: ssh
+    engine: ssh
     host:
       - prod-server-01
       - prod-server-02
@@ -533,7 +533,7 @@ steps:
       curl -X POST "$SLACK_WEBHOOK_URL"
 
   - name: Push image
-    uses: shell
+    engine: shell
     secrets: [ACR_PERSONAL]
     registry_secret: ${secrets.ACR_PERSONAL}
     run: |
@@ -566,7 +566,7 @@ Every registered key on `StepYaml` (`crates/shared/src/pipeline_yaml.rs`). Unkno
 |-------|:--------:|---------|---------|
 | [`name`](#name-1) | ✓ | all | Display name |
 | [`run`](#run) | ✓ | all | Command / script |
-| [`uses`](#uses-engine) | | all | `shell` / `local` / `ssh` / `docker` (default: shell) |
+| [`engine`](#engine) | | all | `shell` / `local` / `ssh` / `docker` (default: shell) |
 | [`image`](#image) | if docker | docker | Container image |
 | [`volumes`](#volumes) | | docker | Extra `host:container` binds |
 | [`privileged`](#privileged) | | docker | `--privileged` (DinD opt-in) |
@@ -599,7 +599,7 @@ Every registered key on `StepYaml` (`crates/shared/src/pipeline_yaml.rs`). Unkno
 
 #### `run`
 
-**Required** on every step (`uses` alone is not enough). The actual command(s) to execute. Can be a single line or a multi-line block (YAML `|`). Environment variables (from env, variables, secrets, inputs) are available as regular `$VAR` references. Typos like `ru:` are rejected — see [Field registration](#field-registration-required-before-use).
+**Required** on every step (`engine` alone is not enough). The actual command(s) to execute. Can be a single line or a multi-line block (YAML `|`). Environment variables (from env, variables, secrets, inputs) are available as regular `$VAR` references. Typos like `ru:` are rejected — see [Field registration](#field-registration-required-before-use).
 
 ```yaml
 run: cargo build --release
@@ -616,7 +616,7 @@ run: |
 
 ---
 
-#### `uses` (Engine)
+#### `engine`
 
 Selects the execution engine. Defaults to `shell` (runner's own shell). When set, value **must** be one of `shell` / `local` / `ssh` / `docker` (other strings fail Validate).
 
@@ -629,7 +629,7 @@ Selects the execution engine. Defaults to `shell` (runner's own shell). When set
 
 | | |
 |---|---|
-| YAML | `uses: ssh` |
+| YAML | `engine: ssh` |
 | Form | Engine dropdown (Runner Shell / SSH / Docker) |
 
 > **Docker** is supported (MVP). See [Docker Engine](/docs/01-architecture/execution/docker-engine/). Enable **Docker** on the Runner in Manager UI.
@@ -638,10 +638,10 @@ Selects the execution engine. Defaults to `shell` (runner's own shell). When set
 
 #### `image`
 
-**Docker only.** Container image reference used when `uses: docker`. Required for that engine; ignored otherwise.
+**Docker only.** Container image reference used when `engine: docker`. Required for that engine; ignored otherwise.
 
 ```yaml
-uses: docker
+engine: docker
 image: rust:1.85-bookworm
 run: cargo test
 ```
@@ -659,7 +659,7 @@ run: cargo test
 **Docker only.** Extra host→container bind mounts beyond the default workspace mount (`/buz/workspace`). Each entry is `host_path:container_path`.
 
 ```yaml
-uses: docker
+engine: docker
 image: docker:27-cli
 volumes:
   - /var/run/docker.sock:/var/run/docker.sock
@@ -680,7 +680,7 @@ Invalid on non-docker steps. Mounting the Docker socket grants root-equivalent c
 **Docker only.** When `true`, runs the container with `--privileged` (needed for true Docker-in-Docker / nested containers). Default `false`.
 
 ```yaml
-uses: docker
+engine: docker
 image: docker:27-dind
 privileged: true
 run: dockerd-entrypoint.sh & sleep 3 && docker info
@@ -714,13 +714,13 @@ Name of a Manager Secret (not a password) for `docker login`. Valid on **shell**
 
 ```yaml
 # Docker pull
-uses: docker
+engine: docker
 image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
 registry_secret: acr_personal
 run: echo ok
 
 # Shell push
-uses: shell
+engine: shell
 registry_secret: acr_personal
 run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
 ```
@@ -931,7 +931,7 @@ Full rules: [pipeline `secrets`](#secrets) and [Secrets Access](/docs/01-archite
 
 ### Docker step fields
 
-When `uses: docker`, YAML requires `image`. Optional docker-only fields: [`volumes`](#volumes), [`privileged`](#privileged). [`registry_secret`](#registry_secret) also works on shell/SSH (for push). Workspace is bind-mounted to `/buz/workspace`. Full rules: [Docker Engine](/docs/01-architecture/execution/docker-engine/).
+When `engine: docker`, YAML requires `image`. Optional docker-only fields: [`volumes`](#volumes), [`privileged`](#privileged). [`registry_secret`](#registry_secret) also works on shell/SSH (for push). Workspace is bind-mounted to `/buz/workspace`. Full rules: [Docker Engine](/docs/01-architecture/execution/docker-engine/).
 
 Examples: `example/pipelines/docker-engine-smoke.yml`, `example/pipelines/acr-personal-pull.yml`, `example/pipelines/acr-personal-push.yml`.
 
@@ -952,7 +952,7 @@ Authoring is YAML-only ([YAML-First](./yaml-first-authoring.md)). On Validate / 
 | `env` / `variables` / `secrets` | env rows + `var_ids` / `pipeline_secrets` | Unknown names rejected at Validate |
 | `notify` | job-end notify channels | Expressions resolved at send time |
 | `steps[]` | `tasks` rows | Nested `config:` → config_* columns |
-| `steps[].uses` | `exec_type` | `shell`/`local`/`ssh`/`docker` only |
+| `steps[].engine` | `exec_type` | `shell`/`local`/`ssh`/`docker` only |
 | `steps[].image` / `volumes` / `privileged` | `tasks.image` / `volumes` / `privileged` | Docker engine |
 | `steps[].host` / `host_labels` / `hosts_strategy` | `tasks.*` | SSH; strategy default `chain` |
 | `steps[].env` / `secrets` | `step_env` / `step_secrets` | |

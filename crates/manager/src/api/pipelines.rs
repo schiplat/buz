@@ -1145,7 +1145,7 @@ pub(crate) async fn insert_steps(
 
     for (i, step) in steps.iter().enumerate() {
         let task_id = Uuid::new_v4().to_string();
-        let exec_type = step.uses.clone().unwrap_or_else(|| "shell".into());
+        let exec_type = step.engine.clone().unwrap_or_else(|| "shell".into());
         let fail_strategy = if step.continue_on_error.unwrap_or(false) {
             "continue"
         } else {

@@ -219,7 +219,7 @@ async fn create_pipeline(app: &Router, jwt: &str, name: &str) -> String {
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
             "env": [],
-            "steps": [{ "name": "echo", "run": "echo hi", "uses": "shell" }]
+            "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
         })),
     )
     .await;

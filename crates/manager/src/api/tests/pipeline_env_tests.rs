@@ -101,7 +101,7 @@ fn create_payload(env: &str) -> String {
         "team_id": "team-1",
         "env": {env},
         "steps": [
-            {{ "name": "echo", "run": "echo hi", "uses": "shell" }}
+            {{ "name": "echo", "run": "echo hi", "engine": "shell" }}
         ]
     }}"#
     )

@@ -35,7 +35,7 @@ steps:
 
   # ── Step 2: Dump PostgreSQL via SSH ───────────────────────────────
   - name: DB Dump
-    uses: ssh
+    engine: ssh
     host: db-server
     run: |
       pg_dumpall -U postgres --clean | gzip > /tmp/full_dump_$(date +%Y%m%d).sql.gz
@@ -51,7 +51,7 @@ steps:
 
   # ── Step 4: Sync logs via rsync ───────────────────────────────────
   - name: Archive Logs
-    uses: ssh
+    engine: ssh
     host:
       - app-server-01
       - app-server-02
@@ -65,7 +65,7 @@ steps:
   # host must be a Host name registered in Manager (or a trigger input $name).
   # Pipeline env vars are NOT expanded in the host: field.
   - name: Upload
-    uses: ssh
+    engine: ssh
     host: backup-server
     run: |
       mkdir -p "$STORAGE_PATH/$(date +%Y/%m)"
@@ -74,7 +74,7 @@ steps:
 
   # ── Step 6: Cleanup old backups ───────────────────────────────────
   - name: Prune
-    uses: ssh
+    engine: ssh
     host: backup-server
     run: |
       find "$STORAGE_PATH" -type f -mtime +"$RETENTION_DAYS" -delete

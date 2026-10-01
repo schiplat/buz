@@ -88,7 +88,7 @@ async fn missing_secret_is_validation_error() {
 name: demo
 steps:
   - name: push
-    uses: shell
+    engine: shell
     registry_secret: ${secrets.ACR_PERSONAL}
     run: echo hi
 "#;
@@ -199,7 +199,7 @@ async fn viewer_with_team_access_sees_secret_errors() {
 name: demo
 steps:
   - name: push
-    uses: shell
+    engine: shell
     registry_secret: ${secrets.MISSING_ACR}
     run: echo hi
 "#;

@@ -57,7 +57,7 @@
 #   * ACR_USERNAME / ACR_PASSWORD may be set for non-interactive docker login.
 #   * BUZ_JWT_SECRET encrypts stored secrets/hosts credentials. It is generated
 #     once and reused on later runs; losing it means re-entering stored secrets.
-#   * To let Runner drive host Docker (`uses: docker` steps), uncomment the
+#   * To let Runner drive host Docker (`engine: docker` steps), uncomment the
 #     docker.sock mounts in the generated compose file.
 #   * `docker pull` always contacts the registry even when the tag exists locally.
 #     On ACR TLS/network blips, pull falls back to the local image when present.
@@ -284,7 +284,7 @@ services:
       - ${RUNNER_CONF}:/app/buz/conf/runner.toml:ro
       - ${DEPLOY_DIR}/workspace:/app/buz/workspace
       - ${DEPLOY_DIR}/logs:/app/buz/logs
-    # Optional: give Runner access to host Docker for \`uses: docker\` steps.
+    # Optional: give Runner access to host Docker for \`engine: docker\` steps.
     # user: root
     # volumes:
     #   - /var/run/docker.sock:/var/run/docker.sock

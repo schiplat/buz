@@ -339,7 +339,7 @@ export BUZ_REGISTER_TOKEN="your-token"
 ./target/release/buz-runner
 ```
 
-> Enable Docker steps (`uses: docker`) in **Manager UI → Runners → Docker**. See [Docker Engine](/docs/01-architecture/execution/docker-engine/). Host-side `docker build` / SSH `docker …` does **not** need this flag.
+> Enable Docker steps (`engine: docker`) in **Manager UI → Runners → Docker**. See [Docker Engine](/docs/01-architecture/execution/docker-engine/). Host-side `docker build` / SSH `docker …` does **not** need this flag.
 
 ## Requirements
 

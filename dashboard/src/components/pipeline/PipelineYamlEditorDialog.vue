@@ -396,7 +396,7 @@ async function openEdit(p: Pick<Pipeline, 'id' | 'name' | 'source'> & { yaml_pat
       steps: (detail.tasks || []).map((t: any) => ({
         name: t.name || '',
         run: t.command_template || '',
-        uses: t.exec_type || 'shell',
+        engine: t.exec_type || 'shell',
         image: t.image || undefined,
         volumes: parseVolumesToRows(t.volumes) as any,
         secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
@@ -839,7 +839,7 @@ steps:
 
   # Docker engine — run inside a container on the runner
   - name: Unit Tests
-    uses: docker
+    engine: docker
     image: node:20-bookworm
     work_dir: ./frontend
     volumes:
@@ -851,7 +851,7 @@ steps:
 
   # Private registry — secret kind = registry auth (UPPER_SNAKE_CASE name)
   - name: Run Private Image
-    uses: docker
+    engine: docker
     image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
     secrets: [ACR_PERSONAL]                    # optional allowlist / narrowing
     registry_secret: ${secrets.ACR_PERSONAL}   # purpose slot (implies allowlist)
@@ -860,7 +860,7 @@ steps:
 
   # Shell + registry_secret → Manager auto login/logout around the script
   - name: Docker Push
-    uses: shell
+    engine: shell
     secrets: [ACR_PERSONAL]
     registry_secret: ${secrets.ACR_PERSONAL}
     run: |
@@ -871,7 +871,7 @@ steps:
   # SSH — at least one of host / host_labels (union of targets)
   # hosts_strategy: chain (default) | parallel — multi-host fan-out
   - name: Deploy
-    uses: ssh
+    engine: ssh
     host:
       - prod-server-01
       - prod-server-02
@@ -891,7 +891,7 @@ steps:
   # host: expands trigger inputs as $name (not $INPUT_*).
   # secrets: [NAME] = allowlist only; purpose slots use ${secrets.NAME}.
   - name: Deliver Config
-    uses: ssh
+    engine: ssh
     host: $deploy_host                         # on.manual.inputs.deploy_host
     secrets: [OSS_CONFIG]                      # allowlist — does not inject $OSS_CONFIG
     config:
@@ -906,7 +906,7 @@ steps:
   #   MANAGER_IMAGE=${vars.MANAGER_IMAGE_TAG:-latest}
   #   POSTGRES_PASSWORD=${secrets.POSTGRES_PASSWORD}
   - name: Render Env
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     secrets: [POSTGRES_PASSWORD]
     config:

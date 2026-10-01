@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real Docker daemon e2e for uses: docker (runner engine).
+# Real Docker daemon e2e for engine: docker (runner engine).
 # Does not start Manager/Runner — exercises crates/runner Docker engine only.
 set -euo pipefail
 

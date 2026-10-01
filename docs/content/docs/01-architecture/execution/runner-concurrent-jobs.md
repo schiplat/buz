@@ -51,7 +51,7 @@ Create or edit a Runner under **Runners** in the web UI.
 | `clean_workspace_after_job` | `false` | Delete `{workspace}/{job_id}` after each job (host files only) |
 | `shell_enabled` | `true` | Allow `shell` / `local` steps |
 | `ssh_enabled` | `true` | Allow `ssh` steps |
-| `docker_enabled` | `false` | Allow `uses: docker` steps (`docker run --rm` per step) |
+| `docker_enabled` | `false` | Allow `engine: docker` steps (`docker run --rm` per step) |
 | `wasm_enabled` | `false` | Allow WASM steps (reserved) |
 | `ssh_host_key_policy` | `insecure` | `insecure` (accept any) or `known_hosts` |
 
@@ -81,7 +81,7 @@ Runner process                        │
 | What | How |
 |------|-----|
 | Job workspace files on the runner host | `clean_workspace_after_job` (UI checkbox) |
-| Container from a `uses: docker` step | Always `docker run --rm` — removed when the step ends; **not** a Runner Policy toggle |
+| Container from a `engine: docker` step | Always `docker run --rm` — removed when the step ends; **not** a Runner Policy toggle |
 
 Label edits take effect on the **next poll**. Engine / concurrency edits typically within **one heartbeat (~30s)**.
 

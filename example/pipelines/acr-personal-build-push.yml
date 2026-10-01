@@ -13,7 +13,7 @@
 #   2) Runner with Docker CLI/daemon and labels: [linux-x64].
 #
 # Flow: prepare context → docker build → docker push (login via registry_secret)
-#       → optional verify pull with uses: docker + registry_secret.
+#       → optional verify pull with engine: docker + registry_secret.
 
 name: acr-personal-build-push
 description: Orchestrated docker build + push to ACR Personal Edition (registry_secret)
@@ -55,7 +55,7 @@ steps:
 
   # ── 2. Build on the runner host (no registry login needed) ──
   - name: Build image
-    uses: shell
+    engine: shell
     run: |
       IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
       docker build -t "$IMAGE" -f hello/Dockerfile hello
@@ -64,7 +64,7 @@ steps:
 
   # ── 3. Push — Manager resolves registry_secret → Runner docker login/logout ──
   - name: Push image
-    uses: shell
+    engine: shell
     secrets: [ACR_PERSONAL]
     registry_secret: ${secrets.ACR_PERSONAL}
     run: |
@@ -75,7 +75,7 @@ steps:
 
   # ── 4. Verify — pull + run the image just pushed ──
   - name: Verify pull
-    uses: shell
+    engine: shell
     secrets: [ACR_PERSONAL]
     registry_secret: ${secrets.ACR_PERSONAL}
     run: |

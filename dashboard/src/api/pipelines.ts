@@ -102,7 +102,7 @@ export interface PipelineInputDef {
 export interface StepDef {
   name: string
   run: string
-  uses?: string
+  engine?: string
   image?: string
   /** Extra host→container bind mounts when uses: docker. Each entry is "host_path:container_path". */
   volumes?: string[]
@@ -205,7 +205,7 @@ export interface YamlConcurrencyConfig {
 export interface YamlStepData {
   name?: string | null
   run?: string | null
-  uses?: string | null
+  engine?: string | null
   image?: string | null
   /** Comma-separated "host:container" pairs from YAML volumes array. */
   volumes?: string | null

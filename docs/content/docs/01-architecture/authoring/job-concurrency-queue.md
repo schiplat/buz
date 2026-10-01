@@ -151,7 +151,7 @@ runner:
 
 steps:
   - name: Build
-    uses: docker
+    engine: docker
     image: docker:27-dind
     privileged: true
     run: |

@@ -10,7 +10,7 @@ Manual trigger inputs (`on.manual.inputs`) historically were **free-form**: the 
 
 ```yaml
 - name: Validate inputs
-  uses: shell
+  engine: shell
   run: |
     case "$INPUT_TAG" in
       ''|*[!A-Za-z0-9._-]*)

@@ -8,9 +8,9 @@ aliases:
 
 ## Status
 
-**Implemented (MVP).** Step-level `uses: docker` with required `image`, always `docker run --rm` (container removed when the step ends — not controlled by Runner Policy), workspace mount at `/buz/workspace`, gated by UI `docker_enabled` on the Runner. See acceptance criteria below.
+**Implemented (MVP).** Step-level `engine: docker` with required `image`, always `docker run --rm` (container removed when the step ends — not controlled by Runner Policy), workspace mount at `/buz/workspace`, gated by UI `docker_enabled` on the Runner. See acceptance criteria below.
 
-Related: [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/) (`uses` / execution engines), [Configuration](/docs/03-operations/configuration/).
+Related: [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/) (`engine` / execution engines), [Configuration](/docs/03-operations/configuration/).
 
 Reference model: [GitHub Actions job `container`](https://docs.github.com/en/actions/using-jobs/running-jobs-in-a-container) — semantics and UX, not the full Actions product surface.
 
@@ -20,7 +20,7 @@ Reference model: [GitHub Actions job `container`](https://docs.github.com/en/act
 
 - Run a pipeline **step** inside a Docker container on the **runner host**
 - Reuse the existing step pipeline: logs, timeout, retry, cancel, env / secrets injection, log masking
-- Keep YAML close to current `uses: ssh` style (engine chosen per step)
+- Keep YAML close to current `engine: ssh` style (engine chosen per step)
 - Fail closed when Docker is disabled or unavailable
 
 ---
@@ -33,11 +33,11 @@ Reference model: [GitHub Actions job `container`](https://docs.github.com/en/act
 | Service / sidecar containers | Actions `services:` — defer |
 | Arbitrary `docker create` option strings | Actions `container.options` — security escape hatch; defer or whitelist later |
 | Docker Action marketplace / `docker://` entrypoint-args model | Buz keeps a single `run:` command model |
-| Remote Docker / Docker Context / Swarm / Compose orchestration | Use `uses: ssh` + host `docker …` (see `example/pipelines/docker-deploy.yml`) |
+| Remote Docker / Docker Context / Swarm / Compose orchestration | Use `engine: ssh` + host `docker …` (see `example/pipelines/docker-deploy.yml`) |
 | Manager-side containers | Execution stays on Runner only |
 | Wasm engine | Separate Phase 3 track |
 
-**Not this engine:** a shell step that shells out to `docker build` / `docker push` on the runner. That is already `uses` omitted (shell) or SSH. Docker engine means **the step command runs inside the container**.
+**Not this engine:** a shell step that shells out to `docker build` / `docker push` on the runner. That is already `engine` omitted (shell) or SSH. Docker engine means **the step command runs inside the container**.
 
 ---
 
@@ -106,7 +106,7 @@ env:
 steps:
   # Step 1: Build the image (runs inside docker:dind)
   - name: Build
-    uses: docker
+    engine: docker
     image: docker:27-dind
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # share host daemon
@@ -116,7 +116,7 @@ steps:
 
   # Step 2: Push to registry
   - name: Push
-    uses: docker
+    engine: docker
     image: docker:27-dind
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -129,7 +129,7 @@ steps:
 
 ```yaml
   - name: Build
-    uses: docker
+    engine: docker
     image: docker:27-dind
     privileged: true                                   # future: --privileged flag
     run: |
@@ -145,7 +145,7 @@ For production environments where runner VM isolation isn't guaranteed:
 
 ```yaml
   - name: Build
-    uses: docker
+    engine: docker
     image: gcr.io/kaniko-project/executor:latest
     volumes:
       - /path/to/docker-config.json:/kaniko/.docker/config.json:ro
@@ -210,9 +210,9 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 
 | # | Decision |
 |---|----------|
-| 1 | **Granularity**: step-level `uses: docker` (not pipeline-level `container:` in MVP) |
+| 1 | **Granularity**: step-level `engine: docker` (not pipeline-level `container:` in MVP) |
 | 2 | **Lifecycle**: one container per docker step with `docker run --rm` (auto-removed when the step ends) |
-| 3 | **Required field**: `image` when `uses: docker` |
+| 3 | **Required field**: `image` when `engine: docker` |
 | 4 | **Command model**: same as local/SSH — multi-line `run:` executed via container shell (`sh -lc` unless overridden later) |
 | 5 | **Workspace**: bind-mount runner step work directory into a fixed container path (default `/buz/workspace`); container cwd = that path |
 | 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution as shell/SSH. **Log masking**: Infrastructure Secrets, registry passwords, and trigger inputs with `masking: true` are redacted — pipeline `env:` and Variables stay readable. Claim payload splits `env` vs `secrets` and includes `masking_input_keys` — see [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) |
@@ -228,7 +228,7 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 ```yaml
 steps:
   - name: Test
-    uses: docker
+    engine: docker
     image: node:20-bookworm          # required
     work_dir: ./frontend             # optional; container-side subdirectory under /buz/workspace
     # runner workspace is always mounted at /buz/workspace
@@ -238,27 +238,27 @@ steps:
       npm test
 
   - name: Private ACR image
-    uses: docker
+    engine: docker
     image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
     registry_secret: acr_personal  # Secret *name* only — password lives in Infrastructure → Secrets
     run: echo ok
 
   # Shell / SSH also support registry_secret (e.g. docker push):
   # - name: Push
-  #   uses: shell
+  #   engine: shell
   #   registry_secret: acr_personal
   #   run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
 ```
 
 | Field | Required | Description |
 |-------|:--------:|-------------|
-| `uses: docker` | ✓ | Selects Docker engine |
+| `engine: docker` | ✓ | Selects Docker engine |
 | `image` | ✓ | Image reference (`name:tag` or digest). Pulled if missing (`docker pull` / run pull behavior TBD in impl) |
 | `registry_secret` | | **Name** of a Manager Secret with **`kind=registry`** (not the password). JSON credentials, encrypted at rest. Also valid on **shell** / **SSH** for push. |
 | `run` | ✓ | Command(s) inside the container |
 | `work_dir` / `dir` | | Container-side subdirectory under `/buz/workspace` (runner workspace always mounted at root) |
 | `timeout` / `retry` / `continue-on-error` | | Same semantics as other engines |
-| `host` / `host_labels` | ✗ | SSH-only; invalid with `uses: docker` (validator should warn/error) |
+| `host` / `host_labels` | ✗ | SSH-only; invalid with `engine: docker` (validator should warn/error) |
 
 ### Explicitly deferred YAML
 
@@ -315,13 +315,13 @@ Failure messages should tell the operator which precondition failed (disabled vs
 
 | Actions | Buz MVP |
 |---------|---------|
-| Job-level `container.image` | Step-level `uses: docker` + `image` |
+| Job-level `container.image` | Step-level `engine: docker` + `image` |
 | All job steps share one container | Fresh container per docker step |
 | `container.env` / job env | Pipeline + step env / variables / secrets → `-e` |
 | Workspace mount | Runner `workspace_dir` → `/buz/workspace` |
 | `container.options` | Deferred |
 | `services:` | Deferred |
-| `uses: docker://image` + entrypoint/args | Not used; keep `run:` |
+| `engine: docker://image` + entrypoint/args | Not used; keep `run:` |
 | Host `run: docker build` | Remains **local** / **ssh**, not this engine |
 
 ---
@@ -330,7 +330,7 @@ Failure messages should tell the operator which precondition failed (disabled vs
 
 ```toml
 [engine]
-docker_enabled = false   # set true on runners that should accept uses: docker
+docker_enabled = false   # set true on runners that should accept engine: docker
 ```
 
 Optional later (not required for MVP design sign-off):
@@ -344,7 +344,7 @@ Optional later (not required for MVP design sign-off):
 
 | YAML | Form |
 |------|------|
-| `uses: docker` | Engine = Docker |
+| `engine: docker` | Engine = Docker |
 | `image` | Image (required when Engine is Docker) |
 | `host` / `host_labels` | Hidden or disabled for Docker engine |
 
@@ -354,11 +354,11 @@ Import-from-YAML should map `image` like other step fields once the parser gains
 
 ## Implementation Checklist (when coding starts)
 
-1. `PipelineYaml` / step schema: add `image`; validate `uses: docker` ⇒ `image` present; reject `host` combo
+1. `PipelineYaml` / step schema: add `image`; validate `engine: docker` ⇒ `image` present; reject `host` combo
 2. Protocol / job step payload: carry `image` to runner
 3. `crates/runner/src/engine/docker.rs` + poll dispatch when `docker_enabled`
 4. Tests: argv construction, disabled gate, missing image, comment/fixture without needing a real daemon where possible
-5. Example pipeline using `uses: docker` (distinct from `docker-deploy.yml`)
+5. Example pipeline using `engine: docker` (distinct from `docker-deploy.yml`)
 6. Update [pipeline-format](/docs/01-architecture/authoring/pipeline-format/) status from “stub” to “supported”
 
 ---
@@ -373,9 +373,9 @@ MVP is **done** only when all items below pass. Criteria are testable (automated
 
 | # | Criterion | How to verify | Status |
 |---|-----------|---------------|:------:|
-| A1 | Step with `uses: docker` and non-empty `image` parses successfully | `crates/shared/tests/pipeline_yaml_test.rs` | ✅ |
-| A2 | `uses: docker` without `image` (or empty `image`) is rejected at validate/import time with a clear error | same | ✅ |
-| A3 | `uses: docker` combined with `host` / `host_labels` is rejected (or hard warning that blocks save) | same | ✅ |
+| A1 | Step with `engine: docker` and non-empty `image` parses successfully | `crates/shared/tests/pipeline_yaml_test.rs` | ✅ |
+| A2 | `engine: docker` without `image` (or empty `image`) is rejected at validate/import time with a clear error | same | ✅ |
+| A3 | `engine: docker` combined with `host` / `host_labels` is rejected (or hard warning that blocks save) | same | ✅ |
 | A4 | `owner_group` / unrelated fields unchanged; local and SSH steps still validate as today | Existing pipeline YAML tests still green | ✅ |
 
 ### B. Runner gate & errors
@@ -404,7 +404,7 @@ MVP is **done** only when all items below pass. Criteria are testable (automated
 | # | Criterion | How to verify | Status |
 |---|-----------|---------------|:------:|
 | D1 | Stdout/stderr stream to Job Detail step logs | Shared streaming path; confirm with smoke job | ⚠ |
-| D2 | Example pipeline demonstrates `uses: docker` + `image` + `team:` | `example/pipelines/docker-engine-smoke.yml` | ✅ |
+| D2 | Example pipeline demonstrates `engine: docker` + `image` + `team:` | `example/pipelines/docker-engine-smoke.yml` | ✅ |
 | D3 | Form: Engine=Docker shows required Image; SSH host fields hidden | Pipeline create/edit UI (manually confirmed) | ✅ |
 | D4 | Import YAML → Form maps `image`; pipeline-format marks Docker supported | Import path + docs | ✅ |
 | D5 | `cargo test --all` and `frontend` build pass; docker unit tests included | CI + `make test-docker-e2e` for ignored daemon tests | ✅ |

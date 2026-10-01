@@ -27,7 +27,7 @@ Related: [Pipeline Format — `host` / `host_labels` / `hosts_strategy`](/docs/0
 
 ## Intent
 
-A single pipeline step with `uses: ssh` may bind **multiple** Infrastructure Hosts via `host` and/or `host_labels` (union, deduplicated).
+A single pipeline step with `engine: ssh` may bind **multiple** Infrastructure Hosts via `host` and/or `host_labels` (union, deduplicated).
 
 - **One host** — unchanged.
 - **N hosts (N > 1)** — fan-out on the **same Runner**, same step:
@@ -36,7 +36,7 @@ A single pipeline step with `uses: ssh` may bind **multiple** Infrastructure Hos
 
 ```yaml
 - name: Deploy
-  uses: ssh
+  engine: ssh
   host_labels: [prod]
   hosts_strategy: parallel   # omit for chain (default)
   run: |

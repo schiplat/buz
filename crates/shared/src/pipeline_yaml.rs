@@ -328,14 +328,14 @@ pub struct StepYaml {
     #[serde(default)]
     pub run: Option<String>,
     #[serde(default)]
-    pub uses: Option<String>,
-    /// Container image when `uses: docker`.
+    pub engine: Option<String>,
+    /// Container image when `engine: docker`.
     #[serde(default)]
     pub image: Option<String>,
-    /// Extra host→container bind mounts (only for uses: docker). Each entry is "host_path:container_path".
+    /// Extra host→container bind mounts (only for engine: docker). Each entry is "host_path:container_path".
     #[serde(default)]
     pub volumes: Option<Vec<String>>,
-    /// Run the container in privileged mode (only for uses: docker).
+    /// Run the container in privileged mode (only for engine: docker).
     /// Required for true Docker-in-Docker (docker:dind) to support nested containers.
     /// WARNING: privileged containers can escape to the host via nsenter or kernel exploits.
     /// Only use on disposable runner VMs.
@@ -491,7 +491,7 @@ pub struct StepData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub uses: Option<String>,
+    pub engine: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     /// Comma-separated host:container volume mounts (for frontend import).
@@ -620,7 +620,7 @@ fn validate_duration_field(field: &str, raw: Option<&str>, errors: &mut Vec<Yaml
 /// Validate a nested `config:` block (deliver / render-only / sugar).
 fn validate_config_block(
     cfg: &ConfigBlock,
-    uses: &str,
+    engine: &str,
     field: &str,
     errors: &mut Vec<YamlValidationError>,
 ) {
@@ -651,7 +651,7 @@ fn validate_config_block(
     let is_sugar = is_deliver && has_render;
 
     if is_deliver || is_sugar {
-        let engine = if uses.is_empty() { "shell" } else { uses };
+        let engine = if engine.is_empty() { "shell" } else { engine };
         if !matches!(engine, "shell" | "local" | "ssh" | "docker") {
             errors.push(YamlValidationError {
                 field: field.into(),
@@ -680,7 +680,7 @@ fn validate_config_block(
     }
 
     if is_render_only || is_sugar {
-        let engine = if uses.is_empty() { "shell" } else { uses };
+        let engine = if engine.is_empty() { "shell" } else { engine };
         if !matches!(engine, "shell" | "local" | "ssh") {
             errors.push(YamlValidationError {
                 field: field.into(),
@@ -944,8 +944,8 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         });
     }
 
-    // 3. Each step must have `run`; `uses` must be a known engine when set.
-    const VALID_USES: &[&str] = &["shell", "local", "ssh", "docker"];
+    // 3. Each step must have `run`; `engine` must be a known value when set.
+    const VALID_ENGINES: &[&str] = &["shell", "local", "ssh", "docker"];
     for (i, step) in parsed.steps.iter().enumerate() {
         let run = step.run.as_deref().unwrap_or("").trim();
 
@@ -956,13 +956,13 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             });
         }
 
-        let uses = step.uses.as_deref().unwrap_or("").trim();
-        if !uses.is_empty() && !VALID_USES.contains(&uses) {
+        let engine = step.engine.as_deref().unwrap_or("").trim();
+        if !engine.is_empty() && !VALID_ENGINES.contains(&engine) {
             errors.push(YamlValidationError {
-                field: format!("steps[{i}].uses"),
+                field: format!("steps[{i}].engine"),
                 message: format!(
-                    "invalid engine '{uses}' — must be one of: {}",
-                    VALID_USES.join(", ")
+                    "invalid engine '{engine}' — must be one of: {}",
+                    VALID_ENGINES.join(", ")
                 ),
             });
         }
@@ -1047,8 +1047,8 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
 
     // 6. SSH step requires host; validate hosts_strategy
     for (i, step) in parsed.steps.iter().enumerate() {
-        let uses = step.uses.as_deref().unwrap_or("").trim();
-        if uses == "ssh"
+        let engine = step.engine.as_deref().unwrap_or("").trim();
+        if engine == "ssh"
             && step.host.as_ref().is_none_or(|h| h.is_empty())
             && step.host_labels.as_ref().is_none_or(|h| h.is_empty())
         {
@@ -1060,10 +1060,10 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         if let Some(raw) = step.hosts_strategy.as_deref() {
             let trimmed = raw.trim();
             if !trimmed.is_empty() {
-                if uses != "ssh" {
+                if engine != "ssh" {
                     errors.push(YamlValidationError {
                         field: format!("steps[{i}].hosts_strategy"),
-                        message: "hosts_strategy is only valid for uses: ssh".into(),
+                        message: "hosts_strategy is only valid for engine: ssh".into(),
                     });
                 } else if let Err(msg) = normalize_hosts_strategy(Some(trimmed)) {
                     errors.push(YamlValidationError {
@@ -1124,11 +1124,11 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
 
     // 6. Docker engine rules
     for (i, step) in parsed.steps.iter().enumerate() {
-        let uses = step.uses.as_deref().unwrap_or("").trim();
+        let engine = step.engine.as_deref().unwrap_or("").trim();
         let field = format!("steps[{i}]");
 
         // privileged is only meaningful for docker
-        if uses != "docker" && step.privileged.unwrap_or(false) {
+        if engine != "docker" && step.privileged.unwrap_or(false) {
             errors.push(YamlValidationError {
                 field: field.clone(),
                 message: "'privileged' is only valid for docker engine steps".into(),
@@ -1141,7 +1141,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             .map(str::trim)
             .filter(|s| !s.is_empty());
         if reg_secret.is_some() {
-            let engine = if uses.is_empty() { "shell" } else { uses };
+            let engine = if engine.is_empty() { "shell" } else { engine };
             if !matches!(engine, "shell" | "local" | "ssh" | "docker") {
                 errors.push(YamlValidationError {
                     field: field.clone(),
@@ -1173,7 +1173,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
 
         if let Some(cfg) = &step.config {
-            validate_config_block(cfg, uses, &field, &mut errors);
+            validate_config_block(cfg, engine, &field, &mut errors);
         }
 
         // Scripts do not expand `${secrets.…}` — require explicit `env:` mapping.
@@ -1188,7 +1188,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             }
         }
 
-        if uses != "docker" {
+        if engine != "docker" {
             continue;
         }
         let image = step.image.as_deref().unwrap_or("").trim();
@@ -1296,7 +1296,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 StepData {
                     name: s.name.clone(),
                     run: s.run.clone(),
-                    uses: s.uses.clone(),
+                    engine: s.engine.clone(),
                     image: s.image.clone(),
                     volumes: s.volumes.as_ref().map(|v| v.join(",")),
                     host: s.host.as_ref().map(|h| match h {

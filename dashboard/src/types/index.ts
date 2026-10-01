@@ -85,7 +85,7 @@ export interface CreatePipelineRequest {
 export interface CreateStepDef {
   name: string
   run: string
-  uses?: ExecType
+  engine?: ExecType
   host?: string
   dir?: string
   timeout?: string

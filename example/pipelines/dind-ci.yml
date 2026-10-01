@@ -44,7 +44,7 @@ secrets:
   - DOCKER_REGISTRY_PASS
 
   # │   DESIGN NOTE: DinD login sharing                          │
-  # │   Each uses: docker step is a fresh ephemeral container     │
+  # │   Each engine: docker step is a fresh ephemeral container     │
   # │   (docker run --rm). The inner dockerd and login state are  │
   # │   destroyed when the step ends. Therefore build, login, and │
   # │   push must happen in a SINGLE step — they cannot be split. │
@@ -55,7 +55,7 @@ steps:
   # All three must share one container because DinD daemon state
   # cannot persist across steps.
   - name: Build and Push
-    uses: docker
+    engine: docker
     image: docker:27-dind
     privileged: true
     run: |
@@ -75,7 +75,7 @@ steps:
   # ── Step 2: Deploy via SSH to target host ───────────────────────
   # host: expands trigger input `$target` (not $INPUT_TARGET).
   - name: Deploy
-    uses: ssh
+    engine: ssh
     host: $target
     run: |
       docker pull "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_VERSION"
@@ -89,7 +89,7 @@ steps:
 
   # ── Step 3: Health check ────────────────────────────────────────
   - name: Health Check
-    uses: ssh
+    engine: ssh
     host: $target
     run: |
       sleep 3

@@ -54,7 +54,7 @@ steps:
   # ── Step 3: SSH single host — uptime check ───────────────────────
   #           Requires a Host named "dev-vm" configured in Manager UI.
   - name: Remote Uptime
-    uses: ssh
+    engine: ssh
     host: dev-vm
     run: |
       echo "Connected to $(hostname)"
@@ -65,7 +65,7 @@ steps:
   # ── Step 4: SSH multi-host — fleet health ────────────────────────
   #           Runs the same command on every host in the array.
   - name: Fleet Status
-    uses: ssh
+    engine: ssh
     host:
       - dev-vm
       - dev-vm

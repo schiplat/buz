@@ -226,7 +226,7 @@ async fn trigger_unknown_environment_returns_404() {
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
             "env": [],
-            "steps": [{ "name": "echo", "run": "echo hi", "uses": "shell" }]
+            "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
         })),
     )
     .await;
@@ -332,7 +332,7 @@ async fn claim_applies_environment_overrides_bound_keys_only() {
             "team_id": "team-1",
             "var_ids": [bound_id],
             "env": [{ "name": "INLINE_KEY", "value": "from-yaml" }],
-            "steps": [{ "name": "echo", "run": "echo hi", "uses": "shell" }]
+            "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
         })),
     )
     .await;
@@ -446,7 +446,7 @@ async fn trigger_without_environment_keeps_defaults() {
             "team_id": "team-1",
             "var_ids": [var_id],
             "env": [],
-            "steps": [{ "name": "echo", "run": "echo hi", "uses": "shell" }]
+            "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
         })),
     )
     .await;
@@ -630,7 +630,7 @@ async fn claim_applies_environment_secret_overrides_allowlisted_only() {
             "team_id": "team-1",
             "secret_ids": [bound_id],
             "env": [{ "name": "TOKEN", "value": "${secrets.DEPLOY_TOKEN}" }],
-            "steps": [{ "name": "echo", "run": "echo hi", "uses": "shell" }]
+            "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
         })),
     )
     .await;

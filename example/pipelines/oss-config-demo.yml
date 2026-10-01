@@ -57,7 +57,7 @@ secrets:
 steps:
   # ── 1. OSS deliver (unpack only) ───────────────────────────────────
   - name: Deliver config
-    uses: shell
+    engine: shell
     secrets: [OSS_DEMO]
     config:
       source: ${secrets.OSS_DEMO}
@@ -78,7 +78,7 @@ steps:
   # $BUZ_ENV_CHANGED(_KEYS) are set on THIS step only — a later Compose step
   # should own `docker compose up` (preferred over render on_change).
   - name: Render env
-    uses: shell
+    engine: shell
     config:
       dest: /tmp/buz-config-demo
       render:
@@ -94,7 +94,7 @@ steps:
 
   # ── 3. Sanity (no config prepare) ──────────────────────────────────
   - name: Echo sanity
-    uses: shell
+    engine: shell
     run: |
       echo "==> BUZ_CONFIG_URL absent on this step: ${BUZ_CONFIG_URL:-unset}"
       echo "==> BUZ_CONFIG_DIR absent on this step: ${BUZ_CONFIG_DIR:-unset}"

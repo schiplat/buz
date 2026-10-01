@@ -45,7 +45,7 @@ aliases:
 - A `config:` block must be exactly one of:
   - **deliver:** `source` ∧ `key_path` ∧ `dest` (no `render` in preferred form), or
   - **render-only:** `dest` ∧ `render` and **no** `source` / `key_path`.
-- **`config.render` / render-only are invalid on `uses: docker`** (shell /
+- **`config.render` / render-only are invalid on `engine: docker`** (shell /
   local / ssh only). See [Engines](#engines-render-only-does-not-include-docker).
 - One-step sugar (`source` + `key_path` + `dest` + `render`) may be accepted by
   the engine but must not appear in examples or Quick YAML Reference.
@@ -176,7 +176,7 @@ bytes to the remote via SSH channel stdin (`cat > /tmp/…` → `mv` into `dest`
 Payloads are **not** embedded in the exec argv (SSH `max_packet_size` is often
 ~32KiB; large `echo | base64` commands fail with an empty exit status).
 
-**SSH step session:** each `uses: ssh` step opens **one TCP session per host**
+**SSH step session:** each `engine: ssh` step opens **one TCP session per host**
 (with connect retries on transient reset/refused/timeout). Config prepare
 (upload / `cat` / render) and the step `run` block reuse that session via new
 exec channels — they do **not** reconnect per remote command. Sessions are not
@@ -186,7 +186,7 @@ the Runner, then upload/render/`run` per host. **Cancel** aborts every in-flight
 host — see [SSH Multi-Host Execution](/docs/01-architecture/execution/ssh-multi-host/).
 
 **Why:** prepare runs **before** the container `run`. Templates must already
-exist on a host filesystem the Runner can read. A `uses: docker` workdir lives
+exist on a host filesystem the Runner can read. A `engine: docker` workdir lives
 inside the container unless `dest` is defined as a host path bind-mounted in —
 that contract is not designed yet.
 
@@ -194,7 +194,7 @@ that contract is not designed yet.
 `dest` (e.g. `volumes: ["/opt/manager:/app/config"]`).
 
 Validation must reject `config.render` (and render-only `config:`) on
-`uses: docker`. Do not document docker+render samples until a later phase
+`engine: docker`. Do not document docker+render samples until a later phase
 defines host-`dest` + volume semantics.
 
 ---
@@ -232,7 +232,7 @@ env:
 
 steps:
   - name: Validate tag
-    uses: shell
+    engine: shell
     run: |
       case "$INPUT_TAG" in
         ''|*[!A-Za-z0-9._-]*)
@@ -245,7 +245,7 @@ steps:
 
   # ── Deliver: OSS unpack only ──
   - name: Deliver config
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     config:
       source: OSS_CONFIG
@@ -257,7 +257,7 @@ steps:
 
   # ── Render: templates already on disk ──
   - name: Render env
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     config:
       dest: /opt/manager
@@ -274,7 +274,7 @@ steps:
   # Dedicated Compose step (preferred over render on_change).
   # --force-recreate so .env rotations apply; $BUZ_ENV_CHANGED is step-local.
   - name: Compose up
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     registry_secret: ACR_PERSONAL
     run: |
@@ -285,7 +285,7 @@ steps:
     timeout: 15m
 
   - name: Health check
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     run: |
       sleep 12
@@ -308,7 +308,7 @@ OSS bundle layout.
 
 ```yaml
   - name: Render configs
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     config:
       dest: /opt/manager
@@ -342,7 +342,7 @@ One `config:` block cannot declare two dests. Split steps; each step’s
 
 ```yaml
   - name: Render app env
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     config:
       dest: /opt/manager
@@ -355,7 +355,7 @@ One `config:` block cannot declare two dests. Split steps; each step’s
       ls -l "$BUZ_CONFIG_DIR/.env"
 
   - name: Render system conf
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     config:
       dest: /etc/foo
@@ -380,7 +380,7 @@ No `config.git` yet — clone in `run`, then the same render-only step as OSS:
 
 ```yaml
   - name: Clone config repo
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     run: |
       rm -rf /opt/manager
@@ -388,7 +388,7 @@ No `config.git` yet — clone in `run`, then the same render-only step as OSS:
     timeout: 5m
 
   - name: Render env
-    uses: ssh
+    engine: ssh
     host: $deploy_host
     config:
       dest: /opt/manager
@@ -408,7 +408,7 @@ No `config.git` yet — clone in `run`, then the same render-only step as OSS:
 
 ```yaml
   - name: Deliver demo bundle
-    uses: shell
+    engine: shell
     config:
       source: OSS_DEMO
       key_path: config_tpl/demo/$tag
@@ -423,7 +423,7 @@ No `config.git` yet — clone in `run`, then the same render-only step as OSS:
 
 | Item | Why |
 |------|-----|
-| **`render` / render-only on `uses: docker`** | Prepare needs host-visible `dest`; container-only paths undefined — use shell/ssh render + volume mount |
+| **`render` / render-only on `engine: docker`** | Prepare needs host-visible `dest`; container-only paths undefined — use shell/ssh render + volume mount |
 | **`on_change` / `services` auto recreate** | Not required for 2b — see next section |
 | **`config.git`** | Phase **2c** (credentials, clone locus, UI) |
 | Rename `$BUZ_CONFIG_DIR` | Keep for script compatibility |

@@ -160,7 +160,7 @@ Claim payload (Manager → Runner):
 | **Secrets** | Infrastructure → Secrets | (1) `team_shared` + same team, or (2) **Authorized Secrets** / YAML `secrets:`, or (3) step `secrets:` / purpose slots | Allowlist for `${secrets.NAME}`; process env only via `env: KEY: ${secrets.NAME}` (**masked**) |
 | **Registry credentials** | Same Secrets store (JSON) | Step `registry_secret: ${secrets.NAME}` (allowlisted) | `docker login` only |
 | **Variables** | Infrastructure → Variables | Advanced → Variables / YAML `variables:` | Env `$NAME` (**not masked**) |
-| **Hosts** | Infrastructure → Hosts | Step `host` / `host_labels` when `uses: ssh` | SSH params on runner |
+| **Hosts** | Infrastructure → Hosts | Step `host` / `host_labels` when `engine: ssh` | SSH params on runner |
 | **Inline Env** | Pipeline `env:` | Always scoped to that pipeline | Env for every step (**not masked**) |
 | **Trigger inputs** | `on.manual.inputs` / trigger dialog | Per job | Env `$NAME` / `$INPUT_NAME`; **`masking: true` → masked in logs** |
 

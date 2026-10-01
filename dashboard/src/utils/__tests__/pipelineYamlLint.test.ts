@@ -13,7 +13,7 @@ steps:
   - name: one
     run: echo 1
   - name: two
-    uses: docker
+    engine: docker
     image: alpine
     ru: echo typo
 `
@@ -25,8 +25,8 @@ describe('positionForField', () => {
   })
 
   it('finds step field by index', () => {
-    const pos = positionForField(sample, 'steps[1].uses')
-    expect(sample.slice(pos.from, pos.to)).toBe('uses')
+    const pos = positionForField(sample, 'steps[1].engine')
+    expect(sample.slice(pos.from, pos.to)).toBe('engine')
   })
 
   it('highlights typo key from field path', () => {

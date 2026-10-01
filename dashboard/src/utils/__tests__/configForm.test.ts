@@ -94,10 +94,10 @@ describe('detectConfigMode / applyConfigMode', () => {
 
 describe('validateStepConfig', () => {
   it('accepts empty and valid deliver / render-only', () => {
-    expect(validateStepConfig({ uses: 'shell' })).toBeNull()
+    expect(validateStepConfig({ engine: 'shell' })).toBeNull()
     expect(
       validateStepConfig({
-        uses: 'ssh',
+        engine: 'ssh',
         config_source: 'OSS',
         config_key_path: 'cfg/v1',
         config_dest: '/opt/manager',
@@ -105,7 +105,7 @@ describe('validateStepConfig', () => {
     ).toBeNull()
     expect(
       validateStepConfig({
-        uses: 'shell',
+        engine: 'shell',
         config_dest: '/opt/manager',
         config_render: [{ template: 'env.example', output: '.env', mode: '0600', on_missing: 'fail' }],
       }),
@@ -113,15 +113,15 @@ describe('validateStepConfig', () => {
   })
 
   it('rejects dest alone, source without key, render on docker', () => {
-    expect(validateStepConfig({ uses: 'shell', config_dest: '/opt' })?.includes('alone')).toBe(true)
+    expect(validateStepConfig({ engine: 'shell', config_dest: '/opt' })?.includes('alone')).toBe(true)
     expect(
-      validateStepConfig({ uses: 'shell', config_source: 'OSS', config_dest: '/opt' })?.includes(
+      validateStepConfig({ engine: 'shell', config_source: 'OSS', config_dest: '/opt' })?.includes(
         'together',
       ),
     ).toBe(true)
     expect(
       validateStepConfig({
-        uses: 'docker',
+        engine: 'docker',
         config_dest: '/opt',
         config_render: [{ template: 't', output: '.env', mode: '0600', on_missing: 'fail' }],
       })?.includes('render'),

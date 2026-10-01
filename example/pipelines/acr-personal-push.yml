@@ -19,7 +19,7 @@ secrets:
 
 steps:
   - name: Push image
-    uses: shell
+    engine: shell
     secrets: [ACR_PERSONAL]
     registry_secret: ${secrets.ACR_PERSONAL}
     run: |

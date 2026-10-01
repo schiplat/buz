@@ -62,13 +62,13 @@ export function serializeConfigRender(raw: unknown): ConfigRenderRow[] | undefin
   }))
 }
 
-export function stepAllowsConfigRender(uses: string | undefined | null): boolean {
-  const u = (uses || 'shell').trim() || 'shell'
+export function stepAllowsConfigRender(engine: string | undefined | null): boolean {
+  const u = (engine || 'shell').trim() || 'shell'
   return u === 'shell' || u === 'local' || u === 'ssh'
 }
 
-export function stepAllowsConfigDeliver(uses: string | undefined | null): boolean {
-  const u = (uses || 'shell').trim() || 'shell'
+export function stepAllowsConfigDeliver(engine: string | undefined | null): boolean {
+  const u = (engine || 'shell').trim() || 'shell'
   return u === 'shell' || u === 'local' || u === 'ssh' || u === 'docker'
 }
 
@@ -162,13 +162,13 @@ export function serializeConfigForApi(step: {
  */
 export function validateStepConfig(step: {
   name?: string
-  uses?: string | null
+  engine?: string | null
   config_source?: string | null
   config_key_path?: string | null
   config_dest?: string | null
   config_render?: unknown
 }): string | null {
-  const uses = (step.uses || 'shell').trim() || 'shell'
+  const engine = (step.engine || 'shell').trim() || 'shell'
   const source = trimStr(step.config_source)
   const key = trimStr(step.config_key_path)
   const dest = trimStr(step.config_dest)
@@ -178,11 +178,11 @@ export function validateStepConfig(step: {
 
   if (!hasDeliver && !hasRender && !dest) return null
 
-  if (!stepAllowsConfigDeliver(uses) && (hasDeliver || hasRender || dest)) {
+  if (!stepAllowsConfigDeliver(engine) && (hasDeliver || hasRender || dest)) {
     return 'config is only valid for shell, local, ssh, or docker steps'
   }
 
-  if (hasRender && !stepAllowsConfigRender(uses)) {
+  if (hasRender && !stepAllowsConfigRender(engine)) {
     return "config.render is only valid for shell, local, or ssh steps"
   }
 

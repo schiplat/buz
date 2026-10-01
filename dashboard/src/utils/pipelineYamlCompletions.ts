@@ -49,8 +49,8 @@ const CONCURRENCY: Completion[] = [
 const STEP: Completion[] = [
   { label: 'name', type: 'property' },
   { label: 'run', type: 'property', info: 'Shell script / command' },
-  { label: 'uses', type: 'property', info: 'shell | docker | ssh' },
-  { label: 'image', type: 'property', info: 'Docker image (uses: docker)' },
+  { label: 'engine', type: 'property', info: 'shell | docker | ssh' },
+  { label: 'image', type: 'property', info: 'Docker image (engine: docker)' },
   { label: 'volumes', type: 'property', info: 'host:container binds' },
   { label: 'host', type: 'property', info: 'SSH host name(s)' },
   { label: 'host_labels', type: 'property', info: 'SSH host label union' },
@@ -146,8 +146,8 @@ export function createPipelineYamlCompletionSource(opts: PipelineYamlCompletionO
     const section = guessSection(ctx)
     let options: Completion[] = []
 
-    // uses: <cursor>
-    if (/uses\s*:\s*[\w-]*$/.test(before.trimEnd()) || /uses\s*:\s*$/.test(before)) {
+    // engine: <cursor>
+    if (/engine\s*:\s*[\w-]*$/.test(before.trimEnd()) || /engine\s*:\s*$/.test(before)) {
       options = USES_VALUES
     } else if (/\$\{secrets\.[A-Za-z0-9_]*$/.test(before) || /\$\{secrets\.$/.test(before)) {
       options = (opts.secretNames || []).map((name) => ({
