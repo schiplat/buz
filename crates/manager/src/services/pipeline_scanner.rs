@@ -123,7 +123,8 @@ pub async fn upsert_from_yaml(
     let pipeline_name = parsed.name.trim();
     let description = parsed.description.clone().unwrap_or_default();
 
-    let (trigger_type, webhook_path, cron_expr, input_defs) = extract_trigger(&parsed.on);
+    let (trigger_type, webhook_path, webhook_secret, cron_expr, input_defs) =
+        extract_trigger(&parsed.on);
 
     let runner_labels = parsed
         .runner
@@ -214,7 +215,7 @@ pub async fn upsert_from_yaml(
         // Do not force is_active=1 — respect deactivate / UI freeze across rescans.
         sqlx::query(
             "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?,
-             webhook_path = ?, cron_expr = ?, runner_labels = ?, timeout_seconds = ?,
+             webhook_path = ?, webhook_secret = ?, cron_expr = ?, runner_labels = ?, timeout_seconds = ?,
              concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
              concurrency_queue_timeout_seconds = ?,
              owner_group = ?, team_id = ?, input_defs = ?, yaml_path = ?,
@@ -225,6 +226,7 @@ pub async fn upsert_from_yaml(
         .bind(&description)
         .bind(&trigger_type)
         .bind(&webhook_path)
+        .bind(webhook_secret.clone().unwrap_or_default())
         .bind(&cron_expr)
         .bind(&labels_json)
         .bind(timeout_seconds)
@@ -322,16 +324,17 @@ pub async fn upsert_from_yaml(
 
         sqlx::query(
             "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path,
-             cron_expr, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
+             webhook_secret, cron_expr, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
              concurrency_max_queue, concurrency_queue_timeout_seconds,
              owner_group, team_id, source, yaml_path, input_defs, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, 1)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, 1)",
         )
         .bind(&id)
         .bind(pipeline_name)
         .bind(&description)
         .bind(&trigger_type)
         .bind(&webhook_path)
+        .bind(webhook_secret.clone().unwrap_or_default())
         .bind(&cron_expr)
         .bind(&labels_json)
         .bind(timeout_seconds)
@@ -1061,16 +1064,18 @@ pub async fn yaml_sync_status(
 }
 
 /// Extract trigger information from the YAML `on` block.
+/// Tuple order: (trigger_type, webhook_path, webhook_secret, cron_expr, input_defs).
 fn extract_trigger(
     on: &Option<TriggerYaml>,
 ) -> (
     String,
     Option<String>,
     Option<String>,
+    Option<String>,
     Vec<PipelineInputDef>,
 ) {
     let Some(on) = on else {
-        return ("manual".into(), None, None, vec![]);
+        return ("manual".into(), None, None, None, vec![]);
     };
 
     if let Some(ref manual) = on.manual {
@@ -1092,18 +1097,24 @@ fn extract_trigger(
                     .collect()
             })
             .unwrap_or_default();
-        return ("manual".into(), None, None, input_defs);
+        return ("manual".into(), None, None, None, input_defs);
     }
 
     if let Some(ref webhook) = on.webhook {
-        return ("webhook".into(), webhook.path.clone(), None, vec![]);
+        let secret = webhook
+            .secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        return ("webhook".into(), webhook.path.clone(), secret, None, vec![]);
     }
 
     if let Some(ref cron) = on.cron {
-        return ("cron".into(), None, cron.schedule.clone(), vec![]);
+        return ("cron".into(), None, None, cron.schedule.clone(), vec![]);
     }
 
-    ("manual".into(), None, None, vec![])
+    ("manual".into(), None, None, None, vec![])
 }
 
 fn parse_concurrency_timeout_seconds(raw: Option<&str>) -> i64 {

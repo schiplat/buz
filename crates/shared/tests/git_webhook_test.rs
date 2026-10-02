@@ -2,7 +2,7 @@
 
 use shared::git_webhook::{
     branch_matches, has_skip_ci, parse_gitee_event, parse_github_event, resolve_delivery_id,
-    verify_gitee_token, verify_github_signature, NormalizedGitEvent,
+    verify_gitee_token, verify_github_signature, verify_hex_hmac_sha256, NormalizedGitEvent,
 };
 
 #[test]
@@ -17,6 +17,40 @@ fn github_signature_roundtrip() {
     assert!(verify_github_signature(secret, body, &sig));
     assert!(!verify_github_signature(secret, body, "sha256=deadbeef"));
     assert!(!verify_github_signature("other", body, &sig));
+}
+
+#[test]
+fn generic_hex_hmac_verify() {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let secret = "buz-webhook-key";
+    let body = br#"{"inputs":{"version":"1.2"}}"#;
+    let sign = |key: &str, payload: &[u8]| {
+        let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).expect("hmac key");
+        mac.update(payload);
+        format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+    };
+
+    // valid signature
+    assert!(verify_hex_hmac_sha256(secret, body, &sign(secret, body)));
+    // tampered body
+    assert!(!verify_hex_hmac_sha256(
+        secret,
+        br#"{"inputs":{"version":"9.9"}}"#,
+        &sign(secret, body)
+    ));
+    // wrong secret
+    assert!(!verify_hex_hmac_sha256(secret, body, &sign("other", body)));
+    // missing prefix / garbage
+    assert!(!verify_hex_hmac_sha256(secret, body, "deadbeef"));
+    assert!(!verify_hex_hmac_sha256(secret, body, "sha256=not-hex!"));
+    assert!(!verify_hex_hmac_sha256(secret, body, ""));
+    // uppercase prefix accepted
+    let upper = format!(
+        "SHA256={}",
+        sign(secret, body).trim_start_matches("sha256=")
+    );
+    assert!(verify_hex_hmac_sha256(secret, body, &upper));
 }
 
 #[test]

@@ -277,12 +277,25 @@ Accepts POST requests at `/api/v1/hooks/{path}`.
 on:
   webhook:
     path: deploy-prod      # URL path segment — /api/v1/hooks/deploy-prod
+    secret: DEPLOY_HOOK_KEY  # optional team secret name → HMAC verification
 ```
 
 | | |
 |---|---|
 | YAML | `webhook.path: my-pipeline` |
 | Form | Webhook Config → URL Path |
+
+**Optional HMAC verification** — when `secret` names a team secret, callers must sign the raw body:
+
+```bash
+SIG="sha256=$(printf '%s' '{"inputs":{"version":"1.2"}}' | openssl dgst -sha256 -hmac "$DEPLOY_HOOK_KEY" -hex | awk '{print $2}')"
+curl -X POST "https://manager.example.com/api/v1/hooks/deploy-prod" \
+  -H "Content-Type: application/json" \
+  -H "X-Buz-Signature: $SIG" \
+  -d '{"inputs":{"version":"1.2"}}'
+```
+
+Requests without a valid `X-Buz-Signature: sha256=<hex>` header are rejected with 401. Only the secret *name* is stored on the pipeline; the value is resolved (and rotated) via the team's Secrets.
 
 > **GitHub / Gitee push triggers** do **not** add YAML fields. Configure URL + Secret in the Pipeline UI; the adapter injects `INPUT_GIT_*` at job creation. See [Git Webhook Triggers](/docs/01-architecture/authoring/git-webhook-triggers/).
 

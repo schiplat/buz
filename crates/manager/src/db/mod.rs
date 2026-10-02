@@ -92,6 +92,11 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
 
+    // Add webhook_secret column (bare team secret name; empty = no verification)
+    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN webhook_secret TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
+
     // Add is_frozen column to runners table (safe to fail if already present)
     let _ = sqlx::query("ALTER TABLE runners ADD COLUMN is_frozen INTEGER NOT NULL DEFAULT 0")
         .execute(pool)
@@ -135,7 +140,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
     let _ = sqlx::query(
-        "ALTER TABLE runners ADD COLUMN ssh_host_key_policy TEXT NOT NULL DEFAULT 'insecure'",
+        "ALTER TABLE runners ADD COLUMN ssh_host_key_policy TEXT NOT NULL DEFAULT 'known_hosts'",
     )
     .execute(pool)
     .await;

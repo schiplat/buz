@@ -116,8 +116,8 @@ pub struct EngineConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SshHostKeyPolicy {
-    #[default]
     Insecure,
+    #[default]
     KnownHosts,
 }
 
@@ -128,7 +128,9 @@ impl Default for EngineConfig {
             ssh_enabled: true,
             docker_enabled: false,
             wasm_enabled: false,
-            ssh_host_key_policy: SshHostKeyPolicy::Insecure,
+            // Secure by default: verify host keys against known_hosts
+            // (~/.ssh/known_hosts when no explicit path is set).
+            ssh_host_key_policy: SshHostKeyPolicy::KnownHosts,
             ssh_known_hosts_path: None,
         }
     }

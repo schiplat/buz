@@ -404,7 +404,7 @@ team: default   # or another existing team slug; omit → default
 
 ### SSH host keys (production)
 
-Default UI policy is `insecure` (accept any server key) for lab convenience. For production, set **SSH host key** to `known_hosts` in Manager UI → Runners. Optionally point the local file in `runner.toml`:
+New runners default to `known_hosts` (secure since v1.6): server keys are verified against the runner's known_hosts file, defaulting to `~/.ssh/known_hosts` — add your hosts once via `ssh-keyscan` or a first manual `ssh`. Runners created before v1.6 keep their stored `insecure` value; flip them in Manager UI → Runners if you want verification. To point at a specific file, set it in `runner.toml`:
 
 ```toml
 [engine]

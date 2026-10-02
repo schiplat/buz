@@ -53,7 +53,7 @@ Create or edit a Runner under **Runners** in the web UI.
 | `ssh_enabled` | `true` | Allow `ssh` steps |
 | `docker_enabled` | `false` | Allow `engine: docker` steps (`docker run --rm` per step) |
 | `wasm_enabled` | `false` | Allow WASM steps (reserved) |
-| `ssh_host_key_policy` | `insecure` | `insecure` (accept any) or `known_hosts` |
+| `ssh_host_key_policy` | `known_hosts` | `insecure` (accept any) or `known_hosts` — **secure default since v1.6**; existing rows keep their stored value |
 
 ## How policy is delivered
 

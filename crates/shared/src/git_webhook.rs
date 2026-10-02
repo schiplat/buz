@@ -53,8 +53,9 @@ impl NormalizedGitEvent {
     }
 }
 
-/// Verify GitHub `X-Hub-Signature-256: sha256=<hex>`.
-pub fn verify_github_signature(secret: &str, body: &[u8], signature_header: &str) -> bool {
+/// Verify an HMAC-SHA256 signature header of the form `sha256=<hex>` over `body`.
+/// Constant-time via `hmac::Mac::verify_slice`.
+pub fn verify_hex_hmac_sha256(secret: &str, body: &[u8], signature_header: &str) -> bool {
     let Some(hex_sig) = signature_header
         .strip_prefix("sha256=")
         .or_else(|| signature_header.strip_prefix("SHA256="))
@@ -69,6 +70,11 @@ pub fn verify_github_signature(secret: &str, body: &[u8], signature_header: &str
     };
     mac.update(body);
     mac.verify_slice(&sig_bytes).is_ok()
+}
+
+/// Verify GitHub `X-Hub-Signature-256: sha256=<hex>`.
+pub fn verify_github_signature(secret: &str, body: &[u8], signature_header: &str) -> bool {
+    verify_hex_hmac_sha256(secret, body, signature_header)
 }
 
 /// Verify Gitee webhook password via `X-Gitee-Token` (constant-time-ish compare).

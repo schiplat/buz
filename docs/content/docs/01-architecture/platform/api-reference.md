@@ -158,7 +158,7 @@ Request:
 }
 ```
 
-Policy fields are optional. Defaults: `max_concurrent_jobs=1`, cleanup off, shell+ssh on, docker+wasm off, `ssh_host_key_policy=insecure`.
+Policy fields are optional. Defaults: `max_concurrent_jobs=1`, cleanup off, shell+ssh on, docker+wasm off, `ssh_host_key_policy=known_hosts`.
 
 Response:
 ```json
@@ -201,6 +201,13 @@ Request:
   "version": "1.3.0"
 }
 ```
+
+**Re-registration** (the runner row already holds a JWT) requires proof of identity — knowing the name alone is rejected:
+
+- `Authorization: Bearer <previous runner JWT>` — the agent persists its JWT and presents it on restart; expiry is ignored (refresh semantics), or
+- a matching **admin-reissued** `register_token` (recovery path after the cached JWT is lost or `jwt_secret` was rotated: delete + re-create the runner, or reset its register token in the DB).
+
+Standalone mode keeps its loopback trust boundary for authorized names.
 
 Response:
 ```json

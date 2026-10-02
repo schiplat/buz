@@ -93,8 +93,31 @@ pub(crate) fn normalize_max_concurrent(v: Option<u32>) -> Result<u32, AppError> 
     Ok(n)
 }
 
+/// Re-registration proof: a Bearer token that is a signature-valid runner JWT
+/// (expiry ignored — refresh semantics) whose `sub` matches the runner row.
+/// Knowing the runner name alone is never enough to obtain a fresh JWT.
+fn bearer_proves_runner(
+    headers: &axum::http::HeaderMap,
+    jwt_secret: &str,
+    runner_id: &str,
+) -> bool {
+    let Some(bearer) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    else {
+        return false;
+    };
+    match TokenManager::new(jwt_secret).verify_ignoring_exp(bearer) {
+        Ok(claims) => claims.role == shared::auth::Role::Runner && claims.sub == runner_id,
+        Err(_) => false,
+    }
+}
+
 pub(crate) fn normalize_ssh_host_key_policy(v: Option<String>) -> Result<String, AppError> {
-    let p = v.unwrap_or_else(|| "insecure".into());
+    let p = v.unwrap_or_else(|| "known_hosts".into());
     match p.as_str() {
         "insecure" | "known_hosts" => Ok(p),
         _ => Err(AppError::ValidationFailed(
@@ -139,10 +162,10 @@ async fn load_runner_policy(
         wasm_enabled: i64_bool(row.get(5)),
         ssh_host_key_policy: {
             let p: String = row.get(6);
-            if p == "known_hosts" {
+            if p == "insecure" {
                 p
             } else {
-                "insecure".into()
+                "known_hosts".into()
             }
         },
     })
@@ -317,6 +340,7 @@ fn peer_is_loopback(peer: Option<SocketAddr>) -> bool {
 pub async fn register(
     ClientAddr(peer): ClientAddr,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Json<ApiResponse<RegisterResponse>>, AppError> {
     let name = req.name.trim();
@@ -346,6 +370,7 @@ pub async fn register(
 
     if let Some(ref row) = existing {
         let existing_token: Option<String> = row.get(2);
+        let row_id: String = row.get(0);
 
         if existing_token.as_ref().is_none_or(|t| t.is_empty()) {
             // First-time registration — must match the one-shot register_token.
@@ -370,10 +395,36 @@ pub async fn register(
                     ));
                 }
             }
+        } else {
+            // Re-registration (runner already holds a JWT). Identity must be
+            // proven — knowing the runner NAME alone must not be enough:
+            //   (a) standalone + loopback trust boundary, or
+            //   (b) Bearer = the runner's previous JWT (signature valid,
+            //       expiry ignored, role Runner, sub matches this runner), or
+            //   (c) an admin-issued register_token (stored value must match —
+            //       recovery path after the cached JWT is lost or the
+            //       jwt_secret was rotated).
+            let authorized = if standalone && loopback {
+                true
+            } else {
+                bearer_proves_runner(&headers, &state.config.auth.jwt_secret, &row_id) || {
+                    let stored_rt: String = row.get(1);
+                    !register_token.is_empty() && stored_rt == register_token
+                }
+            };
+            if !authorized {
+                tracing::warn!(
+                    runner = %name,
+                    ?peer,
+                    "Runner re-registration rejected: no valid bearer JWT or register token"
+                );
+                return Err(AppError::AuthFailed(
+                    "invalid register token or runner name".into(),
+                ));
+            }
         }
-        // else: re-registration — runner already has a JWT; allow without re-checking register_token.
 
-        runner_id = row.get(0);
+        runner_id = row_id;
     } else {
         if standalone && loopback {
             tracing::warn!(
@@ -1887,10 +1938,10 @@ pub async fn list_runners(
                 wasm_enabled: i64_bool(r.get(13)),
                 ssh_host_key_policy: {
                     let p: String = r.get(14);
-                    if p == "known_hosts" {
+                    if p == "insecure" {
                         p
                     } else {
-                        "insecure".into()
+                        "known_hosts".into()
                     }
                 },
             };
@@ -2283,3 +2334,7 @@ mod config_path_tests;
 #[cfg(test)]
 #[path = "tests/runner_create_tests.rs"]
 mod create_tests;
+
+#[cfg(test)]
+#[path = "tests/runner_reregister_tests.rs"]
+mod reregister_tests;

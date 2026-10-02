@@ -24,18 +24,19 @@ fn rejects_empty_new() {
 #[test]
 fn rejects_short_new() {
     let err = validate_change_password(&ChangePasswordRequest {
-        current_password: "oldpass".into(),
+        current_password: "Oldpass1!".into(),
         new_password: "abc".into(),
     })
     .unwrap_err();
-    assert!(err.to_string().contains("at least 6"));
+    // Same complexity policy as setup (>= 8 chars + character classes).
+    assert!(err.to_string().contains("at least 8"));
 }
 
 #[test]
 fn rejects_same_as_current() {
     let err = validate_change_password(&ChangePasswordRequest {
-        current_password: "samepass".into(),
-        new_password: "samepass".into(),
+        current_password: "Samepass1!".into(),
+        new_password: "Samepass1!".into(),
     })
     .unwrap_err();
     assert!(err.to_string().contains("differ"));
@@ -44,8 +45,8 @@ fn rejects_same_as_current() {
 #[test]
 fn accepts_valid_pair() {
     assert!(validate_change_password(&ChangePasswordRequest {
-        current_password: "oldpass".into(),
-        new_password: "newpass1".into(),
+        current_password: "Oldpass1!".into(),
+        new_password: "Newpass2!".into(),
     })
     .is_ok());
 }

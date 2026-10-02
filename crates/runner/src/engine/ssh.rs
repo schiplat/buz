@@ -443,16 +443,12 @@ async fn connect_authenticated(conn: &SshConnectionParams) -> anyhow::Result<Ssh
                 )
             })?;
 
-            let first_50 = if key_data.len() > 50 {
-                &key_data[..50]
-            } else {
-                key_data
-            };
-            tracing::info!(
-                "SSH key for {}@{}: first 50 chars = {:?}",
+            // Log length only — key material never enters logs, even truncated.
+            tracing::debug!(
+                "SSH key for {}@{}: {} bytes",
                 conn.username,
                 addr,
-                first_50
+                key_data.len()
             );
 
             let tmp_path = std::env::temp_dir()

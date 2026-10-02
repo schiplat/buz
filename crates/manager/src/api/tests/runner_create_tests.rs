@@ -26,7 +26,7 @@ async fn test_pool() -> sqlx::SqlitePool {
             ssh_enabled INTEGER NOT NULL DEFAULT 1,
             docker_enabled INTEGER NOT NULL DEFAULT 0,
             wasm_enabled INTEGER NOT NULL DEFAULT 0,
-            ssh_host_key_policy TEXT NOT NULL DEFAULT 'insecure',
+            ssh_host_key_policy TEXT NOT NULL DEFAULT 'known_hosts',
             last_seen TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))

@@ -304,10 +304,7 @@ async fn claim_applies_environment_overrides_bound_keys_only() {
         .unwrap()
         .to_string();
 
-    for (vid, val) in [
-        (&bound_id, "myteam/staging"),
-        (&unbound_id, "injected-bad"),
-    ] {
+    for (vid, val) in [(&bound_id, "myteam/staging"), (&unbound_id, "injected-bad")] {
         let r = json_req(
             &app,
             "PUT",

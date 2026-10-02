@@ -194,6 +194,11 @@ pub struct InputDef {
 pub struct WebhookTriggerYaml {
     #[serde(default)]
     pub path: Option<String>,
+    /// Optional bare team secret name. When set, webhook requests must carry
+    /// `X-Buz-Signature: sha256=<hex HMAC-SHA256 of the raw body>`.
+    /// Only the name is stored; the value is resolved at trigger time.
+    #[serde(default)]
+    pub secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1008,6 +1013,22 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
 
         if trigger_count > 1 {
             warnings.push("Multiple trigger types defined — only the first will be used".into());
+        }
+
+        // 4b. on.webhook.secret — bare team secret name enabling HMAC verification
+        if let Some(secret) = on
+            .webhook
+            .as_ref()
+            .and_then(|w| w.secret.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if let Err(msg) = crate::secret_kind::validate_secret_name(secret) {
+                errors.push(YamlValidationError {
+                    field: "on.webhook.secret".into(),
+                    message: msg,
+                });
+            }
         }
     }
 

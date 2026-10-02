@@ -80,6 +80,15 @@ async fn run_loop(config: config::Config) -> anyhow::Result<()> {
 
     let register = client::register::register_with_center(&http_client, &config).await?;
     let runner_token = register.token;
+    // Persist for the next restart: re-registration proves identity with this
+    // JWT (the one-shot register_token is consumed after first use).
+    if let Err(e) = client::register::cache_token(&config, &runner_token) {
+        tracing::warn!(
+            error = %e,
+            "failed to cache runner token — next restart will need a fresh register_token \
+             unless the Manager still accepts the current JWT"
+        );
+    }
     let shared_policy = policy::new_shared(register.policy);
     tracing::info!(
         max_concurrent = policy::max_concurrent(&shared_policy),

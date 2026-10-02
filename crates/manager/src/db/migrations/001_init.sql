@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS runners (
     ssh_enabled INTEGER NOT NULL DEFAULT 1,
     docker_enabled INTEGER NOT NULL DEFAULT 0,
     wasm_enabled INTEGER NOT NULL DEFAULT 0,
-    ssh_host_key_policy TEXT NOT NULL DEFAULT 'insecure',
+    ssh_host_key_policy TEXT NOT NULL DEFAULT 'known_hosts',
     last_seen TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS pipelines (
     description TEXT NOT NULL DEFAULT '',
     trigger_type TEXT NOT NULL DEFAULT 'manual',
     webhook_path TEXT UNIQUE,
+    webhook_secret TEXT NOT NULL DEFAULT '',
     cron_expr TEXT,
     runner_labels TEXT NOT NULL DEFAULT '[]',
     timeout_seconds INTEGER NOT NULL DEFAULT 3600,

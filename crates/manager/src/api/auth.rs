@@ -237,10 +237,8 @@ pub(crate) fn validate_change_password(req: &ChangePasswordRequest) -> Result<()
             "new_password is required".into(),
         ));
     }
-    if req.new_password.len() < 6 {
-        return Err(AppError::ValidationFailed(
-            "new_password must be at least 6 characters".into(),
-        ));
+    if let Err(msg) = validate_password_complexity(&req.new_password) {
+        return Err(AppError::ValidationFailed(msg));
     }
     if req.current_password == req.new_password {
         return Err(AppError::ValidationFailed(

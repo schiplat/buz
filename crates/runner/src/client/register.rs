@@ -8,6 +8,34 @@ pub struct RegisterResult {
     pub policy: RunnerPolicyConfig,
 }
 
+/// Local cache of the runner JWT, persisted so a restart can prove identity on
+/// re-registration (the one-shot register_token is cleared after first use).
+fn token_cache_path(config: &Config) -> std::path::PathBuf {
+    std::path::Path::new(&config.runner.workspace_dir).join("runner-token")
+}
+
+pub fn load_cached_token(config: &Config) -> Option<String> {
+    let path = token_cache_path(config);
+    std::fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+pub fn cache_token(config: &Config, token: &str) -> anyhow::Result<()> {
+    let path = token_cache_path(config);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, token)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 pub async fn register_with_center(
     client: &Client,
     config: &Config,
@@ -20,8 +48,16 @@ pub async fn register_with_center(
         version: Some(config.runner.version().into()),
     };
 
+    // Present the previous JWT (if any) so re-registration passes the identity
+    // check even though the one-shot register_token is long consumed.
+    let cached = load_cached_token(config);
+
     let url = format!("{}/api/v1/runners/register", config.runner.manager_url);
-    let resp = client.post(&url).json(&req).send().await.map_err(|e| {
+    let mut builder = client.post(&url).json(&req);
+    if let Some(bearer) = cached.as_deref() {
+        builder = builder.bearer_auth(bearer);
+    }
+    let resp = builder.send().await.map_err(|e| {
         super::friendly_reqwest_error(e, &config.runner.manager_url, "Registration failed")
     })?;
 
