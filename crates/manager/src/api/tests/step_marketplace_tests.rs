@@ -1,0 +1,224 @@
+//! Step marketplace smoke (ADR Phase 1): a pipeline step referencing a
+//! local-index template resolves and locks at save time. Covers the happy
+//! path end-to-end over the HTTP API plus the two main authoring errors.
+
+use axum::{
+    body::Body,
+    http::{header::AUTHORIZATION, Request, StatusCode},
+    Router,
+};
+use http_body_util::BodyExt;
+use shared::auth::{Role, TokenManager};
+use sqlx::sqlite::SqlitePoolOptions;
+use tower::ServiceExt;
+
+use crate::api;
+use crate::config::{AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig};
+use crate::db::run_migrations;
+use crate::services::log_broadcast::LogBroadcaster;
+use crate::state::AppState;
+
+const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
+const ADMIN_ID: &str = "admin-1";
+
+async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, sqlx::SqlitePool) {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+
+    sqlx::query(
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
+         VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+    )
+    .bind(ADMIN_ID)
+    .bind("boss")
+    .bind("boss")
+    .execute(&pool)
+    .await
+    .expect("seed user");
+    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
+        .execute(&pool)
+        .await
+        .expect("seed team");
+
+    let mut config = Config {
+        server: ServerConfig::default(),
+        database: Default::default(),
+        auth: AuthConfig {
+            jwt_secret: JWT_SECRET.into(),
+            jwt_ttl_hours: 24,
+            runner_register_token_ttl_hours: 24,
+        },
+        runner: RunnerConfig::default(),
+        pipeline: PipelineConfig::default(),
+        standalone: Default::default(),
+        step_index: Default::default(),
+        clock: Default::default(),
+        logging: Default::default(),
+    };
+    config.step_index.local_dir = index_dir.to_string_lossy().into_owned();
+
+    let state = AppState {
+        pool: pool.clone(),
+        config,
+        log_broadcast: LogBroadcaster::new(),
+    };
+    (Router::new().nest("/api/v1", api::router(state)), pool)
+}
+
+fn feishu_spec() -> String {
+    r#"
+id: notify/feishu
+version: 1.2.0
+engine: shell
+inputs:
+  webhook:
+    type: string
+    required: true
+    masking: true
+run: |
+  curl -fsSL -X POST "$INPUT_WEBHOOK" -d '{}'
+"#
+    .into()
+}
+
+fn create_payload(steps: &str) -> String {
+    format!(
+        r#"{{
+        "name": "uses-smoke",
+        "trigger_type": "manual",
+        "runner_labels": ["linux-x64"],
+        "team_id": "team-1",
+        "steps": {steps}
+    }}"#
+    )
+}
+
+async fn create_pipeline(app: &Router, jwt: &str, steps: &str) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/pipelines")
+                .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(create_payload(steps)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = read_json(resp).await;
+    (status, body)
+}
+
+async fn read_json(response: axum::response::Response) -> serde_json::Value {
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("read body")
+        .to_bytes();
+    serde_json::from_slice(&body)
+        .unwrap_or_else(|e| panic!("json body ({}): {e}", String::from_utf8_lossy(&body)))
+}
+
+#[tokio::test]
+async fn uses_step_resolves_expands_and_locks_provenance() {
+    let index = tempfile::tempdir().unwrap();
+    std::fs::write(index.path().join("feishu.yaml"), feishu_spec()).unwrap();
+    let (app, pool) = test_app_with_index(index.path()).await;
+    let jwt = TokenManager::new(JWT_SECRET)
+        .create_token(ADMIN_ID, Role::Admin, 1)
+        .unwrap();
+
+    let (status, body) = create_pipeline(
+        &app,
+        &jwt,
+        r#"[{ "name": "notify",
+              "uses": "notify/feishu@1.2",
+              "with": { "webhook": "${secrets.FEISHU}" } }]"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let pipeline_id = body["data"]["id"]
+        .as_str()
+        .expect("pipeline id")
+        .to_string();
+
+    // Stored task is the expanded template: concrete run + INPUT_* env.
+    let (command, step_env): (String, String) =
+        sqlx::query_as("SELECT command_template, step_env FROM tasks WHERE pipeline_id = ?")
+            .bind(&pipeline_id)
+            .fetch_one(&pool)
+            .await
+            .expect("task row");
+    assert!(command.contains("INPUT_WEBHOOK"), "command: {command}");
+    assert!(step_env.contains("INPUT_WEBHOOK"), "step_env: {step_env}");
+
+    // Provenance row locks the resolution (per-pipeline, ADR §6.4).
+    let (uses_ref, version, hash, source): (String, String, String, String) = sqlx::query_as(
+        "SELECT uses_ref, resolved_version, content_sha256, source
+         FROM step_resolutions WHERE pipeline_id = ?",
+    )
+    .bind(&pipeline_id)
+    .fetch_one(&pool)
+    .await
+    .expect("provenance row");
+    assert_eq!(uses_ref, "notify/feishu@1.2");
+    assert_eq!(version, "1.2.0");
+    assert_eq!(hash.len(), 64);
+    assert!(source.starts_with("local:"), "{source}");
+}
+
+#[tokio::test]
+async fn unknown_or_unsatisfiable_uses_are_rejected_at_save() {
+    let index = tempfile::tempdir().unwrap();
+    std::fs::write(index.path().join("feishu.yaml"), feishu_spec()).unwrap();
+    let (app, _pool) = test_app_with_index(index.path()).await;
+    let jwt = TokenManager::new(JWT_SECRET)
+        .create_token(ADMIN_ID, Role::Admin, 1)
+        .unwrap();
+
+    // Unknown step id → explicit not-in-index error, no pipeline created.
+    let (status, body) = create_pipeline(
+        &app,
+        &jwt,
+        r#"[{ "name": "notify", "uses": "notify/absent@1" }]"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("not found in local step index"),
+        "{body}"
+    );
+
+    // Missing required input → save-time error naming the input.
+    let (status, body) = create_pipeline(
+        &app,
+        &jwt,
+        r#"[{ "name": "notify", "uses": "notify/feishu@1.2" }]"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("missing required input 'webhook'"),
+        "{body}"
+    );
+
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pipelines WHERE name = 'uses-smoke'")
+        .fetch_one(&_pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "failed saves must not leave a pipeline behind");
+}

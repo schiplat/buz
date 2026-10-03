@@ -165,38 +165,56 @@ pub async fn create(
     .execute(&state.pool)
     .await?;
 
-    // Insert step definitions (uses: steps resolved + locked first)
-    let steps = insert_steps(
-        &state.pool,
-        &pipeline_id,
-        &crate::services::step_resolver::resolve_uses_steps(
+    // Steps / env / bindings are inserted after the pipeline row. If any of
+    // them fails (e.g. a `uses:` step that cannot resolve), clean up so a
+    // failed save never leaves a half-created pipeline behind.
+    let create_result = async {
+        // Insert step definitions (uses: steps resolved + locked first)
+        let steps = insert_steps(
             &state.pool,
             &pipeline_id,
-            req.steps,
-            &crate::services::step_resolver::local_step_index_dir(
-                &state.config.pipeline.yaml_scan_dir,
-                &state.config.step_index.local_dir,
-            ),
+            &crate::services::step_resolver::resolve_uses_steps(
+                &state.pool,
+                &pipeline_id,
+                req.steps,
+                &crate::services::step_resolver::local_step_index_dir(
+                    &state.config.pipeline.yaml_scan_dir,
+                    &state.config.step_index.local_dir,
+                ),
+            )
+            .await
+            .map_err(AppError::ValidationFailed)?,
         )
-        .await
-        .map_err(AppError::ValidationFailed)?,
-    )
-    .await?;
+        .await?;
 
-    // Insert env variables
-    if let Some(envs) = &req.env {
-        insert_env_vars(&state.pool, &pipeline_id, envs).await?;
-    }
+        // Insert env variables
+        if let Some(envs) = &req.env {
+            insert_env_vars(&state.pool, &pipeline_id, envs).await?;
+        }
 
-    // Insert explicit secret bindings
-    if let Some(secret_ids) = &req.secret_ids {
-        insert_pipeline_secret_bindings(&state.pool, &pipeline_id, secret_ids).await?;
-    }
+        // Insert explicit secret bindings
+        if let Some(secret_ids) = &req.secret_ids {
+            insert_pipeline_secret_bindings(&state.pool, &pipeline_id, secret_ids).await?;
+        }
 
-    // Insert explicit variable bindings
-    if let Some(var_ids) = &req.var_ids {
-        insert_pipeline_var_bindings(&state.pool, &pipeline_id, var_ids).await?;
+        // Insert explicit variable bindings
+        if let Some(var_ids) = &req.var_ids {
+            insert_pipeline_var_bindings(&state.pool, &pipeline_id, var_ids).await?;
+        }
+        Ok(steps)
     }
+    .await;
+
+    let steps = match create_result {
+        Ok(steps) => steps,
+        Err(e) => {
+            let _ = sqlx::query("DELETE FROM pipelines WHERE id = ?")
+                .bind(&pipeline_id)
+                .execute(&state.pool)
+                .await;
+            return Err(e);
+        }
+    };
 
     tracing::info!("Pipeline created: {} ({pipeline_id})", req.name);
 

@@ -50,6 +50,12 @@ const STEP: Completion[] = [
   { label: 'name', type: 'property' },
   { label: 'run', type: 'property', info: 'Shell script / command' },
   { label: 'engine', type: 'property', info: 'shell | docker | ssh' },
+  {
+    label: 'uses',
+    type: 'property',
+    info: 'Step template ref: <namespace>/<id>@<pin> (local step index)',
+  },
+  { label: 'with', type: 'property', info: 'inputs for a uses: step → INPUT_*' },
   { label: 'image', type: 'property', info: 'Docker image (engine: docker)' },
   { label: 'volumes', type: 'property', info: 'host:container binds' },
   { label: 'host', type: 'property', info: 'SSH host name(s)' },

@@ -287,3 +287,7 @@ mod environment_approval_integration_tests;
 #[cfg(test)]
 #[path = "tests/jobs_stats_tests.rs"]
 mod jobs_stats_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/step_marketplace_tests.rs"]
+mod step_marketplace_integration_tests;

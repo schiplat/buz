@@ -701,6 +701,9 @@ pub struct TestHostResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepDef {
     pub name: String,
+    /// Step script/command. Empty for `uses:` steps — the resolver fills it
+    /// from the referenced template before the task is stored.
+    #[serde(default)]
     pub run: String,
     pub engine: Option<String>,
     /// Marketplace reference (`<namespace>/<step-id>@<pin>`). Set only by
