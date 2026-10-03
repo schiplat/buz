@@ -177,6 +177,7 @@ pub async fn upsert_from_yaml(
                 run: s.run.clone().unwrap_or_default(),
                 engine: s.engine.clone(),
                 uses: s.uses.clone(),
+                with: s.with.clone(),
                 image: s.image.clone(),
                 volumes: s.volumes.clone(),
                 host: s.host.clone(),
@@ -263,6 +264,16 @@ pub async fn upsert_from_yaml(
             .execute(pool)
             .await?;
 
+        let index_dir = std::path::Path::new(file_path)
+            .parent()
+            .map(|parent| {
+                crate::services::step_resolver::local_step_index_dir(&parent.to_string_lossy(), "")
+            })
+            .unwrap_or_else(|| crate::services::step_resolver::local_step_index_dir(".", ""));
+        let steps =
+            crate::services::step_resolver::resolve_uses_steps(pool, &id, steps, &index_dir)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
         insert_steps(pool, &id, &steps).await?;
         tracing::debug!("YAML scanner: updated pipeline {pipeline_name} ({id})");
 
@@ -352,6 +363,16 @@ pub async fn upsert_from_yaml(
         .execute(pool)
         .await?;
 
+        let index_dir = std::path::Path::new(file_path)
+            .parent()
+            .map(|parent| {
+                crate::services::step_resolver::local_step_index_dir(&parent.to_string_lossy(), "")
+            })
+            .unwrap_or_else(|| crate::services::step_resolver::local_step_index_dir(".", ""));
+        let steps =
+            crate::services::step_resolver::resolve_uses_steps(pool, &id, steps, &index_dir)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
         insert_steps(pool, &id, &steps).await?;
 
         if let Some(ref envs) = parsed.env {

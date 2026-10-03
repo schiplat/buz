@@ -8,4 +8,5 @@ pub mod notify;
 pub mod pipeline_scanner;
 pub mod runner_monitor;
 pub mod scheduler;
+pub mod step_resolver;
 pub mod yaml_validate;

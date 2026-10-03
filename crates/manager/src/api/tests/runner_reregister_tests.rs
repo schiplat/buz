@@ -43,6 +43,7 @@ fn production_config() -> Config {
             enabled: false,
             auto_approve: vec![],
         },
+        step_index: Default::default(),
         clock: Default::default(),
         logging: Default::default(),
     }

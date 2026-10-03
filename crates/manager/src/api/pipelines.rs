@@ -165,8 +165,23 @@ pub async fn create(
     .execute(&state.pool)
     .await?;
 
-    // Insert step definitions
-    let steps = insert_steps(&state.pool, &pipeline_id, &req.steps).await?;
+    // Insert step definitions (uses: steps resolved + locked first)
+    let steps = insert_steps(
+        &state.pool,
+        &pipeline_id,
+        &crate::services::step_resolver::resolve_uses_steps(
+            &state.pool,
+            &pipeline_id,
+            req.steps,
+            &crate::services::step_resolver::local_step_index_dir(
+                &state.config.pipeline.yaml_scan_dir,
+                &state.config.step_index.local_dir,
+            ),
+        )
+        .await
+        .map_err(AppError::ValidationFailed)?,
+    )
+    .await?;
 
     // Insert env variables
     if let Some(envs) = &req.env {
@@ -470,7 +485,22 @@ pub async fn update(
         .execute(&state.pool)
         .await?;
 
-    let steps = insert_steps(&state.pool, &id, &req.steps).await?;
+    let steps = insert_steps(
+        &state.pool,
+        &id,
+        &crate::services::step_resolver::resolve_uses_steps(
+            &state.pool,
+            &id,
+            req.steps,
+            &crate::services::step_resolver::local_step_index_dir(
+                &state.config.pipeline.yaml_scan_dir,
+                &state.config.step_index.local_dir,
+            ),
+        )
+        .await
+        .map_err(AppError::ValidationFailed)?,
+    )
+    .await?;
 
     if let Some(envs) = &req.env {
         insert_env_vars(&state.pool, &id, envs).await?;

@@ -56,3 +56,8 @@ yaml_scan_interval_seconds = 30
 [logging]
 level = "info"
 # file = "./logs/manager.log"
+
+[step_index]
+# Local step-template dir for `uses:` marketplace references.
+# Empty → <yaml_scan_dir>/steps (./pipelines/steps).
+# local_dir = "/etc/buz/steps"

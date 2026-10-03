@@ -698,7 +698,7 @@ pub struct TestHostResponse {
     pub message: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepDef {
     pub name: String,
     pub run: String,
@@ -708,6 +708,10 @@ pub struct StepDef {
     /// must not carry it (rejected in insert_steps).
     #[serde(default)]
     pub uses: Option<String>,
+    /// Input values for a `uses:` step → `INPUT_<UPPER_SNAKE>` env at
+    /// expansion. Only meaningful together with `uses`.
+    #[serde(default)]
+    pub with: Option<std::collections::BTreeMap<String, String>>,
     /// Container image when `engine` is `docker`.
     #[serde(default)]
     pub image: Option<String>,

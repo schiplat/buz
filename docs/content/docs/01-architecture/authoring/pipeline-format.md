@@ -566,7 +566,7 @@ steps:
 
 Schema rules enforced today: `uses:` takes `<namespace>/<step-id>@<pin>` with pin `@1`, `@1.2`, `@1.2.0`, or `@sha256:<64 hex>` (ranges and `latest` are rejected); a `uses:` step cannot also declare `engine:` / `run:` / `image:`; `with:` requires `uses:`.
 
-**Resolution is not available in this build yet** — saving a pipeline with a `uses:` step is rejected with a clear error until the step marketplace (Phase 1) lands. The full design lives in the marketplace ADR (step template spec, local/https index, provenance locking).
+**Resolution (local index)**: at pipeline save, each `uses:` reference is resolved against the local step index — `<yaml_scan_dir>/steps` by default (override with `[step_index].local_dir` in Manager config), one spec file per step template. Pins lock at save time ("resolve & lock"): the resolved version, content hash, source, and expanded step JSON are stored as provenance, so upstream tag moves never change an already-saved pipeline. Save-time errors are explicit: template not found, no version matching the pin, the plugin requiring a newer Buz, or `with:` not matching the template's declared inputs. The full design (remote `https` index, static browse site, update badges) is Phase 2 of the marketplace ADR.
 
 ---
 

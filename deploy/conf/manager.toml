@@ -56,3 +56,8 @@ allowed_hosts = ["*.aliyuncs.com"]
 [logging]
 level = "info"
 # file = "./logs/manager.log"
+
+[step_index]
+# Where `uses:` marketplace step references resolve (one spec file per
+# step template). Empty → <yaml_scan_dir>/steps (./pipelines/steps).
+# local_dir = "/etc/buz/steps"

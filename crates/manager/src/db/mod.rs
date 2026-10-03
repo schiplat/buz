@@ -62,13 +62,16 @@ pub async fn init(config: &Config) -> anyhow::Result<SqlitePool> {
 }
 
 pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Result<()> {
-    let sql = include_str!("migrations/001_init.sql");
-
-    // Split by ; and execute each statement
-    for statement in sql.split(';') {
-        let trimmed = statement.trim();
-        if !trimmed.is_empty() {
-            sqlx::query(trimmed).execute(pool).await?;
+    for path in [
+        include_str!("migrations/001_init.sql"),
+        include_str!("migrations/002_step_resolutions.sql"),
+    ] {
+        // Split by ; and execute each statement
+        for statement in path.split(';') {
+            let trimmed = statement.trim();
+            if !trimmed.is_empty() {
+                sqlx::query(trimmed).execute(pool).await?;
+            }
         }
     }
 

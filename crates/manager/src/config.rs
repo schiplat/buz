@@ -22,6 +22,17 @@ pub struct Config {
     /// Production must leave `enabled = false` (default).
     #[serde(default)]
     pub standalone: StandaloneConfig,
+    #[serde(default)]
+    pub step_index: StepIndexConfig,
+}
+
+/// `[step_index]` — where `uses:` marketplace references resolve (ADR §6).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StepIndexConfig {
+    /// Local step-template directory (`[step_index.local]` in the ADR).
+    /// Empty → `<pipeline.yaml_scan_dir>/steps`.
+    #[serde(default)]
+    pub local_dir: String,
 }
 
 /// `[standalone]` — same-container / loopback Runner pairing (dev only).
