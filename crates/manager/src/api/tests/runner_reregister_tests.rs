@@ -56,6 +56,14 @@ async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
         .await
         .unwrap();
     run_migrations(&pool, JWT_SECRET).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
+         VALUES ('admin-1', 'admin', 'hash', 'admin', 1, 1, 1),
+                ('member-1', 'member', 'hash', 'member', 0, 0, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let created = create_runner_record(
         &pool,
         &CreateRunnerRequest {
@@ -84,6 +92,56 @@ async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
         created.id,
         created.register_token,
     )
+}
+
+async fn request_reissue(
+    app: &Router,
+    runner_id: &str,
+    bearer: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    let mut builder = Request::builder().method("POST").uri(format!(
+        "/api/v1/runners/{runner_id}/register-token/reissue"
+    ));
+    if let Some(token) = bearer {
+        builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
+    let response = app
+        .clone()
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body = serde_json::from_slice(&bytes).unwrap_or_default();
+    (status, body)
+}
+
+async fn request_runner(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    bearer: &str,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("Authorization", format!("Bearer {bearer}"));
+    let request_body = if let Some(body) = body {
+        builder = builder.header("Content-Type", "application/json");
+        Body::from(body.to_string())
+    } else {
+        Body::empty()
+    };
+    let response = app
+        .clone()
+        .oneshot(builder.body(request_body).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body = serde_json::from_slice(&bytes).unwrap_or_default();
+    (status, body)
 }
 
 async fn register(
@@ -118,6 +176,18 @@ async fn register(
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
     (status, json)
+}
+
+fn admin_jwt() -> String {
+    TokenManager::new(JWT_SECRET)
+        .create_token("admin-1", Role::Admin, 24)
+        .unwrap()
+}
+
+fn member_jwt() -> String {
+    TokenManager::new(JWT_SECRET)
+        .create_token("member-1", Role::User, 24)
+        .unwrap()
 }
 
 /// Expired runner JWT for `runner_id` (refresh semantics: expiry ignored).
@@ -170,18 +240,110 @@ async fn reregistration_with_foreign_runner_jwt_is_rejected() {
 }
 
 #[tokio::test]
-async fn reregistration_with_admin_reissued_register_token_succeeds() {
-    let (app, pool, _runner_id, register_token) = app_with_runner().await;
-    let (status, _) = register(&app, "lab-runner-01", &register_token, None).await;
+async fn runner_creation_and_reissue_responses_include_one_time_token() {
+    let (app, _pool, runner_id, _) = app_with_runner().await;
+
+    let (status, created) = request_runner(
+        &app,
+        "POST",
+        "/api/v1/runners",
+        &admin_jwt(),
+        Some(serde_json::json!({ "name": "new-runner" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert!(!created["data"]["register_token"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+
+    let (status, reissued) = request_reissue(&app, &runner_id, Some(&admin_jwt())).await;
+    assert_eq!(status, StatusCode::OK, "{reissued}");
+    assert!(!reissued["data"]["register_token"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn runner_detail_and_update_responses_do_not_expose_register_token() {
+    let (app, _pool, runner_id, _) = app_with_runner().await;
+    let admin = admin_jwt();
+
+    let (status, detail) = request_runner(
+        &app,
+        "GET",
+        &format!("/api/v1/runners/{runner_id}"),
+        &admin,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert!(detail["data"].get("register_token").is_none());
+
+    let (status, updated) = request_runner(
+        &app,
+        "PUT",
+        &format!("/api/v1/runners/{runner_id}"),
+        &admin,
+        Some(serde_json::json!({ "labels": ["linux"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert!(updated["data"].get("register_token").is_none());
+}
+
+#[tokio::test]
+async fn reissue_register_token_requires_platform_admin() {
+    let (app, _pool, runner_id, _) = app_with_runner().await;
+
+    let (status, _) = request_reissue(&app, &runner_id, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, _) = request_reissue(&app, &runner_id, Some(&member_jwt())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn admin_reissue_token_can_recover_runner_registration() {
+    let (app, pool, runner_id, initial_token) = app_with_runner().await;
+    let (status, _) = register(&app, "lab-runner-01", &initial_token, None).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Recovery path: admin re-issues a register_token on the existing row.
-    sqlx::query("UPDATE runners SET register_token = 'admin-reset-token' WHERE name = ?")
-        .bind("lab-runner-01")
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    let (status, body) = register(&app, "lab-runner-01", "admin-reset-token", None).await;
+    let (status, body) = request_reissue(&app, &runner_id, Some(&admin_jwt())).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    let replacement_token = body["data"]["register_token"].as_str().unwrap();
+    assert!(!replacement_token.is_empty());
+    assert_ne!(replacement_token, initial_token);
+
+    let stored_token: String =
+        sqlx::query_scalar("SELECT register_token FROM runners WHERE id = ?")
+            .bind(&runner_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored_token, replacement_token);
+
+    let (status, registration) = register(&app, "lab-runner-01", replacement_token, None).await;
+    assert_eq!(status, StatusCode::OK, "{registration}");
+    assert!(registration["data"]["token"].as_str().unwrap().len() > 10);
+
+    let (status, _) = register(&app, "lab-runner-01", replacement_token, None).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "register token is one-shot"
+    );
+}
+
+#[tokio::test]
+async fn reissue_missing_runner_returns_not_found() {
+    let (app, _pool, _, _) = app_with_runner().await;
+    let (status, _) = request_reissue(
+        &app,
+        "00000000-0000-0000-0000-000000000009",
+        Some(&admin_jwt()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

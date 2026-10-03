@@ -22,3 +22,4 @@ services:
       - ./pipelines:/app/buz/pipelines
       - ./workspace:/app/buz/workspace
       - ./logs:/app/buz/logs
+      - ./state:/app/buz/state

@@ -10,7 +10,26 @@ heartbeat, and the Runner exits cleanly so an external supervisor brings it back
 up. There is no self-update or in-process hot-reload — this is the only supported
 "remote restart" path, by design.
 
-## How it works
+## Runner credential persistence and recovery
+
+The Runner persists its Manager-issued JWT at `runner.token_cache_path` (default
+`./state/runner-token`), outside the job workspace. Keep that path on durable,
+Runner-writable storage; Unix files are created with owner-only mode `0600`.
+Shell jobs run as the Runner OS user, so this directory is not a strong isolation
+boundary against an untrusted job running under that same account.
+
+During upgrade, if the new cache is absent the Runner tries the legacy
+`<workspace_dir>/runner-token`. A successful registration writes the JWT to the
+new path atomically and then attempts to remove the legacy file. An unreadable,
+non-regular, or insecure new cache does not fall back to the legacy path. If
+credential persistence fails after registration, the Runner exits before it can
+claim jobs.
+
+If the JWT cache has been lost or cannot be used, a platform admin can reissue a
+one-time register token in Dashboard → **Runners** → key icon. Copy it into the
+Runner's effective TOML `register_token` or `BUZ_REGISTER_TOKEN`, then restart
+the Runner. The Manager cannot push configuration to an offline Runner, and this
+manual reissue path has no automatic delivery or acknowledgement protocol.
 
 1. A platform admin clicks **Restart** on the Runners page (or calls the API).
 2. The Manager sets a one-shot `restart_requested` flag on the runner row in the

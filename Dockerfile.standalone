@@ -38,7 +38,7 @@ RUN apt-get update -qq \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home /app/buz --shell /usr/sbin/nologin buz \
  && mkdir -p /app/buz/conf /app/buz/data /app/buz/pipelines \
-            /app/buz/workspace /app/buz/logs \
+            /app/buz/workspace /app/buz/logs /app/buz/state \
  && chown -R buz:buz /app/buz
 
 COPY --from=builder /src/target/release/buz-manager /app/buz/buz-manager
@@ -51,7 +51,7 @@ RUN chmod 755 /app/buz/entrypoint.sh
 USER buz
 WORKDIR /app/buz
 EXPOSE 8080
-VOLUME ["/app/buz/data", "/app/buz/pipelines", "/app/buz/workspace", "/app/buz/logs"]
+VOLUME ["/app/buz/data", "/app/buz/pipelines", "/app/buz/workspace", "/app/buz/logs", "/app/buz/state"]
 
 ENV BUZ_MODE=all
 ENTRYPOINT ["/app/buz/entrypoint.sh"]

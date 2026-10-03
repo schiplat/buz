@@ -8,8 +8,8 @@ Full guide: docs/content/docs/03-operations/standalone.md
 ```bash
 mkdir -p /opt/buz-standalone && cd /opt/buz-standalone
 cp /path/to/buz/deploy/standalone/docker-compose.yml .
-mkdir -p data pipelines workspace logs
-sudo chown -R 10001:10001 data pipelines workspace logs
+mkdir -p data pipelines workspace logs state
+sudo chown -R 10001:10001 data pipelines workspace logs state
 
 cat > .env <<EOF
 BUZ_JWT_SECRET=$(openssl rand -hex 32)
@@ -31,4 +31,4 @@ docker compose pull
 docker compose up -d
 ```
 
-Keep the same `.env` (`BUZ_JWT_SECRET`) and volume directories across upgrades.
+Keep the same `.env` (`BUZ_JWT_SECRET`) and volume directories, including `state/` for the Runner JWT cache, across upgrades.

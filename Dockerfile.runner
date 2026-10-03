@@ -3,6 +3,7 @@
 #   /app/buz/buz-runner
 #   /app/buz/conf/runner.toml
 #   /app/buz/workspace
+#   /app/buz/state (persistent Runner credential cache)
 
 FROM rust:bookworm AS builder
 WORKDIR /src
@@ -23,7 +24,7 @@ RUN apt-get update -qq \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home /app/buz --shell /usr/sbin/nologin buz \
- && mkdir -p /app/buz/conf /app/buz/workspace /app/buz/logs \
+ && mkdir -p /app/buz/conf /app/buz/workspace /app/buz/logs /app/buz/state \
  && chown -R buz:buz /app/buz
 
 COPY --from=builder /src/target/release/buz-runner /app/buz/buz-runner
@@ -31,7 +32,7 @@ COPY deploy/conf/runner.toml /app/buz/conf/runner.toml
 
 USER buz
 WORKDIR /app/buz
-VOLUME ["/app/buz/workspace", "/app/buz/logs"]
+VOLUME ["/app/buz/workspace", "/app/buz/logs", "/app/buz/state"]
 
 ENTRYPOINT ["/app/buz/buz-runner"]
 CMD ["-c", "/app/buz/conf/runner.toml"]

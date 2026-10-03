@@ -24,9 +24,27 @@ level = "debug"
     assert_eq!(cfg.runner.manager_url, "http://127.0.0.1:8080");
     assert_eq!(cfg.runner.register_token, "tok");
     assert_eq!(cfg.runner.workspace_dir, "/tmp/x");
+    assert_eq!(cfg.runner.token_cache_path, "./state/runner-token");
     assert_eq!(cfg.runner.labels, vec!["docker".to_string()]);
     assert!(cfg.engine.docker_enabled);
     assert_eq!(cfg.logging.level, "debug");
+}
+
+#[test]
+fn token_cache_path_can_be_configured() {
+    let raw = r#"
+[runner]
+name = "r"
+manager_url = "http://127.0.0.1:8080"
+register_token = "tok"
+token_cache_path = "/var/lib/buz/runner-token"
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("runner.toml");
+    std::fs::write(&path, raw).unwrap();
+
+    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    assert_eq!(cfg.runner.token_cache_path, "/var/lib/buz/runner-token");
 }
 
 #[test]

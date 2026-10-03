@@ -9,6 +9,7 @@ manager_url = "http://127.0.0.1:8080"
 register_token = "REPLACE_WITH_UI_REGISTER_TOKEN"
 # tls_skip_verify = true
 workspace_dir = "/tmp/buz-runner"
+token_cache_path = "./state/runner-token"
 # prefer_interfaces = ["enp26s0"]
 
 [engine]

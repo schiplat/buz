@@ -223,6 +223,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/runners/{id}/freeze", patch(runners::toggle_freeze))
         .route("/runners/{id}/restart", post(runners::restart))
+        .route(
+            "/runners/{id}/register-token/reissue",
+            post(runners::reissue_register_token),
+        )
         .route("/runners/{id}/events", get(runners::get_events))
         .route(
             "/hooks/git/{provider}/{hook_key}",

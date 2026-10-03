@@ -44,6 +44,7 @@ services:
       - ${BUZ_RUNNER_CONF:-./deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
       - ${BUZ_RUNNER_WS:-buz-runner-ws}:/app/buz/workspace
       - ${BUZ_RUNNER_LOGS:-buz-runner-logs}:/app/buz/logs
+      - ${BUZ_RUNNER_STATE:-buz-runner-state}:/app/buz/state
     restart: unless-stopped
     # Optional host Docker for uses:docker steps:
     # user: root
@@ -52,9 +53,11 @@ services:
     #   - ${BUZ_RUNNER_CONF:-./deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
     #   - ${BUZ_RUNNER_WS:-buz-runner-ws}:/app/buz/workspace
     #   - ${BUZ_RUNNER_LOGS:-buz-runner-logs}:/app/buz/logs
+    #   - ${BUZ_RUNNER_STATE:-buz-runner-state}:/app/buz/state
 
 volumes:
   buz-data:
   buz-pipelines:
   buz-runner-ws:
   buz-runner-logs:
+  buz-runner-state:

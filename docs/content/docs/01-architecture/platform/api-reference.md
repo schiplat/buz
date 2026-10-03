@@ -135,6 +135,8 @@ Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`
 | PUT | `/api/v1/runners/:id` | Admin JWT |
 | DELETE | `/api/v1/runners/:id` | Admin JWT |
 | PATCH | `/api/v1/runners/:id/freeze` | Admin JWT |
+| POST | `/api/v1/runners/:id/restart` | Admin JWT |
+| POST | `/api/v1/runners/:id/register-token/reissue` | Platform Admin JWT |
 | GET | `/api/v1/runners/:id/events` | Admin JWT |
 | POST | `/api/v1/runners/register` | Register Token |
 | POST | `/api/v1/runners/heartbeat` | Runner JWT |
@@ -186,9 +188,9 @@ Request (any field optional):
 }
 ```
 
-Returns the updated runner object (includes `running_jobs` and all policy fields).
+Returns the updated runner object (includes `running_jobs` and all policy fields). `register_token` is not included in the response.
 
-List/get responses include policy columns (`max_concurrent_jobs`, `clean_workspace_after_job`, engine flags, `ssh_host_key_policy`) and `running_jobs`.
+List/get responses include policy columns (`max_concurrent_jobs`, `clean_workspace_after_job`, engine flags, `ssh_host_key_policy`) and `running_jobs`; runner detail and update responses never expose `register_token`. The one-time token is returned only by runner creation and the explicit reissue endpoint.
 
 ### POST /runners/register — Runner Registration
 
@@ -202,10 +204,10 @@ Request:
 }
 ```
 
-**Re-registration** (the runner row already holds a JWT) requires proof of identity — knowing the name alone is rejected:
+The Runner stores its Manager-issued JWT in the durable local `token_cache_path` (default `./state/runner-token`), separate from its job workspace. Unix files are restricted to mode `0600`. A missing new cache may migrate the old `<workspace_dir>/runner-token` after successful registration. If the Manager reissues a token, the operator must still update the Runner's TOML or `BUZ_REGISTER_TOKEN` and restart it; online delivery and acknowledgement are not provided.
 
 - `Authorization: Bearer <previous runner JWT>` — the agent persists its JWT and presents it on restart; expiry is ignored (refresh semantics), or
-- a matching **admin-reissued** `register_token` (recovery path after the cached JWT is lost or `jwt_secret` was rotated: delete + re-create the runner, or reset its register token in the DB).
+- a matching **admin-reissued** `register_token` (recovery path after the cached JWT is lost or `jwt_secret` was rotated; use the reissue API below, then update the Runner configuration).
 
 Standalone mode keeps its loopback trust boundary for authorized names.
 
@@ -228,6 +230,25 @@ Response:
   }
 }
 ```
+
+### POST /runners/:id/register-token/reissue — Reissue Runner Register Token
+
+Requires a platform-admin bearer credential (user JWT or API token). This replaces the current one-shot token and returns the new value once; the token is never included in server logs or event/audit records.
+
+```http
+POST /api/v1/runners/<runner-id>/register-token/reissue
+Authorization: Bearer <platform-admin-credential>
+```
+
+Response:
+```json
+{
+  "code": 0,
+  "data": { "register_token": "one-time-token" }
+}
+```
+
+Immediately copy the token into the Runner's effective `register_token` setting (TOML or `BUZ_REGISTER_TOKEN`) and restart that Runner. The token is consumed on successful registration; the Runner then persists its JWT under `token_cache_path` (default `./state/runner-token`) and uses it for subsequent refreshes. Reissuing invalidates any previously stored register token. This endpoint does not update Runner configuration or restart it.
 
 ### POST /runners/heartbeat — Runner Heartbeat
 

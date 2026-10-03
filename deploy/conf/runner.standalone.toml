@@ -8,6 +8,7 @@ manager_url = "http://127.0.0.1:8080"
 standalone = true
 register_token = ""
 workspace_dir = "./workspace"
+token_cache_path = "./state/runner-token"
 
 [clock]
 # Startup validation against the Manager clock (same container/host in

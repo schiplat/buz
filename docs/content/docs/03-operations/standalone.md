@@ -66,9 +66,9 @@ sudo mkdir -p /opt/buz-standalone
 sudo chown "$(id -u):$(id -g)" /opt/buz-standalone
 cd /opt/buz-standalone
 
-mkdir -p data pipelines workspace logs
+mkdir -p data pipelines workspace logs state
 # Container runs as uid 10001 (USER buz)
-sudo chown -R 10001:10001 data pipelines workspace logs
+sudo chown -R 10001:10001 data pipelines workspace logs state
 ```
 
 ### 2. Persist the JWT secret
@@ -106,6 +106,7 @@ services:
       - ./pipelines:/app/buz/pipelines
       - ./workspace:/app/buz/workspace
       - ./logs:/app/buz/logs
+      - ./state:/app/buz/state
 ```
 
 A checked-in copy lives at `deploy/standalone/docker-compose.yml`.
@@ -151,6 +152,13 @@ docker compose logs --tail=50 | grep -E 'registered|STANDALONE|ERROR' || true
 
 ## First run (plain `docker run`)
 
+Prepare the bind-mounted directories first; the container runs as uid 10001:
+
+```bash
+mkdir -p /opt/buz-standalone/{data,pipelines,workspace,logs,state}
+sudo chown -R 10001:10001 /opt/buz-standalone/{data,pipelines,workspace,logs,state}
+```
+
 ```bash
 export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
 # Save this value — required on every restart/upgrade
@@ -165,6 +173,7 @@ docker run -d --name buz --restart unless-stopped \
   -v /opt/buz-standalone/pipelines:/app/buz/pipelines \
   -v /opt/buz-standalone/workspace:/app/buz/workspace \
   -v /opt/buz-standalone/logs:/app/buz/logs \
+  -v /opt/buz-standalone/state:/app/buz/state \
   schiplat/buz-standalone:latest
 ```
 
@@ -194,7 +203,7 @@ curl -fsS "http://127.0.0.1:8080/health"
 ```
 
 Compose recreates the container when the image digest changes; named/bind
-volumes under `./data` etc. are kept.
+volumes under `./data` etc. are kept, including `./state` for the Runner JWT.
 
 ### Plain Docker
 
@@ -214,6 +223,7 @@ docker run -d --name buz --restart unless-stopped \
   -v /opt/buz-standalone/pipelines:/app/buz/pipelines \
   -v /opt/buz-standalone/workspace:/app/buz/workspace \
   -v /opt/buz-standalone/logs:/app/buz/logs \
+  -v /opt/buz-standalone/state:/app/buz/state \
   schiplat/buz-standalone:${IMAGE_TAG:-latest}
 ```
 
@@ -258,6 +268,7 @@ docker compose up -d
 | `./pipelines` | `/app/buz/pipelines` | YAML scan dir |
 | `./workspace` | `/app/buz/workspace` | Runner job workspaces |
 | `./logs` | `/app/buz/logs` | Runner file logs (also check `docker logs`) |
+| `./state` | `/app/buz/state` | Durable Runner JWT credential cache |
 
 Bind mounts must be writable by **uid 10001** (`chown -R 10001:10001 …`).
 

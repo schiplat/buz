@@ -68,6 +68,9 @@ pub struct RunnerSection {
     pub tls_skip_verify: bool,
     #[serde(default = "default_workspace_dir")]
     pub workspace_dir: String,
+    /// Local persistent file for the Manager-issued Runner JWT.
+    #[serde(default = "default_token_cache_path")]
+    pub token_cache_path: String,
     /// Deprecated — labels are UI-managed. Kept for deserialize compatibility.
     #[serde(default)]
     #[allow(dead_code)]
@@ -89,6 +92,7 @@ impl Default for RunnerSection {
             standalone: false,
             tls_skip_verify: false,
             workspace_dir: default_workspace_dir(),
+            token_cache_path: default_token_cache_path(),
             labels: Vec::new(),
             clean_workspace_after_job: false,
             prefer_interfaces: Vec::new(),
@@ -157,6 +161,9 @@ impl EngineConfig {
 
 fn default_workspace_dir() -> String {
     "/tmp/buz-runner".into()
+}
+fn default_token_cache_path() -> String {
+    "./state/runner-token".into()
 }
 fn default_manager_url() -> String {
     "http://127.0.0.1:8080".into()

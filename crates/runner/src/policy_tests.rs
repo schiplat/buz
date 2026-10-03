@@ -7,6 +7,7 @@ use crate::policy;
 fn apply_to_config_overwrites_strategy_keeps_paths() {
     let mut cfg = Config::default();
     cfg.runner.workspace_dir = "/var/buz".into();
+    cfg.runner.token_cache_path = "/var/lib/buz/runner-token".into();
     cfg.engine.ssh_known_hosts_path = Some("/etc/ssh/known_hosts".into());
     cfg.engine.docker_enabled = false;
     cfg.engine.ssh_host_key_policy = SshHostKeyPolicy::Insecure;
@@ -23,6 +24,7 @@ fn apply_to_config_overwrites_strategy_keeps_paths() {
     policy::apply_to_config(&mut cfg, &policy);
 
     assert_eq!(cfg.runner.workspace_dir, "/var/buz");
+    assert_eq!(cfg.runner.token_cache_path, "/var/lib/buz/runner-token");
     assert_eq!(
         cfg.engine.ssh_known_hosts_path.as_deref(),
         Some("/etc/ssh/known_hosts")

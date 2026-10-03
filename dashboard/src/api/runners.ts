@@ -86,6 +86,10 @@ export interface CreateRunnerResponse {
   max_concurrent_jobs?: number
 }
 
+export interface ReissueRegisterTokenResponse {
+  register_token: string
+}
+
 export type UpdateRunnerPayload = Partial<Omit<RunnerPolicy, never>> & {
   labels?: string[]
 }
@@ -117,6 +121,11 @@ export const runnersApi = {
 
   async restart(id: string): Promise<{ restart_requested: boolean }> {
     const resp = await apiClient.post(`/runners/${id}/restart`)
+    return resp.data
+  },
+
+  async reissueRegisterToken(id: string): Promise<ReissueRegisterTokenResponse> {
+    const resp = await apiClient.post(`/runners/${id}/register-token/reissue`)
     return resp.data
   },
 

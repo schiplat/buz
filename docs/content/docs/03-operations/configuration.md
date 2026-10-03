@@ -84,7 +84,7 @@ Machine-local only. Strategy is **not** configured here — see [Runner Policy](
 | Managed in UI | Kept in TOML (`[runner]` / `[engine]` / `[logging]`) |
 |---------------|-----------------------------------------------------|
 | `labels` | `manager_url`, `register_token`, `tls_skip_verify`, `standalone` |
-| `max_concurrent_jobs`, cleanup | `name`, `workspace_dir` |
+| `max_concurrent_jobs`, cleanup | `name`, `workspace_dir`, `token_cache_path` |
 | engine enable flags + `ssh_host_key_policy` | `prefer_interfaces`, `ssh_known_hosts_path` |
 
 ```toml
@@ -95,6 +95,7 @@ register_token = "paste-from-ui"     # or env BUZ_REGISTER_TOKEN
 # standalone = false                 # true → allow empty register_token (lab image only)
 # tls_skip_verify = false
 workspace_dir = "/tmp/buz-runner"
+token_cache_path = "./state/runner-token" # durable Manager-issued JWT cache
 # prefer_interfaces = ["enp26s0"]
 
 [engine]
@@ -115,6 +116,7 @@ level = "info"
 |-----|-------|
 | `register_token` | Required unless `standalone = true` (see [Standalone mode](#standalone-mode)) |
 | `standalone` | Default `false`. When `true`, Runner may start with an empty `register_token` and register over loopback against a Manager with `[standalone] enabled = true` |
+| `token_cache_path` | Default `./state/runner-token`. Writable, durable path for the Manager-issued JWT; created with Unix mode `0600`. `BUZ__RUNNER__TOKEN_CACHE_PATH` overrides it. The old `<workspace_dir>/runner-token` is read only when the new path is missing and removed after a successful cache write. |
 | `clock.enabled` | Default `true`. Validate the Runner clock against the Manager — see [Clock skew](#clock-skew) |
 | `clock.warn_threshold_seconds` | Default `60`. Log a `warn` once per drifted minute above this offset |
 | `clock.max_skew_seconds` | Default `300`. Skew at/above this is treated as a broken clock at startup |
@@ -330,6 +332,7 @@ Do **not** log secrets (`register_token`, JWT, passwords). Create-runner API ret
 | `BUZ_ALLOW_INSECURE_JWT` | `1` / `true` — allow empty or placeholder JWT secrets (**local/demo only**) |
 | `BUZ_MANAGER_URL` | Overrides `runner.manager_url` |
 | `BUZ_REGISTER_TOKEN` | Overrides `runner.register_token` |
+| `BUZ__RUNNER__TOKEN_CACHE_PATH` | Overrides `runner.token_cache_path` |
 | `RUST_LOG` | Overrides `logging.level` filter |
 | `BUZ__…` | Nested TOML via `config` crate (`BUZ__SERVER__PORT=8081`) |
 

@@ -1977,7 +1977,7 @@ pub async fn get_runner(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let r = sqlx::query(
-        "SELECT id, name, labels, status, version, system_info, last_seen, register_token,
+        "SELECT id, name, labels, status, version, system_info, last_seen,
                 created_at, updated_at FROM runners WHERE id = ?",
     )
     .bind(&id)
@@ -2004,9 +2004,8 @@ pub async fn get_runner(
         "version": r.get::<Option<String>, _>(4),
         "system_info": system_info,
         "last_seen": r.get::<Option<String>, _>(6),
-        "register_token": r.get::<Option<String>, _>(7),
-        "created_at": r.get::<Option<String>, _>(8),
-        "updated_at": r.get::<Option<String>, _>(9),
+        "created_at": r.get::<Option<String>, _>(7),
+        "updated_at": r.get::<Option<String>, _>(8),
         "running_jobs": running_jobs,
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,
@@ -2111,7 +2110,7 @@ pub async fn update_runner(
     log_runner_event(&state.pool, &id, "updated", "Runner policy updated from UI").await;
 
     let r = sqlx::query(
-        "SELECT id, name, labels, status, version, system_info, last_seen, register_token,
+        "SELECT id, name, labels, status, version, system_info, last_seen,
                 created_at, updated_at FROM runners WHERE id = ?",
     )
     .bind(&id)
@@ -2137,9 +2136,8 @@ pub async fn update_runner(
         "version": r.get::<Option<String>, _>(4),
         "system_info": system_info,
         "last_seen": r.get::<Option<String>, _>(6),
-        "register_token": r.get::<Option<String>, _>(7),
-        "created_at": r.get::<Option<String>, _>(8),
-        "updated_at": r.get::<Option<String>, _>(9),
+        "created_at": r.get::<Option<String>, _>(7),
+        "updated_at": r.get::<Option<String>, _>(8),
         "running_jobs": running_jobs,
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,
@@ -2260,6 +2258,52 @@ pub async fn restart(
     Ok(Json(ApiResponse::success(serde_json::json!({
         "restart_requested": true
     }))))
+}
+
+/// Re-issue the one-shot register_token for an existing runner — the admin
+/// recovery path for re-registration. Use when a runner lost its cached JWT
+/// (pre-1.6 restart, wiped workspace) or after a jwt_secret rotation: update
+/// the runner's configured register_token, restart it once, and it re-enters
+/// the normal Bearer refresh loop. The new token is returned exactly once and
+/// never logged.
+#[derive(serde::Serialize)]
+pub struct ReissueRegisterTokenResponse {
+    pub register_token: String,
+}
+
+pub async fn reissue_register_token(
+    auth: PlatformAdmin,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<ReissueRegisterTokenResponse>>, AppError> {
+    let register_token = Uuid::new_v4().to_string();
+    let name: Option<String> = sqlx::query_scalar(
+        "UPDATE runners SET register_token = ?, updated_at = datetime('now') WHERE id = ? RETURNING name",
+    )
+    .bind(&register_token)
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let name = name.ok_or_else(|| AppError::NotFound("runner not found".into()))?;
+
+    tracing::info!("Runner {name} ({id}) register token re-issued");
+    log_runner_event(
+        &state.pool,
+        &id,
+        "register_token_reissued",
+        "Register token re-issued (value shown once in the API response, never logged)",
+    )
+    .await;
+    crate::audit::record(
+        &state.pool,
+        crate::audit::AuditEvent::from_auth(&auth.0, "runner.register_token_reissued")
+            .resource("runner", &id, &name),
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(ReissueRegisterTokenResponse {
+        register_token,
+    })))
 }
 
 pub async fn get_events(

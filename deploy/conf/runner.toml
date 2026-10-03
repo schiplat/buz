@@ -13,6 +13,7 @@ manager_url = "http://manager:8080"
 register_token = "REPLACE_WITH_UI_REGISTER_TOKEN"
 # tls_skip_verify = false
 workspace_dir = "./workspace"
+token_cache_path = "./state/runner-token"
 # prefer_interfaces = ["eth0"]
 
 [engine]

@@ -4,7 +4,7 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
-import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw } from '@lucide/vue'
+import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw, KeyRound } from '@lucide/vue'
 import { runnersApi, type Runner } from '@/api/runners'
 import { formatLocalDateTime } from '@/utils/time'
 import { clockSkewInfo, clockToneClass } from '@/utils/runnerClock'
@@ -74,10 +74,17 @@ const creating = ref(false)
 const createdToken = ref<string | null>(null)
 const copied = ref(false)
 const copiedNameId = ref<string | null>(null)
+const reissuedRunnerName = ref<string | null>(null)
+const reissuedToken = ref<string | null>(null)
+const reissuing = ref(false)
+const reissuedCopied = ref(false)
 
 /** Toml line shown after create — always the real token, never a placeholder. */
 const registerTokenTomlLine = computed(() =>
   createdToken.value ? `register_token = "${createdToken.value}"` : '',
+)
+const reissuedTokenTomlLine = computed(() =>
+  reissuedToken.value ? `register_token = "${reissuedToken.value}"` : '',
 )
 
 // Drawer
@@ -278,6 +285,44 @@ async function handleRestart(r: Runner) {
   }
 }
 
+async function handleReissueRegisterToken(r: Runner) {
+  if (!(await dialog.confirm(
+    `Reissue the register token for "${r.name}"? The current token will stop working. You must update the Runner's effective configuration and restart it.`,
+    { title: 'Reissue register token', confirmLabel: 'Reissue', danger: true },
+  ))) return
+
+  reissuing.value = true
+  try {
+    const result = await runnersApi.reissueRegisterToken(r.id)
+    reissuedRunnerName.value = r.name
+    reissuedToken.value = result.register_token
+    reissuedCopied.value = false
+  } catch (e: any) {
+    console.error(e)
+    const detail = e?.response?.data?.message || e?.message || 'Failed to reissue register token'
+    await dialog.alert(detail)
+  } finally {
+    reissuing.value = false
+  }
+}
+
+async function copyReissuedToken() {
+  if (!reissuedTokenTomlLine.value) return
+  const ok = await copyText(reissuedTokenTomlLine.value)
+  if (ok) {
+    reissuedCopied.value = true
+    setTimeout(() => (reissuedCopied.value = false), 2000)
+  } else {
+    await dialog.alert('Copy failed — use HTTPS or copy the TOML line manually.')
+  }
+}
+
+function closeReissuedToken() {
+  reissuedRunnerName.value = null
+  reissuedToken.value = null
+  reissuedCopied.value = false
+}
+
 async function handleDeleteRunner(r: Runner) {
   if (!(await dialog.confirm(`Delete runner "${r.name}"? This cannot be undone.`, {
     title: 'Delete runner',
@@ -434,6 +479,9 @@ const eventBadge = (t: string) => {
                     </UiButton>
                     <UiButton variant="ghost" size="sm" @click="handleRestart(r)" title="Restart">
                       <RotateCcw class="h-3.5 w-3.5 text-muted-foreground" />
+                    </UiButton>
+                    <UiButton variant="ghost" size="sm" @click="handleReissueRegisterToken(r)" :disabled="reissuing" title="Reissue register token">
+                      <KeyRound class="h-3.5 w-3.5 text-muted-foreground" />
                     </UiButton>
                     <UiButton variant="ghost" size="sm" @click="handleDeleteRunner(r)" title="Delete">
                       <Trash2 class="h-3.5 w-3.5 text-destructive" />
@@ -757,6 +805,33 @@ const eventBadge = (t: string) => {
               </div>
             </template>
 
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- ── Reissued register token dialog ── -->
+    <Teleport to="body">
+      <div v-if="reissuedToken" class="fixed inset-0 z-[60] flex items-start justify-center bg-black/40 pt-[15vh]" @click.self="closeReissuedToken">
+        <div class="soft-panel w-full max-w-md p-6 space-y-4">
+          <div class="flex items-center justify-between">
+            <h2 class="text-base font-semibold tracking-tight">Register token reissued</h2>
+            <button type="button" class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground" @click="closeReissuedToken"><X class="h-4 w-4" /></button>
+          </div>
+          <p class="text-sm text-muted-foreground">New token for <span class="font-medium text-foreground">{{ reissuedRunnerName }}</span>. It is shown only now; copy it before closing.</p>
+          <div class="rounded-xl bg-muted px-4 py-3">
+            <p class="type-eyebrow mb-1.5">Register Token</p>
+            <p class="font-mono text-sm break-all text-foreground select-all">{{ reissuedToken }}</p>
+          </div>
+          <p class="type-meta leading-relaxed">Replace the effective <code class="font-mono bg-muted px-1 rounded">register_token</code> in <code class="font-mono bg-muted px-1 rounded">conf/runner.toml</code> (or <code class="font-mono bg-muted px-1 rounded">BUZ_REGISTER_TOKEN</code>) and restart the Runner. This revokes the previous token.</p>
+          <code class="block font-mono text-xs bg-muted px-2 py-2 rounded break-all select-all">{{ reissuedTokenTomlLine }}</code>
+          <div class="flex justify-end gap-2">
+            <UiButton variant="outline" @click="copyReissuedToken">
+              <Copy v-if="!reissuedCopied" class="h-4 w-4" />
+              <Check v-else class="h-4 w-4" />
+              {{ reissuedCopied ? 'Copied' : 'Copy TOML line' }}
+            </UiButton>
+            <UiButton @click="closeReissuedToken">Done</UiButton>
           </div>
         </div>
       </div>

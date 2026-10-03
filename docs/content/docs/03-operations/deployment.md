@@ -207,6 +207,10 @@ Manager container IP) and compare against
 Same-compose default is container↔container: `manager_url = "http://manager:8080"`
 with `depends_on: manager: condition: service_healthy`.
 
+**Upgrading Runner and Manager authentication behavior.** Where practical, upgrade Runners before the Manager, then upgrade the Manager. New Runner builds persist their Manager-issued JWT at `runner.token_cache_path` (default `./state/runner-token`) outside the job workspace and present it on restart, so subsequent registrations refresh without the one-shot register token. Persist this state path across restarts; on Unix the credential is stored with mode `0600`. The newer Manager intentionally provides no compatibility grace period that accepts an old Runner based only on its name.
+
+For upgrades, if the new cache path is missing the Runner reads the legacy `<workspace_dir>/runner-token` file and migrates it after a successful registration. If the new cache exists but cannot be read or is insecure, startup fails rather than silently using an older credential. A cache write failure after registration also aborts before jobs are accepted. If no valid cached JWT remains, reissue its register token from Dashboard → **Runners** → key icon. Copy the token shown once into the Runner's effective `register_token` setting (TOML or `BUZ_REGISTER_TOKEN`) and restart the Runner. Reissuing replaces the previous token; after registration, the Runner stores its refreshed JWT. Platform admins can also call `POST /api/v1/runners/{id}/register-token/reissue`; see the [API reference](/docs/01-architecture/platform/api-reference/#post-runnersidregister-tokenreissue-reissue-runner-register-token). This remains a manual, out-of-band recovery flow; the Manager cannot update or restart a disconnected Runner.
+
 **Runner provisioning requires a platform admin.** `runner` auto-creates the
 runner by calling `buz-manager gen-runner-token` inside the Manager container.
 That CLI subcommand verifies the caller holds a platform-admin credential —
@@ -327,6 +331,7 @@ name = "prod-runner-01"
 manager_url = "https://buz-api.example.com"
 register_token = "your-register-token"
 workspace_dir = "/tmp/buz-runner"
+token_cache_path = "./state/runner-token" # persist this path across restarts
 
 [engine]
 # ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"
