@@ -1593,3 +1593,116 @@ steps:
         "on_change/services must warn: {warnings:?}"
     );
 }
+
+#[test]
+fn uses_step_with_inputs_is_valid() {
+    let yaml = r#"
+name: uses-step
+steps:
+  - name: notify
+    uses: community/notify/feishu@1.2
+    with:
+      webhook: ${secrets.FEISHU_WEBHOOK}
+      title: deploy done
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+}
+
+#[test]
+fn uses_rejects_engine_run_image_override() {
+    for (field, line) in [
+        ("engine", "    engine: shell"),
+        ("run", "    run: echo hi"),
+        ("image", "    image: alpine:3"),
+    ] {
+        let yaml = format!(
+            r#"
+name: uses-conflict
+steps:
+  - name: notify
+    uses: community/notify/feishu@1.2
+{line}
+"#
+        );
+        let r = shared::pipeline_yaml::parse_and_validate(&yaml);
+        assert!(!r.valid, "{field} must conflict with uses");
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.field == format!("steps[0].{field}")),
+            "{field}: {:?}",
+            r.errors
+        );
+    }
+}
+
+#[test]
+fn with_requires_uses() {
+    let yaml = r#"
+name: orphan-with
+steps:
+  - name: run
+    engine: shell
+    run: echo hi
+    with:
+      key: value
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors.iter().any(|e| e.field == "steps[0].with"),
+        "{:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn uses_pin_parsing() {
+    use shared::pipeline_yaml::{parse_uses_reference, UsesPin};
+
+    let (reference, pin) = parse_uses_reference("community/notify/feishu@1.2").unwrap();
+    assert_eq!(reference, "community/notify/feishu");
+    assert_eq!(pin, UsesPin::Version("1.2".into()));
+
+    let (_, pin) = parse_uses_reference("ops/deploy@1").unwrap();
+    assert_eq!(pin, UsesPin::Version("1".into()));
+
+    let (_, pin) = parse_uses_reference("ops/deploy@1.2.0").unwrap();
+    assert_eq!(pin, UsesPin::Version("1.2.0".into()));
+
+    let sha = format!("ops/deploy@sha256:{}", "a".repeat(64));
+    let (_, pin) = parse_uses_reference(&sha).unwrap();
+    assert_eq!(pin, UsesPin::Sha256("a".repeat(64)));
+
+    for bad in [
+        "community/notify/feishu",
+        "no-namespace@1.2",
+        "ns/id@latest",
+        "ns/id@1..2",
+        "ns/id@^1.2",
+        "ns/id@1 - 2",
+        &format!("ns/id@sha256:{}", "zz".repeat(32)),
+    ] {
+        assert!(parse_uses_reference(bad).is_err(), "must reject: {bad}");
+    }
+}
+
+#[test]
+fn uses_invalid_pin_is_a_field_error() {
+    let yaml = r#"
+name: bad-pin
+steps:
+  - name: notify
+    uses: community/notify/feishu@latest
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.field == "steps[0].uses" && e.message.contains("unsupported pin")),
+        "{:?}",
+        r.errors
+    );
+}

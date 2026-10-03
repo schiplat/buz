@@ -436,6 +436,10 @@ pub enum InputTypeKind {
     Boolean,
     Host,
     Choice,
+    /// String list: one item per line, serialized to `INPUT_<NAME>` with
+    /// newline separators (multi-target deploys). No nested maps — use a
+    /// JSON string for structured values.
+    List,
 }
 
 impl InputTypeKind {
@@ -446,6 +450,7 @@ impl InputTypeKind {
             "boolean" => Some(Self::Boolean),
             "host" => Some(Self::Host),
             "choice" => Some(Self::Choice),
+            "list" => Some(Self::List),
             _ => None,
         }
     }
@@ -544,6 +549,20 @@ pub fn validate_input_values(
             });
         }
 
+        // `type: list` — one item per line; blank edge lines are tolerated,
+        // but an empty item in the middle is a mistake. Declared `pattern`
+        // applies to every element, not the joined text.
+        if kind == InputTypeKind::List {
+            let trimmed_block = value.trim_matches('\n');
+            let items: Vec<&str> = trimmed_block.split('\n').map(str::trim).collect();
+            if items.iter().any(|item| item.is_empty()) {
+                errors.push(InputFieldError {
+                    name: def.name.clone(),
+                    message: "list contains an empty item — one entry per line".into(),
+                });
+            }
+        }
+
         if let Some(pat) = def.pattern.as_deref() {
             if !pat.is_empty() {
                 let re = regex::Regex::new(pat).map_err(|_| {
@@ -552,10 +571,24 @@ pub fn validate_input_values(
                         message: format!("invalid pattern '{pat}' in pipeline definition"),
                     }]
                 })?;
-                if !re.is_match(value) {
+                let matches = if kind == InputTypeKind::List {
+                    value
+                        .trim_matches('\n')
+                        .split('\n')
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .all(|item| re.is_match(item))
+                } else {
+                    re.is_match(value)
+                };
+                if !matches {
                     errors.push(InputFieldError {
                         name: def.name.clone(),
-                        message: format!("value does not match pattern '{pat}'"),
+                        message: if kind == InputTypeKind::List {
+                            format!("every list item must match pattern '{pat}'")
+                        } else {
+                            format!("value does not match pattern '{pat}'")
+                        },
                     });
                 }
             }
@@ -670,6 +703,11 @@ pub struct StepDef {
     pub name: String,
     pub run: String,
     pub engine: Option<String>,
+    /// Marketplace reference (`<namespace>/<step-id>@<pin>`). Set only by
+    /// the step resolver when expanding templates — plain pipeline saves
+    /// must not carry it (rejected in insert_steps).
+    #[serde(default)]
+    pub uses: Option<String>,
     /// Container image when `engine` is `docker`.
     #[serde(default)]
     pub image: Option<String>,

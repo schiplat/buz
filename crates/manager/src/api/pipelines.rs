@@ -1144,6 +1144,23 @@ pub(crate) async fn insert_steps(
     let mut result = Vec::with_capacity(steps.len());
 
     for (i, step) in steps.iter().enumerate() {
+        // Step marketplace resolution (ADR Phase 1) is not wired in yet:
+        // reject `uses:` steps so no task is ever stored with an empty
+        // command. The resolver replaces this gate when it lands.
+        if step.uses.is_some() {
+            return Err(AppError::ValidationFailed(format!(
+                "step '{}' uses marketplace reference '{}' — step resolution is not \
+                 available in this build yet",
+                step.name,
+                step.uses.as_deref().unwrap_or_default()
+            )));
+        }
+        if step.run.trim().is_empty() {
+            return Err(AppError::ValidationFailed(format!(
+                "step '{}' has no 'run' command",
+                step.name
+            )));
+        }
         let task_id = Uuid::new_v4().to_string();
         let exec_type = step.engine.clone().unwrap_or_else(|| "shell".into());
         let fail_strategy = if step.continue_on_error.unwrap_or(false) {

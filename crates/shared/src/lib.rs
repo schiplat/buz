@@ -13,5 +13,6 @@ pub mod rbac;
 pub mod registry_auth;
 pub mod secret_kind;
 pub mod secret_ref;
+pub mod step_spec;
 pub mod value_source;
 pub mod version;

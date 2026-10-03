@@ -628,7 +628,7 @@ pub async fn poll(
     // Claim only if runner has ALL required labels (see runner_satisfies_labels).
     let candidates = sqlx::query(
         "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
-                j.debug_unredact, j.verbose_logs
+                j.debug_unredact, j.verbose_logs, j.trigger_by, p.name, p.team_id, p.trigger_type
          FROM jobs j
          JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.status = 'pending'
@@ -671,13 +671,32 @@ pub async fn poll(
                 verbose_logs,
                 "Runner claimed job"
             );
-            claimed = Some((r, snapshot_raw, debug_unredact, verbose_logs));
+            claimed = Some((
+                r,
+                snapshot_raw,
+                debug_unredact,
+                verbose_logs,
+                row.get::<String, _>(7),
+                row.get::<String, _>(8),
+                row.get::<Option<String>, _>(9),
+                row.get::<String, _>(10),
+            ));
             break;
         }
         // Lost the race — try next matching candidate
     }
 
-    let Some((row, snapshot_raw, debug_unredact, verbose_logs)) = claimed else {
+    let Some((
+        row,
+        snapshot_raw,
+        debug_unredact,
+        verbose_logs,
+        trigger_by,
+        pipeline_name,
+        team_id,
+        pipeline_trigger_type,
+    )) = claimed
+    else {
         // No matching pending job
         return Ok(Json(ApiResponse::success(None)));
     };
@@ -1609,9 +1628,23 @@ pub async fn poll(
         }
     }
 
+    // Job metadata for the runner's BUZ_* env (ADR §5.2) — plugin steps
+    // render messages like "build #<job> passed" from this.
+    let team_name: Option<String> = sqlx::query_scalar("SELECT name FROM teams WHERE id = ?")
+        .bind(&team_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .flatten();
+
     Ok(Json(ApiResponse::success(Some(serde_json::json!({
         "job_id": job_id,
         "pipeline_id": pipeline_id,
+        "metadata": {
+            "pipeline_name": pipeline_name,
+            "team": team_name.or(team_id),
+            "trigger": pipeline_trigger_type,
+            "triggered_by": trigger_by,
+        },
         "tasks": tasks,
         "inputs": trigger_params,
         "masking_input_keys": masking_input_keys,

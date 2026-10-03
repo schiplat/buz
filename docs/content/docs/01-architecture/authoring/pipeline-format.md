@@ -216,6 +216,7 @@ on:
     - `boolean` — must be `true` or `false` (case-insensitive); rendered as a `true`/`false` select in the dialog
     - `host` — must reference a **registered Buz Host name** (validated against the Hosts registry)
     - `choice` — value must be one of the declared `options`; rendered as a dropdown in the dialog
+    - `list` — string list, one item per line; exported to `INPUT_<NAME>` with newline separators (multi-target deploys). Rendered as a textarea; declared `pattern` applies to every item. No nested maps — pass structured values as a JSON string.
   - `pattern` — Optional ECMAScript-compatible regex the resolved value must match (e.g. `"^[A-Za-z0-9._-]+$"`). Works with any `type` and replaces hand-written shell `case`/regex guards in the first step.
   - `options` — Allowed values for `type: choice`.
 
@@ -531,6 +532,41 @@ Step env map  >  Pipeline env map  >  Platform variables
 - `$APP_NAME` — from `env:` or `variables:` (non-sensitive)
 - `$GIT_SSH_KEY` — only if `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}` was declared (allowlist alone is not enough)
 - `$INPUT_VERSION` — always from the trigger dialog; has **no overlap** with other types (prefixed with `INPUT_`)
+
+---
+
+## Built-in `BUZ_*` Environment
+
+Every step also receives read-only job metadata as `BUZ_*` environment variables — mainly so plugin/notification steps can render messages like *build #123 passed* without extra plumbing. They are never secret values and are safe to echo:
+
+| Variable | Content |
+|----------|---------|
+| `BUZ_JOB_ID` | Job id (dashboard URL: `$BUZ_JOB_URL`) |
+| `BUZ_JOB_URL` | Link to this job in the dashboard |
+| `BUZ_PIPELINE_NAME` | Pipeline name |
+| `BUZ_TEAM` | Owning team name |
+| `BUZ_TRIGGER` | `manual`, `webhook`, or `cron` (pipeline trigger type) |
+| `BUZ_TRIGGERED_BY` | Who triggered the job (`trigger_by`) |
+| `BUZ_GIT_SHA` / `BUZ_GIT_BRANCH` | Normalized from the `GIT_SHA` / `GIT_BRANCH` webhook inputs; absent on non-git triggers |
+
+---
+
+## Marketplace Steps (`uses:`) — schema preview
+
+Steps may reference a step template from a step index instead of inlining `run:`:
+
+```yaml
+steps:
+  - name: notify
+    uses: community/notify/feishu@1.2     # <namespace>/<step-id>@<pin>
+    with:                                  # inputs of the referenced template
+      webhook: ${secrets.FEISHU_WEBHOOK}
+      title: deploy done
+```
+
+Schema rules enforced today: `uses:` takes `<namespace>/<step-id>@<pin>` with pin `@1`, `@1.2`, `@1.2.0`, or `@sha256:<64 hex>` (ranges and `latest` are rejected); a `uses:` step cannot also declare `engine:` / `run:` / `image:`; `with:` requires `uses:`.
+
+**Resolution is not available in this build yet** — saving a pipeline with a `uses:` step is rejected with a clear error until the step marketplace (Phase 1) lands. The full design lives in the marketplace ADR (step template spec, local/https index, provenance locking).
 
 ---
 

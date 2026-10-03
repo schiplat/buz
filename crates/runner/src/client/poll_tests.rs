@@ -1,10 +1,11 @@
 use super::{
     build_config_prep_banner, build_login_banner, build_runner_banner, build_ssh_banner,
     build_ssh_env_command, build_step_echo, build_step_failure_message, build_verbose_step_config,
-    build_verbose_step_result, config_url_age, format_resolved_ssh_targets, merge_ssh_host_outputs,
-    step_failure_hint, step_log_base, wrap_remote_cmd_with_registry_login, LOG_ECHO, LOG_LOGIN,
-    LOG_RUNNER_BANNER, LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP,
-    LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
+    build_verbose_step_result, buz_metadata_env, config_url_age, format_resolved_ssh_targets,
+    merge_ssh_host_outputs, step_failure_hint, step_log_base, wrap_remote_cmd_with_registry_login,
+    LOG_ECHO, LOG_LOGIN, LOG_RUNNER_BANNER, LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG,
+    LOG_STEP_VERBOSE_CONFIG_PREP, LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE,
+    LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
 };
 use crate::masker::SecretCatalog;
 use std::collections::HashMap;
@@ -568,4 +569,42 @@ fn full_ssh_registry_command_is_fail_fast_by_default() {
     assert!(!full.contains("set +e"), "{full}");
     assert!(full.contains("trap 'docker logout"), "{full}");
     assert!(full.contains("docker compose up -d\n"), "{full}");
+}
+
+#[test]
+fn buz_metadata_env_normalizes_claim_metadata() {
+    let task = serde_json::json!({
+        "metadata": {
+            "pipeline_name": "deploy",
+            "team": "platform",
+            "trigger": "webhook",
+            "triggered_by": "alice"
+        },
+        "inputs": { "GIT_SHA": "abc1234", "GIT_BRANCH": "main" }
+    });
+    let env = buz_metadata_env(&task, "job-1", "http://m:8080/");
+    assert!(env.contains(&("BUZ_JOB_ID".into(), "job-1".into())));
+    assert!(env.contains(&("BUZ_JOB_URL".into(), "http://m:8080/jobs/job-1".into())));
+    assert!(env.contains(&("BUZ_PIPELINE_NAME".into(), "deploy".into())));
+    assert!(env.contains(&("BUZ_TEAM".into(), "platform".into())));
+    assert!(env.contains(&("BUZ_TRIGGER".into(), "webhook".into())));
+    assert!(env.contains(&("BUZ_TRIGGERED_BY".into(), "alice".into())));
+    assert!(env.contains(&("BUZ_GIT_SHA".into(), "abc1234".into())));
+    assert!(env.contains(&("BUZ_GIT_BRANCH".into(), "main".into())));
+    assert!(env.iter().all(|(k, _)| k != "BUZ_GIT_TAG"), "{env:?}");
+}
+
+#[test]
+fn buz_metadata_env_omits_missing_fields() {
+    let env = buz_metadata_env(&serde_json::json!({}), "job-2", "http://m:8080");
+    assert_eq!(
+        env,
+        vec![
+            ("BUZ_JOB_ID".to_string(), "job-2".to_string()),
+            (
+                "BUZ_JOB_URL".to_string(),
+                "http://m:8080/jobs/job-2".to_string()
+            ),
+        ]
+    );
 }

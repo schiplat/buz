@@ -376,6 +376,15 @@ pub struct StepYaml {
     pub timeout: Option<String>,
     #[serde(default)]
     pub retry: Option<i32>,
+    /// Marketplace step reference: `<namespace>/<step-id>@<pin>` (pin is
+    /// `X`, `X.Y`, `X.Y.Z`, or `sha256:<hex>`; ranges/`latest` rejected).
+    /// Mutually exclusive with `engine:` / `run:` / `image:`.
+    #[serde(default)]
+    pub uses: Option<String>,
+    /// Input values for a `uses:` step, mapped to `INPUT_<UPPER_SNAKE>` env
+    /// at resolution time. Values may use `${secrets.X}` / `${vars.X}`.
+    #[serde(default)]
+    pub with: Option<std::collections::BTreeMap<String, String>>,
     /// Prefer kebab-case `continue-on-error`; snake_case accepted as alias.
     #[serde(default, rename = "continue-on-error", alias = "continue_on_error")]
     pub continue_on_error: Option<bool>,
@@ -911,6 +920,58 @@ fn extract_unknown_field_name(msg: &str) -> Option<String> {
     None
 }
 
+/// Parsed pin portion of a `uses:` reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UsesPin {
+    /// `@1`, `@1.2`, `@1.2.0` — exact or major pin.
+    Version(String),
+    /// `@sha256:<64 hex>` — strict content pin.
+    Sha256(String),
+}
+
+/// Parse a `uses:` reference (`<namespace>/<step-id>@<pin>`).
+///
+/// Pins follow §4 of the marketplace ADR: `@1` major, `@1.2` / `@1.2.0`
+/// exact, `@sha256:<hex>` strict. Ranges and `latest` are deliberately not
+/// supported — resolution must be reproducible ("解析即锁定").
+pub fn parse_uses_reference(raw: &str) -> Result<(String, UsesPin), String> {
+    let raw = raw.trim();
+    let Some((reference, pin)) = raw.rsplit_once('@') else {
+        return Err("missing '@pin' — expected '<namespace>/<step-id>@<pin>' \
+             (e.g. community/notify/feishu@1.2)"
+            .into());
+    };
+    let reference = reference.trim();
+    if reference.is_empty() || !reference.contains('/') {
+        return Err("uses reference must be '<namespace>/<step-id>@<pin>'".into());
+    }
+
+    let pin = pin.trim();
+    if let Some(hex) = pin.strip_prefix("sha256:") {
+        if hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok((
+                reference.to_string(),
+                UsesPin::Sha256(hex.to_ascii_lowercase()),
+            ));
+        }
+        return Err("sha256 pin must be 'sha256:<64 hex chars>'".into());
+    }
+
+    let parts: Vec<&str> = pin.split('.').collect();
+    let version_like = parts.len() <= 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+    if version_like {
+        Ok((reference.to_string(), UsesPin::Version(pin.to_string())))
+    } else {
+        Err(format!(
+            "unsupported pin '{pin}' — use @1, @1.2, @1.2.0 or @sha256:<64 hex> \
+             (ranges and 'latest' are not supported)"
+        ))
+    }
+}
+
 /// Parse a pipeline YAML string and run validation checks.
 pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     let mut errors: Vec<YamlValidationError> = Vec::new();
@@ -952,12 +1013,58 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     // 3. Each step must have `run`; `engine` must be a known value when set.
     const VALID_ENGINES: &[&str] = &["shell", "local", "ssh", "docker"];
     for (i, step) in parsed.steps.iter().enumerate() {
+        let uses_ref = match step
+            .uses
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(raw) => match parse_uses_reference(raw) {
+                Ok(parsed) => Some(parsed),
+                Err(msg) => {
+                    errors.push(YamlValidationError {
+                        field: format!("steps[{i}].uses"),
+                        message: msg,
+                    });
+                    None
+                }
+            },
+            None => None,
+        };
+
         let run = step.run.as_deref().unwrap_or("").trim();
 
-        if run.is_empty() {
+        if uses_ref.is_some() {
+            // Marketplace step: engine/run/image come from the resolved
+            // template — the call site may not override them (ADR §4).
+            for (field, value) in [
+                ("engine", step.engine.as_deref().unwrap_or("").trim()),
+                ("run", run),
+                ("image", step.image.as_deref().unwrap_or("").trim()),
+            ] {
+                if !value.is_empty() {
+                    errors.push(YamlValidationError {
+                        field: format!("steps[{i}].{field}"),
+                        message: format!(
+                            "'uses:' steps cannot declare '{field}:' — it comes from the \
+                             referenced step template"
+                        ),
+                    });
+                }
+            }
+        } else if run.is_empty() {
             errors.push(YamlValidationError {
                 field: format!("steps[{i}].run"),
                 message: "Step requires 'run' (script/command to execute)".into(),
+            });
+        }
+
+        if step.with.is_some() && uses_ref.is_none() {
+            errors.push(YamlValidationError {
+                field: format!("steps[{i}].with"),
+                message: "'with:' requires 'uses:' — it provides inputs for a referenced \
+                          step template"
+                    .into(),
             });
         }
 

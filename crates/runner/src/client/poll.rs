@@ -754,6 +754,12 @@ async fn execute_job(
         }
     }
 
+    // BUZ_* job metadata (ADR §5.2) — plugins render "build #<job> passed"
+    // style messages from these. Never secret values, safe to echo.
+    for (key, value) in buz_metadata_env(task, job_id, &config.runner.manager_url) {
+        base_env.insert(key, value);
+    }
+
     // Secret catalog keys/values for log redaction (not process env injection).
     let mut pipeline_secret_keys: HashSet<String> = HashSet::new();
     let mut secret_mask_values: Vec<String> = Vec::new();
@@ -2070,6 +2076,54 @@ async fn execute_job(
     tracing::info!("Job {job_id} completed successfully");
 
     Ok(())
+}
+
+/// Normalize the claim response's `metadata` object plus git trigger inputs
+/// into `BUZ_*` environment variables (marketplace ADR §5.2). Empty or
+/// absent values are omitted — non-git triggers carry no `BUZ_GIT_*`.
+fn buz_metadata_env(
+    task: &serde_json::Value,
+    job_id: &str,
+    manager_url: &str,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut put = |key: &str, value: String| {
+        if !value.is_empty() {
+            out.push((key.to_string(), value));
+        }
+    };
+
+    put("BUZ_JOB_ID", job_id.to_string());
+    put(
+        "BUZ_JOB_URL",
+        format!("{}/jobs/{job_id}", manager_url.trim_end_matches('/')),
+    );
+
+    let metadata = task.get("metadata");
+    let field = |name: &str| {
+        metadata
+            .and_then(|m| m.get(name))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    put("BUZ_PIPELINE_NAME", field("pipeline_name"));
+    put("BUZ_TEAM", field("team"));
+    put("BUZ_TRIGGER", field("trigger"));
+    put("BUZ_TRIGGERED_BY", field("triggered_by"));
+
+    // Normalized from the GIT_* trigger inputs (exported as INPUT_GIT_*).
+    let input = |name: &str| {
+        task.get("inputs")
+            .and_then(|i| i.get(name))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    put("BUZ_GIT_SHA", input("GIT_SHA"));
+    put("BUZ_GIT_BRANCH", input("GIT_BRANCH"));
+
+    out
 }
 
 /// Build an SSH command string with environment variable exports prepended.

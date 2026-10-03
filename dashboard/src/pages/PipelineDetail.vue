@@ -1067,6 +1067,16 @@ async function handleTrigger() {
                 </template>
               </select>
 
+              <textarea
+                v-else-if="pair.type === 'list'"
+                v-model="pair.value"
+                rows="4"
+                :placeholder="pair.required ? 'required — one item per line' : 'one item per line (leave empty for default)'"
+                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 font-mono"
+                :class="errorFields.has(pair.key) ? 'border-destructive' : 'border-border/60'"
+                :disabled="triggering"
+              />
+
               <input
                 v-else
                 v-model="pair.value"

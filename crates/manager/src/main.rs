@@ -58,6 +58,18 @@ enum Command {
         #[arg(long, env = "BUZ_ADMIN_TOKEN")]
         token: String,
     },
+
+    /// Validate buz-plugin step template YAML files (marketplace ADR §5.1).
+    ///
+    /// Intended for buz-plugins repo CI: exits non-zero when any file fails
+    /// so golden tests can gate merges. Works without a Manager config or
+    /// database — pass spec files or directories containing *.yaml/*.yml.
+    StepValidate {
+        /// Step spec files or directories (directories are scanned for
+        /// *.yaml / *.yml, non-recursively)
+        #[arg(value_name = "PATH")]
+        paths: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -75,6 +87,9 @@ async fn main() -> anyhow::Result<()> {
             token,
         }) => {
             return gen_runner_token(&cli.config, &name, labels.as_deref(), &token).await;
+        }
+        Some(Command::StepValidate { paths }) => {
+            return step_validate(&paths);
         }
         None => {}
     }
@@ -190,6 +205,62 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     }
 
+    Ok(())
+}
+
+/// `step-validate` — validate buz-plugin step template YAML files against
+/// the marketplace ADR §5.1 spec. Requires no Manager config or database,
+/// so buz-plugins repo CI can run it standalone.
+fn step_validate(paths: &[String]) -> anyhow::Result<()> {
+    if paths.is_empty() {
+        anyhow::bail!("usage: buz-manager step-validate <spec.yaml | dir> [...]");
+    }
+    let current = env!("CARGO_PKG_VERSION");
+
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for path in paths {
+        let meta =
+            std::fs::metadata(path).map_err(|e| anyhow::anyhow!("cannot access '{path}': {e}"))?;
+        if meta.is_dir() {
+            let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(path)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    matches!(
+                        p.extension().and_then(|e| e.to_str()),
+                        Some("yaml") | Some("yml")
+                    )
+                })
+                .collect();
+            entries.sort();
+            if entries.is_empty() {
+                anyhow::bail!("directory '{path}' contains no *.yaml/*.yml step specs");
+            }
+            files.extend(entries);
+        } else {
+            files.push(std::path::PathBuf::from(path));
+        }
+    }
+
+    let mut failed = 0usize;
+    for file in &files {
+        let raw = std::fs::read_to_string(file)
+            .map_err(|e| anyhow::anyhow!("cannot read '{}': {e}", file.display()))?;
+        match shared::step_spec::parse_and_validate_step_spec(&raw, current) {
+            Ok(spec) => println!("OK       {} ({}@{})", file.display(), spec.id, spec.version),
+            Err(errors) => {
+                failed += 1;
+                eprintln!("INVALID  {}", file.display());
+                for error in errors {
+                    eprintln!("  - {error}");
+                }
+            }
+        }
+    }
+
+    if failed > 0 {
+        anyhow::bail!("{failed} of {} step spec(s) failed validation", files.len());
+    }
+    println!("{} step spec(s) valid", files.len());
     Ok(())
 }
 

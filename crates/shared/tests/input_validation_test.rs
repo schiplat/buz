@@ -207,3 +207,47 @@ fn optional_empty_value_skips_type_checks() {
     let blank2 = HashMap::from([("tag".to_string(), "  ".to_string())]);
     assert!(validate_input_values(&[d2], &blank2, |_| false).is_ok());
 }
+
+#[test]
+fn list_type_accepts_one_item_per_line() {
+    let defs = vec![PipelineInputDef {
+        name: "hosts".into(),
+        input_type: Some("list".into()),
+        required: Some(true),
+        default: None,
+        options: None,
+        pattern: None,
+        masking: None,
+        description: None,
+    }];
+    let mut inputs = HashMap::new();
+    inputs.insert("hosts".into(), "web-01\nweb-02\n".into());
+    assert!(validate_input_values(&defs, &inputs, |_| false).is_ok());
+
+    let mut blank_middle = HashMap::new();
+    blank_middle.insert("hosts".into(), "web-01\n\nweb-02".into());
+    let err = validate_input_values(&defs, &blank_middle, |_| false).unwrap_err();
+    assert!(err[0].message.contains("empty item"), "{:?}", err);
+}
+
+#[test]
+fn list_type_pattern_applies_per_item() {
+    let defs = vec![PipelineInputDef {
+        name: "hosts".into(),
+        input_type: Some("list".into()),
+        required: Some(true),
+        default: None,
+        options: None,
+        pattern: Some("^[a-z]+-\\d{2}$".into()),
+        masking: None,
+        description: None,
+    }];
+    let mut ok = HashMap::new();
+    ok.insert("hosts".into(), "web-01\ndb-02".into());
+    assert!(validate_input_values(&defs, &ok, |_| false).is_ok());
+
+    let mut bad = HashMap::new();
+    bad.insert("hosts".into(), "web-01\nWeb 02".into());
+    let err = validate_input_values(&defs, &bad, |_| false).unwrap_err();
+    assert!(err[0].message.contains("every list item"), "{:?}", err);
+}

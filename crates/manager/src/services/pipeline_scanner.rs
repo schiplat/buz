@@ -176,6 +176,7 @@ pub async fn upsert_from_yaml(
                 name: s.name.clone().unwrap_or_else(|| "unnamed".into()),
                 run: s.run.clone().unwrap_or_default(),
                 engine: s.engine.clone(),
+                uses: s.uses.clone(),
                 image: s.image.clone(),
                 volumes: s.volumes.clone(),
                 host: s.host.clone(),
