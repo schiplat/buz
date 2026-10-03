@@ -978,6 +978,29 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 i
             ));
         }
+
+        // Honest-schema warnings: fields the schema accepts but the runner does
+        // not act on yet. Non-blocking so existing pipelines keep validating.
+        if step.retry.unwrap_or(0) > 0 {
+            warnings.push(format!(
+                "steps[{i}].retry: automatic retries are not executed yet — the step runs once"
+            ));
+        }
+        if let Some(render_entries) = step
+            .config
+            .as_ref()
+            .and_then(|c| c.render.as_ref())
+            .map(|r| r.entries())
+        {
+            for (j, entry) in render_entries.iter().enumerate() {
+                if entry.on_change.is_some() || entry.services.is_some() {
+                    warnings.push(format!(
+                        "steps[{i}].config.render[{j}]: 'on_change'/'services' are parsed \
+                         but not enforced yet — output is written without service recreation"
+                    ));
+                }
+            }
+        }
     }
 
     // 3b. Manual trigger inputs — remind to declare an explicit `type` so the

@@ -589,7 +589,7 @@ Every registered key on `StepYaml` (`crates/shared/src/pipeline_yaml.rs`). Unkno
 | [`hosts_strategy`](#hosts_strategy-ssh) | | ssh | Multi-host fan-out: `chain` (default) \| `parallel` |
 | [`work_dir`](#work_dir) / `dir` | | all | Working directory (`work_dir` aliases `dir`) |
 | [`timeout`](#timeout) | | all | Per-step duration (`10m`, …) |
-| [`retry`](#retry) | | all | Automatic retries on failure |
+| [`retry`](#retry) | | all | ⚠️ Parsed but **not executed yet** — step runs once |
 | [`continue-on-error`](#continue-on-error) | | all | Do not fail the job on step failure |
 | [`env`](#env-1) | | all | Step env map (`KEY: ${secrets.X}`) |
 | [`secrets`](#secrets-1) | | all | Optional step secret allowlist (no auto-inject) |
@@ -873,12 +873,12 @@ Per-step timeout. Same format as `runner.timeout` (`10m`, `300s`, `1h`). If the 
 
 #### `retry`
 
-Number of automatic retries if the step fails. Retries happen immediately back-to-back.
+**Parsed but not executed yet.** The field is accepted so existing pipelines keep validating, but the runner currently executes the step exactly once and YAML validation emits a warning when `retry > 0`. Automatic step retries are planned for a future release; until then, use the job-level **Retry** action in the UI to re-run a failed job.
 
 | | |
 |---|---|
 | YAML | `retry: 2` |
-| Form | Retry number input (0–5) |
+| Behavior | Not executed yet — step runs once (validation warning emitted) |
 | Default | 0 |
 
 ---
@@ -940,7 +940,8 @@ Full rules: [pipeline `secrets`](#secrets) and [Secrets Access](/docs/01-archite
 | _(omitted)_ | `local` | Run on runner host's shell (default) |
 | `ssh` | `ssh` | Execute on remote host(s) via SSH (russh). Requires `host` and/or `host_labels`. |
 | `docker` | `docker` | Execute `run:` in a Docker container on the runner. Requires `image`. Gated by Runner UI `docker_enabled`. See [Docker Engine](/docs/01-architecture/execution/docker-engine/). |
-| `wasm` | `wasm` | Execute in Wasm sandbox (not implemented) |
+
+`wasm` is reserved for a future engine — declaring `engine: wasm` fails validation, and the Runner policy flag is dormant.
 
 ### Docker step fields
 

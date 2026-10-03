@@ -1535,3 +1535,61 @@ on:
         "typed inputs must not warn: {warnings:?}"
     );
 }
+
+#[test]
+fn retry_declared_gets_not_executed_warning() {
+    let yaml = r#"
+name: retry-warning
+steps:
+  - name: flaky
+    engine: shell
+    run: echo hi
+    retry: 2
+"#;
+    let warnings = warnings_for(yaml);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("steps[0].retry") && w.contains("not executed yet")),
+        "retry>0 must warn: {warnings:?}"
+    );
+
+    let quiet = r#"
+name: retry-zero
+steps:
+  - name: once
+    engine: shell
+    run: echo hi
+    retry: 0
+"#;
+    let warnings = warnings_for(quiet);
+    assert!(
+        warnings.iter().all(|w| !w.contains(".retry")),
+        "retry=0 must not warn: {warnings:?}"
+    );
+}
+
+#[test]
+fn render_on_change_and_services_get_not_enforced_warning() {
+    let yaml = r#"
+name: render-change
+steps:
+  - name: render
+    engine: shell
+    run: echo hi
+    config:
+      dest: ./app
+      render:
+        - template: env.example
+          output: .env
+          on_change: recreate
+          services: [web, worker]
+"#;
+    let warnings = warnings_for(yaml);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("config.render[0]") && w.contains("not enforced")),
+        "on_change/services must warn: {warnings:?}"
+    );
+}

@@ -1965,6 +1965,9 @@ async fn execute_job(
                     was_cancelled_docker,
                 )
             }
+            "wasm" => anyhow::bail!(
+                "wasm engine is not implemented in this release — step '{step_name}' cannot run"
+            ),
             other => anyhow::bail!("unsupported engine type: {other}"),
         };
         // ─────────────────────────────────────────────────────────────────────

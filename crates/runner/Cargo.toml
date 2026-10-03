@@ -35,9 +35,6 @@ clap.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Log masking
-aho-corasick = "1"
-
 # flock atomic writes for env_render
 libc = "0.2"
 

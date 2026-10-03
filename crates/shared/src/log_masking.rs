@@ -109,6 +109,28 @@ impl SecretCatalog {
     }
 }
 
+/// Single-pass multi-pattern replacer. `forced` skips the 3-char length floor
+/// (used for rendered `.env` values whose plaintext may be echoed by the run
+/// block). LeftmostLongest: when one secret contains another, the longest
+/// value is masked as one unit. Returns the matcher plus the pattern count
+/// (every pattern maps to the same `***` replacement).
+fn build_masker(secrets: &[String], forced: bool) -> Option<(aho_corasick::AhoCorasick, usize)> {
+    let patterns: Vec<&str> = secrets
+        .iter()
+        .map(String::as_str)
+        .filter(|s| if forced { !s.is_empty() } else { s.len() >= 3 })
+        .collect();
+    if patterns.is_empty() {
+        return None;
+    }
+    let count = patterns.len();
+    let ac = aho_corasick::AhoCorasick::builder()
+        .match_kind(aho_corasick::MatchKind::LeftmostLongest)
+        .build(&patterns)
+        .ok()?;
+    Some((ac, count))
+}
+
 /// 对 `text` 中出现的所有敏感值替换为 `***`。
 ///
 /// 值短于 3 字符跳过（太常见，如 `\n` 或短 token，易误伤）。
@@ -116,14 +138,10 @@ pub fn mask_secrets(text: &str, secrets: &[String]) -> String {
     if secrets.is_empty() || text.is_empty() {
         return text.to_string();
     }
-    let mut result = text.to_string();
-    for secret in secrets {
-        if secret.len() < 3 {
-            continue;
-        }
-        result = result.replace(secret.as_str(), "***");
+    match build_masker(secrets, false) {
+        Some((ac, count)) => ac.replace_all(text, &vec!["***"; count]),
+        None => text.to_string(),
     }
-    result
 }
 
 /// 对 `text` 中出现的所有敏感值替换为 `***`，**不做长度下限过滤**。
@@ -134,14 +152,10 @@ pub fn mask_secrets_forced(text: &str, secrets: &[String]) -> String {
     if secrets.is_empty() || text.is_empty() {
         return text.to_string();
     }
-    let mut result = text.to_string();
-    for secret in secrets {
-        if secret.is_empty() {
-            continue;
-        }
-        result = result.replace(secret.as_str(), "***");
+    match build_masker(secrets, true) {
+        Some((ac, count)) => ac.replace_all(text, &vec!["***"; count]),
+        None => text.to_string(),
     }
-    result
 }
 
 #[cfg(test)]

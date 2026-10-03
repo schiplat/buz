@@ -68,7 +68,6 @@ const newCleanWorkspace = ref(false)
 const newShellEnabled = ref(true)
 const newSshEnabled = ref(true)
 const newDockerEnabled = ref(false)
-const newWasmEnabled = ref(false)
 const newSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
 const creating = ref(false)
 const createdToken = ref<string | null>(null)
@@ -97,7 +96,6 @@ const editCleanWorkspace = ref(false)
 const editShellEnabled = ref(true)
 const editSshEnabled = ref(true)
 const editDockerEnabled = ref(false)
-const editWasmEnabled = ref(false)
 const editSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
 const savingPolicy = ref(false)
 
@@ -118,7 +116,6 @@ function openDetail(r: Runner) {
   editShellEnabled.value = r.shell_enabled !== false
   editSshEnabled.value = r.ssh_enabled !== false
   editDockerEnabled.value = !!r.docker_enabled
-  editWasmEnabled.value = !!r.wasm_enabled
   editSshHostKeyPolicy.value = r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure'
   drawerOpen.value = true
   loadRunnerEvents(r.id)
@@ -163,7 +160,6 @@ function openCreate() {
   newShellEnabled.value = true
   newSshEnabled.value = true
   newDockerEnabled.value = false
-  newWasmEnabled.value = false
   newSshHostKeyPolicy.value = 'insecure'
   createdToken.value = null
   copied.value = false
@@ -184,7 +180,6 @@ async function handleCreate() {
       shell_enabled: newShellEnabled.value,
       ssh_enabled: newSshEnabled.value,
       docker_enabled: newDockerEnabled.value,
-      wasm_enabled: newWasmEnabled.value,
       ssh_host_key_policy: newSshHostKeyPolicy.value,
     })
     createdToken.value = resp.register_token
@@ -208,7 +203,6 @@ function policyDirty(): boolean {
     editShellEnabled.value !== (r.shell_enabled !== false) ||
     editSshEnabled.value !== (r.ssh_enabled !== false) ||
     editDockerEnabled.value !== !!r.docker_enabled ||
-    editWasmEnabled.value !== !!r.wasm_enabled ||
     editSshHostKeyPolicy.value !== (r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure')
   )
 }
@@ -226,7 +220,6 @@ async function savePolicy() {
       shell_enabled: editShellEnabled.value,
       ssh_enabled: editSshEnabled.value,
       docker_enabled: editDockerEnabled.value,
-      wasm_enabled: editWasmEnabled.value,
       ssh_host_key_policy: editSshHostKeyPolicy.value,
     })
     activeRunner.value = { ...activeRunner.value, ...updated }
@@ -593,9 +586,6 @@ const eventBadge = (t: string) => {
                       </span>
                     </span>
                   </label>
-                  <label class="flex items-center gap-2 text-xs cursor-pointer">
-                    <input v-model="editWasmEnabled" type="checkbox" class="rounded border-border" /> WASM
-                  </label>
                 </div>
               </div>
               <div class="flex items-center gap-2">
@@ -896,9 +886,6 @@ const eventBadge = (t: string) => {
                         <code class="font-mono text-[10px]">docker run --rm</code> — container removed when the step ends.
                       </span>
                     </span>
-                  </label>
-                  <label class="flex items-center gap-2 text-xs cursor-pointer">
-                    <input v-model="newWasmEnabled" type="checkbox" class="rounded border-border" /> WASM
                   </label>
                 </div>
                 <div>

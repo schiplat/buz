@@ -3360,7 +3360,6 @@ dependencies = [
 name = "runner"
 version = "1.5.6"
 dependencies = [
- "aho-corasick",
  "anyhow",
  "async-trait",
  "chrono",
@@ -3969,6 +3968,7 @@ dependencies = [
 name = "shared"
 version = "1.5.6"
 dependencies = [
+ "aho-corasick",
  "axum",
  "base64 0.22.1",
  "chrono",

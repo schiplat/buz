@@ -19,7 +19,7 @@ Reference model: [GitHub Actions job `container`](https://docs.github.com/en/act
 ## Goals
 
 - Run a pipeline **step** inside a Docker container on the **runner host**
-- Reuse the existing step pipeline: logs, timeout, retry, cancel, env / secrets injection, log masking
+- Reuse the existing step pipeline: logs, timeout, cancel, env / secrets injection, log masking
 - Keep YAML close to current `engine: ssh` style (engine chosen per step)
 - Fail closed when Docker is disabled or unavailable
 
@@ -257,7 +257,7 @@ steps:
 | `registry_secret` | | **Name** of a Manager Secret with **`kind=registry`** (not the password). JSON credentials, encrypted at rest. Also valid on **shell** / **SSH** for push. |
 | `run` | ✓ | Command(s) inside the container |
 | `work_dir` / `dir` | | Container-side subdirectory under `/buz/workspace` (runner workspace always mounted at root) |
-| `timeout` / `retry` / `continue-on-error` | | Same semantics as other engines |
+| `timeout` / `continue-on-error` | | Same semantics as other engines (`retry` is parsed but not executed yet) |
 | `host` / `host_labels` | ✗ | SSH-only; invalid with `engine: docker` (validator should warn/error) |
 
 ### Explicitly deferred YAML

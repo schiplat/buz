@@ -71,7 +71,7 @@ Pipeline step definitions.
 | Column | Type | Notes |
 |--------|------|-------|
 | step_order | INT | Execution order |
-| exec_type | TEXT | `local`, `ssh`, `docker`, or `wasm` |
+| exec_type | TEXT | `local`, `ssh`, or `docker` (`wasm` reserved — never dispatched) |
 | image | TEXT | Container image when `exec_type=docker` (empty otherwise) |
 | registry_secret | TEXT | Manager Secret name for `docker login` (shell / SSH / docker; empty otherwise) |
 | fail_strategy | TEXT | `stop`, `continue`, or `ignore` |
