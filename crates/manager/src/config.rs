@@ -29,10 +29,6 @@ pub struct Config {
 /// `[step_index]` — where `uses:` marketplace references resolve (ADR §6).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct StepIndexConfig {
-    /// Local step-template directory (`[step_index.local]` in the ADR).
-    /// Empty → `<pipeline.yaml_scan_dir>/steps`.
-    #[serde(default)]
-    pub local_dir: String,
     /// Path to a `reviews.json` manifest (ADR §6.7.4): templates whose
     /// content sha256 is listed are marked officially reviewed. Empty → no
     /// review checking (all resolutions count as unreviewed, allowed).

@@ -177,10 +177,6 @@ pub async fn create(
                 &state.pool,
                 &pipeline_id,
                 req.steps,
-                &crate::services::step_resolver::local_step_index_dir(
-                    &state.config.pipeline.yaml_scan_dir,
-                    &state.config.step_index.local_dir,
-                ),
                 &crate::services::step_resolver::policy_from_settings(),
             )
             .await
@@ -511,10 +507,6 @@ pub async fn update(
             &state.pool,
             &id,
             req.steps,
-            &crate::services::step_resolver::local_step_index_dir(
-                &state.config.pipeline.yaml_scan_dir,
-                &state.config.step_index.local_dir,
-            ),
             &crate::services::step_resolver::policy_from_settings(),
         )
         .await

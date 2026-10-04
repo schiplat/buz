@@ -70,6 +70,22 @@ enum Command {
         #[arg(value_name = "PATH")]
         paths: Vec<String>,
     },
+
+    /// Import step templates into the Manager's template library (ADR §6.2).
+    ///
+    /// Every file runs through the same validator as `step-validate`; valid
+    /// templates are stored append-only into `step_templates`. Re-importing
+    /// identical content is a no-op; same id+version with different content
+    /// is rejected (bump the version).
+    StepImport {
+        /// Step spec files or directories (*.yaml / *.yml, non-recursive)
+        #[arg(value_name = "PATH")]
+        paths: Vec<String>,
+
+        /// Provenance label stored with each imported template
+        #[arg(long, default_value = "import")]
+        source: String,
+    },
 }
 
 #[tokio::main]
@@ -90,6 +106,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Command::StepValidate { paths }) => {
             return step_validate(&paths);
+        }
+        Some(Command::StepImport { paths, source }) => {
+            return step_import(&cli.config, &paths, &source).await;
         }
         None => {}
     }
@@ -114,13 +133,8 @@ async fn main() -> anyhow::Result<()> {
     // URLs that are already expired when the Runner downloads them.
     services::clock::init(&config.clock);
 
-    // Step-index settings for `uses:` resolution (index dir + review gate).
+    // Step-index settings for `uses:` resolution (review gate).
     services::step_resolver::init(services::step_resolver::StepIndexSettings {
-        index_dir: services::step_resolver::local_step_index_dir(
-            &config.pipeline.yaml_scan_dir,
-            &config.step_index.local_dir,
-        ),
-        local_dir: config.step_index.local_dir.clone(),
         reviewed_manifest: config.step_index.reviewed_manifest.clone(),
         require_reviewed: config.step_index.require_reviewed,
     });
@@ -272,6 +286,83 @@ fn step_validate(paths: &[String]) -> anyhow::Result<()> {
         anyhow::bail!("{failed} of {} step spec(s) failed validation", files.len());
     }
     println!("{} step spec(s) valid", files.len());
+    Ok(())
+}
+
+/// `step-import` — import validated step templates into the library.
+/// Requires the Manager config (database); append-only per (id, version).
+async fn step_import(config_path: &str, paths: &[String], source: &str) -> anyhow::Result<()> {
+    if paths.is_empty() {
+        anyhow::bail!("usage: buz-manager step-import <spec.yaml | dir> [...]");
+    }
+    let config = config::load_unchecked(Some(config_path))?;
+    let pool = db::init(&config).await?;
+    db::run_migrations(&pool, &config.auth.jwt_secret).await?;
+    let current_buz = env!("CARGO_PKG_VERSION");
+
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for path in paths {
+        let meta =
+            std::fs::metadata(path).map_err(|e| anyhow::anyhow!("cannot access '{path}': {e}"))?;
+        if meta.is_dir() {
+            let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(path)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    matches!(
+                        p.extension().and_then(|e| e.to_str()),
+                        Some("yaml") | Some("yml")
+                    )
+                })
+                .collect();
+            entries.sort();
+            if entries.is_empty() {
+                anyhow::bail!("directory '{path}' contains no *.yaml/*.yml step specs");
+            }
+            files.extend(entries);
+        } else {
+            files.push(std::path::PathBuf::from(path));
+        }
+    }
+
+    let mut inserted = 0usize;
+    let mut present = 0usize;
+    let mut failed = 0usize;
+    for file in &files {
+        let raw = std::fs::read_to_string(file)
+            .map_err(|e| anyhow::anyhow!("cannot read '{}': {e}", file.display()))?;
+        match crate::services::step_resolver::import_template(&pool, &raw, source, current_buz)
+            .await
+        {
+            Ok((crate::services::step_resolver::ImportOutcome::Inserted, id, version)) => {
+                println!("IMPORTED  {} ({}@{})", file.display(), id, version);
+                inserted += 1;
+            }
+            Ok((crate::services::step_resolver::ImportOutcome::AlreadyPresent, id, version)) => {
+                println!("PRESENT   {} ({}@{})", file.display(), id, version);
+                present += 1;
+            }
+            Err(errors) => {
+                failed += 1;
+                eprintln!("INVALID   {}", file.display());
+                for error in errors.split("; ") {
+                    eprintln!("  - {error}");
+                }
+            }
+        }
+    }
+
+    if failed > 0 {
+        anyhow::bail!(
+            "{failed} of {} file(s) failed ({inserted} imported, {present} already present)",
+            files.len()
+        );
+    }
+    println!(
+        "done: {} imported, {} already present ({} file(s))",
+        inserted,
+        present,
+        files.len()
+    );
     Ok(())
 }
 

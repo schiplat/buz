@@ -58,6 +58,9 @@ level = "info"
 # file = "./logs/manager.log"
 
 [step_index]
-# Where `uses:` marketplace step references resolve (one spec file per
-# step template). Empty → <yaml_scan_dir>/steps (./pipelines/steps).
-# local_dir = "/etc/buz/steps"
+# Review badge for `uses:` marketplace steps (ADR §6.7.4). Templates whose
+# content hash is listed are marked officially reviewed; require_reviewed
+# rejects unreviewed ones at pipeline-save time. Import templates with
+# `buz-manager step-import <dir|file>`.
+# reviewed_manifest = "/etc/buz/reviews.json"
+# require_reviewed = false
