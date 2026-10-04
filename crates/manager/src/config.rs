@@ -33,6 +33,15 @@ pub struct StepIndexConfig {
     /// Empty → `<pipeline.yaml_scan_dir>/steps`.
     #[serde(default)]
     pub local_dir: String,
+    /// Path to a `reviews.json` manifest (ADR §6.7.4): templates whose
+    /// content sha256 is listed are marked officially reviewed. Empty → no
+    /// review checking (all resolutions count as unreviewed, allowed).
+    #[serde(default)]
+    pub reviewed_manifest: String,
+    /// Strict mode: reject resolving templates whose hash is not in the
+    /// reviewed manifest. Only meaningful with `reviewed_manifest` set.
+    #[serde(default)]
+    pub require_reviewed: bool,
 }
 
 /// `[standalone]` — same-container / loopback Runner pairing (dev only).

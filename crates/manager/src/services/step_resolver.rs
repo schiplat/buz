@@ -7,12 +7,104 @@
 //! Remote `https` indexes and the static site are Phase 2 and deliberately
 //! out of scope here.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 use shared::pipeline_yaml::{parse_uses_reference, UsesPin};
 use shared::protocol::StepDef;
 use shared::step_spec::{buz_requirement_satisfied, StepSpec};
+
+/// Step-index settings resolved from Manager config at startup.
+#[derive(Debug, Clone, Default)]
+pub struct StepIndexSettings {
+    /// Resolved index dir (`local_step_index_dir(yaml_scan_dir, local_dir)`).
+    pub index_dir: PathBuf,
+    /// Raw configured `local_dir` — non-empty means callers may use it
+    /// directly instead of deriving from the YAML file's parent.
+    pub local_dir: String,
+    /// Path to `reviews.json` (empty → no review checking).
+    pub reviewed_manifest: String,
+    /// Strict mode: reject resolutions whose hash is not reviewed.
+    pub require_reviewed: bool,
+}
+
+static SETTINGS: OnceLock<StepIndexSettings> = OnceLock::new();
+
+/// Install startup settings (mirrors `services::clock::init`). No-op when
+/// already initialized.
+pub fn init(settings: StepIndexSettings) {
+    let _ = SETTINGS.set(settings);
+}
+
+fn settings() -> StepIndexSettings {
+    SETTINGS.get().cloned().unwrap_or_default()
+}
+
+/// Review gate applied to every resolution.
+#[derive(Debug, Clone, Default)]
+pub struct ResolutionPolicy {
+    /// Content sha256 values listed in the reviewed manifest.
+    pub reviewed_hashes: HashSet<String>,
+    /// Reject unreviewed templates instead of only warning.
+    pub require_reviewed: bool,
+}
+
+/// Load reviewed hashes from a `reviews.json` manifest
+/// (`{ "reviews": [ { "sha256": ... } ] }`). Missing file → empty set
+/// (with `require_reviewed` that fails closed: nothing is reviewed).
+/// Malformed file → warn and continue empty.
+pub fn load_reviewed_hashes(path: &str) -> HashSet<String> {
+    if path.trim().is_empty() {
+        return HashSet::new();
+    }
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) => {
+            tracing::warn!("reviewed manifest {path} unreadable: {e} — treating as empty");
+            return HashSet::new();
+        }
+    };
+    let parsed: Result<ReviewsManifest, _> = serde_json::from_str(&raw);
+    match parsed {
+        Ok(manifest) => manifest
+            .reviews
+            .into_iter()
+            .map(|r| r.sha256.to_lowercase())
+            .collect(),
+        Err(e) => {
+            tracing::warn!("reviewed manifest {path} malformed: {e} — treating as empty");
+            HashSet::new()
+        }
+    }
+}
+
+/// Build the resolution policy from startup settings.
+pub fn policy_from_settings() -> ResolutionPolicy {
+    let settings = settings();
+    ResolutionPolicy {
+        reviewed_hashes: load_reviewed_hashes(&settings.reviewed_manifest),
+        require_reviewed: settings.require_reviewed,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ReviewsManifest {
+    #[serde(default)]
+    reviews: Vec<ReviewEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct ReviewEntry {
+    sha256: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    id: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    version: String,
+}
 
 /// A step template resolved from an index, with everything provenance needs.
 #[derive(Debug, Clone)]
@@ -281,6 +373,7 @@ pub async fn resolve_uses_steps(
     pipeline_id: &str,
     steps: Vec<StepDef>,
     index_dir: &Path,
+    policy: &ResolutionPolicy,
 ) -> Result<Vec<StepDef>, String> {
     if !steps.iter().any(|s| s.uses.is_some()) {
         return Ok(steps);
@@ -292,8 +385,22 @@ pub async fn resolve_uses_steps(
     for step in steps {
         if let Some(uses_ref) = step.uses.clone() {
             let resolved = index.resolve(&uses_ref, current_buz)?;
+            let reviewed = policy.reviewed_hashes.contains(&resolved.content_sha256);
+            if !reviewed && policy.require_reviewed {
+                return Err(format!(
+                    "step '{uses_ref}' (sha256 {}) is not officially reviewed and                      require_reviewed is enabled — pin an approved hash or disable the flag",
+                    resolved.content_sha256
+                ));
+            }
+            if !reviewed {
+                tracing::warn!(
+                    step = %uses_ref,
+                    sha256 = %resolved.content_sha256,
+                    "resolving a template that is not in the reviewed manifest"
+                );
+            }
             let expanded = expand_uses_step(&step, &resolved).map_err(|e| e.join("; "))?;
-            record_resolution(pool, pipeline_id, &uses_ref, &resolved, &expanded).await?;
+            record_resolution(pool, pipeline_id, &uses_ref, &resolved, &expanded, reviewed).await?;
             out.push(expanded);
         } else {
             out.push(step);
@@ -308,13 +415,15 @@ async fn record_resolution(
     uses_ref: &str,
     resolved: &ResolvedStep,
     expanded: &StepDef,
+    reviewed: bool,
 ) -> Result<(), String> {
     let expanded_json = serde_json::to_string(expanded)
         .map_err(|e| format!("cannot serialize expanded step: {e}"))?;
     sqlx::query(
         "INSERT INTO step_resolutions
-         (id, pipeline_id, uses_ref, resolved_version, content_sha256, source, expanded_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         (id, pipeline_id, uses_ref, resolved_version, content_sha256, source, expanded_json, \
+          reviewed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(pipeline_id)
@@ -323,6 +432,7 @@ async fn record_resolution(
     .bind(&resolved.content_sha256)
     .bind(&resolved.source)
     .bind(expanded_json)
+    .bind(reviewed)
     .execute(pool)
     .await
     .map_err(|e| format!("cannot record step resolution: {e}"))?;

@@ -113,6 +113,17 @@ async fn main() -> anyhow::Result<()> {
     // Clock-skew guard for signed config URLs: a slow Manager clock produces
     // URLs that are already expired when the Runner downloads them.
     services::clock::init(&config.clock);
+
+    // Step-index settings for `uses:` resolution (index dir + review gate).
+    services::step_resolver::init(services::step_resolver::StepIndexSettings {
+        index_dir: services::step_resolver::local_step_index_dir(
+            &config.pipeline.yaml_scan_dir,
+            &config.step_index.local_dir,
+        ),
+        local_dir: config.step_index.local_dir.clone(),
+        reviewed_manifest: config.step_index.reviewed_manifest.clone(),
+        require_reviewed: config.step_index.require_reviewed,
+    });
     tracing::info!(
         enabled = config.clock.enabled,
         warn_threshold_seconds = config.clock.warn_threshold_seconds,

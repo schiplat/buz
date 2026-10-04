@@ -270,10 +270,15 @@ pub async fn upsert_from_yaml(
                 crate::services::step_resolver::local_step_index_dir(&parent.to_string_lossy(), "")
             })
             .unwrap_or_else(|| crate::services::step_resolver::local_step_index_dir(".", ""));
-        let steps =
-            crate::services::step_resolver::resolve_uses_steps(pool, &id, steps, &index_dir)
-                .await
-                .map_err(|e| anyhow::anyhow!(e))?;
+        let steps = crate::services::step_resolver::resolve_uses_steps(
+            pool,
+            &id,
+            steps,
+            &index_dir,
+            &crate::services::step_resolver::policy_from_settings(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
         insert_steps(pool, &id, &steps).await?;
         tracing::debug!("YAML scanner: updated pipeline {pipeline_name} ({id})");
 
@@ -369,10 +374,15 @@ pub async fn upsert_from_yaml(
                 crate::services::step_resolver::local_step_index_dir(&parent.to_string_lossy(), "")
             })
             .unwrap_or_else(|| crate::services::step_resolver::local_step_index_dir(".", ""));
-        let steps =
-            crate::services::step_resolver::resolve_uses_steps(pool, &id, steps, &index_dir)
-                .await
-                .map_err(|e| anyhow::anyhow!(e))?;
+        let steps = crate::services::step_resolver::resolve_uses_steps(
+            pool,
+            &id,
+            steps,
+            &index_dir,
+            &crate::services::step_resolver::policy_from_settings(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
         insert_steps(pool, &id, &steps).await?;
 
         if let Some(ref envs) = parsed.env {

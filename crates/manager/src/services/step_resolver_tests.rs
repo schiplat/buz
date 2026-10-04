@@ -185,6 +185,88 @@ fn expand_rejects_unknown_and_missing_required_inputs() {
 }
 
 #[tokio::test]
+async fn reviewed_manifest_flags_hash_and_strict_mode_rejects_unreviewed() {
+    let dir = seed_index();
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    crate::db::run_migrations(&pool, "test-secret-0123456789abcdef")
+        .await
+        .unwrap();
+
+    // Discover the 1.4.0 content hash via a lenient resolution.
+    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let resolved = index.resolve("notify/feishu@1", "1.5.6").unwrap();
+
+    let manifest_path = dir.path().join("reviews.json");
+    std::fs::write(
+        &manifest_path,
+        format!(
+            r#"{{"reviews":[{{"id":"notify/feishu","version":"1.4.0","sha256":"{}"}}]}}"#,
+            resolved.content_sha256
+        ),
+    )
+    .unwrap();
+
+    let policy = super::ResolutionPolicy {
+        reviewed_hashes: super::load_reviewed_hashes(manifest_path.to_str().unwrap()),
+        require_reviewed: true,
+    };
+
+    // Reviewed hash → resolves under strict mode, provenance flagged.
+    let mut step = uses_step("notify/feishu@1.4.0");
+    let mut with = BTreeMap::new();
+    with.insert("webhook".to_string(), "https://hook".to_string());
+    step.with = Some(with);
+    let out = resolve_uses_steps(&pool, "pipe-r", vec![step], dir.path(), &policy)
+        .await
+        .unwrap();
+    assert_eq!(out.len(), 1);
+    let reviewed: i64 =
+        sqlx::query_scalar("SELECT reviewed FROM step_resolutions WHERE pipeline_id = 'pipe-r'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(reviewed, 1);
+
+    // Different (unreviewed) pin → strict mode rejects.
+    let err = resolve_uses_steps(
+        &pool,
+        "pipe-r2",
+        vec![uses_step("notify/feishu@1.2.0")],
+        dir.path(),
+        &policy,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("not officially reviewed"), "{err}");
+
+    // Lenient policy allows it (warning only) and records reviewed=0.
+    let mut step = uses_step("notify/feishu@1.2.0");
+    let mut with = BTreeMap::new();
+    with.insert("webhook".to_string(), "https://hook".to_string());
+    step.with = Some(with);
+    let out = resolve_uses_steps(
+        &pool,
+        "pipe-r3",
+        vec![step],
+        dir.path(),
+        &super::ResolutionPolicy::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out[0].uses, None);
+    let reviewed: i64 =
+        sqlx::query_scalar("SELECT reviewed FROM step_resolutions WHERE pipeline_id = 'pipe-r3'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(reviewed, 0);
+}
+
+#[tokio::test]
 async fn resolve_uses_steps_passthrough_and_provenance() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -199,9 +281,15 @@ async fn resolve_uses_steps_passthrough_and_provenance() {
 
     // No uses → passthrough, no rows.
     let plain = vec![plain_step()];
-    let out = resolve_uses_steps(&pool, "pipe-1", plain.clone(), dir.path())
-        .await
-        .unwrap();
+    let out = resolve_uses_steps(
+        &pool,
+        "pipe-1",
+        plain.clone(),
+        dir.path(),
+        &Default::default(),
+    )
+    .await
+    .unwrap();
     assert_eq!(out.len(), 1);
     let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM step_resolutions")
         .fetch_one(&pool)
@@ -217,14 +305,14 @@ async fn resolve_uses_steps_passthrough_and_provenance() {
         "https://open.feishu/hook/x".to_string(),
     );
     step.with = Some(with);
-    let out = resolve_uses_steps(&pool, "pipe-1", vec![step], dir.path())
+    let out = resolve_uses_steps(&pool, "pipe-1", vec![step], dir.path(), &Default::default())
         .await
         .unwrap();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].uses, None);
     assert!(out[0].run.contains("INPUT_WEBHOOK"));
-    let (version, hash, source): (String, String, String) = sqlx::query_as(
-        "SELECT resolved_version, content_sha256, source FROM step_resolutions \
+    let (version, hash, source, reviewed): (String, String, String, i64) = sqlx::query_as(
+        "SELECT resolved_version, content_sha256, source, reviewed FROM step_resolutions \
          WHERE pipeline_id = 'pipe-1'",
     )
     .fetch_one(&pool)
@@ -233,6 +321,7 @@ async fn resolve_uses_steps_passthrough_and_provenance() {
     assert_eq!(version, "1.4.0");
     assert_eq!(hash.len(), 64);
     assert!(source.starts_with("local:"));
+    assert_eq!(reviewed, 0, "no manifest → unreviewed");
 }
 
 fn plain_step() -> StepDef {

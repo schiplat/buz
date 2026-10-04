@@ -95,6 +95,13 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
 
+    // Step review badge (ADR §6.7.4): 1 when the resolved content hash was
+    // in the reviewed manifest at save time.
+    let _ =
+        sqlx::query("ALTER TABLE step_resolutions ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await;
+
     // Add webhook_secret column (bare team secret name; empty = no verification)
     let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN webhook_secret TEXT NOT NULL DEFAULT ''")
         .execute(pool)

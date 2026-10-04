@@ -181,6 +181,7 @@ pub async fn create(
                     &state.config.pipeline.yaml_scan_dir,
                     &state.config.step_index.local_dir,
                 ),
+                &crate::services::step_resolver::policy_from_settings(),
             )
             .await
             .map_err(AppError::ValidationFailed)?,
@@ -514,6 +515,7 @@ pub async fn update(
                 &state.config.pipeline.yaml_scan_dir,
                 &state.config.step_index.local_dir,
             ),
+            &crate::services::step_resolver::policy_from_settings(),
         )
         .await
         .map_err(AppError::ValidationFailed)?,
