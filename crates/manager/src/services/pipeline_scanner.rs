@@ -264,10 +264,17 @@ pub async fn upsert_from_yaml(
             .execute(pool)
             .await?;
 
+        let index_dir = std::path::Path::new(file_path)
+            .parent()
+            .map(|parent| {
+                crate::services::step_resolver::local_step_index_dir(&parent.to_string_lossy(), "")
+            })
+            .unwrap_or_else(|| crate::services::step_resolver::local_step_index_dir(".", ""));
         let steps = crate::services::step_resolver::resolve_uses_steps(
             pool,
             &id,
             steps,
+            &index_dir,
             &crate::services::step_resolver::policy_from_settings(),
         )
         .await
@@ -361,10 +368,17 @@ pub async fn upsert_from_yaml(
         .execute(pool)
         .await?;
 
+        let index_dir = std::path::Path::new(file_path)
+            .parent()
+            .map(|parent| {
+                crate::services::step_resolver::local_step_index_dir(&parent.to_string_lossy(), "")
+            })
+            .unwrap_or_else(|| crate::services::step_resolver::local_step_index_dir(".", ""));
         let steps = crate::services::step_resolver::resolve_uses_steps(
             pool,
             &id,
             steps,
+            &index_dir,
             &crate::services::step_resolver::policy_from_settings(),
         )
         .await

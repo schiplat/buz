@@ -8,16 +8,22 @@
 //! out of scope here.
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 use shared::pipeline_yaml::{parse_uses_reference, UsesPin};
 use shared::protocol::StepDef;
-use shared::step_spec::{buz_requirement_satisfied, parse_and_validate_step_spec, StepSpec};
+use shared::step_spec::{buz_requirement_satisfied, StepSpec};
 
 /// Step-index settings resolved from Manager config at startup.
 #[derive(Debug, Clone, Default)]
 pub struct StepIndexSettings {
+    /// Resolved index dir (`local_step_index_dir(yaml_scan_dir, local_dir)`).
+    pub index_dir: PathBuf,
+    /// Raw configured `local_dir` — non-empty means callers may use it
+    /// directly instead of deriving from the YAML file's parent.
+    pub local_dir: String,
     /// Path to `reviews.json` (empty → no review checking).
     pub reviewed_manifest: String,
     /// Strict mode: reject resolutions whose hash is not reviewed.
@@ -110,108 +116,158 @@ pub struct ResolvedStep {
     pub content_sha256: String,
 }
 
-/// A template row as stored in `step_templates`.
-struct StoredSpec {
+/// Local index dir: configured value wins, else `<yaml_scan_dir>/steps`
+/// (2026-10-03 decision — no extra config by default).
+pub fn local_step_index_dir(yaml_scan_dir: &str, configured: &str) -> PathBuf {
+    let configured = configured.trim();
+    if configured.is_empty() {
+        Path::new(yaml_scan_dir).join("steps")
+    } else {
+        PathBuf::from(configured)
+    }
+}
+
+/// One template file found in the index.
+struct IndexedSpec {
     spec: StepSpec,
-    raw_yaml: String,
     source: String,
     content_sha256: String,
 }
 
-/// Resolve a `uses:` reference against the `step_templates` table
-/// (the DB is the primary trusted source — ADR §6.2, 2026-10-04).
-///
-/// Pin semantics unchanged: `@X.Y.Z` exact (PK makes it unambiguous),
-/// `@X` / `@X.Y` → highest matching version, `@sha256:<hex>` matches the
-/// stored content hash. The raw YAML's actual hash is recomputed on read
-/// and must match the stored column — a tampered row fails loudly.
-async fn resolve_in_db(
-    pool: &sqlx::SqlitePool,
-    uses_ref: &str,
-    current_buz: &str,
-) -> Result<ResolvedStep, String> {
-    let (reference, pin) = parse_uses_reference(uses_ref)?;
+/// The `local` step index: a directory of one-file-one-plugin YAML specs.
+pub struct LocalStepIndex {
+    dir: PathBuf,
+}
 
-    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-        "SELECT version, raw_yaml, content_sha256, source
-         FROM step_templates WHERE id = ? ORDER BY version ASC",
-    )
-    .bind(&reference)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("cannot query step templates: {e}"))?;
-
-    if rows.is_empty() {
-        return Err(format!(
-            "step '{reference}' not found in the step library — import it via \
-             `buz-manager step-import` or the steps API"
-        ));
+impl LocalStepIndex {
+    pub fn new(dir: PathBuf) -> Self {
+        Self { dir }
     }
 
-    // Integrity first: recompute the hash of the stored truth.
-    let rows: Vec<StoredSpec> = rows
-        .into_iter()
-        .map(|(version, raw_yaml, stored_hash, source)| {
-            let actual = format!("{:x}", Sha256::digest(raw_yaml.as_bytes()));
-            if actual != stored_hash {
+    /// Load every parseable spec. Files that fail to parse are skipped with
+    /// a warning — one broken file must not take the whole index down
+    /// (the `buz step validate` CLI is the tool that reports them loudly).
+    fn load(&self) -> Result<Vec<IndexedSpec>, String> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(format!(
-                    "step '{reference}@{version}' failed integrity check — stored hash does \
-                     not match its content; re-import the template"
+                    "local step index directory {} does not exist",
+                    self.dir.display()
                 ));
             }
-            let spec: StepSpec = serde_yaml::from_str(&raw_yaml).map_err(|e| {
-                format!("stored template '{reference}@{version}' no longer parses: {e}")
-            })?;
-            Ok(StoredSpec {
-                spec,
-                raw_yaml,
-                source,
-                content_sha256: stored_hash,
+            Err(e) => return Err(format!("cannot read {}: {e}", self.dir.display())),
+        };
+
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                matches!(
+                    p.extension().and_then(|e| e.to_str()),
+                    Some("yaml") | Some("yml")
+                )
             })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+            .collect();
+        files.sort();
 
-    let picked = match &pin {
-        UsesPin::Sha256(hex) => rows
-            .into_iter()
-            .find(|entry| entry.content_sha256 == *hex)
-            .ok_or_else(|| {
-                format!("no step '{reference}' with content sha256:{hex} in the step library")
-            })?,
-        UsesPin::Version(v) => {
-            let parts: Vec<&str> = v.split('.').collect();
-            let matched: Vec<StoredSpec> = rows
-                .into_iter()
-                .filter(|entry| {
-                    entry.spec.version == *v
-                        || (parts.len() < 3 && entry.spec.version.starts_with(&format!("{v}.")))
-                })
-                .collect();
-            if matched.is_empty() {
-                return Err(format!(
-                    "step '{reference}' has no version matching @{v} in the step library"
-                ));
-            }
-            if parts.len() < 3 {
-                matched
-                    .into_iter()
-                    .max_by_key(|entry| version_triple(&entry.spec.version).unwrap_or((0, 0, 0)))
-                    .expect("matched is non-empty")
-            } else {
-                matched.into_iter().next().expect("matched is non-empty")
-            }
+        let mut specs = Vec::new();
+        for file in files {
+            let Ok(raw) = std::fs::read_to_string(&file) else {
+                tracing::warn!("step index: cannot read {} — skipped", file.display());
+                continue;
+            };
+            let Ok(spec) = serde_yaml::from_str::<StepSpec>(&raw) else {
+                tracing::warn!(
+                    "step index: {} is not a valid step spec — skipped (run `buz-manager \
+                     step-validate` for details)",
+                    file.display()
+                );
+                continue;
+            };
+            specs.push(IndexedSpec {
+                content_sha256: format!("{:x}", Sha256::digest(raw.as_bytes())),
+                source: format!("local:{}", self.dir.display()),
+                spec,
+            });
         }
-    };
-
-    if let Some(requires) = picked.spec.requires_buz.as_deref() {
-        buz_requirement_satisfied(requires, current_buz)?;
+        Ok(specs)
     }
 
-    Ok(ResolvedStep {
-        spec: picked.spec,
-        source: picked.source,
-        content_sha256: picked.content_sha256,
-    })
+    /// Resolve a `uses:` reference against this index.
+    pub fn resolve(&self, uses_ref: &str, current_buz: &str) -> Result<ResolvedStep, String> {
+        let (reference, pin) = parse_uses_reference(uses_ref)?;
+
+        let candidates: Vec<IndexedSpec> = self
+            .load()?
+            .into_iter()
+            .filter(|entry| entry.spec.id == reference)
+            .collect();
+
+        if candidates.is_empty() {
+            return Err(format!(
+                "step '{reference}' not found in local step index {}",
+                self.dir.display()
+            ));
+        }
+
+        let picked = match &pin {
+            UsesPin::Sha256(hex) => candidates
+                .into_iter()
+                .find(|entry| entry.content_sha256 == *hex)
+                .ok_or_else(|| {
+                    format!(
+                        "no step '{reference}' with content sha256:{hex} in local step index {}",
+                        self.dir.display()
+                    )
+                })?,
+            UsesPin::Version(v) => {
+                let parts: Vec<&str> = v.split('.').collect();
+                let matched: Vec<IndexedSpec> = candidates
+                    .into_iter()
+                    .filter(|entry| {
+                        // Exact for @X.Y.Z, prefix for the @X / @1.2 major pins.
+                        entry.spec.version == *v
+                            || (parts.len() < 3 && entry.spec.version.starts_with(&format!("{v}.")))
+                    })
+                    .collect();
+                if matched.is_empty() {
+                    return Err(format!(
+                        "step '{reference}' has no version matching @{v} in local step index {}",
+                        self.dir.display()
+                    ));
+                }
+                if parts.len() < 3 {
+                    // Major pin → the highest matching version wins.
+                    matched
+                        .into_iter()
+                        .max_by_key(|entry| {
+                            version_triple(&entry.spec.version).unwrap_or((0, 0, 0))
+                        })
+                        .expect("matched is non-empty")
+                } else {
+                    // Exact pin must be unambiguous.
+                    if matched.len() > 1 {
+                        return Err(format!(
+                            "step '{reference}@{v}' is ambiguous — {} files declare the same \
+                             id and version in the local index",
+                            matched.len()
+                        ));
+                    }
+                    matched.into_iter().next().expect("non-empty")
+                }
+            }
+        };
+
+        if let Some(requires) = picked.spec.requires_buz.as_deref() {
+            buz_requirement_satisfied(requires, current_buz)?;
+        }
+
+        Ok(ResolvedStep {
+            spec: picked.spec,
+            source: picked.source,
+            content_sha256: picked.content_sha256,
+        })
+    }
 }
 
 fn version_triple(v: &str) -> Option<(u64, u64, u64)> {
@@ -316,17 +372,19 @@ pub async fn resolve_uses_steps(
     pool: &sqlx::SqlitePool,
     pipeline_id: &str,
     steps: Vec<StepDef>,
+    index_dir: &Path,
     policy: &ResolutionPolicy,
 ) -> Result<Vec<StepDef>, String> {
     if !steps.iter().any(|s| s.uses.is_some()) {
         return Ok(steps);
     }
+    let index = LocalStepIndex::new(index_dir.to_path_buf());
     let current_buz = env!("CARGO_PKG_VERSION");
 
     let mut out = Vec::with_capacity(steps.len());
     for step in steps {
         if let Some(uses_ref) = step.uses.clone() {
-            let resolved = resolve_in_db(pool, &uses_ref, current_buz).await?;
+            let resolved = index.resolve(&uses_ref, current_buz)?;
             let reviewed = policy.reviewed_hashes.contains(&resolved.content_sha256);
             if !reviewed && policy.require_reviewed {
                 return Err(format!(
@@ -349,63 +407,6 @@ pub async fn resolve_uses_steps(
         }
     }
     Ok(out)
-}
-
-/// Outcome of [`import_template`].
-#[derive(Debug, PartialEq, Eq)]
-pub enum ImportOutcome {
-    /// Row created.
-    Inserted,
-    /// Identical (id, version, sha256) already present — idempotent no-op.
-    AlreadyPresent,
-}
-
-/// Validate one template's YAML and store it into `step_templates`.
-/// Append-only: same (id, version) with identical content is an idempotent
-/// no-op; with different content it is a conflict (the author must bump the
-/// version). Every ingestion path (CLI / API / sync) goes through this.
-pub async fn import_template(
-    pool: &sqlx::SqlitePool,
-    raw_yaml: &str,
-    source: &str,
-    current_buz: &str,
-) -> Result<(ImportOutcome, String, String), String> {
-    let spec = parse_and_validate_step_spec(raw_yaml, current_buz).map_err(|e| e.join("; "))?;
-    let content_sha256 = format!("{:x}", Sha256::digest(raw_yaml.as_bytes()));
-
-    let existing: Option<String> = sqlx::query_scalar(
-        "SELECT content_sha256 FROM step_templates WHERE id = ? AND version = ?",
-    )
-    .bind(&spec.id)
-    .bind(&spec.version)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("cannot query step templates: {e}"))?;
-
-    if let Some(existing_hash) = existing {
-        if existing_hash == content_sha256 {
-            return Ok((ImportOutcome::AlreadyPresent, spec.id, spec.version));
-        }
-        return Err(format!(
-            "step '{}@{}' already exists with different content — bump the version instead of              overwriting (library rows are append-only)",
-            spec.id, spec.version
-        ));
-    }
-
-    sqlx::query(
-        "INSERT INTO step_templates (id, version, raw_yaml, content_sha256, source)
-         VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind(&spec.id)
-    .bind(&spec.version)
-    .bind(raw_yaml)
-    .bind(&content_sha256)
-    .bind(source)
-    .execute(pool)
-    .await
-    .map_err(|e| format!("cannot insert step template: {e}"))?;
-
-    Ok((ImportOutcome::Inserted, spec.id, spec.version))
 }
 
 async fn record_resolution(

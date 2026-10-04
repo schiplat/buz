@@ -65,7 +65,6 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     for path in [
         include_str!("migrations/001_init.sql"),
         include_str!("migrations/002_step_resolutions.sql"),
-        include_str!("migrations/003_step_templates.sql"),
     ] {
         // Split by ; and execute each statement
         for statement in path.split(';') {

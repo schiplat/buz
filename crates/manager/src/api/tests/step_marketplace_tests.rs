@@ -21,7 +21,7 @@ use crate::state::AppState;
 const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
 const ADMIN_ID: &str = "admin-1";
 
-async fn test_app_with_templates(feishu_yaml: &str) -> (Router, sqlx::SqlitePool) {
+async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, sqlx::SqlitePool) {
     let pool = SqlitePoolOptions::new()
         .max_connections(4)
         .connect("sqlite::memory:")
@@ -44,7 +44,7 @@ async fn test_app_with_templates(feishu_yaml: &str) -> (Router, sqlx::SqlitePool
         .await
         .expect("seed team");
 
-    let config = Config {
+    let mut config = Config {
         server: ServerConfig::default(),
         database: Default::default(),
         auth: AuthConfig {
@@ -59,16 +59,7 @@ async fn test_app_with_templates(feishu_yaml: &str) -> (Router, sqlx::SqlitePool
         clock: Default::default(),
         logging: Default::default(),
     };
-
-    // Seed the step library directly (DB is the primary source, §6.2).
-    crate::services::step_resolver::import_template(
-        &pool,
-        feishu_yaml,
-        "test",
-        env!("CARGO_PKG_VERSION"),
-    )
-    .await
-    .expect("seed step template");
+    config.step_index.local_dir = index_dir.to_string_lossy().into_owned();
 
     let state = AppState {
         pool: pool.clone(),
@@ -82,7 +73,6 @@ fn feishu_spec() -> String {
     r#"
 id: notify/feishu
 version: 1.2.0
-publisher: official
 engine: shell
 inputs:
   webhook:
@@ -139,7 +129,9 @@ async fn read_json(response: axum::response::Response) -> serde_json::Value {
 
 #[tokio::test]
 async fn uses_step_resolves_expands_and_locks_provenance() {
-    let (app, pool) = test_app_with_templates(&feishu_spec()).await;
+    let index = tempfile::tempdir().unwrap();
+    std::fs::write(index.path().join("feishu.yaml"), feishu_spec()).unwrap();
+    let (app, pool) = test_app_with_index(index.path()).await;
     let jwt = TokenManager::new(JWT_SECRET)
         .create_token(ADMIN_ID, Role::Admin, 1)
         .unwrap();
@@ -180,12 +172,14 @@ async fn uses_step_resolves_expands_and_locks_provenance() {
     assert_eq!(uses_ref, "notify/feishu@1.2");
     assert_eq!(version, "1.2.0");
     assert_eq!(hash.len(), 64);
-    assert_eq!(source, "test");
+    assert!(source.starts_with("local:"), "{source}");
 }
 
 #[tokio::test]
 async fn unknown_or_unsatisfiable_uses_are_rejected_at_save() {
-    let (app, _pool) = test_app_with_templates(&feishu_spec()).await;
+    let index = tempfile::tempdir().unwrap();
+    std::fs::write(index.path().join("feishu.yaml"), feishu_spec()).unwrap();
+    let (app, _pool) = test_app_with_index(index.path()).await;
     let jwt = TokenManager::new(JWT_SECRET)
         .create_token(ADMIN_ID, Role::Admin, 1)
         .unwrap();
@@ -202,7 +196,7 @@ async fn unknown_or_unsatisfiable_uses_are_rejected_at_save() {
         body["message"]
             .as_str()
             .unwrap()
-            .contains("not found in the step library"),
+            .contains("not found in local step index"),
         "{body}"
     );
 

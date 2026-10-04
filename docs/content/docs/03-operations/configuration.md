@@ -28,13 +28,13 @@ heartbeat_timeout_seconds = 90
 
 [pipeline]
 yaml_scan_dir = "./pipelines"
+# Pipeline YAML files are scanned flat; the step index lives in ./pipelines/steps
 
 [step_index]
-# Step templates live in the Manager database (`step_templates`); import
-# them from spec files/dirs or an official Release bundle with
-# `buz-manager step-import <dir|file>`. Optional review badge (ADR §6.7.4):
-# reviewed_manifest = "/etc/buz/reviews.json"
-# require_reviewed = false
+# Where `uses:` marketplace step references resolve. Empty (default) →
+# <yaml_scan_dir>/steps. One spec file per step template; validate with
+# `buz-manager step-validate <file-or-dir>`.
+# local_dir = "/etc/buz/steps"
 yaml_scan_interval_seconds = 30
 
 [clock]
