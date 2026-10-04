@@ -49,9 +49,22 @@ pub struct StepSpec {
     pub description: Option<String>,
     #[serde(default)]
     pub description_zh: Option<String>,
-    /// `official` | `community` — display-only badge, no review system.
+    /// `official` | `community` (default when omitted). Attribution rules
+    /// bind to community: `author` + `source_repo` become required.
     #[serde(default)]
     pub publisher: Option<String>,
+    /// Template author — required for `publisher: community` (ADR §6.7.1).
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub author_url: Option<String>,
+    /// Repository the template is maintained in — required for
+    /// `publisher: community`.
+    #[serde(default)]
+    pub source_repo: Option<String>,
+    /// Search keywords (zh/en mix), consumed by the static-site index.
+    #[serde(default)]
+    pub keywords: Option<Vec<String>>,
     #[serde(default)]
     pub license: Option<String>,
     /// `>=X.Y.Z` or exact `X.Y.Z` — the only supported forms (2026-10-03).
@@ -89,6 +102,47 @@ impl StepSpec {
     /// Effective engine (`shell` when omitted).
     pub fn effective_engine(&self) -> &str {
         self.engine.as_deref().unwrap_or("shell").trim()
+    }
+
+    /// Effective publisher — omitted means `community` (the strictest
+    /// attribution default; official templates declare it explicitly).
+    pub fn effective_publisher(&self) -> &'static str {
+        match self.publisher.as_deref().map(str::trim) {
+            Some("official") => "official",
+            _ => "community",
+        }
+    }
+
+    fn non_empty(field: Option<&str>) -> bool {
+        field.map(str::trim).filter(|s| !s.is_empty()).is_some()
+    }
+
+    /// Attribution completeness for this spec's publisher tier.
+    pub fn attribution_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        match self.publisher.as_deref().map(str::trim) {
+            None | Some("") | Some("official") | Some("community") => {}
+            Some(other) => errors.push(format!(
+                "publisher: unknown value {other:?} — use 'official' or 'community'"
+            )),
+        }
+        if self.effective_publisher() == "community" {
+            if !Self::non_empty(self.author.as_deref()) {
+                errors.push(
+                    "author: is required for publisher: community (or omitted publisher) \
+                     templates — who maintains this template?"
+                        .into(),
+                );
+            }
+            if !Self::non_empty(self.source_repo.as_deref()) {
+                errors.push(
+                    "source_repo: is required for publisher: community (or omitted publisher) \
+                     templates — where is it maintained?"
+                        .into(),
+                );
+            }
+        }
+        errors
     }
 
     /// Input declarations with the map key filled in as `name`, preserving
@@ -271,6 +325,26 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
         }
     }
 
+    errors.extend(spec.attribution_errors());
+
+    // Credential-like inputs must be masked: their values are redacted in
+    // logs/snapshots/audit. Name-based heuristic — cheap, catches the
+    // overwhelmingly common cases at authoring time.
+    const CREDENTIAL_HINTS: &[&str] = &[
+        "webhook",
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "api_key",
+        "apikey",
+        "credential",
+        "private_key",
+        "access_key",
+        "secret_key",
+        "app_key",
+        "sign_key",
+    ];
     for (name, input) in spec.inputs.iter().flatten() {
         if InputTypeKind::parse(input.input_type.as_deref()).is_none() {
             errors.push(format!(
@@ -284,6 +358,15 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
         {
             errors.push(format!(
                 "inputs.{name}: type: choice requires a non-empty options list"
+            ));
+        }
+        let lower = name.to_lowercase();
+        let credential_like = lower.contains("key") && !lower.contains("keyword")
+            || CREDENTIAL_HINTS.iter().any(|hint| lower.contains(hint));
+        if credential_like && !input.masking.unwrap_or(false) {
+            errors.push(format!(
+                "inputs.{name}: credential-like input must declare `masking: true` — values \
+                 would otherwise appear in logs and job snapshots"
             ));
         }
     }

@@ -135,3 +135,63 @@ fn malformed_ids_versions_and_inputs_rejected() {
         "{errors:?}"
     );
 }
+
+#[test]
+fn community_publisher_requires_attribution() {
+    // Omitted publisher defaults to community → author + source_repo required.
+    let community = base_yaml().replacen("publisher: official\n", "", 1);
+    let errors = validate_step_spec(
+        &serde_yaml::from_str::<StepSpec>(&community).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
+    assert!(
+        errors.iter().any(|e| e.starts_with("author:")),
+        "{errors:?}"
+    );
+    assert!(
+        errors.iter().any(|e| e.starts_with("source_repo:")),
+        "{errors:?}"
+    );
+
+    let complete = base_yaml().replacen(
+        "publisher: official",
+        "publisher: community\nauthor: someone\nsource_repo: https://github.com/someone/steps",
+        1,
+    );
+    let spec: StepSpec = serde_yaml::from_str(&complete).unwrap();
+    assert!(validate_step_spec(&spec, CURRENT).is_ok());
+
+    // Explicit official keeps attribution optional — base_yaml IS official.
+    let spec: StepSpec = serde_yaml::from_str(&base_yaml()).unwrap();
+    assert!(validate_step_spec(&spec, CURRENT).is_ok());
+
+    let bad = base_yaml().replacen("publisher: official", "publisher: verified", 1);
+    let errors =
+        validate_step_spec(&serde_yaml::from_str::<StepSpec>(&bad).unwrap(), CURRENT).unwrap_err();
+    assert!(
+        errors.iter().any(|e| e.starts_with("publisher:")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn credential_like_inputs_must_be_masked() {
+    let leaky = base_yaml().replacen(
+        "  at_all:",
+        "  bot_token:\n    type: string\n    default: \"x\"\n  at_all:",
+        1,
+    );
+    let errors = validate_step_spec(&serde_yaml::from_str::<StepSpec>(&leaky).unwrap(), CURRENT)
+        .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.starts_with("inputs.bot_token:") && e.contains("masking: true")),
+        "{errors:?}"
+    );
+
+    // The existing webhook input is masked → base template stays valid.
+    let spec: StepSpec = serde_yaml::from_str(&base_yaml()).unwrap();
+    assert!(validate_step_spec(&spec, CURRENT).is_ok());
+}
