@@ -116,11 +116,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Step-index settings for `uses:` resolution (index dir + review gate).
     services::step_resolver::init(services::step_resolver::StepIndexSettings {
-        index_dir: services::step_resolver::local_step_index_dir(
-            &config.pipeline.yaml_scan_dir,
-            &config.step_index.local_dir,
-        ),
-        local_dir: config.step_index.local_dir.clone(),
         reviewed_manifest: config.step_index.reviewed_manifest.clone(),
         require_reviewed: config.step_index.require_reviewed,
     });

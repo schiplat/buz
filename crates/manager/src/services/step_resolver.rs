@@ -19,11 +19,6 @@ use shared::step_spec::{buz_requirement_satisfied, StepSpec};
 /// Step-index settings resolved from Manager config at startup.
 #[derive(Debug, Clone, Default)]
 pub struct StepIndexSettings {
-    /// Resolved index dir (`local_step_index_dir(yaml_scan_dir, local_dir)`).
-    pub index_dir: PathBuf,
-    /// Raw configured `local_dir` — non-empty means callers may use it
-    /// directly instead of deriving from the YAML file's parent.
-    pub local_dir: String,
     /// Path to `reviews.json` (empty → no review checking).
     pub reviewed_manifest: String,
     /// Strict mode: reject resolutions whose hash is not reviewed.
