@@ -12,6 +12,14 @@ buz-runner --version
 # Web UI: sidebar footer / login page; API: GET /health
 ```
 
+## Security / 安全报告
+
+**Please do not report security vulnerabilities through public GitHub issues.**
+
+Use [Private vulnerability reporting](https://github.com/schiplat/buz/security/advisories/new) — reports stay private between you and the maintainers, with a first response targeted within **7 days**.
+
+**请勿通过公开 issue 报告安全漏洞。** 请使用上方"私有漏洞报告"私下提交（7 天内首次响应）。社区插件的疑似恶意内容同样走 [buz-plugins 私有举报](https://github.com/schiplat/buz-plugins/security/advisories/new)。
+
 ## Quick Start
 
 ```bash
