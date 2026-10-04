@@ -58,6 +58,8 @@ level = "info"
 # file = "./logs/manager.log"
 
 [step_index]
-# Local step-template dir for `uses:` marketplace references.
-# Empty → <yaml_scan_dir>/steps (./pipelines/steps).
-# local_dir = "/etc/buz/steps"
+# Step templates for `uses:` marketplace references. Empty →
+# <yaml_scan_dir>/steps (./pipelines/steps) — clone
+# github.com/schiplat/buz-plugins there and `git pull` to update.
+# Review badge (ADR §6.7.4): reviewed_manifest = "/etc/buz/reviews.json"
+# require_reviewed = false

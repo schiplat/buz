@@ -60,4 +60,7 @@ level = "info"
 [step_index]
 # Where `uses:` marketplace step references resolve (one spec file per
 # step template). Empty → <yaml_scan_dir>/steps (./pipelines/steps).
-# local_dir = "/etc/buz/steps"
+# Review badge: list officially reviewed content hashes in a reviews.json
+# and require_reviewed = true to reject unreviewed templates at save time.
+# reviewed_manifest = "/etc/buz/reviews.json"
+# require_reviewed = false

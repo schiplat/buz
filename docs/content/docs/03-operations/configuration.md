@@ -32,9 +32,11 @@ yaml_scan_dir = "./pipelines"
 
 [step_index]
 # Where `uses:` marketplace step references resolve. Empty (default) →
-# <yaml_scan_dir>/steps. One spec file per step template; validate with
-# `buz-manager step-validate <file-or-dir>`.
-# local_dir = "/etc/buz/steps"
+# <yaml_scan_dir>/steps — clone github.com/schiplat/buz-plugins there
+# (git pull to update). Validate with `buz-manager step-validate`.
+# Optional review badge (ADR §6.7.4):
+# reviewed_manifest = "/etc/buz/reviews.json"
+# require_reviewed = false
 yaml_scan_interval_seconds = 30
 
 [clock]
