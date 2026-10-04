@@ -96,7 +96,7 @@ async fn lists_templates_with_attribution_and_reports_unparseable() {
     std::fs::write(
         dir.path().join("notify-feishu.yaml"),
         r#"
-id: notify/feishu
+id: buz/feishu
 name: Feishu notify
 version: 1.0.0
 publisher: official
@@ -122,7 +122,7 @@ run: |
 
     let items = body["data"]["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "{body}");
-    assert_eq!(items[0]["id"], "notify/feishu");
+    assert_eq!(items[0]["id"], "buz/feishu");
     assert_eq!(items[0]["version"], "1.0.0");
     assert_eq!(items[0]["publisher"], "official");
     assert_eq!(items[0]["buz_compatible"], true);

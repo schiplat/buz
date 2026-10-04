@@ -36,7 +36,7 @@ pub struct RawStepInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StepSpec {
-    /// `<namespace>/<step-id>`, e.g. `notify/feishu`.
+    /// `<namespace>/<step-id>`, e.g. `buz/feishu` (official) or `alice/notify` (community).
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -89,12 +89,12 @@ pub struct StepSpec {
 }
 
 impl StepSpec {
-    /// Namespace portion of `id` (`notify/feishu` → `notify`).
+    /// Namespace portion of `id` (`buz/feishu` → `buz`).
     pub fn namespace(&self) -> &str {
         self.id.split('/').next().unwrap_or("")
     }
 
-    /// Step-id portion of `id` (`notify/feishu` → `feishu`).
+    /// Step-id portion of `id` (`buz/feishu` → `feishu`).
     pub fn step_id(&self) -> &str {
         self.id.split('/').nth(1).unwrap_or("")
     }
@@ -262,6 +262,25 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
             "id: expected '<namespace>/<step-id>' with lowercase [a-z0-9-] segments, got {:?}",
             spec.id
         ));
+    }
+
+    // Reserved namespace (ADR §6.7.1, 2026-10-04): `buz/` belongs to the
+    // officially maintained set; community templates pick their own
+    // namespace (usually the author handle) at first contribution.
+    let official = spec.effective_publisher() == "official";
+    if official && (parts.len() != 2 || parts[0] != "buz") {
+        errors.push(format!(
+            "id: publisher 'official' templates must live in the 'buz' namespace \
+             (buz/<step-id>), got {:?}",
+            spec.id
+        ));
+    }
+    if !official && parts.len() == 2 && parts[0] == "buz" {
+        errors.push(
+            "id: namespace 'buz' is reserved for officially maintained templates — \
+             pick your own namespace (usually your author handle)"
+                .into(),
+        );
     }
 
     if parse_version_triple(&spec.version).is_none() {

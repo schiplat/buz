@@ -71,7 +71,7 @@ async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, sqlx::Sqli
 
 fn feishu_spec() -> String {
     r#"
-id: notify/feishu
+id: buz/feishu
 version: 1.2.0
 engine: shell
 inputs:
@@ -140,7 +140,7 @@ async fn uses_step_resolves_expands_and_locks_provenance() {
         &app,
         &jwt,
         r#"[{ "name": "notify",
-              "uses": "notify/feishu@1.2",
+              "uses": "buz/feishu@1.2",
               "with": { "webhook": "${secrets.FEISHU}" } }]"#,
     )
     .await;
@@ -169,7 +169,7 @@ async fn uses_step_resolves_expands_and_locks_provenance() {
     .fetch_one(&pool)
     .await
     .expect("provenance row");
-    assert_eq!(uses_ref, "notify/feishu@1.2");
+    assert_eq!(uses_ref, "buz/feishu@1.2");
     assert_eq!(version, "1.2.0");
     assert_eq!(hash.len(), 64);
     assert!(source.starts_with("local:"), "{source}");
@@ -204,7 +204,7 @@ async fn unknown_or_unsatisfiable_uses_are_rejected_at_save() {
     let (status, body) = create_pipeline(
         &app,
         &jwt,
-        r#"[{ "name": "notify", "uses": "notify/feishu@1.2" }]"#,
+        r#"[{ "name": "notify", "uses": "buz/feishu@1.2" }]"#,
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");

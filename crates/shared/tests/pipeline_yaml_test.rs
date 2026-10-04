@@ -1600,7 +1600,7 @@ fn uses_step_with_inputs_is_valid() {
 name: uses-step
 steps:
   - name: notify
-    uses: community/notify/feishu@1.2
+    uses: buz/feishu@1.2
     with:
       webhook: ${secrets.FEISHU_WEBHOOK}
       title: deploy done
@@ -1621,7 +1621,7 @@ fn uses_rejects_engine_run_image_override() {
 name: uses-conflict
 steps:
   - name: notify
-    uses: community/notify/feishu@1.2
+    uses: buz/feishu@1.2
 {line}
 "#
         );
@@ -1661,8 +1661,8 @@ steps:
 fn uses_pin_parsing() {
     use shared::pipeline_yaml::{parse_uses_reference, UsesPin};
 
-    let (reference, pin) = parse_uses_reference("community/notify/feishu@1.2").unwrap();
-    assert_eq!(reference, "community/notify/feishu");
+    let (reference, pin) = parse_uses_reference("buz/feishu@1.2").unwrap();
+    assert_eq!(reference, "buz/feishu");
     assert_eq!(pin, UsesPin::Version("1.2".into()));
 
     let (_, pin) = parse_uses_reference("ops/deploy@1").unwrap();
@@ -1676,7 +1676,7 @@ fn uses_pin_parsing() {
     assert_eq!(pin, UsesPin::Sha256("a".repeat(64)));
 
     for bad in [
-        "community/notify/feishu",
+        "buz/feishu",
         "no-namespace@1.2",
         "ns/id@latest",
         "ns/id@1..2",
@@ -1694,7 +1694,7 @@ fn uses_invalid_pin_is_a_field_error() {
 name: bad-pin
 steps:
   - name: notify
-    uses: community/notify/feishu@latest
+    uses: buz/feishu@latest
 "#;
     let r = shared::pipeline_yaml::parse_and_validate(yaml);
     assert!(!r.valid);

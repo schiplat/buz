@@ -6,7 +6,7 @@ const CURRENT: &str = "1.5.6";
 
 fn base_yaml() -> String {
     r#"
-id: notify/feishu
+id: buz/feishu
 name: Feishu notify
 version: 1.2.0
 description: Send a card message to a Feishu group bot
@@ -32,7 +32,7 @@ run: |
 #[test]
 fn valid_template_spec_parses_and_validates() {
     let spec = parse_and_validate_step_spec(&base_yaml(), CURRENT).expect("valid spec");
-    assert_eq!(spec.namespace(), "notify");
+    assert_eq!(spec.namespace(), "buz");
     assert_eq!(spec.step_id(), "feishu");
     assert_eq!(spec.effective_engine(), "shell");
     assert_eq!(spec.input_defs().len(), 2);
@@ -121,7 +121,7 @@ fn docker_requires_image_and_run_bans_secret_refs() {
 #[test]
 fn malformed_ids_versions_and_inputs_rejected() {
     let bad = base_yaml()
-        .replacen("id: notify/feishu", "id: notify", 1)
+        .replacen("id: buz/feishu", "id: notify", 1)
         .replacen("version: 1.2.0", "version: 1.2", 1)
         .replacen("at_all:\n    type: boolean", "at_all:\n    type: banana", 1);
     let errors = parse_and_validate_step_spec(&bad, CURRENT).unwrap_err();
@@ -154,11 +154,14 @@ fn community_publisher_requires_attribution() {
         "{errors:?}"
     );
 
-    let complete = base_yaml().replacen(
-        "publisher: official",
-        "publisher: community\nauthor: someone\nsource_repo: https://github.com/someone/steps",
-        1,
-    );
+    let complete = base_yaml()
+        .replacen("publisher: official", "publisher: community", 1)
+        .replacen("id: buz/feishu", "id: alice/telegram", 1)
+        .replacen(
+            "engine: shell",
+            "author: someone\nsource_repo: https://github.com/someone/steps\nengine: shell",
+            1,
+        );
     let spec: StepSpec = serde_yaml::from_str(&complete).unwrap();
     assert!(validate_step_spec(&spec, CURRENT).is_ok());
 
@@ -171,6 +174,37 @@ fn community_publisher_requires_attribution() {
         validate_step_spec(&serde_yaml::from_str::<StepSpec>(&bad).unwrap(), CURRENT).unwrap_err();
     assert!(
         errors.iter().any(|e| e.starts_with("publisher:")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn buz_namespace_is_reserved_for_official_templates() {
+    // Community template using the reserved `buz` namespace → rejected.
+    let community = base_yaml()
+        .replacen("publisher: official", "publisher: community", 1)
+        .replacen(
+            "engine: shell",
+            "author: someone\nsource_repo: https://github.com/someone/steps\nengine: shell",
+            1,
+        );
+    let errors =
+        validate_step_spec(&serde_yaml::from_str::<StepSpec>(&community).unwrap(), CURRENT)
+            .unwrap_err();
+    assert!(
+        errors.iter().any(|e| e.contains("namespace 'buz' is reserved")),
+        "{errors:?}"
+    );
+
+    // Official template outside the `buz` namespace → rejected.
+    let misplaced = base_yaml().replacen("id: buz/feishu", "id: tools/feishu", 1);
+    let errors =
+        validate_step_spec(&serde_yaml::from_str::<StepSpec>(&misplaced).unwrap(), CURRENT)
+            .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("must live in the 'buz' namespace")),
         "{errors:?}"
     );
 }
