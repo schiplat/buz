@@ -123,6 +123,7 @@ pub fn local_step_index_dir(yaml_scan_dir: &str, configured: &str) -> PathBuf {
 }
 
 /// One template file found in the index.
+#[derive(Clone)]
 struct IndexedSpec {
     spec: StepSpec,
     source: String,
@@ -231,25 +232,32 @@ impl LocalStepIndex {
                         self.dir.display()
                     ));
                 }
-                if parts.len() < 3 {
+                // The chosen (id, version) must be declared by exactly one
+                // file — two files with the same id+version but different
+                // content would otherwise resolve nondeterministically.
+                let best = if parts.len() < 3 {
                     // Major pin → the highest matching version wins.
                     matched
-                        .into_iter()
-                        .max_by_key(|entry| {
-                            version_triple(&entry.spec.version).unwrap_or((0, 0, 0))
-                        })
+                        .iter()
+                        .map(|entry| version_triple(&entry.spec.version).unwrap_or((0, 0, 0)))
+                        .max()
                         .expect("matched is non-empty")
                 } else {
-                    // Exact pin must be unambiguous.
-                    if matched.len() > 1 {
-                        return Err(format!(
-                            "step '{reference}@{v}' is ambiguous — {} files declare the same \
-                             id and version in the local index",
-                            matched.len()
-                        ));
-                    }
-                    matched.into_iter().next().expect("non-empty")
+                    version_triple(v).expect("validated X.Y.Z above")
+                };
+                let at_best: Vec<&IndexedSpec> = matched
+                    .iter()
+                    .filter(|entry| version_triple(&entry.spec.version) == Some(best))
+                    .collect();
+                if at_best.len() > 1 {
+                    let pretty = format!("{}.{}.{}", best.0, best.1, best.2);
+                    return Err(format!(
+                        "step '{reference}@{pretty}' is ambiguous — {} files declare the same \
+                         id and version in the local index; keep one file per id+version",
+                        at_best.len()
+                    ));
                 }
+                at_best.into_iter().next().expect("non-empty").clone()
             }
         };
 

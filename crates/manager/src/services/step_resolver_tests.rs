@@ -3,6 +3,8 @@ use shared::protocol::StepDef;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+const CURRENT: &str = env!("CARGO_PKG_VERSION");
+
 fn write_spec(dir: &Path, file: &str, yaml: &str) {
     std::fs::write(dir.join(file), yaml).unwrap();
 }
@@ -40,6 +42,36 @@ fn seed_index() -> tempfile::TempDir {
     );
     write_spec(dir.path(), "broken.yaml", "id: [broken");
     dir
+}
+
+#[test]
+fn duplicate_id_version_across_files_is_ambiguous_even_for_major_pins() {
+    let dir = seed_index();
+    // Two files, same id+version, different content.
+    write_spec(
+        dir.path(),
+        "feishu-1.2.0-dup.yaml",
+        &feishu_spec("notify/feishu", "1.2.0").replacen("engine: shell", "engine: ssh", 1),
+    );
+    let index = LocalStepIndex::new(dir.path().to_path_buf());
+
+    // Exact pin → ambiguous.
+    let err = index.resolve("notify/feishu@1.2.0", CURRENT).unwrap_err();
+    assert!(err.contains("ambiguous") && err.contains("1.2.0"), "{err}");
+
+    // Major pin → also ambiguous (would otherwise pick a file arbitrarily).
+    let err = index.resolve("notify/feishu@1.2", CURRENT).unwrap_err();
+    assert!(err.contains("ambiguous") && err.contains("1.2.0"), "{err}");
+
+    // Distinct versions across files stay legitimate (@1 → highest = 1.4.0
+    // from the seeded index, the 1.3.0 file doesn't disturb it).
+    write_spec(
+        dir.path(),
+        "feishu-1.3.0.yaml",
+        &feishu_spec("notify/feishu", "1.3.0"),
+    );
+    let resolved = index.resolve("notify/feishu@1", CURRENT).unwrap();
+    assert_eq!(resolved.spec.version, "1.4.0");
 }
 
 fn uses_step(uses: &str) -> StepDef {
