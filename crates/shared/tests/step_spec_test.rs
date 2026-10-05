@@ -188,19 +188,25 @@ fn buz_namespace_is_reserved_for_official_templates() {
             "author: someone\nsource_repo: https://github.com/someone/steps\nengine: shell",
             1,
         );
-    let errors =
-        validate_step_spec(&serde_yaml::from_str::<StepSpec>(&community).unwrap(), CURRENT)
-            .unwrap_err();
+    let errors = validate_step_spec(
+        &serde_yaml::from_str::<StepSpec>(&community).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
     assert!(
-        errors.iter().any(|e| e.contains("namespace 'buz' is reserved")),
+        errors
+            .iter()
+            .any(|e| e.contains("namespace 'buz' is reserved")),
         "{errors:?}"
     );
 
     // Official template outside the `buz` namespace → rejected.
     let misplaced = base_yaml().replacen("id: buz/feishu", "id: tools/feishu", 1);
-    let errors =
-        validate_step_spec(&serde_yaml::from_str::<StepSpec>(&misplaced).unwrap(), CURRENT)
-            .unwrap_err();
+    let errors = validate_step_spec(
+        &serde_yaml::from_str::<StepSpec>(&misplaced).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
     assert!(
         errors
             .iter()
