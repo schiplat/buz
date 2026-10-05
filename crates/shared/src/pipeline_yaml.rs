@@ -943,8 +943,9 @@ pub fn parse_uses_reference(raw: &str) -> Result<(String, UsesPin), String> {
     };
     let reference = reference.trim();
     let segments: Vec<&str> = reference.split('/').collect();
-    if segments.len() != 2 || segments.iter().any(|part| part.is_empty()) {
-        return Err("uses reference must be '<namespace>/<step-id>@<pin>'".into());
+    // Official: buz/<category>/<name> (3 segments). Community: >=2 segments.
+    if segments.len() < 2 || segments.iter().any(|part| part.is_empty()) {
+        return Err("uses reference must be '<namespace>/<name>@<pin>' — official templates use 'buz/<category>/<name>'".into());
     }
 
     let pin = pin.trim();

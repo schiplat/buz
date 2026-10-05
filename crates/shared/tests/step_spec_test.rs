@@ -6,7 +6,7 @@ const CURRENT: &str = "1.5.6";
 
 fn base_yaml() -> String {
     r#"
-id: buz/feishu
+id: buz/notify/feishu
 name: Feishu notify
 version: 1.2.0
 description: Send a card message to a Feishu group bot
@@ -121,7 +121,7 @@ fn docker_requires_image_and_run_bans_secret_refs() {
 #[test]
 fn malformed_ids_versions_and_inputs_rejected() {
     let bad = base_yaml()
-        .replacen("id: buz/feishu", "id: notify", 1)
+        .replacen("id: buz/notify/feishu", "id: notify", 1)
         .replacen("version: 1.2.0", "version: 1.2", 1)
         .replacen("at_all:\n    type: boolean", "at_all:\n    type: banana", 1);
     let errors = parse_and_validate_step_spec(&bad, CURRENT).unwrap_err();
@@ -156,7 +156,7 @@ fn community_publisher_requires_attribution() {
 
     let complete = base_yaml()
         .replacen("publisher: official", "publisher: community", 1)
-        .replacen("id: buz/feishu", "id: alice/telegram", 1)
+        .replacen("id: buz/notify/feishu", "id: alice/notify/telegram", 1)
         .replacen(
             "engine: shell",
             "author: someone\nsource_repo: https://github.com/someone/steps\nengine: shell",
@@ -201,7 +201,7 @@ fn buz_namespace_is_reserved_for_official_templates() {
     );
 
     // Official template outside the `buz` namespace → rejected.
-    let misplaced = base_yaml().replacen("id: buz/feishu", "id: tools/feishu", 1);
+    let misplaced = base_yaml().replacen("id: buz/notify/feishu", "id: tools/notify/feishu", 1);
     let errors = validate_step_spec(
         &serde_yaml::from_str::<StepSpec>(&misplaced).unwrap(),
         CURRENT,
@@ -211,6 +211,36 @@ fn buz_namespace_is_reserved_for_official_templates() {
         errors
             .iter()
             .any(|e| e.contains("must live in the 'buz' namespace")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn id_grammar_is_three_segments_for_all_templates() {
+    // Official: buz/<category>/<name>.
+    let spec: StepSpec = serde_yaml::from_str(&base_yaml()).unwrap();
+    assert!(validate_step_spec(&spec, CURRENT).is_ok());
+
+    // Community: <handle>/<category>/<name> — same grammar, own namespace.
+    let community = base_yaml()
+        .replacen("publisher: official", "publisher: community", 1)
+        .replacen("id: buz/notify/feishu", "id: alice/notify/telegram", 1)
+        .replacen(
+            "engine: shell",
+            "author: someone\nsource_repo: https://github.com/someone/steps\nengine: shell",
+            1,
+        );
+    let spec: StepSpec = serde_yaml::from_str(&community).unwrap();
+    assert!(validate_step_spec(&spec, CURRENT).is_ok());
+
+    // Two segments (ns/name) no longer parse as valid ids.
+    let two = base_yaml().replacen("id: buz/notify/feishu", "id: buz/feishu", 1);
+    let errors =
+        validate_step_spec(&serde_yaml::from_str::<StepSpec>(&two).unwrap(), CURRENT).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("expected '<namespace>/<category>/<name>'")),
         "{errors:?}"
     );
 }
