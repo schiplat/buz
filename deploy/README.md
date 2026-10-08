@@ -62,7 +62,7 @@ ADMIN_USERNAME='<admin>' ADMIN_PASSWORD='<password>' ./dev-deploy.sh runner
 explicitly rather than `latest`, so the running version stays traceable:
 
 ```bash
-IMAGE_TAG=v1.7.0 ./dev-deploy.sh upgrade
+IMAGE_TAG=v1.7.1 ./dev-deploy.sh upgrade
 ```
 
 `upgrade` rewrites the `image:` lines in the compose file (keeping any other
@@ -81,10 +81,10 @@ disk, upgrade/runner strips `extra_hosts` and rewrites `manager_url` back.
 image when present. To skip the registry entirely:
 
 ```bash
-SKIP_PULL=1 IMAGE_TAG=v1.7.0 ./dev-deploy.sh upgrade
+SKIP_PULL=1 IMAGE_TAG=v1.7.1 ./dev-deploy.sh upgrade
 # If the stack was first created with sudo/root (common on VMs):
-sudo SKIP_PULL=1 IMAGE_TAG=v1.7.0 ./dev-deploy.sh upgrade
-# or: DOCKER='sudo docker' SKIP_PULL=1 IMAGE_TAG=v1.7.0 ./dev-deploy.sh upgrade
+sudo SKIP_PULL=1 IMAGE_TAG=v1.7.1 ./dev-deploy.sh upgrade
+# or: DOCKER='sudo docker' SKIP_PULL=1 IMAGE_TAG=v1.7.1 ./dev-deploy.sh upgrade
 ```
 
 Runs on a Linux VM with only Docker installed; images are pulled from
@@ -97,9 +97,9 @@ touching Docker.
 The default `latest` is the merged multi-arch manifest, so Docker auto-selects
 the image for the VM's architecture (arm64 or amd64). To pin one platform —
 e.g. while the CI merge job is still running, or to bypass a broken index —
-set `IMAGE_TAG=latest-arm64` / `latest-amd64` (or `1.7.0-arm64`). Verify a
+set `IMAGE_TAG=latest-arm64` / `latest-amd64` (or `1.7.1-arm64`). Verify a
 platform tag with `docker manifest inspect
-<registry>/<namespace>/buz-manager:1.7.0-arm64`.
+<registry>/<namespace>/buz-manager:1.7.1-arm64`.
 
 **Non-root user with sudo is supported.** The script auto-detects whether the
 current user can reach the docker daemon directly; if not it falls back to

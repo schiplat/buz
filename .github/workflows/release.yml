@@ -3,7 +3,7 @@ name: Release
 # Build release binaries (UI embedded in buz-manager) + config tarball.
 # Platforms: Linux (x86_64, aarch64) + macOS aarch64.
 # macOS Intel (x86_64 / macos-13) temporarily disabled.
-# Triggers: version tags (v1.7.0) or manual workflow_dispatch.
+# Triggers: version tags (e.g. v1.7.1) or manual workflow_dispatch.
 
 on:
   push:
