@@ -18,6 +18,10 @@ mod services;
 mod ssh_probe;
 mod state;
 
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod main_tests;
+
 /// Buz Manager — lightweight cross‑network orchestration control plane.
 #[derive(Parser)]
 #[command(
@@ -65,8 +69,8 @@ enum Command {
     /// so golden tests can gate merges. Works without a Manager config or
     /// database — pass spec files or directories containing *.yaml/*.yml.
     StepValidate {
-        /// Step spec files or directories (directories are scanned for
-        /// *.yaml / *.yml, non-recursively)
+        /// Step spec files or directories (directories are scanned recursively
+        /// for *.yaml / *.yml; hidden paths and symlinks are skipped)
         #[arg(value_name = "PATH")]
         paths: Vec<String>,
     },
@@ -228,41 +232,66 @@ fn step_validate(paths: &[String]) -> anyhow::Result<()> {
     let current = env!("CARGO_PKG_VERSION");
 
     let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut roots = Vec::new();
     for path in paths {
-        let meta =
-            std::fs::metadata(path).map_err(|e| anyhow::anyhow!("cannot access '{path}': {e}"))?;
-        if meta.is_dir() {
-            let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(path)?
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| {
-                    matches!(
-                        p.extension().and_then(|e| e.to_str()),
-                        Some("yaml") | Some("yml")
-                    )
-                })
-                .collect();
-            entries.sort();
-            if entries.is_empty() {
-                anyhow::bail!("directory '{path}' contains no *.yaml/*.yml step specs");
-            }
-            files.extend(entries);
+        let meta = std::fs::symlink_metadata(path)
+            .map_err(|e| anyhow::anyhow!("cannot access '{path}': {e}"))?;
+        if meta.file_type().is_symlink() {
+            anyhow::bail!("'{path}' is a symlink; step specs must be regular files");
+        } else if meta.is_dir() {
+            roots.push(std::path::PathBuf::from(path));
         } else {
             files.push(std::path::PathBuf::from(path));
         }
     }
 
+    for root in roots {
+        let entries = shared::yaml_files::discover_yaml_files(&root)?;
+        if entries.is_empty() {
+            anyhow::bail!(
+                "directory '{}' contains no *.yaml/*.yml step specs",
+                root.display()
+            );
+        }
+        files.extend(entries);
+    }
+    files.sort();
+    files.dedup();
+
+    let mut seen_specs = std::collections::HashMap::<(String, String), String>::new();
     let mut failed = 0usize;
     for file in &files {
         let raw = std::fs::read_to_string(file)
             .map_err(|e| anyhow::anyhow!("cannot read '{}': {e}", file.display()))?;
-        match shared::step_spec::parse_and_validate_step_spec(&raw, current) {
-            Ok(spec) => println!("OK       {} ({}@{})", file.display(), spec.id, spec.version),
-            Err(errors) => {
+        let spec = match serde_yaml::from_str::<shared::step_spec::StepSpec>(&raw) {
+            Ok(spec) => spec,
+            Err(error) => {
                 failed += 1;
-                eprintln!("INVALID  {}", file.display());
-                for error in errors {
-                    eprintln!("  - {error}");
-                }
+                eprintln!("INVALID  {}\n  - YAML: {error}", file.display());
+                continue;
+            }
+        };
+
+        let mut errors = shared::step_spec::validate_step_spec(&spec, current)
+            .err()
+            .unwrap_or_default();
+        if let Some(previous) = seen_specs.insert(
+            (spec.id.clone(), spec.version.clone()),
+            file.display().to_string(),
+        ) {
+            errors.push(format!(
+                "duplicate id/version {}@{} also declared in {}",
+                spec.id, spec.version, previous
+            ));
+        }
+
+        if errors.is_empty() {
+            println!("OK       {} ({}@{})", file.display(), spec.id, spec.version);
+        } else {
+            failed += 1;
+            eprintln!("INVALID  {}", file.display());
+            for error in errors {
+                eprintln!("  - {error}");
             }
         }
     }

@@ -16,3 +16,4 @@ pub mod secret_ref;
 pub mod step_spec;
 pub mod value_source;
 pub mod version;
+pub mod yaml_files;

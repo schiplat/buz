@@ -48,6 +48,40 @@ fn seed_index() -> tempfile::TempDir {
 }
 
 #[test]
+fn local_index_recursively_finds_specs_and_skips_hidden_or_symlink_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("community/nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    write_spec(&nested, "notify.yaml", &feishu_spec("buz/feishu", "1.2.0"));
+    let hidden = dir.path().join(".hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    write_spec(&hidden, "notify.yaml", &feishu_spec("buz/hidden", "1.2.0"));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let external = tempfile::tempdir().unwrap();
+        write_spec(
+            external.path(),
+            "linked.yaml",
+            &feishu_spec("buz/linked", "1.2.0"),
+        );
+        symlink(
+            external.path().join("linked.yaml"),
+            dir.path().join("linked.yaml"),
+        )
+        .unwrap();
+        symlink(external.path(), dir.path().join("linked-dir")).unwrap();
+    }
+
+    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let resolved = index.resolve("buz/feishu@1.2.0", CURRENT).unwrap();
+    assert_eq!(resolved.spec.id, "buz/feishu");
+    assert!(index.resolve("buz/hidden@1.2.0", CURRENT).is_err());
+    assert!(index.resolve("buz/linked@1.2.0", CURRENT).is_err());
+}
+
+#[test]
 fn duplicate_id_version_across_files_is_ambiguous_even_for_major_pins() {
     let dir = seed_index();
     // Two files, same id+version, different content.

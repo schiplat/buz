@@ -26,16 +26,8 @@ pub async fn list_steps(
         &state.config.step_index.local_dir,
     );
 
-    let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| {
-                matches!(
-                    p.extension().and_then(|e| e.to_str()),
-                    Some("yaml") | Some("yml")
-                )
-            })
-            .collect(),
+    let files = match shared::yaml_files::discover_yaml_files(&dir) {
+        Ok(files) => files,
         Err(_) => {
             // No step directory yet — an empty library, not an error.
             return Ok(Json(ApiResponse::success(json!({
@@ -44,7 +36,6 @@ pub async fn list_steps(
             }))));
         }
     };
-    files.sort();
 
     let reviewed_hashes = crate::services::step_resolver::load_reviewed_hashes(
         &state.config.step_index.reviewed_manifest,
@@ -53,14 +44,19 @@ pub async fn list_steps(
     let mut unparseable: Vec<Value> = Vec::new();
 
     for file in files {
+        let file_name = file
+            .strip_prefix(&dir)
+            .unwrap_or(&file)
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/");
         let Ok(raw) = std::fs::read_to_string(&file) else {
             continue;
         };
-        let file_name = file
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
         let content_sha256 = format!("{:x}", Sha256::digest(raw.as_bytes()));
 
         let spec: StepSpec = match serde_yaml::from_str(&raw) {

@@ -144,27 +144,16 @@ impl LocalStepIndex {
     /// a warning — one broken file must not take the whole index down
     /// (the `buz step validate` CLI is the tool that reports them loudly).
     fn load(&self) -> Result<Vec<IndexedSpec>, String> {
-        let entries = match std::fs::read_dir(&self.dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(format!(
+        let files = shared::yaml_files::discover_yaml_files(&self.dir).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                format!(
                     "local step index directory {} does not exist",
                     self.dir.display()
-                ));
-            }
-            Err(e) => return Err(format!("cannot read {}: {e}", self.dir.display())),
-        };
-
-        let mut files: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| {
-                matches!(
-                    p.extension().and_then(|e| e.to_str()),
-                    Some("yaml") | Some("yml")
                 )
-            })
-            .collect();
-        files.sort();
+            } else {
+                format!("cannot read {}: {e}", self.dir.display())
+            }
+        })?;
 
         let mut specs = Vec::new();
         for file in files {

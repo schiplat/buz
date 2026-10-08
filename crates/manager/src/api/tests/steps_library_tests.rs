@@ -120,27 +120,46 @@ run: |
     )
     .unwrap();
     std::fs::write(dir.path().join("broken.yaml"), "id: [broken").unwrap();
+    std::fs::create_dir_all(dir.path().join("community/nested")).unwrap();
+    std::fs::write(
+        dir.path().join("community/nested/custom.yaml"),
+        r#"
+id: alice/custom
+name: Custom step
+version: 1.0.0
+author: Alice
+source_repo: https://example.com/alice/plugins
+run: echo custom
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join(".hidden.yaml"), "id: hidden").unwrap();
+    std::fs::create_dir_all(dir.path().join(".hidden-dir")).unwrap();
+    std::fs::write(dir.path().join(".hidden-dir/hidden.yaml"), "id: hidden").unwrap();
 
     let (app, _) = test_app_with_dir(dir.path()).await;
     let (status, body) = get_json(&app, Some(&admin_jwt())).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     let items = body["data"]["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "{body}");
-    assert_eq!(items[0]["id"], "buz/feishu");
-    assert_eq!(items[0]["version"], "1.0.0");
-    assert_eq!(items[0]["publisher"], "official");
-    assert_eq!(items[0]["category"], "notify");
-    assert_eq!(items[0]["buz_compatible"], true);
-    assert_eq!(items[0]["content_sha256"].as_str().unwrap().len(), 64);
-    assert_eq!(items[0]["reviewed"], false);
-    assert_eq!(items[0]["valid"], true);
-    assert_eq!(items[0]["inputs"].as_array().unwrap().len(), 1);
-    assert_eq!(items[0]["inputs"][0]["name"], "webhook");
-    assert_eq!(items[0]["inputs"][0]["masking"], true);
-    assert_eq!(items[0]["inputs"][0]["pattern"], "^https://[^ ]+$");
+    assert_eq!(items.len(), 2, "{body}");
+    assert_eq!(items[0]["id"], "alice/custom");
+    assert_eq!(items[0]["file"], "community/nested/custom.yaml");
+    assert_eq!(items[1]["id"], "buz/feishu");
+    assert_eq!(items[1]["file"], "notify-feishu.yaml");
+    assert_eq!(items[1]["version"], "1.0.0");
+    assert_eq!(items[1]["publisher"], "official");
+    assert_eq!(items[1]["category"], "notify");
+    assert_eq!(items[1]["buz_compatible"], true);
+    assert_eq!(items[1]["content_sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(items[1]["reviewed"], false);
+    assert_eq!(items[1]["valid"], true);
+    assert_eq!(items[1]["inputs"].as_array().unwrap().len(), 1);
+    assert_eq!(items[1]["inputs"][0]["name"], "webhook");
+    assert_eq!(items[1]["inputs"][0]["masking"], true);
+    assert_eq!(items[1]["inputs"][0]["pattern"], "^https://[^ ]+$");
     assert_eq!(
-        items[0]["inputs"][0]["options"].as_array().unwrap().len(),
+        items[1]["inputs"][0]["options"].as_array().unwrap().len(),
         2
     );
 
