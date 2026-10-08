@@ -376,7 +376,7 @@ pub struct StepYaml {
     pub timeout: Option<String>,
     #[serde(default)]
     pub retry: Option<i32>,
-    /// Marketplace step reference: `<namespace>/<step-id>@<pin>` (pin is
+    /// Marketplace step reference: `<namespace>/<name>@<pin>` (pin is
     /// `X`, `X.Y`, `X.Y.Z`, or `sha256:<hex>`; ranges/`latest` rejected).
     /// Mutually exclusive with `engine:` / `run:` / `image:`.
     #[serde(default)]
@@ -929,23 +929,32 @@ pub enum UsesPin {
     Sha256(String),
 }
 
-/// Parse a `uses:` reference (`<namespace>/<step-id>@<pin>`).
+/// Parse a `uses:` reference (`<namespace>/<name>@<pin>`).
 ///
-/// Pins follow §4 of the marketplace ADR: `@1` major, `@1.2` / `@1.2.0`
-/// exact, `@sha256:<hex>` strict. Ranges and `latest` are deliberately not
-/// supported — resolution must be reproducible ("解析即锁定").
+/// IDs use the same canonical two-segment grammar as step specs. Pins follow
+/// §4 of the marketplace ADR: `@1` major, `@1.2` / `@1.2.0` exact,
+/// `@sha256:<hex>` strict. Ranges and `latest` are deliberately not supported
+/// — resolution must be reproducible ("解析即锁定").
 pub fn parse_uses_reference(raw: &str) -> Result<(String, UsesPin), String> {
     let raw = raw.trim();
     let Some((reference, pin)) = raw.rsplit_once('@') else {
-        return Err("missing '@pin' — expected '<namespace>/<step-id>@<pin>' \
+        return Err("missing '@pin' — expected '<namespace>/<name>@<pin>' \
              (e.g. buz/feishu@1.2)"
             .into());
     };
     let reference = reference.trim();
     let segments: Vec<&str> = reference.split('/').collect();
-    // Official: buz/<category>/<name> (3 segments). Community: >=2 segments.
-    if segments.len() < 2 || segments.iter().any(|part| part.is_empty()) {
-        return Err("uses reference must be '<namespace>/<name>@<pin>' — official templates use 'buz/<category>/<name>'".into());
+    let canonical_segment = |segment: &str| {
+        !segment.is_empty()
+            && segment
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    if segments.len() != 2 || !segments.iter().all(|segment| canonical_segment(segment)) {
+        return Err(
+            "uses reference must be '<namespace>/<name>@<pin>' with lowercase [a-z0-9-] segments"
+                .into(),
+        );
     }
 
     let pin = pin.trim();

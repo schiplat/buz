@@ -1665,20 +1665,22 @@ fn uses_pin_parsing() {
     assert_eq!(reference, "buz/feishu");
     assert_eq!(pin, UsesPin::Version("1.2".into()));
 
-    let (_, pin) = parse_uses_reference("ops/deploy@1").unwrap();
+    let (_, pin) = parse_uses_reference("ops/ship@1").unwrap();
     assert_eq!(pin, UsesPin::Version("1".into()));
 
-    let (_, pin) = parse_uses_reference("ops/deploy@1.2.0").unwrap();
+    let (_, pin) = parse_uses_reference("ops/ship@1.2.0").unwrap();
     assert_eq!(pin, UsesPin::Version("1.2.0".into()));
 
-    let sha = format!("ops/deploy@sha256:{}", "a".repeat(64));
+    let sha = format!("ops/ship@sha256:{}", "a".repeat(64));
     let (_, pin) = parse_uses_reference(&sha).unwrap();
     assert_eq!(pin, UsesPin::Sha256("a".repeat(64)));
 
     for bad in [
         "buz/feishu",
         "no-namespace@1.2",
-        "ns/id@latest",
+        "ns/id/step@latest",
+        "ns/ID@1.2",
+        "ns/id/name/extra@1.2",
         "ns/id@1..2",
         "ns/id@^1.2",
         "ns/id@1 - 2",

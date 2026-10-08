@@ -21,8 +21,8 @@ use crate::middleware::AuthUser;
 use crate::rbac::pipeline_team_id;
 use crate::services::pipeline_scanner::{
     delete_yaml_file, filename_from_pipeline_name, filename_from_yaml_path, find_yaml_pipeline_row,
-    list_yaml_files, read_yaml_file, validate_yaml_filename, write_and_upsert_yaml,
-    yaml_content_etag, yaml_path_storage,
+    list_yaml_files, lock_yaml_file, read_yaml_file, validate_yaml_filename,
+    write_and_upsert_yaml_locked, yaml_content_etag, yaml_path_storage,
 };
 use crate::services::yaml_validate::{
     parse_and_resolve_team, reject_if_invalid, validate_pipeline_yaml,
@@ -163,7 +163,8 @@ pub async fn create_file(
         None => filename_from_pipeline_name(pipeline_name),
     };
 
-    // Create refuses overwrite — flat basename only under scan_dir.
+    // Create refuses overwrite — check and write under the same file lock.
+    let file_guard = lock_yaml_file(&scan_dir, &filename).await?;
     let path = crate::services::pipeline_scanner::resolve_yaml_path(&scan_dir, &filename)?;
     if path.exists() {
         return Err(AppError::Conflict(format!(
@@ -171,7 +172,19 @@ pub async fn create_file(
         )));
     }
 
-    let result = write_and_upsert_yaml(&state.pool, &scan_dir, &filename, &yaml, None).await?;
+    let result = write_and_upsert_yaml_locked(
+        &state.pool,
+        &scan_dir,
+        &filename,
+        &yaml,
+        &crate::services::step_resolver::local_step_index_dir(
+            &state.config.pipeline.yaml_scan_dir,
+            &state.config.step_index.local_dir,
+        ),
+        None,
+        file_guard,
+    )
+    .await?;
     let etag = yaml_content_etag(&yaml);
 
     audit::record(
@@ -221,7 +234,11 @@ pub async fn put_file(
         authorize_file_access(&state, &auth, &scan_dir, &filename, Perm::PipelineWrite).await?;
     }
 
-    // Optimistic concurrency when the file already exists.
+    // Serialize the compare and replace with scanner read/upsert for this file.
+    let file_guard = lock_yaml_file(&scan_dir, &filename).await?;
+
+    // Optimistic concurrency when the file already exists. Re-read only after
+    // taking the coordination lock so two PUTs cannot both pass on one ETag.
     let path = crate::services::pipeline_scanner::resolve_yaml_path(&scan_dir, &filename)?;
     if path.exists() {
         if let Some(expected) = if_match_value(&headers, req.etag.as_deref()) {
@@ -239,12 +256,17 @@ pub async fn put_file(
     let validation = validate_pipeline_yaml(&state.pool, &yaml).await?;
     reject_if_invalid(&validation)?;
 
-    let result = write_and_upsert_yaml(
+    let result = write_and_upsert_yaml_locked(
         &state.pool,
         &scan_dir,
         &filename,
         &yaml,
+        &crate::services::step_resolver::local_step_index_dir(
+            &state.config.pipeline.yaml_scan_dir,
+            &state.config.step_index.local_dir,
+        ),
         req.pipeline_id.as_deref(),
+        file_guard,
     )
     .await?;
     let etag = yaml_content_etag(&yaml);

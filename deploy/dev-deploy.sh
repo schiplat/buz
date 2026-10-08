@@ -19,7 +19,7 @@
 #   ./dev-deploy.sh status              # container + health status
 #   ./dev-deploy.sh logs                # follow compose logs
 #   ./dev-deploy.sh down                # stop everything (data volumes are kept)
-#   IMAGE_TAG=v1.3.5 ./dev-deploy.sh upgrade
+#   IMAGE_TAG=v1.7.0 ./dev-deploy.sh upgrade
 #                                       # pull + recreate Manager & Runner at a new tag;
 #                                       # waits for Manager /health, then force-recreates
 #                                       # Runner and verifies it can reach Manager
@@ -32,7 +32,7 @@
 #                   for the VM's architecture (arm64 or amd64). To pin a single
 #                   platform instead (e.g. while the merge job is still running,
 #                   or to bypass a broken index) use a platform tag such as
-#                   `latest-arm64` / `latest-amd64` or `1.3.0-arm64`.
+#                   `latest-arm64` / `latest-amd64` or `1.7.0-arm64`.
 #   MANAGER_PORT    8080              (host bind port -> container 8080)
 #   DEPLOY_DIR      /opt/buz
 #   DOCKER          docker invocation (auto-detected; prefers the daemon that

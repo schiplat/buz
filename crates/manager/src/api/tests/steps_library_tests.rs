@@ -101,7 +101,9 @@ name: Feishu notify
 version: 1.0.0
 publisher: official
 author: "buz maintainers"
+source_repo: https://github.com/schiplat/buz-plugins
 keywords: [feishu, notify]
+category: notify
 engine: shell
 default_timeout: 30s
 inputs:
@@ -109,6 +111,9 @@ inputs:
     type: string
     required: true
     masking: true
+    pattern: '^https://[^ ]+$'
+    description: Webhook endpoint
+    options: ['https://one.example/hook', 'https://two.example/hook']
 run: |
   curl -fsSL -X POST "$INPUT_WEBHOOK" -d '{}'
 "#,
@@ -125,11 +130,19 @@ run: |
     assert_eq!(items[0]["id"], "buz/feishu");
     assert_eq!(items[0]["version"], "1.0.0");
     assert_eq!(items[0]["publisher"], "official");
+    assert_eq!(items[0]["category"], "notify");
     assert_eq!(items[0]["buz_compatible"], true);
     assert_eq!(items[0]["content_sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(items[0]["reviewed"], false);
+    assert_eq!(items[0]["valid"], true);
     assert_eq!(items[0]["inputs"].as_array().unwrap().len(), 1);
     assert_eq!(items[0]["inputs"][0]["name"], "webhook");
     assert_eq!(items[0]["inputs"][0]["masking"], true);
+    assert_eq!(items[0]["inputs"][0]["pattern"], "^https://[^ ]+$");
+    assert_eq!(
+        items[0]["inputs"][0]["options"].as_array().unwrap().len(),
+        2
+    );
 
     let unparseable = body["data"]["unparseable"].as_array().unwrap();
     assert_eq!(unparseable.len(), 1);

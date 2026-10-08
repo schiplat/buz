@@ -1,7 +1,31 @@
 use crate::services::pipeline_scanner::{
-    filename_from_pipeline_name, normalize_yaml_path_key, validate_yaml_filename,
-    yaml_content_etag, yaml_path_storage,
+    filename_from_pipeline_name, lock_yaml_file, normalize_yaml_path_key, read_yaml_for_scan,
+    validate_yaml_filename, yaml_content_etag, yaml_path_storage,
 };
+
+#[tokio::test]
+async fn scanner_read_waits_for_file_lock_and_observes_replaced_content() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let scan_dir = dir.path().to_string_lossy().to_string();
+    let filename = "scanner-lock.yml";
+    let initial = "name: initial\nsteps: []\n";
+    let replacement = "name: replacement\nsteps: []\n";
+    std::fs::write(dir.path().join(filename), initial).expect("write initial YAML");
+
+    let guard = lock_yaml_file(&scan_dir, filename)
+        .await
+        .expect("lock YAML file");
+    let scan_dir_for_task = scan_dir.clone();
+    let read_task =
+        tokio::spawn(async move { read_yaml_for_scan(&scan_dir_for_task, filename).await });
+
+    tokio::task::yield_now().await;
+    std::fs::write(dir.path().join(filename), replacement).expect("replace YAML");
+    drop(guard);
+
+    let (read, _guard) = read_task.await.expect("scanner task").expect("read YAML");
+    assert_eq!(read, replacement);
+}
 
 #[test]
 fn rejects_path_separators_and_traversal() {

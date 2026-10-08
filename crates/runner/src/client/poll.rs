@@ -790,7 +790,7 @@ async fn execute_job(
             }
             pipeline_secret_keys.insert(key.to_string());
             // Engines also export INPUT_<NAME>; cover both key forms in env echo.
-            pipeline_secret_keys.insert(format!("INPUT_{}", key.to_uppercase()));
+            pipeline_secret_keys.insert(shared::protocol::input_env_key(key));
         }
     }
 
@@ -844,7 +844,7 @@ async fn execute_job(
                 render_values.vars.insert(k.clone(), s.to_string());
                 render_values
                     .vars
-                    .insert(format!("INPUT_{}", k.to_uppercase()), s.to_string());
+                    .insert(shared::protocol::input_env_key(k), s.to_string());
             }
         }
     }
@@ -908,6 +908,13 @@ async fn execute_job(
             }
         }
         if let Some(keys) = step.get("secret_env_keys").and_then(|v| v.as_array()) {
+            for key in keys.iter().filter_map(|v| v.as_str()) {
+                if !key.is_empty() {
+                    catalog.add_key(key.to_string());
+                }
+            }
+        }
+        if let Some(keys) = step.get("masking_env_keys").and_then(|v| v.as_array()) {
             for key in keys.iter().filter_map(|v| v.as_str()) {
                 if !key.is_empty() {
                     catalog.add_key(key.to_string());
@@ -1029,7 +1036,29 @@ async fn execute_job(
 
         update_job_status(client, config, token, job_id, "running", Some(idx as i32)).await?;
 
-        // Fail fast if Manager could not expand step `env:` (`${secrets.X}`).
+        if let Some(err) = step
+            .get("input_validation_error")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let msg = format!("marketplace input validation: {err}");
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_ERROR,
+                    step_order: idx as i32,
+                    content: format!("==> ERROR\\n{msg}\\n"),
+                },
+            )
+            .await;
+            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+            anyhow::bail!(msg);
+        }
+
+        // Fail fast if Manager could not resolve step `env:` (`${secrets.X}`).
         if let Some(err) = step
             .get("env_expand_error")
             .and_then(|v| v.as_str())
@@ -2139,7 +2168,7 @@ fn build_ssh_env_command(command: &str, env: &std::collections::HashMap<String, 
         let safe_v = shell_escape(v);
         prefix.push_str(&format!("export {k}={safe_v} && "));
         // Also export as INPUT_* for consistency (pipeline inputs convention)
-        let input_key = format!("INPUT_{}", k.to_uppercase());
+        let input_key = shared::protocol::input_env_key(k);
         prefix.push_str(&format!("export {input_key}={safe_v} && "));
     }
     format!("{}{}", prefix, command)

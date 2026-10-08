@@ -13,8 +13,8 @@ use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 use shared::pipeline_yaml::{parse_uses_reference, UsesPin};
-use shared::protocol::StepDef;
-use shared::step_spec::{buz_requirement_satisfied, StepSpec};
+use shared::protocol::{validate_input_values, StepDef};
+use shared::step_spec::{buz_requirement_satisfied, validate_step_spec, StepSpec};
 
 /// Step-index settings resolved from Manager config at startup.
 #[derive(Debug, Clone, Default)]
@@ -174,7 +174,7 @@ impl LocalStepIndex {
             };
             let Ok(spec) = serde_yaml::from_str::<StepSpec>(&raw) else {
                 tracing::warn!(
-                    "step index: {} is not a valid step spec — skipped (run `buz-manager \
+                    "step index: {} is not valid YAML — skipped (run `buz-manager \\
                      step-validate` for details)",
                     file.display()
                 );
@@ -261,6 +261,13 @@ impl LocalStepIndex {
             }
         };
 
+        if let Err(errors) = validate_step_spec(&picked.spec, current_buz) {
+            return Err(format!(
+                "step spec '{}' is invalid: {}",
+                picked.spec.id,
+                errors.join("; ")
+            ));
+        }
         if let Some(requires) = picked.spec.requires_buz.as_deref() {
             buz_requirement_satisfied(requires, current_buz)?;
         }
@@ -297,33 +304,86 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepD
     let spec = &resolved.spec;
 
     let input_defs = spec.input_defs();
-    let mut env = step.env.clone().unwrap_or_default();
-
     let with = step.with.clone().unwrap_or_default();
-    for (key, value) in &with {
+    let mut values = std::collections::HashMap::new();
+    let mut deferred_defs = Vec::new();
+    let mut deferred_values = std::collections::HashMap::new();
+    let mut validation_defs = Vec::new();
+    let mut validation_values = std::collections::HashMap::new();
+
+    for def in &input_defs {
+        let value = with.get(&def.name).cloned().or_else(|| def.default.clone());
+        if def.required.unwrap_or(false)
+            && value
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+        {
+            errors.push(format!(
+                "with: missing required input '{}' of template '{}'",
+                def.name, spec.id
+            ));
+        }
+        let Some(value) = value else { continue };
+        values.insert(def.name.clone(), value.clone());
+        let is_secret_ref = shared::secret_ref::parse_secrets_expr(&value).is_some();
+        let is_vars_ref = shared::secret_ref::parse_vars_expr(&value).is_some();
+        if value.contains("${secrets.") && !is_secret_ref {
+            errors.push(format!(
+                "with.{}: Secret inputs must use a complete ${{secrets.NAME}} reference",
+                def.name
+            ));
+        }
+        if value.contains("${vars.") && !is_vars_ref {
+            errors.push(format!(
+                "with.{}: variable inputs must use a complete ${{vars.NAME}} reference",
+                def.name
+            ));
+        }
+        if def.is_masking() && !is_secret_ref {
+            errors.push(format!(
+                "with.{}: masking input must be exactly a ${{secrets.NAME}} reference",
+                def.name
+            ));
+        }
+        if is_secret_ref {
+            deferred_defs.push(def.clone());
+            deferred_values.insert(def.name.clone(), value);
+        } else if !is_vars_ref {
+            let mut definition = def.clone();
+            definition.required = Some(false);
+            validation_defs.push(definition);
+            validation_values.insert(def.name.clone(), value);
+        }
+    }
+
+    for key in with.keys() {
         if !input_defs.iter().any(|def| &def.name == key) {
             errors.push(format!(
                 "with.{key}: template '{}' does not declare this input (declared: {})",
                 spec.id,
                 input_defs
                     .iter()
-                    .map(|d| d.name.as_str())
+                    .map(|def| def.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
         }
-        let env_key = format!("INPUT_{}", key.to_uppercase());
-        env.insert(env_key, value.clone());
     }
-    for def in &input_defs {
-        let provided = with.contains_key(&def.name);
-        let has_default = def.default.as_deref().is_some_and(|d| !d.is_empty());
-        if def.required.unwrap_or(false) && !provided && !has_default {
-            errors.push(format!(
-                "with: missing required input '{}' of template '{}'",
-                def.name, spec.id
-            ));
-        }
+    if let Err(field_errors) =
+        validate_input_values(&validation_defs, &validation_values, |_| false)
+    {
+        errors.extend(
+            field_errors
+                .into_iter()
+                .map(|error| format!("with.{}: {}", error.name, error.message)),
+        );
+    }
+
+    let mut env = step.env.clone().unwrap_or_default();
+    for (name, value) in &values {
+        env.insert(shared::protocol::input_env_key(name), value.clone());
     }
 
     if !errors.is_empty() {
@@ -366,32 +426,43 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepD
     })
 }
 
-/// Resolve any `uses:` steps of a pipeline save against the local index:
-/// each reference is expanded into a concrete step and locked with one
-/// provenance row (ADR §6.4 — 解析即锁定, per-pipeline records). Steps
-/// without `uses:` pass through untouched, so this is cheap on the common
-/// path.
-pub async fn resolve_uses_steps(
-    pool: &sqlx::SqlitePool,
-    pipeline_id: &str,
+#[derive(Debug, Clone)]
+pub struct PendingStepResolution {
+    pub step_order: i64,
+    pub uses_ref: String,
+    pub resolved_version: String,
+    pub content_sha256: String,
+    pub source: String,
+    pub expanded_json: String,
+    pub input_defs_json: String,
+    pub reviewed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedSteps {
+    pub steps: Vec<StepDef>,
+    pub resolutions: Vec<PendingStepResolution>,
+}
+
+/// Resolve all marketplace references without mutating the database. The caller
+/// persists `resolutions` in the same transaction as the expanded tasks.
+pub fn resolve_uses_steps(
     steps: Vec<StepDef>,
     index_dir: &Path,
     policy: &ResolutionPolicy,
-) -> Result<Vec<StepDef>, String> {
-    if !steps.iter().any(|s| s.uses.is_some()) {
-        return Ok(steps);
-    }
+) -> Result<ResolvedSteps, String> {
     let index = LocalStepIndex::new(index_dir.to_path_buf());
     let current_buz = env!("CARGO_PKG_VERSION");
 
     let mut out = Vec::with_capacity(steps.len());
-    for step in steps {
+    let mut resolutions = Vec::new();
+    for (step_order, step) in steps.into_iter().enumerate() {
         if let Some(uses_ref) = step.uses.clone() {
             let resolved = index.resolve(&uses_ref, current_buz)?;
             let reviewed = policy.reviewed_hashes.contains(&resolved.content_sha256);
             if !reviewed && policy.require_reviewed {
                 return Err(format!(
-                    "step '{uses_ref}' (sha256 {}) is not officially reviewed and                      require_reviewed is enabled — pin an approved hash or disable the flag",
+                    "step '{uses_ref}' (sha256 {}) is not officially reviewed and require_reviewed is enabled — pin an approved hash or disable the flag",
                     resolved.content_sha256
                 ));
             }
@@ -403,42 +474,61 @@ pub async fn resolve_uses_steps(
                 );
             }
             let expanded = expand_uses_step(&step, &resolved).map_err(|e| e.join("; "))?;
-            record_resolution(pool, pipeline_id, &uses_ref, &resolved, &expanded, reviewed).await?;
+            let expanded_json = serde_json::to_string(&expanded)
+                .map_err(|e| format!("cannot serialize expanded step: {e}"))?;
+            resolutions.push(PendingStepResolution {
+                step_order: step_order as i64,
+                uses_ref,
+                resolved_version: resolved.spec.version.clone(),
+                content_sha256: resolved.content_sha256,
+                source: resolved.source,
+                expanded_json,
+                input_defs_json: serde_json::to_string(&resolved.spec.input_defs())
+                    .map_err(|e| format!("cannot serialize step input definitions: {e}"))?,
+                reviewed,
+            });
             out.push(expanded);
         } else {
             out.push(step);
         }
     }
-    Ok(out)
+    Ok(ResolvedSteps {
+        steps: out,
+        resolutions,
+    })
 }
 
-async fn record_resolution(
-    pool: &sqlx::SqlitePool,
+/// Replace a pipeline's provenance rows inside the caller's transaction.
+pub async fn replace_step_resolutions(
+    conn: &mut sqlx::SqliteConnection,
     pipeline_id: &str,
-    uses_ref: &str,
-    resolved: &ResolvedStep,
-    expanded: &StepDef,
-    reviewed: bool,
+    resolutions: &[PendingStepResolution],
 ) -> Result<(), String> {
-    let expanded_json = serde_json::to_string(expanded)
-        .map_err(|e| format!("cannot serialize expanded step: {e}"))?;
-    sqlx::query(
-        "INSERT INTO step_resolutions
-         (id, pipeline_id, uses_ref, resolved_version, content_sha256, source, expanded_json, \
-          reviewed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(uuid::Uuid::new_v4().to_string())
-    .bind(pipeline_id)
-    .bind(uses_ref)
-    .bind(&resolved.spec.version)
-    .bind(&resolved.content_sha256)
-    .bind(&resolved.source)
-    .bind(expanded_json)
-    .bind(reviewed)
-    .execute(pool)
-    .await
-    .map_err(|e| format!("cannot record step resolution: {e}"))?;
+    sqlx::query("DELETE FROM step_resolutions WHERE pipeline_id = ?")
+        .bind(pipeline_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("cannot replace step resolutions: {e}"))?;
+    for resolution in resolutions {
+        sqlx::query(
+            "INSERT INTO step_resolutions
+             (id, pipeline_id, step_order, uses_ref, resolved_version, content_sha256, source, expanded_json, input_defs_json, reviewed)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(pipeline_id)
+        .bind(resolution.step_order)
+        .bind(&resolution.uses_ref)
+        .bind(&resolution.resolved_version)
+        .bind(&resolution.content_sha256)
+        .bind(&resolution.source)
+        .bind(&resolution.expanded_json)
+        .bind(&resolution.input_defs_json)
+        .bind(resolution.reviewed)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("cannot record step resolution: {e}"))?;
+    }
     Ok(())
 }
 

@@ -98,7 +98,7 @@ fn build_command(
             // Set the original env var (e.g. GIT_TERMINAL_PROMPT=0)
             cmd.env(k, v);
             // Also export as INPUT_* for trigger-style referencing
-            let input_key = format!("INPUT_{}", k.to_uppercase());
+            let input_key = shared::protocol::input_env_key(k);
             cmd.env(input_key, v);
         }
     }

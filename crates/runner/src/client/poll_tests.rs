@@ -608,3 +608,98 @@ fn buz_metadata_env_omits_missing_fields() {
         ]
     );
 }
+
+#[tokio::test]
+async fn marketplace_input_validation_error_logs_and_fails_job_before_execution() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buf = [0_u8; 4096];
+        let header_end = loop {
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "connection closed before complete HTTP headers");
+            request.extend_from_slice(&buf[..n]);
+            if let Some(pos) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        while request.len() < header_end + content_length {
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "connection closed before complete HTTP body");
+            request.extend_from_slice(&buf[..n]);
+        }
+        String::from_utf8_lossy(&request).into_owned()
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            requests.push(read_http_request(&mut stream).await);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        }
+        requests
+    });
+
+    let client = reqwest::Client::new();
+    let config = crate::config::Config {
+        runner: crate::config::RunnerSection {
+            manager_url: format!("http://{addr}"),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let task = serde_json::json!({
+        "job_id": "job-marketplace-invalid",
+        "tasks": [
+            {
+                "name": "invalid-template-input",
+                "command_template": "echo must-not-run",
+                "exec_type": "shell",
+                "input_validation_error": "inputs.webhook: does not match pattern",
+                "step_env": { "INPUT_WEBHOOK": "not-a-url" },
+                "masking_env_keys": ["INPUT_WEBHOOK"]
+            },
+            {
+                "name": "must-not-run-after-validation-failure",
+                "command_template": "echo must-also-not-run",
+                "exec_type": "shell"
+            }
+        ]
+    });
+
+    let error = super::execute_job(&client, &config, "runner-token", &task)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("marketplace input validation"));
+
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[0].starts_with("POST /api/v1/jobs/job-marketplace-invalid/logs "));
+    assert!(requests[1].starts_with("PATCH /api/v1/jobs/job-marketplace-invalid/status "));
+    assert!(requests[1].contains("\"status\":\"running\""));
+    assert!(requests[2].starts_with("POST /api/v1/jobs/job-marketplace-invalid/logs "));
+    assert!(requests[2].contains("marketplace input validation"));
+    assert!(requests[2].contains("does not match pattern"));
+    assert!(requests[3].starts_with("PATCH /api/v1/jobs/job-marketplace-invalid/status "));
+    assert!(requests[3].contains("\"status\":\"failed\""));
+    assert!(requests
+        .iter()
+        .all(|request| { !request.contains("must-not-run") && !request.contains("not-a-url") }));
+}

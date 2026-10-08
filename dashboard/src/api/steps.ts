@@ -7,6 +7,8 @@ export interface StepTemplateInput {
   default?: string | null
   masking: boolean
   description?: string | null
+  pattern?: string | null
+  options?: string[] | null
 }
 
 export interface StepTemplate {
@@ -16,6 +18,7 @@ export interface StepTemplate {
   name?: string | null
   description?: string | null
   description_zh?: string | null
+  category?: string | null
   author?: string | null
   publisher: string
   license?: string | null
@@ -26,6 +29,9 @@ export interface StepTemplate {
   requires_buz?: string | null
   buz_compatible: boolean
   content_sha256: string
+  reviewed: boolean
+  valid: boolean
+  validation_errors: string[]
   inputs: StepTemplateInput[]
 }
 

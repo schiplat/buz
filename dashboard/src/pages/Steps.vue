@@ -7,17 +7,24 @@ import { stepsApi, type StepTemplate, type StepLibrary } from '@/api/steps'
 const loading = ref(true)
 const library = ref<StepLibrary>({ items: [], unparseable: [] })
 const searchQuery = ref('')
+const selectedCategory = ref('')
 const selected = ref<StepTemplate | null>(null)
+
+const categories = computed(() =>
+  [...new Set(library.value.items.map((t) => t.category?.trim()).filter((c): c is string => Boolean(c)))].sort(),
+)
 
 const filtered = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
-  if (!q) return library.value.items
   return library.value.items.filter((t) => {
+    if (selectedCategory.value && t.category !== selectedCategory.value) return false
+    if (!q) return true
     const haystack = [
       t.id,
       t.name,
       t.description,
       t.description_zh,
+      t.category,
       t.author,
       t.engine,
       ...(t.keywords || []),
@@ -65,14 +72,24 @@ onMounted(async () => {
       <div v-for="u in library.unparseable" :key="u.file" class="font-mono">{{ u.file }} — {{ u.error }}</div>
     </div>
 
-    <div class="relative mb-4">
-      <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-      <input
-        v-model="searchQuery"
-        type="text"
-        placeholder="Search by name, id, keyword, author…"
-        class="w-full rounded-lg border border-border bg-input pl-9 pr-3 py-2 text-sm outline-none focus:border-ring/50"
-      />
+    <div class="relative mb-4 flex gap-2">
+      <div class="relative min-w-0 flex-1">
+        <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="Search by name, id, keyword, author…"
+          class="w-full rounded-lg border border-border bg-input pl-9 pr-3 py-2 text-sm outline-none focus:border-ring/50"
+        />
+      </div>
+      <select
+        v-model="selectedCategory"
+        aria-label="Filter by category"
+        class="rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:border-ring/50"
+      >
+        <option value="">All categories</option>
+        <option v-for="category in categories" :key="category" :value="category">{{ category }}</option>
+      </select>
     </div>
 
     <div v-if="loading" class="flex items-center justify-center py-16 text-muted-foreground">
@@ -80,7 +97,7 @@ onMounted(async () => {
     </div>
 
     <div v-else-if="!filtered.length" class="text-center py-16 text-muted-foreground text-sm">
-      <template v-if="searchQuery">No steps match “{{ searchQuery }}”.</template>
+      <template v-if="searchQuery || selectedCategory">No steps match the current filters.</template>
       <template v-else>
         Step library is empty — clone
         <a
@@ -104,7 +121,7 @@ onMounted(async () => {
         <div class="flex items-start justify-between gap-2">
           <div>
             <div class="font-mono text-sm font-medium text-foreground">{{ t.id }}</div>
-            <div class="text-xs text-muted-foreground mt-0.5">v{{ t.version }} · {{ t.engine }}</div>
+            <div class="text-xs text-muted-foreground mt-0.5">v{{ t.version }} · {{ t.engine }}<span v-if="t.category"> · {{ t.category }}</span></div>
           </div>
           <span
             class="rounded px-1.5 py-0.5 text-[10px] font-medium"
@@ -118,6 +135,12 @@ onMounted(async () => {
         </p>
         <div class="flex items-center gap-2 mt-2 flex-wrap">
           <span v-if="t.author" class="text-[10px] text-muted-foreground">by {{ t.author }}</span>
+          <span v-if="!t.reviewed" class="inline-flex items-center gap-1 text-[10px] text-amber-600">
+            <TriangleAlert class="h-3 w-3" /> Not reviewed
+          </span>
+          <span v-if="!t.valid" class="inline-flex items-center gap-1 text-[10px] text-destructive">
+            <ShieldAlert class="h-3 w-3" /> Invalid template
+          </span>
           <span v-if="!t.buz_compatible" class="inline-flex items-center gap-1 text-[10px] text-destructive">
             <ShieldAlert class="h-3 w-3" /> requires newer Buz
           </span>
@@ -140,6 +163,10 @@ onMounted(async () => {
         </a>
       </div>
 
+      <div v-if="!selected.valid || !selected.reviewed" class="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
+        <div v-if="!selected.reviewed" class="font-medium">This template is not marked as reviewed. Review its source before using it in production.</div>
+        <div v-if="!selected.valid" class="mt-1 font-mono">{{ selected.validation_errors.join('; ') }}</div>
+      </div>
       <div class="mt-4">
         <div class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1.5">Usage</div>
         <pre class="rounded-lg bg-muted/60 p-3 text-xs font-mono overflow-x-auto">{{ usageSnippet(selected) }}</pre>
@@ -163,7 +190,11 @@ onMounted(async () => {
               <td class="py-1.5 pr-3">{{ input.type }}</td>
               <td class="py-1.5 pr-3">{{ input.required ? 'yes' : 'no' }}</td>
               <td class="py-1.5 pr-3">{{ input.masking ? 'yes' : 'no' }}</td>
-              <td class="py-1.5 text-muted-foreground">{{ input.description || '—' }}</td>
+              <td class="py-1.5 text-muted-foreground">
+                {{ input.description || '—' }}
+                <span v-if="input.pattern" class="block font-mono text-[10px]">Pattern: {{ input.pattern }}</span>
+                <span v-if="input.options?.length" class="block">Options: {{ input.options.join(', ') }}</span>
+              </td>
             </tr>
           </tbody>
         </table>

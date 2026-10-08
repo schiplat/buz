@@ -52,7 +52,7 @@ pub fn build_docker_run_args(
         args.push("-e".into());
         args.push(format!("{k}={v}"));
         // Match shell engine's INPUT_* convention for trigger-style vars.
-        let input_key = format!("INPUT_{}", k.to_uppercase());
+        let input_key = shared::protocol::input_env_key(k);
         if !env.contains_key(&input_key) {
             args.push("-e".into());
             args.push(format!("{input_key}={v}"));

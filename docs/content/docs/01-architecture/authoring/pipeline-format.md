@@ -558,13 +558,13 @@ Steps may reference a step template from a step index instead of inlining `run:`
 ```yaml
 steps:
   - name: notify
-    uses: community/notify/feishu@1.2     # <namespace>/<step-id>@<pin>
+    uses: community/feishu@1.2     # <namespace>/<name>@<pin>
     with:                                  # inputs of the referenced template
       webhook: ${secrets.FEISHU_WEBHOOK}
       title: deploy done
 ```
 
-Schema rules enforced today: `uses:` takes `<namespace>/<step-id>@<pin>` with pin `@1`, `@1.2`, `@1.2.0`, or `@sha256:<64 hex>` (ranges and `latest` are rejected); a `uses:` step cannot also declare `engine:` / `run:` / `image:`; `with:` requires `uses:`.
+Schema rules enforced today: `uses:` takes `<namespace>/<name>@<pin>` with pin `@1`, `@1.2`, `@1.2.0`, or `@sha256:<64 hex>` (ranges and `latest` are rejected); a `uses:` step cannot also declare `engine:` / `run:` / `image:`; `with:` requires `uses:`. Templates may declare an optional `category:` for browsing and filtering; it is metadata, not part of the stable ID.
 
 **Resolution (local index)**: at pipeline save, each `uses:` reference is resolved against the local step index — `<yaml_scan_dir>/steps` by default (override with `[step_index].local_dir` in Manager config), one spec file per step template. Pins lock at save time ("resolve & lock"): the resolved version, content hash, source, and expanded step JSON are stored as provenance, so upstream tag moves never change an already-saved pipeline. Save-time errors are explicit: template not found, no version matching the pin, the plugin requiring a newer Buz, or `with:` not matching the template's declared inputs. The full design (remote `https` index, static browse site, update badges) is Phase 2 of the marketplace ADR.
 

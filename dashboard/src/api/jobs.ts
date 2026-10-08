@@ -95,6 +95,23 @@ export interface SnapshotTask {
   retry_count: number
   timeout_seconds: number
   fail_strategy: string
+  marketplace?: {
+    uses_ref: string
+    resolved_version: string
+    content_sha256: string
+    source: string
+    reviewed: boolean
+    inputs: Array<{
+      name: string
+      description?: string | null
+      required?: boolean | null
+      default?: string | null
+      masking?: boolean | null
+      type?: string | null
+      pattern?: string | null
+      options?: string[] | null
+    }>
+  }
 }
 
 export interface SnapshotEnv {

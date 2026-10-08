@@ -1111,6 +1111,15 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
                     <span v-if="t.host_id" class="text-[9px] font-mono rounded-md bg-muted px-1.5 py-0 text-muted-foreground/60 truncate max-w-[120px]">{{ t.host_id }}</span>
                   </div>
                   <div class="font-mono text-[11px] text-muted-foreground/60 whitespace-pre-wrap break-all leading-relaxed mt-1">{{ t.command_template }}</div>
+                  <div v-if="t.marketplace" class="mt-2 rounded-lg border border-border/40 bg-muted/20 px-2.5 py-2 text-[10px] font-mono text-muted-foreground/70 space-y-1">
+                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span class="font-semibold text-foreground/70">{{ t.marketplace.uses_ref }}</span>
+                      <span>v{{ t.marketplace.resolved_version }}</span>
+                      <span :class="t.marketplace.reviewed ? 'text-emerald-600' : 'text-amber-600'">{{ t.marketplace.reviewed ? 'reviewed' : 'unreviewed' }}</span>
+                    </div>
+                    <div class="break-all">sha256:{{ t.marketplace.content_sha256 }}</div>
+                    <div class="break-all">source: {{ t.marketplace.source }}</div>
+                  </div>
                   <div v-if="t.fail_strategy === 'continue'" class="mt-1.5">
                     <span class="inline-flex items-center gap-1 text-[10px] text-amber-600 bg-amber-500/[0.06] border border-amber-500/20 rounded-md px-2 py-0 font-medium">continue-on-error</span>
                   </div>

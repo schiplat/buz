@@ -136,6 +136,10 @@ async fn main() -> anyhow::Result<()> {
     services::pipeline_scanner::spawn_scanner(
         db_pool.clone(),
         config.pipeline.yaml_scan_dir.clone(),
+        services::step_resolver::local_step_index_dir(
+            &config.pipeline.yaml_scan_dir,
+            &config.step_index.local_dir,
+        ),
         config.pipeline.yaml_scan_interval_seconds,
     );
 

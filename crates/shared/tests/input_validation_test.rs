@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use shared::protocol::{validate_input_values, PipelineInputDef};
+use shared::protocol::{input_env_key, validate_input_values, PipelineInputDef};
 
 fn def(name: &str, required: bool) -> PipelineInputDef {
     PipelineInputDef {
@@ -16,6 +16,15 @@ fn def(name: &str, required: bool) -> PipelineInputDef {
         pattern: None,
         options: None,
     }
+}
+
+#[test]
+fn marketplace_input_env_keys_normalize_separators_and_camel_case() {
+    assert_eq!(input_env_key("webhook"), "INPUT_WEBHOOK");
+    assert_eq!(input_env_key("api-key"), "INPUT_API_KEY");
+    assert_eq!(input_env_key("apiKey"), "INPUT_API_KEY");
+    assert_eq!(input_env_key("URLValue"), "INPUT_URL_VALUE");
+    assert_eq!(input_env_key("webhook_url"), "INPUT_WEBHOOK_URL");
 }
 
 #[test]

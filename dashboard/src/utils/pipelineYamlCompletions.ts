@@ -53,7 +53,7 @@ const STEP: Completion[] = [
   {
     label: 'uses',
     type: 'property',
-    info: 'Step template ref: <namespace>/<id>@<pin> (local step index)',
+    info: 'Step template ref: <namespace>/<name>@<pin> (local step index)',
   },
   { label: 'with', type: 'property', info: 'inputs for a uses: step → INPUT_*' },
   { label: 'image', type: 'property', info: 'Docker image (engine: docker)' },

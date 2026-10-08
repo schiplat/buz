@@ -13,10 +13,13 @@ fn feishu_spec(id: &str, version: &str) -> String {
     format!(
         r#"
 id: {id}
-name: Feishu notify
+publisher: official
 version: {version}
 engine: shell
 default_timeout: 30s
+author: Buz
+source_repo: https://github.com/buz/buz-plugins
+
 inputs:
   webhook:
     type: string
@@ -33,12 +36,12 @@ fn seed_index() -> tempfile::TempDir {
     write_spec(
         dir.path(),
         "feishu-1.2.0.yaml",
-        &feishu_spec("notify/feishu", "1.2.0"),
+        &feishu_spec("buz/feishu", "1.2.0"),
     );
     write_spec(
         dir.path(),
         "feishu-1.4.0.yaml",
-        &feishu_spec("notify/feishu", "1.4.0"),
+        &feishu_spec("buz/feishu", "1.4.0"),
     );
     write_spec(dir.path(), "broken.yaml", "id: [broken");
     dir
@@ -51,16 +54,16 @@ fn duplicate_id_version_across_files_is_ambiguous_even_for_major_pins() {
     write_spec(
         dir.path(),
         "feishu-1.2.0-dup.yaml",
-        &feishu_spec("notify/feishu", "1.2.0").replacen("engine: shell", "engine: ssh", 1),
+        &feishu_spec("buz/feishu", "1.2.0").replacen("engine: shell", "engine: ssh", 1),
     );
     let index = LocalStepIndex::new(dir.path().to_path_buf());
 
     // Exact pin → ambiguous.
-    let err = index.resolve("notify/feishu@1.2.0", CURRENT).unwrap_err();
+    let err = index.resolve("buz/feishu@1.2.0", CURRENT).unwrap_err();
     assert!(err.contains("ambiguous") && err.contains("1.2.0"), "{err}");
 
     // Major pin → also ambiguous (would otherwise pick a file arbitrarily).
-    let err = index.resolve("notify/feishu@1.2", CURRENT).unwrap_err();
+    let err = index.resolve("buz/feishu@1.2", CURRENT).unwrap_err();
     assert!(err.contains("ambiguous") && err.contains("1.2.0"), "{err}");
 
     // Distinct versions across files stay legitimate (@1 → highest = 1.4.0
@@ -68,9 +71,9 @@ fn duplicate_id_version_across_files_is_ambiguous_even_for_major_pins() {
     write_spec(
         dir.path(),
         "feishu-1.3.0.yaml",
-        &feishu_spec("notify/feishu", "1.3.0"),
+        &feishu_spec("buz/feishu", "1.3.0"),
     );
-    let resolved = index.resolve("notify/feishu@1", CURRENT).unwrap();
+    let resolved = index.resolve("buz/feishu@1", CURRENT).unwrap();
     assert_eq!(resolved.spec.version, "1.4.0");
 }
 
@@ -114,10 +117,10 @@ fn local_index_dir_defaults_under_scan_dir() {
 fn resolve_major_pin_picks_highest_version() {
     let dir = seed_index();
     let index = LocalStepIndex::new(dir.path().to_path_buf());
-    let resolved = index.resolve("notify/feishu@1", "1.5.6").unwrap();
+    let resolved = index.resolve("buz/feishu@1", "1.5.6").unwrap();
     assert_eq!(resolved.spec.version, "1.4.0");
 
-    let resolved = index.resolve("notify/feishu@1.2.0", "1.5.6").unwrap();
+    let resolved = index.resolve("buz/feishu@1.2.0", "1.5.6").unwrap();
     assert_eq!(resolved.spec.version, "1.2.0");
     assert!(resolved.source.starts_with("local:"));
     assert_eq!(resolved.content_sha256.len(), 64);
@@ -127,16 +130,16 @@ fn resolve_major_pin_picks_highest_version() {
 fn resolve_by_content_sha256() {
     let dir = seed_index();
     let index = LocalStepIndex::new(dir.path().to_path_buf());
-    let any = index.resolve("notify/feishu@1.2.0", "1.5.6").unwrap();
+    let any = index.resolve("buz/feishu@1.2.0", "1.5.6").unwrap();
     let by_hash = index
         .resolve(
-            &format!("notify/feishu@sha256:{}", any.content_sha256),
+            &format!("buz/feishu@sha256:{}", any.content_sha256),
             "1.5.6",
         )
         .unwrap();
     assert_eq!(by_hash.spec.version, "1.2.0");
 
-    let wrong = format!("notify/feishu@sha256:{}", "0".repeat(64));
+    let wrong = format!("buz/feishu@sha256:{}", "0".repeat(64));
     assert!(index.resolve(&wrong, "1.5.6").is_err());
 }
 
@@ -144,21 +147,21 @@ fn resolve_by_content_sha256() {
 fn resolve_reports_missing_and_stale_requires_buz() {
     let dir = seed_index();
     let index = LocalStepIndex::new(dir.path().to_path_buf());
-    let err = index.resolve("notify/absent@1", "1.5.6").unwrap_err();
+    let err = index.resolve("buz/absent@1", "1.5.6").unwrap_err();
     assert!(err.contains("not found in local step index"), "{err}");
 
     let dir = tempfile::tempdir().unwrap();
     write_spec(
         dir.path(),
         "future.yaml",
-        &feishu_spec("notify/feishu", "9.0.0").replacen(
+        &feishu_spec("buz/feishu", "9.0.0").replacen(
             "engine: shell",
             "requires_buz: \">=99.0.0\"\nengine: shell",
             1,
         ),
     );
     let index = LocalStepIndex::new(dir.path().to_path_buf());
-    let err = index.resolve("notify/feishu@9", "1.5.6").unwrap_err();
+    let err = index.resolve("buz/feishu@9", "1.5.6").unwrap_err();
     assert!(err.contains("too new"), "{err}");
 }
 
@@ -166,9 +169,9 @@ fn resolve_reports_missing_and_stale_requires_buz() {
 fn expand_maps_with_to_input_env_and_clears_uses() {
     let dir = seed_index();
     let index = LocalStepIndex::new(dir.path().to_path_buf());
-    let resolved = index.resolve("notify/feishu@1.2.0", "1.5.6").unwrap();
+    let resolved = index.resolve("buz/feishu@1.2.0", "1.5.6").unwrap();
 
-    let mut step = uses_step("notify/feishu@1.2.0");
+    let mut step = uses_step("buz/feishu@1.2.0");
     let mut with = BTreeMap::new();
     with.insert("webhook".to_string(), "${secrets.FEISHU}".to_string());
     step.with = Some(with);
@@ -190,13 +193,54 @@ fn expand_maps_with_to_input_env_and_clears_uses() {
     );
 }
 
+fn numeric_spec() -> String {
+    r#"
+id: buz/retries
+publisher: official
+version: 1.2.0
+engine: shell
+author: Buz
+source_repo: https://github.com/buz/buz-plugins
+inputs:
+  retries:
+    type: number
+    required: true
+run: echo "$INPUT_RETRIES"
+"#
+    .to_string()
+}
+
+#[test]
+fn vars_input_is_deferred_to_claim_time_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    write_spec(dir.path(), "retries.yaml", &numeric_spec());
+    let resolved = LocalStepIndex::new(dir.path().to_path_buf())
+        .resolve("buz/retries@1.2.0", "1.5.6")
+        .unwrap();
+
+    let mut step = uses_step("buz/retries@1.2.0");
+    let mut with = BTreeMap::new();
+    with.insert("retries".to_string(), "${vars.RELEASE_TAG}".to_string());
+    step.with = Some(with);
+
+    let expanded = expand_uses_step(&step, &resolved).expect("dynamic value is deferred");
+    assert_eq!(
+        expanded
+            .env
+            .unwrap()
+            .get("INPUT_RETRIES")
+            .map(String::as_str),
+        Some("${vars.RELEASE_TAG}")
+    );
+}
+
 #[test]
 fn expand_rejects_unknown_and_missing_required_inputs() {
     let dir = seed_index();
     let index = LocalStepIndex::new(dir.path().to_path_buf());
-    let resolved = index.resolve("notify/feishu@1.2.0", "1.5.6").unwrap();
+    let resolved = index.resolve("buz/feishu@1.2.0", "1.5.6").unwrap();
 
-    let mut step = uses_step("notify/feishu@1.2.0");
+    let mut step = uses_step("buz/feishu@1.2.0");
     let mut with = BTreeMap::new();
     with.insert("nope".to_string(), "x".to_string());
     step.with = Some(with);
@@ -206,7 +250,7 @@ fn expand_rejects_unknown_and_missing_required_inputs() {
         "{errors:?}"
     );
 
-    let step = uses_step("notify/feishu@1.2.0");
+    let step = uses_step("buz/feishu@1.2.0");
     let errors = expand_uses_step(&step, &resolved).unwrap_err();
     assert!(
         errors
@@ -216,90 +260,55 @@ fn expand_rejects_unknown_and_missing_required_inputs() {
     );
 }
 
-#[tokio::test]
-async fn reviewed_manifest_flags_hash_and_strict_mode_rejects_unreviewed() {
+#[test]
+fn reviewed_manifest_flags_hash_and_strict_mode_rejects_unreviewed() {
     let dir = seed_index();
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    crate::db::run_migrations(&pool, "test-secret-0123456789abcdef")
-        .await
-        .unwrap();
-
-    // Discover the 1.4.0 content hash via a lenient resolution.
     let index = LocalStepIndex::new(dir.path().to_path_buf());
-    let resolved = index.resolve("notify/feishu@1", "1.5.6").unwrap();
-
+    let resolved = index.resolve("buz/feishu@1", "1.5.6").unwrap();
     let manifest_path = dir.path().join("reviews.json");
     std::fs::write(
         &manifest_path,
         format!(
-            r#"{{"reviews":[{{"id":"notify/feishu","version":"1.4.0","sha256":"{}"}}]}}"#,
+            r#"{{"reviews":[{{"id":"buz/feishu","version":"1.4.0","sha256":"{}"}}]}}"#,
             resolved.content_sha256
         ),
     )
     .unwrap();
-
-    let policy = super::ResolutionPolicy {
+    let strict_policy = super::ResolutionPolicy {
         reviewed_hashes: super::load_reviewed_hashes(manifest_path.to_str().unwrap()),
         require_reviewed: true,
     };
 
-    // Reviewed hash → resolves under strict mode, provenance flagged.
-    let mut step = uses_step("notify/feishu@1.4.0");
+    let mut reviewed_step = uses_step("buz/feishu@1.4.0");
     let mut with = BTreeMap::new();
-    with.insert("webhook".to_string(), "https://hook".to_string());
-    step.with = Some(with);
-    let out = resolve_uses_steps(&pool, "pipe-r", vec![step], dir.path(), &policy)
-        .await
-        .unwrap();
-    assert_eq!(out.len(), 1);
-    let reviewed: i64 =
-        sqlx::query_scalar("SELECT reviewed FROM step_resolutions WHERE pipeline_id = 'pipe-r'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(reviewed, 1);
+    with.insert("webhook".to_string(), "${secrets.FEISHU}".to_string());
+    reviewed_step.with = Some(with);
+    let resolved = resolve_uses_steps(vec![reviewed_step], dir.path(), &strict_policy).unwrap();
+    assert!(resolved.resolutions[0].reviewed);
 
-    // Different (unreviewed) pin → strict mode rejects.
     let err = resolve_uses_steps(
-        &pool,
-        "pipe-r2",
-        vec![uses_step("notify/feishu@1.2.0")],
+        vec![uses_step("buz/feishu@1.2.0")],
         dir.path(),
-        &policy,
+        &strict_policy,
     )
-    .await
     .unwrap_err();
     assert!(err.contains("not officially reviewed"), "{err}");
 
-    // Lenient policy allows it (warning only) and records reviewed=0.
-    let mut step = uses_step("notify/feishu@1.2.0");
+    let mut unreviewed_step = uses_step("buz/feishu@1.2.0");
     let mut with = BTreeMap::new();
-    with.insert("webhook".to_string(), "https://hook".to_string());
-    step.with = Some(with);
-    let out = resolve_uses_steps(
-        &pool,
-        "pipe-r3",
-        vec![step],
+    with.insert("webhook".to_string(), "${secrets.FEISHU}".to_string());
+    unreviewed_step.with = Some(with);
+    let resolved = resolve_uses_steps(
+        vec![unreviewed_step],
         dir.path(),
         &super::ResolutionPolicy::default(),
     )
-    .await
     .unwrap();
-    assert_eq!(out[0].uses, None);
-    let reviewed: i64 =
-        sqlx::query_scalar("SELECT reviewed FROM step_resolutions WHERE pipeline_id = 'pipe-r3'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(reviewed, 0);
+    assert!(!resolved.resolutions[0].reviewed);
 }
 
 #[tokio::test]
-async fn resolve_uses_steps_passthrough_and_provenance() {
+async fn resolve_uses_steps_stages_provenance_for_caller_transaction() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -308,44 +317,46 @@ async fn resolve_uses_steps_passthrough_and_provenance() {
     crate::db::run_migrations(&pool, "test-secret-0123456789abcdef")
         .await
         .unwrap();
-
     let dir = seed_index();
 
-    // No uses → passthrough, no rows.
-    let plain = vec![plain_step()];
-    let out = resolve_uses_steps(
-        &pool,
-        "pipe-1",
-        plain.clone(),
-        dir.path(),
-        &Default::default(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(out.len(), 1);
-    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM step_resolutions")
+    let plain = resolve_uses_steps(vec![plain_step()], dir.path(), &Default::default()).unwrap();
+    assert_eq!(plain.steps.len(), 1);
+    assert!(plain.resolutions.is_empty());
+
+    let mut step = uses_step("buz/feishu@1");
+    let mut with = BTreeMap::new();
+    with.insert("webhook".to_string(), "${secrets.FEISHU}".to_string());
+    step.with = Some(with);
+    let resolved = resolve_uses_steps(vec![step], dir.path(), &Default::default()).unwrap();
+    assert_eq!(resolved.steps.len(), 1);
+    assert_eq!(resolved.steps[0].uses, None);
+    assert!(resolved.steps[0].run.contains("INPUT_WEBHOOK"));
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM step_resolutions")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(rows, 0);
-
-    // uses → expanded + one provenance row (webhook is required → supply it).
-    let mut step = uses_step("notify/feishu@1");
-    let mut with = BTreeMap::new();
-    with.insert(
-        "webhook".to_string(),
-        "https://open.feishu/hook/x".to_string(),
+    assert_eq!(
+        count, 0,
+        "resolution has no side effects before persistence"
     );
-    step.with = Some(with);
-    let out = resolve_uses_steps(&pool, "pipe-1", vec![step], dir.path(), &Default::default())
+
+    let mut tx = pool.begin().await.unwrap();
+    super::replace_step_resolutions(&mut *tx, "pipe-1", &resolved.resolutions)
         .await
         .unwrap();
-    assert_eq!(out.len(), 1);
-    assert_eq!(out[0].uses, None);
-    assert!(out[0].run.contains("INPUT_WEBHOOK"));
-    let (version, hash, source, reviewed): (String, String, String, i64) = sqlx::query_as(
-        "SELECT resolved_version, content_sha256, source, reviewed FROM step_resolutions \
-         WHERE pipeline_id = 'pipe-1'",
+    tx.commit().await.unwrap();
+
+    let (version, hash, source, reviewed, step_order, input_defs_json): (
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        String,
+    ) = sqlx::query_as(
+        "SELECT resolved_version, content_sha256, source, reviewed, step_order, input_defs_json \
+             FROM step_resolutions WHERE pipeline_id = 'pipe-1'",
     )
     .fetch_one(&pool)
     .await
@@ -353,7 +364,12 @@ async fn resolve_uses_steps_passthrough_and_provenance() {
     assert_eq!(version, "1.4.0");
     assert_eq!(hash.len(), 64);
     assert!(source.starts_with("local:"));
-    assert_eq!(reviewed, 0, "no manifest → unreviewed");
+    assert_eq!(reviewed, 0);
+    assert_eq!(step_order, 0);
+    let input_defs: Vec<shared::protocol::PipelineInputDef> =
+        serde_json::from_str(&input_defs_json).unwrap();
+    assert_eq!(input_defs.len(), 1);
+    assert_eq!(input_defs[0].name, "webhook");
 }
 
 fn plain_step() -> StepDef {

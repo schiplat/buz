@@ -391,9 +391,43 @@ impl PipelineInputDef {
     pub fn is_masking(&self) -> bool {
         self.masking.unwrap_or(false)
     }
+
+    pub fn env_key(&self) -> String {
+        input_env_key(&self.name)
+    }
 }
 
-/// Names of input params marked `masking: true`.
+pub fn input_env_key(name: &str) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    let mut key = String::from("INPUT_");
+    let mut separator_pending = false;
+    for (index, ch) in chars.iter().copied().enumerate() {
+        if !ch.is_ascii_alphanumeric() {
+            separator_pending = !key.ends_with('_');
+            continue;
+        }
+        let previous = index.checked_sub(1).and_then(|i| chars.get(i)).copied();
+        let next = chars.get(index + 1).copied();
+        let starts_word = ch.is_ascii_uppercase()
+            && (previous.is_some_and(|p| p.is_ascii_lowercase() || p.is_ascii_digit())
+                || (previous.is_some_and(|p| p.is_ascii_uppercase())
+                    && next.is_some_and(|n| n.is_ascii_lowercase())));
+        if (separator_pending || starts_word) && !key.ends_with('_') {
+            key.push('_');
+        }
+        key.push(ch.to_ascii_uppercase());
+        separator_pending = false;
+    }
+    let suffix = key.strip_prefix("INPUT_").unwrap_or_default();
+    let normalized = suffix.trim_end_matches('_');
+    if normalized.is_empty() {
+        String::from("INPUT_")
+    } else {
+        format!("INPUT_{normalized}")
+    }
+}
+
+/// Names of input params marked masking: true.
 pub fn masking_input_names(defs: &[PipelineInputDef]) -> Vec<String> {
     defs.iter()
         .filter(|d| d.is_masking())
@@ -706,7 +740,7 @@ pub struct StepDef {
     #[serde(default)]
     pub run: String,
     pub engine: Option<String>,
-    /// Marketplace reference (`<namespace>/<step-id>@<pin>`). Set only by
+    /// Marketplace reference (`<namespace>/<name>@<pin>`). Set only by
     /// the step resolver when expanding templates — plain pipeline saves
     /// must not carry it (rejected in insert_steps).
     #[serde(default)]

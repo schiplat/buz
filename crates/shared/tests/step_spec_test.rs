@@ -6,7 +6,7 @@ const CURRENT: &str = "1.5.6";
 
 fn base_yaml() -> String {
     r#"
-id: buz/notify/feishu
+id: buz/feishu
 name: Feishu notify
 version: 1.2.0
 description: Send a card message to a Feishu group bot
@@ -121,7 +121,7 @@ fn docker_requires_image_and_run_bans_secret_refs() {
 #[test]
 fn malformed_ids_versions_and_inputs_rejected() {
     let bad = base_yaml()
-        .replacen("id: buz/notify/feishu", "id: notify", 1)
+        .replacen("id: buz/feishu", "id: notify", 1)
         .replacen("version: 1.2.0", "version: 1.2", 1)
         .replacen("at_all:\n    type: boolean", "at_all:\n    type: banana", 1);
     let errors = parse_and_validate_step_spec(&bad, CURRENT).unwrap_err();
@@ -156,7 +156,7 @@ fn community_publisher_requires_attribution() {
 
     let complete = base_yaml()
         .replacen("publisher: official", "publisher: community", 1)
-        .replacen("id: buz/notify/feishu", "id: alice/notify/telegram", 1)
+        .replacen("id: buz/feishu", "id: alice/telegram", 1)
         .replacen(
             "engine: shell",
             "author: someone\nsource_repo: https://github.com/someone/steps\nengine: shell",
@@ -201,7 +201,7 @@ fn buz_namespace_is_reserved_for_official_templates() {
     );
 
     // Official template outside the `buz` namespace → rejected.
-    let misplaced = base_yaml().replacen("id: buz/notify/feishu", "id: tools/notify/feishu", 1);
+    let misplaced = base_yaml().replacen("id: buz/feishu", "id: tools/feishu", 1);
     let errors = validate_step_spec(
         &serde_yaml::from_str::<StepSpec>(&misplaced).unwrap(),
         CURRENT,
@@ -216,15 +216,15 @@ fn buz_namespace_is_reserved_for_official_templates() {
 }
 
 #[test]
-fn id_grammar_is_three_segments_for_all_templates() {
-    // Official: buz/<category>/<name>.
+fn id_grammar_is_two_segments_for_all_templates() {
+    // Official: buz/<name>; category is optional browsing metadata.
     let spec: StepSpec = serde_yaml::from_str(&base_yaml()).unwrap();
     assert!(validate_step_spec(&spec, CURRENT).is_ok());
 
-    // Community: <handle>/<category>/<name> — same grammar, own namespace.
+    // Community: <handle>/<name> — same grammar, own namespace.
     let community = base_yaml()
         .replacen("publisher: official", "publisher: community", 1)
-        .replacen("id: buz/notify/feishu", "id: alice/notify/telegram", 1)
+        .replacen("id: buz/feishu", "id: alice/telegram", 1)
         .replacen(
             "engine: shell",
             "author: someone\nsource_repo: https://github.com/someone/steps\nengine: shell",
@@ -233,14 +233,137 @@ fn id_grammar_is_three_segments_for_all_templates() {
     let spec: StepSpec = serde_yaml::from_str(&community).unwrap();
     assert!(validate_step_spec(&spec, CURRENT).is_ok());
 
-    // Two segments (ns/name) no longer parse as valid ids.
-    let two = base_yaml().replacen("id: buz/notify/feishu", "id: buz/feishu", 1);
-    let errors =
-        validate_step_spec(&serde_yaml::from_str::<StepSpec>(&two).unwrap(), CURRENT).unwrap_err();
+    // The old three-segment form is invalid.
+    let three = base_yaml().replacen("id: buz/feishu", "id: buz/notify/feishu", 1);
+    let errors = validate_step_spec(&serde_yaml::from_str::<StepSpec>(&three).unwrap(), CURRENT)
+        .unwrap_err();
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("expected '<namespace>/<category>/<name>'")),
+            .any(|e| e.contains("expected '<namespace>/<name>'")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn marketplace_engine_and_host_inputs_are_restricted() {
+    let ssh = base_yaml().replacen("engine: shell", "engine: ssh", 1);
+    let errors =
+        validate_step_spec(&serde_yaml::from_str::<StepSpec>(&ssh).unwrap(), CURRENT).unwrap_err();
+    assert!(
+        errors.iter().any(|e| e.contains("'ssh' is not supported")),
+        "{errors:?}"
+    );
+
+    let host = base_yaml().replacen("type: boolean", "type: host", 1);
+    let errors =
+        validate_step_spec(&serde_yaml::from_str::<StepSpec>(&host).unwrap(), CURRENT).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("type: host is not supported")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn input_names_colliding_after_env_key_normalization_are_rejected() {
+    let collision = base_yaml().replacen(
+        "  at_all:\n    type: boolean\n    default: \"false\"",
+        "  api-key:\n    type: string\n  apiKey:\n    type: string\n  at_all:\n    type: boolean\n    default: \"false\"",
+        1,
+    );
+    let errors = validate_step_spec(
+        &serde_yaml::from_str::<StepSpec>(&collision).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("normalizes to INPUT_API_KEY")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn input_defaults_obey_masking_types_options_and_patterns() {
+    let masked_default = base_yaml().replacen(
+        "    masking: true\n    description:",
+        "    masking: true\n    default: \"literal-secret\"\n    description:",
+        1,
+    );
+    let errors = validate_step_spec(
+        &serde_yaml::from_str::<StepSpec>(&masked_default).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("masked inputs must not declare a literal default")),
+        "{errors:?}"
+    );
+
+    let number = base_yaml().replacen(
+        "  at_all:\n    type: boolean\n    default: \"false\"",
+        "  retries:\n    type: number\n    default: \"many\"\n  at_all:\n    type: boolean\n    default: \"false\"",
+        1,
+    );
+    let errors = validate_step_spec(&serde_yaml::from_str::<StepSpec>(&number).unwrap(), CURRENT)
+        .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("inputs.retries.default: must be an integer")),
+        "{errors:?}"
+    );
+
+    let choice = base_yaml().replacen(
+        "  at_all:\n    type: boolean\n    default: \"false\"",
+        "  mode:\n    type: choice\n    options: [safe, fast]\n    default: \"unknown\"\n  at_all:\n    type: boolean\n    default: \"false\"",
+        1,
+    );
+    let errors = validate_step_spec(&serde_yaml::from_str::<StepSpec>(&choice).unwrap(), CURRENT)
+        .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("inputs.mode.default: must match one of the declared options")),
+        "{errors:?}"
+    );
+
+    let pattern = base_yaml().replacen(
+        "  at_all:\n    type: boolean\n    default: \"false\"",
+        "  tag:\n    type: string\n    default: \"not-valid\"\n    pattern: ^[a-z]+$\n  at_all:\n    type: boolean\n    default: \"false\"",
+        1,
+    );
+    let errors = validate_step_spec(
+        &serde_yaml::from_str::<StepSpec>(&pattern).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("inputs.tag.default: does not match pattern")),
+        "{errors:?}"
+    );
+
+    let malformed_pattern = base_yaml().replacen(
+        "    type: boolean\n    default: \"false\"",
+        "    type: boolean\n    default: \"false\"\n    pattern: (",
+        1,
+    );
+    let errors = validate_step_spec(
+        &serde_yaml::from_str::<StepSpec>(&malformed_pattern).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("inputs.at_all: invalid pattern")),
         "{errors:?}"
     );
 }

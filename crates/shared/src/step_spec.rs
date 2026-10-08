@@ -36,8 +36,8 @@ pub struct RawStepInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StepSpec {
-    /// `<namespace>/<category>/<name>`, e.g. `buz/notify/feishu` (official) or
-    /// `alice/notify/telegram` (community).
+    /// `<namespace>/<name>`, e.g. `buz/feishu` (official) or
+    /// `alice/telegram` (community).
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -50,6 +50,9 @@ pub struct StepSpec {
     pub description: Option<String>,
     #[serde(default)]
     pub description_zh: Option<String>,
+    /// Optional browsing/filtering category; not part of the template ID.
+    #[serde(default)]
+    pub category: Option<String>,
     /// `official` | `community` (default when omitted). Attribution rules
     /// bind to community: `author` + `source_repo` become required.
     #[serde(default)]
@@ -252,18 +255,122 @@ fn valid_id_segment(seg: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+fn validate_input_default(name: &str, input: &RawStepInput, errors: &mut Vec<String>) {
+    let kind = InputTypeKind::parse(input.input_type.as_deref());
+    if input.input_type.as_deref().map(str::trim) == Some("host") {
+        errors.push(format!(
+            "inputs.{name}: type: host is not supported for marketplace step templates — use string, number, boolean, choice, or list"
+        ));
+    } else if kind.is_none() {
+        errors.push(format!(
+            "inputs.{name}: unknown type {:?} — use string, number, boolean, choice, or list",
+            input.input_type.as_deref().unwrap_or("")
+        ));
+    }
+
+    if kind == Some(InputTypeKind::Choice)
+        && input.options.as_ref().map(|o| o.is_empty()).unwrap_or(true)
+    {
+        errors.push(format!(
+            "inputs.{name}: type: choice requires a non-empty options list"
+        ));
+    }
+
+    if input.masking.unwrap_or(false) && input.default.is_some() {
+        errors.push(format!(
+            "inputs.{name}: masked inputs must not declare a literal default"
+        ));
+    }
+
+    let regex = match input.pattern.as_deref() {
+        Some(pattern) => match regex::Regex::new(pattern) {
+            Ok(regex) => Some(regex),
+            Err(_) => {
+                errors.push(format!("inputs.{name}: invalid pattern {pattern:?}"));
+                None
+            }
+        },
+        None => None,
+    };
+
+    let (Some(default), Some(kind)) = (input.default.as_deref(), kind) else {
+        return;
+    };
+    let value = default.trim();
+    let mut valid = true;
+    let mut reason = None;
+    match kind {
+        InputTypeKind::String => {}
+        InputTypeKind::Number => {
+            if value.parse::<i64>().is_err() {
+                valid = false;
+                reason = Some("must be an integer");
+            }
+        }
+        InputTypeKind::Boolean => {
+            if !matches!(value.to_ascii_lowercase().as_str(), "true" | "false") {
+                valid = false;
+                reason = Some("must be true or false");
+            }
+        }
+        InputTypeKind::Choice => {
+            if let Some(options) = input.options.as_deref() {
+                if !options.iter().any(|option| option == value) {
+                    valid = false;
+                    reason = Some("must match one of the declared options");
+                }
+            }
+        }
+        InputTypeKind::List => {
+            let items: Vec<&str> = value
+                .trim_matches('\n')
+                .split('\n')
+                .map(str::trim)
+                .collect();
+            if items.iter().any(|item| item.is_empty()) {
+                valid = false;
+                reason = Some("must not contain an empty list item");
+            }
+        }
+        InputTypeKind::Host => return,
+    }
+    if !valid {
+        errors.push(format!(
+            "inputs.{name}.default: {}",
+            reason.unwrap_or("is invalid")
+        ));
+    }
+
+    if let Some(regex) = regex {
+        let matches = if kind == InputTypeKind::List {
+            value
+                .trim_matches('\n')
+                .split('\n')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .all(|item| regex.is_match(item))
+        } else {
+            regex.is_match(value)
+        };
+        if !matches {
+            errors.push(format!(
+                "inputs.{name}.default: does not match pattern {:?}",
+                input.pattern.as_deref().unwrap_or("")
+            ));
+        }
+    }
+}
+
 /// Validate a parsed step spec. Returns one message per problem so plugin
 /// CI can print them all at once.
 pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
 
     let parts: Vec<&str> = spec.id.split('/').collect();
-    // Unified grammar for ALL templates (official and community alike):
-    //   <namespace>/<category>/<name> — namespace = owner identity
-    //   (official team = reserved `buz`; community = author handle).
-    if parts.len() != 3 || !parts.iter().all(|seg| valid_id_segment(seg)) {
+    // Namespace is the owner identity; the second segment is the stable name.
+    if parts.len() != 2 || !parts.iter().all(|seg| valid_id_segment(seg)) {
         errors.push(format!(
-            "id: expected '<namespace>/<category>/<name>' with lowercase [a-z0-9-] segments, \
+            "id: expected '<namespace>/<name>' with lowercase [a-z0-9-] segments, \
              got {:?}",
             spec.id
         ));
@@ -275,7 +382,7 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
         if official && parts[0] != "buz" {
             errors.push(format!(
                 "id: publisher 'official' templates must live in the 'buz' namespace as \
-                 buz/<category>/<name> (e.g. buz/notify/feishu), got {:?}",
+                 buz/<name> (e.g. buz/feishu), got {:?}",
                 spec.id
             ));
         }
@@ -283,6 +390,19 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
             errors.push(
                 "id: namespace 'buz' is reserved for officially maintained templates — \
                  pick your own namespace (usually your author handle)"
+                    .into(),
+            );
+        }
+    }
+
+    if let Some(category) = spec.category.as_deref() {
+        if category.trim().is_empty()
+            || !category
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ' '))
+        {
+            errors.push(
+                "category: must be a non-empty label using letters, numbers, spaces, '-' or '_'"
                     .into(),
             );
         }
@@ -306,7 +426,11 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
     }
 
     match spec.effective_engine() {
-        "shell" | "ssh" => {}
+        "shell" => {}
+        "ssh" => errors.push(
+            "engine: 'ssh' is not supported for marketplace step templates — use shell or docker"
+                .into(),
+        ),
         "docker" => {
             if spec
                 .image
@@ -319,7 +443,7 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
             }
         }
         other => errors.push(format!(
-            "engine: {other:?} is not valid for a step template — use shell, docker, or ssh"
+            "engine: {other:?} is not valid for a step template — use shell or docker"
         )),
     }
 
@@ -369,20 +493,26 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
         "app_key",
         "sign_key",
     ];
+    let mut input_env_keys: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for (name, input) in spec.inputs.iter().flatten() {
-        if InputTypeKind::parse(input.input_type.as_deref()).is_none() {
-            errors.push(format!(
-                "inputs.{name}: unknown type {:?} — use string, number, boolean, host, choice, \
-                 or list",
-                input.input_type.as_deref().unwrap_or("")
-            ));
-        }
-        if input.input_type.as_deref().map(str::trim) == Some("choice")
-            && input.options.as_ref().map(|o| o.is_empty()).unwrap_or(true)
+        validate_input_default(name, input, &mut errors);
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
         {
             errors.push(format!(
-                "inputs.{name}: type: choice requires a non-empty options list"
+                "inputs.{name}: name must contain only ASCII letters, numbers, '_' or '-'"
             ));
+        }
+        let env_key = crate::protocol::input_env_key(name);
+        if let Some(previous) = input_env_keys.get(&env_key) {
+            errors.push(format!(
+                "inputs.{name}: normalizes to {env_key}, which is already used by input '{previous}'"
+            ));
+        } else {
+            input_env_keys.insert(env_key, name.clone());
         }
         let lower = name.to_lowercase();
         let credential_like = lower.contains("key") && !lower.contains("keyword")

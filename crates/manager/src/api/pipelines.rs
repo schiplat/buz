@@ -140,6 +140,7 @@ pub async fn create(
     let input_defs_json =
         serde_json::to_string(&req.input_defs.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
 
+    let mut tx = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path, cron_expr,
          runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
@@ -162,57 +163,56 @@ pub async fn create(
     .bind(&owner_group)
     .bind(&team_id)
     .bind(&input_defs_json)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     // Steps / env / bindings are inserted after the pipeline row. If any of
     // them fails (e.g. a `uses:` step that cannot resolve), clean up so a
     // failed save never leaves a half-created pipeline behind.
     let create_result = async {
-        // Insert step definitions (uses: steps resolved + locked first)
-        let steps = insert_steps(
-            &state.pool,
-            &pipeline_id,
-            &crate::services::step_resolver::resolve_uses_steps(
-                &state.pool,
-                &pipeline_id,
-                req.steps,
-                &crate::services::step_resolver::local_step_index_dir(
-                    &state.config.pipeline.yaml_scan_dir,
-                    &state.config.step_index.local_dir,
-                ),
-                &crate::services::step_resolver::policy_from_settings(),
-            )
-            .await
-            .map_err(AppError::ValidationFailed)?,
+        let resolved = crate::services::step_resolver::resolve_uses_steps(
+            req.steps,
+            &crate::services::step_resolver::local_step_index_dir(
+                &state.config.pipeline.yaml_scan_dir,
+                &state.config.step_index.local_dir,
+            ),
+            &crate::services::step_resolver::policy_from_settings(),
         )
-        .await?;
+        .map_err(AppError::ValidationFailed)?;
+        let steps = insert_steps(&mut *tx, &pipeline_id, &resolved.steps).await?;
+        crate::services::step_resolver::replace_step_resolutions(
+            &mut *tx,
+            &pipeline_id,
+            &resolved.resolutions,
+        )
+        .await
+        .map_err(AppError::Internal)?;
 
         // Insert env variables
         if let Some(envs) = &req.env {
-            insert_env_vars(&state.pool, &pipeline_id, envs).await?;
+            insert_env_vars(&mut *tx, &pipeline_id, envs).await?;
         }
 
         // Insert explicit secret bindings
         if let Some(secret_ids) = &req.secret_ids {
-            insert_pipeline_secret_bindings(&state.pool, &pipeline_id, secret_ids).await?;
+            insert_pipeline_secret_bindings(&mut *tx, &pipeline_id, secret_ids).await?;
         }
 
         // Insert explicit variable bindings
         if let Some(var_ids) = &req.var_ids {
-            insert_pipeline_var_bindings(&state.pool, &pipeline_id, var_ids).await?;
+            insert_pipeline_var_bindings(&mut *tx, &pipeline_id, var_ids).await?;
         }
         Ok(steps)
     }
     .await;
 
     let steps = match create_result {
-        Ok(steps) => steps,
+        Ok(steps) => {
+            tx.commit().await?;
+            steps
+        }
         Err(e) => {
-            let _ = sqlx::query("DELETE FROM pipelines WHERE id = ?")
-                .bind(&pipeline_id)
-                .execute(&state.pool)
-                .await;
+            tx.rollback().await?;
             return Err(e);
         }
     };
@@ -451,6 +451,16 @@ pub async fn update(
     let input_defs_json =
         serde_json::to_string(&req.input_defs.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
 
+    let resolved_steps = crate::services::step_resolver::resolve_uses_steps(
+        req.steps,
+        &crate::services::step_resolver::local_step_index_dir(
+            &state.config.pipeline.yaml_scan_dir,
+            &state.config.step_index.local_dir,
+        ),
+        &crate::services::step_resolver::policy_from_settings(),
+    )
+    .map_err(AppError::ValidationFailed)?;
+    let mut tx = state.pool.begin().await?;
     let result = sqlx::query(
         "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?, webhook_path = ?,
          cron_expr = ?, runner_labels = ?, timeout_seconds = ?, concurrency_group = ?,
@@ -473,64 +483,59 @@ pub async fn update(
     .bind(&team_id)
     .bind(&input_defs_json)
     .bind(&id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("pipeline not found".into()));
     }
 
-    // Replace steps: delete old, insert new
+    sqlx::query("DELETE FROM step_resolutions WHERE pipeline_id = ?")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM tasks WHERE pipeline_id = ?")
         .bind(&id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
     // Delete old variables
     sqlx::query("DELETE FROM variables WHERE pipeline_id = ?")
         .bind(&id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
     // Delete old explicit secret bindings
     sqlx::query("DELETE FROM pipeline_secrets WHERE pipeline_id = ?")
         .bind(&id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
     // Delete old explicit variable bindings
     sqlx::query("DELETE FROM pipeline_vars WHERE pipeline_id = ?")
         .bind(&id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
-    let steps = insert_steps(
-        &state.pool,
+    let steps = insert_steps(&mut *tx, &id, &resolved_steps.steps).await?;
+    crate::services::step_resolver::replace_step_resolutions(
+        &mut *tx,
         &id,
-        &crate::services::step_resolver::resolve_uses_steps(
-            &state.pool,
-            &id,
-            req.steps,
-            &crate::services::step_resolver::local_step_index_dir(
-                &state.config.pipeline.yaml_scan_dir,
-                &state.config.step_index.local_dir,
-            ),
-            &crate::services::step_resolver::policy_from_settings(),
-        )
-        .await
-        .map_err(AppError::ValidationFailed)?,
+        &resolved_steps.resolutions,
     )
-    .await?;
+    .await
+    .map_err(AppError::Internal)?;
 
     if let Some(envs) = &req.env {
-        insert_env_vars(&state.pool, &id, envs).await?;
+        insert_env_vars(&mut *tx, &id, envs).await?;
     }
     if let Some(secret_ids) = &req.secret_ids {
-        insert_pipeline_secret_bindings(&state.pool, &id, secret_ids).await?;
+        insert_pipeline_secret_bindings(&mut *tx, &id, secret_ids).await?;
     }
     if let Some(var_ids) = &req.var_ids {
-        insert_pipeline_var_bindings(&state.pool, &id, var_ids).await?;
+        insert_pipeline_var_bindings(&mut *tx, &id, var_ids).await?;
     }
+    tx.commit().await?;
 
     tracing::info!("Pipeline updated: {id}");
 
@@ -866,6 +871,10 @@ pub(crate) async fn do_trigger(
     crate::services::pipeline_scanner::sync_yaml_before_trigger(
         &state.pool,
         &state.config.pipeline.yaml_scan_dir,
+        &crate::services::step_resolver::local_step_index_dir(
+            &state.config.pipeline.yaml_scan_dir,
+            &state.config.step_index.local_dir,
+        ),
         pipeline_id,
     )
     .await?;
@@ -986,11 +995,11 @@ pub(crate) async fn do_trigger(
 
     // Capture the full pipeline definition so historical runs are
     // reproducible even if the pipeline is later modified or deleted.
-    let tasks_snapshot = sqlx::query(
+    let mut tasks_snapshot = sqlx::query(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, volumes,
                 privileged, registry_secret, config_source, config_key_path, config_render, config_dest,
-                hosts_strategy
+                hosts_strategy, id
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(pipeline_id)
@@ -1027,9 +1036,36 @@ pub(crate) async fn do_trigger(
             ).ok().filter(|v| !v.is_null()),
             "config_dest": t.get::<String, _>(20),
             "hosts_strategy": t.get::<String, _>(21),
+            "id": t.get::<String, _>(22),
         })
     })
     .collect::<Vec<_>>();
+
+    let resolutions = sqlx::query(
+        "SELECT step_order, uses_ref, resolved_version, content_sha256, source, reviewed, input_defs_json \
+         FROM step_resolutions WHERE pipeline_id = ?",
+    )
+    .bind(pipeline_id)
+    .fetch_all(&state.pool)
+    .await?;
+    for resolution in resolutions {
+        let step_order: i64 = resolution.get(0);
+        if let Some(task) = tasks_snapshot
+            .iter_mut()
+            .find(|task| task["step_order"].as_i64() == Some(step_order))
+        {
+            task["marketplace"] = serde_json::json!({
+                "uses_ref": resolution.get::<String, _>(1),
+                "resolved_version": resolution.get::<String, _>(2),
+                "content_sha256": resolution.get::<String, _>(3),
+                "source": resolution.get::<String, _>(4),
+                "reviewed": resolution.get::<i64, _>(5) != 0,
+                "inputs": serde_json::from_str::<serde_json::Value>(
+                    &resolution.get::<String, _>(6),
+                ).unwrap_or(serde_json::json!([])),
+            });
+        }
+    }
 
     let env_snapshot =
         sqlx::query("SELECT var_name, is_secret FROM variables WHERE pipeline_id = ?")
@@ -1187,16 +1223,14 @@ async fn verify_pipeline_secret_bindings(
 }
 
 pub(crate) async fn insert_steps(
-    pool: &sqlx::SqlitePool,
+    conn: &mut sqlx::SqliteConnection,
     pipeline_id: &str,
     steps: &[StepDef],
 ) -> Result<Vec<serde_json::Value>, AppError> {
     let mut result = Vec::with_capacity(steps.len());
 
     for (i, step) in steps.iter().enumerate() {
-        // Step marketplace resolution (ADR Phase 1) is not wired in yet:
-        // reject `uses:` steps so no task is ever stored with an empty
-        // command. The resolver replaces this gate when it lands.
+        // Step definitions must already be expanded before they are persisted.
         if step.uses.is_some() {
             return Err(AppError::ValidationFailed(format!(
                 "step '{}' uses marketplace reference '{}' — step resolution is not \
@@ -1245,7 +1279,7 @@ pub(crate) async fn insert_steps(
                 }
                 if let Ok(Some(row)) = sqlx::query("SELECT id FROM hosts WHERE name = ?")
                     .bind(name)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *conn)
                     .await
                 {
                     ids.push(row.get::<String, _>(0));
@@ -1277,7 +1311,7 @@ pub(crate) async fn insert_steps(
                         "SELECT id FROM hosts, json_each(hosts.labels) WHERE json_each.value = ?",
                     )
                     .bind(label)
-                    .fetch_all(pool)
+                    .fetch_all(&mut *conn)
                     .await
                     {
                         Ok(rows) => {
@@ -1430,7 +1464,7 @@ pub(crate) async fn insert_steps(
         .bind(&config_render_stored)
         .bind(&config_dest_stored)
         .bind(&hosts_strategy_stored)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
         result.push(serde_json::json!({
@@ -1453,7 +1487,7 @@ fn parse_timeout_seconds(raw: Option<&str>) -> i64 {
 }
 
 pub(crate) async fn insert_env_vars(
-    pool: &sqlx::SqlitePool,
+    conn: &mut sqlx::SqliteConnection,
     pipeline_id: &str,
     envs: &[shared::protocol::EnvPair],
 ) -> Result<(), AppError> {
@@ -1466,7 +1500,7 @@ pub(crate) async fn insert_env_vars(
         .bind(pipeline_id)
         .bind(&env.name)
         .bind(&env.value)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     }
     Ok(())
@@ -1474,7 +1508,7 @@ pub(crate) async fn insert_env_vars(
 
 /// Explicitly bind variable IDs to a pipeline (many-to-many via pipeline_vars).
 pub(crate) async fn insert_pipeline_var_bindings(
-    pool: &sqlx::SqlitePool,
+    conn: &mut sqlx::SqliteConnection,
     pipeline_id: &str,
     var_ids: &[String],
 ) -> Result<(), AppError> {
@@ -1485,7 +1519,7 @@ pub(crate) async fn insert_pipeline_var_bindings(
         )
         .bind(pipeline_id)
         .bind(var_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     }
     Ok(())
@@ -1493,7 +1527,7 @@ pub(crate) async fn insert_pipeline_var_bindings(
 
 /// Explicitly bind secret IDs to a pipeline (many-to-many via pipeline_secrets).
 pub(crate) async fn insert_pipeline_secret_bindings(
-    pool: &sqlx::SqlitePool,
+    conn: &mut sqlx::SqliteConnection,
     pipeline_id: &str,
     secret_ids: &[String],
 ) -> Result<(), AppError> {
@@ -1504,7 +1538,7 @@ pub(crate) async fn insert_pipeline_secret_bindings(
         )
         .bind(pipeline_id)
         .bind(secret_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     }
     Ok(())

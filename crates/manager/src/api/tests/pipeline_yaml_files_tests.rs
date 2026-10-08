@@ -300,6 +300,109 @@ async fn put_rejects_stale_etag() {
 }
 
 #[tokio::test]
+async fn concurrent_puts_with_same_etag_only_allow_one_save() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let scan = dir.path().to_string_lossy().to_string();
+    let app = test_app(&scan).await;
+    let token = admin_jwt();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/pipelines/yaml-files")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "yaml": SAMPLE_YAML,
+                        "filename": "concurrent-save.yml"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let etag = read_body(resp).await["data"]["etag"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let first_yaml = SAMPLE_YAML.replace("echo hello", "echo first");
+    let second_yaml = SAMPLE_YAML.replace("echo hello", "echo second");
+    let make_request = |yaml: String| {
+        Request::builder()
+            .method("PUT")
+            .uri("/api/v1/pipelines/yaml-files/concurrent-save.yml")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "yaml": yaml, "etag": etag.clone() }).to_string(),
+            ))
+            .unwrap()
+    };
+
+    let (first, second) = tokio::join!(
+        app.clone().oneshot(make_request(first_yaml.clone())),
+        app.oneshot(make_request(second_yaml.clone())),
+    );
+    let first_status = first.unwrap().status();
+    let second_status = second.unwrap().status();
+    assert!(
+        (first_status == StatusCode::OK && second_status == StatusCode::CONFLICT)
+            || (first_status == StatusCode::CONFLICT && second_status == StatusCode::OK),
+        "expected one successful save and one stale-ETag conflict, got {first_status} and {second_status}"
+    );
+
+    let final_yaml = std::fs::read_to_string(dir.path().join("concurrent-save.yml")).unwrap();
+    assert!(final_yaml == first_yaml || final_yaml == second_yaml);
+}
+
+#[tokio::test]
+async fn concurrent_creates_for_same_filename_only_create_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let scan = dir.path().to_string_lossy().to_string();
+    let app = test_app(&scan).await;
+    let token = admin_jwt();
+
+    let make_request = |yaml: String| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/pipelines/yaml-files")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "yaml": yaml,
+                    "filename": "concurrent-create.yml"
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+
+    let yaml_a = SAMPLE_YAML.replace("echo hello", "echo a");
+    let yaml_b = SAMPLE_YAML.replace("echo hello", "echo b");
+    let (first, second) = tokio::join!(
+        app.clone().oneshot(make_request(yaml_a.clone())),
+        app.oneshot(make_request(yaml_b.clone())),
+    );
+    let first_status = first.unwrap().status();
+    let second_status = second.unwrap().status();
+    assert!(
+        (first_status == StatusCode::OK && second_status == StatusCode::CONFLICT)
+            || (first_status == StatusCode::CONFLICT && second_status == StatusCode::OK),
+        "expected one create and one conflict, got {first_status} and {second_status}"
+    );
+
+    let final_yaml = std::fs::read_to_string(dir.path().join("concurrent-create.yml")).unwrap();
+    assert!(final_yaml == yaml_a || final_yaml == yaml_b);
+}
+
+#[tokio::test]
 async fn create_rejects_target_team_without_write_before_file_exists() {
     let dir = tempfile::tempdir().expect("tempdir");
     let scan = dir.path().to_string_lossy().to_string();

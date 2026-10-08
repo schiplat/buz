@@ -1,6 +1,10 @@
+use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 use std::time::Duration;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio::time;
 use uuid::Uuid;
 
@@ -11,25 +15,63 @@ use shared::protocol::{EnvPair, PipelineInputDef, StepDef};
 use crate::api::{
     insert_env_vars, insert_pipeline_secret_bindings, insert_pipeline_var_bindings, insert_steps,
 };
+
+static YAML_FILE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Weak<AsyncMutex<()>>>>> =
+    OnceLock::new();
+
+/// Coordinate in-process operations for one YAML file. The key is its path under
+/// the configured scan directory; this lock is intentionally not cross-process.
+pub async fn lock_yaml_file(
+    scan_dir: &str,
+    filename: &str,
+) -> Result<OwnedMutexGuard<()>, AppError> {
+    let path = resolve_yaml_path(scan_dir, filename)?;
+    let locks = YAML_FILE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let lock = {
+        let mut locks = locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        match locks.get(&path).and_then(Weak::upgrade) {
+            Some(lock) => lock,
+            None => {
+                let lock = Arc::new(AsyncMutex::new(()));
+                locks.insert(path, Arc::downgrade(&lock));
+                lock
+            }
+        }
+    };
+    Ok(lock.lock_owned().await)
+}
+
+async fn read_yaml_for_scan(
+    scan_dir: &str,
+    filename: &str,
+) -> Result<(String, OwnedMutexGuard<()>), AppError> {
+    let file_guard = lock_yaml_file(scan_dir, filename).await?;
+    let content = read_yaml_file(scan_dir, filename).await?;
+    Ok((content, file_guard))
+}
+
 /// Periodically scan `yaml_scan_dir` for `.yml`/`.yaml` files,
 /// parsing them into pipeline definitions and upserting into the DB.
-pub fn spawn_scanner(pool: SqlitePool, dir: String, interval_secs: u64) {
+pub fn spawn_scanner(pool: SqlitePool, dir: String, step_index_dir: PathBuf, interval_secs: u64) {
     tokio::spawn(async move {
         tracing::info!("Pipeline YAML scanner started (dir: {dir}, interval: {interval_secs}s)");
 
         let mut tick = time::interval(Duration::from_secs(interval_secs));
         // Do an immediate scan on startup
         tokio::task::yield_now().await;
-        scan_and_sync(&pool, &dir).await;
+        scan_and_sync(&pool, &dir, &step_index_dir).await;
 
         loop {
             tick.tick().await;
-            scan_and_sync(&pool, &dir).await;
+            scan_and_sync(&pool, &dir, &step_index_dir).await;
         }
     });
 }
 
-async fn scan_and_sync(pool: &SqlitePool, dir: &str) {
+async fn scan_and_sync(pool: &SqlitePool, dir: &str, step_index_dir: &Path) {
     let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
         tracing::warn!("YAML scanner: cannot read directory {dir}");
         return;
@@ -74,32 +116,38 @@ async fn scan_and_sync(pool: &SqlitePool, dir: &str) {
         // DB key is the basename (normalized) — never absolute/relative path strings.
         let yaml_key = filename.clone();
 
-        match tokio::fs::read_to_string(&path).await {
-            Ok(raw) => match serde_yaml::from_str::<PipelineYaml>(&raw) {
-                Ok(parsed) => {
-                    match crate::services::yaml_validate::validate_pipeline_yaml(pool, &raw).await {
-                        Ok(result) if !result.valid => {
-                            tracing::warn!(
-                                "YAML scanner: {filename} has validation errors: {:?}",
-                                result.errors
-                            );
-                        }
-                        Ok(_) => {
-                            if let Err(e) = upsert_from_yaml(pool, &yaml_key, &parsed).await {
-                                tracing::error!("YAML scanner: failed to upsert {filename}: {e:#}");
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("YAML scanner: validate {filename} failed: {e}");
+        let (raw, _file_guard) = match read_yaml_for_scan(dir, &filename).await {
+            Ok(read) => read,
+            Err(e) => {
+                tracing::warn!("YAML scanner: cannot read/coordinate {filename}: {e}");
+                found_names.push(yaml_key);
+                continue;
+            }
+        };
+
+        match serde_yaml::from_str::<PipelineYaml>(&raw) {
+            Ok(parsed) => {
+                match crate::services::yaml_validate::validate_pipeline_yaml(pool, &raw).await {
+                    Ok(result) if !result.valid => {
+                        tracing::warn!(
+                            "YAML scanner: {filename} has validation errors: {:?}",
+                            result.errors
+                        );
+                    }
+                    Ok(_) => {
+                        if let Err(e) =
+                            upsert_from_yaml(pool, &yaml_key, &parsed, step_index_dir, &raw).await
+                        {
+                            tracing::error!("YAML scanner: failed to upsert {filename}: {e:#}");
                         }
                     }
+                    Err(e) => {
+                        tracing::warn!("YAML scanner: validate {filename} failed: {e}");
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("YAML scanner: failed to parse {filename}: {e}");
-                }
-            },
+            }
             Err(e) => {
-                tracing::warn!("YAML scanner: failed to read {filename}: {e}");
+                tracing::warn!("YAML scanner: failed to parse {filename}: {e}");
             }
         }
 
@@ -119,6 +167,8 @@ pub async fn upsert_from_yaml(
     pool: &SqlitePool,
     file_path: &str,
     parsed: &PipelineYaml,
+    step_index_dir: &Path,
+    yaml_content: &str,
 ) -> anyhow::Result<String> {
     let pipeline_name = parsed.name.trim();
     let description = parsed.description.clone().unwrap_or_default();
@@ -166,7 +216,7 @@ pub async fn upsert_from_yaml(
         .unwrap_or("default");
     let (team_id, resolved_slug) = resolve_team_for_yaml(pool, team_slug).await?;
 
-    let steps: Vec<StepDef> = parsed
+    let parsed_steps: Vec<StepDef> = parsed
         .steps
         .iter()
         .map(|s| {
@@ -206,21 +256,42 @@ pub async fn upsert_from_yaml(
     let pipeline_secrets: Vec<String> =
         shared::pipeline_yaml::collect_effective_secret_names(parsed);
 
-    // Normalize key to basename and migrate legacy absolute/relative paths.
+    let yaml_sha256 = format!("{:x}", Sha256::digest(yaml_content.as_bytes()));
     let yaml_key = normalize_yaml_path_key(file_path);
     let existing = find_yaml_pipeline_row(pool, &yaml_key).await?;
+    if let Some(id) = existing.as_deref() {
+        let stored_hash: String =
+            sqlx::query_scalar("SELECT yaml_sha256 FROM pipelines WHERE id = ?")
+                .bind(id)
+                .fetch_one(pool)
+                .await?;
+        if stored_hash == yaml_sha256 {
+            return Ok(id.to_string());
+        }
+    }
+
+    // Resolve all templates before mutating the current DB projection. This
+    // preserves the previous task set when a new YAML version cannot resolve.
+    let resolved_steps = crate::services::step_resolver::resolve_uses_steps(
+        parsed_steps,
+        step_index_dir,
+        &crate::services::step_resolver::policy_from_settings(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let steps = resolved_steps.steps;
+    let resolutions = resolved_steps.resolutions;
 
     let labels_json = serde_json::to_string(&runner_labels).unwrap_or_else(|_| "[]".into());
     let input_defs_json = serde_json::to_string(&input_defs).unwrap_or_else(|_| "[]".into());
 
     if let Some(id) = existing {
-        // Do not force is_active=1 — respect deactivate / UI freeze across rescans.
+        let mut tx = pool.begin().await?;
         sqlx::query(
             "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?,
              webhook_path = ?, webhook_secret = ?, cron_expr = ?, runner_labels = ?, timeout_seconds = ?,
              concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
              concurrency_queue_timeout_seconds = ?,
-             owner_group = ?, team_id = ?, input_defs = ?, yaml_path = ?,
+             owner_group = ?, team_id = ?, input_defs = ?, yaml_path = ?, yaml_sha256 = ?,
              updated_at = datetime('now')
              WHERE id = ?",
         )
@@ -242,45 +313,37 @@ pub async fn upsert_from_yaml(
         .bind(&team_id)
         .bind(&input_defs_json)
         .bind(&yaml_key)
+        .bind(&yaml_sha256)
         .bind(&id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
-        // Replace steps
+        // Replace the previously expanded step projection after resolution succeeded.
+        sqlx::query("DELETE FROM step_resolutions WHERE pipeline_id = ?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM tasks WHERE pipeline_id = ?")
             .bind(&id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM variables WHERE pipeline_id = ?")
             .bind(&id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM pipeline_secrets WHERE pipeline_id = ?")
             .bind(&id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM pipeline_vars WHERE pipeline_id = ?")
             .bind(&id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
 
-        let index_dir = std::path::Path::new(file_path)
-            .parent()
-            .map(|parent| {
-                crate::services::step_resolver::local_step_index_dir(&parent.to_string_lossy(), "")
-            })
-            .unwrap_or_else(|| crate::services::step_resolver::local_step_index_dir(".", ""));
-        let steps = crate::services::step_resolver::resolve_uses_steps(
-            pool,
-            &id,
-            steps,
-            &index_dir,
-            &crate::services::step_resolver::policy_from_settings(),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-        insert_steps(pool, &id, &steps).await?;
-        tracing::debug!("YAML scanner: updated pipeline {pipeline_name} ({id})");
+        insert_steps(&mut *tx, &id, &steps).await?;
+        crate::services::step_resolver::replace_step_resolutions(&mut *tx, &id, &resolutions)
+            .await
+            .map_err(anyhow::Error::msg)?;
 
         if let Some(ref envs) = parsed.env {
             let pairs: Vec<EnvPair> = envs
@@ -290,7 +353,7 @@ pub async fn upsert_from_yaml(
                     value: v.clone(),
                 })
                 .collect();
-            insert_env_vars(pool, &id, &pairs).await?;
+            insert_env_vars(&mut *tx, &id, &pairs).await?;
         }
         if !pipeline_secrets.is_empty() {
             // Same-team name resolve only (never bind another team's secret)
@@ -301,8 +364,12 @@ pub async fn upsert_from_yaml(
             for name in &pipeline_secrets {
                 q = q.bind(name);
             }
-            let secret_ids: Vec<String> =
-                q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+            let secret_ids: Vec<String> = q
+                .fetch_all(&mut *tx)
+                .await?
+                .into_iter()
+                .map(|r| r.0)
+                .collect();
             if secret_ids.len() != pipeline_secrets.len() {
                 tracing::warn!(
                     pipeline = %pipeline_name,
@@ -312,7 +379,7 @@ pub async fn upsert_from_yaml(
                     "YAML secrets: some names missing or not in this pipeline's team — skipped"
                 );
             }
-            insert_pipeline_secret_bindings(pool, &id, &secret_ids).await?;
+            insert_pipeline_secret_bindings(&mut *tx, &id, &secret_ids).await?;
         }
         if let Some(ref var_names) = parsed.variables {
             if !var_names.is_empty() {
@@ -329,22 +396,29 @@ pub async fn upsert_from_yaml(
                 for name in var_names {
                     q = q.bind(name);
                 }
-                let var_ids: Vec<String> =
-                    q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
-                insert_pipeline_var_bindings(pool, &id, &var_ids).await?;
+                let var_ids: Vec<String> = q
+                    .fetch_all(&mut *tx)
+                    .await?
+                    .into_iter()
+                    .map(|r| r.0)
+                    .collect();
+                insert_pipeline_var_bindings(&mut *tx, &id, &var_ids).await?;
             }
         }
 
+        tx.commit().await?;
+        tracing::info!("YAML scanner: created pipeline {pipeline_name} ({id}) from {file_path}");
         Ok(id)
     } else {
         let id = Uuid::new_v4().to_string();
+        let mut tx = pool.begin().await?;
 
         sqlx::query(
             "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path,
              webhook_secret, cron_expr, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
              concurrency_max_queue, concurrency_queue_timeout_seconds,
-             owner_group, team_id, source, yaml_path, input_defs, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, 1)",
+            owner_group, team_id, source, yaml_path, yaml_sha256, input_defs, is_active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, 1)",
         )
         .bind(&id)
         .bind(pipeline_name)
@@ -364,26 +438,15 @@ pub async fn upsert_from_yaml(
         .bind(&resolved_slug)
         .bind(&team_id)
         .bind(&yaml_key)
+        .bind(&yaml_sha256)
         .bind(&input_defs_json)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
-        let index_dir = std::path::Path::new(file_path)
-            .parent()
-            .map(|parent| {
-                crate::services::step_resolver::local_step_index_dir(&parent.to_string_lossy(), "")
-            })
-            .unwrap_or_else(|| crate::services::step_resolver::local_step_index_dir(".", ""));
-        let steps = crate::services::step_resolver::resolve_uses_steps(
-            pool,
-            &id,
-            steps,
-            &index_dir,
-            &crate::services::step_resolver::policy_from_settings(),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-        insert_steps(pool, &id, &steps).await?;
+        insert_steps(&mut *tx, &id, &steps).await?;
+        crate::services::step_resolver::replace_step_resolutions(&mut *tx, &id, &resolutions)
+            .await
+            .map_err(anyhow::Error::msg)?;
 
         if let Some(ref envs) = parsed.env {
             let pairs: Vec<EnvPair> = envs
@@ -393,7 +456,7 @@ pub async fn upsert_from_yaml(
                     value: v.clone(),
                 })
                 .collect();
-            insert_env_vars(pool, &id, &pairs).await?;
+            insert_env_vars(&mut *tx, &id, &pairs).await?;
         }
         if !pipeline_secrets.is_empty() {
             // Same-team name resolve only (never bind another team's secret)
@@ -404,8 +467,12 @@ pub async fn upsert_from_yaml(
             for name in &pipeline_secrets {
                 q = q.bind(name);
             }
-            let secret_ids: Vec<String> =
-                q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
+            let secret_ids: Vec<String> = q
+                .fetch_all(&mut *tx)
+                .await?
+                .into_iter()
+                .map(|r| r.0)
+                .collect();
             if secret_ids.len() != pipeline_secrets.len() {
                 tracing::warn!(
                     pipeline = %pipeline_name,
@@ -415,7 +482,7 @@ pub async fn upsert_from_yaml(
                     "YAML secrets: some names missing or not in this pipeline's team — skipped"
                 );
             }
-            insert_pipeline_secret_bindings(pool, &id, &secret_ids).await?;
+            insert_pipeline_secret_bindings(&mut *tx, &id, &secret_ids).await?;
         }
         if let Some(ref var_names) = parsed.variables {
             if !var_names.is_empty() {
@@ -432,12 +499,17 @@ pub async fn upsert_from_yaml(
                 for name in var_names {
                     q = q.bind(name);
                 }
-                let var_ids: Vec<String> =
-                    q.fetch_all(pool).await?.into_iter().map(|r| r.0).collect();
-                insert_pipeline_var_bindings(pool, &id, &var_ids).await?;
+                let var_ids: Vec<String> = q
+                    .fetch_all(&mut *tx)
+                    .await?
+                    .into_iter()
+                    .map(|r| r.0)
+                    .collect();
+                insert_pipeline_var_bindings(&mut *tx, &id, &var_ids).await?;
             }
         }
 
+        tx.commit().await?;
         tracing::info!("YAML scanner: created pipeline {pipeline_name} ({id}) from {file_path}");
         Ok(id)
     }
@@ -712,12 +784,14 @@ pub async fn list_yaml_files(
 /// When `bind_pipeline_id` is set (migrating a Form/API pipeline), that row is
 /// retargeted to `source=yaml` + this path before upsert so the id is preserved.
 /// `is_active` is never forced on.
-pub async fn write_and_upsert_yaml(
+pub async fn write_and_upsert_yaml_locked(
     pool: &SqlitePool,
     scan_dir: &str,
     filename: &str,
     content: &str,
+    step_index_dir: &Path,
     bind_pipeline_id: Option<&str>,
+    _file_guard: OwnedMutexGuard<()>,
 ) -> Result<YamlFileWriteResult, AppError> {
     let filename = filename.trim();
     validate_yaml_filename(filename)?;
@@ -797,7 +871,9 @@ pub async fn write_and_upsert_yaml(
         }
     }
 
-    let pipeline_id = match upsert_from_yaml(pool, &yaml_path, &parsed).await {
+    let pipeline_id = match upsert_from_yaml(pool, &yaml_path, &parsed, step_index_dir, content)
+        .await
+    {
         Ok(id) => id,
         Err(e) => {
             restore_yaml_file(&path, file_backup.as_deref()).await;
@@ -846,6 +922,7 @@ pub async fn delete_yaml_file(
     scan_dir: &str,
     filename: &str,
 ) -> Result<Option<String>, AppError> {
+    let _file_guard = lock_yaml_file(scan_dir, filename).await?;
     let path = resolve_yaml_path(scan_dir, filename)?;
     assert_path_under_scan_dir(scan_dir, &path)?;
     let yaml_path = filename.trim().to_string();
@@ -930,6 +1007,7 @@ async fn deactivate_removed(pool: &SqlitePool, found_basenames: &[String]) -> an
 pub async fn sync_yaml_before_trigger(
     pool: &SqlitePool,
     scan_dir: &str,
+    step_index_dir: &Path,
     pipeline_id: &str,
 ) -> Result<(), AppError> {
     let row = sqlx::query("SELECT source, yaml_path FROM pipelines WHERE id = ?")
@@ -947,14 +1025,15 @@ pub async fn sync_yaml_before_trigger(
     let filename = normalize_yaml_path_key(&yaml_path);
     validate_yaml_filename(&filename)?;
 
-    let content = read_yaml_file(scan_dir, &filename)
-        .await
-        .map_err(|e| match e {
-            AppError::NotFound(_) => AppError::ValidationFailed(format!(
-                "YAML file '{filename}' is missing under yaml_scan_dir — cannot trigger"
-            )),
-            other => other,
-        })?;
+    let (content, _file_guard) =
+        read_yaml_for_scan(scan_dir, &filename)
+            .await
+            .map_err(|e| match e {
+                AppError::NotFound(_) => AppError::ValidationFailed(format!(
+                    "YAML file '{filename}' is missing under yaml_scan_dir — cannot trigger"
+                )),
+                other => other,
+            })?;
 
     let validation = crate::services::yaml_validate::validate_pipeline_yaml(pool, &content).await?;
     if !validation.valid {
@@ -972,7 +1051,7 @@ pub async fn sync_yaml_before_trigger(
     let parsed: PipelineYaml = serde_yaml::from_str(&content).map_err(|e| {
         AppError::ValidationFailed(format!("YAML syntax error in '{filename}': {e}"))
     })?;
-    upsert_from_yaml(pool, &filename, &parsed)
+    upsert_from_yaml(pool, &filename, &parsed, step_index_dir, &content)
         .await
         .map_err(|e| AppError::Internal(format!("failed to sync YAML projection: {e:#}")))?;
     Ok(())

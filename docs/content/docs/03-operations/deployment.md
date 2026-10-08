@@ -41,7 +41,7 @@ buz-<version>-linux-x86_64.tar.gz
 ```
 
 ```bash
-git tag v1.3.0 && git push origin v1.3.0
+git tag v1.7.0 && git push origin v1.7.0
 make package   # local host only → dist/release/buz-*.tar.gz
 ```
 
@@ -62,7 +62,7 @@ Images:
 | `buz-runner` | `Dockerfile.runner` |
 | `buz-standalone` (arm64 only) | `Dockerfile.standalone` — Manager + Runner in one image |
 
-Both split images are built for `linux/amd64` **and** `linux/arm64` (native matrix builds: `ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64, no QEMU emulation). The matrix jobs push platform-specific tags (`v1.3.0-amd64` / `v1.3.0-arm64`), and a final `merge` job assembles the shared multi-arch tags (`v1.3.0` / `1.3.0` / `latest`) with `docker buildx imagetools create`. Pushing the same tag concurrently from both jobs would make ACR produce a broken index (arm64 as `unknown/unknown`), so the two tags are never pushed in parallel.
+Both split images are built for `linux/amd64` **and** `linux/arm64` (native matrix builds: `ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64, no QEMU emulation). The matrix jobs push platform-specific tags (`v1.7.0-amd64` / `v1.7.0-arm64`), and a final `merge` job assembles the shared multi-arch tags (`v1.7.0` / `1.7.0` / `latest`) with `docker buildx imagetools create`. Pushing the same tag concurrently from both jobs would make ACR produce a broken index (arm64 as `unknown/unknown`), so the two tags are never pushed in parallel.
 
 The standalone image is **arm64-only** (workflow `.github/workflows/docker-standalone.yml` on `ubuntu-24.04-arm`); tags are `buz-standalone:vX.Y.Z` / `:latest` / `:X.Y.Z` plus `-arm64` suffixes.
 
@@ -93,7 +93,7 @@ Configure the GitHub repository:
 | Secret | `ACR_USERNAME` | ACR login user |
 | Secret | `ACR_PASSWORD` | ACR password / token |
 
-Pushed tags: `<registry>/<namespace>/buz-manager:v1.3.0` (and `:1.3.0`, `:latest`), same for `buz-runner`. Standalone: `<registry>/<namespace>/buz-standalone:v1.3.0` (linux/arm64).
+Pushed tags: `<registry>/<namespace>/buz-manager:v1.7.0` (and `:1.7.0`, `:latest`), same for `buz-runner`. Standalone: `<registry>/<namespace>/buz-standalone:v1.7.0` (linux/arm64).
 
 ### Container layout
 
@@ -166,8 +166,8 @@ the merged multi-arch manifest, so Docker pulls the image matching the VM's
 architecture automatically. To pin a single platform — for example while the CI
 `merge` job has not finished yet, or to bypass a broken index — set a
 platform-specific tag instead: `IMAGE_TAG=latest-arm64` (or `latest-amd64` /
-`1.3.0-arm64`). Verify the platform tags with
-`docker manifest inspect <registry>/<namespace>/buz-manager:1.3.0-arm64`.
+`1.7.0-arm64`). Verify the platform tags with
+`docker manifest inspect <registry>/<namespace>/buz-manager:1.7.0-arm64`.
 
 **Runs as a non-root user with sudo.** Every `docker` invocation is prefixed with
 `sudo` when the current user cannot reach the daemon directly (auto-detected;

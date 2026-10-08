@@ -750,16 +750,79 @@ pub async fn poll(
             },
         )?;
     let trigger_params = serde_json::to_value(&trigger_params_plain).unwrap_or_default();
-    // Fetch tasks for this pipeline
-    let task_rows = sqlx::query(
-        "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template,
-                work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
-                registry_secret, config_source, config_key_path, config_render, config_dest, hosts_strategy
-         FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
-    )
-    .bind(&pipeline_id)
-    .fetch_all(&state.pool)
-    .await?;
+    let has_frozen_tasks = job_snapshot
+        .get("tasks")
+        .and_then(|tasks| tasks.as_array())
+        .is_some();
+    let marketplace_by_order: std::collections::HashMap<i64, serde_json::Value> = job_snapshot
+        .get("tasks")
+        .and_then(|tasks| tasks.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|task| {
+            let order = task.get("step_order")?.as_i64()?;
+            let marketplace = task.get("marketplace")?.clone();
+            Some((order, marketplace))
+        })
+        .collect();
+    let mut resolutions_by_order: std::collections::HashMap<i64, String> = marketplace_by_order
+        .iter()
+        .filter_map(|(order, marketplace)| {
+            serde_json::to_string(marketplace.get("inputs")?)
+                .ok()
+                .map(|v| (*order, v))
+        })
+        .collect();
+    if !has_frozen_tasks {
+        resolutions_by_order = sqlx::query_as(
+            "SELECT step_order, input_defs_json FROM step_resolutions WHERE pipeline_id = ?",
+        )
+        .bind(&pipeline_id)
+        .fetch_all(&state.pool)
+        .await?
+        .into_iter()
+        .collect();
+    }
+    let task_rows = if has_frozen_tasks {
+        sqlx::query(
+            "SELECT COALESCE(json_extract(j.value, '$.id'), ''), json_extract(j.value, '$.step_order'),
+                    json_extract(j.value, '$.name'), json_extract(j.value, '$.exec_type'),
+                    COALESCE(json_extract(j.value, '$.host_id'), ''), COALESCE(json_extract(j.value, '$.host_names'), ''),
+                    COALESCE(json_extract(j.value, '$.host_labels'), ''),
+                    COALESCE(json_extract(j.value, '$.command_template'), ''),
+                    COALESCE(json_extract(j.value, '$.work_dir'), ''),
+                    COALESCE(json_extract(j.value, '$.retry_count'), 0),
+                    COALESCE(json_extract(j.value, '$.timeout_seconds'), 0),
+                    COALESCE(json_extract(j.value, '$.fail_strategy'), 'stop'),
+                    COALESCE(json_extract(j.value, '$.step_secrets'), ''),
+                    COALESCE(json_extract(j.value, '$.step_env'), '{}'),
+                    COALESCE(json_extract(j.value, '$.image'), ''),
+                    COALESCE(json_extract(j.value, '$.volumes'), '[]'),
+                    COALESCE(json_extract(j.value, '$.registry_secret'), ''),
+                    COALESCE(json_extract(j.value, '$.config_source'), ''),
+                    COALESCE(json_extract(j.value, '$.config_key_path'), ''),
+                    COALESCE(json_extract(j.value, '$.config_render'), 'null'),
+                    COALESCE(json_extract(j.value, '$.config_dest'), ''),
+                    COALESCE(json_extract(j.value, '$.hosts_strategy'), 'chain'),
+                    COALESCE(json_extract(j.value, '$.privileged'), 0)
+             FROM json_each(?, '$.tasks') j
+             ORDER BY json_extract(j.value, '$.step_order')",
+        )
+        .bind(&snapshot_raw)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query(
+            "SELECT id, step_order, name, exec_type, COALESCE(host_id, ''), host_names, host_labels, command_template,
+                    work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
+                    registry_secret, config_source, config_key_path, config_render, config_dest, hosts_strategy,
+                    privileged
+             FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
+        )
+        .bind(&pipeline_id)
+        .fetch_all(&state.pool)
+        .await?
+    };
 
     // Resolve pipeline secrets from explicit bindings + team_shared (sensitive).
     // `secrets:` / team_shared are an **allowlist** for `${secrets.NAME}` —
@@ -998,6 +1061,7 @@ pub async fn poll(
         let config_render_raw: String = t.get(19);
         let config_dest: String = t.get(20);
         let hosts_strategy: String = t.get(21);
+        let privileged: i64 = t.get(22);
 
         // Purpose slots accept `${secrets.NAME}` or bare NAME.
         let registry_secret_name =
@@ -1028,6 +1092,7 @@ pub async fn poll(
                 Some(hosts_strategy.as_str()),
             )
             .unwrap_or("chain"),
+            "privileged": privileged != 0,
         });
 
         // Values that must be redacted in the Runner's logs. Registered here — the
@@ -1045,6 +1110,19 @@ pub async fn poll(
             task_json["config_auth_error"] = serde_json::Value::String(format!(
                 "invalid config.source '{config_source_raw}' — use ${{secrets.NAME}} or a bare secret name"
             ));
+        }
+
+        if let Some(defs_raw) = resolutions_by_order.get(&t.get::<i64, _>(1)) {
+            let defs: Vec<shared::protocol::PipelineInputDef> =
+                serde_json::from_str(defs_raw).unwrap_or_default();
+            task_json["marketplace_input_defs"] = serde_json::to_value(&defs).unwrap_or_default();
+            let masking_keys: Vec<String> = defs
+                .iter()
+                .filter(|def| def.is_masking())
+                .map(|def| def.name.clone())
+                .collect();
+            task_json["masking_input_keys"] =
+                serde_json::to_value(masking_keys).unwrap_or_default();
         }
 
         // Resolve step allowlist secrets (values for ${secrets.X} / render / mask — not env inject).
@@ -1153,6 +1231,44 @@ pub async fn poll(
                 .map(serde_json::Value::String)
                 .collect(),
         );
+        if let Some(defs_raw) = resolutions_by_order.get(&t.get::<i64, _>(1)) {
+            let defs: Vec<shared::protocol::PipelineInputDef> =
+                serde_json::from_str(defs_raw).unwrap_or_default();
+            let mut input_values = std::collections::HashMap::new();
+            for def in &defs {
+                if let Some(value) =
+                    task_json["step_env"][shared::protocol::input_env_key(&def.name)].as_str()
+                {
+                    input_values.insert(def.name.clone(), value.to_string());
+                }
+            }
+            let validation_defs: Vec<_> = defs
+                .iter()
+                .cloned()
+                .map(|mut def| {
+                    def.required = Some(false);
+                    def.default = None;
+                    def
+                })
+                .collect();
+            if let Err(field_errors) =
+                shared::protocol::validate_input_values(&validation_defs, &input_values, |_| false)
+            {
+                task_json["input_validation_error"] = serde_json::Value::String(
+                    field_errors
+                        .iter()
+                        .map(|error| format!("{}: {}", error.name, error.message))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                );
+            }
+            let keys: Vec<String> = defs
+                .iter()
+                .filter(|def| def.is_masking())
+                .map(|def| shared::protocol::input_env_key(&def.name))
+                .collect();
+            task_json["masking_env_keys"] = serde_json::to_value(keys).unwrap_or_default();
+        }
 
         // For SSH steps, resolve host IDs → connection details
         if exec_type == "ssh" {
@@ -1833,7 +1949,7 @@ fn claim_value_map(
             if let Some(s) = v.as_str() {
                 map.vars.insert(k.clone(), s.to_string());
                 map.vars
-                    .insert(format!("INPUT_{}", k.to_uppercase()), s.to_string());
+                    .insert(shared::protocol::input_env_key(k), s.to_string());
             }
         }
     }

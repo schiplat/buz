@@ -81,8 +81,8 @@ jobs:
             PRIMARY="latest"
           fi
 
-          # Each matrix job pushes platform-specific tags (e.g. v1.3.0-amd64,
-          # latest-arm64). The final multi-arch tags (v1.3.0 / latest / 1.3.0)
+          # Each matrix job pushes platform-specific tags (e.g. v1.7.0-amd64,
+          # latest-arm64). The final multi-arch tags (v1.7.0 / latest / 1.7.0)
           # are assembled in the `merge` job via `buildx imagetools create`;
           # pushing the same tag from two jobs concurrently makes ACR produce a
           # broken index with an unknown/unknown platform entry.

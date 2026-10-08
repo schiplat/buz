@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
-use shared::step_spec::StepSpec;
+use shared::step_spec::{validate_step_spec, StepSpec};
 
 use crate::middleware::AuthUser;
 use crate::state::AppState;
@@ -46,6 +46,9 @@ pub async fn list_steps(
     };
     files.sort();
 
+    let reviewed_hashes = crate::services::step_resolver::load_reviewed_hashes(
+        &state.config.step_index.reviewed_manifest,
+    );
     let mut items: Vec<Value> = Vec::new();
     let mut unparseable: Vec<Value> = Vec::new();
 
@@ -75,6 +78,8 @@ pub async fn list_steps(
             None => true,
         };
 
+        let validation = validate_step_spec(&spec, env!("CARGO_PKG_VERSION"));
+        let reviewed = reviewed_hashes.contains(&content_sha256);
         let inputs: Vec<Value> = spec
             .inputs
             .iter()
@@ -87,6 +92,8 @@ pub async fn list_steps(
                     "default": input.default,
                     "masking": input.masking.unwrap_or(false),
                     "description": input.description,
+                    "pattern": input.pattern,
+                    "options": input.options,
                 })
             })
             .collect();
@@ -98,6 +105,7 @@ pub async fn list_steps(
             "name": spec.name,
             "description": spec.description,
             "description_zh": spec.description_zh,
+            "category": spec.category,
             "author": spec.author,
             "publisher": spec.effective_publisher(),
             "license": spec.license,
@@ -108,6 +116,9 @@ pub async fn list_steps(
             "requires_buz": spec.requires_buz,
             "buz_compatible": buz_compatible,
             "content_sha256": content_sha256,
+            "reviewed": reviewed,
+            "valid": validation.is_ok(),
+            "validation_errors": validation.err().unwrap_or_default(),
             "inputs": inputs,
         }));
     }
