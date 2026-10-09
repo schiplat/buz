@@ -749,7 +749,7 @@ defineExpose({ openCreate, openEdit, close })
               <code class="font-mono text-[11px]">30s</code> /
               <code class="font-mono text-[11px]">10m</code> /
               <code class="font-mono text-[11px]">1h</code>
-              (no spaces). Secrets &amp; Variables must already exist under Infrastructure.
+              (no spaces). Secrets &amp; Variables must already exist under Infrastructure. Marketplace examples use pinned versions; make sure their spec files are in the Manager's configured local step index (the default is <code class="font-mono text-[11px]">&lt;yaml_scan_dir&gt;/steps</code>). Browse available templates from the Plugin Marketplace link above.
             </p>
 <pre class="rounded-lg bg-muted p-3 text-xs font-mono text-muted-foreground overflow-x-auto">name: hello-world
 description: Sample pipeline covering common fields
@@ -942,6 +942,30 @@ steps:
         git clone --depth 1 git@github.com:org/private-repo.git /tmp/private
       rm -f /tmp/key
     timeout: 5m
+
+  # ── Plugin Marketplace examples (exact version pins) ──
+  # Manager resolves uses: from its local step index, not directly from the website.
+  # Add the plugin spec files from Plugin Marketplace to that index before saving.
+  - name: Check service readiness
+    uses: buz/http-check@1.0.0
+    with:
+      url: https://example.com/health
+
+  - name: Notify Slack
+    uses: buz/slack@1.0.0
+    with:
+      webhook: ${secrets.SLACK_WEBHOOK}
+
+  - name: Upload build to OSS
+    uses: buz/oss-upload@1.0.2
+    with:
+      source: dist/app.tar.gz
+      bucket: my-release-bucket
+      object: releases/app.tar.gz
+      endpoint: https://oss-cn-hangzhou.aliyuncs.com
+      region: cn-hangzhou
+      access_key_id: ${secrets.OSS_ACCESS_KEY_ID}
+      access_key_secret: ${secrets.OSS_ACCESS_KEY_SECRET}
 
 # ────────────────────────────────────────────────────
 # Resolution cheat sheet
