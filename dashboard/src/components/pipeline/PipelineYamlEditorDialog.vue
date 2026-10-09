@@ -544,83 +544,93 @@ defineExpose({ openCreate, openEdit, close })
 
         <!-- Tab bar — same segmented control as Secrets / Variables -->
         <div
-          class="relative inline-flex w-fit items-center gap-0.5 rounded-lg bg-muted/70 p-0.5 shrink-0 mx-5 sm:mx-6"
+          class="relative flex items-center justify-between shrink-0 mx-5 sm:mx-6"
           :class="showRefGuide ? 'z-20 mb-36' : 'mb-3'"
         >
-          <button
-            type="button"
-            :class="
-              cn(
-                'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all cursor-pointer',
-                dialogTab === 'editor'
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-background/60',
-              )
-            "
-            @click="selectDialogTab('editor')"
-          >
-            <FileCode2 class="h-3.5 w-3.5" />
-            Editor
-          </button>
-          <div class="relative">
+          <div class="inline-flex w-fit items-center gap-0.5 rounded-lg bg-muted/70 p-0.5">
             <button
-              ref="refTabBtnRef"
               type="button"
               :class="
                 cn(
-                  'relative z-20 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all cursor-pointer',
-                  dialogTab === 'reference'
+                  'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all cursor-pointer',
+                  dialogTab === 'editor'
                     ? 'bg-background text-foreground shadow-sm'
                     : 'text-muted-foreground hover:text-foreground hover:bg-background/60',
-                  showRefGuide && 'ring-2 ring-amber-500/50 ring-offset-2 ring-offset-background shadow-sm bg-background text-foreground',
                 )
               "
-              @click="selectDialogTab('reference')"
+              @click="selectDialogTab('editor')"
             >
-              <BookOpenText class="h-3.5 w-3.5" />
-              Quick YAML Reference
+              <FileCode2 class="h-3.5 w-3.5" />
+              Editor
             </button>
+            <div class="relative">
+              <button
+                ref="refTabBtnRef"
+                type="button"
+                :class="
+                  cn(
+                    'relative z-20 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all cursor-pointer',
+                    dialogTab === 'reference'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-background/60',
+                    showRefGuide && 'ring-2 ring-amber-500/50 ring-offset-2 ring-offset-background shadow-sm bg-background text-foreground',
+                  )
+                "
+                @click="selectDialogTab('reference')"
+              >
+                <BookOpenText class="h-3.5 w-3.5" />
+                Quick YAML Reference
+              </button>
 
-            <!-- First-visit coachmark (New Pipeline only) — points at this tab -->
-            <div
-              v-if="showRefGuide"
-              class="absolute left-0 top-full z-30 mt-2.5 w-64 sm:w-72"
-              role="status"
-            >
+              <!-- First-visit coachmark (New Pipeline only) — points at this tab -->
               <div
-                class="absolute left-8 bottom-full border-x-[6px] border-x-transparent border-b-[7px] border-b-border"
-                aria-hidden="true"
-              />
-              <div
-                class="absolute left-8 bottom-full mb-px ml-px border-x-[5px] border-x-transparent border-b-[6px] border-b-card"
-                aria-hidden="true"
-              />
-              <div class="rounded-xl border border-border bg-card px-3.5 py-3 shadow-lg">
-                <p class="text-[13px] font-medium text-foreground leading-snug">
-                  Start with Quick YAML Reference
-                </p>
-                <p class="mt-1 text-xs text-muted-foreground leading-relaxed">
-                  Examples, field notes, and timeout / secrets syntax — open this tab anytime while authoring.
-                </p>
-                <div class="mt-2.5 flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    class="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors px-2 py-1"
-                    @click="dismissRefGuide"
-                  >
-                    Dismiss
-                  </button>
-                  <UiButton
-                    size="sm"
-                    class="h-7 text-xs px-2.5"
-                    @click="selectDialogTab('reference')"
-                  >
-                    Open reference
-                  </UiButton>
+                v-if="showRefGuide"
+                class="absolute left-0 top-full z-30 mt-2.5 w-64 sm:w-72"
+                role="status"
+              >
+                <div
+                  class="absolute left-8 bottom-full border-x-[6px] border-x-transparent border-b-[7px] border-b-border"
+                  aria-hidden="true"
+                />
+                <div
+                  class="absolute left-8 bottom-full mb-px ml-px border-x-[5px] border-x-transparent border-b-[6px] border-b-card"
+                  aria-hidden="true"
+                />
+                <div class="rounded-xl border border-border bg-card px-3.5 py-3 shadow-lg">
+                  <p class="text-[13px] font-medium text-foreground leading-snug">
+                    Start with Quick YAML Reference
+                  </p>
+                  <p class="mt-1 text-xs text-muted-foreground leading-relaxed">
+                    Examples, field notes, and timeout / secrets syntax — open this tab anytime while authoring.
+                  </p>
+                  <div class="mt-2.5 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      class="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors px-2 py-1"
+                      @click="dismissRefGuide"
+                    >
+                      Dismiss
+                    </button>
+                    <UiButton
+                      size="sm"
+                      class="h-7 text-xs px-2.5"
+                      @click="selectDialogTab('reference')"
+                    >
+                      Open reference
+                    </UiButton>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
+          <a
+            href="https://plugins.buz.schiplat.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="shrink-0 px-2 py-1.5 text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Plugin Marketplace
+          </a>
         </div>
 
         <!-- Scrollable body — keeps dialog within viewport -->

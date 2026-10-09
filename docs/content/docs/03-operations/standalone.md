@@ -191,8 +191,8 @@ Goal: new image, **same data volumes**, **same `BUZ_JWT_SECRET`**.
 cd /opt/buz-standalone
 
 # Pin a release tag when you want a fixed version (recommended):
-#   echo 'IMAGE_TAG=v1.7.2' >> .env
-#   # or: IMAGE_TAG=v1.7.2 docker compose up -d
+#   echo 'IMAGE_TAG=v1.7.3' >> .env
+#   # or: IMAGE_TAG=v1.7.3 docker compose up -d
 
 docker compose pull
 docker compose up -d
