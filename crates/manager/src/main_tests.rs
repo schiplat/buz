@@ -1,4 +1,5 @@
-use super::step_validate;
+use super::{step_validate, Cli, Command, PipelineCommand};
+use clap::Parser;
 
 fn write_spec(dir: &std::path::Path, file: &str, id: &str, version: &str) {
     std::fs::create_dir_all(dir).unwrap();
@@ -7,6 +8,43 @@ fn write_spec(dir: &std::path::Path, file: &str, id: &str, version: &str) {
         format!("id: {id}\npublisher: official\nversion: {version}\nrun: echo ok\n"),
     )
     .unwrap();
+}
+
+#[test]
+fn pipeline_plan_cli_parses_without_manager_configuration() {
+    let cli = Cli::try_parse_from([
+        "buz-manager",
+        "pipeline",
+        "plan",
+        "examples/pipeline.yml",
+        "--step-index",
+        "./plugins",
+        "--reviews",
+        "./reviews.json",
+        "--require-reviewed",
+        "--offline",
+    ])
+    .unwrap();
+
+    match cli.command.unwrap() {
+        Command::Pipeline {
+            command:
+                PipelineCommand::Plan {
+                    pipeline,
+                    step_index,
+                    reviews,
+                    require_reviewed,
+                    offline,
+                },
+        } => {
+            assert_eq!(pipeline, std::path::PathBuf::from("examples/pipeline.yml"));
+            assert_eq!(step_index, std::path::PathBuf::from("./plugins"));
+            assert_eq!(reviews, Some(std::path::PathBuf::from("./reviews.json")));
+            assert!(require_reviewed);
+            assert!(offline);
+        }
+        _ => panic!("expected pipeline plan command"),
+    }
 }
 
 #[test]

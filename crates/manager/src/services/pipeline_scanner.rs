@@ -216,39 +216,7 @@ pub async fn upsert_from_yaml(
         .unwrap_or("default");
     let (team_id, resolved_slug) = resolve_team_for_yaml(pool, team_slug).await?;
 
-    let parsed_steps: Vec<StepDef> = parsed
-        .steps
-        .iter()
-        .map(|s| {
-            let (config_source, config_key_path, config_dest, config_render) =
-                shared::pipeline_yaml::flatten_config(s.config.as_ref());
-            StepDef {
-                name: s.name.clone().unwrap_or_else(|| "unnamed".into()),
-                run: s.run.clone().unwrap_or_default(),
-                engine: s.engine.clone(),
-                uses: s.uses.clone(),
-                with: s.with.clone(),
-                image: s.image.clone(),
-                volumes: s.volumes.clone(),
-                host: s.host.clone(),
-                host_labels: s.host_labels.clone(),
-                hosts_strategy: s.hosts_strategy.clone(),
-                dir: s.dir.clone(),
-                timeout: s.timeout.clone(),
-                retry: s.retry,
-                continue_on_error: s.continue_on_error,
-                secrets: s.secrets.clone(),
-                env: s.env.clone(),
-                privileged: s.privileged,
-                registry_secret: s.registry_secret.clone(),
-                config: s.config.clone(),
-                config_source,
-                config_key_path,
-                config_dest,
-                config_render,
-            }
-        })
-        .collect();
+    let parsed_steps: Vec<StepDef> = parsed.steps.iter().map(StepDef::from).collect();
 
     // Effective allowlist: optional top-level `secrets:` ∪ step lists ∪ purpose
     // slots ∪ `${secrets.X}` in env maps. Top-level list is optional (GHA-style).

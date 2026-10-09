@@ -11,8 +11,10 @@ mod config;
 mod crypto;
 mod db;
 mod frontend;
+mod image_registry;
 mod middleware;
 mod password;
+mod pipeline_plan;
 mod rbac;
 mod services;
 mod ssh_probe;
@@ -74,6 +76,34 @@ enum Command {
         #[arg(value_name = "PATH")]
         paths: Vec<String>,
     },
+
+    /// Work with a pipeline definition without starting Manager services.
+    Pipeline {
+        #[command(subcommand)]
+        command: PipelineCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum PipelineCommand {
+    /// Resolve marketplace steps and print a non-executing plan.
+    Plan {
+        /// Pipeline YAML file to inspect
+        #[arg(value_name = "PIPELINE")]
+        pipeline: std::path::PathBuf,
+        /// Directory containing local step-template YAML files
+        #[arg(long, value_name = "DIR")]
+        step_index: std::path::PathBuf,
+        /// Optional reviewed-template manifest (reviews.json)
+        #[arg(long, value_name = "FILE")]
+        reviews: Option<std::path::PathBuf>,
+        /// Fail if any resolved template is absent from --reviews
+        #[arg(long)]
+        require_reviewed: bool,
+        /// Skip remote Docker/OCI image availability checks
+        #[arg(long)]
+        offline: bool,
+    },
 }
 
 #[tokio::main]
@@ -94,6 +124,25 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Command::StepValidate { paths }) => {
             return step_validate(&paths);
+        }
+        Some(Command::Pipeline {
+            command:
+                PipelineCommand::Plan {
+                    pipeline,
+                    step_index,
+                    reviews,
+                    require_reviewed,
+                    offline,
+                },
+        }) => {
+            return pipeline_plan::run(
+                &pipeline,
+                &step_index,
+                reviews.as_deref(),
+                require_reviewed,
+                offline,
+            )
+            .await;
         }
         None => {}
     }

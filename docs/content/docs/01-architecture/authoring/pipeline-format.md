@@ -568,6 +568,21 @@ Schema rules enforced today: `uses:` takes `<namespace>/<name>@<pin>` with pin `
 
 **Resolution (local index)**: at pipeline save, each `uses:` reference is resolved against the local step index — `<yaml_scan_dir>/steps` by default (override with `[step_index].local_dir` in Manager config), one YAML spec file per step template. Specs are discovered recursively; hidden paths and symlinks are ignored. The Step Library API reports each file as a path relative to the index root, using `/` separators (for example, `community/notify/feishu.yaml`). Keep each `(id, version)` in exactly one file; `buz-manager step-validate <directory>` recursively checks specs and rejects duplicate ID/version pairs. Pins lock at save time ("resolve & lock"): the resolved version, content hash, source, and expanded step JSON are stored as provenance, so upstream tag moves never change an already-saved pipeline. Save-time errors are explicit: template not found, no version matching the pin, the plugin requiring a newer Buz, or `with:` not matching the template's declared inputs. The full design (remote `https` index, static browse site, update badges) is Phase 2 of the marketplace ADR.
 
+### Plan a pipeline without executing it
+
+`pipeline plan` performs the same structural validation, local `uses:` resolution, version selection, template expansion, and input validation as pipeline save, then prints a redacted plan. It does not start Manager services, open the database, write files, contact a Runner, or execute steps. Secret and variable values are never printed; only declared input names are listed. By default it also checks every Docker step's tag or digest against the registry's read-only V2 manifest API; it does not pull or run images. Docker Hub and anonymous Bearer-token registries are supported. Private images that require credentials, network failures, timeouts, and unsupported registry responses are reported as `unverified`; an explicit `not found` result fails the command. Use `--offline` to skip registry requests. This registry check only confirms that the manifest is addressable; it does not prove that the image is pullable by a Runner, matches its architecture, or runs successfully.
+
+```bash
+buz-manager pipeline plan pipeline.yml --step-index ./plugins
+buz-manager pipeline plan pipeline.yml \
+  --step-index ./plugins \
+  --reviews ./reviews.json \
+  --require-reviewed
+buz-manager pipeline plan pipeline.yml --step-index ./plugins --offline
+```
+
+The review options are optional; strict review mode fails if any selected template hash is absent from the supplied manifest. Planning does not verify that referenced Manager Secrets or Variables exist or that a Runner is available. Use a disposable test pipeline and a real test Runner for runtime verification.
+
 ---
 
 ## Template Variables
