@@ -1,5 +1,4 @@
-//! Step template library listing (marketplace ADR §6.7) — the Dashboard
-//! step-library page reads the local step directory through this endpoint.
+//! Step template diagnostics for the local index (marketplace ADR §6.7).
 //! Read-only: templates are authored in the buz-plugins repo and arrive via
 //! git clone; ingestion gatekeeping lives there, not here.
 

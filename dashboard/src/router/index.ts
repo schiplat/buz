@@ -32,7 +32,6 @@ const routes: RouteRecordRaw[] = [
       { path: 'jobs', name: 'jobs', component: () => import('@/pages/Jobs.vue'), meta: { title: 'Jobs' } },
       { path: 'jobs/:id', name: 'job-detail', component: () => import('@/pages/JobDetail.vue'), meta: { title: 'Job Detail' } },
       { path: 'hosts', name: 'hosts', component: () => import('@/pages/Hosts.vue'), meta: { title: 'Hosts' } },
-      { path: 'steps', name: 'steps', component: () => import('@/pages/Steps.vue'), meta: { title: 'Step Library' } },
       { path: 'environments', name: 'environments', component: () => import('@/pages/Environments.vue'), meta: { title: 'Environments' } },
       {
         path: 'environments/:id',
