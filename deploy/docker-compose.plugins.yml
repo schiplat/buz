@@ -1,0 +1,6 @@
+services:
+  manager:
+    environment:
+      BUZ_STEP_INDEX__LOCAL_DIR: /app/buz/plugins
+    volumes:
+      - "${BUZ_PLUGIN_MIRROR:?set BUZ_PLUGIN_MIRROR to the host plugins directory}:/app/buz/plugins:ro"

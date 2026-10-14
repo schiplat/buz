@@ -28,16 +28,19 @@ heartbeat_timeout_seconds = 90
 
 [pipeline]
 yaml_scan_dir = "./pipelines"
-# Pipeline YAML files are scanned flat; the step index lives in ./pipelines/steps
+# Pipeline YAML files are scanned flat; the default step index is ./pipelines/steps
+yaml_scan_interval_seconds = 30
 
 [step_index]
-# Where `uses:` marketplace step references resolve. Empty (default) →
-# <yaml_scan_dir>/steps — clone github.com/schiplat/buz-plugins there
-# (git pull to update). Validate with `buz-manager step-validate`.
-# Optional review badge (ADR §6.7.4):
+# Local YAML specs used to resolve `uses:` references. Empty (default) →
+# <yaml_scan_dir>/steps. Manager reads this directory; it does not clone/sync it.
+# For a Docker Git mirror, use deploy/docker-compose.plugins.yml and set
+# BUZ_PLUGIN_MIRROR to the host-side buz-plugins/plugins directory.
+# Optional local override outside Docker:
+# local_dir = "/srv/buz-plugin-mirror/plugins"
+# Optional review gate:
 # reviewed_manifest = "/etc/buz/reviews.json"
 # require_reviewed = false
-yaml_scan_interval_seconds = 30
 
 [clock]
 enabled = true                 # probe remote clock before signing config URLs
@@ -65,6 +68,7 @@ level = "info"                 # error | warn | info | debug | trace
 | `auth` | `runner_register_token_ttl_hours` | Runner JWT lifetime after register |
 | `runner` | `heartbeat_timeout_seconds` | Offline threshold for runners |
 | `pipeline` | `yaml_scan_*` | File/Git authority for pipeline YAML; scanner + UI online edit write here. **Flat directory only** (basename files; no private subdirs). See [YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/) |
+| `step_index` | `local_dir` | Local YAML specs used to resolve `uses:` references. Empty uses `<yaml_scan_dir>/steps`; Manager reads the selected directory and does not clone or sync it. |
 | `clock` | `enabled` | Default `true`. Probe the OSS endpoint's `Date` header before signing `config.source` URLs — see [Clock skew](#clock-skew) |
 | `clock` | `warn_threshold_seconds` | Default `60`. Log a `warn` when the Manager clock is at least this far behind remote time. `0` disables the warning |
 | `clock` | `cache_ttl_seconds` | Default `300`. Reuse a probe result for this long; `0` probes on every dispatch |
@@ -73,6 +77,34 @@ level = "info"                 # error | warn | info | debug | trace
 | `standalone` | `auto_approve` | Runner names created at Manager boot if missing. Default `["standalone-runner"]` |
 | `logging` | `level` | Default `info`. Overridden by `RUST_LOG` if set |
 | `logging` | `file` | Optional append path; empty = stdout only |
+
+## External plugin Git mirror
+
+Manager resolves Pipeline `uses:` references from local YAML specs; it does not
+fetch the public marketplace or synchronize Git repositories. For Docker, keep a
+checkout of your internal `buz-plugins` mirror on the host and mount its `plugins/`
+subdirectory read-only with the optional Compose overlay:
+
+```bash
+git clone https://git.example.internal/platform/buz-plugins.git /srv/buz-plugin-mirror
+export BUZ_PLUGIN_MIRROR=/srv/buz-plugin-mirror/plugins
+docker compose -f docker-compose.yml -f deploy/docker-compose.plugins.yml up -d manager
+docker compose exec manager /app/buz/buz-manager step-validate /app/buz/plugins
+```
+
+After the mirror is updated, validate the specs again; the bind mount exposes the
+updated files to Manager without adding an in-Manager sync service:
+
+```bash
+git -C /srv/buz-plugin-mirror pull --ff-only
+docker compose exec manager /app/buz/buz-manager step-validate /app/buz/plugins
+```
+
+The overlay sets `BUZ_STEP_INDEX__LOCAL_DIR=/app/buz/plugins`. Set
+`BUZ_PLUGIN_MIRROR` to the host-side `plugins/` directory, not the repository
+root. Pipeline pins are resolved and locked when saved, so mirror changes apply
+to newly saved pipelines and do not rewrite existing ones. Without the overlay,
+the default remains `<yaml_scan_dir>/steps` (typically `./pipelines/steps`).
 
 **First admin:** not in config. On a fresh database, open the UI — you are redirected to `/setup` to create the platform admin (password ≥ 8 chars, complexity rules apply). After that, use `/login`.
 
