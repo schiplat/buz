@@ -38,9 +38,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # flock atomic writes for env_render
 libc = "0.2"
 
-# SSH execution
+# SSH execution (key handling comes from russh's built-in `keys` module)
 russh = "0.61"
-russh-keys = "0.48"
 async-trait = "0.1"
 
 # Error handling
