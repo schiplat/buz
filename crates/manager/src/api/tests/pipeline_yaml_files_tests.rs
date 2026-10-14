@@ -219,6 +219,125 @@ async fn create_put_get_delete_yaml_file() {
 }
 
 #[tokio::test]
+async fn unresolved_uses_returns_validation_error_and_restores_yaml_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(dir.path().join("steps")).expect("step index");
+    let scan = dir.path().to_string_lossy().to_string();
+    let app = test_app(&scan).await;
+    let token = admin_jwt();
+
+    let invalid_yaml = SAMPLE_YAML
+        .replace("name: file-backed-demo", "name: invalid-update")
+        .replace("    run: echo hello", "    uses: buz/missing-plugin@1.0.0");
+    let create_invalid = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/pipelines/yaml-files")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "yaml": invalid_yaml,
+                        "filename": "missing-plugin.yml"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = read_body(create_invalid).await;
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("not found in local step index"));
+    assert!(!dir.path().join("missing-plugin.yml").exists());
+    let pipelines = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/pipelines")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pipelines.status(), StatusCode::OK);
+    assert!(read_body(pipelines).await["data"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let create_valid = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/pipelines/yaml-files")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "yaml": SAMPLE_YAML,
+                        "filename": "file-backed-demo.yml"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_valid.status(), StatusCode::OK);
+
+    let update_invalid = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/pipelines/yaml-files/file-backed-demo.yml")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "yaml": invalid_yaml }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update_invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = read_body(update_invalid).await;
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("not found in local step index"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("file-backed-demo.yml")).unwrap(),
+        SAMPLE_YAML
+    );
+    let pipelines = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/pipelines")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pipelines.status(), StatusCode::OK);
+    let pipelines = read_body(pipelines).await;
+    let pipelines = pipelines["data"].as_array().unwrap();
+    assert_eq!(pipelines.len(), 1);
+    assert_eq!(pipelines[0]["name"], "file-backed-demo");
+}
+
+#[tokio::test]
 async fn rejects_path_traversal_filename() {
     let dir = tempfile::tempdir().expect("tempdir");
     let scan = dir.path().to_string_lossy().to_string();

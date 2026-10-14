@@ -1,6 +1,8 @@
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 use std::time::Duration;
@@ -18,6 +20,17 @@ use crate::api::{
 
 static YAML_FILE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Weak<AsyncMutex<()>>>>> =
     OnceLock::new();
+
+#[derive(Debug)]
+struct StepResolutionError(String);
+
+impl fmt::Display for StepResolutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for StepResolutionError {}
 
 /// Coordinate in-process operations for one YAML file. The key is its path under
 /// the configured scan directory; this lock is intentionally not cross-process.
@@ -245,7 +258,7 @@ pub async fn upsert_from_yaml(
         step_index_dir,
         &crate::services::step_resolver::policy_from_settings(),
     )
-    .map_err(anyhow::Error::msg)?;
+    .map_err(|error| anyhow::Error::new(StepResolutionError(error)))?;
     let steps = resolved_steps.steps;
     let resolutions = resolved_steps.resolutions;
 
@@ -856,6 +869,9 @@ pub async fn write_and_upsert_yaml_locked(
                 .bind(pid)
                 .execute(pool)
                 .await;
+            }
+            if let Some(error) = e.downcast_ref::<StepResolutionError>() {
+                return Err(AppError::ValidationFailed(error.to_string()));
             }
             return Err(AppError::Internal(format!("upsert failed: {e:#}")));
         }
