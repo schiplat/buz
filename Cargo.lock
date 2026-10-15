@@ -2081,7 +2081,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "manager"
-version = "1.7.4"
+version = "1.7.5"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -3091,7 +3091,7 @@ dependencies = [
 
 [[package]]
 name = "runner"
-version = "1.7.4"
+version = "1.7.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3594,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "1.7.4"
+version = "1.7.5"
 dependencies = [
  "aho-corasick",
  "axum",
