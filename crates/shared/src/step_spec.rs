@@ -426,11 +426,10 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
     }
 
     match spec.effective_engine() {
-        "shell" => {}
-        "ssh" => errors.push(
-            "engine: 'ssh' is not supported for marketplace step templates — use shell or docker"
-                .into(),
-        ),
+        // `ssh` runs on the pipeline-declared target host — reserved for the
+        // community (unmanaged) tier and governed official deploy templates;
+        // see the marketplace governance document in buz-plugins.
+        "shell" | "ssh" => {}
         "docker" => {
             if spec
                 .image
@@ -443,7 +442,7 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
             }
         }
         other => errors.push(format!(
-            "engine: {other:?} is not valid for a step template — use shell or docker"
+            "engine: {other:?} is not valid for a step template — use shell, ssh, or docker"
         )),
     }
 

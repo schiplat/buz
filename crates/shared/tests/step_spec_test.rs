@@ -246,15 +246,10 @@ fn id_grammar_is_two_segments_for_all_templates() {
 }
 
 #[test]
-fn marketplace_engine_and_host_inputs_are_restricted() {
-    let ssh = base_yaml().replacen("engine: shell", "engine: ssh", 1);
-    let errors =
-        validate_step_spec(&serde_yaml::from_str::<StepSpec>(&ssh).unwrap(), CURRENT).unwrap_err();
-    assert!(
-        errors.iter().any(|e| e.contains("'ssh' is not supported")),
-        "{errors:?}"
-    );
-
+fn host_inputs_are_restricted_for_marketplace_templates() {
+    // ssh templates execute on the pipeline step's host — the target is never
+    // chosen through a template input. (engine: ssh itself is allowed; see
+    // ssh_engine_template_is_valid_without_image.)
     let host = base_yaml().replacen("type: boolean", "type: host", 1);
     let errors =
         validate_step_spec(&serde_yaml::from_str::<StepSpec>(&host).unwrap(), CURRENT).unwrap_err();
@@ -386,5 +381,16 @@ fn credential_like_inputs_must_be_masked() {
 
     // The existing webhook input is masked → base template stays valid.
     let spec: StepSpec = serde_yaml::from_str(&base_yaml()).unwrap();
+    assert!(validate_step_spec(&spec, CURRENT).is_ok());
+}
+
+#[test]
+fn ssh_engine_template_is_valid_without_image() {
+    // ssh templates execute on the pipeline-declared target host; no image
+    // field is required. Community (unmanaged) and governed official deploy
+    // templates both rely on this — see the marketplace governance document.
+    let yaml = base_yaml().replacen("engine: shell", "engine: ssh", 1);
+    let spec = parse_and_validate_step_spec(&yaml, CURRENT).expect("valid ssh spec");
+    assert_eq!(spec.effective_engine(), "ssh");
     assert!(validate_step_spec(&spec, CURRENT).is_ok());
 }
