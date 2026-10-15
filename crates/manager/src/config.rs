@@ -24,6 +24,11 @@ pub struct Config {
     pub standalone: StandaloneConfig,
     #[serde(default)]
     pub step_index: StepIndexConfig,
+    /// Public plugin-marketplace URL linked from the Dashboard's YAML editor.
+    /// Empty → the built-in default. Override for internal-mirror or
+    /// air-gapped deployments (env: `BUZ_MARKETPLACE_URL`).
+    #[serde(default)]
+    pub marketplace_url: String,
 }
 
 /// `[step_index]` — where `uses:` marketplace references resolve (ADR §6).

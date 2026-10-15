@@ -41,6 +41,7 @@ fn test_config() -> Config {
         step_index: Default::default(),
         clock: Default::default(),
         logging: Default::default(),
+        marketplace_url: String::new(),
     }
 }
 

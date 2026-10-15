@@ -12,6 +12,10 @@ use std::time::Instant;
 
 use crate::state::AppState;
 
+/// Public plugin-marketplace linked from the Dashboard's YAML editor when
+/// `marketplace_url` is not set in manager.toml.
+pub const DEFAULT_MARKETPLACE_URL: &str = "https://plugins.buz.schiplat.com";
+
 /// Wall-clock process start time, recorded once the manager boots.
 static STARTED_AT: OnceLock<chrono::DateTime<chrono::Utc>> = OnceLock::new();
 
@@ -127,11 +131,17 @@ pub async fn health(
         .unwrap_or(0);
 
     let status = if db_ok { "ok" } else { "degraded" };
+    let marketplace_url = if state.config.marketplace_url.is_empty() {
+        DEFAULT_MARKETPLACE_URL
+    } else {
+        state.config.marketplace_url.as_str()
+    };
     let body = Json(serde_json::json!({
         "status": status,
         "name": PRODUCT_NAME,
         "version": VERSION,
         "component": "manager",
+        "marketplace_url": marketplace_url,
         "uptime_seconds": uptime_seconds,
         "started_at": started.map(|s| s.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         "database": {

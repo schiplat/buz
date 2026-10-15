@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import {
   X,
   CheckCircle,
@@ -26,6 +26,7 @@ import { splitWarningField } from '@/utils/pipelineYamlLint'
 import PipelineYamlCodeEditor from '@/components/pipeline/PipelineYamlCodeEditor.vue'
 import { cn } from '@/lib/utils'
 import { useAppDialog } from '@/composables/useAppDialog'
+import { DEFAULT_MARKETPLACE_URL, getMarketplaceUrl } from '@/api/health'
 
 const emit = defineEmits<{
   saved: [payload: { pipelineId: string | null }]
@@ -38,6 +39,13 @@ const REF_GUIDE_KEY = 'buz_guide_new_pipeline_yaml_ref'
 const open = ref(false)
 const dialogTitle = ref('New Pipeline')
 const editingId = ref<string | null>(null)
+
+// Marketplace link from Manager config (`marketplace_url`), falling back to
+// the public marketplace when unset or when the health probe is unreachable.
+const marketplaceHref = ref(DEFAULT_MARKETPLACE_URL)
+onMounted(async () => {
+  marketplaceHref.value = await getMarketplaceUrl()
+})
 const saving = ref(false)
 /** Dialog body tab — matches Secrets/Variables segmented control style. */
 const dialogTab = ref<'editor' | 'reference'>('editor')
@@ -624,7 +632,7 @@ defineExpose({ openCreate, openEdit, close })
             </div>
           </div>
           <a
-            href="https://plugins.buz.schiplat.com"
+            :href="marketplaceHref"
             target="_blank"
             rel="noopener noreferrer"
             class="shrink-0 px-2 py-1.5 text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground"

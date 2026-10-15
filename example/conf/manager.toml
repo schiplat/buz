@@ -3,6 +3,10 @@
 # Production: set a strong jwt_secret (or BUZ_JWT_SECRET).
 # First admin is created in the web UI at /setup (no password in this file).
 
+# Public plugin-marketplace URL linked from the Dashboard's YAML editor.
+# Override for internal-mirror or air-gapped deployments (env: BUZ_MARKETPLACE_URL).
+# marketplace_url = "https://plugins.example.com"
+
 [server]
 host = "0.0.0.0"
 port = 8080
@@ -37,11 +41,14 @@ yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30
 
 [step_index]
-# Empty local_dir → <yaml_scan_dir>/steps (./pipelines/steps).
-# To use an external Git mirror, point this at its plugins/ directory.
+# Where `uses:` references resolve — local YAML specs, one file per template.
+# Empty local_dir → <yaml_scan_dir>/steps (./pipelines/steps). Manager reads
+# this directory; it does not clone/sync it. To use an external Git mirror,
+# point local_dir (or env BUZ_STEP_INDEX__LOCAL_DIR in Docker) at its
+# plugins/ subdirectory.
 # local_dir = "/opt/buz-plugin-mirror/plugins"
 # Validate with: buz-manager step-validate /opt/buz-plugin-mirror/plugins
-# Review badge (ADR §6.7.4): reviewed_manifest = "/etc/buz/reviews.json"
+# Review badge: reviewed_manifest = "/etc/buz/reviews.json"
 # require_reviewed = false
 
 [clock]
@@ -65,12 +72,3 @@ yaml_scan_interval_seconds = 30
 level = "info"
 # file = "./logs/manager.log"
 
-[step_index]
-# Local YAML specs for `uses:` references. Empty → <yaml_scan_dir>/steps.
-# For Docker, mount an external mirror's plugins/ directory and set
-# BUZ_STEP_INDEX__LOCAL_DIR to its container path. Manager does not clone/sync it.
-# Optional local override outside Docker:
-# local_dir = "/opt/buz-plugin-mirror/plugins"
-# Validate with: buz-manager step-validate /opt/buz-plugin-mirror/plugins
-# reviewed_manifest = "/etc/buz/reviews.json"
-# require_reviewed = false

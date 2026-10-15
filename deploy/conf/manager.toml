@@ -1,5 +1,10 @@
 # Manager config — Docker + binary package
 
+# ── Marketplace link ────────────────────────────────────────────────────────
+# Public plugin-marketplace URL linked from the Dashboard's YAML editor.
+# Override for internal-mirror or air-gapped deployments (env: BUZ_MARKETPLACE_URL).
+# marketplace_url = "https://plugins.example.com"
+
 [server]
 host = "0.0.0.0"
 port = 8080

@@ -29,11 +29,32 @@ export interface HealthInfo {
   name: string
   version: string
   component: string
+  marketplace_url?: string
   uptime_seconds: number
   started_at?: string
   database: DatabaseHealth
   jobs: JobsBacklogHealth
   ws: WsHealth
+}
+
+export const DEFAULT_MARKETPLACE_URL = 'https://plugins.buz.schiplat.com'
+
+let cachedMarketplaceUrl: string | null = null
+
+/**
+ * Plugin-marketplace URL configured on the Manager (falls back to the public
+ * marketplace). Fetched once per page load; failures keep the default so the
+ * YAML editor link works even when the health probe is unreachable.
+ */
+export async function getMarketplaceUrl(): Promise<string> {
+  if (cachedMarketplaceUrl) return cachedMarketplaceUrl
+  try {
+    const info = await healthApi.get()
+    if (info.marketplace_url) cachedMarketplaceUrl = info.marketplace_url
+  } catch {
+    // keep the default — the link should not break on a failed probe
+  }
+  return cachedMarketplaceUrl ?? DEFAULT_MARKETPLACE_URL
 }
 
 export const healthApi = {

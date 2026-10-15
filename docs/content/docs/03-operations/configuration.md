@@ -7,6 +7,10 @@ description: "All configuration options for Manager and Runner"
 ## Manager (`conf/manager.toml`)
 
 ```toml
+# Public plugin-marketplace URL linked from the Dashboard's YAML editor.
+# Override for internal-mirror or air-gapped deployments (env: BUZ_MARKETPLACE_URL).
+# marketplace_url = "https://plugins.example.com"
+
 [server]
 host = "0.0.0.0"
 port = 8080
@@ -61,6 +65,7 @@ level = "info"                 # error | warn | info | debug | trace
 | Section | Key | Notes |
 |---------|-----|-------|
 | `server` | `host` / `port` | Listen address |
+| (top level) | `marketplace_url` | Public plugin-marketplace URL shown in the Dashboard's YAML editor. Default: the public marketplace; override for internal mirrors / air-gapped deployments. Env: `BUZ_MARKETPLACE_URL` |
 | `server` | `tls_cert` + `tls_key` | Optional HTTPS (both required). See [TLS](/docs/03-operations/tls/) |
 | `database` | `path` | SQLite file |
 | `auth` | `jwt_secret` | Signs JWTs + encrypts secrets/hosts. **Required** (≥ 32 chars). Empty / `CHANGE_ME` / `changeme` / `demo-only` placeholders are **refused at startup** unless `BUZ_ALLOW_INSECURE_JWT=1` (local only) |

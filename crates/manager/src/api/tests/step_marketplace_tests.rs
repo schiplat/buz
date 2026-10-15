@@ -76,6 +76,7 @@ async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, sqlx::Sqli
         step_index: Default::default(),
         clock: Default::default(),
         logging: Default::default(),
+        marketplace_url: String::new(),
     };
     config.step_index.local_dir = index_dir.to_string_lossy().into_owned();
 

@@ -42,6 +42,7 @@ fn base_config(standalone: bool) -> Config {
         step_index: Default::default(),
         clock: Default::default(),
         logging: Default::default(),
+        marketplace_url: String::new(),
     }
 }
 
