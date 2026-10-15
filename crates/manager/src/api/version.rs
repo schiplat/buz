@@ -98,6 +98,19 @@ fn clock_health() -> serde_json::Value {
 /// Public health + version probe (no auth). Liveness semantics by default
 /// (HTTP 200 while the process responds); pass `?readiness=true` for a
 /// readiness probe that returns 503 when a dependency is unavailable.
+///
+/// The first endpoint annotated for the OpenAPI document served at
+/// `/api/v1/openapi.json` — annotate further handlers with `#[utoipa::path]`
+/// and register them in `api/openapi.rs`; the spec grows incrementally.
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "system",
+    responses(
+        (status = 200, description = "Liveness probe with version and health details"),
+        (status = 503, description = "Readiness probe failed (pass ?readiness=true)")
+    )
+)]
 pub async fn health(
     State(state): State<AppState>,
     Query(q): Query<HealthQuery>,

@@ -70,6 +70,16 @@ still be complete and testable?* Yes → it belongs in buz; no → plugins.
 Buz must never embed template content, marketplace URLs beyond the
 configurable `marketplace_url`, or publishing automation.
 
+## API specification (OpenAPI)
+
+The Manager serves its OpenAPI document at `/api/v1/openapi.json`, generated
+from code by [utoipa](https://github.com/juhaku/utoipa) — it is never
+hand-edited. Convention: when you touch a handler, annotate it with
+`#[utoipa::path]` and register it in `crates/manager/src/api/openapi.rs`;
+coverage grows incrementally with the code (`crates/manager/src/api/version.rs`
+is the reference example). Generated specs are the foundation for
+generated SDKs — no hand-written clients.
+
 ## Getting Started
 
 ```bash

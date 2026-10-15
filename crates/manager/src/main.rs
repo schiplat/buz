@@ -221,6 +221,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(path = %dir, "serving UI from disk");
             Router::new()
                 .route("/health", get(api::version::health))
+                .route("/api/v1/openapi.json", get(api::openapi::openapi_json))
                 .with_state(app_state.clone())
                 .nest("/api/v1", api::router(app_state.clone()))
                 .fallback_service(frontend::disk_fallback(dir))
@@ -234,6 +235,7 @@ async fn main() -> anyhow::Result<()> {
             );
             Router::new()
                 .route("/health", get(api::version::health))
+                .route("/api/v1/openapi.json", get(api::openapi::openapi_json))
                 .with_state(app_state.clone())
                 .nest("/api/v1", api::router(app_state.clone()))
                 .fallback(frontend::embedded_handler)

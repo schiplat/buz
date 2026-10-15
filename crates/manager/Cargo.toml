@@ -12,6 +12,7 @@ shared = { path = "../shared", features = ["web"] }
 
 # Web framework
 axum = { version = "0.8", features = ["ws"] }
+utoipa = { version = "5", features = ["axum_extras"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 tokio.workspace = true
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }

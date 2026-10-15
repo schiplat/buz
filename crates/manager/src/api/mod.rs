@@ -23,6 +23,7 @@ mod github_sync;
 mod hosts;
 mod jobs;
 mod logs;
+pub mod openapi;
 mod secrets;
 mod steps;
 mod teams;
