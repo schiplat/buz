@@ -51,6 +51,25 @@ buz/
 └── docs/                   # Hugo documentation site
 ```
 
+## Component boundaries
+
+Buz is one of two components. The step-template plugins — template content,
+tool images, the static marketplace site, and their review governance — live
+in the separate `buz-plugins` repository. Buz stays complete and testable
+with zero plugins installed: resolution reads a local step index, and no
+plugin content ships inside the binaries.
+
+| Belongs in buz | Belongs in buz-plugins |
+|----------------|------------------------|
+| Execution semantics, engines, and the runtime interface ([Plugin Contract](/docs/01-architecture/authoring/plugin-contract/)) | Template content and per-plugin documentation |
+| Spec schema + `step-validate` + the local step-index API | Tool images, static marketplace site, publishing pipelines |
+| Review-gate mechanics (`require_reviewed`, `reviewed_manifest`) | Review records and the egress baseline as governance data |
+
+Rule of thumb: *if the plugins repository disappeared tomorrow, would this
+still be complete and testable?* Yes → it belongs in buz; no → plugins.
+Buz must never embed template content, marketplace URLs beyond the
+configurable `marketplace_url`, or publishing automation.
+
 ## Getting Started
 
 ```bash

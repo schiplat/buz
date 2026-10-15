@@ -8,6 +8,7 @@
 | `conf/runner.standalone.toml` | Standalone image Runner conf (loopback, no token) |
 | `standalone/entrypoint.sh` | Starts Manager + Runner in one container |
 | `dev-deploy.sh` | One-shot deploy of Manager + Runner on a Linux VM (pull from a container registry + compose) |
+| `docker-compose.plugins.yml` | Optional Compose overlay: mount an external plugin-mirror directory read-only and point `[step_index]` at it (see the configuration guide) |
 | `nginx/buz-manager.conf` | Optional system Nginx reverse proxy (HTTP-only, non-Docker) |
 | `nginx/buz-manager-docker.conf` | Same, for `dev-deploy.sh` Docker deployments (HTTP-only) |
 | `nginx/buz-manager-ssl.conf` | Same, HTTPS (Let's Encrypt + HTTP→HTTPS redirect) |
