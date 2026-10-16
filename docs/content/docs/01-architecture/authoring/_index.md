@@ -12,17 +12,19 @@ Everything about **authoring** a pipeline: file authority, field reference, secr
 
 1. [YAML-First Authoring](./yaml-first-authoring/) — who owns the YAML (file/Git vs DB)
 2. [Pipeline Format](./pipeline-format/) — **parameter reference** (all YAML fields)
-3. [Input Validation](./pipeline-input-validation/) — declarative `type`/`pattern`/`options` constraints enforced at trigger
-4. [Secrets & Variables Expressions](./secrets-vars-expressions/) — cheat sheet
-5. [Secrets Access (GHA-style)](../platform/secrets-access/) — allowlist → map → consume
-6. [Config Block](./config-block/) + [Env Render](./env-render/) — when you ship `.env` / OSS bundles
-7. [Pipeline Notify](./pipeline-notify/) / [Git Webhook Triggers](./git-webhook-triggers/) / [Job Concurrency Queue](./job-concurrency-queue/) — as needed
+3. [Pipeline Parameter Scopes](./pipeline-parameter-scopes/) — which key belongs to which scope (pipeline / step / config / runtime env)
+4. [Input Validation](./pipeline-input-validation/) — declarative `type`/`pattern`/`options` constraints enforced at trigger
+5. [Secrets & Variables Expressions](./secrets-vars-expressions/) — cheat sheet
+6. [Secrets Access (GHA-style)](../platform/secrets-access/) — allowlist → map → consume
+7. [Config Block](./config-block/) + [Env Render](./env-render/) — when you ship `.env` / OSS bundles
+8. [Pipeline Notify](./pipeline-notify/) / [Git Webhook Triggers](./git-webhook-triggers/) / [Job Concurrency Queue](./job-concurrency-queue/) — as needed
 
 ## Topics
 
 {{< cards >}}
   {{< card link="yaml-first-authoring/" title="YAML-First Authoring" subtitle="File/Git authority; UI writes scan dir" >}}
   {{< card link="pipeline-format/" title="Pipeline Format" subtitle="YAML field reference + registration" >}}
+  {{< card link="pipeline-parameter-scopes/" title="Pipeline Parameter Scopes" subtitle="Which key belongs to which scope" >}}
   {{< card link="pipeline-input-validation/" title="Input Validation" subtitle="Declarative type/pattern/options enforced at trigger" >}}
   {{< card link="secrets-vars-expressions/" title="Secrets & Variables" subtitle="Expression cheat sheet" >}}
   {{< card link="config-block/" title="Config Block DSL v2" subtitle="OSS deliver + render-only" >}}

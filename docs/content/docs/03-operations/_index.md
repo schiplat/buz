@@ -6,6 +6,7 @@ description: "Configuration, deployment, and operations guides"
 
 {{< cards >}}
   {{< card link="configuration/" title="Configuration" subtitle="manager.toml / runner.toml" >}}
+  {{< card link="config-file-scopes/" title="Config File Scopes" subtitle="manager.toml / runner.toml parameter scopes" >}}
   {{< card link="deployment/" title="Deployment" subtitle="Install Manager and Runner" >}}
   {{< card link="standalone/" title="Standalone" subtitle="Single-image first run & upgrade (arm64)" >}}
   {{< card link="tls/" title="HTTPS" subtitle="Manager TLS, Runner client, reverse proxy, commands" >}}
