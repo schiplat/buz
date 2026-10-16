@@ -57,14 +57,10 @@ secrets:
 steps:
   # ── 1. Fetch config bundle (presigned OSS URL → unpack) ────────────
   - name: Fetch config bundle
-    engine: shell
-    env:
-      CONFIG_BUNDLE_URL: ${secrets.CONFIG_BUNDLE_URL}   # presigned, TTL <= 1h — refresh per deploy
-    run: |
-      mkdir -p /tmp/buz-config-demo
-      curl -fsSL --retry 2 --max-time 240 -o /tmp/example-bucket.tar.gz "$CONFIG_BUNDLE_URL"
-      tar -xzf /tmp/example-bucket.tar.gz -C /tmp/buz-config-demo
-      rm -f /tmp/example-bucket.tar.gz
+    uses: buz/config-fetch@1.1.0
+    with:
+      url: ${secrets.CONFIG_BUNDLE_URL}   # presigned, TTL <= 1h — refresh per deploy
+      dest: config                        # workspace-relative
       echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
       if [ ! -d "${BUZ_CONFIG_DIR:-}" ]; then
         echo "!! BUZ_CONFIG_DIR is empty — OSS deliver did not run" >&2
@@ -81,7 +77,7 @@ steps:
   - name: Render env
     engine: shell
     config:
-      dest: /tmp/buz-config-demo
+      dest: config
       render:
         - template: env.example
           output: .env
