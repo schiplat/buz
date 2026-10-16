@@ -111,6 +111,29 @@ fn duplicate_id_version_across_files_is_ambiguous_even_for_major_pins() {
     assert_eq!(resolved.spec.version, "1.4.0");
 }
 
+fn dual_engine_spec(id: &str, version: &str) -> String {
+    format!(
+        r#"
+id: {id}
+publisher: official
+version: {version}
+engine: shell
+engines: [shell, ssh]
+default_timeout: 30s
+author: Buz
+source_repo: https://github.com/buz/buz-plugins
+
+inputs:
+  url:
+    type: string
+    required: true
+    masking: true
+run: |
+  curl -fsSL "$INPUT_URL"
+"#
+    )
+}
+
 fn uses_step(uses: &str) -> StepDef {
     StepDef {
         name: "notify".into(),
@@ -411,4 +434,75 @@ fn plain_step() -> StepDef {
     step.uses = None;
     step.run = "echo hi".into();
     step
+}
+
+#[test]
+fn expand_honors_call_site_engine_override_within_declared_engines() {
+    let dir = tempfile::tempdir().unwrap();
+    write_spec(
+        dir.path(),
+        "fetch-1.0.0.yaml",
+        &dual_engine_spec("buz/fetch", "1.0.0"),
+    );
+    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let resolved = index.resolve("buz/fetch@1.0.0", "1.5.6").unwrap();
+
+    let mut step = uses_step("buz/fetch@1.0.0");
+    step.engine = Some("ssh".into());
+    let mut with = BTreeMap::new();
+    with.insert(
+        "url".to_string(),
+        "${secrets.CONFIG_BUNDLE_URL}".to_string(),
+    );
+    step.with = Some(with);
+
+    let expanded = expand_uses_step(&step, &resolved).unwrap();
+    assert_eq!(expanded.engine.as_deref(), Some("ssh"));
+    assert!(
+        expanded.host.is_none(),
+        "call-site host passes through untouched"
+    );
+}
+
+#[test]
+fn expand_rejects_engine_override_outside_declared_engines() {
+    let dir = tempfile::tempdir().unwrap();
+    write_spec(
+        dir.path(),
+        "fetch-1.0.0.yaml",
+        &dual_engine_spec("buz/fetch", "1.0.0"),
+    );
+    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let resolved = index.resolve("buz/fetch@1.0.0", "1.5.6").unwrap();
+
+    let mut step = uses_step("buz/fetch@1.0.0");
+    step.engine = Some("docker".into());
+    let err = expand_uses_step(&step, &resolved).unwrap_err();
+    assert!(
+        err.iter().any(|e| e.contains("is not supported by")),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn expand_without_call_site_engine_uses_template_default() {
+    let dir = tempfile::tempdir().unwrap();
+    write_spec(
+        dir.path(),
+        "fetch-1.0.0.yaml",
+        &dual_engine_spec("buz/fetch", "1.0.0"),
+    );
+    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let resolved = index.resolve("buz/fetch@1.0.0", "1.5.6").unwrap();
+
+    let mut step = uses_step("buz/fetch@1.0.0");
+    let mut with = BTreeMap::new();
+    with.insert(
+        "url".to_string(),
+        "${secrets.CONFIG_BUNDLE_URL}".to_string(),
+    );
+    step.with = Some(with);
+
+    let expanded = expand_uses_step(&step, &resolved).unwrap();
+    assert_eq!(expanded.engine.as_deref(), Some("shell"));
 }

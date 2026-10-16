@@ -72,7 +72,8 @@ Scope: **one step**. `engine:` selects the executor; engine-specific keys are re
 
 | Owner | Keys | Takes effect on |
 |---|---|---|
-| **Template spec** (call site cannot override) | `run`, `engine`, `image`, typed `inputs` | every call site of that template version |
+| **Template spec** | `run`, `image`, typed `inputs`, default `engine` | every call site of that template version |
+| **Call site `engine:` override** | template-declared `engines` list (e.g. `[shell, ssh]`); incompatible override fails at claim time | this step only |
 | **Call site** (kept through expansion) | `name`, `env`, `timeout`, `continue-on-error`, `secrets`, `host*`, `dir`, `volumes`, `privileged`, `registry_secret` | this step only |
 | **`with`** | → `INPUT_<UPPER_SNAKE>` step env; validated against declared inputs | this step only |
 

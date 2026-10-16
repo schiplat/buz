@@ -1603,6 +1603,7 @@ async fn execute_job(
                 if let Some(dir) = &docker_config_dir {
                     env.insert("DOCKER_CONFIG".into(), dir.clone());
                 }
+                env.insert("BUZ_STEP_ENGINE".into(), exec_type.to_string());
 
                 // Debug echo — show the command before execution (like bash -x)
                 {
@@ -1799,6 +1800,7 @@ async fn execute_job(
                     step_env_ssh
                         .insert("DOCKER_CONFIG".into(), format!("/tmp/buz-docker-{job_id}"));
                 }
+                step_env_ssh.insert("BUZ_STEP_ENGINE".into(), "ssh".into());
                 // Parallel fan-out inside execute_ssh_step; cancelling this
                 // select arm drops join_all and aborts every in-flight host.
                 let sessions_for_run = std::mem::take(&mut ssh_sessions);

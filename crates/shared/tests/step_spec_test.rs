@@ -394,3 +394,45 @@ fn ssh_engine_template_is_valid_without_image() {
     assert_eq!(spec.effective_engine(), "ssh");
     assert!(validate_step_spec(&spec, CURRENT).is_ok());
 }
+
+#[test]
+fn engines_declares_extra_call_site_engines() {
+    let mut yaml = base_yaml();
+    yaml.push_str("engines: [shell, ssh]\n");
+    let spec = parse_and_validate_step_spec(&yaml, CURRENT).expect("valid spec");
+    assert_eq!(spec.declared_engines(), vec!["shell", "ssh"]);
+    assert!(spec.engine_override_ok("ssh"));
+    assert!(spec.engine_override_ok("SSH ")); // normalized
+    assert!(!spec.engine_override_ok("docker"));
+}
+
+#[test]
+fn engines_default_is_engine_only() {
+    let spec = parse_and_validate_step_spec(&base_yaml(), CURRENT).expect("valid spec");
+    assert_eq!(spec.declared_engines(), vec!["shell"]);
+    assert!(spec.engine_override_ok("shell"));
+    assert!(!spec.engine_override_ok("ssh"));
+}
+
+#[test]
+fn invalid_declared_engine_is_rejected() {
+    let mut yaml = base_yaml();
+    yaml.push_str("engines: [shell, wasm]\n");
+    let err = parse_and_validate_step_spec(&yaml, CURRENT).unwrap_err();
+    assert!(
+        err.iter()
+            .any(|e| e.contains("is not valid for a step template")),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn docker_declared_without_image_is_rejected() {
+    let mut yaml = base_yaml();
+    yaml.push_str("engines: [shell, docker]\n");
+    let err = parse_and_validate_step_spec(&yaml, CURRENT).unwrap_err();
+    assert!(
+        err.iter().any(|e| e.contains("image: is required")),
+        "{err:?}"
+    );
+}

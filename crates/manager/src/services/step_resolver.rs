@@ -279,8 +279,10 @@ fn version_triple(v: &str) -> Option<(u64, u64, u64)> {
 
 /// Expand a `uses:` step into a concrete step (ADR §4/§5.1).
 ///
-/// The template provides `run` / `engine` / `image` (not overridable) and
-/// the timeout fallback; the call site keeps its own `name`, `env`,
+/// The template provides `run` / `image` and the default `engine`; the call
+/// site may override the engine within the template's declared `engines`
+/// (e.g. a `[shell, ssh]` template runs on the Runner host or on the
+/// pipeline's target hosts). The call site also keeps its own `name`, `env`,
 /// `timeout`, `retry`, `continue-on-error`, `secrets`, and deployment
 /// context (`host*`, `dir`, `volumes`, `privileged`, `registry_secret`).
 /// `with:` values become `INPUT_<UPPER_SNAKE>` step env entries — the same
@@ -375,6 +377,31 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepD
         env.insert(shared::protocol::input_env_key(name), value.clone());
     }
 
+    // Engine: the template default, or a call-site override within the
+    // template's declared `engines` (shell ↔ ssh reuse of one template).
+    let engine = match step
+        .engine
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+    {
+        Some(requested) => {
+            let requested = requested.to_ascii_lowercase();
+            if spec.engine_override_ok(&requested) {
+                requested
+            } else {
+                errors.push(format!(
+                    "engine: '{requested}' is not supported by {} {} — declared engines: {:?}",
+                    spec.id,
+                    spec.version,
+                    spec.declared_engines()
+                ));
+                spec.effective_engine().to_string()
+            }
+        }
+        None => spec.effective_engine().to_string(),
+    };
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -386,7 +413,7 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepD
             step.name.clone()
         },
         run: spec.run.clone().unwrap_or_default(),
-        engine: Some(spec.effective_engine().to_string()),
+        engine: Some(engine),
         // The expanded step is concrete — `uses` is cleared and the
         // provenance row carries the audit trail instead.
         uses: None,

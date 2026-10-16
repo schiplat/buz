@@ -77,6 +77,12 @@ pub struct StepSpec {
     /// `shell` (default) | `docker` | `ssh`.
     #[serde(default)]
     pub engine: Option<String>,
+    /// Extra engines the run block supports via a call-site `engine:`
+    /// override — e.g. `engines: [shell, ssh]` lets one template run on the
+    /// Runner host (shell) or on the pipeline's target hosts (ssh). When
+    /// omitted the template runs only on `engine`.
+    #[serde(default)]
+    pub engines: Option<Vec<String>>,
     /// Required for `engine: docker`; digest-pinning recommended.
     #[serde(default)]
     pub image: Option<String>,
@@ -106,6 +112,28 @@ impl StepSpec {
     /// Effective engine (`shell` when omitted).
     pub fn effective_engine(&self) -> &str {
         self.engine.as_deref().unwrap_or("shell").trim()
+    }
+
+    /// Engines the template supports: the default engine plus everything
+    /// declared in `engines` (normalized lowercase, deduped).
+    pub fn declared_engines(&self) -> Vec<String> {
+        let mut out = vec![self.effective_engine().to_ascii_lowercase()];
+        if let Some(list) = &self.engines {
+            for e in list {
+                let e = e.trim().to_ascii_lowercase();
+                if !e.is_empty() && !out.contains(&e) {
+                    out.push(e);
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether a call-site `engine:` override to `requested` is supported
+    /// by this template.
+    pub fn engine_override_ok(&self, requested: &str) -> bool {
+        let requested = requested.trim().to_ascii_lowercase();
+        !requested.is_empty() && self.declared_engines().iter().any(|e| e == &requested)
     }
 
     /// Effective publisher — omitted means `community` (the strictest
@@ -425,25 +453,28 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
         )),
     }
 
-    match spec.effective_engine() {
-        // `ssh` runs on the pipeline-declared target host — reserved for the
-        // community (unmanaged) tier and governed official deploy templates;
-        // see the marketplace governance document in buz-plugins.
-        "shell" | "ssh" => {}
-        "docker" => {
-            if spec
-                .image
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .is_none()
-            {
-                errors.push("image: is required for engine: docker".into());
+    // Every declared engine must be valid (`engines:` extends the default).
+    for engine in spec.declared_engines() {
+        match engine.as_str() {
+            // `ssh` runs on the pipeline-declared target host — reserved for the
+            // community (unmanaged) tier and governed official deploy templates;
+            // see the marketplace governance document in buz-plugins.
+            "shell" | "ssh" => {}
+            "docker" => {
+                if spec
+                    .image
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .is_none()
+                {
+                    errors.push("image: is required for engine: docker".into());
+                }
             }
+            other => errors.push(format!(
+                "engine: {other:?} is not valid for a step template — use shell, ssh, or docker"
+            )),
         }
-        other => errors.push(format!(
-            "engine: {other:?} is not valid for a step template — use shell, ssh, or docker"
-        )),
     }
 
     let run = spec.run.as_deref().unwrap_or("").trim();

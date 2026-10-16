@@ -38,6 +38,9 @@ against incompatibility with `requires_buz` (see [Version gate](#version-gate)).
   and secret values exported through the command prefix (`BUZ_REGISTRY_HOST`,
   `BUZ_REGISTRY_USER`, `BUZ_REGISTRY_PASSWORD` accompany a step-level
   `registry_secret`).
+- `engines:` (optional, template spec) declares extra engines the run block
+  supports; a call site may then set `engine:` to override (shell ↔ ssh).
+  Incompatible overrides fail at claim time.
 
 ## Inputs
 
