@@ -115,6 +115,11 @@ pub struct EngineConfig {
     pub ssh_host_key_policy: SshHostKeyPolicy,
     #[serde(default)]
     pub ssh_known_hosts_path: Option<String>,
+    /// Machine-local: scope the Docker CLI config to the job workspace
+    /// (`per_job`, default) or keep the legacy host-global `~/.docker`
+    /// (`shared`). Not UI-managed — never overridden by Manager policy.
+    #[serde(default)]
+    pub docker_config_isolation: DockerConfigIsolation,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
@@ -123,6 +128,21 @@ pub enum SshHostKeyPolicy {
     Insecure,
     #[default]
     KnownHosts,
+}
+
+/// Where the Docker CLI writes/reads `config.json` for job steps.
+///
+/// `per_job` (default) scopes credentials to `{workspace}/{job_id}/.docker`:
+/// logins (core or marketplace template) never touch the host-global
+/// `~/.docker/config.json`, and the directory is removed when the job ends —
+/// success, failure, or cancel. `shared` restores the legacy host-global
+/// behavior for environments that rely on a pre-configured credential store.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerConfigIsolation {
+    #[default]
+    PerJob,
+    Shared,
 }
 
 impl Default for EngineConfig {
@@ -136,6 +156,7 @@ impl Default for EngineConfig {
             // (~/.ssh/known_hosts when no explicit path is set).
             ssh_host_key_policy: SshHostKeyPolicy::KnownHosts,
             ssh_known_hosts_path: None,
+            docker_config_isolation: DockerConfigIsolation::PerJob,
         }
     }
 }

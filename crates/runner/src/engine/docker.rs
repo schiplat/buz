@@ -91,15 +91,28 @@ pub fn preflight(docker_enabled: bool, image: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `docker login --password-stdin` for a private registry (e.g. ACR Personal Edition).
-pub async fn registry_login(registry: &str, username: &str, password: &str) -> anyhow::Result<()> {
+/// `docker login --password-stdin` for a private registry.
+///
+/// `docker_config_dir` — when set, the CLI writes credentials into this
+/// job-scoped config dir (`DOCKER_CONFIG`) instead of the host-global
+/// `~/.docker/config.json`. The caller removes it when the job ends.
+pub async fn registry_login(
+    registry: &str,
+    username: &str,
+    password: &str,
+    docker_config_dir: Option<&str>,
+) -> anyhow::Result<()> {
     let registry = registry.trim();
     let username = username.trim();
     if registry.is_empty() || username.is_empty() || password.is_empty() {
         anyhow::bail!("registry_auth requires non-empty registry, username, and password");
     }
 
-    let mut child = Command::new("docker")
+    let mut command = Command::new("docker");
+    if let Some(dir) = docker_config_dir {
+        command.env("DOCKER_CONFIG", dir);
+    }
+    let mut child = command
         .args([
             "login",
             "--username",
@@ -147,14 +160,21 @@ pub async fn registry_login(registry: &str, username: &str, password: &str) -> a
 }
 
 /// Best-effort `docker logout` so credentials do not linger across jobs on shared runners.
-pub async fn registry_logout(registry: &str) {
+///
+/// `docker_config_dir` — scope the logout to the same job-scoped config dir
+/// the login used (see [`registry_login`]); `None` for the host-global default.
+pub async fn registry_logout(registry: &str, docker_config_dir: Option<&str>) {
     let registry = registry.trim();
     if registry.is_empty() {
         return;
     }
+    let mut command = Command::new("docker");
+    if let Some(dir) = docker_config_dir {
+        command.env("DOCKER_CONFIG", dir);
+    }
     let result = tokio::time::timeout(
         Duration::from_secs(30),
-        Command::new("docker")
+        command
             .args(["logout", registry])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -184,6 +204,11 @@ pub async fn registry_logout(registry: &str) {
 /// to use as the working directory (e.g. `frontend` → `--workdir /buz/workspace/frontend`).
 ///
 /// `privileged` — when true, adds `--privileged` to the container (required for Docker-in-Docker).
+///
+/// `docker_config_dir` — when set, the Docker CLI (image pull / push auth)
+/// reads credentials from this job-scoped config dir (`DOCKER_CONFIG`) instead
+/// of the host-global `~/.docker/config.json`. Container env is unaffected.
+#[allow(clippy::too_many_arguments)] // docker run surface: image/workdir/cmd/env/volumes/workdir/privileged + config scope
 pub async fn execute_streaming(
     image: &str,
     runner_workspace_dir: &Path,
@@ -192,6 +217,7 @@ pub async fn execute_streaming(
     volumes: &[String],
     container_work_dir: Option<&str>,
     privileged: bool,
+    docker_config_dir: Option<&str>,
 ) -> anyhow::Result<(Child, mpsc::UnboundedReceiver<String>, ReadGuard)> {
     std::fs::create_dir_all(runner_workspace_dir).map_err(|e| {
         anyhow::anyhow!(
@@ -212,6 +238,9 @@ pub async fn execute_streaming(
     );
     let mut cmd = Command::new("docker");
     cmd.args(&args);
+    if let Some(dir) = docker_config_dir {
+        cmd.env("DOCKER_CONFIG", dir);
+    }
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

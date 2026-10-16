@@ -51,6 +51,7 @@ async fn run_and_collect(
         &[],
         container_work_dir,
         privileged,
+        None,
     )
     .await?;
     let status = child.wait().await?;
@@ -252,6 +253,7 @@ async fn docker_e2e_kill_stops_container() {
         &[],
         None,
         false,
+        None,
     )
     .await
     .expect("spawn");

@@ -172,17 +172,17 @@ fn build_args_empty_volumes_ignored() {
 
 #[tokio::test]
 async fn registry_login_rejects_empty_fields() {
-    let err = super::registry_login("", "u", "p")
+    let err = super::registry_login("", "u", "p", None)
         .await
         .unwrap_err()
         .to_string();
     assert!(err.contains("registry_auth"), "{err}");
-    let err = super::registry_login("reg.example", "", "p")
+    let err = super::registry_login("reg.example", "", "p", None)
         .await
         .unwrap_err()
         .to_string();
     assert!(err.contains("registry_auth"), "{err}");
-    let err = super::registry_login("reg.example", "u", "")
+    let err = super::registry_login("reg.example", "u", "", None)
         .await
         .unwrap_err()
         .to_string();

@@ -18,6 +18,10 @@ token_cache_path = "./state/runner-token"
 
 [engine]
 # ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"
+# Scope the Docker CLI config (docker login credentials) to the job workspace.
+# per_job (default): {workspace}/{job}/.docker, removed when the job ends.
+# shared: legacy host-global ~/.docker/config.json (credential-store setups).
+# docker_config_isolation = "per_job"
 
 [clock]
 # The Runner must stay consistent with the Manager clock: it is validated on

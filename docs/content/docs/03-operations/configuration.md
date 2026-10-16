@@ -131,7 +131,7 @@ Machine-local only. Strategy is **not** configured here — see [Runner Policy](
 |---------------|-----------------------------------------------------|
 | `labels` | `manager_url`, `register_token`, `tls_skip_verify`, `standalone` |
 | `max_concurrent_jobs`, cleanup | `name`, `workspace_dir`, `token_cache_path` |
-| engine enable flags + `ssh_host_key_policy` | `prefer_interfaces`, `ssh_known_hosts_path` |
+| engine enable flags + `ssh_host_key_policy` | `prefer_interfaces`, `ssh_known_hosts_path`, `docker_config_isolation` |
 
 ```toml
 [runner]
@@ -146,6 +146,11 @@ token_cache_path = "./state/runner-token" # durable Manager-issued JWT cache
 
 [engine]
 # ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"
+# Scope the Docker CLI config (docker login credentials) to the job workspace:
+# "per_job" (default) → {workspace}/{job}/.docker (0700), removed when the job
+# ends (success / failure / cancel). "shared" → legacy host-global
+# ~/.docker/config.json (for credential-store-based setups).
+# docker_config_isolation = "per_job"
 
 [clock]
 enabled = true                 # validate this host's clock against the Manager

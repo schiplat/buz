@@ -143,3 +143,59 @@ fn ensure_enabled_respects_engine_flags() {
     let err = eng.ensure_enabled("shell").unwrap_err().to_string();
     assert!(err.contains("shell_enabled"), "{err}");
 }
+
+#[test]
+fn docker_config_isolation_defaults_to_per_job() {
+    let raw = r#"
+[runner]
+name = "r"
+register_token = "tok"
+
+[engine]
+docker_enabled = true
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("runner.toml");
+    std::fs::write(&path, raw).unwrap();
+    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    assert_eq!(
+        cfg.engine.docker_config_isolation,
+        DockerConfigIsolation::PerJob
+    );
+}
+
+#[test]
+fn docker_config_isolation_shared_is_opt_in() {
+    let raw = r#"
+[runner]
+name = "r"
+register_token = "tok"
+
+[engine]
+docker_config_isolation = "shared"
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("runner.toml");
+    std::fs::write(&path, raw).unwrap();
+    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    assert_eq!(
+        cfg.engine.docker_config_isolation,
+        DockerConfigIsolation::Shared
+    );
+}
+
+#[test]
+fn docker_config_isolation_rejects_unknown_value() {
+    let raw = r#"
+[runner]
+name = "r"
+register_token = "tok"
+
+[engine]
+docker_config_isolation = "global"
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("runner.toml");
+    std::fs::write(&path, raw).unwrap();
+    assert!(load(Some(path.to_str().unwrap())).is_err());
+}

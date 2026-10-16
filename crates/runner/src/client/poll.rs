@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::Config;
+use crate::config::{Config, DockerConfigIsolation};
 use crate::engine;
 use crate::engine::ssh::{SshConnectionParams, SshSession};
 use crate::masker::SecretCatalog;
@@ -564,12 +564,22 @@ pub async fn run_poll_loop(
                     tracing::error!("Failed to create job workspace {job_ws}: {e}");
                     continue;
                 }
+                if let Err(e) =
+                    prepare_job_docker_config_dir(&job_ws, config.engine.docker_config_isolation)
+                {
+                    // Best-effort: `docker login` recreates the dir if missing.
+                    tracing::warn!("Failed to prepare job docker config dir for {job_id}: {e}");
+                }
                 job_config.runner.workspace_dir = job_ws.clone();
                 let t = token.to_string();
                 let clean = snap.clean_workspace_after_job;
 
                 jobs.spawn(async move {
                     let result = run_one_job(&c, &job_config, &t, &task).await;
+                    // Unconditional: job-scoped Docker credentials never outlive
+                    // the job — independent of clean_workspace_after_job (which
+                    // defaults to false).
+                    clean_job_docker_config(&job_ws);
                     if clean {
                         tracing::info!("Cleaning job workspace: {job_ws}");
                         clean_workspace(&job_ws);
@@ -696,6 +706,15 @@ async fn execute_job(
     let job_id = task["job_id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
+
+    // Per-job Docker CLI config isolation (runner.toml `[engine]`, machine-local).
+    // `Some(dir)` → shell/docker steps get DOCKER_CONFIG inside the job workspace;
+    // ssh steps get a job-named /tmp dir on each target host. `None` = legacy
+    // host-global `~/.docker` behavior.
+    let docker_config_dir: Option<String> = match config.engine.docker_config_isolation {
+        DockerConfigIsolation::PerJob => Some(job_docker_config_dir(&config.runner.workspace_dir)),
+        DockerConfigIsolation::Shared => None,
+    };
 
     // Admin-only debug flag: when set, skip all log redaction for this job.
     // The Manager only sets it for platform-admin-triggered runs; debug-job
@@ -1528,8 +1547,13 @@ async fn execute_job(
         let (output, was_cancelled): (engine::shell::ShellOutput, bool) = match exec_type {
             "local" | "shell" => {
                 if let Some((ref registry, ref username, ref password)) = registry_login {
-                    if let Err(e) =
-                        engine::docker::registry_login(registry, username, password).await
+                    if let Err(e) = engine::docker::registry_login(
+                        registry,
+                        username,
+                        password,
+                        docker_config_dir.as_deref(),
+                    )
+                    .await
                     {
                         let msg = format!("{e:#}");
                         let masked = crate::masker::mask_secrets_forced(
@@ -1575,7 +1599,10 @@ async fn execute_job(
 
                 let cmd = command.to_string();
                 let wd = work_dir.map(|s| s.to_string());
-                let env = step_env.clone();
+                let mut env = step_env.clone();
+                if let Some(dir) = &docker_config_dir {
+                    env.insert("DOCKER_CONFIG".into(), dir.clone());
+                }
 
                 // Debug echo — show the command before execution (like bash -x)
                 {
@@ -1606,7 +1633,8 @@ async fn execute_job(
                     Ok(v) => v,
                     Err(e) => {
                         if let Some((ref reg, _, _)) = registry_login {
-                            engine::docker::registry_logout(reg).await;
+                            engine::docker::registry_logout(reg, docker_config_dir.as_deref())
+                                .await;
                         }
                         return Err(e);
                     }
@@ -1677,7 +1705,7 @@ async fn execute_job(
                 };
 
                 if let Some((ref reg, _, _)) = registry_login {
-                    engine::docker::registry_logout(reg).await;
+                    engine::docker::registry_logout(reg, docker_config_dir.as_deref()).await;
                 }
 
                 (
@@ -1763,7 +1791,14 @@ async fn execute_job(
                 let jid = job_id.to_string();
                 let sname = step_name.to_string();
                 let sname2 = sname.clone();
-                let step_env_ssh = ssh_env;
+                let mut step_env_ssh = ssh_env;
+                // Job-scoped remote Docker config (per-host copy of the same
+                // path): plugin/step logins on the target host stay inside the
+                // job; inserted after masking setup — a path, not a secret.
+                if docker_config_dir.is_some() {
+                    step_env_ssh
+                        .insert("DOCKER_CONFIG".into(), format!("/tmp/buz-docker-{job_id}"));
+                }
                 // Parallel fan-out inside execute_ssh_step; cancelling this
                 // select arm drops join_all and aborts every in-flight host.
                 let sessions_for_run = std::mem::take(&mut ssh_sessions);
@@ -1812,8 +1847,13 @@ async fn execute_job(
 
                 let pull_registry = registry_login.as_ref().map(|(r, _, _)| r.clone());
                 if let Some((ref registry, ref username, ref password)) = registry_login {
-                    if let Err(e) =
-                        engine::docker::registry_login(registry, username, password).await
+                    if let Err(e) = engine::docker::registry_login(
+                        registry,
+                        username,
+                        password,
+                        docker_config_dir.as_deref(),
+                    )
+                    .await
                     {
                         let msg = format!("{e:#}");
                         let masked = crate::masker::mask_secrets_forced(
@@ -1907,6 +1947,7 @@ async fn execute_job(
                     &volumes,
                     work_dir,
                     privileged,
+                    docker_config_dir.as_deref(),
                 )
                 .await;
 
@@ -1914,7 +1955,8 @@ async fn execute_job(
                     Ok(v) => v,
                     Err(e) => {
                         if let Some(reg) = &pull_registry {
-                            engine::docker::registry_logout(reg).await;
+                            engine::docker::registry_logout(reg, docker_config_dir.as_deref())
+                                .await;
                         }
                         return Err(e);
                     }
@@ -1978,7 +2020,7 @@ async fn execute_job(
                 };
 
                 if let Some(reg) = &pull_registry {
-                    engine::docker::registry_logout(reg).await;
+                    engine::docker::registry_logout(reg, docker_config_dir.as_deref()).await;
                 }
 
                 (
@@ -2160,6 +2202,11 @@ fn buz_metadata_env(
 /// and also exports step-level secret values.
 fn build_ssh_env_command(command: &str, env: &std::collections::HashMap<String, String>) -> String {
     let mut prefix = String::from("set -e; ");
+    // DOCKER_CONFIG target dir may not exist on the host yet — docker login
+    // creates it, but pulls reading a missing dir misbehave on older CLIs.
+    if let Some(dir) = env.get("DOCKER_CONFIG") {
+        prefix.push_str(&format!("mkdir -p {} && ", shell_escape(dir)));
+    }
     if env.is_empty() {
         return format!("{prefix}{command}");
     }
@@ -2409,6 +2456,47 @@ async fn update_job_status(
     }
 
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("status update failed after all retries")))
+}
+
+/// Job-scoped Docker CLI config directory: `{workspace}/{job_id}/.docker`.
+///
+/// Per-job `DOCKER_CONFIG` isolation (runner.toml `[engine]
+/// docker_config_isolation`, default `per_job`): logins — core or marketplace
+/// template — land here instead of the host-global `~/.docker/config.json`.
+pub fn job_docker_config_dir(job_ws: &str) -> String {
+    format!("{}/.docker", job_ws.trim_end_matches('/'))
+}
+
+/// Create the job Docker config dir (0700) when isolation is `per_job`.
+///
+/// No-op under `shared`. Best-effort by contract: if this fails the job still
+/// runs — `docker login` recreates the dir on first use.
+fn prepare_job_docker_config_dir(
+    job_ws: &str,
+    isolation: DockerConfigIsolation,
+) -> std::io::Result<()> {
+    if isolation != DockerConfigIsolation::PerJob {
+        return Ok(());
+    }
+    let dir = job_docker_config_dir(job_ws);
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Remove the job Docker config dir. Missing dir is fine (already cleaned with
+/// the workspace); any other error is logged, never fails the job.
+fn clean_job_docker_config(job_ws: &str) {
+    let dir = job_docker_config_dir(job_ws);
+    if let Err(e) = std::fs::remove_dir_all(&dir) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("Failed to clean job docker config dir '{dir}': {e}");
+        }
+    }
 }
 
 /// Clean the workspace directory by removing all contents.

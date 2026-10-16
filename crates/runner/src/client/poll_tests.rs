@@ -1,11 +1,12 @@
 use super::{
     build_config_prep_banner, build_login_banner, build_runner_banner, build_ssh_banner,
     build_ssh_env_command, build_step_echo, build_step_failure_message, build_verbose_step_config,
-    build_verbose_step_result, buz_metadata_env, config_url_age, format_resolved_ssh_targets,
-    merge_ssh_host_outputs, step_failure_hint, step_log_base, wrap_remote_cmd_with_registry_login,
-    LOG_ECHO, LOG_LOGIN, LOG_RUNNER_BANNER, LOG_STEP_ERROR, LOG_STEP_VERBOSE_CONFIG,
-    LOG_STEP_VERBOSE_CONFIG_PREP, LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE,
-    LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
+    build_verbose_step_result, buz_metadata_env, clean_job_docker_config, config_url_age,
+    format_resolved_ssh_targets, job_docker_config_dir, merge_ssh_host_outputs,
+    prepare_job_docker_config_dir, step_failure_hint, step_log_base,
+    wrap_remote_cmd_with_registry_login, LOG_ECHO, LOG_LOGIN, LOG_RUNNER_BANNER, LOG_STEP_ERROR,
+    LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP, LOG_STEP_VERBOSE_EXEC,
+    LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
 };
 use crate::masker::SecretCatalog;
 use std::collections::HashMap;
@@ -702,4 +703,75 @@ async fn marketplace_input_validation_error_logs_and_fails_job_before_execution(
     assert!(requests
         .iter()
         .all(|request| { !request.contains("must-not-run") && !request.contains("not-a-url") }));
+}
+
+#[test]
+fn job_docker_config_dir_is_workspace_scoped() {
+    assert_eq!(
+        job_docker_config_dir("/tmp/buz-runner/job-1"),
+        "/tmp/buz-runner/job-1/.docker"
+    );
+    assert_eq!(
+        job_docker_config_dir("/tmp/buz-runner/job-1/"),
+        "/tmp/buz-runner/job-1/.docker"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn prepare_creates_private_dir_for_per_job_isolation() {
+    use crate::config::DockerConfigIsolation;
+
+    let dir = tempfile::tempdir().unwrap();
+    let job_ws = dir.path().join("job-1");
+    std::fs::create_dir_all(&job_ws).unwrap();
+
+    prepare_job_docker_config_dir(job_ws.to_str().unwrap(), DockerConfigIsolation::PerJob).unwrap();
+    let docker_dir = job_ws.join(".docker");
+    assert!(docker_dir.is_dir());
+    use std::os::unix::fs::PermissionsExt;
+    let mode = docker_dir.metadata().unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700, "docker config dir must be 0700");
+
+    // Shared mode: no directory is created.
+    let shared_ws = dir.path().join("job-2");
+    std::fs::create_dir_all(&shared_ws).unwrap();
+    prepare_job_docker_config_dir(shared_ws.to_str().unwrap(), DockerConfigIsolation::Shared)
+        .unwrap();
+    assert!(!shared_ws.join(".docker").exists());
+}
+
+#[test]
+fn clean_job_docker_config_removes_dir_and_tolerates_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let job_ws = dir.path().join("job-1");
+    let docker_dir = job_ws.join(".docker");
+    std::fs::create_dir_all(&docker_dir).unwrap();
+    std::fs::write(docker_dir.join("config.json"), "{}").unwrap();
+
+    clean_job_docker_config(job_ws.to_str().unwrap());
+    assert!(!docker_dir.exists(), "config dir must be removed");
+
+    // Missing dir (e.g. workspace already cleaned) is not an error.
+    clean_job_docker_config(job_ws.to_str().unwrap());
+    // The job workspace itself survives — only .docker is removed.
+    assert!(job_ws.exists());
+}
+
+#[test]
+fn ssh_env_command_creates_docker_config_dir_before_exports() {
+    let mut env = HashMap::new();
+    env.insert(
+        "DOCKER_CONFIG".to_string(),
+        "/tmp/buz-docker-job-1".to_string(),
+    );
+    let cmd = build_ssh_env_command("docker pull reg.example/app:1\n", &env);
+    assert!(cmd.starts_with("set -e; "), "{cmd}");
+    let mkdir_pos = cmd
+        .find("mkdir -p '/tmp/buz-docker-job-1'")
+        .expect("mkdir prefix");
+    let export_pos = cmd
+        .find("export DOCKER_CONFIG=")
+        .expect("docker config export");
+    assert!(mkdir_pos < export_pos, "mkdir must precede exports: {cmd}");
 }
