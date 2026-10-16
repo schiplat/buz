@@ -3,7 +3,7 @@
 # REGISTRY_PASSWORD with Team share OFF; allowlist via secrets:.
 
 name: acr-personal-push
-description: docker login + push (shell engine, inline registry login)
+description: docker login (buz/docker-login) + push
 team: default
 
 on:
