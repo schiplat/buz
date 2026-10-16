@@ -1,22 +1,18 @@
-# Build and push to Alibaba Cloud ACR Personal Edition via registry_secret.
+# Build and push to Alibaba Cloud ACR Personal Edition.
 #
 # Prerequisites:
-#   1) Secrets & Variables → Secrets named `ACR_PERSONAL` (AES-256-GCM at rest).
-#      Leave **Team share OFF** (default); allowlist via secrets: + purpose slot.
-#      {
-#        "provider": "acr_personal",
-#        "registry": "registry.cn-hongkong.aliyuncs.com",
-#        "username": "<ACR login name>",
-#        "password": "<fixed password from ACR console>"
-#      }
-#      `registry` is required for shell push (no step `image` to infer from).
+#   1) Secrets & Variables → Secrets (plain values, encrypted at rest):
+#      REGISTRY_USERNAME / REGISTRY_PASSWORD — leave **Team share OFF** (default);
+#      allowlist via secrets:.
 #   2) Runner with Docker CLI/daemon and labels: [linux-x64].
 #
-# Flow: prepare context → docker build → docker push (login via registry_secret)
-#       → optional verify pull with engine: docker + registry_secret.
+# Flow: prepare context → docker build → docker login (inline step; job-scoped
+#       DOCKER_CONFIG) → docker push → optional verify pull.
+# With a step index configured, `uses: buz/docker-login@1.0.0` replaces the
+# inline login step.
 
 name: acr-personal-build-push
-description: Orchestrated docker build + push to ACR Personal Edition (registry_secret)
+description: Orchestrated docker build + push to ACR Personal Edition (inline registry login)
 team: default
 
 on:
@@ -33,7 +29,8 @@ runner:
   timeout: 30m
 
 secrets:
-  - ACR_PERSONAL
+  - REGISTRY_USERNAME
+  - REGISTRY_PASSWORD
 
 env:
   REGISTRY: registry.cn-hongkong.aliyuncs.com
@@ -62,11 +59,18 @@ steps:
       docker images "$IMAGE"
     timeout: 10m
 
-  # ── 3. Push — Manager resolves registry_secret → Runner docker login/logout ──
+  # ── Registry login — job-scoped DOCKER_CONFIG (buz/docker-login covers this too) ──
+  - name: Registry login
+    engine: shell
+    env:
+      REGISTRY_USERNAME: ${secrets.REGISTRY_USERNAME}
+      REGISTRY_PASSWORD: ${secrets.REGISTRY_PASSWORD}
+    run: |
+      printf '%s\n' "$REGISTRY_PASSWORD" | docker login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin
+    timeout: 1m
+  # ── 3. Push — credentials from the job-scoped DOCKER_CONFIG above ──
   - name: Push image
     engine: shell
-    secrets: [ACR_PERSONAL]
-    registry_secret: ${secrets.ACR_PERSONAL}
     run: |
       IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
       echo "Pushing $IMAGE"
@@ -76,8 +80,6 @@ steps:
   # ── 4. Verify — pull + run the image just pushed ──
   - name: Verify pull
     engine: shell
-    secrets: [ACR_PERSONAL]
-    registry_secret: ${secrets.ACR_PERSONAL}
     run: |
       IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_TAG"
       docker pull "$IMAGE"

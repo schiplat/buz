@@ -1,8 +1,8 @@
 # ── OSS Config Block Demo (deliver + render-only) ─────────────────────
-# Verifies nested `config:` end-to-end on a shell/local runner:
+# Verifies the config flow end-to-end on a shell/local runner:
 #
-#   1. YAML: nested `config: { source, key_path, dest }` and render-only.
-#   2. Manager stores config_source / config_key_path / config_dest /
+#   1. Deliver: fetch a presigned OSS URL into dest (plain curl + tar).
+#   2. Render: nested `config: { dest, render }` — render-only.
 #      config_render on tasks (no flat config_path / env_render).
 #   3. Deliver step: Manager signs a 1-hour GET for
 #      `key_path + /configs.tar.gz` → Runner unpacks to dest ($BUZ_CONFIG_DIR).
@@ -34,7 +34,7 @@
 #   - render template missing at dest  → config_render: template '…' not found
 
 name: OSS Config Delivery Demo
-description: "Nested config: OSS deliver → render-only into $BUZ_CONFIG_DIR."
+description: "Config flow: presigned OSS URL → fetch → render-only into $BUZ_CONFIG_DIR."
 
 team: default
 
@@ -52,18 +52,19 @@ runner:
   timeout: 5m
 
 secrets:
-  - OSS_DEMO
+  - CONFIG_BUNDLE_URL
 
 steps:
-  # ── 1. OSS deliver (unpack only) ───────────────────────────────────
-  - name: Deliver config
+  # ── 1. Fetch config bundle (presigned OSS URL → unpack) ────────────
+  - name: Fetch config bundle
     engine: shell
-    secrets: [OSS_DEMO]
-    config:
-      source: ${secrets.OSS_DEMO}
-      key_path: config_tpl/demo/$tag
-      dest: /tmp/buz-config-demo
+    env:
+      CONFIG_BUNDLE_URL: ${secrets.CONFIG_BUNDLE_URL}   # presigned, TTL <= 1h — refresh per deploy
     run: |
+      mkdir -p /tmp/buz-config-demo
+      curl -fsSL --retry 2 --max-time 240 -o /tmp/example-bucket.tar.gz "$CONFIG_BUNDLE_URL"
+      tar -xzf /tmp/example-bucket.tar.gz -C /tmp/buz-config-demo
+      rm -f /tmp/example-bucket.tar.gz
       echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
       if [ ! -d "${BUZ_CONFIG_DIR:-}" ]; then
         echo "!! BUZ_CONFIG_DIR is empty — OSS deliver did not run" >&2
@@ -96,5 +97,4 @@ steps:
   - name: Echo sanity
     engine: shell
     run: |
-      echo "==> BUZ_CONFIG_URL absent on this step: ${BUZ_CONFIG_URL:-unset}"
       echo "==> BUZ_CONFIG_DIR absent on this step: ${BUZ_CONFIG_DIR:-unset}"

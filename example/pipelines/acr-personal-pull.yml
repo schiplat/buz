@@ -1,23 +1,16 @@
 # Private registry login (ACR Personal Edition) for docker pull / push.
 #
-# 1) Create Secrets & Variables → Secrets named e.g. ACR_PERSONAL (encrypted at rest).
-#    Leave **Team share OFF** (default) so unrelated pipelines never get this JSON as env.
-#    Value JSON (password never goes in this YAML file):
-#   {
-#     "provider": "acr_personal",
-#     "registry": "registry.cn-hongkong.aliyuncs.com",
-#     "username": "<ACR login name>",
-#     "password": "<fixed password from ACR console>"
-#   }
-#    For shell/SSH push steps, `registry` in JSON is required (no step `image` to infer from).
-#    For docker engine pull, `registry` may be omitted when `image` includes the host.
+# 1) Create Secrets & Variables → Secrets (plain values, encrypted at rest):
+#    REGISTRY_USERNAME / REGISTRY_PASSWORD. Leave **Team share OFF** (default)
+#    so unrelated pipelines never get them as env.
 #
-# 2) Allowlist via secrets: and bind the purpose slot with ${secrets.NAME}.
+# 2) Allowlist via secrets:. A shell login step first (job-scoped DOCKER_CONFIG),
+#    then engine: docker pulls read the same config.
 #
 # Personal Edition uses a fixed password (not temporary GetAuthorizationToken).
 
 name: acr-personal-pull
-description: Pull a private ACR Personal Edition image via registry_secret
+description: Pull a private ACR Personal Edition image (inline registry login)
 team: default
 
 on:
@@ -28,14 +21,23 @@ runner:
   timeout: 15m
 
 secrets:
-  - ACR_PERSONAL
+  - REGISTRY_USERNAME
+  - REGISTRY_PASSWORD
 
 steps:
+  # ── Registry login — job-scoped DOCKER_CONFIG; the docker-engine pull below reads it ──
+  - name: Registry login
+    engine: shell
+    env:
+      REGISTRY_USERNAME: ${secrets.REGISTRY_USERNAME}
+      REGISTRY_PASSWORD: ${secrets.REGISTRY_PASSWORD}
+    run: |
+      printf '%s\n' "$REGISTRY_PASSWORD" | docker login registry.cn-hongkong.aliyuncs.com --username "$REGISTRY_USERNAME" --password-stdin
+    timeout: 1m
+
   - name: Run private image
     engine: docker
     image: registry.cn-hongkong.aliyuncs.com/myns/demo-app
-    secrets: [ACR_PERSONAL]
-    registry_secret: ${secrets.ACR_PERSONAL}
     run: |
       echo "hello from private ACR image"
       uname -a || true

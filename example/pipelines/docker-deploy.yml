@@ -2,7 +2,8 @@
 # Deploy a Docker container to staging / production
 #
 # Trigger: manual (with inputs) or webhook
-# Add secrets: / registry_secret when credentials are needed (Team share OFF by default).
+# Registry credentials: add a login step (buz/docker-login template or inline
+# docker login) when credentials are needed (Team share OFF by default).
 #
 # Run blocks: $INPUT_<KEY>. host: field: $target (trigger input name, not $INPUT_TARGET).
 

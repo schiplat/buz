@@ -2,7 +2,7 @@
 # Exercises: local exec, SSH (single + multi-host), dynamic inputs,
 #            continue-on-error, retry, timeout.
 #
-# No secrets:/registry_secret — with team_shared default false, same-team
+# No secrets: — with team_shared default false, same-team
 # secrets are not auto-injected into this smoke job.
 #
 # Place this file under the Manager's yaml_scan_dir (default: ./pipelines/).

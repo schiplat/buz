@@ -1,10 +1,9 @@
 # Push-only demo. For full build → push → verify, see acr-personal-build-push.yml.
-# Secret JSON must include `registry` (no step image to infer from).
-# Create secret (Secrets & Variables → Secrets) with Team share OFF;
-# allowlist via secrets: and bind the purpose slot with ${secrets.NAME}.
+# Create plain secrets (Secrets & Variables → Secrets) REGISTRY_USERNAME /
+# REGISTRY_PASSWORD with Team share OFF; allowlist via secrets:.
 
 name: acr-personal-push
-description: docker login + push via registry_secret (shell engine)
+description: docker login + push (shell engine, inline registry login)
 team: default
 
 on:
@@ -15,14 +14,17 @@ runner:
   timeout: 30m
 
 secrets:
-  - ACR_PERSONAL
+  - REGISTRY_USERNAME
+  - REGISTRY_PASSWORD
 
 steps:
   - name: Push image
     engine: shell
-    secrets: [ACR_PERSONAL]
-    registry_secret: ${secrets.ACR_PERSONAL}
+    env:
+      REGISTRY_USERNAME: ${secrets.REGISTRY_USERNAME}
+      REGISTRY_PASSWORD: ${secrets.REGISTRY_PASSWORD}
     run: |
+      printf '%s\n' "$REGISTRY_PASSWORD" | docker login registry.cn-hongkong.aliyuncs.com --username "$REGISTRY_USERNAME" --password-stdin
       # Image must already exist locally (build in a prior step).
       docker tag myapp:local registry.cn-hongkong.aliyuncs.com/myns/hello:1.0
       docker push registry.cn-hongkong.aliyuncs.com/myns/hello:1.0
