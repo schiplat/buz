@@ -4,13 +4,7 @@ Lightweight Cross-Network Orchestration Platform.
 
 **Single Binary, Unified Orchestration, Zero Trust.**
 
-Current version: **1.7.3** (workspace `Cargo.toml` + `dashboard/package.json`).
-
-```bash
-buz-manager --version
-buz-runner --version
-# Web UI: sidebar footer / login page; API: GET /health
-```
+Check the installed version any time: `buz-manager --version` / `buz-runner --version` — also shown in the Web UI (sidebar footer / login page) and via `GET /health`.
 
 ## Security / 安全报告
 
