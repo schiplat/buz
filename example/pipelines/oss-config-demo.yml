@@ -61,14 +61,6 @@ steps:
     with:
       url: ${secrets.CONFIG_BUNDLE_URL}   # presigned, TTL <= 1h — refresh per deploy
       dest: config                        # workspace-relative
-      echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
-      if [ ! -d "${BUZ_CONFIG_DIR:-}" ]; then
-        echo "!! BUZ_CONFIG_DIR is empty — OSS deliver did not run" >&2
-        exit 1
-      fi
-      echo "==> bundle contents:"
-      ls -la "$BUZ_CONFIG_DIR"
-      echo "==> deliver OK"
 
   # ── 2. Render-only (no OSS; templates already under dest) ──────────
   # List form shows multi-file shape; add more entries as the bundle grows.
