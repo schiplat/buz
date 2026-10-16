@@ -85,3 +85,10 @@ steps:
       docker pull "$IMAGE"
       docker run --rm "$IMAGE"
     timeout: 10m
+
+  # ── 5. Logout — hygiene; the Runner also removes the job-scoped dir at job end ──
+  - name: Registry logout
+    engine: shell
+    run: |
+      docker logout "$REGISTRY" 2>/dev/null || true
+    timeout: 1m

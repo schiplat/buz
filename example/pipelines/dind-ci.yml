@@ -63,7 +63,7 @@ steps:
       dockerd &
       sleep 3
       echo "Logging in to registry..."
-      docker login -u "$DOCKER_REGISTRY_USER" -p "$DOCKER_REGISTRY_PASS" "$REGISTRY"
+      printf '%s\n' "$DOCKER_REGISTRY_PASS" | docker login -u "$DOCKER_REGISTRY_USER" --password-stdin "$REGISTRY"
       echo "Building $REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_VERSION"
       docker build -t "$REGISTRY/$NAMESPACE/$IMAGE_NAME:$INPUT_VERSION" .
       echo "Pushing to registry..."

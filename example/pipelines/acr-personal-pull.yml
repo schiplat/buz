@@ -42,3 +42,10 @@ steps:
       echo "hello from private ACR image"
       uname -a || true
     timeout: 10m
+
+  # ── Logout — hygiene; the Runner also removes the job-scoped dir at job end ──
+  - name: Registry logout
+    engine: shell
+    run: |
+      docker logout registry.cn-hongkong.aliyuncs.com 2>/dev/null || true
+    timeout: 1m
