@@ -6,10 +6,9 @@
 #      allowlist via secrets:.
 #   2) Runner with Docker CLI/daemon and labels: [linux-x64].
 #
-# Flow: prepare context → docker build → docker login (inline step; job-scoped
-#       DOCKER_CONFIG) → docker push → optional verify pull.
-# With a step index configured, `uses: buz/docker-login@1.0.0` replaces the
-# inline login step.
+# Flow: prepare context → buz/docker-login → docker build/push → verify → logout.
+# `uses:` requires the official step index (default marketplace_url, or copy
+# plugins into the Manager's step scan dir) so templates resolve at claim time.
 
 name: acr-personal-build-push
 description: Orchestrated docker build + push to ACR Personal Edition (inline registry login)
@@ -59,15 +58,12 @@ steps:
       docker images "$IMAGE"
     timeout: 10m
 
-  # ── Registry login — job-scoped DOCKER_CONFIG (buz/docker-login covers this too) ──
   - name: Registry login
-    engine: shell
-    env:
-      REGISTRY_USERNAME: ${secrets.REGISTRY_USERNAME}
-      REGISTRY_PASSWORD: ${secrets.REGISTRY_PASSWORD}
-    run: |
-      printf '%s\n' "$REGISTRY_PASSWORD" | docker login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin
-    timeout: 1m
+    uses: buz/docker-login@1.0.0
+    with:
+      registry: registry.cn-hongkong.aliyuncs.com
+      username: ${secrets.REGISTRY_USERNAME}
+      password: ${secrets.REGISTRY_PASSWORD}
   # ── 3. Push — credentials from the job-scoped DOCKER_CONFIG above ──
   - name: Push image
     engine: shell
@@ -88,7 +84,7 @@ steps:
 
   # ── 5. Logout — hygiene; the Runner also removes the job-scoped dir at job end ──
   - name: Registry logout
-    engine: shell
-    run: |
-      docker logout "$REGISTRY" 2>/dev/null || true
-    timeout: 1m
+    uses: buz/docker-logout@1.0.0
+    with:
+      registry: registry.cn-hongkong.aliyuncs.com
+

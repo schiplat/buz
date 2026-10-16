@@ -25,15 +25,12 @@ secrets:
   - REGISTRY_PASSWORD
 
 steps:
-  # ── Registry login — job-scoped DOCKER_CONFIG; the docker-engine pull below reads it ──
   - name: Registry login
-    engine: shell
-    env:
-      REGISTRY_USERNAME: ${secrets.REGISTRY_USERNAME}
-      REGISTRY_PASSWORD: ${secrets.REGISTRY_PASSWORD}
-    run: |
-      printf '%s\n' "$REGISTRY_PASSWORD" | docker login registry.cn-hongkong.aliyuncs.com --username "$REGISTRY_USERNAME" --password-stdin
-    timeout: 1m
+    uses: buz/docker-login@1.0.0
+    with:
+      registry: registry.cn-hongkong.aliyuncs.com
+      username: ${secrets.REGISTRY_USERNAME}
+      password: ${secrets.REGISTRY_PASSWORD}
 
   - name: Run private image
     engine: docker
@@ -45,7 +42,7 @@ steps:
 
   # ── Logout — hygiene; the Runner also removes the job-scoped dir at job end ──
   - name: Registry logout
-    engine: shell
-    run: |
-      docker logout registry.cn-hongkong.aliyuncs.com 2>/dev/null || true
-    timeout: 1m
+    uses: buz/docker-logout@1.0.0
+    with:
+      registry: registry.cn-hongkong.aliyuncs.com
+

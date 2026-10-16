@@ -48,6 +48,8 @@ secrets:
   # │   (docker run --rm). The inner dockerd and login state are  │
   # │   destroyed when the step ends. Therefore build, login, and │
   # │   push must happen in a SINGLE step — they cannot be split. │
+  # │   buz/docker-login cannot be used here: it writes the     │
+  # │   host-level config, which the inner daemon never reads.    │
 
 steps:
   # ── Step 1: Login + Build + Push ──────────────────────────────
