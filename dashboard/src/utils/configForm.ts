@@ -199,7 +199,7 @@ export function validateStepConfig(step: {
   }
 
   if (!hasDeliver && !hasRender && dest) {
-    return 'config.dest alone is not enough — add OSS deliver (source+key_path) or render'
+    return 'config.dest alone is not enough — add config.render after fetching with buz/config-fetch'
   }
 
   for (let i = 0; i < renders.length; i++) {

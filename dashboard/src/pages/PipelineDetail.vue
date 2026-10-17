@@ -2032,6 +2032,7 @@ async function handleTrigger() {
                       <span v-if="step.registry_secret" class="inline-flex items-center gap-1">
                         <span class="text-muted-foreground/60 text-xs">registry secret</span>
                         <code class="mono-chip text-xs">{{ step.registry_secret }}</code>
+                        <span class="text-amber-600 dark:text-amber-400" title="Legacy compatibility only; use buz/docker-login before registry operations.">Deprecated · use buz/docker-login</span>
                       </span>
                       <span v-if="step.volumes" class="inline-flex items-center gap-1">
                         <span class="text-muted-foreground/60 text-xs w-14">volumes</span>
@@ -2047,10 +2048,12 @@ async function handleTrigger() {
                       <span v-if="(step as any).config_source" class="inline-flex items-center gap-1">
                         <span class="text-muted-foreground/60 text-xs">config.source</span>
                         <code class="mono-chip text-xs">{{ (step as any).config_source }}</code>
+                        <span class="text-amber-600 dark:text-amber-400" title="Legacy compatibility only; fetch with buz/config-fetch, then use config.render.">Deprecated · use buz/config-fetch</span>
                       </span>
                       <span v-if="(step as any).config_key_path" class="inline-flex items-center gap-1">
                         <span class="text-muted-foreground/60 text-xs">key_path</span>
                         <code class="mono-chip text-xs">{{ (step as any).config_key_path }}</code>
+                        <span class="text-amber-600 dark:text-amber-400" title="Legacy compatibility only; pass a complete bundle URL to buz/config-fetch.">Deprecated · use buz/config-fetch</span>
                       </span>
                       <span v-if="(step as any).config_dest" class="inline-flex items-center gap-1">
                         <span class="text-muted-foreground/60 text-xs">dest</span>

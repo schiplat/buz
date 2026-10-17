@@ -25,6 +25,23 @@ describe('parseDurationToSeconds', () => {
 })
 
 describe('yamlStepsToDefTasks', () => {
+  it('preserves legacy delivery and current render data in definition cards', () => {
+    const render = [{ template: 'env.example', output: '.env', mode: '0600' }]
+    const tasks = yamlStepsToDefTasks([{
+      name: 'legacy', registry_secret: '${secrets.REG}', config_source: '${secrets.OSS}',
+      config_key_path: 'app/prod', config_dest: '/opt/app', config_render: render,
+    }, {
+      name: 'render-only', config_dest: 'config', config_render: render,
+    }])
+    expect(tasks[0]).toMatchObject({
+      registry_secret: '${secrets.REG}', config_source: '${secrets.OSS}',
+      config_key_path: 'app/prod', config_dest: '/opt/app', config_render: render,
+    })
+    expect(tasks[1]).toMatchObject({
+      registry_secret: '', config_source: '', config_key_path: '', config_dest: 'config', config_render: render,
+    })
+  })
+
   it('maps YAML steps to definition cards', () => {
     const tasks = yamlStepsToDefTasks([
       {

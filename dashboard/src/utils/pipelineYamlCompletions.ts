@@ -74,10 +74,7 @@ const STEP: Completion[] = [
   { label: 'privileged', type: 'property', info: 'Docker privileged / DinD' },
   { label: 'secrets', type: 'property', info: 'Step secret allowlist' },
   { label: 'env', type: 'property', info: 'Map KEY: ${secrets.NAME}' },
-  { label: 'registry_secret', type: 'property', info: '${secrets.NAME} for registry login' },
-  { label: 'config', type: 'property', info: 'Nested config block (OSS / render)' },
-  { label: 'source', type: 'property', info: 'config.source secret slot' },
-  { label: 'key_path', type: 'property' },
+  { label: 'config', type: 'property', info: 'Render-only config block (dest + render); fetch with buz/config-fetch' },
   { label: 'dest', type: 'property', info: '→ $BUZ_CONFIG_DIR' },
   { label: 'render', type: 'property' },
   { label: 'template', type: 'property' },
@@ -87,10 +84,16 @@ const STEP: Completion[] = [
   { label: 'backup_keep', type: 'property', info: 'timestamped .env backups to keep (default 3, 0 disables)' },
 ]
 
-const USES_VALUES: Completion[] = [
+const ENGINE_VALUES: Completion[] = [
   { label: 'shell', type: 'keyword', apply: 'shell' },
   { label: 'docker', type: 'keyword', apply: 'docker' },
   { label: 'ssh', type: 'keyword', apply: 'ssh' },
+]
+
+const TEMPLATE_VALUES: Completion[] = [
+  { label: 'buz/docker-login@1.1.0', type: 'keyword', info: 'Registry authentication via with: registry / username / password' },
+  { label: 'buz/docker-logout@1.0.0', type: 'keyword', info: 'Remove registry credentials after pull / build / push' },
+  { label: 'buz/config-fetch@1.1.0', type: 'keyword', info: 'Fetch a config bundle before config.render' },
 ]
 
 export type PipelineYamlCompletionOptions = {
@@ -144,25 +147,35 @@ function uniqueByLabel(items: Completion[]): Completion[] {
 
 export function createPipelineYamlCompletionSource(opts: PipelineYamlCompletionOptions = {}) {
   return (ctx: CompletionContext): CompletionResult | null => {
-    const word = ctx.matchBefore(/[\w${}.:-]*/)
+    const word = ctx.matchBefore(/[\w${}.:@/-]*/)
     if (!word && !ctx.explicit) return null
     if (word && word.from === word.to && !ctx.explicit) return null
 
     const before = lineBefore(ctx)
     const section = guessSection(ctx)
     let options: Completion[] = []
+    let from = word ? word.from : ctx.pos
+    const engineValue = before.match(/^\s*(?:-\s*)?engine\s*:\s*([\w-]*)$/)
+    const templateValue = before.match(/^\s*(?:-\s*)?uses\s*:\s*([\w/@.:-]*)$/)
+    const secretRef = before.match(/\$\{secrets\.([A-Za-z0-9_]*)$/)
+    const variableRef = before.match(/\$\{vars\.([A-Za-z0-9_]*)$/)
 
-    // engine: <cursor>
-    if (/engine\s*:\s*[\w-]*$/.test(before.trimEnd()) || /engine\s*:\s*$/.test(before)) {
-      options = USES_VALUES
-    } else if (/\$\{secrets\.[A-Za-z0-9_]*$/.test(before) || /\$\{secrets\.$/.test(before)) {
+    if (engineValue) {
+      options = ENGINE_VALUES
+      from = ctx.pos - engineValue[1].length
+    } else if (templateValue) {
+      options = TEMPLATE_VALUES
+      from = ctx.pos - templateValue[1].length
+    } else if (secretRef) {
+      from = ctx.pos - secretRef[1].length
       options = (opts.secretNames || []).map((name) => ({
         label: name,
         type: 'variable',
         apply: name,
         info: 'Secret name',
       }))
-    } else if (/\$\{vars\.[A-Za-z0-9_]*$/.test(before) || /\$\{vars\.$/.test(before)) {
+    } else if (variableRef) {
+      from = ctx.pos - variableRef[1].length
       options = (opts.variableNames || []).map((name) => ({
         label: name,
         type: 'variable',
@@ -170,6 +183,7 @@ export function createPipelineYamlCompletionSource(opts: PipelineYamlCompletionO
         info: 'Platform variable',
       }))
     } else if (/\$\{$/.test(before) || /\$\{[a-z]*$/.test(before)) {
+      from = before.endsWith('${') ? ctx.pos : ctx.pos - (before.match(/\$\{([a-z]*)$/)?.[1].length || 0)
       options = [
         { label: 'secrets.', type: 'keyword', apply: 'secrets.', info: 'Secret expression' },
         { label: 'vars.', type: 'keyword', apply: 'vars.', info: 'Variable expression' },
@@ -211,9 +225,9 @@ export function createPipelineYamlCompletionSource(opts: PipelineYamlCompletionO
     if (!options.length) return null
 
     return {
-      from: word ? word.from : ctx.pos,
+      from,
       options,
-      validFor: /^[\w${}.:-]*$/,
+      validFor: /^[\w${}.:@/-]*$/,
     }
   }
 }

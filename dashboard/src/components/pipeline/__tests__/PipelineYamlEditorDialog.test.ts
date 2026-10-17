@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createApp, h, ref } from 'vue'
+import { createApp, h, nextTick, ref } from 'vue'
 import PipelineYamlEditorDialog from '@/components/pipeline/PipelineYamlEditorDialog.vue'
 
 vi.mock('@/api/pipelines', () => ({
@@ -45,6 +45,48 @@ afterEach(() => {
 })
 
 describe('PipelineYamlEditorDialog', () => {
+  it('recommends only plugin-based authentication and config delivery, followed by render-only', async () => {
+    const mounted = mountDialog()
+    await mounted.openCreate()
+    const buttons = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+    buttons.find((button) => button.textContent?.trim() === 'Quick YAML Reference')?.click()
+    await nextTick()
+    const text = document.body.textContent || ''
+    const reference = document.body.querySelector('pre')?.textContent || ''
+    expect(text).toContain('Prefer a pinned uses: plugin')
+    for (const deprecated of ['registry_secret', 'config.source', 'key_path', 'purpose slot', 'Manager builds {prefix}']) {
+      expect(reference).not.toContain(deprecated)
+    }
+    expect(reference).toContain('uses: buz/docker-login@1.1.0')
+    expect(reference).toContain('registry: ${secrets.REGISTRY_HOST}')
+    expect(reference).toContain('username: ${secrets.REGISTRY_USERNAME}')
+    expect(reference).toContain('password: ${secrets.REGISTRY_PASSWORD}')
+    expect(reference.indexOf('uses: buz/docker-login@1.1.0')).toBeLessThan(reference.indexOf('name: Run Private Image'))
+    expect(reference).toContain('uses: buz/docker-logout@1.0.0')
+    expect(reference).toContain('uses: buz/config-fetch@1.1.0')
+    expect(reference).toContain('url: ${secrets.CONFIG_BUNDLE_URL}')
+    expect(reference).toContain('with:\n      url: ${secrets.CONFIG_BUNDLE_URL}')
+    expect(reference).toContain('config:\n      dest: config\n      render:')
+    expect(reference).toContain('with.dest is workspace-relative')
+    expect(reference).toContain('Local fetch/render above does not transfer files')
+    expect(reference).not.toMatch(/uses:[^\n]+\n\s+engine:/)
+    expect(reference).not.toMatch(/debug:\s*["']?true/)
+    expect(text).toContain('current pipeline validator rejects them')
+    expect(reference).toContain('source: dist/app.tar.gz')
+    for (const plugin of ['buz/git-clone@1.0.0', 'buz/setup-rust@1.0.0', 'buz/setup-node@1.0.0', 'buz/docker@1.0.0', 'buz/docker-compose@1.0.0']) {
+      expect(reference).toContain(`uses: ${plugin}`)
+    }
+    expect(reference).toContain('token: ${secrets.GIT_TOKEN}')
+    expect(reference).toContain('project_dir: /opt/app')
+    expect(reference).toContain('/var/run/docker.sock:/var/run/docker.sock')
+    expect(reference).toContain('push: "false"')
+    expect(reference).toContain("not auth for the container's Docker CLI")
+    for (const inline of ['git clone --depth', 'docker push ', 'docker compose up', 'StrictHostKeyChecking=no', 'curl -X POST', '# notify:']) {
+      expect(reference).not.toContain(inline)
+    }
+    mounted.unmount()
+  })
+
   it('includes pinned examples for common marketplace steps', async () => {
     localStorage.removeItem('buz_guide_new_pipeline_yaml_ref')
     const mounted = mountDialog()
@@ -55,7 +97,7 @@ describe('PipelineYamlEditorDialog', () => {
 
     const reference = document.body.textContent || ''
     expect(reference).toContain('local step index')
-    expect(reference).toContain('buz/http-check@1.0.0')
+    expect(reference).toContain('buz/http-check@1.1.0')
     expect(reference).toContain('buz/slack@1.0.0')
     expect(reference).toContain('buz/oss-upload@1.0.2')
     expect(reference).toContain('access_key_id: ${secrets.OSS_ACCESS_KEY_ID}')

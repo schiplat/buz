@@ -112,6 +112,13 @@ describe('validateStepConfig', () => {
     ).toBeNull()
   })
 
+  it('recommends fetch plus render, not legacy delivery, for a dest-only block', () => {
+    const error = validateStepConfig({ engine: 'shell', config_dest: 'config' })
+    expect(error).toContain('buz/config-fetch')
+    expect(error).toContain('config.render')
+    expect(error).not.toContain('source+key_path')
+  })
+
   it('rejects dest alone, source without key, render on docker', () => {
     expect(validateStepConfig({ engine: 'shell', config_dest: '/opt' })?.includes('alone')).toBe(true)
     expect(

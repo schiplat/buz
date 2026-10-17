@@ -106,56 +106,36 @@ const formKind = ref<SecretKind>('generic')
 const saving = ref(false)
 const showValue = ref(false)
 
-/** Placeholder / sample for private registry credentials (ACR Personal Edition). */
-const ACR_REGISTRY_SAMPLE = `{
-  "provider": "acr_personal",
-  "registry": "crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com",
-  "username": "<ACR login name>",
-  "password": "<fixed password from ACR console>"
-}`
+const SECRET_REFERENCE = '${secrets.NAME}'
+const SECRETS_DESCRIPTION = `Encrypted credentials. Reference ${SECRET_REFERENCE} in plugin with, step env, or config.render templates. Team share is optional; values are masked in logs.`
 
-/** Placeholder / sample for Aliyun OSS read-only credentials (config_source). */
-const OSS_AUTH_SAMPLE = `{
-  "provider": "aliyun_oss",
-  "endpoint": "oss-cn-hongkong.aliyuncs.com",
-  "bucket": "example-bucket",
-  "region": "cn-hongkong",
-  "access_key_id": "LTAIxxxxxxxxxxxx",
-  "access_key_secret": "<access key secret>"
-}`
+const DOCKER_LOGIN_EXAMPLE = `- name: Registry Login
+  uses: buz/docker-login@1.1.0
+  with:
+    registry: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com
+    username: \${secrets.REGISTRY_USERNAME}
+    password: \${secrets.REGISTRY_PASSWORD}`
+
+const CONFIG_FETCH_EXAMPLE = `- name: Fetch Config
+  uses: buz/config-fetch@1.1.0
+  with:
+    url: \${secrets.CONFIG_BUNDLE_URL}
+    dest: config`
+
+// Only an existing secret can retain its original deprecated kind.
+const editingLegacyKind = computed(() => {
+  const kind = normalizeSecretKind(editing.value?.kind)
+  return kind === 'generic' ? null : kind
+})
 
 const valuePlaceholder = computed(() => {
   if (editing.value && !editing.value.reencrypt_required) {
     return 'Leave empty to keep current value'
   }
-  if (formKind.value === 'registry') return 'Paste registry credentials JSON…'
-  if (formKind.value === 'aliyun_oss_auth') return 'Paste Aliyun OSS credentials JSON…'
+  if (formKind.value === 'registry') return 'Paste registry credentials JSON… (Deprecated kind)'
+  if (formKind.value === 'aliyun_oss_auth') return 'Paste Aliyun OSS credentials JSON… (Deprecated kind)'
   return 'Paste secret value…'
 })
-
-async function insertRegistrySample() {
-  if (formValue.value.trim() && !(await dialog.confirm('Replace the current Value with the ACR sample JSON?', {
-    title: 'Replace value',
-    confirmLabel: 'Replace',
-  }))) {
-    return
-  }
-  formValue.value = ACR_REGISTRY_SAMPLE
-  formKind.value = 'registry'
-  showValue.value = true
-}
-
-async function insertOssSample() {
-  if (formValue.value.trim() && !(await dialog.confirm('Replace the current Value with the OSS sample JSON?', {
-    title: 'Replace value',
-    confirmLabel: 'Replace',
-  }))) {
-    return
-  }
-  formValue.value = OSS_AUTH_SAMPLE
-  formKind.value = 'aliyun_oss_auth'
-  showValue.value = true
-}
 
 function openCreate() {
   editing.value = null
@@ -292,7 +272,7 @@ onMounted(loadSecrets)
   <div class="space-y-6">
     <PageHeader
       title="Secrets"
-      description="Encrypted credentials. Default: not auto-injected. Enable Team share for same-team auto-inject, or bind via Authorized Secrets / YAML / registry_secret. Values are masked in logs."
+      :description="SECRETS_DESCRIPTION"
     >
       <template #actions>
         <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> Add Secret</UiButton>
@@ -376,17 +356,17 @@ onMounted(loadSecrets)
                     <span
                       v-if="s.kind === 'registry'"
                       class="inline-flex w-fit items-center rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
-                      title="Registry credentials for registry_secret / docker login"
-                    >Registry</span>
+                      title="Deprecated registry credentials kind; retained for existing secrets only"
+                    >Registry (Deprecated)</span>
                     <span
                       v-else-if="s.kind === 'aliyun_oss_auth'"
                       class="inline-flex w-fit items-center rounded-md bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-medium text-orange-700 dark:text-orange-400"
-                      title="Aliyun OSS read-only credentials for config_source / signed-URL downloads"
-                    >Aliyun OSS</span>
+                      title="Deprecated Aliyun OSS credentials kind; retained for existing secrets only"
+                    >Aliyun OSS (Deprecated)</span>
                     <span
                       v-else
                       class="inline-flex w-fit items-center rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-                      title="Generic secret (env inject)"
+                      title="Generic secret for plugin with, step env, or config.render templates"
                     >Generic</span>
                   </div>
                 </td>
@@ -436,10 +416,10 @@ onMounted(loadSecrets)
         <Shield class="h-10 w-10 mb-3 text-muted-foreground/20" />
         <p class="text-sm">{{ secrets.length === 0 ? 'No secrets configured yet' : 'No secrets in the selected team' }}</p>
         <p class="text-xs mt-1 text-muted-foreground/60">
-          Create secrets here, then bind them in Pipeline → Advanced → Authorized Secrets,
-          reference via YAML <code class="mono-chip text-[10px]">secrets:</code> /
-          <code class="mono-chip text-[10px]">registry_secret</code>,
-          or enable <span class="font-medium text-foreground">Team share</span> for same-team auto-inject.
+          Create generic secrets here, then reference <code class="mono-chip text-[10px]">{{ SECRET_REFERENCE }}</code>
+          in plugin <code class="mono-chip text-[10px]">with</code>, step <code class="mono-chip text-[10px]">env</code>,
+          or <code class="mono-chip text-[10px]">config.render</code> templates.
+          Enable <span class="font-medium text-foreground">Team share</span> only when every same-team pipeline needs access.
         </p>
       </div>
     </div>
@@ -461,10 +441,9 @@ onMounted(loadSecrets)
                 placeholder="POSTGRES_PASSWORD"
               />
               <p class="text-[10px] text-muted-foreground mt-1 leading-relaxed">
-                UPPER_SNAKE_CASE — this name IS the injected env var (<code class="mono-chip text-[10px]">$NAME</code>),
-                the YAML binding (<code class="mono-chip text-[10px]">secrets: [NAME]</code>) and the
-                <code class="mono-chip text-[10px]">config.render</code> template key
-                (<code class="mono-chip text-[10px]">{{ '${secrets.' + 'NAME' + '}' }}</code>). Auto-uppercased on save.
+                UPPER_SNAKE_CASE — reference <code class="mono-chip text-[10px]">{{ SECRET_REFERENCE }}</code>
+                in plugin <code class="mono-chip text-[10px]">with</code>, step <code class="mono-chip text-[10px]">env</code>,
+                or <code class="mono-chip text-[10px]">config.render</code> templates. Auto-uppercased on save.
               </p>
             </div>
             <div>
@@ -484,18 +463,18 @@ onMounted(loadSecrets)
                 v-model="formKind"
                 class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
               >
-                <option value="generic">Generic — env inject / Authorized Secrets</option>
-                <option value="registry">Registry — docker login / registry_secret</option>
-                <option value="aliyun_oss_auth">Aliyun OSS auth — config_source signed downloads</option>
+                <option value="generic">Generic — plugin with / env / config.render</option>
+                <option v-if="editingLegacyKind === 'registry'" value="registry">Registry (Deprecated)</option>
+                <option v-if="editingLegacyKind === 'aliyun_oss_auth'" value="aliyun_oss_auth">Aliyun OSS auth (Deprecated)</option>
               </select>
               <p class="text-[10px] text-muted-foreground mt-1 leading-relaxed">
-                Pipeline <strong>Registry Secret</strong> dropdown only lists Kind = Registry;
-                <strong>Config Source</strong> only lists Kind = Aliyun OSS auth.
-                Registry values must be JSON with <code class="mono-chip text-[10px]">username</code> and
-                <code class="mono-chip text-[10px]">password</code>; OSS values must be JSON with
-                <code class="mono-chip text-[10px]">endpoint</code>, <code class="mono-chip text-[10px]">bucket</code>,
-                <code class="mono-chip text-[10px]">access_key_id</code> and
-                <code class="mono-chip text-[10px]">access_key_secret</code>.
+                New secrets are Generic. Store one credential or URL per secret and reference it in plugin inputs.
+              </p>
+              <p v-if="editingLegacyKind" class="text-[10px] text-amber-600 mt-1 leading-relaxed">
+                Deprecated kind: saving keeps the original kind unless you explicitly select Generic.
+                Do not pass old credentials JSON directly as a plugin password. Save the username and password
+                separately as Generic secrets for docker-login. For config-fetch, save the full download URL
+                (including any signed query parameters) as a Generic secret instead of the old OSS credentials JSON.
               </p>
             </div>
             <div>
@@ -509,10 +488,10 @@ onMounted(loadSecrets)
                   <span class="block text-[12px] font-medium text-foreground">Team share</span>
                   <span class="block text-[10px] text-muted-foreground mt-0.5 leading-relaxed">
                     When enabled, every pipeline in this team auto-receives this secret as an env var at job claim.
-                    Leave off for sensitive credentials — use Authorized Secrets, YAML
-                    <code class="mono-chip text-[10px]">secrets:</code>, step
-                    <code class="mono-chip text-[10px]">secrets:</code>, or
-                    <code class="mono-chip text-[10px]">registry_secret</code> instead.
+                    Leave off for sensitive credentials — reference <code class="mono-chip text-[10px]">{{ SECRET_REFERENCE }}</code>
+                    explicitly in plugin <code class="mono-chip text-[10px]">with</code> or step
+                    <code class="mono-chip text-[10px]">env</code>. For <code class="mono-chip text-[10px]">config.render</code>
+                    templates, authorize only the needed names with step <code class="mono-chip text-[10px]">secrets: [NAME]</code>.
                   </span>
                 </span>
               </label>
@@ -541,69 +520,38 @@ onMounted(loadSecrets)
               </p>
               <p class="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">
                 Stored encrypted at rest. List view shows a partial redaction only.
-                Plain secrets work as env vars; for private registries use JSON below and reference the secret
-                <span class="font-medium text-foreground">name</span> via
-                <code class="mono-chip text-[10px]">registry_secret</code> on the step.
+                Save a single value, then reference <code class="mono-chip text-[10px]">{{ SECRET_REFERENCE }}</code>
+                in plugin <code class="mono-chip text-[10px]">with</code>, step <code class="mono-chip text-[10px]">env</code>,
+                or <code class="mono-chip text-[10px]">config.render</code> templates.
               </p>
-              <details class="mt-3 rounded-lg border border-border/50 bg-muted/30 group">
-                <summary class="cursor-pointer select-none px-3 py-2.5 text-[11px] font-medium text-foreground flex items-center gap-2 list-none [&::-webkit-details-marker]:hidden">
-                  <span class="text-muted-foreground/70 font-mono text-[10px] group-open:rotate-90 transition-transform">▸</span>
-                  Registry credentials sample (ACR Personal)
+              <details class="mt-3 rounded-lg border border-border/50 bg-muted/30">
+                <summary class="cursor-pointer select-none px-3 py-2.5 text-[11px] font-medium text-foreground">
+                  Private registry — docker-login plugin
                 </summary>
                 <div class="px-3 pb-2.5 space-y-2 border-t border-border/40 pt-2">
-                  <div class="flex justify-end">
-                    <button
-                      type="button"
-                      class="text-[11px] text-primary hover:underline cursor-pointer"
-                      @click="insertRegistrySample"
-                    >
-                      Insert sample
-                    </button>
-                  </div>
-                  <pre class="text-[10px] font-mono text-muted-foreground whitespace-pre-wrap break-all leading-relaxed">{{ ACR_REGISTRY_SAMPLE }}</pre>
                   <p class="text-[10px] text-muted-foreground leading-relaxed">
-                    Get login name + fixed password from the ACR console (Personal Edition access credentials).
-                    <code class="mono-chip text-[10px]">registry</code> is required for shell/SSH push;
-                    optional for docker pull when
-                    <code class="mono-chip text-[10px]">image</code> already includes the host.
+                    Save the actual registry login username as REGISTRY_USERNAME and its password as REGISTRY_PASSWORD,
+                    each in a separate Generic secret. For ACR Personal, use the login name and fixed password from
+                    the ACR console. The plugin password input is the password itself, not a credentials JSON object.
+                    Run this login step before pulling or pushing private images.
                   </p>
-                  <p class="text-[10px] text-muted-foreground leading-relaxed">
-                    Get credentials:
-                    <a
-                      class="text-primary hover:underline"
-                      href="https://help.aliyun.com/zh/acr/user-guide/configure-access-credentials-of-the-personal-edition-of-container-registry"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >Alibaba Cloud — ACR Personal access credentials</a>
-                    . Pipeline wiring:
-                    <span class="font-medium text-foreground">Docker Engine → Appendix: ACR Personal Edition</span>
-                    in project docs (<code class="mono-chip text-[10px]">registry_secret</code>).
-                  </p>
+                  <pre class="text-[10px] font-mono text-muted-foreground whitespace-pre-wrap break-all leading-relaxed">{{ DOCKER_LOGIN_EXAMPLE }}</pre>
                 </div>
               </details>
-              <details class="mt-2 rounded-lg border border-border/50 bg-muted/30 group">
-                <summary class="cursor-pointer select-none px-3 py-2.5 text-[11px] font-medium text-foreground flex items-center gap-2 list-none [&::-webkit-details-marker]:hidden">
-                  <span class="text-muted-foreground/70 font-mono text-[10px] group-open:rotate-90 transition-transform">▸</span>
-                  Aliyun OSS auth sample (config_source)
+              <details class="mt-2 rounded-lg border border-border/50 bg-muted/30">
+                <summary class="cursor-pointer select-none px-3 py-2.5 text-[11px] font-medium text-foreground">
+                  Config download — config-fetch plugin
                 </summary>
                 <div class="px-3 pb-2.5 space-y-2 border-t border-border/40 pt-2">
-                  <div class="flex justify-end">
-                    <button
-                      type="button"
-                      class="text-[11px] text-primary hover:underline cursor-pointer"
-                      @click="insertOssSample"
-                    >
-                      Insert sample
-                    </button>
-                  </div>
-                  <pre class="text-[10px] font-mono text-muted-foreground whitespace-pre-wrap break-all leading-relaxed">{{ OSS_AUTH_SAMPLE }}</pre>
                   <p class="text-[10px] text-muted-foreground leading-relaxed">
-                    Create a <strong>read-only</strong> RAM user (AliyunReadOnlyAccess scoped to the bucket) and
-                    paste its AK/SK. At job dispatch the Manager signs a short-lived GET URL for
-                    <code class="mono-chip text-[10px]">config.key_path</code>. The Runner downloads + unpacks the
-                    bundle into <code class="mono-chip text-[10px]">$BUZ_CONFIG_DIR</code> before the run block.
-                    The target never holds the AK/SK.
+                    Save the complete .tar.gz bundle download URL as CONFIG_BUNDLE_URL in a Generic secret.
+                    For private OSS, include the full presigned URL with its filename and signed query parameters;
+                    keep it valid for the job. Do not use the old OSS credentials JSON as the URL.
+                    Fetch into the job-workspace-relative config directory, then use the same
+                    <code class="mono-chip text-[10px]">config.dest</code> for a later
+                    <code class="mono-chip text-[10px]">config.render</code> step on the same target.
                   </p>
+                  <pre class="text-[10px] font-mono text-muted-foreground whitespace-pre-wrap break-all leading-relaxed">{{ CONFIG_FETCH_EXAMPLE }}</pre>
                 </div>
               </details>
             </div>

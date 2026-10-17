@@ -752,12 +752,12 @@ defineExpose({ openCreate, openEdit, close })
 
           <div v-show="dialogTab === 'reference'" class="shrink-0 pb-1 space-y-2">
             <p class="text-xs text-muted-foreground leading-relaxed px-0.5">
-              Cheat sheet for the YAML editor. Durations:
+              Cheat sheet for the YAML editor. Prefer a pinned <code class="font-mono text-[11px]">uses:</code> plugin whenever it provides the needed operation; keep inline scripts for project-specific work. Durations:
               <code class="font-mono text-[11px]">30</code> /
               <code class="font-mono text-[11px]">30s</code> /
               <code class="font-mono text-[11px]">10m</code> /
               <code class="font-mono text-[11px]">1h</code>
-              (no spaces). Secrets &amp; Variables must already exist under Infrastructure. Marketplace examples use pinned versions; make sure their spec files are in the Manager's configured local step index (the default is <code class="font-mono text-[11px]">&lt;yaml_scan_dir&gt;/steps</code>). Browse available templates from the Plugin Marketplace link above.
+              (no spaces). Secrets &amp; Variables must already exist under Infrastructure. Marketplace examples use pinned versions; make sure their spec files are in the Manager's configured local step index (the default is <code class="font-mono text-[11px]">&lt;yaml_scan_dir&gt;/steps</code>). Browse available templates from the Plugin Marketplace link above. A <code class="font-mono text-[11px]">uses:</code> step gets its engine, run script, and image from the template. Do not declare those fields alongside <code class="font-mono text-[11px]">uses:</code>: the current pipeline validator rejects them.
             </p>
 <pre class="rounded-lg bg-muted p-3 text-xs font-mono text-muted-foreground overflow-x-auto">name: hello-world
 description: Sample pipeline covering common fields
@@ -816,13 +816,6 @@ concurrency:
 #   group: prod
 #   mode: discard-new             # reject while a job is active
 
-# ── Notify (Manager posts on job terminal status; YAML only) ──
-# Requires Secrets webhook + optional server.public_base_url for View Job.
-# notify:
-#   - type: feishu
-#     webhook: ${secrets.FEISHU_WEBHOOK}  # Feishu custom bot URL in Secrets
-#     # on: [success, failure]            # default; add cancelled if needed
-
 # ── Inline env (non-secret) ──
 env:
   APP_NAME: myapp
@@ -835,127 +828,127 @@ variables:
 
 # ── Secrets (optional top-level list — GHA-style) ──
 # Prefer referencing at the use site; listing a name does NOT inject $NAME.
-# On save, Manager also collects names from ${secrets.X} / purpose slots.
+# On save, Manager also collects names from ${secrets.X} in env: / with:.
 # secrets:
-#   - GIT_SSH_KEY
-#   - ACR_PERSONAL
-#   - OSS_CONFIG
-#   - SLACK_WEBHOOK_URL
+#   - GIT_TOKEN
+#   - REGISTRY_HOST
+#   - REGISTRY_USERNAME
+#   - REGISTRY_PASSWORD
+#   - CONFIG_BUNDLE_URL
+#   - SLACK_WEBHOOK
 #   - POSTGRES_PASSWORD
 
 steps:
+  # Checkout into the job workspace so later toolchain plugins share the files.
   - name: Checkout
-    run: |
-      echo "==> Cloning repo..."
-      git clone --depth 1 https://github.com/example/hello-world.git /tmp/build
+    uses: buz/git-clone@1.0.0
+    with:
+      repo: https://github.com/example/hello-world.git
+      dir: source                              # relative, new directory; no .. components
 
   - name: Build
-    run: cargo build --release --manifest-path=apps/$INPUT_ENVIRONMENT/Cargo.toml
-    work_dir: /tmp/build
+    uses: buz/setup-rust@1.0.0                 # template supplies a pinned Docker toolchain
+    with:
+      workdir: source
+      script: cargo build --release
     timeout: 10m
     retry: 2
 
-  # Docker engine — run inside a container on the runner
   - name: Unit Tests
-    engine: docker
-    image: node:20-bookworm
-    work_dir: ./frontend
-    volumes:
-      - "/data/cache:/cache"
-    run: |
-      npm ci
-      npm test
+    uses: buz/setup-node@1.0.0
+    with:
+      workdir: source/frontend
+      script: |
+        npm ci
+        npm test
     timeout: 15m
 
-  # Private registry — secret kind = registry auth (UPPER_SNAKE_CASE name)
+  # Login on the runner BEFORE pulling / pushing private images.
+  # with: registry, username, password are required; reference Secrets by name.
+  - name: Registry Login
+    uses: buz/docker-login@1.1.0
+    with:
+      registry: ${secrets.REGISTRY_HOST}         # crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com
+      username: ${secrets.REGISTRY_USERNAME}
+      password: ${secrets.REGISTRY_PASSWORD}
+      # debug: "false"                         # optional; defaults to false
+
   - name: Run Private Image
     engine: docker
     image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
-    secrets: [ACR_PERSONAL]                    # optional allowlist / narrowing
-    registry_secret: ${secrets.ACR_PERSONAL}   # purpose slot (implies allowlist)
     run: echo "pulled private image"
     timeout: 10m
 
-  # Shell + registry_secret → Manager auto login/logout around the script
-  - name: Docker Push
-    engine: shell
-    secrets: [ACR_PERSONAL]
-    registry_secret: ${secrets.ACR_PERSONAL}
-    run: |
-      docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/myapp:$INPUT_VERSION
-      echo "CACHE_DIR=$BUILD_CACHE_DIR"
-    timeout: 5m
+  # Build and tag through the Docker plugin; the socket is a step field.
+  # Host login covers private engine-image pulls, not auth for the container's Docker CLI.
+  # Keep push disabled until registry credentials are available inside that plugin container.
+  - name: Docker Build
+    uses: buz/docker@1.0.0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    with:
+      context: source
+      tags: myapp:1.0 myapp:latest               # local tags only; not a published release
+      push: "false"
+    timeout: 10m
 
-  # SSH — at least one of host / host_labels (union of targets)
-  # hosts_strategy: chain (default) | parallel — multi-host fan-out
-  - name: Deploy
-    engine: ssh
-    host:
-      - prod-server-01
-      - prod-server-02
-    host_labels:
-      - prod
-      - web
-    hosts_strategy: parallel
-    env:
-      SLACK_WEBHOOK_URL: ${secrets.SLACK_WEBHOOK_URL}
-    run: |
-      docker tag myapp:$INPUT_VERSION myapp:latest
-      docker compose up -d
-      curl -X POST -d '{"text":"deploy complete"}' "$SLACK_WEBHOOK_URL"
-    continue-on-error: true
+  # Optional cleanup AFTER the last registry use (e.g. shared isolation mode).
+  # Runner job-scoped credentials are cleaned up when the job ends.
+  # - name: Registry Logout
+  #   uses: buz/docker-logout@1.0.0
+  #   with:
+  #     registry: ${secrets.REGISTRY_HOST}
+  # This example uses the login template's default shell engine.
 
-  # OSS deliver then render-only (preferred as two steps)
-  # host: expands trigger inputs as $name (not $INPUT_*).
-  # secrets: [NAME] = allowlist only; purpose slots use ${secrets.NAME}.
-  - name: Deliver Config
-    engine: ssh
-    host: $deploy_host                         # on.manual.inputs.deploy_host
-    secrets: [OSS_CONFIG]                      # allowlist — does not inject $OSS_CONFIG
-    config:
-      source: ${secrets.OSS_CONFIG}            # OSS auth secret (purpose slot)
-      key_path: config_tpl/demo-app/v1.4.0  # dir prefix; trailing / optional
-      dest: /opt/manager                       # → $BUZ_CONFIG_DIR
-    run: |
-      cd "$BUZ_CONFIG_DIR"
-      ls -l docker-compose.yml env.example
+  # Fetch a .tar.gz bundle, then render in a separate step in the job workspace.
+  # with.dest is workspace-relative; use a clean path without .. components.
+  - name: Fetch Config
+    uses: buz/config-fetch@1.1.0
+    with:
+      url: ${secrets.CONFIG_BUNDLE_URL}       # full presigned .tar.gz URL, including filename
+      dest: config                           # fetch destination; does NOT set $BUZ_CONFIG_DIR
 
   # Template under dest may use ${vars.*} / ${secrets.*}, e.g.:
   #   MANAGER_IMAGE=${vars.MANAGER_IMAGE_TAG:-latest}
   #   POSTGRES_PASSWORD=${secrets.POSTGRES_PASSWORD}
+  # Match config.dest to the prior fetch destination; render paths are relative to it.
   - name: Render Env
-    engine: ssh
-    host: $deploy_host
+    engine: shell
     secrets: [POSTGRES_PASSWORD]
     config:
-      dest: /opt/manager
+      dest: config
       render:
         - template: env.example
           output: .env
           mode: "0600"
           on_missing: fail
-    run: |
-      cd "$BUZ_CONFIG_DIR"
-      test -f .env
-      docker compose --env-file .env up -d
+    run: test -f "$BUZ_CONFIG_DIR/.env"          # project-specific post-render assertion
 
-  # Inject a secret into the script env (required for $GIT_SSH_KEY)
+  # Independent SSH deployment example: the target must ALREADY contain the project
+  # and its configuration. Local fetch/render above does not transfer files to it.
+  # Requires Buz >= 1.7.5, Docker Compose, and an ALREADY PUBLISHED accessible image.
+  # The template supplies the ssh engine; host selectors use $input_name, not $INPUT_*.
+  - name: Deploy
+    uses: buz/docker-compose@1.0.0
+    host: $deploy_host
+    with:
+      project_dir: /opt/app
+      image: nginx:stable
+
+  # Private HTTPS checkout uses a separate Generic token Secret, not an SSH-key script.
   - name: Clone Private Repo
-    secrets: [GIT_SSH_KEY]
-    env:
-      GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
-    run: |
-      echo "$GIT_SSH_KEY" > /tmp/key && chmod 600 /tmp/key
-      GIT_SSH_COMMAND="ssh -i /tmp/key -o StrictHostKeyChecking=no" \
-        git clone --depth 1 git@github.com:org/private-repo.git /tmp/private
-      rm -f /tmp/key
+    uses: buz/git-clone@1.0.0
+    with:
+      repo: https://github.com/org/private-repo.git
+      dir: private-source
+      token: ${secrets.GIT_TOKEN}
     timeout: 5m
 
   # ── Plugin Marketplace examples (exact version pins) ──
   # Manager resolves uses: from its local step index, not directly from the website.
   # Add the plugin spec files from Plugin Marketplace to that index before saving.
   - name: Check service readiness
-    uses: buz/http-check@1.0.0
+    uses: buz/http-check@1.1.0
     with:
       url: https://example.com/health
 
@@ -987,12 +980,12 @@ steps:
 #
 # Secrets (top-level secrets: is optional)
 #   env: KEY: ${secrets.NAME}       inject + allowlist
-#   registry_secret / config.source purpose slot (= allowlist)
-#   secrets: [NAME]                 overview / step narrowing
+#   with: input: ${secrets.NAME}    plugin input + allowlist
+#   secrets: [NAME]                overview / step narrowing
 #   never put ${secrets.…} inside run: scripts
 #
-# key_path = OSS directory prefix only
-#   Manager builds {prefix}/configs.tar.gz — do not include the filename
+# Config delivery: buz/config-fetch with a full bundle URL and explicit dest.
+# Render-only config: match config.dest to the fetch destination.
 # ────────────────────────────────────────────────────</pre>
           </div>
         </div>
