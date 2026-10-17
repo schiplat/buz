@@ -1129,6 +1129,24 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             ));
         }
 
+        // Deprecation warnings (2.0 removal plan): registry login and OSS
+        // config delivery have plugin/core replacements. Non-blocking so
+        // existing pipelines keep validating.
+        if step.registry_secret.is_some() {
+            warnings.push(format!(
+                "steps[{i}].registry_secret: deprecated — use the buz/docker-login \
+                 template for registry login; removal planned in 2.0"
+            ));
+        }
+        if let Some(cfg) = &step.config {
+            if cfg.source.is_some() || cfg.key_path.is_some() {
+                warnings.push(format!(
+                    "steps[{i}].config.source: deprecated — deliver with the buz/config-fetch \
+                     template and render via config.render; removal planned in 2.0"
+                ));
+            }
+        }
+
         // Honest-schema warnings: fields the schema accepts but the runner does
         // not act on yet. Non-blocking so existing pipelines keep validating.
         if step.retry.unwrap_or(0) > 0 {
