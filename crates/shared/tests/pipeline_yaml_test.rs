@@ -906,8 +906,10 @@ steps:
     let r = parse_and_validate(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(
-        r.warnings.is_empty(),
-        "unexpected warnings: {:?}",
+        r.warnings
+            .iter()
+            .any(|w| w.contains("config.source: deprecated") && w.contains("buz/config-fetch")),
+        "expected OSS delivery deprecation warning, got: {:?}",
         r.warnings
     );
     let step = &r.parsed.unwrap().steps[0];
@@ -1706,5 +1708,87 @@ steps:
             .any(|e| e.field == "steps[0].uses" && e.message.contains("unsupported pin")),
         "{:?}",
         r.errors
+    );
+}
+
+#[test]
+fn registry_secret_emits_deprecation_warning() {
+    let yaml = r#"
+name: legacy registry login
+on:
+  manual: {}
+steps:
+  - name: pull
+    engine: docker
+    image: registry.example.com/app:1.0
+    registry_secret: ACR_CREDS
+    run: echo hi
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("registry_secret: deprecated") && w.contains("buz/docker-login")),
+        "expected deprecation warning, got: {:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn config_source_emits_deprecation_warning() {
+    let yaml = r#"
+name: legacy config delivery
+on:
+  manual: {}
+steps:
+  - name: deliver
+    engine: ssh
+    host: web-01
+    config:
+      source: OSS_CREDS
+      key_path: config_tpl/app/v1
+      dest: /opt/app
+    run: ls "$BUZ_CONFIG_DIR"
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("config.source: deprecated") && w.contains("buz/config-fetch")),
+        "expected deprecation warning, got: {:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn plugin_based_config_flow_has_no_deprecation_warning() {
+    let yaml = r#"
+name: modern config flow
+on:
+  manual: {}
+steps:
+  - name: fetch
+    uses: buz/config-fetch@1.1.0
+    with:
+      url: ${secrets.CONFIG_BUNDLE_URL}
+      dest: config
+  - name: render
+    engine: ssh
+    host: web-01
+    config:
+      dest: config
+      render:
+        - template: env.tpl
+          output: .env
+    run: ls "$BUZ_CONFIG_DIR"
+"#;
+    let r = parse_and_validate(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
+    assert!(
+        !r.warnings.iter().any(|w| w.contains("deprecated")),
+        "unexpected deprecation warnings: {:?}",
+        r.warnings
     );
 }
