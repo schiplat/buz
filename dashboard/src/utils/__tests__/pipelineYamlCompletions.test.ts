@@ -28,7 +28,7 @@ describe('plugin-first pipeline YAML completions', () => {
     for (const doc of ['steps:\n  - name: deploy\n    ', 'steps:\n  - name: deploy\n    config:\n      ']) {
       const options = labels(doc)
       expect(options).toEqual(expect.arrayContaining(['uses', 'with', 'config', 'dest', 'render', 'template', 'output']))
-      for (const field of ['registry_secret', 'source', 'key_path']) expect(options).not.toContain(field)
+      for (const field of ['registry_secret', 'source', 'key_path', 'capabilities']) expect(options).not.toContain(field)
     }
     const config = complete('steps:\n  - name: deploy\n    ')!.options.find((option) => option.label === 'config')!
     expect(config.info).toContain('buz/config-fetch')
@@ -37,7 +37,18 @@ describe('plugin-first pipeline YAML completions', () => {
   it.each(['', 'buz/', 'buz/docker', 'buz/docker-login@', 'buz/config-fetch@1.']) (
     'replaces the full uses reference for prefix %s', (prefix) => {
       const doc = `steps:\n  - uses: ${prefix}`
-      expect(labels(doc)).toEqual(['buz/docker-login@1.1.0', 'buz/docker-logout@1.0.0', 'buz/config-fetch@1.1.0'])
+      expect(labels(doc)).toEqual([
+        'buz/git-clone@1.1.0',
+        'buz/setup-rust@1.1.0',
+        'buz/setup-node@1.1.0',
+        'buz/docker@1.1.0',
+        'buz/docker-login@1.1.0',
+        'buz/docker-logout@1.0.0',
+        'buz/config-fetch@1.1.0',
+      ])
+      const docker = complete(doc)!.options.find((option) => option.label === 'buz/docker@1.1.0')!
+      expect(docker.info).toContain('docker-socket')
+      expect(docker.info).toContain('docker_socket_allowed')
       expect(apply(doc, 'buz/docker-login@1.1.0')).toBe('steps:\n  - uses: buz/docker-login@1.1.0')
       expect((complete(doc)!.validFor as RegExp).test('buz/docker-login@1.1.0')).toBe(true)
     },
@@ -50,10 +61,45 @@ describe('plugin-first pipeline YAML completions', () => {
     expect(apply(doc, 'ssh')).toContain('engine:')
   })
 
+  it('describes run as the uses-step extension point and keeps engine template-owned', () => {
+    const stepOptions = complete('steps:\n  - name: deploy\n    ')!.options
+    const run = stepOptions.find((option) => option.label === 'run')!
+    const uses = stepOptions.find((option) => option.label === 'uses')!
+    expect(run.info).toContain('appended after the template run block')
+    expect(uses.info).toContain('run: appends')
+    expect(uses.info).toContain('engine/image stay template-owned')
+    const workDir = stepOptions.find((option) => option.label === 'work_dir')!
+    expect(workDir.info).toContain('default_dir')
+  })
+
+  it('documents git-clone into and the default_dir fallback on templates', () => {
+    const doc = 'steps:\n  - uses: '
+    const gitClone = complete(doc)!.options.find((option) => option.label === 'buz/git-clone@1.1.0')!
+    expect(gitClone.info).toContain('with.into')
+    expect(gitClone.info).toContain('default source')
+    for (const label of ['buz/setup-rust@1.1.0', 'buz/setup-node@1.1.0', 'buz/docker@1.1.0']) {
+      const info = complete(doc)!.options.find((option) => option.label === label)!.info
+      expect(info).toContain('default_dir: source')
+      expect(info).toContain('work_dir')
+      expect(info).not.toContain('with.work_dir')
+    }
+  })
+
   it.each(['', 'REG'])('preserves the Secret expression when completing %s', (prefix) => {
     const doc = `steps:\n  - uses: buz/docker-login@1.1.0\n    with:\n      password: \${secrets.${prefix}`
     expect(labels(doc)).toEqual(['REGISTRY_PASSWORD', 'CONFIG_BUNDLE_URL'])
     expect(apply(doc, 'REGISTRY_PASSWORD')).toContain('password: ${secrets.REGISTRY_PASSWORD')
+  })
+
+  it('permits ${env.*} dynamic references in with values', () => {
+    const prefix = 'steps:\n  - uses: buz/docker@1.1.0\n    with:\n      tags: ${'
+    expect(labels(prefix)).toEqual(expect.arrayContaining(['secrets.', 'vars.', 'env.']))
+    const envOption = complete(prefix)!.options.find((option) => option.label === 'env.')!
+    expect(envOption.info).toContain('$BUZ_ENV')
+    const withEnv = apply(prefix, 'env.')
+    expect(withEnv).toBe('steps:\n  - uses: buz/docker@1.1.0\n    with:\n      tags: ${env.')
+    // Dynamic keys resolve on the Runner — the Manager completes nothing mid-reference.
+    expect(complete(`${withEnv}.`)).toBeNull()
   })
 
   it('preserves variable and expression prefixes', () => {

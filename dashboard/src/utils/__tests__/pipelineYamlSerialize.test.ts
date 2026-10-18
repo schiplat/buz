@@ -62,6 +62,88 @@ describe('serializePipelineFormToYaml legacy compatibility', () => {
   })
 })
 
+describe('serializePipelineFormToYaml capability safety', () => {
+  it('keeps resolved plugin capability requests out of saved author YAML but round-trips run', () => {
+    const yaml = serializePipelineFormToYaml({
+      ...base,
+      steps: [{
+        name: 'Docker Build',
+        uses: 'buz/docker@1.1.0',
+        with: { tags: 'app:latest' },
+        capabilities: ['docker-socket'],
+        run: 'docker images',
+        engine: 'shell',
+        privileged: true,
+      } as any],
+    })
+    expect(yaml).toContain('uses: "buz/docker@1.1.0"')
+    expect(yaml).toContain('tags: "app:latest"')
+    expect(yaml).toContain('run: docker images')
+    for (const forbidden of ['capabilities:', 'docker-socket', 'engine:', 'privileged:']) {
+      expect(yaml).not.toContain(forbidden)
+    }
+  })
+
+  it('ignores capability properties on inline steps too', () => {
+    const yaml = serializePipelineFormToYaml({
+      ...base,
+      steps: [{ name: 'inline', run: 'echo safe', capabilities: ['docker-socket'] } as any],
+    })
+    expect(yaml).toContain('run: echo safe')
+    expect(yaml).not.toContain('capabilities:')
+    expect(yaml).not.toContain('docker-socket')
+  })
+})
+
+describe('serializePipelineFormToYaml plugin steps', () => {
+  it('preserves uses, inputs and run without copying template-owned fields', () => {
+    const yaml = serializePipelineFormToYaml({
+      ...base,
+      steps: [{
+        name: 'Docker Build',
+        uses: 'buz/docker@1.1.0',
+        with: { tags: 'app:latest' },
+        run: 'docker images',
+        engine: 'shell',
+        image: 'untrusted/image',
+        volumes: ['/var/run/docker.sock:/var/run/docker.sock'],
+        privileged: true,
+      } as any],
+    })
+    expect(yaml).toContain('uses: "buz/docker@1.1.0"')
+    expect(yaml).toContain('tags: "app:latest"')
+    expect(yaml).toContain('run: docker images')
+    for (const forbidden of ['capabilities:', 'docker-socket', 'engine:', 'image:', 'volumes:', 'privileged:']) {
+      expect(yaml).not.toContain(forbidden)
+    }
+  })
+
+  it('serializes a multiline run block after with: on a uses step', () => {
+    const yaml = serializePipelineFormToYaml({
+      ...base,
+      steps: [{
+        name: 'Unit Tests',
+        uses: 'buz/setup-node@1.1.0',
+        with: { script: 'npm ci' },
+        run: 'npm test\nnpm run lint',
+        dir: 'source/frontend',
+      } as any],
+    })
+    expect(yaml).toContain('with:\n      script: npm ci\n    run: |\n      npm test\n      npm run lint')
+    expect(yaml).toContain('dir: source/frontend')
+  })
+
+  it('does not serialize capability properties on inline steps', () => {
+    const yaml = serializePipelineFormToYaml({
+      ...base,
+      steps: [{ name: 'inline', run: 'echo safe', capabilities: ['docker-socket'] } as any],
+    })
+    expect(yaml).toContain('run: echo safe')
+    expect(yaml).not.toContain('capabilities:')
+    expect(yaml).not.toContain('docker-socket')
+  })
+})
+
 describe('serializePipelineFormToYaml input constraints', () => {
   it('emits type / pattern / options and omits blanks', () => {
     const yaml = serializePipelineFormToYaml({

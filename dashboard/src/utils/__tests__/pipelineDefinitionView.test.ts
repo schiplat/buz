@@ -42,6 +42,39 @@ describe('yamlStepsToDefTasks', () => {
     })
   })
 
+  it('maps plugin references and inputs separately from resolved marketplace provenance', () => {
+    const tasks = yamlStepsToDefTasks([{
+      name: 'docker-build',
+      uses: 'buz/docker@1.1.0',
+      with: { tags: 'app:latest', work_dir: 'source' },
+    }])
+    expect(tasks[0]).toMatchObject({
+      name: 'docker-build',
+      uses: 'buz/docker@1.1.0',
+      plugin_inputs: { tags: 'app:latest', work_dir: 'source' },
+      exec_type: 'shell',
+      command_template: '',
+    })
+    expect(tasks[0]).not.toHaveProperty('capabilities')
+    expect(tasks[0]).not.toHaveProperty('marketplace')
+  })
+
+  it('maps the uses-step run append and step-level work_dir to definition cards', () => {
+    const tasks = yamlStepsToDefTasks([{
+      name: 'build',
+      uses: 'buz/setup-rust@1.1.0',
+      with: { script: 'cargo build --release' },
+      run: 'cargo test',
+      dir: 'source',
+    }])
+    expect(tasks[0]).toMatchObject({
+      uses: 'buz/setup-rust@1.1.0',
+      plugin_inputs: { script: 'cargo build --release' },
+      command_template: 'cargo test',
+      work_dir: 'source',
+    })
+  })
+
   it('maps YAML steps to definition cards', () => {
     const tasks = yamlStepsToDefTasks([
       {

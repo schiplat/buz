@@ -95,12 +95,16 @@ export interface SnapshotTask {
   retry_count: number
   timeout_seconds: number
   fail_strategy: string
+  /** Frozen execution capability requests inherited from a locked plugin. */
+  capabilities?: string[]
   marketplace?: {
     uses_ref: string
     resolved_version: string
     content_sha256: string
     source: string
     reviewed: boolean
+    capabilities?: string[]
+    requires_buz?: string | null
     inputs: Array<{
       name: string
       description?: string | null
@@ -110,7 +114,7 @@ export interface SnapshotTask {
       type?: string | null
       pattern?: string | null
       options?: string[] | null
-    }>
+    } | Record<string, string>>
   }
 }
 

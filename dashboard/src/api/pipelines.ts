@@ -26,6 +26,8 @@ export interface Pipeline {
   latest_job_id: string | null
   latest_job_status: string | null
   latest_job_start: string | null
+  /** Detail API tasks include inherited plugin capabilities (requests, not grants). */
+  tasks?: PipelineTask[]
   /** Total jobs ever created for this pipeline. */
   job_total: number
   /** Jobs with status === 'success'. */
@@ -80,7 +82,7 @@ export interface CreatePipelinePayload {
   var_ids?: string[]
   secret_ids?: string[]
   env?: { name: string; value: string }[]
-  steps: StepDef[]
+  steps: PipelineStepInput[]
   input_defs?: PipelineInputDef[]
 }
 
@@ -99,9 +101,12 @@ export interface PipelineInputDef {
   options?: string[]
 }
 
-export interface StepDef {
+export interface PipelineStepInput {
   name: string
-  run: string
+  /** A pinned plugin template ref; capability requests come only from its locked metadata. */
+  uses?: string
+  with?: Record<string, string>
+  run?: string
   engine?: string
   image?: string
   /** Extra host→container bind mounts when uses: docker. Each entry is "host_path:container_path". */
@@ -131,7 +136,7 @@ export interface StepDef {
   config_key_path?: string
   /** Unpack / working directory → $BUZ_CONFIG_DIR. */
   config_dest?: string
-  /** Render entries (`config.render` → column `config_render` JSON array). */
+  /** Host-authorable form fields only; capability and uses metadata are server/plugin-owned. */
   config_render?: Array<{
     template?: string
     output?: string
@@ -141,6 +146,41 @@ export interface StepDef {
     services?: string[]
     backup_keep?: number
   }>
+}
+
+export type StepDef = PipelineStepInput
+
+export interface ResolvedMarketplaceStep {
+  uses_ref: string
+  resolved_version?: string
+  content_sha256?: string
+  source?: string
+  reviewed?: boolean
+  /** Exposed for resolved step details and frozen job history. */
+  capabilities?: string[]
+  requires_buz?: string | null
+  inputs: Array<YamlInputData | Record<string, string>>
+}
+
+export interface PipelineTask extends PipelineStepInput {
+  id?: string
+  step_order: number
+  exec_type: string
+  host_id?: string | null
+  host_names?: string
+  host_labels?: string
+  command_template: string
+  work_dir?: string
+  retry_count?: number
+  timeout_seconds?: number
+  fail_strategy?: string
+  step_secrets?: string
+  step_env?: Record<string, string> | null
+  privileged?: boolean
+  capabilities?: string[]
+  /** Original marketplace ref when rendered from the YAML source. */
+  uses_ref?: string
+  marketplace?: ResolvedMarketplaceStep
 }
 
 export interface YamlValidationResult {
@@ -204,6 +244,9 @@ export interface YamlConcurrencyConfig {
 
 export interface YamlStepData {
   name?: string | null
+  /** Raw uses reference is not emitted by validate YAML (server validates separately). */
+  uses?: string | null
+  with?: Record<string, string> | null
   run?: string | null
   engine?: string | null
   image?: string | null

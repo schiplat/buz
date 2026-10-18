@@ -401,29 +401,34 @@ async function openEdit(p: Pick<Pipeline, 'id' | 'name' | 'source'> & { yaml_pat
       var_ids: detail.var_ids || [],
       secret_ids: detail.secret_ids || [],
       env: (detail.env || []).map((e: any) => ({ name: e.name, value: e.value })),
-      steps: (detail.tasks || []).map((t: any) => ({
-        name: t.name || '',
-        run: t.command_template || '',
-        engine: t.exec_type || 'shell',
-        image: t.image || undefined,
-        volumes: parseVolumesToRows(t.volumes) as any,
-        secrets: t.step_secrets ? t.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
-        env: (t.step_env && typeof t.step_env === 'object' && !Array.isArray(t.step_env))
-          ? { ...t.step_env }
+      steps: (detail.tasks || []).map((t: any) => {
+        // Capability grants are locked plugin metadata. Never turn resolved task
+        // metadata back into an authorable YAML field during edit/serialization.
+        const { capabilities: _capabilities, uses_ref: _usesRef, marketplace: _marketplace, ...authorable } = t
+        return {
+        name: authorable.name || '',
+        run: authorable.command_template || '',
+        engine: authorable.exec_type || 'shell',
+        image: authorable.image || undefined,
+        volumes: parseVolumesToRows(authorable.volumes) as any,
+        secrets: authorable.step_secrets ? authorable.step_secrets.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+        env: (authorable.step_env && typeof authorable.step_env === 'object' && !Array.isArray(authorable.step_env))
+          ? { ...authorable.step_env }
           : undefined,
-        host: (t.host_names || t.host_id || '').toString().trim() || undefined,
-        host_labels: t.host_labels || undefined,
-        dir: t.work_dir || undefined,
-        timeout: t.timeout_seconds ? `${t.timeout_seconds}s` : undefined,
-        retry: t.retry_count || undefined,
-        continue_on_error: t.fail_strategy === 'continue' ? true : undefined,
-        privileged: (t as any).privileged === true ? true : undefined,
-        registry_secret: (t.registry_secret || '').trim() || undefined,
-        config_source: ((t as any).config_source || '').trim() || '',
-        config_key_path: ((t as any).config_key_path || '').trim() || '',
-        config_dest: ((t as any).config_dest || '').trim() || '',
-        config_render: normalizeConfigRender((t as any).config_render),
-      })),
+        host: (authorable.host_names || authorable.host_id || '').toString().trim() || undefined,
+        host_labels: authorable.host_labels || undefined,
+        dir: authorable.work_dir || undefined,
+        timeout: authorable.timeout_seconds ? `${authorable.timeout_seconds}s` : undefined,
+        retry: authorable.retry_count || undefined,
+        continue_on_error: authorable.fail_strategy === 'continue' ? true : undefined,
+        privileged: authorable.privileged === true ? true : undefined,
+        registry_secret: (authorable.registry_secret || '').trim() || undefined,
+        config_source: (authorable.config_source || '').trim() || '',
+        config_key_path: (authorable.config_key_path || '').trim() || '',
+        config_dest: (authorable.config_dest || '').trim() || '',
+        config_render: normalizeConfigRender(authorable.config_render),
+      }
+      }),
       input_defs: normalizeInputDefsForForm(detail.input_defs),
     }
     const varNames = formLike.var_ids
@@ -757,7 +762,7 @@ defineExpose({ openCreate, openEdit, close })
               <code class="font-mono text-[11px]">30s</code> /
               <code class="font-mono text-[11px]">10m</code> /
               <code class="font-mono text-[11px]">1h</code>
-              (no spaces). Secrets &amp; Variables must already exist under Infrastructure. Marketplace examples use pinned versions; make sure their spec files are in the Manager's configured local step index (the default is <code class="font-mono text-[11px]">&lt;yaml_scan_dir&gt;/steps</code>). Browse available templates from the Plugin Marketplace link above. A <code class="font-mono text-[11px]">uses:</code> step gets its engine, run script, and image from the template. Do not declare those fields alongside <code class="font-mono text-[11px]">uses:</code>: the current pipeline validator rejects them.
+              (no spaces). Secrets &amp; Variables must already exist under Infrastructure. Marketplace examples use pinned versions; make sure their spec files are in the Manager's configured local step index (the default is <code class="font-mono text-[11px]">&lt;yaml_scan_dir&gt;/steps</code>). Browse available templates from the Plugin Marketplace link above. A <code class="font-mono text-[11px]">uses:</code> step gets its engine, image, and any requested capabilities from the template — <code class="font-mono text-[11px]">engine:</code> / <code class="font-mono text-[11px]">image:</code> alongside <code class="font-mono text-[11px]">uses:</code> are rejected by the validator. <code class="font-mono text-[11px]">run:</code> is the extension point: on a <code class="font-mono text-[11px]">uses:</code> step it is appended after the template's run block (the template provides the environment, the call site provides extra commands). Step inputs go under <code class="font-mono text-[11px]">with:</code>; a step-level <code class="font-mono text-[11px]">work_dir:</code> (optional, workspace-relative) overrides the template's <code class="font-mono text-[11px]">default_dir</code>. Capability requests are locked plugin metadata, not pipeline grants; a Runner administrator must separately authorize them in that machine's local Runner config (<code class="font-mono text-[11px]">docker_socket_allowed = true</code>).
             </p>
 <pre class="rounded-lg bg-muted p-3 text-xs font-mono text-muted-foreground overflow-x-auto">name: hello-world
 description: Sample pipeline covering common fields
@@ -841,23 +846,24 @@ variables:
 steps:
   # Checkout into the job workspace so later toolchain plugins share the files.
   - name: Checkout
-    uses: buz/git-clone@1.0.0
+    uses: buz/git-clone@1.1.0
     with:
       repo: https://github.com/example/hello-world.git
-      dir: source                              # relative, new directory; no .. components
+      into: source                          # clone destination (default source); no .. components
 
   - name: Build
-    uses: buz/setup-rust@1.0.0                 # template supplies a pinned Docker toolchain
+    uses: buz/setup-rust@1.1.0                # template supplies a pinned Docker toolchain
+    work_dir: source                        # optional step-level override of the template's default_dir: source
     with:
-      workdir: source
       script: cargo build --release
+    run: echo "IMAGE_TAG=1.0.0" >> "$BUZ_ENV"   # appended after the template's run block
     timeout: 10m
     retry: 2
 
   - name: Unit Tests
-    uses: buz/setup-node@1.0.0
+    uses: buz/setup-node@1.1.0
+    work_dir: source/frontend               # step-level work_dir (template default_dir: source)
     with:
-      workdir: source/frontend
       script: |
         npm ci
         npm test
@@ -879,17 +885,17 @@ steps:
     run: echo "pulled private image"
     timeout: 10m
 
-  # Build and tag through the Docker plugin; the socket is a step field.
-  # Host login covers private engine-image pulls, not auth for the container's Docker CLI.
-  # Keep push disabled until registry credentials are available inside that plugin container.
+  # Build and tag through the Docker plugin; Runner-admin authorization is separate.
+  # buz/docker@1.1.0 requests docker-socket; do not grant capabilities in pipeline YAML.
+  # Only enable docker_socket_allowed on a dedicated Runner for trusted jobs.
+  # Socket access gives root-equivalent control of that Runner's Docker host.
   - name: Docker Build
-    uses: buz/docker@1.0.0
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+    uses: buz/docker@1.1.0
+    work_dir: source                        # step-level; default_dir: source makes this optional
     with:
-      context: source
-      tags: myapp:1.0 myapp:latest               # local tags only; not a published release
-      push: "false"
+      context: .                                      # relative to the step's work_dir
+      tags: myapp:${env.IMAGE_TAG}          # dynamic env from an earlier step's $BUZ_ENV (Runner-resolved)
+      push: "false"                         # local tags only; not a published release
     timeout: 10m
 
   # Optional cleanup AFTER the last registry use (e.g. shared isolation mode).
@@ -937,10 +943,10 @@ steps:
 
   # Private HTTPS checkout uses a separate Generic token Secret, not an SSH-key script.
   - name: Clone Private Repo
-    uses: buz/git-clone@1.0.0
+    uses: buz/git-clone@1.1.0
     with:
       repo: https://github.com/org/private-repo.git
-      dir: private-source
+      into: private-source                  # clone destination (default source)
       token: ${secrets.GIT_TOKEN}
     timeout: 5m
 
@@ -975,12 +981,15 @@ steps:
 #   pipeline env:            $APP_NAME
 #   platform Variables:      $BUILD_CACHE_DIR
 #   secrets in scripts:      only via env: KEY: ${secrets.NAME}  →  $KEY
+#   dynamic env:             echo "KEY=value" >> "$BUZ_ENV"   (a later step or with: value reads ${env.KEY})
 #   config.dest:             $BUZ_CONFIG_DIR
 #   after config.render:     $BUZ_ENV_CHANGED*
 #
 # Secrets (top-level secrets: is optional)
 #   env: KEY: ${secrets.NAME}       inject + allowlist
 #   with: input: ${secrets.NAME}    plugin input + allowlist
+#   with: input: ${env.KEY}         dynamic $BUZ_ENV value — NOT a secret ref;
+#                                   masking inputs still require exactly ${secrets.NAME}
 #   secrets: [NAME]                overview / step narrowing
 #   never put ${secrets.…} inside run: scripts
 #

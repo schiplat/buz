@@ -440,7 +440,11 @@ const definitionView = computed(() => {
         pattern: i.pattern || undefined,
         options: i.options || undefined,
       })),
-      tasks: yamlStepsToDefTasks(parsed.steps || []),
+      tasks: yamlStepsToDefTasks(parsed.steps || []).map((task, index) => ({
+        ...task,
+        capabilities: p.tasks?.[index]?.capabilities || [],
+        marketplace: p.tasks?.[index]?.marketplace || null,
+      })),
       concurrency: concurrencyFromYaml(parsed),
       filename: defYamlFilename.value,
     }
@@ -2021,6 +2025,15 @@ async function handleTrigger() {
                       <span v-if="(step as any).privileged" class="font-semibold text-red-500 bg-red-500/8 border border-red-500/20 rounded px-1.5 py-0.5 uppercase tracking-wider">
                         privileged
                       </span>
+                      <span
+                        v-if="(step as any).capabilities?.length"
+                        class="font-semibold text-red-600 bg-red-500/10 border border-red-500/25 rounded px-1.5 py-0.5"
+                        title="Plugin-requested capabilities are not grants; each Runner administrator must separately authorize them locally."
+                      >requests: {{ (step as any).capabilities.join(', ') }}</span>
+                      <span
+                        v-if="(step as any).capabilities?.includes('docker-socket')"
+                        class="font-medium text-amber-700"
+                      >High privilege: Runner admin must set <code>docker_socket_allowed = true</code> in local Runner config.</span>
                     </div>
 
                     <!-- Docker engine extras: image + volumes + pull secret -->
@@ -2108,6 +2121,32 @@ async function handleTrigger() {
                       </span>
                     </div>
 
+                    <div v-if="step.marketplace" class="mt-2 rounded-lg border border-border/40 bg-muted/20 px-2.5 py-2 text-[10px] font-mono text-muted-foreground/70 space-y-1">
+                      <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span class="font-semibold text-foreground/70">{{ step.marketplace.uses_ref }}</span>
+                        <span v-if="step.marketplace.resolved_version">v{{ step.marketplace.resolved_version }}</span>
+                        <span v-if="step.marketplace.reviewed != null" :class="step.marketplace.reviewed ? 'text-emerald-600' : 'text-amber-600'">{{ step.marketplace.reviewed ? 'reviewed' : 'unreviewed' }}</span>
+                      </div>
+                      <div v-if="step.marketplace.content_sha256" class="break-all">sha256:{{ step.marketplace.content_sha256 }}</div>
+                      <div v-if="step.marketplace.source" class="break-all">source: {{ step.marketplace.source }}</div>
+                      <div v-if="step.marketplace.inputs?.length" class="space-y-0.5">
+                        <div class="text-[9px] uppercase tracking-wide text-muted-foreground/60">Declared plugin inputs</div>
+                        <div v-for="input in step.marketplace.inputs" :key="input.name || input['name']" class="break-all">{{ input['name'] }}<span v-if="input['required'] === true || input['required'] === 'true'"> (required)</span><span v-if="input['description']"> — {{ input['description'] }}</span></div>
+                      </div>
+                      <div v-if="step.capabilities?.length" class="font-semibold text-red-600" title="Runner admins authorize capabilities separately in local Runner configuration.">Requests (not grants): {{ step.capabilities.join(', ') }}</div>
+                      <div v-if="step.capabilities?.includes('docker-socket')" class="text-amber-700">High privilege: Docker socket access gives root-equivalent control of the Runner's Docker host. A Runner administrator must enable <code>docker_socket_allowed = true</code> locally.</div>
+                      <div v-if="step.privileged" class="font-semibold text-red-600">High privilege: privileged container requested.</div>
+                    </div>
+                    <div v-else-if="step.uses" class="mt-2 rounded-lg border border-border/40 bg-muted/20 px-2.5 py-2 text-[10px] font-mono text-muted-foreground/70 space-y-1">
+                      <div class="font-semibold text-foreground/70">{{ step.uses }}</div>
+                      <div v-if="Object.keys(step.plugin_inputs || {}).length" class="space-y-0.5">
+                        <div class="text-[9px] uppercase tracking-wide text-muted-foreground/60">Requested inputs</div>
+                        <div v-for="(value, key) in step.plugin_inputs" :key="String(key)" class="break-all"><span class="text-muted-foreground/50">{{ key }}:</span> {{ value }}</div>
+                      </div>
+                      <div v-if="step.capabilities?.length" class="font-semibold text-red-600" title="Runner admins authorize capabilities separately in local Runner configuration.">Requests (not grants): {{ step.capabilities.join(', ') }}</div>
+                      <div v-if="step.capabilities?.includes('docker-socket')" class="text-amber-700">High privilege: Docker socket access gives root-equivalent control of the Runner's Docker host. A Runner administrator must enable <code>docker_socket_allowed = true</code> locally.</div>
+                      <div v-if="step.privileged" class="font-semibold text-red-600">High privilege: privileged container requested.</div>
+                    </div>
                     <!-- Step secrets badge -->
                     <div v-if="step.step_secrets" class="flex items-center gap-1.5 mb-2 text-xs text-muted-foreground/70">
                       <span>step secrets:</span>

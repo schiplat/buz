@@ -48,14 +48,22 @@ const CONCURRENCY: Completion[] = [
 
 const STEP: Completion[] = [
   { label: 'name', type: 'property' },
-  { label: 'run', type: 'property', info: 'Shell script / command' },
-  { label: 'engine', type: 'property', info: 'shell | docker | ssh' },
+  {
+    label: 'run',
+    type: 'property',
+    info: 'Shell script / command; on a uses: step it is appended after the template run block',
+  },
+  { label: 'engine', type: 'property', info: 'shell | docker | ssh (template-owned on uses: steps)' },
   {
     label: 'uses',
     type: 'property',
-    info: 'Step template ref: <namespace>/<name>@<pin> (local step index)',
+    info: 'Pinned step template ref: <namespace>/<name>@<pin> (local index). Inputs go under with:; engine/image stay template-owned; run: appends; capability requests come only from the plugin.',
   },
-  { label: 'with', type: 'property', info: 'inputs for a uses: step → INPUT_*' },
+  {
+    label: 'with',
+    type: 'property',
+    info: 'inputs for a uses: step → INPUT_*; values may use ${secrets.X} / ${vars.X} / ${env.X}',
+  },
   { label: 'image', type: 'property', info: 'Docker image (engine: docker)' },
   { label: 'volumes', type: 'property', info: 'host:container binds' },
   { label: 'host', type: 'property', info: 'SSH host name(s)' },
@@ -65,8 +73,16 @@ const STEP: Completion[] = [
     type: 'property',
     info: 'SSH multi-host fan-out: chain (default) | parallel',
   },
-  { label: 'dir', type: 'property', info: 'Working directory' },
-  { label: 'work_dir', type: 'property' },
+  {
+    label: 'dir',
+    type: 'property',
+    info: 'Working directory (alias of work_dir); on a uses: step it overrides the template default_dir',
+  },
+  {
+    label: 'work_dir',
+    type: 'property',
+    info: 'Step working directory, workspace-relative; on a uses: step it overrides the template default_dir',
+  },
   { label: 'timeout', type: 'property' },
   { label: 'retry', type: 'property' },
   { label: 'continue-on-error', type: 'property' },
@@ -91,6 +107,10 @@ const ENGINE_VALUES: Completion[] = [
 ]
 
 const TEMPLATE_VALUES: Completion[] = [
+  { label: 'buz/git-clone@1.1.0', type: 'keyword', info: 'Checkout into with.into (default source); workspace-relative, no .. components' },
+  { label: 'buz/setup-rust@1.1.0', type: 'keyword', info: 'Pinned Rust toolchain (default_dir: source; override with a step-level work_dir:)' },
+  { label: 'buz/setup-node@1.1.0', type: 'keyword', info: 'Pinned Node toolchain (default_dir: source; override with a step-level work_dir:)' },
+  { label: 'buz/docker@1.1.0', type: 'keyword', info: 'default_dir: source (a step-level work_dir: overrides it); requests docker-socket — Runner administrator must separately enable docker_socket_allowed locally' },
   { label: 'buz/docker-login@1.1.0', type: 'keyword', info: 'Registry authentication via with: registry / username / password' },
   { label: 'buz/docker-logout@1.0.0', type: 'keyword', info: 'Remove registry credentials after pull / build / push' },
   { label: 'buz/config-fetch@1.1.0', type: 'keyword', info: 'Fetch a config bundle before config.render' },
@@ -159,6 +179,7 @@ export function createPipelineYamlCompletionSource(opts: PipelineYamlCompletionO
     const templateValue = before.match(/^\s*(?:-\s*)?uses\s*:\s*([\w/@.:-]*)$/)
     const secretRef = before.match(/\$\{secrets\.([A-Za-z0-9_]*)$/)
     const variableRef = before.match(/\$\{vars\.([A-Za-z0-9_]*)$/)
+    const envRef = before.match(/\$\{env\.([A-Za-z0-9_.]*)$/)
 
     if (engineValue) {
       options = ENGINE_VALUES
@@ -182,11 +203,17 @@ export function createPipelineYamlCompletionSource(opts: PipelineYamlCompletionO
         apply: name,
         info: 'Platform variable',
       }))
+    } else if (envRef) {
+      // ${env.KEY} values resolve on the Runner from a previous step's
+      // $BUZ_ENV — the Manager has no key list to complete. Permit them by
+      // staying quiet instead of suggesting step fields mid-value.
+      return null
     } else if (/\$\{$/.test(before) || /\$\{[a-z]*$/.test(before)) {
       from = before.endsWith('${') ? ctx.pos : ctx.pos - (before.match(/\$\{([a-z]*)$/)?.[1].length || 0)
       options = [
         { label: 'secrets.', type: 'keyword', apply: 'secrets.', info: 'Secret expression' },
         { label: 'vars.', type: 'keyword', apply: 'vars.', info: 'Variable expression' },
+        { label: 'env.', type: 'keyword', apply: 'env.', info: 'Dynamic $BUZ_ENV value written by an earlier step (Runner-resolved)' },
       ]
     } else if (section === 'on') {
       options = [...TRIGGER]

@@ -16,6 +16,8 @@ export function parseDurationToSeconds(raw?: string | null): number {
 export function yamlStepsToDefTasks(steps: YamlStepData[]) {
   return steps.map((s) => ({
     name: s.name || 'unnamed',
+    uses: s.uses || '',
+    plugin_inputs: s.with && typeof s.with === 'object' ? s.with : {},
     exec_type: s.engine || 'shell',
     command_template: s.run || '',
     image: s.image || '',

@@ -7,6 +7,8 @@ type EnvRow = { name: string; value: string }
 
 type StepLike = {
   name?: string
+  uses?: string
+  with?: Record<string, string>
   run?: string
   engine?: string
   image?: string
@@ -187,6 +189,58 @@ export function serializePipelineFormToYaml(
 
   lines.push('steps:')
   for (const s of form.steps) {
+    if (s.uses?.trim()) {
+      lines.push(`  - name: ${esc(s.name || 'unnamed')}`)
+      lines.push(`    uses: ${esc(s.uses.trim())}`)
+      if (s.with && Object.keys(s.with).length) {
+        lines.push('    with:')
+        for (const [k, v] of Object.entries(s.with)) {
+          lines.push(`      ${k}: ${esc(v)}`)
+        }
+      }
+      // `run:` is authorable on uses steps — the Manager appends it after the
+      // template run block. engine/image remain template-owned; any
+      // capability-shaped property accidentally present is still ignored.
+      if (s.run?.trim()) {
+        const run = s.run
+        if (run.includes('\n')) {
+          lines.push('    run: |')
+          lines.push(indentBlock(run.replace(/\n$/, ''), 6))
+        } else {
+          lines.push(`    run: ${esc(run)}`)
+        }
+      }
+      if (s.secrets?.length) {
+        lines.push(`    secrets: [${s.secrets.map(esc).join(', ')}]`)
+      }
+      if (s.env && Object.keys(s.env).length) {
+        lines.push('    env:')
+        for (const [k, v] of Object.entries(s.env)) lines.push(`      ${k}: ${esc(v)}`)
+      }
+      if (s.host) {
+        const hosts = s.host.split(',').map((h) => h.trim()).filter(Boolean)
+        if (hosts.length === 1) lines.push(`    host: ${esc(hosts[0])}`)
+        else if (hosts.length > 1) {
+          lines.push('    host:')
+          for (const h of hosts) lines.push(`      - ${esc(h)}`)
+        }
+      }
+      if (s.host_labels) {
+        const labs = s.host_labels.split(',').map((h) => h.trim()).filter(Boolean)
+        if (labs.length === 1) lines.push(`    host_labels: ${esc(labs[0])}`)
+        else if (labs.length > 1) {
+          lines.push('    host_labels:')
+          for (const h of labs) lines.push(`      - ${esc(h)}`)
+        }
+      }
+      if (s.hosts_strategy) lines.push(`    hosts_strategy: ${esc(s.hosts_strategy)}`)
+      if (s.dir) lines.push(`    dir: ${esc(s.dir)}`)
+      if (s.timeout) lines.push(`    timeout: ${esc(s.timeout)}`)
+      if (s.retry) lines.push(`    retry: ${s.retry}`)
+      if (s.continue_on_error) lines.push('    continue-on-error: true')
+      continue
+    }
+
     lines.push(`  - name: ${esc(s.name || 'unnamed')}`)
     const engine = (s.engine || 'shell').trim()
     if (engine && engine !== 'shell' && engine !== 'local') {

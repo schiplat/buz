@@ -1119,7 +1119,15 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
                     </div>
                     <div class="break-all">sha256:{{ t.marketplace.content_sha256 }}</div>
                     <div class="break-all">source: {{ t.marketplace.source }}</div>
+                    <div v-if="t.capabilities?.length" class="font-semibold text-red-600" title="Runner admins authorize capabilities separately in local Runner configuration.">Requests (not grants): {{ t.capabilities.join(', ') }}</div>
+                    <div v-if="t.capabilities?.includes('docker-socket')" class="text-amber-700">High privilege: Docker socket access gives root-equivalent control of the Runner's Docker host. A Runner administrator must enable <code>docker_socket_allowed = true</code> locally.</div>
+                    <div v-if="t.marketplace.requires_buz" class="text-muted-foreground/60">Requires Buz {{ t.marketplace.requires_buz }}</div>
+                    <div v-if="t.marketplace.inputs?.length" class="space-y-0.5">
+                      <div class="text-[9px] uppercase tracking-wide text-muted-foreground/60">Plugin inputs</div>
+                      <div v-for="input in t.marketplace.inputs" :key="input.name" class="break-all">{{ input.name }}<span v-if="input.required"> (required)</span><span v-if="input.description"> — {{ input.description }}</span></div>
+                    </div>
                   </div>
+                  <div v-else-if="t.capabilities?.length" class="mt-2 rounded-lg border border-red-500/25 bg-red-500/5 px-2.5 py-2 text-[10px] font-mono font-semibold text-red-600" title="Execution capabilities are requests only; the Runner authorizes them locally.">High privilege request (not grant): {{ t.capabilities.join(', ') }}<div v-if="t.capabilities.includes('docker-socket')" class="mt-1 font-normal text-amber-700">Docker socket access gives root-equivalent control of the Runner's Docker host; Runner-admin local authorization is required.</div></div>
                   <div v-if="t.fail_strategy === 'continue'" class="mt-1.5">
                     <span class="inline-flex items-center gap-1 text-[10px] text-amber-600 bg-amber-500/[0.06] border border-amber-500/20 rounded-md px-2 py-0 font-medium">continue-on-error</span>
                   </div>
