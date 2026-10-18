@@ -112,6 +112,25 @@ fn plan(
             .filter(|engine| !engine.is_empty())
             .unwrap_or("shell");
         writeln!(output, "   engine: {engine}").unwrap();
+        if !step.capabilities.is_empty() {
+            writeln!(
+                output,
+                "   requested capabilities: {}",
+                step.capabilities.join(", ")
+            )
+            .unwrap();
+            writeln!(output, "   WARNING: capabilities require separate local Runner administrator authorization.").unwrap();
+        }
+        if let Some(volumes) = step.volumes.as_ref().filter(|volumes| !volumes.is_empty()) {
+            writeln!(output, "   extra host mounts: {}", volumes.join(", ")).unwrap();
+        }
+        if step.privileged.unwrap_or(false) {
+            writeln!(
+                output,
+                "   WARNING: privileged container requested; this grants broad host-level powers."
+            )
+            .unwrap();
+        }
         if engine == "docker" {
             if let Some(image) = step.image.as_deref() {
                 images.push(image.to_string());

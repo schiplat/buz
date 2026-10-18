@@ -804,7 +804,8 @@ pub async fn poll(
                     COALESCE(json_extract(j.value, '$.config_render'), 'null'),
                     COALESCE(json_extract(j.value, '$.config_dest'), ''),
                     COALESCE(json_extract(j.value, '$.hosts_strategy'), 'chain'),
-                    COALESCE(json_extract(j.value, '$.privileged'), 0)
+                    COALESCE(json_extract(j.value, '$.privileged'), 0),
+                    COALESCE(json_extract(j.value, '$.capabilities'), '[]')
              FROM json_each(?, '$.tasks') j
              ORDER BY json_extract(j.value, '$.step_order')",
         )
@@ -816,7 +817,7 @@ pub async fn poll(
             "SELECT id, step_order, name, exec_type, COALESCE(host_id, ''), host_names, host_labels, command_template,
                     work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
                     registry_secret, config_source, config_key_path, config_render, config_dest, hosts_strategy,
-                    privileged
+                    privileged, capabilities
              FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
         )
         .bind(&pipeline_id)
@@ -1062,6 +1063,15 @@ pub async fn poll(
         let config_dest: String = t.get(20);
         let hosts_strategy: String = t.get(21);
         let privileged: i64 = t.get(22);
+        let capabilities_raw: String = t.get(23);
+        let capabilities: Vec<String> = serde_json::from_str(&capabilities_raw).map_err(|_| {
+            AppError::ValidationFailed(format!(
+                "task {} has invalid capabilities JSON",
+                t.get::<String, _>(0)
+            ))
+        })?;
+        shared::step_spec::validate_step_capabilities(&capabilities, &exec_type)
+            .map_err(AppError::ValidationFailed)?;
 
         // Purpose slots accept `${secrets.NAME}` or bare NAME.
         let registry_secret_name =
@@ -1093,6 +1103,7 @@ pub async fn poll(
             )
             .unwrap_or("chain"),
             "privileged": privileged != 0,
+            "capabilities": capabilities,
         });
 
         // Values that must be redacted in the Runner's logs. Registered here — the
@@ -1239,6 +1250,11 @@ pub async fn poll(
                 if let Some(value) =
                     task_json["step_env"][shared::protocol::input_env_key(&def.name)].as_str()
                 {
+                    // `${env.X}` values resolve on the Runner at execution time
+                    // (previous steps' $BUZ_ENV) — skip literal type checks.
+                    if value.contains("${env.") {
+                        continue;
+                    }
                     input_values.insert(def.name.clone(), value.to_string());
                 }
             }

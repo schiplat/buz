@@ -143,6 +143,7 @@ fn uses_step(uses: &str) -> StepDef {
         with: None,
         image: None,
         volumes: None,
+        capabilities: Vec::new(),
         host: None,
         host_labels: None,
         hosts_strategy: None,
@@ -427,6 +428,115 @@ async fn resolve_uses_steps_stages_provenance_for_caller_transaction() {
         serde_json::from_str(&input_defs_json).unwrap();
     assert_eq!(input_defs.len(), 1);
     assert_eq!(input_defs[0].name, "webhook");
+}
+
+#[test]
+fn resolve_rejects_capabilities_on_raw_api_steps() {
+    let dir = seed_index();
+    let mut step = plain_step();
+    step.capabilities.push("docker-socket".into());
+
+    let error = resolve_uses_steps(vec![step], dir.path(), &Default::default()).unwrap_err();
+    assert!(
+        error.contains("raw pipeline steps cannot request execution capabilities"),
+        "{error}"
+    );
+}
+
+fn spec_with_run_and_dir(run: &str, default_dir: Option<&str>) -> String {
+    let dir_line = default_dir
+        .map(|d| format!("default_dir: \"{d}\"\n"))
+        .unwrap_or_default();
+    format!(
+        r#"
+id: buz/harness
+publisher: official
+version: 1.0.0
+engine: shell
+default_timeout: 30s
+{dir_line}author: Buz
+source_repo: https://github.com/buz/buz-plugins
+
+run: |
+{run}
+"#
+    )
+}
+
+#[test]
+fn caller_run_is_appended_after_template_run() {
+    let dir = tempfile::tempdir().unwrap();
+    write_spec(
+        dir.path(),
+        "harness.yaml",
+        &spec_with_run_and_dir("  set -eu", None),
+    );
+    let resolved = LocalStepIndex::new(dir.path().to_path_buf())
+        .resolve("buz/harness@1.0.0", "1.8.0")
+        .unwrap();
+
+    let mut step = uses_step("buz/harness@1.0.0");
+    step.run = "cargo test".into();
+    let expanded = expand_uses_step(&step, &resolved).unwrap();
+    assert!(expanded.run.contains("set -eu"), "{:?}", expanded.run);
+    assert!(expanded.run.ends_with("cargo test"), "{:?}", expanded.run);
+
+    // No caller run → template run verbatim.
+    let plain = uses_step("buz/harness@1.0.0");
+    let expanded = expand_uses_step(&plain, &resolved).unwrap();
+    assert_eq!(expanded.run.trim(), "set -eu");
+}
+
+#[test]
+fn default_dir_fills_step_work_dir_when_omitted() {
+    let dir = tempfile::tempdir().unwrap();
+    write_spec(
+        dir.path(),
+        "harness.yaml",
+        &spec_with_run_and_dir("  set -eu", Some("source")),
+    );
+    let resolved = LocalStepIndex::new(dir.path().to_path_buf())
+        .resolve("buz/harness@1.0.0", "1.8.0")
+        .unwrap();
+
+    let step = uses_step("buz/harness@1.0.0");
+    let expanded = expand_uses_step(&step, &resolved).unwrap();
+    assert_eq!(expanded.dir.as_deref(), Some("source"));
+
+    // Call-site work_dir wins over the template default.
+    let mut step = uses_step("buz/harness@1.0.0");
+    step.dir = Some("backend".into());
+    let expanded = expand_uses_step(&step, &resolved).unwrap();
+    assert_eq!(expanded.dir.as_deref(), Some("backend"));
+}
+
+#[test]
+fn with_values_may_reference_dynamic_env() {
+    let dir = tempfile::tempdir().unwrap();
+    write_spec(
+        dir.path(),
+        "harness.yaml",
+        &spec_with_run_and_dir("  set -eu", None).replacen(
+            "run: |",
+            "inputs:\n  tag:\n    type: string\nrun: |",
+            1,
+        ),
+    );
+    let resolved = LocalStepIndex::new(dir.path().to_path_buf())
+        .resolve("buz/harness@1.0.0", "1.8.0")
+        .unwrap();
+
+    let mut step = uses_step("buz/harness@1.0.0");
+    let mut with = BTreeMap::new();
+    with.insert("tag".to_string(), "v${env.APP_VERSION}".to_string());
+    step.with = Some(with);
+    let expanded = expand_uses_step(&step, &resolved).unwrap();
+    let env = expanded.env.unwrap();
+    assert_eq!(
+        env.get("INPUT_TAG").map(String::as_str),
+        Some("v${env.APP_VERSION}"),
+        "env refs must pass through unresolved for the Runner"
+    );
 }
 
 fn plain_step() -> StepDef {

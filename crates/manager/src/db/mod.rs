@@ -1,5 +1,5 @@
 use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 
 use crate::config::Config;
 
@@ -169,6 +169,18 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN volumes TEXT NOT NULL DEFAULT ''")
         .execute(pool)
         .await;
+
+    let task_columns: Vec<String> = sqlx::query("PRAGMA table_info(tasks)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get::<String, _>(1))
+        .collect();
+    if !task_columns.iter().any(|column| column == "capabilities") {
+        sqlx::query("ALTER TABLE tasks ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'")
+            .execute(pool)
+            .await?;
+    }
 
     // Add step_statuses column to jobs table (safe to fail if already present)
     let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN step_statuses TEXT NOT NULL DEFAULT '[]'")

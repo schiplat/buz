@@ -320,6 +320,7 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepD
         values.insert(def.name.clone(), value.clone());
         let is_secret_ref = shared::secret_ref::parse_secrets_expr(&value).is_some();
         let is_vars_ref = shared::secret_ref::parse_vars_expr(&value).is_some();
+        let is_env_ref = value.contains("${env.");
         if value.contains("${secrets.") && !is_secret_ref {
             errors.push(format!(
                 "with.{}: Secret inputs must use a complete ${{secrets.NAME}} reference",
@@ -332,7 +333,7 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepD
                 def.name
             ));
         }
-        if def.is_masking() && !is_secret_ref {
+        if def.is_masking() && (is_env_ref || !is_secret_ref) {
             errors.push(format!(
                 "with.{}: masking input must be exactly a ${{secrets.NAME}} reference",
                 def.name
@@ -341,12 +342,18 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepD
         if is_secret_ref {
             deferred_defs.push(def.clone());
             deferred_values.insert(def.name.clone(), value);
-        } else if !is_vars_ref {
+        } else if !is_vars_ref && !is_env_ref {
+            // `${env.X}` values resolve on the Runner (previous steps'
+            // $BUZ_ENV) — literal type-checking here would wrongly reject them.
             let mut definition = def.clone();
             definition.required = Some(false);
             validation_defs.push(definition);
             validation_values.insert(def.name.clone(), value);
         }
+    }
+
+    if step.uses.is_some() && !step.capabilities.is_empty() {
+        errors.push("capabilities: uses steps inherit capabilities from their template".into());
     }
 
     for key in with.keys() {
@@ -402,6 +409,15 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepD
         None => spec.effective_engine().to_string(),
     };
 
+    let capabilities = if step.uses.is_some() {
+        spec.capabilities.clone()
+    } else {
+        step.capabilities.clone()
+    };
+    if let Err(error) = shared::step_spec::validate_step_capabilities(&capabilities, &engine) {
+        errors.push(error);
+    }
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -412,18 +428,26 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepD
         } else {
             step.name.clone()
         },
-        run: spec.run.clone().unwrap_or_default(),
+        run: match (
+            spec.run.as_deref().map(str::trim).filter(|r| !r.is_empty()),
+            step.run.trim(),
+        ) {
+            (Some(template_run), "") => template_run.to_string(),
+            (Some(template_run), caller_run) => format!("{template_run}\n{caller_run}"),
+            (None, caller_run) => caller_run.to_string(),
+        },
         engine: Some(engine),
         // The expanded step is concrete — `uses` is cleared and the
         // provenance row carries the audit trail instead.
         uses: None,
         with: None,
         image: spec.image.clone(),
+        capabilities,
         volumes: step.volumes.clone(),
         host: step.host.clone(),
         host_labels: step.host_labels.clone(),
         hosts_strategy: step.hosts_strategy.clone(),
-        dir: step.dir.clone(),
+        dir: step.dir.clone().or_else(|| spec.default_dir.clone()),
         timeout: step
             .timeout
             .clone()
@@ -505,6 +529,9 @@ pub fn resolve_uses_steps(
             });
             out.push(expanded);
         } else {
+            if !step.capabilities.is_empty() {
+                return Err("capabilities: raw pipeline steps cannot request execution capabilities; declare them on a locked uses: template".into());
+            }
             out.push(step);
         }
     }

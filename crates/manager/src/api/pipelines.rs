@@ -312,7 +312,7 @@ pub async fn get_one(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
                 work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
                 step_env, privileged, registry_secret, config_source, config_key_path, config_render, config_dest,
-                hosts_strategy
+                hosts_strategy, capabilities
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&id)
@@ -350,6 +350,7 @@ pub async fn get_one(
             ).ok().filter(|v| !v.is_null()),
             "config_dest": t.get::<String, _>(21),
             "hosts_strategy": t.get::<String, _>(22),
+            "capabilities": serde_json::from_str::<Vec<String>>(&t.get::<String, _>(23)).unwrap_or_default(),
         })
     })
     .collect::<Vec<_>>();
@@ -999,7 +1000,7 @@ pub(crate) async fn do_trigger(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, volumes,
                 privileged, registry_secret, config_source, config_key_path, config_render, config_dest,
-                hosts_strategy, id
+                hosts_strategy, id, capabilities
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(pipeline_id)
@@ -1037,6 +1038,7 @@ pub(crate) async fn do_trigger(
             "config_dest": t.get::<String, _>(20),
             "hosts_strategy": t.get::<String, _>(21),
             "id": t.get::<String, _>(22),
+            "capabilities": serde_json::from_str::<Vec<String>>(&t.get::<String, _>(23)).unwrap_or_default(),
         })
     })
     .collect::<Vec<_>>();
@@ -1247,6 +1249,10 @@ pub(crate) async fn insert_steps(
         }
         let task_id = Uuid::new_v4().to_string();
         let exec_type = step.engine.clone().unwrap_or_else(|| "shell".into());
+        shared::step_spec::validate_step_capabilities(&step.capabilities, &exec_type)
+            .map_err(AppError::ValidationFailed)?;
+        let capabilities_stored = serde_json::to_string(&step.capabilities)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
         let fail_strategy = if step.continue_on_error.unwrap_or(false) {
             "continue"
         } else {
@@ -1437,8 +1443,8 @@ pub(crate) async fn insert_steps(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
              command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
              step_env, volumes, privileged, registry_secret, config_source, config_key_path, config_render, config_dest,
-             hosts_strategy)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             hosts_strategy, capabilities)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(pipeline_id)
@@ -1464,6 +1470,7 @@ pub(crate) async fn insert_steps(
         .bind(&config_render_stored)
         .bind(&config_dest_stored)
         .bind(&hosts_strategy_stored)
+        .bind(&capabilities_stored)
         .execute(&mut *conn)
         .await?;
 
@@ -1473,6 +1480,7 @@ pub(crate) async fn insert_steps(
             "name": step.name,
             "exec_type": exec_type,
             "image": image_stored,
+            "capabilities": step.capabilities,
         }));
     }
 
