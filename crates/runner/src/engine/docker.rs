@@ -24,6 +24,10 @@ pub const CONTAINER_WORKSPACE: &str = "/buz/workspace";
 ///   When absent, `--workdir` defaults to `CONTAINER_WORKSPACE`.
 ///
 /// Order: global flags → volumes → env → image → shell + script.
+///
+/// Test-only convenience wrapper; production callers pass socket/name via
+/// [`build_docker_run_args_with_socket`].
+#[cfg(test)]
 pub fn build_docker_run_args(
     image: &str,
     runner_workspace_dir: &str,
@@ -388,6 +392,9 @@ pub async fn stop_container(name: &str, docker_config_dir: Option<&str>) {
 /// `docker_config_dir` — when set, the Docker CLI (image pull / push auth)
 /// reads credentials from this job-scoped config dir (`DOCKER_CONFIG`) instead
 /// of the host-global `~/.docker/config.json`. Container env is unaffected.
+/// Test-only convenience wrapper; production callers use
+/// [`execute_streaming_with_socket`].
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)] // docker run surface: image/workdir/cmd/env/volumes/workdir/privileged + config scope
 pub async fn execute_streaming(
     image: &str,

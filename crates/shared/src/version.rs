@@ -6,13 +6,13 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Product name shown in CLI and API payloads.
 pub const PRODUCT_NAME: &str = "Buz";
 
-/// `--version` line for the manager binary: `Buz manager 1.8.0`.
+/// `--version` line for the manager binary: `Buz manager 1.8.1`.
 pub const MANAGER_LONG_VERSION: &str = concat!("Buz manager ", env!("CARGO_PKG_VERSION"));
 
-/// `--version` line for the runner binary: `Buz runner 1.8.0`.
+/// `--version` line for the runner binary: `Buz runner 1.8.1`.
 pub const RUNNER_LONG_VERSION: &str = concat!("Buz runner ", env!("CARGO_PKG_VERSION"));
 
-/// Build a clap-style version line: `1.8.0`.
+/// Build a clap-style version line: `1.8.1`.
 pub fn version_string() -> &'static str {
     VERSION
 }
