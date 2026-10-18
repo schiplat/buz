@@ -779,6 +779,25 @@ async fn execute_job(
         base_env.insert(key, value);
     }
 
+    // Job-scoped dynamic env file ($BUZ_ENV, GHA $GITHUB_ENV style): steps
+    // append KEY=value lines; parsed after each step and merged into the base
+    // env of subsequent steps. Lives inside the job workspace so Docker
+    // containers reach it via the workspace mount (/buz/workspace/.buz/env).
+    let buz_env_path = format!(
+        "{}/.buz/env",
+        config.runner.workspace_dir.trim_end_matches('/')
+    );
+    if let Some(parent) = std::path::Path::new(&buz_env_path).parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(
+                "Failed to create {}: {e} — $BUZ_ENV disabled for this job",
+                parent.display()
+            );
+        }
+    }
+    let _ = std::fs::remove_file(&buz_env_path);
+    base_env.insert("BUZ_ENV".into(), buz_env_path.clone());
+
     // Secret catalog keys/values for log redaction (not process env injection).
     let mut pipeline_secret_keys: HashSet<String> = HashSet::new();
     let mut secret_mask_values: Vec<String> = Vec::new();
@@ -911,6 +930,91 @@ async fn execute_job(
             None
         };
         let has_timeout = step_timeout.is_some();
+        let privileged = step
+            .get("privileged")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let volumes: Vec<String> = step
+            .get("volumes")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let capabilities: Vec<String> = step
+            .get("capabilities")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let has_host_prepare = super::config_source::needs_prepare(step);
+        let docker_socket_path = if exec_type == "docker" {
+            match engine::docker::validate_step_policy(
+                &config.runner,
+                &capabilities,
+                &volumes,
+                privileged,
+                has_host_prepare,
+            ) {
+                Ok(value) => value,
+                Err(e) => {
+                    let msg = format!("{e:#}");
+                    let _ = super::logs::upload_chunk(
+                        client,
+                        config,
+                        token,
+                        job_id,
+                        LogChunk {
+                            chunk_index: step_log_base(idx) + LOG_STEP_ERROR,
+                            step_order: idx as i32,
+                            content: format!("==> ERROR\\n{msg}\\n"),
+                        },
+                    )
+                    .await;
+                    update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
+                        .await?;
+                    anyhow::bail!(msg);
+                }
+            }
+        } else {
+            if !capabilities.is_empty() {
+                anyhow::bail!("execution capabilities are only valid for Docker engine steps");
+            }
+            None
+        };
+        if exec_type == "docker" {
+            let image = step.get("image").and_then(|v| v.as_str()).unwrap_or("");
+            if let Err(e) = engine::docker::preflight(config.engine.docker_enabled, image) {
+                let msg = format!("{e:#}");
+                let _ = super::logs::upload_chunk(
+                    client,
+                    config,
+                    token,
+                    job_id,
+                    LogChunk {
+                        chunk_index: step_log_base(idx) + LOG_STEP_ERROR,
+                        step_order: idx as i32,
+                        content: format!("==> ERROR\\n{msg}\\n"),
+                    },
+                )
+                .await;
+                update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
+                    .await?;
+                anyhow::bail!(msg);
+            }
+        }
+        if work_dir.is_some_and(|dir| !is_safe_workspace_subdir(dir)) {
+            let msg = format!(
+                "step work_dir must be a relative path inside the job workspace: {work_dir:?}"
+            );
+            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+            anyhow::bail!(msg);
+        }
 
         // ── Step env: base + expanded step `env:` map (no auto-inject from secrets:) ──
         let mut step_env = base_env.clone();
@@ -922,7 +1026,44 @@ async fn execute_job(
         if let Some(se_obj) = step.get("step_env").and_then(|v| v.as_object()) {
             for (k, v) in se_obj {
                 if let Some(s) = v.as_str() {
-                    step_env.insert(k.clone(), s.to_string());
+                    // `with:` values may reference dynamic env written by
+                    // earlier steps ($BUZ_ENV) via `${env.NAME}` — resolve
+                    // now, when those values exist. Fail closed on unknown.
+                    if k.starts_with("INPUT_") && s.contains("${env.") {
+                        match shared::secret_ref::expand_env_refs(s, &step_env) {
+                            Ok(expanded) => {
+                                step_env.insert(k.clone(), expanded);
+                            }
+                            Err(msg) => {
+                                let error =
+                                    format!("with input {}: {msg}", k.trim_start_matches("INPUT_"));
+                                let _ = super::logs::upload_chunk(
+                                    client,
+                                    config,
+                                    token,
+                                    job_id,
+                                    LogChunk {
+                                        chunk_index: step_log_base(idx) + LOG_STEP_ERROR,
+                                        step_order: idx as i32,
+                                        content: format!("==> ERROR\n{error}\n"),
+                                    },
+                                )
+                                .await;
+                                update_job_status(
+                                    client,
+                                    config,
+                                    token,
+                                    job_id,
+                                    "failed",
+                                    Some(idx as i32),
+                                )
+                                .await?;
+                                anyhow::bail!(error);
+                            }
+                        }
+                    } else {
+                        step_env.insert(k.clone(), s.to_string());
+                    }
                 }
             }
         }
@@ -1604,6 +1745,12 @@ async fn execute_job(
                     env.insert("DOCKER_CONFIG".into(), dir.clone());
                 }
                 env.insert("BUZ_STEP_ENGINE".into(), exec_type.to_string());
+                // Inside the container the workspace mounts at CONTAINER_WORKSPACE;
+                // point $BUZ_ENV at the same physical file the host parses.
+                env.insert(
+                    "BUZ_ENV".into(),
+                    format!("{}/.buz/env", engine::docker::CONTAINER_WORKSPACE),
+                );
 
                 // Debug echo — show the command before execution (like bash -x)
                 {
@@ -1941,7 +2088,8 @@ async fn execute_job(
                 let sv_for_upload = secret_values.clone();
                 let forced_for_upload = forced_values.clone();
 
-                let exec_result = engine::docker::execute_streaming(
+                let container_name = format!("buz-{}-{}", job_id, idx);
+                let exec_result = engine::docker::execute_streaming_with_socket(
                     &img,
                     Path::new(&config.runner.workspace_dir),
                     &cmd,
@@ -1950,6 +2098,8 @@ async fn execute_job(
                     work_dir,
                     privileged,
                     docker_config_dir.as_deref(),
+                    docker_socket_path.as_deref(),
+                    Some(&container_name),
                 )
                 .await;
 
@@ -2008,6 +2158,7 @@ async fn execute_job(
                         tracing::warn!("Job {jid} cancelled during docker step '{sname}' — killing container process");
                         let _ = child.kill().await;
                         let _ = child.wait().await;
+                        engine::docker::stop_container(&container_name, docker_config_dir.as_deref()).await;
                         upload_task.abort();
                         (-1, true, false)
                     }
@@ -2015,6 +2166,7 @@ async fn execute_job(
                         tracing::warn!("Docker step '{sname}' timed out after {step_timeout_secs}s — killing container");
                         let _ = child.kill().await;
                         let _ = child.wait().await;
+                        engine::docker::stop_container(&container_name, docker_config_dir.as_deref()).await;
                         let _ = read_guard.join().await;
                         upload_task.abort();
                         (-1, false, true)
@@ -2134,6 +2286,21 @@ async fn execute_job(
         } else {
             update_job_status(client, config, token, job_id, "success", Some(idx as i32)).await?;
         }
+
+        // ── $BUZ_ENV merge: what this step wrote becomes env for later steps ──
+        // Shell and Docker steps share the same physical file (the Docker
+        // container sees it via the workspace mount). Values are not
+        // auto-masked — route sensitive data through Secrets instead.
+        match parse_buz_env_file(&buz_env_path) {
+            Ok(dynamic) => {
+                for (key, value) in dynamic {
+                    base_env.insert(key, value);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse $BUZ_ENV after step '{step_name}': {e}");
+            }
+        }
     }
 
     // fail_strategy = "continue" may leave failed steps behind; the job must
@@ -2149,6 +2316,74 @@ async fn execute_job(
     tracing::info!("Job {job_id} completed successfully");
 
     Ok(())
+}
+
+/// Parse a `$BUZ_ENV` file (GHA `$GITHUB_ENV` format).
+///
+/// - `KEY=value` — everything after the first `=` is the value (no quote
+///   stripping), trailing newline/CR removed.
+/// - `KEY<<DELIM` — multiline block; following lines until a line equal to
+///   `DELIM` are joined with `\n` (GHA heredoc form).
+/// - Blank lines and `# comments` are skipped; anything else is a warning.
+/// Duplicate keys: the last write wins (file order).
+pub(crate) fn parse_buz_env_file(path: &str) -> anyhow::Result<Vec<(String, String)>> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => anyhow::bail!("cannot read {path}: {e}"),
+    };
+    let valid_key = |key: &str| {
+        let mut chars = key.chars();
+        matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut lines = content.lines().peekable();
+    while let Some(raw) = lines.next() {
+        let line = raw.trim_end_matches('\r');
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((key, delimiter)) = trimmed.split_once("<<") {
+            let key = key.trim();
+            let delimiter = delimiter.trim();
+            if !valid_key(key) || delimiter.is_empty() {
+                tracing::warn!("$BUZ_ENV: ignoring malformed line: {trimmed:?}");
+                continue;
+            }
+            let mut value = String::new();
+            let mut closed = false;
+            for block_line in lines.by_ref() {
+                let block_line = block_line.trim_end_matches('\r');
+                if block_line.trim() == delimiter {
+                    closed = true;
+                    break;
+                }
+                if !value.is_empty() {
+                    value.push('\n');
+                }
+                value.push_str(block_line);
+            }
+            if !closed {
+                tracing::warn!("$BUZ_ENV: unterminated {key}<<{delimiter} block — dropping");
+                continue;
+            }
+            out.retain(|(k, _)| k != key);
+            out.push((key.to_string(), value));
+        } else if let Some((key, value)) = trimmed.split_once('=') {
+            let key = key.trim();
+            if !valid_key(key) {
+                tracing::warn!("$BUZ_ENV: ignoring malformed line: {trimmed:?}");
+                continue;
+            }
+            out.retain(|(k, _)| k != key);
+            out.push((key.to_string(), value.to_string()));
+        } else {
+            tracing::warn!("$BUZ_ENV: ignoring line without '=': {trimmed:?}");
+        }
+    }
+    Ok(out)
 }
 
 /// Normalize the claim response's `metadata` object plus git trigger inputs
@@ -2213,6 +2448,11 @@ fn build_ssh_env_command(command: &str, env: &std::collections::HashMap<String, 
         return format!("{prefix}{command}");
     }
     for (k, v) in env {
+        // $BUZ_ENV is a Runner-host workspace path; remote hosts have no such
+        // file. Dynamic values still flow as ordinary exported vars below.
+        if k == "BUZ_ENV" {
+            continue;
+        }
         // Export the raw variable
         let safe_v = shell_escape(v);
         prefix.push_str(&format!("export {k}={safe_v} && "));
@@ -2458,6 +2698,15 @@ async fn update_job_status(
     }
 
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("status update failed after all retries")))
+}
+
+fn is_safe_workspace_subdir(dir: &str) -> bool {
+    let path = Path::new(dir);
+    !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
 }
 
 /// Job-scoped Docker CLI config directory: `{workspace}/{job_id}/.docker`.

@@ -10,6 +10,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
 use super::shell::ReadGuard;
+use crate::config::{DockerMountPolicy, RunnerSection};
 
 /// Fixed mount point / working directory inside the container (design).
 pub const CONTAINER_WORKSPACE: &str = "/buz/workspace";
@@ -32,8 +33,36 @@ pub fn build_docker_run_args(
     container_work_dir: Option<&str>,
     privileged: bool,
 ) -> Vec<String> {
+    build_docker_run_args_with_socket(
+        image,
+        runner_workspace_dir,
+        command,
+        env,
+        volumes,
+        container_work_dir,
+        privileged,
+        None,
+        None,
+    )
+}
+
+fn build_docker_run_args_with_socket(
+    image: &str,
+    runner_workspace_dir: &str,
+    command: &str,
+    env: &HashMap<String, String>,
+    volumes: &[String],
+    container_work_dir: Option<&str>,
+    privileged: bool,
+    docker_socket_path: Option<&Path>,
+    container_name: Option<&str>,
+) -> Vec<String> {
     let mut args = vec!["run".into(), "--rm".into()];
 
+    if let Some(name) = container_name {
+        args.push("--name".into());
+        args.push(name.into());
+    }
     if privileged {
         args.push("--privileged".into());
     }
@@ -49,6 +78,11 @@ pub fn build_docker_run_args(
     args.push(wd);
 
     for (k, v) in env {
+        // When the authorized local socket is mounted, force the in-container
+        // Docker CLI to use it rather than a caller-selected remote endpoint.
+        if docker_socket_path.is_some() && matches!(k.as_str(), "DOCKER_HOST" | "DOCKER_CONTEXT") {
+            continue;
+        }
         args.push("-e".into());
         args.push(format!("{k}={v}"));
         // Match shell engine's INPUT_* convention for trigger-style vars.
@@ -63,9 +97,16 @@ pub fn build_docker_run_args(
     for vol in volumes {
         let v = vol.trim();
         if !v.is_empty() {
+            if docker_socket_path.is_some() && is_socket_volume(v) {
+                continue;
+            }
             args.push("-v".into());
             args.push(v.to_string());
         }
+    }
+    if let Some(socket_path) = docker_socket_path {
+        args.push("-v".into());
+        args.push(format!("{}:/var/run/docker.sock", socket_path.display()));
     }
 
     args.push(image.into());
@@ -73,6 +114,116 @@ pub fn build_docker_run_args(
     args.push("-elc".into());
     args.push(command.into());
     args
+}
+
+/// Validate that a Docker step requests only Runner-authorized local resources.
+/// This check is independent of Manager's mutable engine policy and must run
+/// before any host-side prepare/login action.
+pub fn validate_step_policy(
+    runner: &RunnerSection,
+    capabilities: &[String],
+    volumes: &[String],
+    privileged: bool,
+    has_host_prepare: bool,
+) -> anyhow::Result<Option<std::path::PathBuf>> {
+    let mut socket_path = None;
+    let mut wants_socket = false;
+    for capability in capabilities {
+        match capability.as_str() {
+            "docker-socket" if !wants_socket => wants_socket = true,
+            "docker-socket" => anyhow::bail!("duplicate Docker capability 'docker-socket'"),
+            other => anyhow::bail!("unsupported Docker capability {other:?}"),
+        }
+    }
+    if wants_socket {
+        if !runner.docker_socket_allowed {
+            anyhow::bail!("docker-socket capability denied by local Runner policy");
+        }
+        socket_path = Some(validate_socket_path(&runner.docker_socket_path)?);
+    }
+    let mut explicit_socket_volume = false;
+    for volume in volumes {
+        if is_socket_volume(volume) {
+            if runner.docker_mount_policy == DockerMountPolicy::Strict {
+                anyhow::bail!("explicit Docker socket mounts are forbidden by strict local Runner policy; the locked capability injects the socket automatically");
+            }
+            let allowed_legacy =
+                volume.trim() == format!("{}:/var/run/docker.sock", runner.docker_socket_path);
+            if !runner.docker_socket_allowed || !allowed_legacy {
+                anyhow::bail!(
+                    "Docker socket volume must exactly match the locally authorized socket"
+                );
+            }
+            if explicit_socket_volume {
+                anyhow::bail!("duplicate Docker socket volume is not allowed");
+            }
+            explicit_socket_volume = true;
+            socket_path = Some(validate_socket_path(&runner.docker_socket_path)?);
+            if !capabilities.iter().any(|c| c == "docker-socket") {
+                tracing::warn!("legacy explicit Docker socket volume accepted under local authorization; declare capabilities: [docker-socket] to migrate");
+            }
+            continue;
+        }
+        if runner.docker_mount_policy == DockerMountPolicy::Strict {
+            anyhow::bail!(
+                "explicit Docker volume {volume:?} is forbidden by strict local Runner policy"
+            );
+        }
+    }
+    if runner.docker_mount_policy == DockerMountPolicy::Strict && privileged {
+        anyhow::bail!("privileged Docker containers are forbidden by strict local Runner policy");
+    }
+    if runner.docker_mount_policy == DockerMountPolicy::Strict && has_host_prepare {
+        anyhow::bail!(
+            "strict Docker policy forbids host-side config_source/config_render preparation"
+        );
+    }
+    Ok(socket_path)
+}
+
+fn is_socket_volume(volume: &str) -> bool {
+    let mut parts = volume.trim().split(':');
+    let source = parts.next().unwrap_or_default();
+    let target = parts.next().unwrap_or_default();
+    source.ends_with("docker.sock") || target.ends_with("docker.sock")
+}
+
+fn validate_socket_path(path: &str) -> anyhow::Result<std::path::PathBuf> {
+    let p = Path::new(path);
+    if !p.is_absolute()
+        || p.components().any(|c| {
+            !matches!(
+                c,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
+        || path.trim().is_empty()
+        || path.contains(':')
+        || path.contains(',')
+    {
+        anyhow::bail!("docker_socket_path must be an absolute, simple Unix socket path");
+    }
+    let metadata = std::fs::symlink_metadata(p)
+        .map_err(|e| anyhow::anyhow!("cannot inspect docker_socket_path {path:?}: {e}"))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!("docker_socket_path must not be a symlink");
+    }
+    // Keep an operator-owned socket's parent path stable and mount the canonical
+    // target, never a symlink alias supplied by configuration.
+    let canonical = std::fs::canonicalize(p)
+        .map_err(|e| anyhow::anyhow!("cannot resolve docker_socket_path {path:?}: {e}"))?;
+    let metadata = std::fs::metadata(&canonical)
+        .map_err(|e| anyhow::anyhow!("cannot inspect docker_socket_path {path:?}: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if !metadata.file_type().is_socket() {
+            anyhow::bail!("docker_socket_path {path:?} is not a Unix domain socket");
+        }
+    }
+    #[cfg(not(unix))]
+    anyhow::bail!("docker-socket capability is supported only on Unix runners");
+    Ok(canonical)
 }
 
 /// Preconditions before spawning docker.
@@ -195,6 +346,35 @@ pub async fn registry_logout(registry: &str, docker_config_dir: Option<&str>) {
     }
 }
 
+pub async fn stop_container(name: &str, docker_config_dir: Option<&str>) {
+    if name.trim().is_empty() {
+        return;
+    }
+    let mut command = Command::new("docker");
+    if let Some(dir) = docker_config_dir {
+        command.env("DOCKER_CONFIG", dir);
+    }
+    match tokio::time::timeout(
+        Duration::from_secs(15),
+        command
+            .args(["rm", "--force", name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status(),
+    )
+    .await
+    {
+        Ok(Ok(status)) if status.success() => {}
+        Ok(Ok(status)) => tracing::warn!(
+            "Docker cleanup for container {name:?} exited {}",
+            status.code().unwrap_or(-1)
+        ),
+        Ok(Err(error)) => tracing::warn!("Docker cleanup for container {name:?} failed: {error}"),
+        Err(_) => tracing::warn!("Docker cleanup for container {name:?} timed out"),
+    }
+}
+
 /// Spawn `docker run` with streaming stdout/stderr (same shape as shell engine).
 ///
 /// `runner_workspace_dir` — the runner's own work directory (e.g. `/tmp/buz-runner`).
@@ -219,6 +399,34 @@ pub async fn execute_streaming(
     privileged: bool,
     docker_config_dir: Option<&str>,
 ) -> anyhow::Result<(Child, mpsc::UnboundedReceiver<String>, ReadGuard)> {
+    execute_streaming_with_socket(
+        image,
+        runner_workspace_dir,
+        command,
+        env,
+        volumes,
+        container_work_dir,
+        privileged,
+        docker_config_dir,
+        None,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_streaming_with_socket(
+    image: &str,
+    runner_workspace_dir: &Path,
+    command: &str,
+    env: &HashMap<String, String>,
+    volumes: &[String],
+    container_work_dir: Option<&str>,
+    privileged: bool,
+    docker_config_dir: Option<&str>,
+    docker_socket_path: Option<&Path>,
+    container_name: Option<&str>,
+) -> anyhow::Result<(Child, mpsc::UnboundedReceiver<String>, ReadGuard)> {
     std::fs::create_dir_all(runner_workspace_dir).map_err(|e| {
         anyhow::anyhow!(
             "failed to create docker workspace {}: {e}",
@@ -227,7 +435,7 @@ pub async fn execute_streaming(
     })?;
 
     let runner_wd_str = runner_workspace_dir.to_string_lossy();
-    let args = build_docker_run_args(
+    let args = build_docker_run_args_with_socket(
         image,
         &runner_wd_str,
         command,
@@ -235,6 +443,8 @@ pub async fn execute_streaming(
         volumes,
         container_work_dir,
         privileged,
+        docker_socket_path,
+        container_name,
     );
     let mut cmd = Command::new("docker");
     cmd.args(&args);

@@ -68,6 +68,16 @@ pub struct RunnerSection {
     pub tls_skip_verify: bool,
     #[serde(default = "default_workspace_dir")]
     pub workspace_dir: String,
+    /// Machine-local Docker bind-mount policy; never overlaid by Manager policy.
+    /// Omitted keeps existing deployments compatible. New templates opt into strict.
+    #[serde(default)]
+    pub docker_mount_policy: DockerMountPolicy,
+    /// Authorize access to the locally configured daemon socket. A capability is
+    /// a request, not a grant; even legacy mode checks this for new requests.
+    #[serde(default)]
+    pub docker_socket_allowed: bool,
+    #[serde(default = "default_docker_socket_path")]
+    pub docker_socket_path: String,
     /// Local persistent file for the Manager-issued Runner JWT.
     #[serde(default = "default_token_cache_path")]
     pub token_cache_path: String,
@@ -92,6 +102,9 @@ impl Default for RunnerSection {
             standalone: false,
             tls_skip_verify: false,
             workspace_dir: default_workspace_dir(),
+            docker_mount_policy: DockerMountPolicy::Legacy,
+            docker_socket_allowed: false,
+            docker_socket_path: default_docker_socket_path(),
             token_cache_path: default_token_cache_path(),
             labels: Vec::new(),
             clean_workspace_after_job: false,
@@ -183,6 +196,9 @@ impl EngineConfig {
 fn default_workspace_dir() -> String {
     "/tmp/buz-runner".into()
 }
+fn default_docker_socket_path() -> String {
+    "/var/run/docker.sock".into()
+}
 fn default_token_cache_path() -> String {
     "./state/runner-token".into()
 }
@@ -206,6 +222,16 @@ fn default_clock_warn_threshold() -> i64 {
 }
 fn default_clock_max_skew() -> i64 {
     300
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerMountPolicy {
+    /// Preserve explicit bind mounts for existing Runner deployments.
+    #[default]
+    Legacy,
+    /// Permit only Runner-owned workspace and explicitly authorized socket mounts.
+    Strict,
 }
 
 impl RunnerSection {

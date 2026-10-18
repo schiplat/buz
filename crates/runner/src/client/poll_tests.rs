@@ -2,7 +2,7 @@ use super::{
     build_config_prep_banner, build_login_banner, build_runner_banner, build_ssh_banner,
     build_ssh_env_command, build_step_echo, build_step_failure_message, build_verbose_step_config,
     build_verbose_step_result, buz_metadata_env, clean_job_docker_config, config_url_age,
-    format_resolved_ssh_targets, job_docker_config_dir, merge_ssh_host_outputs,
+    format_resolved_ssh_targets, job_docker_config_dir, merge_ssh_host_outputs, parse_buz_env_file,
     prepare_job_docker_config_dir, step_failure_hint, step_log_base,
     wrap_remote_cmd_with_registry_login, LOG_ECHO, LOG_LOGIN, LOG_RUNNER_BANNER, LOG_STEP_ERROR,
     LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP, LOG_STEP_VERBOSE_EXEC,
@@ -10,6 +10,86 @@ use super::{
 };
 use crate::masker::SecretCatalog;
 use std::collections::HashMap;
+
+#[test]
+fn work_dir_rejects_absolute_parent_and_prefix_escape() {
+    assert!(!super::is_safe_workspace_subdir("/tmp"));
+    assert!(!super::is_safe_workspace_subdir("../outside"));
+    assert!(!super::is_safe_workspace_subdir("src/../../outside"));
+    assert!(!super::is_safe_workspace_subdir(""));
+    assert!(super::is_safe_workspace_subdir("frontend/src"));
+}
+
+#[test]
+fn buz_env_file_parses_kv_heredoc_and_last_write_wins() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("env");
+    std::fs::write(
+        &path,
+        "# comment\n\
+         APP_VERSION=1.2.3\n\
+         MULTI<<EOF\nline one\nline two\nEOF\n\
+         EMPTY=\n\
+         APP_VERSION=9.9.9\n\
+         BAD LINE WITHOUT EQUALS\n\
+         1BAD=skip\n",
+    )
+    .unwrap();
+    let got = parse_buz_env_file(path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        got,
+        vec![
+            ("MULTI".to_string(), "line one\nline two".to_string()),
+            ("EMPTY".to_string(), String::new()),
+            ("APP_VERSION".to_string(), "9.9.9".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn buz_env_file_missing_is_empty_and_unterminated_block_dropped() {
+    assert!(parse_buz_env_file("/nonexistent/buz-env")
+        .unwrap()
+        .is_empty());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("env");
+    std::fs::write(&path, "OK=yes\nBROKEN<<EOF\nnever closed\n").unwrap();
+    let got = parse_buz_env_file(path.to_str().unwrap()).unwrap();
+    assert_eq!(got, vec![("OK".to_string(), "yes".to_string())]);
+}
+
+#[test]
+fn expand_env_refs_resolves_and_fails_closed() {
+    let mut values = HashMap::new();
+    values.insert("TAG".to_string(), "1.0".to_string());
+    let malformed = shared::secret_ref::expand_env_refs("app:${env.}", &values).unwrap_err();
+    assert!(malformed.contains("invalid"), "{malformed}");
+
+    // `${TAG}` is not an env ref — left verbatim; only ${env.*} expands.
+    let ok = shared::secret_ref::expand_env_refs("app:${TAG}-${env.TAG}", &values).unwrap();
+    assert_eq!(ok, "app:${TAG}-1.0");
+    let missing = shared::secret_ref::expand_env_refs("${env.MISSING}", &values).unwrap_err();
+    assert!(missing.contains("MISSING"), "{missing}");
+}
+
+#[test]
+fn ssh_env_command_drops_buz_env_path() {
+    let mut env = HashMap::new();
+    env.insert("BUZ_ENV".into(), "/tmp/buz-runner/job/.buz/env".into());
+    env.insert("APP_VERSION".into(), "1.2.3".into());
+    let cmd = build_ssh_env_command("deploy", &env);
+    assert!(!cmd.contains("BUZ_ENV="), "{cmd}");
+    // Dynamic values still reach the remote host as ordinary vars.
+    assert!(cmd.contains("export APP_VERSION='1.2.3'"), "{cmd}");
+    assert!(cmd.contains("export INPUT_APP_VERSION='1.2.3'"), "{cmd}");
+}
+
+#[test]
+fn docker_policy_error_preflight_test_anchor() {
+    let mut runner = crate::config::RunnerSection::default();
+    runner.docker_mount_policy = crate::config::DockerMountPolicy::Strict;
+    assert!(crate::engine::docker::validate_step_policy(&runner, &[], &[], false, true).is_err());
+}
 
 #[test]
 fn step_log_base_isolates_steps() {

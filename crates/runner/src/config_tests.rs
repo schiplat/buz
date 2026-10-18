@@ -24,6 +24,9 @@ level = "debug"
     assert_eq!(cfg.runner.manager_url, "http://127.0.0.1:8080");
     assert_eq!(cfg.runner.register_token, "tok");
     assert_eq!(cfg.runner.workspace_dir, "/tmp/x");
+    assert_eq!(cfg.runner.docker_mount_policy, DockerMountPolicy::Legacy);
+    assert!(!cfg.runner.docker_socket_allowed);
+    assert_eq!(cfg.runner.docker_socket_path, "/var/run/docker.sock");
     assert_eq!(cfg.runner.token_cache_path, "./state/runner-token");
     assert_eq!(cfg.runner.labels, vec!["docker".to_string()]);
     assert!(cfg.engine.docker_enabled);
@@ -142,6 +145,35 @@ fn ensure_enabled_respects_engine_flags() {
     eng.shell_enabled = false;
     let err = eng.ensure_enabled("shell").unwrap_err().to_string();
     assert!(err.contains("shell_enabled"), "{err}");
+}
+
+#[test]
+fn docker_mount_policy_and_socket_authorization_are_machine_local() {
+    let raw = r#"
+[runner]
+name = "r"
+register_token = "tok"
+docker_mount_policy = "strict"
+docker_socket_allowed = true
+docker_socket_path = "/run/docker/daemon.sock"
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("runner.toml");
+    std::fs::write(&path, raw).unwrap();
+    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    assert_eq!(cfg.runner.docker_mount_policy, DockerMountPolicy::Strict);
+    assert!(cfg.runner.docker_socket_allowed);
+    assert_eq!(cfg.runner.docker_socket_path, "/run/docker/daemon.sock");
+}
+
+#[test]
+fn docker_mount_policy_rejects_unknown_mode() {
+    let raw =
+        "[runner]\\nregister_token = \\\"tok\\\"\\ndocker_mount_policy = \\\"permissive\\\"\\n";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("runner.toml");
+    std::fs::write(&path, raw).unwrap();
+    assert!(load(Some(path.to_str().unwrap())).is_err());
 }
 
 #[test]
