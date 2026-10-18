@@ -1104,14 +1104,14 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         let run = step.run.as_deref().unwrap_or("").trim();
 
         if uses_ref.is_some() {
-            // Marketplace step: engine/image come from the resolved template —
-            // the call site may not override them (ADR §4). `run:` is allowed:
-            // it is appended after the template run block (the template
-            // provides the environment, the call site provides the commands).
-            for (field, value) in [
-                ("engine", step.engine.as_deref().unwrap_or("").trim()),
-                ("image", step.image.as_deref().unwrap_or("").trim()),
-            ] {
+            // Marketplace step: `image:` comes from the resolved template and
+            // has no call-site override — statically rejected. `engine:` is
+            // allowed here as a deployment-context override; whether the
+            // template supports the requested engine is enforced at resolution
+            // time against its declared `engines` ("shell/ssh unsupported
+            // override" errors). `run:` is appended after the template run
+            // block (template = environment, call site = commands).
+            for (field, value) in [("image", step.image.as_deref().unwrap_or("").trim())] {
                 if !value.is_empty() {
                     errors.push(YamlValidationError {
                         field: format!("steps[{i}].{field}"),

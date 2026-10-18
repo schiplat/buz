@@ -61,13 +61,15 @@ describe('plugin-first pipeline YAML completions', () => {
     expect(apply(doc, 'ssh')).toContain('engine:')
   })
 
-  it('describes run as the uses-step extension point and keeps engine template-owned', () => {
+  it('describes run as the uses-step extension point and engine as a scoped override', () => {
     const stepOptions = complete('steps:\n  - name: deploy\n    ')!.options
     const run = stepOptions.find((option) => option.label === 'run')!
     const uses = stepOptions.find((option) => option.label === 'uses')!
+    const engine = stepOptions.find((option) => option.label === 'engine')!
     expect(run.info).toContain('appended after the template run block')
     expect(uses.info).toContain('run: appends')
-    expect(uses.info).toContain('engine/image stay template-owned')
+    expect(uses.info).toContain('image stays template-owned')
+    expect(engine.info).toContain('within its declared engines')
     const workDir = stepOptions.find((option) => option.label === 'work_dir')!
     expect(workDir.info).toContain('default_dir')
   })

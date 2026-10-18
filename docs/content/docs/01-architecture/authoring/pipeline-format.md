@@ -564,7 +564,7 @@ steps:
       title: deploy done
 ```
 
-Schema rules enforced today: `uses:` takes `<namespace>/<name>@<pin>` with pin `@1`, `@1.2`, `@1.2.0`, or `@sha256:<64 hex>` (ranges and `latest` are rejected); a `uses:` step cannot also declare `engine:` / `run:` / `image:`; `with:` requires `uses:`. Templates may declare an optional `category:` for browsing and filtering; it is metadata, not part of the stable ID. Templates that must run against a minimum Buz release declare `requires_buz` (see the [Plugin Contract](plugin-contract/)).
+Schema rules enforced today: `uses:` takes `<namespace>/<name>@<pin>` with pin `@1`, `@1.2`, `@1.2.0`, or `@sha256:<64 hex>` (ranges and `latest` are rejected); a `uses:` step cannot also declare `image:` (template-owned, no override); `engine:` is allowed as a deployment-context override — resolution enforces the template's declared `engines` at save time; `run:` is appended after the template run block (template = environment, call site = commands); `with:` requires `uses:`. Templates may declare an optional `category:` for browsing and filtering; it is metadata, not part of the stable ID. Templates that must run against a minimum Buz release declare `requires_buz` (see the [Plugin Contract](plugin-contract/)).
 
 **Resolution (local index)**: at pipeline save, each `uses:` reference is resolved against the local step index — `<yaml_scan_dir>/steps` by default (override with `[step_index].local_dir` in Manager config), one YAML spec file per step template. Specs are discovered recursively; hidden paths and symlinks are ignored. Keep each `(id, version)` in exactly one file; `buz-manager step-validate <directory>` recursively checks specs and rejects duplicate ID/version pairs. Pins lock at save time ("resolve & lock"): the resolved version, content hash, source, and expanded step JSON are stored as provenance, so upstream tag moves never change an already-saved pipeline. Save-time errors are explicit: template not found, no version matching the pin, the plugin requiring a newer Buz, or `with:` not matching the template's declared inputs. The full design (remote `https` index, static browse site, update badges) is Phase 2 of the marketplace ADR.
 
@@ -692,6 +692,8 @@ Selects the execution engine. Defaults to `shell` (runner's own shell). When set
 | `shell` / `local` | Same as omitted — runner host shell |
 | `ssh` | **SSH** — connects to remote host(s) via SSH (requires `host` and/or `host_labels`) |
 | `docker` | **Docker** — runs `run:` inside a container on the runner. Requires `image`. See [Docker Engine](/docs/01-architecture/execution/docker-engine/). |
+
+On a `uses:` step, `engine:` overrides the template's default engine — allowed only within the engines the template declares via `engines:` (checked at save time, "解析即锁定"). Note that with `ssh` the step's `work_dir`, `config.render` outputs and `run:` all execute on the target host, not the Runner.
 
 | | |
 |---|---|

@@ -53,11 +53,11 @@ const STEP: Completion[] = [
     type: 'property',
     info: 'Shell script / command; on a uses: step it is appended after the template run block',
   },
-  { label: 'engine', type: 'property', info: 'shell | docker | ssh (template-owned on uses: steps)' },
+  { label: 'engine', type: 'property', info: 'shell | docker | ssh (on uses: steps: overrides the template engine within its declared engines)' },
   {
     label: 'uses',
     type: 'property',
-    info: 'Pinned step template ref: <namespace>/<name>@<pin> (local index). Inputs go under with:; engine/image stay template-owned; run: appends; capability requests come only from the plugin.',
+    info: 'Pinned step template ref: <namespace>/<name>@<pin> (local index). Inputs go under with:; image stays template-owned; engine: overrides within the template engines; run: appends; capability requests come only from the plugin.',
   },
   {
     label: 'with',

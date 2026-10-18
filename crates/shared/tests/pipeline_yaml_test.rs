@@ -1612,42 +1612,40 @@ steps:
 }
 
 #[test]
-fn uses_rejects_engine_image_override_but_allows_run() {
-    for (field, line) in [
-        ("engine", "    engine: shell"),
-        ("image", "    image: alpine:3"),
-    ] {
-        let yaml = format!(
-            r#"
+fn uses_rejects_image_override_but_allows_engine_and_run() {
+    let yaml = r#"
 name: uses-conflict
 steps:
   - name: notify
     uses: buz/feishu@1.2
-{line}
-"#
-        );
-        let r = shared::pipeline_yaml::parse_and_validate(&yaml);
-        assert!(!r.valid, "{field} must conflict with uses");
-        assert!(
-            r.errors
-                .iter()
-                .any(|e| e.field == format!("steps[0].{field}")),
-            "{field}: {:?}",
-            r.errors
-        );
-    }
-
-    // `run:` is the supported extension point: appended after the template
-    // run block (template provides the environment, call site the commands).
-    let with_run = r#"
-name: uses-run
-steps:
-  - name: test
-    uses: buz/feishu@1.2
-    run: cargo test
+    image: alpine:3
 "#;
-    let r = shared::pipeline_yaml::parse_and_validate(with_run);
-    assert!(r.valid, "run with uses must be valid: {:?}", r.errors);
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(!r.valid, "image must conflict with uses");
+    assert!(
+        r.errors.iter().any(|e| e.field == "steps[0].image"),
+        "{:?}",
+        r.errors
+    );
+
+    // `engine:` is a deployment-context override — statically allowed;
+    // the resolver enforces the template's declared engines at save time.
+    // `run:` is appended after the template run block.
+    let yaml = r#"
+name: uses-override
+steps:
+  - name: unpack
+    uses: buz/archive@1.1
+    engine: ssh
+    host: $deploy_host
+    run: echo appended
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(
+        r.valid,
+        "engine/run with uses must be valid: {:?}",
+        r.errors
+    );
 }
 
 #[test]
