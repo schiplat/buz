@@ -9,6 +9,12 @@ manager_url = "http://127.0.0.1:8080"
 register_token = "REPLACE_WITH_UI_REGISTER_TOKEN"
 # tls_skip_verify = true
 workspace_dir = "/tmp/buz-runner"
+# New deployments should opt into strict host-mount restrictions. Existing
+# deployments default to legacy until explicitly migrated.
+docker_mount_policy = "strict"
+# Grant only on a dedicated Runner whose jobs are trusted to control this daemon.
+docker_socket_allowed = false
+docker_socket_path = "/var/run/docker.sock"
 token_cache_path = "./state/runner-token"
 # prefer_interfaces = ["enp26s0"]
 

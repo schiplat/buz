@@ -13,6 +13,11 @@ manager_url = "http://manager:8080"
 register_token = "REPLACE_WITH_UI_REGISTER_TOKEN"
 # tls_skip_verify = false
 workspace_dir = "./workspace"
+# Strict allows only the Runner-owned workspace and an explicitly requested,
+# locally authorized Docker socket. Set true only for trusted Docker-in-Docker jobs.
+docker_mount_policy = "strict"
+docker_socket_allowed = false
+docker_socket_path = "/var/run/docker.sock"
 token_cache_path = "./state/runner-token"
 # prefer_interfaces = ["eth0"]
 
