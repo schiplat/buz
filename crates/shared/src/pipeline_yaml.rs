@@ -410,6 +410,7 @@ impl From<&StepYaml> for crate::protocol::StepDef {
             with: step.with.clone(),
             image: step.image.clone(),
             volumes: step.volumes.clone(),
+            capabilities: Vec::new(),
             host: step.host.clone(),
             host_labels: step.host_labels.clone(),
             hosts_strategy: step.hosts_strategy.clone(),
@@ -1034,6 +1035,18 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
     };
 
+    // The typed pipeline schema intentionally has no author-controlled capability
+    // field. Inspect the original YAML so attempts to add one get a clear error.
+    let raw_steps = serde_yaml::from_str::<serde_yaml::Value>(raw)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("steps")
+                .and_then(serde_yaml::Value::as_sequence)
+                .cloned()
+        })
+        .unwrap_or_default();
+
     // --- Validation rules ---
 
     // 1. name is required
@@ -1056,6 +1069,19 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     // 3. Each step must have `run`; `engine` must be a known value when set.
     const VALID_ENGINES: &[&str] = &["shell", "local", "ssh", "docker"];
     for (i, step) in parsed.steps.iter().enumerate() {
+        if raw_steps
+            .get(i)
+            .and_then(serde_yaml::Value::as_mapping)
+            .is_some_and(|mapping| {
+                mapping.contains_key(serde_yaml::Value::String("capabilities".into()))
+            })
+        {
+            errors.push(YamlValidationError {
+                field: format!("steps[{i}].capabilities"),
+                message: "capabilities are granted only by a locked plugin template; raw steps cannot request them".into(),
+            });
+        }
+
         let uses_ref = match step
             .uses
             .as_deref()
@@ -1078,11 +1104,12 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         let run = step.run.as_deref().unwrap_or("").trim();
 
         if uses_ref.is_some() {
-            // Marketplace step: engine/run/image come from the resolved
-            // template — the call site may not override them (ADR §4).
+            // Marketplace step: engine/image come from the resolved template —
+            // the call site may not override them (ADR §4). `run:` is allowed:
+            // it is appended after the template run block (the template
+            // provides the environment, the call site provides the commands).
             for (field, value) in [
                 ("engine", step.engine.as_deref().unwrap_or("").trim()),
-                ("run", run),
                 ("image", step.image.as_deref().unwrap_or("").trim()),
             ] {
                 if !value.is_empty() {
@@ -1119,6 +1146,19 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                     "invalid engine '{engine}' — must be one of: {}",
                     VALID_ENGINES.join(", ")
                 ),
+            });
+        }
+
+        if raw_steps
+            .get(i)
+            .and_then(serde_yaml::Value::as_mapping)
+            .is_some_and(|mapping| {
+                mapping.contains_key(serde_yaml::Value::String("capabilities".into()))
+            })
+        {
+            errors.push(YamlValidationError {
+                field: format!("steps[{i}].capabilities"),
+                message: "capabilities are granted only by a locked plugin template; raw steps cannot request them".into(),
             });
         }
 

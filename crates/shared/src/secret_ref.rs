@@ -15,6 +15,13 @@ pub fn parse_vars_expr(raw: &str) -> Option<&str> {
     parse_domain_expr(raw, "vars")
 }
 
+/// Extract `NAME` from `${env.NAME}` — a Runner-side dynamic reference to a
+/// value a previous step wrote to `$BUZ_ENV`. Resolved at execution time
+/// (unlike `${secrets.*}` / `${vars.*}`, which the Manager resolves at claim).
+pub fn parse_env_expr(raw: &str) -> Option<&str> {
+    parse_domain_expr(raw, "env")
+}
+
 fn parse_domain_expr<'a>(raw: &'a str, domain: &str) -> Option<&'a str> {
     let s = raw.trim();
     let prefix = format!("${{{domain}.");
@@ -47,6 +54,45 @@ pub fn resolve_secret_slot(raw: &str) -> Option<String> {
         return None;
     }
     Some(s.to_string())
+}
+
+/// Expand every `${env.NAME}` occurrence in `text` using `values`.
+///
+/// Fail-closed: returns `Err` naming the first missing or malformed
+/// reference instead of leaving it unresolved silently.
+pub fn expand_env_refs(
+    text: &str,
+    values: &std::collections::HashMap<String, String>,
+) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    const MARKER: &str = "${env.";
+    while let Some(i) = rest.find(MARKER) {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let Some(end_rel) = rest.find('}') else {
+            return Err("${env.NAME} reference is missing its closing '}'".into());
+        };
+        let name = &rest[MARKER.len()..end_rel];
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(format!(
+                "invalid ${{env.{name}}} reference — NAME must be [A-Za-z0-9_]"
+            ));
+        }
+        match values.get(name) {
+            Some(value) => {
+                out.push_str(value);
+                rest = &rest[end_rel + 1..];
+            }
+            None => {
+                return Err(format!(
+                    "${{env.{name}}} is not set — no previous step in this job wrote it to $BUZ_ENV"
+                ));
+            }
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
 /// True when `run` contains a `${secrets.` reference (not expanded in scripts).

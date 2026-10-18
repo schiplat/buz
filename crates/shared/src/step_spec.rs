@@ -86,9 +86,18 @@ pub struct StepSpec {
     /// Required for `engine: docker`; digest-pinning recommended.
     #[serde(default)]
     pub image: Option<String>,
+    /// Execution capabilities requested by the template, not authorization.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     /// Call-site fallback when the invoking step omits `timeout`.
     #[serde(default)]
     pub default_timeout: Option<String>,
+    /// Call-site fallback working directory when the invoking step omits
+    /// `work_dir`. Workspace-relative (e.g. `source`); validated like a step
+    /// `dir` — relative, no `..` components. Resolved into the expanded
+    /// step's `dir` by the Manager, so engines see an ordinary `work_dir`.
+    #[serde(default)]
+    pub default_dir: Option<String>,
     /// Input declarations; values arrive as `INPUT_<UPPER_SNAKE>` env.
     #[serde(default)]
     pub inputs: Option<std::collections::BTreeMap<String, RawStepInput>>,
@@ -389,6 +398,50 @@ fn validate_input_default(name: &str, input: &RawStepInput, errors: &mut Vec<Str
     }
 }
 
+pub const DOCKER_SOCKET_CAPABILITY: &str = "docker-socket";
+
+/// Validate a template/step working directory: relative, non-empty, and made
+/// only of normal path components (no `..`, no absolute prefix). Mirrors the
+/// Runner's `is_safe_workspace_subdir` so a spec accepted here cannot escape
+/// the job workspace at execution time.
+pub fn validate_relative_dir(raw: &str) -> Result<(), String> {
+    let dir = raw.trim();
+    if dir.is_empty() {
+        return Err("directory must not be empty".into());
+    }
+    let path = std::path::Path::new(dir);
+    if path.is_absolute() || dir.starts_with('~') {
+        return Err(format!(
+            "directory must be relative to the job workspace, got {dir:?}"
+        ));
+    }
+    if !path
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(format!(
+            "directory must not contain '..' or '.' components, got {dir:?}"
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_step_capabilities(capabilities: &[String], engine: &str) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for capability in capabilities {
+        if capability != DOCKER_SOCKET_CAPABILITY {
+            return Err(format!("capabilities: unknown capability {capability:?}"));
+        }
+        if !seen.insert(capability) {
+            return Err(format!("capabilities: duplicate capability {capability:?}"));
+        }
+        if engine != "docker" {
+            return Err("capabilities: docker-socket requires engine: docker".into());
+        }
+    }
+    Ok(())
+}
+
 /// Validate a parsed step spec. Returns one message per problem so plugin
 /// CI can print them all at once.
 pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<String>> {
@@ -477,6 +530,33 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
         }
     }
 
+    if let Err(error) = validate_step_capabilities(&spec.capabilities, spec.effective_engine()) {
+        errors.push(error);
+    }
+    if !spec.capabilities.is_empty() {
+        let version = parse_version_triple(current_buz);
+        if version.map_or(true, |version| version < (1, 8, 0)) {
+            errors.push("capabilities: this plugin requires Buz >= 1.8.0".into());
+        }
+        let requirement = spec
+            .requires_buz
+            .as_deref()
+            .and_then(|raw| parse_buz_requirement(raw).ok());
+        if !matches!(requirement, Some(BuzRequirement::Min(version) | BuzRequirement::Exact(version)) if version >= (1, 8, 0))
+        {
+            errors.push("capabilities: declare requires_buz: '>=1.8.0' or newer".into());
+        }
+        if spec
+            .declared_engines()
+            .iter()
+            .any(|engine| engine != "docker")
+        {
+            errors.push(
+                "capabilities: docker-socket templates cannot declare non-Docker engines".into(),
+            );
+        }
+    }
+
     let run = spec.run.as_deref().unwrap_or("").trim();
     if run.is_empty() {
         errors.push("run: is required (script/command the step executes)".into());
@@ -494,6 +574,12 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
     if let Some(timeout) = spec.default_timeout.as_deref() {
         if let Err(msg) = parse_duration_seconds(timeout) {
             errors.push(format!("default_timeout: {msg}"));
+        }
+    }
+
+    if let Some(dir) = spec.default_dir.as_deref() {
+        if let Err(msg) = validate_relative_dir(dir) {
+            errors.push(format!("default_dir: {msg}"));
         }
     }
 

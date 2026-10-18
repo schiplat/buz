@@ -755,6 +755,9 @@ pub struct StepDef {
     /// Extra host→container bind mounts ("host:container"), docker only.
     #[serde(default)]
     pub volumes: Option<Vec<String>>,
+    /// Execution capabilities; the Runner must separately authorize them.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     /// Host name(s) — single string or array. Only relevant for SSH steps.
     #[serde(default)]
     pub host: Option<OneOrMany>,

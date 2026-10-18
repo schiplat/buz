@@ -293,9 +293,13 @@ fn expand_value(
                             out.push_str(&v);
                         }
                         Resolved::Missing(reference) => missing.push(reference),
+                        Resolved::Verbatim => {
+                            out.push_str(&format!("${{{inner}}}"));
+                        }
                     }
                     rest = &braced[close + 1..];
                 }
+
                 None => {
                     out.push('$');
                     rest = after;
@@ -334,6 +338,10 @@ fn expand_value(
 enum Resolved {
     Value(String),
     Missing(String),
+    /// `${env.X}` — dynamic value from a previous step's `$BUZ_ENV`. The
+    /// Manager cannot resolve it (it only exists at execution time); copied
+    /// through verbatim for the Runner to expand.
+    Verbatim,
 }
 
 fn resolve_reference(inner: &str, map: &ValueMap, mode: ExpandMode) -> Resolved {
@@ -356,6 +364,9 @@ fn resolve_reference(inner: &str, map: &ValueMap, mode: ExpandMode) -> Resolved 
         (Some(ValueDomain::Secrets), rest)
     } else if let Some(rest) = inner.strip_prefix("vars.") {
         (Some(ValueDomain::Vars), rest)
+    } else if inner.starts_with("env.") {
+        // Not Manager-resolvable: leave for the Runner's $BUZ_ENV expansion.
+        return Resolved::Verbatim;
     } else {
         (None, inner)
     };

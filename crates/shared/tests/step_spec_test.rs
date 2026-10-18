@@ -436,3 +436,27 @@ fn docker_declared_without_image_is_rejected() {
         "{err:?}"
     );
 }
+
+#[test]
+fn default_dir_validated_like_step_work_dir() {
+    let ok = base_yaml().replacen(
+        "engine: shell",
+        "default_dir: \"source/subdir\"\nengine: shell",
+        1,
+    );
+    assert!(validate_step_spec(&serde_yaml::from_str::<StepSpec>(&ok).unwrap(), CURRENT).is_ok());
+
+    for bad in ["/abs", "../escape", "a/../b", "./dot", ""] {
+        let yaml = base_yaml().replacen(
+            "engine: shell",
+            &format!("default_dir: \"{bad}\"\nengine: shell"),
+            1,
+        );
+        let errors = validate_step_spec(&serde_yaml::from_str::<StepSpec>(&yaml).unwrap(), CURRENT)
+            .unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.starts_with("default_dir:")),
+            "{bad}: {errors:?}"
+        );
+    }
+}

@@ -1612,10 +1612,9 @@ steps:
 }
 
 #[test]
-fn uses_rejects_engine_run_image_override() {
+fn uses_rejects_engine_image_override_but_allows_run() {
     for (field, line) in [
         ("engine", "    engine: shell"),
-        ("run", "    run: echo hi"),
         ("image", "    image: alpine:3"),
     ] {
         let yaml = format!(
@@ -1637,6 +1636,18 @@ steps:
             r.errors
         );
     }
+
+    // `run:` is the supported extension point: appended after the template
+    // run block (template provides the environment, call site the commands).
+    let with_run = r#"
+name: uses-run
+steps:
+  - name: test
+    uses: buz/feishu@1.2
+    run: cargo test
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(with_run);
+    assert!(r.valid, "run with uses must be valid: {:?}", r.errors);
 }
 
 #[test]
