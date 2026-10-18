@@ -75,7 +75,7 @@ describe('PipelineYamlEditorDialog', () => {
     expect(text).toContain('rejected by the validator')
     expect(text).toContain('overrides the template')
     expect(reference).toContain('source: dist/app.tar.gz')
-    for (const plugin of ['buz/git-clone@1.1.0', 'buz/setup-rust@1.1.0', 'buz/setup-node@1.1.0', 'buz/docker@1.1.0', 'buz/docker-compose@1.0.0']) {
+    for (const plugin of ['buz/checkout@1.2.0', 'buz/setup-rust@1.1.0', 'buz/setup-node@1.1.0', 'buz/docker@1.1.0', 'buz/docker-compose@1.0.0']) {
       expect(reference).toContain(`uses: ${plugin}`)
     }
     expect(reference).toContain('token: ${secrets.GIT_TOKEN}')

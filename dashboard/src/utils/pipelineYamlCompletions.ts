@@ -107,7 +107,8 @@ const ENGINE_VALUES: Completion[] = [
 ]
 
 const TEMPLATE_VALUES: Completion[] = [
-  { label: 'buz/git-clone@1.1.0', type: 'keyword', info: 'Checkout into with.into (default source); workspace-relative, no .. components' },
+  { label: 'buz/checkout@1.2.0', type: 'keyword', info: 'actions/checkout equivalent: ref defaults to BUZ_GIT_SHA on webhook triggers; branch/tag/full-SHA refs; submodules; into (default source)' },
+  { label: 'buz/git-clone@1.1.0', type: 'keyword', info: 'Legacy clone template (superseded by buz/checkout); into (default source), workspace-relative, no .. components' },
   { label: 'buz/setup-rust@1.1.0', type: 'keyword', info: 'Pinned Rust toolchain (default_dir: source; override with a step-level work_dir:)' },
   { label: 'buz/setup-node@1.1.0', type: 'keyword', info: 'Pinned Node toolchain (default_dir: source; override with a step-level work_dir:)' },
   { label: 'buz/docker@1.1.0', type: 'keyword', info: 'default_dir: source (a step-level work_dir: overrides it); requests docker-socket — Runner administrator must separately enable docker_socket_allowed locally' },

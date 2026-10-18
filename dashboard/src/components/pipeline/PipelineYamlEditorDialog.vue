@@ -845,18 +845,19 @@ variables:
 
 steps:
   # Checkout into the job workspace so later toolchain plugins share the files.
+  # ref is omitted: webhook triggers land on BUZ_GIT_SHA, else the remote HEAD.
   - name: Checkout
-    uses: buz/git-clone@1.1.0
+    uses: buz/checkout@1.2.0
     with:
       repo: https://github.com/example/hello-world.git
-      into: source                          # clone destination (default source); no .. components
+      into: source                          # checkout destination (default source); no .. components
 
   - name: Build
     uses: buz/setup-rust@1.1.0                # template supplies a pinned Docker toolchain
     work_dir: source                        # optional step-level override of the template's default_dir: source
-    with:
-      script: cargo build --release
-    run: echo "IMAGE_TAG=1.0.0" >> "$BUZ_ENV"   # appended after the template's run block
+    run: |
+      cargo build --release
+      echo "IMAGE_TAG=1.0.0" >> "$BUZ_ENV"  # appended after the template's run block
     timeout: 10m
     retry: 2
 
@@ -943,10 +944,10 @@ steps:
 
   # Private HTTPS checkout uses a separate Generic token Secret, not an SSH-key script.
   - name: Clone Private Repo
-    uses: buz/git-clone@1.1.0
+    uses: buz/checkout@1.2.0
     with:
       repo: https://github.com/org/private-repo.git
-      into: private-source                  # clone destination (default source)
+      into: private-source                  # checkout destination (default source)
       token: ${secrets.GIT_TOKEN}
     timeout: 5m
 

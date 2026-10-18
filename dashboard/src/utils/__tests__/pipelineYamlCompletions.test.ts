@@ -38,6 +38,7 @@ describe('plugin-first pipeline YAML completions', () => {
     'replaces the full uses reference for prefix %s', (prefix) => {
       const doc = `steps:\n  - uses: ${prefix}`
       expect(labels(doc)).toEqual([
+        'buz/checkout@1.2.0',
         'buz/git-clone@1.1.0',
         'buz/setup-rust@1.1.0',
         'buz/setup-node@1.1.0',
@@ -74,10 +75,13 @@ describe('plugin-first pipeline YAML completions', () => {
     expect(workDir.info).toContain('default_dir')
   })
 
-  it('documents git-clone into and the default_dir fallback on templates', () => {
+  it('documents checkout trigger-commit default and the git-clone legacy entry', () => {
     const doc = 'steps:\n  - uses: '
+    const checkout = complete(doc)!.options.find((option) => option.label === 'buz/checkout@1.2.0')!
+    expect(checkout.info).toContain('BUZ_GIT_SHA')
+    expect(checkout.info).toContain('submodules')
     const gitClone = complete(doc)!.options.find((option) => option.label === 'buz/git-clone@1.1.0')!
-    expect(gitClone.info).toContain('with.into')
+    expect(gitClone.info).toContain('superseded by buz/checkout')
     expect(gitClone.info).toContain('default source')
     for (const label of ['buz/setup-rust@1.1.0', 'buz/setup-node@1.1.0', 'buz/docker@1.1.0']) {
       const info = complete(doc)!.options.find((option) => option.label === label)!.info
