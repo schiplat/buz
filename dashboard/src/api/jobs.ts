@@ -23,6 +23,10 @@ export interface Job {
   verbose_logs?: boolean
   /** Manual trigger user id (null for webhook/cron/git). */
   trigger_user_id?: string | null
+  /** GHA-style per-pipeline build number (1-based, allocated at trigger). */
+  run_number?: number
+  /** Re-run counter; always 1 until job re-run exists. */
+  run_attempt?: number
   /** Append-only approval trail (approve/reject/cancel/timeout). */
   approvals?: JobApprovalRecord[]
 }

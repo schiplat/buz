@@ -71,7 +71,10 @@ async function handleCancel(jobId: string) {
           </thead>
           <tbody>
             <tr v-for="j in filteredJobs" :key="j.id" class="clickable">
-              <td class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all">{{ j.pipeline_name || j.pipeline_id }}</td>
+              <td class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all">
+                {{ j.pipeline_name || j.pipeline_id }}
+                <span v-if="j.run_number" class="ml-1 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">#{{ j.run_number }}</span>
+              </td>
               <td>
                 <StatusBadge :status="j.status" />
               </td>

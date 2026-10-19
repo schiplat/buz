@@ -2415,10 +2415,21 @@ fn buz_metadata_env(
             .unwrap_or("")
             .to_string()
     };
+    // Numeric metadata (GHA github.run_number / github.run_attempt analogue);
+    // omitted when the claim predates them (put() skips empty values).
+    let number = |name: &str| {
+        metadata
+            .and_then(|m| m.get(name))
+            .and_then(|v| v.as_i64())
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+    };
     put("BUZ_PIPELINE_NAME", field("pipeline_name"));
     put("BUZ_TEAM", field("team"));
     put("BUZ_TRIGGER", field("trigger"));
     put("BUZ_TRIGGERED_BY", field("triggered_by"));
+    put("BUZ_RUN_NUMBER", number("run_number"));
+    put("BUZ_RUN_ATTEMPT", number("run_attempt"));
 
     // Normalized from the GIT_* trigger inputs (exported as INPUT_GIT_*).
     let input = |name: &str| {

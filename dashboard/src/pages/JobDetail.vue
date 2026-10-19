@@ -797,7 +797,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
       <button class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors" @click="router.push('/pipelines/' + (job?.pipeline_id || '') + '/history')">
         <ArrowLeft class="h-4 w-4" />
       </button>
-      <PageHeader :title="`Job ${jobId}`" :description="job?.pipeline_name || 'Loading...'">
+      <PageHeader :title="job?.run_number ? `Job #${job.run_number}` : `Job ${jobId}`" :description="job?.pipeline_name || 'Loading...'">
         <template #actions>
           <UiButton v-if="canCancelJob" variant="outline" size="sm" class="border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs px-3 py-1.5" @click="handleCancel">
             <XCircle class="h-3.5 w-3.5" /> Cancel
@@ -941,7 +941,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
           </div>
           <div>
             <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Pipeline</div>
-            <div class="text-sm font-medium text-foreground/90">{{ job.pipeline_name || job.pipeline_id }}</div>
+            <div class="text-sm font-medium text-foreground/90">{{ job.pipeline_name || job.pipeline_id }}<span v-if="job.run_number" class="ml-1 text-xs text-muted-foreground">#{{ job.run_number }}</span></div>
           </div>
           <div>
             <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Runner</div>

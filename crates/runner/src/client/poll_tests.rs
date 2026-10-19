@@ -676,6 +676,37 @@ fn buz_metadata_env_normalizes_claim_metadata() {
 }
 
 #[test]
+fn buz_metadata_env_carries_run_numbers_when_present() {
+    let task = serde_json::json!({
+        "metadata": {
+            "pipeline_name": "deploy",
+            "run_number": 42,
+            "run_attempt": 1
+        }
+    });
+    let env = buz_metadata_env(&task, "job-9", "http://m:8080");
+    assert!(
+        env.contains(&("BUZ_RUN_NUMBER".into(), "42".into())),
+        "{env:?}"
+    );
+    assert!(
+        env.contains(&("BUZ_RUN_ATTEMPT".into(), "1".into())),
+        "{env:?}"
+    );
+}
+
+#[test]
+fn buz_metadata_env_omits_run_numbers_for_legacy_claims() {
+    let env = buz_metadata_env(
+        &serde_json::json!({"metadata": {"pipeline_name": "p"}}),
+        "j",
+        "http://m",
+    );
+    assert!(env.iter().all(|(k, _)| k != "BUZ_RUN_NUMBER"), "{env:?}");
+    assert!(env.iter().all(|(k, _)| k != "BUZ_RUN_ATTEMPT"), "{env:?}");
+}
+
+#[test]
 fn buz_metadata_env_omits_missing_fields() {
     let env = buz_metadata_env(&serde_json::json!({}), "job-2", "http://m:8080");
     assert_eq!(

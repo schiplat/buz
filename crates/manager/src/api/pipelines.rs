@@ -1148,11 +1148,21 @@ pub(crate) async fn do_trigger(
         .map_err(AppError::Internal)?;
     let trigger_params_json = serde_json::to_string(&sealed).unwrap_or_else(|_| "{}".into());
 
+    // Allocate the GHA-style build number and create the job atomically, so
+    // concurrent triggers of one pipeline get gapless, unique numbers.
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let run_number = crate::db::allocate_run_number(&mut tx, pipeline_id)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     sqlx::query(
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot,
                            debug_unredact, verbose_logs, environment_id, trigger_user_id,
-                           created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+                           run_number, run_attempt, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))",
     )
     .bind(&job_id)
     .bind(pipeline_id)
@@ -1164,8 +1174,12 @@ pub(crate) async fn do_trigger(
     .bind(if verbose { 1 } else { 0 })
     .bind(environment_id)
     .bind(trigger_user_id)
-    .execute(&state.pool)
+    .bind(run_number)
+    .execute(&mut *tx)
     .await?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
 
     tracing::info!("Pipeline triggered: {pipeline_name} → job {job_id} (by: {triggered_by})");
 

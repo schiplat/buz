@@ -57,7 +57,8 @@ pub async fn list(
                 j.status, j.trigger_by, j.retry_times,
                 j.step_statuses, j.snapshot,
                 j.start_time, j.end_time, j.created_at, j.updated_at,
-                p.team_id, j.verbose_logs, j.debug_unredact, j.trigger_user_id
+                p.team_id, j.verbose_logs, j.debug_unredact, j.trigger_user_id,
+                j.run_number
          FROM jobs j
          JOIN pipelines p ON j.pipeline_id = p.id
          WHERE 1=1";
@@ -116,6 +117,7 @@ pub async fn list(
                 "verbose_logs": r.get::<i64, _>(14) != 0,
                 "debug_unredact": r.get::<i64, _>(15) != 0,
                 "trigger_user_id": r.get::<Option<String>, _>(16),
+                "run_number": r.get::<i64, _>(17),
             })
         })
         .collect();
@@ -346,7 +348,7 @@ pub async fn get_one(
         "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
                 j.status, j.trigger_by, j.trigger_params, j.snapshot, j.step_statuses, j.retry_times,
                 j.start_time, j.end_time, j.created_at, j.updated_at, j.debug_unredact, j.verbose_logs,
-                j.trigger_user_id
+                j.trigger_user_id, j.run_number, j.run_attempt
          FROM jobs j
          LEFT JOIN pipelines p ON j.pipeline_id = p.id
          WHERE j.id = ?",
@@ -399,6 +401,8 @@ pub async fn get_one(
         "debug_unredact": r.get::<i64, _>(14) != 0,
         "verbose_logs": r.get::<i64, _>(15) != 0,
         "trigger_user_id": r.get::<Option<String>, _>(16),
+        "run_number": r.get::<i64, _>(17),
+        "run_attempt": r.get::<i64, _>(18),
         "team_id": team_id,
         "approvals": approvals,
     }))))

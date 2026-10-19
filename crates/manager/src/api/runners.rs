@@ -628,7 +628,8 @@ pub async fn poll(
     // Claim only if runner has ALL required labels (see runner_satisfies_labels).
     let candidates = sqlx::query(
         "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
-                j.debug_unredact, j.verbose_logs, j.trigger_by, p.name, p.team_id, p.trigger_type
+                j.debug_unredact, j.verbose_logs, j.trigger_by, p.name, p.team_id, p.trigger_type,
+                j.run_number, j.run_attempt
          FROM jobs j
          JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.status = 'pending'
@@ -654,7 +655,7 @@ pub async fn poll(
             "UPDATE jobs SET status = 'running', runner_id = ?, start_time = datetime('now'),
              updated_at = datetime('now')
              WHERE id = ? AND status = 'pending'
-             RETURNING id, pipeline_id, trigger_params, environment_id",
+             RETURNING id, pipeline_id, trigger_params, environment_id, run_number, run_attempt",
         )
         .bind(&auth.runner_id)
         .bind(&job_id)
@@ -705,6 +706,8 @@ pub async fn poll(
     let pipeline_id: String = row.get(1);
     let trigger_params_raw: Option<String> = row.get(2);
     let job_environment_id: Option<String> = row.get(3);
+    let run_number: i64 = row.get(4);
+    let run_attempt: i64 = row.get(5);
     let trigger_params_stored: serde_json::Value = trigger_params_raw
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::json!({}));
@@ -1776,6 +1779,8 @@ pub async fn poll(
             "team": team_name.or(team_id),
             "trigger": pipeline_trigger_type,
             "triggered_by": trigger_by,
+            "run_number": run_number,
+            "run_attempt": run_attempt,
         },
         "tasks": tasks,
         "inputs": trigger_params,
