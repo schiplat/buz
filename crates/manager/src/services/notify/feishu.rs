@@ -95,6 +95,16 @@ pub fn build_feishu_card(event: &NotifyEvent) -> serde_json::Value {
                 "is_short": true,
                 "text": {
                     "tag": "lark_md",
+                    "content": event.run_number.map_or_else(
+                        || "**Build**\n—".to_string(),
+                        |n| format!("**Build**\n#{n}"),
+                    )
+                }
+            },
+            {
+                "is_short": true,
+                "text": {
+                    "tag": "lark_md",
                     "content": format!("**Duration**\n{duration}")
                 }
             },

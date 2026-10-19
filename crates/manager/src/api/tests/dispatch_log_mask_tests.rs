@@ -180,6 +180,11 @@ async fn dispatch_puts_registry_password_in_log_mask_values() {
     let tasks = body["data"]["tasks"].as_array().expect("tasks array");
     assert_eq!(tasks.len(), 1);
 
+    // GHA-style build numbers flow trigger → claim metadata → BUZ_* env.
+    let metadata = &body["data"]["metadata"];
+    assert_eq!(metadata["run_number"], 1, "first trigger of the pipeline");
+    assert_eq!(metadata["run_attempt"], 1);
+
     let mask_values = tasks[0]["log_mask_values"]
         .as_array()
         .expect("log_mask_values");

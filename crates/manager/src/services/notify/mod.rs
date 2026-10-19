@@ -29,6 +29,8 @@ pub struct NotifyEvent {
     pub status: String,
     pub trigger_by: String,
     pub duration_secs: Option<i64>,
+    /// Per-pipeline build number (GHA run_number); None for pre-feature jobs.
+    pub run_number: Option<i64>,
     /// Absolute Job Detail URL when `server.public_base_url` is configured.
     pub job_url: Option<String>,
 }
@@ -115,7 +117,8 @@ async fn send_job_notifications(
     new_status: &str,
 ) -> Result<(), NotifyError> {
     let row = sqlx::query(
-        "SELECT j.snapshot, j.trigger_by, j.pipeline_id, j.start_time, j.end_time, p.name
+        "SELECT j.snapshot, j.trigger_by, j.pipeline_id, j.start_time, j.end_time, p.name,
+                j.run_number
          FROM jobs j
          LEFT JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.id = ?",
@@ -148,6 +151,7 @@ async fn send_job_notifications(
     }
 
     let duration_secs = duration_secs_from_sqlite(start_time.as_deref(), end_time.as_deref());
+    let run_number: i64 = row.get(6);
     let event = NotifyEvent {
         pipeline_name,
         pipeline_id: pipeline_id.clone(),
@@ -155,6 +159,7 @@ async fn send_job_notifications(
         status: new_status.to_string(),
         trigger_by,
         duration_secs,
+        run_number: (run_number > 0).then_some(run_number),
         job_url: job_detail_url(public_base_url, job_id),
     };
 

@@ -50,8 +50,22 @@ fn sample_event(job_url: Option<&str>) -> NotifyEvent {
         status: "success".into(),
         trigger_by: "alice".into(),
         duration_secs: Some(125),
+        run_number: Some(42),
         job_url: job_url.map(str::to_string),
     }
+}
+
+#[test]
+fn feishu_card_shows_build_number_and_tolerates_legacy_jobs() {
+    let card = build_feishu_card(&sample_event(None));
+    let fields_text = serde_json::to_string(&card["card"]["elements"]).unwrap();
+    assert!(fields_text.contains("#42"), "{fields_text}");
+
+    let mut legacy = sample_event(None);
+    legacy.run_number = None;
+    let card = build_feishu_card(&legacy);
+    let fields_text = serde_json::to_string(&card["card"]["elements"]).unwrap();
+    assert!(fields_text.contains("**Build**"), "{fields_text}");
 }
 
 #[test]
@@ -99,6 +113,7 @@ fn feishu_card_failed_template() {
         status: "failed".into(),
         trigger_by: "cron".into(),
         duration_secs: None,
+        run_number: None,
         job_url: None,
     };
     let card = build_feishu_card(&event);

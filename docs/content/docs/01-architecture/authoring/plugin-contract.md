@@ -64,6 +64,8 @@ set):
 | `BUZ_PIPELINE_NAME` | Pipeline name |
 | `BUZ_TEAM` | Team that owns the pipeline |
 | `BUZ_TRIGGER` / `BUZ_TRIGGERED_BY` | Trigger type and actor |
+| `BUZ_RUN_NUMBER` / `BUZ_RUN_ATTEMPT` | Per-pipeline build number (1-based, like GHA `github.run_number`) and the re-run counter — useful for image tags like `app:$BUZ_RUN_NUMBER` and "build #N" messages |
+
 | `BUZ_GIT_SHA` / `BUZ_GIT_BRANCH` | Normalized from `GIT_SHA` / `GIT_BRANCH` inputs on webhook triggers |
 | `BUZ_CONFIG_URL` | Pre-signed config URL, when the step declares a `config.source` |
 | `BUZ_ENV_CHANGED`, `BUZ_ENV_CHANGED_KEYS` | Render results, when the step declares a `config.render` |
