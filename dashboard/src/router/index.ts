@@ -75,6 +75,14 @@ const routes: RouteRecordRaw[] = [
       { path: 'users', name: 'users', component: () => import('@/pages/Users.vue'), meta: { title: 'Users', adminOnly: true } },
       { path: 'api-tokens', name: 'api-tokens', component: () => import('@/pages/ApiTokens.vue'), meta: { title: 'API tokens', adminOnly: true } },
       { path: 'audit-logs', name: 'audit-logs', component: () => import('@/pages/AuditLogs.vue'), meta: { title: 'Audit logs', adminOnly: true } },
+      // Catch-all: unknown URLs get a friendly 404 inside the app shell
+      // (sidebar/topnav keep working) instead of a blank page.
+      {
+        path: ':pathMatch(.*)*',
+        name: 'not-found',
+        component: () => import('@/pages/NotFound.vue'),
+        meta: { title: 'Page not found' },
+      },
     ],
   },
 ]

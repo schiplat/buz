@@ -14,6 +14,14 @@ app.config.errorHandler = (err, instance, info) => {
   console.error('[Vue] Unhandled error:', err)
   console.error('[Vue] Component:', instance?.$?.type?.__name || instance?.$?.type?.name || 'unknown')
   console.error('[Vue] Info:', info)
+  // Surface a friendly notice for errors that escape the route-level
+  // ErrorBoundary (e.g. failures inside dialogs / outside the shell).
+  void import('@/stores/apiFailures')
+    .then(({ useApiFailuresStore }) => {
+      const message = (err as Error)?.message || String(err)
+      useApiFailuresStore().report(500, message)
+    })
+    .catch(() => {})
   // Do NOT re-throw — let the page degrade gracefully rather than
   // freezing the sidebar navigation.
 }

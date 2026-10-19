@@ -78,6 +78,18 @@ apiClient.interceptors.response.use(
         }
       }
     }
+    // Server trouble (5xx) or unreachable Manager: surface one friendly,
+    // dismissible notice instead of leaving pages silently blank.
+    if (status >= 500 || !error.response) {
+      try {
+        // Lazy import keeps the client importable before Pinia is installed.
+        void import('@/stores/apiFailures').then(({ useApiFailuresStore }) => {
+          useApiFailuresStore().report(status ?? 0, String(error.message || ''))
+        })
+      } catch {
+        /* never let reporting break error propagation */
+      }
+    }
     return Promise.reject(error)
   },
 )
