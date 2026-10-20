@@ -3,6 +3,7 @@ import { serializePipelineFormToYaml } from '@/utils/pipelineYamlSerialize'
 
 const base = {
   name: 'demo',
+  environments: ['staging', 'production'],
   description: '',
   trigger_type: 'manual',
   webhook_path: '',
@@ -24,6 +25,12 @@ describe('serializePipelineFormToYaml team', () => {
   it('emits non-default team slug', () => {
     const yaml = serializePipelineFormToYaml({ ...base, team: 'acme' })
     expect(yaml).toContain('team: acme')
+  })
+
+  it('serializes required top-level environments before trigger inputs', () => {
+    const yaml = serializePipelineFormToYaml({ ...base, environments: ['staging', 'production'] })
+    expect(yaml).toContain('name: demo\nenvironments: [staging, production]')
+    expect(yaml).not.toContain('environment:')
   })
 
   it('omits default team', () => {

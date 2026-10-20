@@ -16,6 +16,7 @@ const props = withDefaults(
     modelValue: string
     secretNames?: string[]
     variableNames?: string[]
+    environmentSlugs?: string[]
     placeholder?: string
     /** Debounce for remote validate lint (ms). */
     lintDebounceMs?: number
@@ -23,6 +24,7 @@ const props = withDefaults(
   {
     secretNames: () => [],
     variableNames: () => [],
+    environmentSlugs: () => [],
     placeholder: 'name: hello-world\nsteps:\n  - name: greet\n    run: echo Hello',
     lintDebounceMs: 550,
   },
@@ -113,6 +115,7 @@ function completionExt() {
       createPipelineYamlCompletionSource({
         secretNames: props.secretNames,
         variableNames: props.variableNames,
+        environmentSlugs: props.environmentSlugs,
       }),
     ],
     activateOnTyping: true,

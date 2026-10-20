@@ -14,7 +14,9 @@ export interface Pipeline {
   source: string
   /** Basename under Manager `yaml_scan_dir` when `source=yaml` (flat dir, no subfolders). */
   yaml_path?: string | null
-  /** File vs DB projection sync (only meaningful for source=yaml). */
+  /** Slugs this pipeline may target; every trigger must choose one. */
+  environments: string[]
+  /** On-disk YAML vs DB projection sync (only meaningful for source=yaml). */
   yaml_sync?: YamlSyncStatus | null
   input_defs: PipelineInputDef[] | null
   is_active: boolean
@@ -79,6 +81,7 @@ export interface CreatePipelinePayload {
   concurrency_queue_timeout_seconds?: number
   owner_group?: string
   team_id?: string
+  environments: string[]
   var_ids?: string[]
   secret_ids?: string[]
   env?: { name: string; value: string }[]
@@ -192,6 +195,7 @@ export interface YamlValidationResult {
 }
 
 export interface YamlParsedData {
+  environments?: string[] | null
   description?: string | null
   trigger_type?: string | null
   trigger_config?: YamlTriggerConfig | null
@@ -214,7 +218,9 @@ export interface YamlNotifyChannel {
 
 export interface YamlTriggerConfig {
   webhook_path?: string | null
+  webhook_environment?: string | null
   cron_expr?: string | null
+  cron_environment?: string | null
   inputs?: YamlInputData[] | null
 }
 
@@ -417,6 +423,7 @@ export const pipelinesApi = {
       provider: 'github' | 'gitee'
       label?: string
       branch_filter?: string
+      environment: string
       enabled?: boolean
     },
   ): Promise<GitHookConfig> {
@@ -464,6 +471,7 @@ export interface GitHookConfig {
   hook_key: string
   url_path: string
   branch_filter: string
+  environment: string
   enabled: boolean
   has_secret: boolean
   secret?: string

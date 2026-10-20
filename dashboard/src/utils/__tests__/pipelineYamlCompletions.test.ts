@@ -6,6 +6,7 @@ import { createPipelineYamlCompletionSource } from '../pipelineYamlCompletions'
 const source = createPipelineYamlCompletionSource({
   secretNames: ['REGISTRY_PASSWORD', 'CONFIG_BUNDLE_URL'],
   variableNames: ['IMAGE_TAG'],
+  environmentSlugs: ['staging', 'production'],
 })
 
 function complete(doc: string, explicit = true): CompletionResult | null {
@@ -122,8 +123,15 @@ describe('plugin-first pipeline YAML completions', () => {
     expect(labels('steps:\n  - name: deploy\n    env:\n      my_engine: sh')).not.toEqual(['shell', 'docker', 'ssh'])
   })
 
+  it('suggests only registered environment slugs in the top-level allowlist', () => {
+    expect(labels('environments:\n  - ')).toEqual(['staging', 'production'])
+    const production = complete('environments:\n  - ')!.options.find((option) => option.label === 'production')!
+    expect(production.info).toContain('Registered environment slug')
+  })
+
   it('keeps top-level fields and allowlist completions', () => {
     expect(labels('')).toContain('steps')
+    expect(labels('')).toContain('environments')
     expect(labels('secrets:\n  - ')).toEqual(['REGISTRY_PASSWORD', 'CONFIG_BUNDLE_URL'])
     expect(labels('variables:\n  - ')).toEqual(['IMAGE_TAG'])
     expect(complete('steps:\n  - name: deploy\n    ', false)).toBeNull()

@@ -134,6 +134,11 @@ const triggerDebug = ref(false)
 const triggerVerbose = ref(false)
 const triggerEnvironment = ref('')
 const environments = ref<Environment[]>([])
+const environmentLoadFailed = ref(false)
+const declaredTriggerEnvironments = computed(() => {
+  const declared = new Set(triggerTarget.value?.environments || [])
+  return environments.value.filter((env) => declared.has(env.slug))
+})
 
 const selectedTriggerEnv = computed(() =>
   environments.value.find((e) => e.slug === triggerEnvironment.value) || null,
@@ -142,8 +147,11 @@ const selectedTriggerEnv = computed(() =>
 async function loadEnvironments() {
   try {
     environments.value = await environmentsApi.list()
-  } catch {
+    environmentLoadFailed.value = false
+  } catch (e) {
+    console.error(e)
     environments.value = []
+    environmentLoadFailed.value = true
   }
 }
 
@@ -265,7 +273,7 @@ async function handleTrigger(p: Pipeline) {
   triggerEnvironment.value = ''
   triggerError.value = null
   showAdhocParams.value = false
-  void loadEnvironments()
+  await loadEnvironments()
   let defs: PipelineInputDef[] = Array.isArray(p.input_defs) ? p.input_defs : []
   try {
     const detail = await pipelinesApi.get(p.id)
@@ -313,6 +321,14 @@ async function doTrigger(p: Pipeline) {
       title: 'Invalid inputs',
       summary: 'Fill in the required fields highlighted below, then trigger again.',
       items: missing.map((name) => ({ field: name, message: 'required input is missing' })),
+    }
+    return
+  }
+  if (!triggerEnvironment.value || !declaredTriggerEnvironments.value.some((env) => env.slug === triggerEnvironment.value)) {
+    triggerError.value = {
+      title: 'Environment required',
+      summary: 'Choose one of the environments declared by this pipeline.',
+      items: [{ field: 'environment', message: 'environment is required' }],
     }
     return
   }
@@ -861,19 +877,25 @@ async function handleToggleActive(p: Pipeline) {
           </div>
 
           <div class="mt-5">
-            <label class="mb-1.5 block text-[12px] font-medium">Environment</label>
+            <label class="mb-1.5 block text-[12px] font-medium">Environment <span class="text-red-500">*</span></label>
             <select
               v-model="triggerEnvironment"
               class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
               :disabled="triggeringId !== null"
             >
-              <option value="">Default (no environment)</option>
-              <option v-for="e in environments" :key="e.id" :value="e.slug">
+              <option value="" disabled>Select a declared environment…</option>
+              <option v-for="e in declaredTriggerEnvironments" :key="e.id" :value="e.slug">
                 {{ e.name }} ({{ e.slug }}){{ e.protection_enabled ? ' — protected' : '' }}
               </option>
             </select>
+            <p v-if="environmentLoadFailed" class="mt-1.5 text-[11px] text-destructive">
+              Could not load registered environments. Retry after restoring Manager access.
+            </p>
+            <p v-else-if="declaredTriggerEnvironments.length === 0" class="mt-1.5 text-[11px] text-destructive">
+              This pipeline declares no environments registered in the Manager.
+            </p>
             <p
-              v-if="selectedTriggerEnv?.protection_enabled"
+              v-else-if="selectedTriggerEnv?.protection_enabled"
               class="mt-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300"
             >
               Requires approval after trigger (min role:
@@ -914,7 +936,7 @@ async function handleToggleActive(p: Pipeline) {
 
           <div class="mt-6 flex items-center justify-end gap-3 border-t border-border/30 pt-5">
             <UiButton variant="outline" size="sm" @click="cancelTriggerDialog()">Cancel</UiButton>
-            <UiButton size="sm" @click="doTrigger(triggerTarget!)" :disabled="triggeringId !== null">
+            <UiButton size="sm" @click="doTrigger(triggerTarget!)" :disabled="triggeringId !== null || environmentLoadFailed || !triggerEnvironment || declaredTriggerEnvironments.length === 0">
               <Loader2 v-if="triggeringId === triggerTarget?.id" class="mr-1.5 h-4 w-4 animate-spin" />
               <Play v-else class="mr-1.5 h-4 w-4" /> Run
             </UiButton>

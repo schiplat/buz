@@ -32,6 +32,7 @@ const formMinApproveRole = ref('maintainer')
 const formRequireApprovals = ref(1)
 const formForbidSelfApprove = ref(true)
 const formApprovalTimeoutSeconds = ref(86400)
+const formDeploymentConcurrency = ref<'off' | 'queue' | 'cancel_in_progress'>('off')
 const savingEnv = ref(false)
 
 const ROLE_OPTIONS = ['developer', 'maintainer', 'owner'] as const
@@ -59,6 +60,7 @@ function resetProtectionForm() {
   formRequireApprovals.value = 1
   formForbidSelfApprove.value = true
   formApprovalTimeoutSeconds.value = 86400
+  formDeploymentConcurrency.value = 'off'
 }
 
 function loadProtectionForm(env: Environment) {
@@ -68,6 +70,7 @@ function loadProtectionForm(env: Environment) {
   formRequireApprovals.value = Math.max(1, env.require_approvals ?? 1)
   formForbidSelfApprove.value = env.forbid_self_approve !== false
   formApprovalTimeoutSeconds.value = env.approval_timeout_seconds ?? 86400
+  formDeploymentConcurrency.value = env.deployment_concurrency || 'off'
 }
 
 function protectionPayload() {
@@ -78,6 +81,7 @@ function protectionPayload() {
     require_approvals: Math.max(1, Number(formRequireApprovals.value) || 1),
     forbid_self_approve: formForbidSelfApprove.value,
     approval_timeout_seconds: Math.max(60, Number(formApprovalTimeoutSeconds.value) || 86400),
+    deployment_concurrency: formDeploymentConcurrency.value,
   }
 }
 
@@ -199,6 +203,8 @@ onMounted(() => {
               <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Name</th>
               <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Slug</th>
               <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Protection</th>
+              <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Deploy concurrency</th>
+              <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Hosts</th>
               <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Overrides</th>
               <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Updated</th>
               <th class="text-right px-5 py-2.5 w-28" />
@@ -225,6 +231,12 @@ onMounted(() => {
                 >Protected</span>
                 <span v-else class="text-xs text-muted-foreground/40">—</span>
               </td>
+              <td class="px-5 py-3">
+                <span class="mono-chip text-xs">{{ e.deployment_concurrency || 'off' }}</span>
+              </td>
+              <td class="px-5 py-3 text-xs text-muted-foreground">
+                {{ e.host_allowlist_count ? `${e.host_allowlist_count} entries` : 'Unrestricted' }}
+              </td>
               <td class="px-5 py-3 text-muted-foreground text-xs">
                 <span title="Variable overrides">V:{{ e.var_override_count ?? 0 }}</span>
                 <span class="mx-1 text-muted-foreground/40">·</span>
@@ -233,7 +245,8 @@ onMounted(() => {
               <td class="px-5 py-3 text-muted-foreground text-xs">{{ e.updated_at ? formatLocalDateTime(e.updated_at) : '—' }}</td>
               <td class="px-5 py-3 text-right" @click.stop>
                 <div v-if="auth.isPlatformAdmin" class="inline-flex gap-1">
-                  <UiButton variant="ghost" size="sm" @click="openEditEnv(e)" title="Edit"><Pencil class="h-3.5 w-3.5" /></UiButton>
+                  <UiButton variant="ghost" size="sm" @click="openEditEnv(e)" title="Environment host allowlist"
+              ><Pencil class="h-3.5 w-3.5" /></UiButton>
                   <UiButton variant="ghost" size="sm" @click="deleteEnv(e)" title="Delete"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
                 </div>
               </td>
@@ -274,13 +287,21 @@ onMounted(() => {
               <label class="flex items-start gap-2 cursor-pointer">
                 <input v-model="formProtectionEnabled" type="checkbox" class="mt-0.5" />
                 <span class="text-[12px] leading-snug">
-                  <span class="font-medium">Enable protection</span>
-                  <span class="block text-[11px] text-muted-foreground mt-0.5">
-                    Jobs using this environment wait for approval before running.
-                  </span>
+                <span class="font-medium">Enable protection</span>
+                <span class="block text-[11px] text-muted-foreground mt-0.5">
+                  Jobs using this environment wait for approval before running.
                 </span>
-              </label>
-              <template v-if="formProtectionEnabled">
+              </span>
+            </label>
+            <div>
+              <label class="block text-[12px] font-medium mb-1">Deployment concurrency</label>
+              <select v-model="formDeploymentConcurrency" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50">
+                <option value="off">off — do not serialize across pipelines</option>
+                <option value="queue">queue — FIFO across pipelines</option>
+                <option value="cancel_in_progress">cancel_in_progress — replace active deployment</option>
+              </select>
+            </div>
+            <template v-if="formProtectionEnabled">
                 <div class="grid grid-cols-2 gap-3">
                   <div>
                     <label class="block text-[12px] font-medium mb-1">Min trigger role <span class="text-red-500">*</span></label>

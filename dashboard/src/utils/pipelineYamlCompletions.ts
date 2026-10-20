@@ -9,6 +9,7 @@ const TOP_LEVEL: Completion[] = [
   { label: 'name', type: 'property', info: 'Pipeline name (required)' },
   { label: 'description', type: 'property', info: 'Optional description' },
   { label: 'team', type: 'property', info: 'Team slug (default: default)' },
+  { label: 'environments', type: 'property', info: 'Required target environment slug allowlist; every trigger must choose one' },
   { label: 'owner_group', type: 'property', info: 'Alias of team' },
   { label: 'on', type: 'property', info: 'Trigger: manual / webhook / cron' },
   { label: 'runner', type: 'property', info: 'labels / timeout' },
@@ -120,6 +121,7 @@ const TEMPLATE_VALUES: Completion[] = [
 export type PipelineYamlCompletionOptions = {
   secretNames?: string[]
   variableNames?: string[]
+  environmentSlugs?: string[]
 }
 
 function lineBefore(ctx: CompletionContext): string {
@@ -149,6 +151,7 @@ function guessSection(ctx: CompletionContext): string {
     if (/^steps\s*:/.test(t)) return 'steps'
     if (/^env\s*:/.test(t) && ind === 0) return 'env'
     if (/^secrets\s*:/.test(t) && ind === 0) return 'secrets'
+    if (/^environments\s*:/.test(t) && ind === 0) return 'environments'
     if (/^variables\s*:/.test(t) && ind === 0) return 'variables'
     if (ind === 0 && /^[a-z_]+\s*:/.test(t)) return 'top'
   }
@@ -238,6 +241,12 @@ export function createPipelineYamlCompletionSource(opts: PipelineYamlCompletionO
         label: name,
         type: 'variable',
         info: 'Existing secret',
+      }))
+    } else if (section === 'environments') {
+      options = (opts.environmentSlugs || []).map((slug) => ({
+        label: slug,
+        type: 'variable',
+        info: 'Registered environment slug',
       }))
     } else if (section === 'variables') {
       options = (opts.variableNames || []).map((name) => ({

@@ -41,9 +41,12 @@ type FormLike = {
   description: string
   /** Team slug (`team:` / `owner_group:`). Omit or `default` → default team. */
   team?: string
+  environments: string[]
   trigger_type: string
   webhook_path: string
+  webhook_environment?: string
   cron_expr: string
+  cron_environment?: string
   runner_labels: string
   runner_timeout: string
   concurrency_group: string
@@ -106,6 +109,7 @@ export function serializePipelineFormToYaml(
 ): string {
   const lines: string[] = []
   lines.push(`name: ${esc(form.name.trim() || 'unnamed')}`)
+  lines.push(`environments: [${(form.environments || []).map((slug) => esc(slug)).join(', ')}]`)
   if (form.description.trim()) {
     lines.push(`description: ${esc(form.description.trim())}`)
   }
@@ -119,10 +123,16 @@ export function serializePipelineFormToYaml(
     lines.push('on:')
     lines.push('  webhook:')
     lines.push(`    path: ${esc(form.webhook_path.trim())}`)
+    if (form.webhook_environment?.trim()) {
+      lines.push(`    environment: ${esc(form.webhook_environment.trim())}`)
+    }
   } else if (tt === 'cron' && form.cron_expr.trim()) {
     lines.push('on:')
     lines.push('  cron:')
     lines.push(`    schedule: ${esc(form.cron_expr.trim())}`)
+    if (form.cron_environment?.trim()) {
+      lines.push(`    environment: ${esc(form.cron_environment.trim())}`)
+    }
   } else if (form.input_defs.some((d) => d.name.trim())) {
     lines.push('on:')
     lines.push('  manual:')

@@ -9,6 +9,8 @@ import {
   type EnvironmentDetail,
   type EnvironmentOverride,
   type EnvironmentSecretOverride,
+  type HostAllowlistEntry,
+  type HostAllowlistKind,
 } from '@/api/environments'
 import { variablesApi, type Variable } from '@/api/variables'
 import { secretsApi, type Secret } from '@/api/secrets'
@@ -107,7 +109,12 @@ const formMinApproveRole = ref('maintainer')
 const formRequireApprovals = ref(1)
 const formForbidSelfApprove = ref(true)
 const formApprovalTimeoutSeconds = ref(86400)
+const formDeploymentConcurrency = ref<'off' | 'queue' | 'cancel_in_progress'>('off')
 const savingEnv = ref(false)
+const allowlistKind = ref<HostAllowlistKind>('name')
+const allowlistValue = ref('')
+const savingAllowlist = ref(false)
+const allowlistError = ref('')
 
 const ROLE_OPTIONS = ['developer', 'maintainer', 'owner'] as const
 
@@ -156,6 +163,7 @@ function syncFormFromEnv() {
   formRequireApprovals.value = Math.max(1, env.value.require_approvals ?? 1)
   formForbidSelfApprove.value = env.value.forbid_self_approve !== false
   formApprovalTimeoutSeconds.value = env.value.approval_timeout_seconds ?? 86400
+  formDeploymentConcurrency.value = env.value.deployment_concurrency || 'off'
 }
 
 function startEditEnv() {
@@ -184,6 +192,7 @@ async function saveEnv() {
           require_approvals: Math.max(1, Number(formRequireApprovals.value) || 1),
           forbid_self_approve: formForbidSelfApprove.value,
           approval_timeout_seconds: Math.max(60, Number(formApprovalTimeoutSeconds.value) || 86400),
+          deployment_concurrency: formDeploymentConcurrency.value,
         }
       : {}
     await environmentsApi.update(env.value.id, {
@@ -198,6 +207,43 @@ async function saveEnv() {
     error.value = e?.response?.data?.message || e?.message || 'Failed to save environment'
   } finally {
     savingEnv.value = false
+  }
+}
+
+async function addHostAllowlistEntry() {
+  if (!env.value || !allowlistValue.value.trim()) {
+    allowlistError.value = 'Enter a host name or label'
+    return
+  }
+  savingAllowlist.value = true
+  allowlistError.value = ''
+  try {
+    await environmentsApi.addHostAllowlist(env.value.id, {
+      kind: allowlistKind.value,
+      value: allowlistValue.value.trim(),
+    })
+    allowlistValue.value = ''
+    await loadDetail()
+  } catch (e: any) {
+    allowlistError.value = e?.response?.data?.message || e?.message || 'Failed to add allowlist entry'
+  } finally {
+    savingAllowlist.value = false
+  }
+}
+
+async function removeHostAllowlistEntry(entry: HostAllowlistEntry) {
+  if (!env.value) return
+  if (!(await dialog.confirm(`Remove ${entry.kind} “${entry.value}” from this environment's host allowlist?`, {
+    title: 'Remove host allowlist entry',
+    confirmLabel: 'Remove',
+    danger: true,
+  }))) return
+  allowlistError.value = ''
+  try {
+    await environmentsApi.deleteHostAllowlist(env.value.id, entry)
+    await loadDetail()
+  } catch (e: any) {
+    allowlistError.value = e?.response?.data?.message || e?.message || 'Failed to remove allowlist entry'
   }
 }
 
@@ -364,45 +410,54 @@ onMounted(() => {
       <!-- Environment info (editable) -->
       <div class="rounded-xl border border-border/50 bg-card shadow-sm overflow-hidden">
         <template v-if="!editingEnv">
-          <div class="px-5 py-4">
-            <p class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">Protection</p>
-            <template v-if="env.protection_enabled">
-              <div class="flex flex-wrap gap-x-6 gap-y-3 text-[12px]">
-                <div>
-                  <span class="text-muted-foreground">Min trigger role</span>
-                  <div class="mt-0.5 font-medium">{{ env.min_trigger_role || 'developer' }}</div>
+          <div class="px-5 py-4 space-y-4">
+            <div>
+              <p class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">Protection</p>
+              <template v-if="env.protection_enabled">
+                <div class="flex flex-wrap gap-x-6 gap-y-3 text-[12px]">
+                  <div>
+                    <span class="text-muted-foreground">Min trigger role</span>
+                    <div class="mt-0.5 font-medium">{{ env.min_trigger_role || 'developer' }}</div>
+                  </div>
+                  <div>
+                    <span class="text-muted-foreground">Min approve role</span>
+                    <div class="mt-0.5 font-medium">{{ env.min_approve_role || 'maintainer' }}</div>
+                  </div>
+                  <div>
+                    <span class="text-muted-foreground">Required approvals</span>
+                    <div class="mt-0.5 font-medium tabular-nums">{{ env.require_approvals ?? 1 }}</div>
+                  </div>
+                  <div>
+                    <span class="text-muted-foreground">Self-approve</span>
+                    <div class="mt-0.5 font-medium">{{ env.forbid_self_approve !== false ? 'Forbidden' : 'Allowed' }}</div>
+                  </div>
+                  <div>
+                    <span class="text-muted-foreground">Timeout</span>
+                    <div class="mt-0.5 font-medium tabular-nums">{{ env.approval_timeout_seconds ?? 86400 }}s</div>
+                  </div>
                 </div>
-                <div>
-                  <span class="text-muted-foreground">Min approve role</span>
-                  <div class="mt-0.5 font-medium">{{ env.min_approve_role || 'maintainer' }}</div>
-                </div>
-                <div>
-                  <span class="text-muted-foreground">Required approvals</span>
-                  <div class="mt-0.5 font-medium tabular-nums">{{ env.require_approvals ?? 1 }}</div>
-                </div>
-                <div>
-                  <span class="text-muted-foreground">Self-approve</span>
-                  <div class="mt-0.5 font-medium">{{ env.forbid_self_approve !== false ? 'Forbidden' : 'Allowed' }}</div>
-                </div>
-                <div>
-                  <span class="text-muted-foreground">Timeout</span>
-                  <div class="mt-0.5 font-medium tabular-nums">{{ env.approval_timeout_seconds ?? 86400 }}s</div>
-                </div>
-                <div v-if="env.updated_at">
-                  <span class="text-muted-foreground">Updated</span>
-                  <div class="mt-0.5 tabular-nums text-foreground/90">{{ formatLocalDateTime(env.updated_at) }}</div>
-                </div>
-              </div>
-            </template>
-            <div v-else class="flex flex-wrap items-end gap-x-6 gap-y-3">
-              <p class="text-xs text-muted-foreground">
+              </template>
+              <p v-else class="text-xs text-muted-foreground">
                 Not protected — jobs targeting this environment start without approval.
               </p>
-              <div v-if="env.updated_at" class="text-[12px]">
+            </div>
+            <div class="flex flex-wrap gap-x-6 gap-y-3 text-[12px]">
+              <div>
+                <span class="text-muted-foreground">Deployment concurrency</span>
+                <div class="mt-0.5 font-medium font-mono">{{ env.deployment_concurrency || 'off' }}</div>
+              </div>
+              <div>
+                <span class="text-muted-foreground">Host allowlist</span>
+                <div class="mt-0.5 font-medium">{{ env.host_allowlist.length ? `${env.host_allowlist.length} entries` : 'Unrestricted' }}</div>
+              </div>
+              <div v-if="env.updated_at">
                 <span class="text-muted-foreground">Updated</span>
                 <div class="mt-0.5 tabular-nums text-foreground/90">{{ formatLocalDateTime(env.updated_at) }}</div>
               </div>
             </div>
+            <p class="text-[11px] text-muted-foreground">
+              An empty host allowlist permits any target. With entries present, only listed Host names or labels are allowed; dynamic SSH targets are rejected.
+            </p>
           </div>
         </template>
 
@@ -444,6 +499,14 @@ onMounted(() => {
                   </span>
                 </span>
               </label>
+              <div>
+                <label class="block text-[12px] font-medium mb-1">Deployment concurrency</label>
+                <select v-model="formDeploymentConcurrency" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50">
+                  <option value="off">off — no cross-pipeline serialization</option>
+                  <option value="queue">queue — FIFO across pipelines</option>
+                  <option value="cancel_in_progress">cancel_in_progress — replace active deployment</option>
+                </select>
+              </div>
               <template v-if="formProtectionEnabled">
                 <div class="grid grid-cols-2 gap-3">
                   <div>
@@ -497,6 +560,40 @@ onMounted(() => {
             </div>
           </div>
         </template>
+      </div>
+
+      <div class="rounded-xl border border-border/50 bg-card shadow-sm overflow-hidden">
+        <div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-border/30">
+          <div>
+            <p class="text-[13px] font-medium">Host name / label allowlist</p>
+            <p class="mt-0.5 text-[11px] text-muted-foreground">
+              Empty means unrestricted. Once populated, each static SSH target must match a listed Host name or label.
+            </p>
+          </div>
+        </div>
+        <div class="p-5 space-y-3">
+          <p v-if="allowlistError" class="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[12px] text-red-700 dark:text-red-400">
+            {{ allowlistError }}
+          </p>
+          <form v-if="auth.isPlatformAdmin" class="flex flex-col sm:flex-row gap-2" @submit.prevent="addHostAllowlistEntry">
+            <select v-model="allowlistKind" class="rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50">
+              <option value="name">Host name</option>
+              <option value="label">Host label</option>
+            </select>
+            <input v-model="allowlistValue" class="flex-1 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50" :placeholder="allowlistKind === 'name' ? 'prod-01' : 'production'" />
+            <UiButton type="submit" size="sm" :disabled="savingAllowlist || !allowlistValue.trim()"><Plus class="h-3.5 w-3.5" /> Add</UiButton>
+          </form>
+          <div v-if="env.host_allowlist.length" class="divide-y divide-border/20 rounded-lg border border-border/30">
+            <div v-for="entry in env.host_allowlist" :key="`${entry.kind}:${entry.value}`" class="flex items-center gap-3 px-3 py-2.5">
+              <span class="mono-chip text-[10px] uppercase">{{ entry.kind }}</span>
+              <code class="flex-1 break-all text-xs">{{ entry.value }}</code>
+              <UiButton v-if="auth.isPlatformAdmin" variant="ghost" size="sm" title="Remove allowlist entry" @click="removeHostAllowlistEntry(entry)"><Trash2 class="h-3.5 w-3.5 text-red-500" /></UiButton>
+            </div>
+          </div>
+          <p v-else class="py-3 text-center text-xs text-muted-foreground">
+            No restrictions: all registered Host names and labels may be targeted, including dynamic SSH targets.
+          </p>
+        </div>
       </div>
 
       <!-- Variable | Secret overrides (left / right) -->

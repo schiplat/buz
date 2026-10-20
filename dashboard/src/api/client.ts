@@ -83,9 +83,11 @@ apiClient.interceptors.response.use(
     if (status >= 500 || !error.response) {
       try {
         // Lazy import keeps the client importable before Pinia is installed.
-        void import('@/stores/apiFailures').then(({ useApiFailuresStore }) => {
-          useApiFailuresStore().report(status ?? 0, String(error.message || ''))
-        })
+        void import('@/stores/apiFailures')
+          .then(({ useApiFailuresStore }) => {
+            useApiFailuresStore().report(status ?? 0, String(error.message || ''))
+          })
+          .catch(() => {})
       } catch {
         /* never let reporting break error propagation */
       }

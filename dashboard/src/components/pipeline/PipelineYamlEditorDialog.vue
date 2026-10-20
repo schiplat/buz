@@ -16,6 +16,7 @@ import { normalizeInputDefsForForm } from '@/utils/pipelineInputs'
 import { normalizeConfigRender } from '@/utils/configForm'
 import { secretsApi } from '@/api/secrets'
 import { variablesApi } from '@/api/variables'
+import { environmentsApi, type Environment } from '@/api/environments'
 import { serializePipelineFormToYaml } from '@/utils/pipelineYamlSerialize'
 import {
   severityBadgeClass,
@@ -144,9 +145,11 @@ let floatDragCleanup: (() => void) | null = null
 
 const availableSecrets = ref<{ id: string; name: string; owner_group: string; kind?: string }[]>([])
 const availableVariables = ref<{ id: string; name: string; value: string }[]>([])
+const availableEnvironments = ref<Environment[]>([])
 
 const secretNames = computed(() => availableSecrets.value.map((s) => s.name))
 const variableNames = computed(() => availableVariables.value.map((v) => v.name))
+const environmentSlugs = computed(() => availableEnvironments.value.map((e) => e.slug))
 
 const floatErrors = computed(() => yamlResult.value?.errors ?? [])
 const floatWarnings = computed(() => yamlResult.value?.warnings ?? [])
@@ -304,13 +307,15 @@ function jumpToIssue(field: string | null | undefined, message: string) {
 }
 
 async function loadNameMaps() {
-  const [secrets, variables, yamlFiles] = await Promise.allSettled([
+  const [secrets, variables, yamlFiles, environments] = await Promise.allSettled([
     secretsApi.list(),
     variablesApi.list(),
     pipelinesApi.listYamlFiles(),
+    environmentsApi.list(),
   ])
   if (secrets.status === 'fulfilled') availableSecrets.value = secrets.value
   if (variables.status === 'fulfilled') availableVariables.value = variables.value
+  if (environments.status === 'fulfilled') availableEnvironments.value = environments.value
   if (yamlFiles.status === 'fulfilled') {
     if (yamlFiles.value?.scan_dir) yamlScanDir.value = yamlFiles.value.scan_dir
     existingYamlFiles.value = Array.isArray(yamlFiles.value?.files) ? yamlFiles.value.files : []
@@ -389,9 +394,12 @@ async function openEdit(p: Pick<Pipeline, 'id' | 'name' | 'source'> & { yaml_pat
       name: detail.name || '',
       description: detail.description || '',
       team: (detail.owner_group || '').trim(),
+      environments: detail.environments || [],
       trigger_type: detail.trigger_type || 'manual',
       webhook_path: detail.webhook_path || '',
+      webhook_environment: detail.webhook_environment || '',
       cron_expr: detail.cron_expr || '',
+      cron_environment: detail.cron_environment || '',
       runner_labels: (detail.runner_labels || []).join(', '),
       runner_timeout: detail.timeout_seconds ? `${detail.timeout_seconds}s` : '',
       concurrency_group: detail.concurrency_group || '',
@@ -706,6 +714,7 @@ defineExpose({ openCreate, openEdit, close })
               v-model="yamlContent"
               :secret-names="secretNames"
               :variable-names="variableNames"
+              :environment-slugs="environmentSlugs"
               class="h-full"
               @validated="onEditorValidated"
             />
@@ -765,6 +774,8 @@ defineExpose({ openCreate, openEdit, close })
               (no spaces). Secrets &amp; Variables must already exist under Infrastructure. Marketplace examples use pinned versions; make sure their spec files are in the Manager's configured local step index (the default is <code class="font-mono text-[11px]">&lt;yaml_scan_dir&gt;/steps</code>). Browse available templates from the Plugin Marketplace link above. A <code class="font-mono text-[11px]">uses:</code> step gets its image and any requested capabilities from the template — <code class="font-mono text-[11px]">image:</code> alongside <code class="font-mono text-[11px]">uses:</code> is rejected by the validator. <code class="font-mono text-[11px]">engine:</code> on a <code class="font-mono text-[11px]">uses:</code> step overrides the template's engine within the engines it declares (checked at save time). <code class="font-mono text-[11px]">run:</code> is the extension point: on a <code class="font-mono text-[11px]">uses:</code> step it is appended after the template's run block (the template provides the environment, the call site provides extra commands). Step inputs go under <code class="font-mono text-[11px]">with:</code>; a step-level <code class="font-mono text-[11px]">work_dir:</code> (optional, workspace-relative) overrides the template's <code class="font-mono text-[11px]">default_dir</code>. Capability requests are locked plugin metadata, not pipeline grants; a Runner administrator must separately authorize them in that machine's local Runner config (<code class="font-mono text-[11px]">docker_socket_allowed = true</code>).
             </p>
 <pre class="rounded-lg bg-muted p-3 text-xs font-mono text-muted-foreground overflow-x-auto">name: hello-world
+# Required target environment allowlist; every trigger selects one of these registered slugs.
+environments: [staging, production]
 description: Sample pipeline covering common fields
 team: default                     # team slug; omit → default (alias: owner_group)
 
@@ -785,9 +796,9 @@ on:
         description: One-time deploy token
         required: true
         masking: true               # redact logs/audit; encrypted in job DB
-      environment:
-        description: Target environment
-        type: choice                # dropdown in trigger dialog
+      environment_name:
+        description: Ordinary business input only; the run environment is selected from top-level environments
+        type: choice                # dropdown for this input; does not bind the deployment environment
         options: [staging, production]
       replicas:
         type: number                # must be an integer

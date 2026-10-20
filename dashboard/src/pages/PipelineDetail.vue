@@ -106,6 +106,7 @@ const triggerDebug = ref(false)
 const triggerVerbose = ref(false)
 const triggerEnvironment = ref('')
 const environments = ref<Environment[]>([])
+const environmentLoadFailed = ref(false)
 const editAvailableSecrets = ref<{ id: string; name: string; owner_group: string; kind?: string }[]>([])
 const editAvailableVariables = ref<{ id: string; name: string; value: string }[]>([])
 const editAvailableTeams = ref<Team[]>([])
@@ -113,12 +114,19 @@ const editAvailableTeams = ref<Team[]>([])
 const selectedTriggerEnv = computed(() =>
   environments.value.find((e) => e.slug === triggerEnvironment.value) || null,
 )
+const declaredTriggerEnvironments = computed(() => {
+  const declared = new Set<string>(pipeline.value?.environments || [])
+  return environments.value.filter((environment) => declared.has(environment.slug))
+})
 
 async function loadEnvironments() {
   try {
     environments.value = await environmentsApi.list()
-  } catch {
+    environmentLoadFailed.value = false
+  } catch (e) {
+    console.error(e)
     environments.value = []
+    environmentLoadFailed.value = true
   }
 }
 
@@ -142,6 +150,11 @@ const gitHookCopied = ref<{ id: string; kind: 'url' | 'secret' } | null>(null)
 const newHookProvider = ref<'github' | 'gitee'>('gitee')
 const newHookLabel = ref('')
 const newHookBranchFilter = ref('')
+const newHookEnvironment = ref('')
+const newHookAvailableEnvironments = computed(() => {
+  const declared = new Set<string>(pipeline.value?.environments || [])
+  return environments.value.filter((environment) => declared.has(environment.slug))
+})
 
 async function loadTriggerEvents() {
   if (!pipelineId.value) return
@@ -179,6 +192,7 @@ async function addGitHook() {
       provider: newHookProvider.value,
       label: newHookLabel.value.trim(),
       branch_filter: newHookBranchFilter.value,
+      environment: newHookEnvironment.value,
       enabled: true,
     })
     if (h.secret) {
@@ -186,6 +200,7 @@ async function addGitHook() {
     }
     newHookLabel.value = ''
     newHookBranchFilter.value = ''
+    newHookEnvironment.value = ''
     await loadGitHooks()
   } catch (e: any) {
     await dialog.alert(e?.response?.data?.message || e?.message || 'Failed to create git hook')
@@ -421,9 +436,12 @@ const definitionView = computed(() => {
       id: p.id,
       trigger_type: parsed.trigger_type || 'manual',
       webhook_path: tc?.webhook_path || '',
+      webhook_environment: tc?.webhook_environment || '',
       cron_expr: tc?.cron_expr || '',
+      cron_environment: tc?.cron_environment || '',
       runner_labels: runner?.labels || [],
       timeout_seconds: parseDurationToSeconds(runner?.timeout) || p.timeout_seconds || 3600,
+      environments: parsed.environments || [],
       variableNames: parsed.variables || [],
       secretNames: collectSecretNamesFromYaml(parsed),
       envEntries: envEntriesFromRecord(parsed.env),
@@ -474,9 +492,12 @@ const definitionView = computed(() => {
     id: p.id,
     trigger_type: p.trigger_type || 'manual',
     webhook_path: p.webhook_path || '',
+    webhook_environment: p.webhook_environment || '',
     cron_expr: p.cron_expr || '',
+    cron_environment: p.cron_environment || '',
     runner_labels: p.runner_labels || [],
     timeout_seconds: p.timeout_seconds || 3600,
+    environments: p.environments || [],
     variableNames: boundVariableNames.value,
     secretNames: boundSecretNames.value,
     envEntries: envEntriesFromRows(p.env),
@@ -771,7 +792,7 @@ onMounted(async () => {
     await loadYamlDefinition()
   }
   if (activeTab.value === 'trigger-events') {
-    await Promise.all([loadTriggerEvents(), loadGitHooks()])
+    await Promise.all([loadTriggerEvents(), loadGitHooks(), loadEnvironments()])
   }
 })
 
@@ -780,7 +801,7 @@ watch(activeTab, async (tab) => {
     await loadYamlDefinition()
   }
   if (tab === 'trigger-events') {
-    await Promise.all([loadTriggerEvents(), loadGitHooks()])
+    await Promise.all([loadTriggerEvents(), loadGitHooks(), loadEnvironments()])
   }
 })
 
@@ -889,15 +910,15 @@ async function loadData() {
   } finally { loading.value = false }
 }
 
-function openTriggerDialog() {
+async function openTriggerDialog() {
   if (!pipeline.value) return
+  await loadEnvironments()
   const defs: PipelineInputDef[] = pipeline.value.input_defs || []
   triggerDebug.value = false
   triggerVerbose.value = false
   triggerEnvironment.value = ''
   triggerError.value = null
   showAdhocParams.value = false
-  void loadEnvironments()
   // Always open the dialog so users can opt into Verbose / Debug before Run.
   inputPairs.value = defs.length > 0
     ? normalizeInputDefsForForm(defs).map((d) => ({
@@ -943,6 +964,14 @@ async function handleTrigger() {
     }
     return
   }
+  if (!triggerEnvironment.value || !declaredTriggerEnvironments.value.some((env) => env.slug === triggerEnvironment.value)) {
+    triggerError.value = {
+      title: 'Environment required',
+      summary: 'Choose one of the environments declared by this pipeline.',
+      items: [{ field: 'environment', message: 'select a declared environment' }],
+    }
+    return
+  }
   triggering.value = true
   triggerError.value = null
   try {
@@ -956,7 +985,7 @@ async function handleTrigger() {
       inputs,
       triggerDebug.value,
       triggerVerbose.value,
-      triggerEnvironment.value || null,
+      triggerEnvironment.value,
     )
     showTriggerDialog.value = false
     triggerDebug.value = false
@@ -1148,19 +1177,25 @@ async function handleTrigger() {
           </div>
 
           <div class="mt-5">
-            <label class="mb-1.5 block text-[12px] font-medium">Environment</label>
+            <label class="mb-1.5 block text-[12px] font-medium">Environment <span class="text-red-500">*</span></label>
             <select
               v-model="triggerEnvironment"
               class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
               :disabled="triggering"
             >
-              <option value="">Default (no environment)</option>
-              <option v-for="e in environments" :key="e.id" :value="e.slug">
+              <option value="" disabled>Select a declared environment…</option>
+              <option v-for="e in declaredTriggerEnvironments" :key="e.id" :value="e.slug">
                 {{ e.name }} ({{ e.slug }}){{ e.protection_enabled ? ' — protected' : '' }}
               </option>
             </select>
+            <p v-if="environmentLoadFailed" class="mt-1.5 text-[11px] text-destructive">
+              Could not load registered environments. Retry after restoring Manager access.
+            </p>
+            <p v-else-if="declaredTriggerEnvironments.length === 0" class="mt-1.5 text-[11px] text-destructive">
+              This pipeline declares no environments registered in the Manager.
+            </p>
             <p
-              v-if="selectedTriggerEnv?.protection_enabled"
+              v-else-if="selectedTriggerEnv?.protection_enabled"
               class="mt-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300"
             >
               Requires approval after trigger (min role:
@@ -1201,7 +1236,7 @@ async function handleTrigger() {
 
           <div class="mt-6 flex items-center justify-end gap-3 border-t border-border/30 pt-5">
             <UiButton variant="outline" size="sm" @click="showTriggerDialog = false">Cancel</UiButton>
-            <UiButton size="sm" @click="handleTrigger" :disabled="triggering">
+            <UiButton size="sm" @click="handleTrigger" :disabled="triggering || !triggerEnvironment || declaredTriggerEnvironments.length === 0">
               <Loader2 v-if="triggering" class="mr-1.5 h-4 w-4 animate-spin" />
               <Play v-else class="mr-1.5 h-4 w-4" /> Run
             </UiButton>
@@ -1692,10 +1727,12 @@ async function handleTrigger() {
                     <div v-if="definitionView.webhook_path" class="flex items-center gap-1.5">
                       <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">path</span>
                       <code class="text-xs font-mono text-foreground/70">{{ definitionView.webhook_path }}</code>
+                      <span v-if="definitionView.webhook_environment" class="text-xs text-muted-foreground">default: {{ definitionView.webhook_environment }}</span>
                     </div>
                     <div v-if="definitionView.cron_expr" class="flex items-center gap-1.5">
                       <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">cron</span>
                       <code class="text-xs font-mono text-foreground/70">{{ definitionView.cron_expr }}</code>
+                      <span v-if="definitionView.cron_environment" class="text-xs text-muted-foreground">scheduled target: {{ definitionView.cron_environment }}</span>
                     </div>
                     <div v-if="!definitionView.webhook_path && !definitionView.cron_expr" class="text-xs text-muted-foreground/50 italic">No external trigger configured</div>
                   </div>
@@ -1904,6 +1941,20 @@ async function handleTrigger() {
                     <span class="text-muted-foreground">in YAML (e.g. Feishu webhook via Secrets)</span>
                   </div>
                 </template>
+              </div>
+
+              <!-- ── Declared deployment environments ── -->
+              <div class="border-t border-border/20 px-5 py-4">
+                <div class="flex items-center gap-2 mb-3">
+                  <Server class="h-3.5 w-3.5 text-teal-500" />
+                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Declared environments</span>
+                  <span class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.environments.length }}</span>
+                </div>
+                <div v-if="definitionView.environments.length" class="flex flex-wrap gap-2">
+                  <code v-for="slug in definitionView.environments" :key="slug" class="mono-chip text-xs">{{ slug }}</code>
+                </div>
+                <p v-else class="text-xs text-destructive">No environments declared; this pipeline cannot be triggered.</p>
+                <p class="mt-2 text-[11px] text-muted-foreground">Every run must select one of these registered environment slugs. Manual inputs named “environment” do not select the deployment environment.</p>
               </div>
 
               <!-- ── Environment (pipeline-level env:) ── -->
@@ -2189,6 +2240,7 @@ async function handleTrigger() {
                     <span v-if="hook.label" class="text-sm font-medium truncate">{{ hook.label }}</span>
                     <span v-if="hook.branch_filter" class="text-xs font-mono text-muted-foreground">{{ hook.branch_filter }}</span>
                     <span v-else class="text-xs text-muted-foreground/60">all branches</span>
+                    <span class="text-xs text-muted-foreground">environment: {{ hook.environment }}</span>
                   </div>
                   <UiButton size="sm" variant="ghost" @click="removeGitHook(hook)">Delete</UiButton>
                 </div>
@@ -2215,7 +2267,7 @@ async function handleTrigger() {
 
               <div class="rounded-lg border border-dashed border-border/60 p-3 space-y-3">
                 <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Add webhook</div>
-                <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <div>
                     <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Label</label>
                     <input v-model="newHookLabel" type="text" placeholder="e.g. github-main" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-none" />
@@ -2231,8 +2283,27 @@ async function handleTrigger() {
                     <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Branch filter</label>
                     <input v-model="newHookBranchFilter" type="text" placeholder="optional" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm font-mono outline-none" />
                   </div>
+                  <div>
+                    <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Environment</label>
+            <select
+              v-model="newHookEnvironment"
+              class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-none"
+              :disabled="environmentLoadFailed || newHookAvailableEnvironments.length === 0"
+            >
+                      <option value="" disabled>Select a declared environment…</option>
+                      <option v-for="environment in newHookAvailableEnvironments" :key="environment.id" :value="environment.slug">
+                        {{ environment.name }} ({{ environment.slug }})
+                      </option>
+                    </select>
+                    <p v-if="environmentLoadFailed" class="mt-1 text-[11px] text-destructive">
+                      Could not load registered environments. Retry after restoring Manager access.
+                    </p>
+                    <p v-else-if="newHookAvailableEnvironments.length === 0" class="mt-1 text-[11px] text-destructive">
+                      This pipeline declares no environments registered in the Manager.
+                    </p>
+                  </div>
                 </div>
-                <UiButton size="sm" :disabled="gitHookSaving" @click="addGitHook">
+                <UiButton size="sm" :disabled="gitHookSaving || environmentLoadFailed || newHookAvailableEnvironments.length === 0 || !newHookEnvironment" @click="addGitHook">
                   {{ gitHookSaving ? 'Creating…' : 'Add Git webhook' }}
                 </UiButton>
               </div>

@@ -2,6 +2,15 @@ import apiClient from './client'
 
 export type EnvTeamRole = 'owner' | 'maintainer' | 'developer'
 
+export type DeploymentConcurrency = 'off' | 'queue' | 'cancel_in_progress'
+export type HostAllowlistKind = 'name' | 'label'
+
+export interface HostAllowlistEntry {
+  kind: HostAllowlistKind
+  value: string
+  created_at?: string | null
+}
+
 export interface Environment {
   id: string
   name: string
@@ -19,6 +28,8 @@ export interface Environment {
   require_approvals?: number
   forbid_self_approve?: boolean
   approval_timeout_seconds?: number
+  deployment_concurrency?: DeploymentConcurrency
+  host_allowlist_count?: number
 }
 
 export interface EnvironmentOverride {
@@ -41,6 +52,7 @@ export interface EnvironmentSecretOverride {
 export interface EnvironmentDetail extends Environment {
   overrides: EnvironmentOverride[]
   secret_overrides: EnvironmentSecretOverride[]
+  host_allowlist: HostAllowlistEntry[]
 }
 
 export type EnvironmentWritePayload = {
@@ -53,6 +65,7 @@ export type EnvironmentWritePayload = {
   require_approvals?: number
   forbid_self_approve?: boolean
   approval_timeout_seconds?: number
+  deployment_concurrency?: DeploymentConcurrency
 }
 
 export const environmentsApi = {
@@ -82,6 +95,22 @@ export const environmentsApi = {
 
   async delete(id: string): Promise<void> {
     await apiClient.delete(`/environments/${id}`)
+  },
+
+  async listHostAllowlist(id: string): Promise<HostAllowlistEntry[]> {
+    const resp = await apiClient.get(`/environments/${id}/host-allowlist`)
+    return resp.data as HostAllowlistEntry[]
+  },
+
+  async addHostAllowlist(id: string, data: { kind: HostAllowlistKind; value: string }): Promise<HostAllowlistEntry> {
+    const resp = await apiClient.post(`/environments/${id}/host-allowlist`, data)
+    return resp.data as HostAllowlistEntry
+  },
+
+  async deleteHostAllowlist(id: string, entry: HostAllowlistEntry): Promise<void> {
+    await apiClient.delete(
+      `/environments/${id}/host-allowlist/${encodeURIComponent(entry.kind)}/${encodeURIComponent(entry.value)}`,
+    )
   },
 
   async listOverrides(id: string): Promise<EnvironmentOverride[]> {
