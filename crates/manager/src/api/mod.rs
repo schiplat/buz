@@ -91,6 +91,8 @@ pub fn router(state: AppState) -> Router {
             "/pipelines/{id}/toggle-active",
             patch(pipelines::toggle_active),
         )
+        .route("/pipelines/{id}/disable", post(pipelines::disable))
+        .route("/pipelines/{id}/enable", post(pipelines::enable))
         .route("/pipelines/{id}/trigger", post(pipelines::trigger))
         .route("/pipelines/{id}/trigger-events", get(trigger_events::list))
         .route(
@@ -250,6 +252,10 @@ pub fn router(state: AppState) -> Router {
 #[cfg(test)]
 #[path = "tests/api_token_tests.rs"]
 mod api_token_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/pipeline_disable_tests.rs"]
+mod pipeline_disable_integration_tests;
 
 #[cfg(test)]
 #[path = "tests/pipeline_env_tests.rs"]

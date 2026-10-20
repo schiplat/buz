@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use serde::Deserialize;
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::protocol::{
@@ -706,6 +707,174 @@ pub async fn toggle_active(
     }))))
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct DisablePipelineRequest {
+    /// Also cancel every in-flight (pending / queued / running /
+    /// waiting_approval) job of this pipeline.
+    #[serde(default)]
+    pub cancel_in_flight: bool,
+}
+
+/// Idempotent emergency stop: ensures the pipeline is disabled and, on
+/// request, cancels every in-flight job in the same transaction. Unlike
+/// `toggle-active`, repeating this call never re-enables the pipeline.
+pub async fn disable(
+    auth: AuthUser,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    body: Option<Json<DisablePipelineRequest>>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let team_id = pipeline_team_id(&state.pool, &id).await?;
+    auth.check_team(&team_id, Perm::PipelineWrite)?;
+
+    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let row = sqlx::query("SELECT name, is_active FROM pipelines WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+    let name: String = row.get(0);
+    let was_active: bool = row.get::<i64, _>(1) != 0;
+
+    // Flip first, then scan: the write lock is held from BEGIN IMMEDIATE, so
+    // a trigger that re-checks is_active inside its own insert transaction
+    // cannot slip a new job past this scan after we commit.
+    if was_active {
+        sqlx::query(
+            "UPDATE pipelines SET is_active = 0, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // (job_id, debug_unredact, step_statuses) for post-commit fan-out.
+    let mut cancelled: Vec<(String, bool, Vec<serde_json::Value>)> = Vec::new();
+    if req.cancel_in_flight {
+        let targets = sqlx::query(
+            "SELECT id, debug_unredact FROM jobs
+             WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued', 'waiting_approval')
+             ORDER BY created_at, rowid",
+        )
+        .bind(&id)
+        .fetch_all(&mut *tx)
+        .await?;
+        for t in targets {
+            let job_id: String = t.get(0);
+            let debug_unredact: bool = t.get::<i64, _>(1) != 0;
+            if let Some(info) =
+                super::jobs::cancel_job_in_tx(&mut tx, &job_id, &auth.id, &auth.username).await?
+            {
+                tracing::info!(
+                    operator = %auth.username,
+                    job_id = %job_id,
+                    pipeline = %name,
+                    prev_status = %info.old_status,
+                    "Job cancelled by pipeline disable"
+                );
+                cancelled.push((job_id, debug_unredact, info.step_statuses));
+            }
+        }
+    }
+    tx.commit().await?;
+
+    // Post-commit fan-out per cancelled job: notify channels + WebSocket.
+    for (job_id, debug_unredact, step_statuses) in &cancelled {
+        crate::services::notify::spawn_job_notify(
+            state.pool.clone(),
+            state.config.auth.jwt_secret.clone(),
+            state.config.server.public_base_url.clone(),
+            job_id.clone(),
+            "cancelled".to_string(),
+        );
+        let payload = serde_json::json!({
+            "id": job_id,
+            "status": "cancelled",
+            "step_statuses": step_statuses,
+            "end_time": super::jobs::now_utc(),
+            "debug_unredact": debug_unredact,
+        });
+        state.log_broadcast.broadcast_status(
+            job_id,
+            &id,
+            &serde_json::to_string(&payload).unwrap_or_default(),
+        );
+    }
+
+    let cancelled_ids: Vec<&str> = cancelled.iter().map(|(j, _, _)| j.as_str()).collect();
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "pipeline.disable")
+            .resource("pipeline", &id, &name)
+            .team(Some(team_id))
+            .before(Some(serde_json::json!({ "is_active": was_active })))
+            .after(Some(serde_json::json!({ "is_active": false })))
+            .meta(Some(serde_json::json!({
+                "cancel_in_flight": req.cancel_in_flight,
+                "cancelled_count": cancelled.len(),
+                "cancelled_jobs": cancelled_ids,
+            }))),
+    )
+    .await;
+
+    tracing::info!(
+        "Pipeline {name} ({id}) disabled (cancelled {} in-flight jobs)",
+        cancelled.len()
+    );
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "is_active": false,
+        "cancelled_count": cancelled.len(),
+        "cancelled_jobs": cancelled_ids,
+    }))))
+}
+
+/// Idempotent re-enable. No-op when already active; never touches jobs —
+/// runs cancelled by `disable` stay cancelled.
+pub async fn enable(
+    auth: AuthUser,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let team_id = pipeline_team_id(&state.pool, &id).await?;
+    auth.check_team(&team_id, Perm::PipelineWrite)?;
+
+    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let row = sqlx::query("SELECT name, is_active FROM pipelines WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+    let name: String = row.get(0);
+    let was_active: bool = row.get::<i64, _>(1) != 0;
+    if !was_active {
+        sqlx::query(
+            "UPDATE pipelines SET is_active = 1, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "pipeline.enable")
+            .resource("pipeline", &id, &name)
+            .team(Some(team_id))
+            .before(Some(serde_json::json!({ "is_active": was_active })))
+            .after(Some(serde_json::json!({ "is_active": true }))),
+    )
+    .await;
+
+    tracing::info!("Pipeline {name} ({id}) enabled");
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "is_active": true
+    }))))
+}
+
 pub async fn trigger(
     auth: AuthUser,
     Path(id): Path<String>,
@@ -893,13 +1062,18 @@ pub(crate) async fn do_trigger(
     let pipeline = sqlx::query(
         "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
                 concurrency_max_queue, concurrency_queue_timeout_seconds, input_defs, team_id,
-                environments
-         FROM pipelines WHERE id = ? AND is_active = 1",
+                environments, is_active
+         FROM pipelines WHERE id = ?",
     )
     .bind(pipeline_id)
     .fetch_optional(&state.pool)
     .await?
-    .ok_or_else(|| AppError::NotFound("pipeline not found or inactive".into()))?;
+    .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+    if pipeline.get::<i64, _>(10) == 0 {
+        return Err(AppError::Conflict(
+            "pipeline is disabled — enable it before triggering".into(),
+        ));
+    }
 
     let concurrency_group: Option<String> = pipeline.get(3);
     let concurrency_mode: String = pipeline.get(4);
@@ -1279,11 +1453,28 @@ pub(crate) async fn do_trigger(
 
     // Allocate the GHA-style build number and create the job atomically, so
     // concurrent triggers of one pipeline get gapless, unique numbers.
+    // BEGIN IMMEDIATE serializes against `disable`, whose transaction flips
+    // is_active and cancels in-flight jobs — re-checking is_active here closes
+    // the check-to-insert race with a concurrent disable.
     let mut tx = state
         .pool
-        .begin()
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    match sqlx::query_scalar::<_, i64>("SELECT is_active FROM pipelines WHERE id = ?")
+        .bind(pipeline_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+    {
+        None => return Err(AppError::NotFound("pipeline not found".into())),
+        Some(0) => {
+            return Err(AppError::Conflict(
+                "pipeline is disabled — enable it before triggering".into(),
+            ));
+        }
+        Some(_) => {}
+    }
     let run_number = crate::db::allocate_run_number(&mut tx, pipeline_id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;

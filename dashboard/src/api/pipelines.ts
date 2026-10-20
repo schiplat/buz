@@ -337,8 +337,21 @@ export const pipelinesApi = {
     await apiClient.delete(`/pipelines/${id}`)
   },
 
-  async toggleActive(id: string): Promise<{ is_active: boolean }> {
-    const resp = await apiClient.patch(`/pipelines/${id}/toggle-active`)
+  /** Idempotent emergency stop: blocks every trigger path; optionally cancels
+   *  all in-flight jobs. Repeating never re-enables the pipeline. */
+  async disable(
+    id: string,
+    cancelInFlight: boolean,
+  ): Promise<{ is_active: boolean; cancelled_count: number; cancelled_jobs: string[] }> {
+    const resp = await apiClient.post(`/pipelines/${id}/disable`, {
+      cancel_in_flight: cancelInFlight,
+    })
+    return resp.data
+  },
+
+  /** Idempotent re-enable. Jobs cancelled by disable stay cancelled. */
+  async enable(id: string): Promise<{ is_active: boolean }> {
+    const resp = await apiClient.post(`/pipelines/${id}/enable`)
     return resp.data
   },
 

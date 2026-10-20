@@ -11,6 +11,10 @@ export type ConfirmOptions = {
   cancelLabel?: string
   /** Destructive confirm button styling */
   danger?: boolean
+  /** When set, the confirm dialog shows a checkbox with this label. */
+  checkboxLabel?: string
+  /** Initial checkbox state (only with `checkboxLabel`). */
+  checkboxDefault?: boolean
 }
 
 export type PromptOptions = {
@@ -40,7 +44,9 @@ type ConfirmState = {
   confirmLabel: string
   cancelLabel: string
   danger: boolean
-  resolve: (ok: boolean) => void
+  checkboxLabel: string | null
+  checkboxDefault: boolean
+  resolve: (ok: boolean, checked: boolean) => void
 }
 
 type PromptState = {
@@ -105,9 +111,36 @@ export function useAppDialog() {
           confirmLabel: opts.confirmLabel ?? 'Confirm',
           cancelLabel: opts.cancelLabel ?? 'Cancel',
           danger: opts.danger ?? false,
+          checkboxLabel: opts.checkboxLabel ?? null,
+          checkboxDefault: opts.checkboxDefault ?? false,
           resolve: (ok) => {
             settle()
             resolve(ok)
+          },
+        }
+      })
+    })
+  }
+
+  /** Confirm variant that also reports the checkbox state on close. */
+  function confirmChoice(
+    message: string,
+    opts: ConfirmOptions = {},
+  ): Promise<{ ok: boolean; checked: boolean }> {
+    return new Promise((resolve) => {
+      enqueue(() => {
+        dialog.value = {
+          kind: 'confirm',
+          title: opts.title ?? 'Confirm',
+          message,
+          confirmLabel: opts.confirmLabel ?? 'Confirm',
+          cancelLabel: opts.cancelLabel ?? 'Cancel',
+          danger: opts.danger ?? false,
+          checkboxLabel: opts.checkboxLabel ?? null,
+          checkboxDefault: opts.checkboxDefault ?? false,
+          resolve: (ok, checked) => {
+            settle()
+            resolve({ ok, checked })
           },
         }
       })
@@ -137,7 +170,7 @@ export function useAppDialog() {
     })
   }
 
-  return { alert, confirm, prompt, dialog }
+  return { alert, confirm, confirmChoice, prompt, dialog }
 }
 
 /** Shared state for AppDialogHost (same module singleton). */

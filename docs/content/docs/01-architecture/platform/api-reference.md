@@ -339,7 +339,9 @@ Primary authoring is **YAML file APIs** under Manager `yaml_scan_dir` — see [Y
 | PUT | `/api/v1/pipelines/:id` | JWT | **Legacy** JSON update; **409** when `source=yaml` |
 | DELETE | `/api/v1/pipelines/:id` | JWT | |
 | PATCH | `/api/v1/pipelines/:id/toggle-active` | JWT | Deactivate sticks across YAML rescans |
-| POST | `/api/v1/pipelines/:id/trigger` | JWT | Re-reads/validates file first when `source=yaml`; `verbose` / `debug` (debug = platform admin only) |
+| POST | `/api/v1/pipelines/:id/disable` | JWT | Idempotent emergency stop; body `{ "cancel_in_flight": true }` cancels all non-terminal jobs in the same transaction |
+| POST | `/api/v1/pipelines/:id/enable` | JWT | Idempotent re-enable; jobs cancelled by disable stay cancelled |
+| POST | `/api/v1/pipelines/:id/trigger` | JWT | Re-reads/validates file first when `source=yaml`; `verbose` / `debug` (debug = platform admin only); **409** when pipeline disabled |
 
 ### GET /pipelines — List
 

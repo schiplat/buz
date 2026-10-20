@@ -7,6 +7,12 @@ const dialog = useAppDialogState()
 const inputEl = ref<HTMLInputElement | HTMLTextAreaElement | null>(null)
 /** Local draft — avoids nested reactive mutation issues on the shared dialog state. */
 const promptDraft = ref('')
+/** Checkbox draft for confirm dialogs that carry a checkboxLabel. */
+const checkboxDraft = ref(false)
+
+const hasCheckbox = computed(
+  () => dialog.value?.kind === 'confirm' && dialog.value.checkboxLabel !== null,
+)
 
 const promptOkDisabled = computed(() => {
   if (dialog.value?.kind !== 'prompt') return false
@@ -22,6 +28,9 @@ watch(
       await nextTick()
       inputEl.value?.focus()
     }
+    if (d?.kind === 'confirm' && d.checkboxLabel !== null) {
+      checkboxDraft.value = d.checkboxDefault
+    }
   },
   { flush: 'post' },
 )
@@ -35,7 +44,7 @@ function onBackdrop() {
   const d = dialog.value
   if (!d) return
   if (d.kind === 'alert') finish(() => d.resolve())
-  else if (d.kind === 'confirm') finish(() => d.resolve(false))
+  else if (d.kind === 'confirm') finish(() => d.resolve(false, checkboxDraft.value))
   else finish(() => d.resolve(null))
 }
 
@@ -43,7 +52,7 @@ function onPrimary() {
   const d = dialog.value
   if (!d) return
   if (d.kind === 'alert') finish(() => d.resolve())
-  else if (d.kind === 'confirm') finish(() => d.resolve(true))
+  else if (d.kind === 'confirm') finish(() => d.resolve(true, checkboxDraft.value))
   else {
     if (d.required && !promptDraft.value.trim()) return
     const value = promptDraft.value
@@ -54,7 +63,7 @@ function onPrimary() {
 function onCancel() {
   const d = dialog.value
   if (!d) return
-  if (d.kind === 'confirm') finish(() => d.resolve(false))
+  if (d.kind === 'confirm') finish(() => d.resolve(false, checkboxDraft.value))
   else if (d.kind === 'prompt') finish(() => d.resolve(null))
 }
 </script>
@@ -99,6 +108,18 @@ function onCancel() {
             @keydown.enter.prevent="onPrimary"
           />
         </div>
+
+        <label
+          v-if="hasCheckbox && dialog.kind === 'confirm'"
+          class="mt-4 flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none"
+        >
+          <input
+            v-model="checkboxDraft"
+            type="checkbox"
+            class="h-4 w-4 rounded border-border/60 accent-primary cursor-pointer"
+          />
+          {{ dialog.checkboxLabel }}
+        </label>
 
         <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/30">
           <UiButton

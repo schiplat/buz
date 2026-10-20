@@ -390,11 +390,44 @@ async function handleDelete(p: Pipeline) {
 }
 
 async function handleToggleActive(p: Pipeline) {
-  try {
-    const result = await pipelinesApi.toggleActive(p.id)
-    p.is_active = result.is_active
-  } catch (e) {
-    console.error(e)
+  if (p.is_active) {
+    const choice = await dialog.confirmChoice(
+      `Disable pipeline "${p.name}"? All trigger paths (manual, webhook, cron, git hook) will reject new runs.`,
+      {
+        title: 'Disable pipeline',
+        confirmLabel: 'Disable',
+        danger: true,
+        checkboxLabel: 'Also cancel in-flight jobs (pending / queued / running / waiting approval)',
+        checkboxDefault: true,
+      },
+    )
+    if (!choice.ok) return
+    try {
+      const result = await pipelinesApi.disable(p.id, choice.checked)
+      p.is_active = false
+      if (result.cancelled_count > 0) {
+        await dialog.alert(
+          `Pipeline disabled — cancelled ${result.cancelled_count} in-flight job(s).`,
+          { title: 'Pipeline disabled' },
+        )
+      }
+    } catch (e) {
+      console.error(e)
+      await dialog.alert('Disable failed')
+    }
+  } else {
+    const ok = await dialog.confirm(`Enable pipeline "${p.name}"?`, {
+      title: 'Enable pipeline',
+      confirmLabel: 'Enable',
+    })
+    if (!ok) return
+    try {
+      const result = await pipelinesApi.enable(p.id)
+      p.is_active = result.is_active
+    } catch (e) {
+      console.error(e)
+      await dialog.alert('Enable failed')
+    }
   }
 }
 </script>

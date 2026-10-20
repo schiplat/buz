@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Braces, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp, Bell, AlertTriangle, AlertCircle } from '@lucide/vue'
+import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Braces, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp, Bell, AlertTriangle, AlertCircle, Snowflake } from '@lucide/vue'
 import { cn } from '@/lib/utils'
 import {
   pipelinesApi,
@@ -910,6 +910,50 @@ async function loadData() {
   } finally { loading.value = false }
 }
 
+async function handleToggleActive() {
+  if (!pipeline.value) return
+  if (pipeline.value.is_active) {
+    const choice = await dialog.confirmChoice(
+      `Disable pipeline "${pipeline.value.name}"? All trigger paths (manual, webhook, cron, git hook) will reject new runs.`,
+      {
+        title: 'Disable pipeline',
+        confirmLabel: 'Disable',
+        danger: true,
+        checkboxLabel: 'Also cancel in-flight jobs (pending / queued / running / waiting approval)',
+        checkboxDefault: true,
+      },
+    )
+    if (!choice.ok) return
+    try {
+      const result = await pipelinesApi.disable(pipelineId.value, choice.checked)
+      pipeline.value.is_active = false
+      if (result.cancelled_count > 0) {
+        await dialog.alert(
+          `Pipeline disabled — cancelled ${result.cancelled_count} in-flight job(s).`,
+          { title: 'Pipeline disabled' },
+        )
+        await loadData()
+      }
+    } catch (e) {
+      console.error(e)
+      await dialog.alert('Disable failed')
+    }
+  } else {
+    const ok = await dialog.confirm(`Enable pipeline "${pipeline.value.name}"?`, {
+      title: 'Enable pipeline',
+      confirmLabel: 'Enable',
+    })
+    if (!ok) return
+    try {
+      const result = await pipelinesApi.enable(pipelineId.value)
+      pipeline.value.is_active = result.is_active
+    } catch (e) {
+      console.error(e)
+      await dialog.alert('Enable failed')
+    }
+  }
+}
+
 async function openTriggerDialog() {
   if (!pipeline.value) return
   await loadEnvironments()
@@ -1016,11 +1060,25 @@ async function handleTrigger() {
         <h1 class="text-base font-semibold tracking-tight truncate">{{ pipeline?.name || 'Loading…' }}</h1>
         <StatusBadge v-if="pipeline" :status="pipeline.is_active ? 'online' : 'offline'" />
       </div>
-      <UiButton size="sm" @click="openTriggerDialog" :disabled="!pipeline || triggering" class="shrink-0">
-        <Loader2 v-if="triggering" class="h-4 w-4 animate-spin" />
-        <Play v-else class="h-4 w-4" />
-        {{ triggering ? 'Running…' : 'Build Now' }}
-      </UiButton>
+      <div class="flex items-center gap-2 shrink-0">
+        <UiButton
+          variant="ghost"
+          size="sm"
+          :disabled="!pipeline"
+          :title="pipeline?.is_active ? 'Disable pipeline' : 'Enable pipeline'"
+          @click="handleToggleActive"
+        >
+          <Snowflake
+            class="h-4 w-4"
+            :class="pipeline?.is_active ? 'text-cyan-500' : 'text-muted-foreground'"
+          />
+        </UiButton>
+        <UiButton size="sm" @click="openTriggerDialog" :disabled="!pipeline || triggering || !pipeline.is_active" class="shrink-0">
+          <Loader2 v-if="triggering" class="h-4 w-4 animate-spin" />
+          <Play v-else class="h-4 w-4" />
+          {{ triggering ? 'Running…' : 'Build Now' }}
+        </UiButton>
+      </div>
     </div>
 
     <!-- Trigger Dialog -->

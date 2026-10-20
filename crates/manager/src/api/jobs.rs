@@ -17,7 +17,7 @@ use crate::rbac::{pipeline_team_id, team_in_clause};
 use crate::state::AppState;
 
 /// Return current UTC timestamp in SQLite format ("2026-07-27 10:30:00")
-fn now_utc() -> String {
+pub(crate) fn now_utc() -> String {
     chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
@@ -430,20 +430,90 @@ pub async fn cancel(
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let Some(cancelled) = cancel_job_in_tx(&mut tx, &id, &auth.id, &auth.username).await? else {
+        tx.rollback().await?;
+        return Err(AppError::NotFound(
+            "job not found or already finished".into(),
+        ));
+    };
+    tx.commit().await?;
+
+    tracing::info!(
+        operator = %auth.username,
+        job_id = %id,
+        pipeline = ?pipeline_name,
+        prev_status = %cancelled.old_status,
+        "Job cancelled by operator"
+    );
+
+    // Non-terminal → cancelled: async notify (only if channel `on` includes cancelled).
+    crate::services::notify::spawn_job_notify(
+        state.pool.clone(),
+        state.config.auth.jwt_secret.clone(),
+        state.config.server.public_base_url.clone(),
+        id.clone(),
+        "cancelled".to_string(),
+    );
+
+    // Broadcast cancelled status to WebSocket subscribers
+    if let Ok(Some(pid_row)) =
+        sqlx::query("SELECT pipeline_id, debug_unredact FROM jobs WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&state.pool)
+            .await
+    {
+        let pid: String = pid_row.get(0);
+        let debug_unredact: i64 = pid_row.get(1);
+        let ss = serde_json::to_string(&cancelled.step_statuses).unwrap_or_default();
+        let payload = serde_json::json!({
+            "id": id,
+            "status": "cancelled",
+            "step_statuses": serde_json::from_str::<serde_json::Value>(&ss).unwrap_or_default(),
+            "end_time": now_utc(),
+            "debug_unredact": debug_unredact != 0,
+        });
+        state.log_broadcast.broadcast_status(
+            &id,
+            &pid,
+            &serde_json::to_string(&payload).unwrap_or_default(),
+        );
+    }
+
+    Ok(Json(ApiResponse::success(())))
+}
+
+/// A job flipped to `cancelled` inside the caller's transaction.
+pub(crate) struct CancelledJob {
+    pub old_status: String,
+    pub step_statuses: Vec<serde_json::Value>,
+}
+
+/// Transaction-internal core of job cancellation: flips one non-terminal job
+/// (`pending` / `running` / `queued` / `waiting_approval`) to `cancelled`,
+/// marks the currently running step cancelled and records the approval
+/// outcome for `waiting_approval` jobs. Returns `None` when the job is
+/// missing or already terminal, so batch callers can skip instead of fail.
+/// The caller owns the transaction (BEGIN IMMEDIATE) and handles post-commit
+/// notify + WebSocket broadcast.
+pub(crate) async fn cancel_job_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    job_id: &str,
+    operator_id: &str,
+    operator_username: &str,
+) -> Result<Option<CancelledJob>, AppError> {
     let current = sqlx::query("SELECT status, step_statuses, snapshot FROM jobs WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+        .bind(job_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let Some(current) = current else {
+        return Ok(None);
+    };
     let old_status: String = current.get(0);
     if !matches!(
         old_status.as_str(),
         "pending" | "running" | "queued" | "waiting_approval"
     ) {
-        tx.rollback().await?;
-        return Err(AppError::NotFound(
-            "job not found or already finished".into(),
-        ));
+        return Ok(None);
     }
     let step_statuses_str: String = current.get(1);
     let mut snapshot: serde_json::Value =
@@ -475,15 +545,12 @@ pub async fn cancel(
     )
     .bind(serde_json::to_string(&step_statuses).unwrap_or_else(|_| "[]".into()))
     .bind(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
-    .bind(&id)
-    .execute(&mut *tx)
+    .bind(job_id)
+    .execute(&mut **tx)
     .await?;
 
     if result.rows_affected() == 0 {
-        tx.rollback().await?;
-        return Err(AppError::NotFound(
-            "job not found or already finished".into(),
-        ));
+        return Ok(None);
     }
     if old_status == "waiting_approval" {
         sqlx::query(
@@ -491,56 +558,16 @@ pub async fn cancel(
              VALUES (?, ?, ?, ?, 'cancel', '')",
         )
         .bind(Uuid::new_v4().to_string())
-        .bind(&id)
-        .bind(&auth.id)
-        .bind(&auth.username)
-        .execute(&mut *tx)
+        .bind(job_id)
+        .bind(operator_id)
+        .bind(operator_username)
+        .execute(&mut **tx)
         .await?;
     }
-    tx.commit().await?;
-
-    tracing::info!(
-        operator = %auth.username,
-        job_id = %id,
-        pipeline = ?pipeline_name,
-        prev_status = %old_status,
-        "Job cancelled by operator"
-    );
-
-    // Non-terminal → cancelled: async notify (only if channel `on` includes cancelled).
-    crate::services::notify::spawn_job_notify(
-        state.pool.clone(),
-        state.config.auth.jwt_secret.clone(),
-        state.config.server.public_base_url.clone(),
-        id.clone(),
-        "cancelled".to_string(),
-    );
-
-    // Broadcast cancelled status to WebSocket subscribers
-    if let Ok(Some(pid_row)) =
-        sqlx::query("SELECT pipeline_id, debug_unredact FROM jobs WHERE id = ?")
-            .bind(&id)
-            .fetch_optional(&state.pool)
-            .await
-    {
-        let pid: String = pid_row.get(0);
-        let debug_unredact: i64 = pid_row.get(1);
-        let ss = serde_json::to_string(&step_statuses).unwrap_or_default();
-        let payload = serde_json::json!({
-            "id": id,
-            "status": "cancelled",
-            "step_statuses": serde_json::from_str::<serde_json::Value>(&ss).unwrap_or_default(),
-            "end_time": now_utc(),
-            "debug_unredact": debug_unredact != 0,
-        });
-        state.log_broadcast.broadcast_status(
-            &id,
-            &pid,
-            &serde_json::to_string(&payload).unwrap_or_default(),
-        );
-    }
-
-    Ok(Json(ApiResponse::success(())))
+    Ok(Some(CancelledJob {
+        old_status,
+        step_statuses,
+    }))
 }
 
 #[derive(Debug, Deserialize, Default)]
