@@ -107,7 +107,7 @@ backlog, and WebSocket broadcast sink counts.
 {
   "status": "ok",
   "name": "Buz",
-  "version": "1.7.3",
+  "version": "1.9.0",
   "component": "manager",
   "uptime_seconds": 3600,
   "started_at": "2026-08-30T12:00:00Z",
@@ -379,7 +379,7 @@ Request:
 
 ### POST /pipelines/:id/trigger — Trigger Run
 
-Body requires `environment` and may include `inputs`, `verbose`, and `debug` (`debug` is rejected for non–platform-admin). The selected registered environment slug must be declared by the pipeline; missing, unknown, or undeclared environments are rejected. See [Environments](./environments/).
+Body requires `environment` and may include `inputs`, `verbose`, and `debug` (`debug` is rejected for non–platform-admin). The selected registered environment slug must be declared by the pipeline; missing, unknown, or undeclared environments are rejected. A declared slug whose Environment was deleted also fails (`422` for file-backed pipelines, `404 environment '<slug>' not found` otherwise); see [Environments](./environments/) for the `default` environment lifecycle.
 
 Response:
 ```json

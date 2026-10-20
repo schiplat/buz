@@ -27,6 +27,31 @@ when a job is triggered with that Environment selected.
 
 These axes are **orthogonal**. Do not store Environment values on GitHub binds.
 
+## The `default` environment
+
+A slug-`default` Environment ships with every deployment. It is seeded by an
+idempotent migration on Manager startup ("auto-created home for pipelines
+without an explicit environment", mirroring the `default` team) and is born
+**unprotected**: `protection_enabled=false`, `deployment_concurrency=off` —
+triggering it behaves like the pre-environment product. Pipelines must still
+declare `default` in their top-level `environments:` list to target it;
+auto-creation does not auto-bind.
+
+**Deleting it** (Platform admin; deletion has no in-use guard) fails every
+trigger path that targets it — a job can never run against a deleted
+Environment:
+
+| Path | What the user sees |
+|------|--------------------|
+| Dashboard trigger dialog | Empty environment picker ("no declared/registered environment"), Run disabled |
+| Trigger of a file-backed (YAML) pipeline | `422` — `environment 'default' does not exist — create it under Environments first` |
+| Trigger of other pipelines | `404` — `environment 'default' not found` |
+| Cron / webhook / git triggers | No job is created; cron failures surface only in Manager logs |
+
+**Recovery**: create a new environment with slug `default` (triggers resolve by
+slug, not by the old id), or simply restart the Manager — the migration
+re-seeds it automatically.
+
 ## Data model
 
 ```sql
