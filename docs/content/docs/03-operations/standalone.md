@@ -16,7 +16,7 @@ to use `buz-manager` + `buz-runner` with normal `register_token` registration.
 | Arch | **linux/arm64** only |
 | Tags | `latest`, `vX.Y.Z`, `X.Y.Z`, plus `-arm64` suffixes |
 | Auth mode | Manager `[standalone]` on — loopback tokenless register for `standalone-runner` |
-| Compose template | [`deploy/standalone/docker-compose.yml`](https://github.com/hzbd/buz/blob/master/deploy/standalone/docker-compose.yml) |
+| Compose template | [`deploy/standalone/docker-compose.yml`](https://github.com/schiplat/buz/blob/master/deploy/standalone/docker-compose.yml) |
 
 ---
 

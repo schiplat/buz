@@ -37,6 +37,7 @@ Buz ships with the following known limitations. They are tracked and will be add
 - **Audit log is best-effort.** Not tamper-proof; source IPs are not recorded; first-admin creation is not audited.
 - **Runner path & TLS options.** `config_dest` accepts absolute paths and does not normalize relative joins; `tls_skip_verify` disables certificate verification (labs only). The Manager clock probe accepts any host key by design — it is a probe, not a trust boundary.
 - **Credentials on Runners (template model).** Step credentials (registry passwords, presigned URLs) transit the Runner process environment as masked values; same-user processes can read them for the step's lifetime. On ssh target hosts, `docker logout` empties the credential file and the paired logout step removes the job-scoped directory — a cancelled job leaves cleanup to the host's `/tmp` hygiene.
+- **Dependency advisory without an upstream fix.** The `rsa` crate (pulled in via `russh` SSH support) is affected by [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071) (Marvin Attack, timing side channel); no fixed release exists at the time of writing. Impact is limited to RSA key exchange / RSA cipher paths in SSH connections — prefer Ed25519 keys and modern ciphers.
 
 ## Scope
 
@@ -62,6 +63,7 @@ Buz ships with the following known limitations. They are tracked and will be add
 - **审计日志 best-effort**：非防篡改、不记录来源 IP、首管理员创建未审计。
 - **Runner 路径与 TLS 选项**：`config_dest` 接受绝对路径、相对拼接不归一化；`tls_skip_verify` 仅限实验环境；Manager 时钟探测不校验主机密钥（仅探测用途，非信任边界）。
 - **Runner 上的凭证（模板模型）**：步骤凭证（镜像仓库密码、预签名 URL）以打码形式经过 Runner 进程环境，同用户进程在步骤存续期内可读；SSH 目标机上 `docker logout` 会清空凭据文件、配对登出步会移除 job 级目录——job 被取消时，清理依赖目标机 `/tmp` 机制。
+- **暂无上游修复的依赖通告**：`rsa` crate（经 `russh` SSH 支持引入）受 [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071)（Marvin Attack，计时侧信道）影响，暂无修复版本。影响面限于 SSH 连接中的 RSA 密钥交换 / RSA 密码套件——建议优先使用 Ed25519 密钥与现代密码套件。
 
 ## 中文 / Chinese
 

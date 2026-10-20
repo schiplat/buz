@@ -18,7 +18,7 @@ version: {version}
 engine: shell
 default_timeout: 30s
 author: Buz
-source_repo: https://github.com/buz/buz-plugins
+source_repo: https://github.com/schiplat/buz-plugins
 
 inputs:
   webhook:
@@ -121,7 +121,7 @@ engine: shell
 engines: [shell, ssh]
 default_timeout: 30s
 author: Buz
-source_repo: https://github.com/buz/buz-plugins
+source_repo: https://github.com/schiplat/buz-plugins
 
 inputs:
   url:
@@ -258,7 +258,7 @@ publisher: official
 version: 1.2.0
 engine: shell
 author: Buz
-source_repo: https://github.com/buz/buz-plugins
+source_repo: https://github.com/schiplat/buz-plugins
 inputs:
   retries:
     type: number
@@ -455,7 +455,7 @@ version: 1.0.0
 engine: shell
 default_timeout: 30s
 {dir_line}author: Buz
-source_repo: https://github.com/buz/buz-plugins
+source_repo: https://github.com/schiplat/buz-plugins
 
 run: |
 {run}

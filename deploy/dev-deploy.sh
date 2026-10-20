@@ -2,7 +2,7 @@
 #
 # dev-deploy.sh — one-shot deployment of Buz Manager + Runner on a Linux VM.
 #
-# Pulls buz-manager / buz-runner images from Alibaba Cloud ACR (personal) and
+# Pulls buz-manager / buz-runner images from Docker Hub (schiplat namespace) and
 # runs them with docker compose. Designed for a Linux VM on macOS (arm64 or
 # x86_64 — the images are multi-arch, the platform is picked up automatically).
 #
@@ -13,7 +13,7 @@
 # the buz-manager / buz-runner containers (which run as USER buz) can write.
 #
 # Quick start:
-#   ./dev-deploy.sh login               # docker login to ACR (interactive)
+#   ./dev-deploy.sh login               # docker login to the registry (interactive)
 #   ./dev-deploy.sh up                  # pull + start Manager (prints Runner bootstrap steps)
 #   ./dev-deploy.sh runner              # start Runner; register_token is auto-generated
 #   ./dev-deploy.sh status              # container + health status
@@ -91,7 +91,7 @@ image_present() {
   $DOCKER image inspect "$1" >/dev/null 2>&1
 }
 
-# Pull an image from ACR. `docker pull` always hits the registry (even when the
+# Pull an image from the registry. `docker pull` always hits the registry (even when the
 # tag exists locally) to refresh the manifest — that is why a TLS timeout can
 # abort upgrade despite `docker images` already listing the tag.
 # Fallback: if pull fails but the image is local, continue with a warning.

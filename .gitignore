@@ -23,6 +23,7 @@ example/data/
 # Node / Dashboard
 dashboard/node_modules/
 dashboard/dist/
+.pnpm-store/
 
 # Config with secrets (use *.example.toml or placeholders in committed samples)
 *.local.toml

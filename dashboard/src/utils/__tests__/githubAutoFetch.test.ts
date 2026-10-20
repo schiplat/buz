@@ -12,7 +12,7 @@ describe('autoFetchStatus', () => {
   })
 
   it('trims and dedups blank owner entries', () => {
-    expect(autoFetchStatus(30, ' schiplat , \n fuxi , ')).toEqual({ badge: '30m', detail: 'schiplat, fuxi', warn: false })
+    expect(autoFetchStatus(30, ' schiplat , \n ops , ')).toEqual({ badge: '30m', detail: 'schiplat, ops', warn: false })
   })
 
   it('truncates a long owner list with an ellipsis', () => {
