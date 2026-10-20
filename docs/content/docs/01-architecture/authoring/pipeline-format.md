@@ -56,6 +56,7 @@ cargo test -p shared --test pipeline_yaml_test
 
 ```yaml
 name: Deploy Production               # required
+environments: [staging, production]  # required registered slug allowlist; every run selects one
 description: Build and deploy to prod # optional
 team: default                         # optional team slug (defaults to "default")
 
@@ -72,17 +73,16 @@ on:                                    # optional — defaults to manual trigger
         description: Buz Host name (must exist in Infrastructure → Hosts)
         required: true
         type: host                    # registry check at trigger
-      env:
-        description: Target environment
+      environment_name:
+        description: Business input only; deployment environment is selected separately
         type: choice
         options: [staging, production]
       replicas:
         type: number
         default: "3"
-  cron:
-    schedule: "0 2 * * *"
   webhook:
     path: deploy-prod
+    environment: production       # optional default; caller may select another declared environment
 
 concurrency: deploy-prod              # optional — prevent concurrent runs
 
@@ -150,6 +150,7 @@ Built-in top-level keys on `PipelineYaml` (`deny_unknown_fields`):
 | Field | Required | Summary |
 |-------|:--------:|---------|
 | [`name`](#name) | ✓ | Unique pipeline name |
+| `environments` | ✓ | Registered environment slugs allowed for trigger-time selection |
 | [`description`](#description) | | UI description |
 | [`team`](#team) / `owner_group` | | Team slug (default `default`) |
 | [`on`](#on-trigger) | | Triggers: `manual` / `webhook` / `cron` |
@@ -160,6 +161,18 @@ Built-in top-level keys on `PipelineYaml` (`deny_unknown_fields`):
 | [`secrets`](#secrets) | | Optional secret name overview / allowlist |
 | [`notify`](#notify) | | End-of-job notification channels |
 | `steps` | ✓ | Ordered step list (see [Steps](#steps)) |
+
+## `environments` (Required deployment targets)
+
+Every pipeline must declare a non-empty top-level list of registered environment slugs:
+
+```yaml
+environments: [staging, production]
+```
+
+The YAML validator rejects unknown slugs. Every manual/API trigger must explicitly select one of these declared environments; missing or undeclared values are rejected. This is separate from `on.manual.inputs`: an input named `environment` is only an ordinary job parameter and does not select or authorize a deployment environment.
+
+---
 
 ### `name`
 
@@ -233,8 +246,8 @@ on:
         default: "0.1.0"
         type: string
         pattern: "^[A-Za-z0-9._-]+$"
-      env:
-        description: Target environment
+      environment_name:
+        description: Business input only; deployment environment is selected separately
         type: choice
         options: [staging, production]
       deploy_host:
@@ -278,8 +291,11 @@ Accepts POST requests at `/api/v1/hooks/{path}`.
 on:
   webhook:
     path: deploy-prod      # URL path segment — /api/v1/hooks/deploy-prod
+    environment: production # default target when the caller omits one
     secret: DEPLOY_HOOK_KEY  # optional team secret name → HMAC verification
 ```
+
+A webhook caller may choose any registered environment also declared by the pipeline. The selector may be supplied as the `environment` query parameter or in the JSON body (top-level or `inputs.environment`); precedence is query > body > this configured default. `environment` is reserved for deployment targeting and is not passed as a business input. If no selector or configured default exists, the trigger is rejected; it never picks the first declared environment.
 
 | | |
 |---|---|
@@ -308,7 +324,10 @@ Runs on a cron schedule (manager-side timer).
 on:
   cron:
     schedule: "0 2 * * *"   # standard 5-field cron: minute hour day month weekday
+    environment: production # required; must be in top-level environments
 ```
+
+Cron triggers require an explicit `environment` because a timer has no caller to choose one. Webhooks may configure `environment` as their default target; requests can override it with a registered slug that the pipeline declares. Neither path falls back to the first declared environment.
 
 | | |
 |---|---|
@@ -651,7 +670,7 @@ Every registered key on `StepYaml` (`crates/shared/src/pipeline_yaml.rs`). Unkno
 
 ### Step Fields
 
-#### `name`
+### `name`
 
 **Required.** Human-readable step name shown in Stage View and Build History.
 

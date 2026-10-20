@@ -32,7 +32,7 @@ Manual trigger inputs (`on.manual.inputs`) historically were **free-form**: the 
 
 ## Syntax
 
-All new fields are **optional** — existing pipelines keep working unchanged.
+Input-level constraint fields are **optional** — existing input definitions keep working unchanged. Independently, every pipeline must declare its deployment targets in a non-empty top-level `environments:` list; see [Pipeline Format](./pipeline-format/#environments-required-deployment-targets).
 
 ```yaml
 on:
@@ -48,10 +48,10 @@ on:
         description: Buz Host name
         required: true
         type: host                      # must reference a registered Buz Host
-      env:
-        description: Target environment
+      environment_name:
+        description: Business input only; deployment environment is selected separately
         type: choice
-        options: [staging, production]  # required when type: choice
+        options: [staging, production]
       replicas:
         type: number
       dry_run:

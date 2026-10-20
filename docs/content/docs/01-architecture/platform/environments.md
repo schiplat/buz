@@ -14,7 +14,7 @@ platform_vars.value / secrets.value   ← shared Default (always)
          └─ pipeline env:             ← YAML still wins (vars path)
 ```
 
-An **Environment** is a named platform scope (`staging`, `production`, …). It does
+An **Environment** is a named platform scope (`staging`, `production`, …). Pipeline YAML declares which registered slugs it may target with a required top-level `environments: [staging, production]` list; each trigger must select one of those slugs. The selected Environment does
 **not** replace Variables or Secrets — it only overrides a subset of their values
 when a job is triggered with that Environment selected.
 
@@ -84,10 +84,25 @@ Unbound Environment overrides (Variable or Secret) are never injected.
 { "inputs": {}, "environment": "production", "verbose": false }
 ```
 
-- Omit / empty `environment` → legacy behavior (defaults only)
-- Slug or id accepted; unknown → `404`
+- Omit / empty `environment` → rejected (`422`); every trigger must include one declared slug
+- Slugs are checked against both the pipeline allowlist and registered environments
+- An `on.manual.inputs.environment` value is an ordinary parameter, not the selected deployment environment
 
 Job `snapshot.environment` records the slug for Job Detail UI.
+
+## Deployment concurrency
+
+Each Environment has a Web-managed `deployment_concurrency` policy:
+
+- `off` (default): no cross-pipeline environment gate; same-pipeline/environment jobs retain their normal serialization.
+- `queue`: queue jobs targeting the same Environment across pipelines.
+- `cancel_in_progress`: allow the newer deployment to replace an in-progress deployment targeting the same Environment.
+
+The Manager evaluates and claims environment-gated jobs in a SQLite write transaction so separate pollers cannot claim the same environment concurrently.
+
+## Host name / label allowlist
+
+The Web environment detail manages Host names and Host labels; Hosts themselves remain global and have no Environment column. An empty allowlist means unrestricted. Once any entry exists, each SSH target must match a listed Host name or one of its labels. Dynamic Host names/labels are rejected for restricted Environments because they cannot be authorized before execution.
 
 ## Protection / approval gates
 
@@ -104,11 +119,9 @@ append-only row in `job_approvals` (exposed on `GET /jobs/{id}` as `approvals`).
 
 ## UI
 
-- Infrastructure → **Environments** (`/environments`): list + create
-- Environment detail (`/environments/{id}`): env info + protection on top
-  (inline edit); Variable / Secret overrides below in a left/right split,
-  each with its own pagination. List and detail use separate routes.
-- Trigger dialog: Environment dropdown; protected envs labeled
+- Infrastructure → **Environments** (`/environments`): list + create, protection, deployment concurrency summary, and Host allowlist count
+- Environment detail (`/environments/{id}`): inline edit for protection and deployment concurrency; Host name / label allowlist; Variable / Secret overrides below in a left/right split, each with its own pagination. List and detail use separate routes.
+- Trigger dialogs show only the pipeline's declared registered environments and require a selection; protected envs are labeled
 - Job Detail: Approve / Reject + **Approval history** trail
 
 ## API
@@ -118,7 +131,9 @@ append-only row in `job_approvals` (exposed on `GET /jobs/{id}` as `approvals`).
 | GET | `/api/v1/environments` | Auth (Trigger dropdown) |
 | POST | `/api/v1/environments` | PlatformAdmin (optional protection fields) |
 | GET/PUT/DELETE | `/api/v1/environments/{id}` | GET Auth; mutate PlatformAdmin |
-| GET | `/api/v1/environments/{id}/overrides` | Auth |
+| GET | `/api/v1/environments/{id}/host-allowlist` | Auth |
+| POST | `/api/v1/environments/{id}/host-allowlist` | PlatformAdmin `{kind: name|label, value}` |
+| DELETE | `/api/v1/environments/{id}/host-allowlist/{kind}/{value}` | PlatformAdmin |
 | PUT | `/api/v1/environments/{id}/overrides` | PlatformAdmin `{var_id, value}` |
 | DELETE | `/api/v1/environments/{id}/overrides/{var_id}` | PlatformAdmin |
 | GET | `/api/v1/environments/{id}/secret-overrides` | Auth (`has_override` only) |
@@ -132,7 +147,6 @@ See also [Environment Approval Gates](./environment-approvals/) and [API Referen
 
 ## Out of scope
 
-- Per-environment Hosts
-- YAML `environments:` allowlist on a pipeline
+- Assigning Hosts directly to Environments (Hosts remain global; Environment-owned name/label allowlists provide targeting policy)
 - Syncing Environment values to GitHub
 - Approval IM notify (see deferrals in [Approval Gates](./environment-approvals/))

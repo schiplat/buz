@@ -379,7 +379,7 @@ Request:
 
 ### POST /pipelines/:id/trigger — Trigger Run
 
-Body may include `inputs`, `verbose`, `debug` (`debug` rejected for non–platform-admin), and optional `environment` (slug or id). Omit / empty → Variable defaults only. Unknown slug → `404`. See [Environments](./environments/).
+Body requires `environment` and may include `inputs`, `verbose`, and `debug` (`debug` is rejected for non–platform-admin). The selected registered environment slug must be declared by the pipeline; missing, unknown, or undeclared environments are rejected. See [Environments](./environments/).
 
 Response:
 ```json
@@ -403,7 +403,7 @@ Job `snapshot.environment` records the selected slug when set.
 | POST | `/api/v1/jobs/:id/claim` | Runner Token |
 | PATCH | `/api/v1/jobs/:id/status` | Runner Token |
 
-List/get include `trigger_user_id` when set. `GET /jobs/:id` returns append-only `approvals[]` (`approve` \| `reject` \| `cancel` \| `timeout`). Protected Environment triggers create `waiting_approval` jobs (`approval_required: true` on trigger response) until approve — see [Environment Approval Gates](./environment-approvals/).
+List/get include `trigger_user_id` when set. `GET /jobs/:id` returns append-only `approvals[]` (`approve` \| `reject` \| `cancel` \| `timeout`). Protected Environment triggers create `waiting_approval` jobs (`approval_required: true` on trigger response) until approve — see [Environment Approval Gates](./environment-approvals/). Concurrent approve/reject/cancel on one job are serialized per job: exactly one decision wins and each loser gets `409 Conflict` with no side effects (race semantics in [Environment Approval Gates](./environment-approvals/)).
 
 List items include `team_id` (from the owning pipeline) so the UI team switcher can filter Jobs client-side. Visibility still follows membership / platform-admin rules via `team_in_clause`.
 
@@ -590,25 +590,27 @@ Generic hooks use query / flat JSON / `inputs` (below). Git platform push events
 Triggers the pipeline whose `webhook_path` matches `:path`.  Supports two
 input styles:
 
+**Deployment environment selector** (required for pipelines with declared environments): use `environment` in the query string, top-level JSON body, or JSON `inputs` object. Query takes precedence over body; body takes precedence over the pipeline's configured `on.webhook.environment` default. The selector must name an environment registered in Manager and declared by the pipeline. It is reserved and is not passed as a business input. If neither the request nor the YAML default supplies it, the trigger is rejected; `env` remains an ordinary input and is not an alias.
+
 **Query params**:
 
 ```
-POST /api/v1/hooks/deploy-prod?version=1.2&env=staging
+POST /api/v1/hooks/deploy-prod?version=1.2&environment=staging
 ```
 
 **JSON body** (flat keys, CI-style):
 
 ```json
-{ "version": "1.2", "branch": "main" }
+{ "environment": "staging", "version": "1.2", "branch": "main" }
 ```
 
-**JSON body** (`inputs` object — overrides query params):
+**JSON body** (`inputs` object — overrides query params for business inputs):
 
 ```json
-{ "inputs": { "version": "2.0" } }
+{ "environment": "staging", "inputs": { "version": "2.0" } }
 ```
 
-Merge priority (highest wins): JSON `inputs` > flat JSON keys > query params.
+Merge priority for business inputs (highest wins): JSON `inputs` > flat JSON keys > query params. The environment selector is resolved separately using query > body > YAML default.
 
 Response:
 ```json
@@ -631,12 +633,10 @@ Errors:
 | Method | Path | Notes |
 |--------|------|-------|
 | GET | `/api/v1/pipelines/:id/git-hooks` | `{ items: [...] }` public fields (no secret) |
-| POST | `/api/v1/pipelines/:id/git-hooks` | Create; returns plaintext `secret` once. Immutable afterward. |
+| POST | `/api/v1/pipelines/:id/git-hooks` | Create with required `environment`; must be registered and declared by the pipeline. Returns plaintext `secret` once. Environment binding is immutable afterward. |
 | DELETE | `/api/v1/pipelines/:id/git-hooks/:hook_id` | Remove one hook (recreate to change settings) |
 
-### GET /pipelines/:id/trigger-events
-
-JWT. Paginated **Trigger events** (`source`, `decision` filters) for Pipeline detail → Trigger events.
+Git Hook create body requires `provider` and `environment`, and may include `label`, `branch_filter`, and `enabled`. The selected environment is fixed for every delivery to that hook; delete and recreate the hook to change its target. Cron YAML likewise requires an explicit `on.cron.environment` declared in the top-level `environments` list.
 
 ## Audit logs
 

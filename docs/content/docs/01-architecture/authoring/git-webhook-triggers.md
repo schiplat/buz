@@ -139,8 +139,9 @@ A pipeline may have **multiple** Git webhooks (e.g. one for GitHub, one for Gite
 | `hook_key` | URL path segment (unique) |
 | `secret` | encrypted; plaintext shown once at create |
 | `branch_filter` | e.g. `main`, `release/*`; empty = all |
+| `environment` | Required at create; must be one of the pipeline's declared `environments`. Every delivery triggered by this hook targets exactly this environment — it cannot be overridden per request. |
 
-Generic `on.webhook` / `webhook_path` remains for human/CI HTTP triggers.
+Generic `on.webhook` / `webhook_path` remains for human/CI HTTP triggers (its `environment` selector precedence: query > body > YAML default).
 
 ---
 
@@ -185,6 +186,7 @@ Manual, cron, and generic `/hooks/:path` writes rows with the appropriate `sourc
 | `hook_key` | UNIQUE |
 | `secret_ciphertext` | AES-GCM |
 | `branch_filter` | TEXT |
+| `environment` | Fixed target environment, bound at create; must be declared by the pipeline |
 | `enabled` | 0/1 |
 | `created_at`, `updated_at` | |
 

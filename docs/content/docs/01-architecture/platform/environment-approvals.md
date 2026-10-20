@@ -155,6 +155,43 @@ sequenceDiagram
 | POST | `/jobs/{id}/cancel` | Also records `cancel` if was waiting |
 | GET | `/jobs/{id}` | Includes `approvals[]` + `snapshot.approval` |
 
+## Concurrent decisions & race semantics
+
+`approve`, `reject` and `cancel` serialize through a `BEGIN IMMEDIATE`
+transaction and re-check the job status **inside** it; every state write is
+conditional (`WHERE status = 'waiting_approval'`, or the non-terminal set for
+cancel). When decisions race, exactly one wins — every loser gets
+`409 Conflict` with no side effects: no `job_approvals` row, no snapshot
+rewrite, no notify/broadcast.
+
+| Race | Outcome |
+|------|---------|
+| `approve` vs `reject` | First commit wins (promote vs `cancelled` + outcome `rejected`). The loser returns 409 `job is no longer waiting for approval` and appends nothing. |
+| `approve` twice, same user | Second insert violates `UNIQUE(job_id, user_id, action)` → 409 `you have already approved this job`. |
+| `approve` twice, threshold met by the first | First promotes to `pending`/`queued`; the second fails the in-transaction status re-check → 409, no extra row. |
+| `cancel` wins, then late `approve`/`reject` | Outcome stays `cancelled`; the late decision gets 409 and appends nothing. |
+| `approve` reaches threshold first, then `cancel` | The job was promoted, so operator cancel legitimately cancels a `pending` job. `snapshot.approval.outcome` stays `approved`; no `cancel` trail row is written (cancel rows exist only while `waiting_approval`). |
+
+Additional guarantees:
+
+- **Snapshot re-read** — `reject` and `cancel` re-read `jobs.snapshot` inside
+  the transaction, so an approve that committed just before them keeps its
+  `approval.received` count. This matters when `require_approvals ≥ 2`: a
+  mid-flight approve below the threshold is not clobbered by a concurrent
+  reject.
+- **Approve recorded, concurrency blocked** — if the threshold is met but the
+  concurrency resolver returns Conflict (queue full / `discard-new`), the
+  approval row is kept and the job stays `waiting_approval`; the API returns
+  409 with the concurrency reason.
+- **System actors** — approval timeout records `timeout` as
+  `user_id='system'`; environment `cancel_in_progress` auto-cancel of a
+  waiting job records `cancel` as `user_id='system:environment'`; manual
+  operator cancel records the operator identity.
+
+These semantics are locked by regression tests in
+`crates/manager/src/api/tests/approval_race_tests.rs` and
+`cancel_in_progress_tests.rs`.
+
 ## UI
 
 - **Environments** — Protection card (platform admin)
@@ -167,7 +204,6 @@ sequenceDiagram
 - Named reviewers / groups (role thresholds only)
 - Multi-stage approval chains
 - Automated request + human approve (`allow_automated_request`)
-- YAML pipeline allowlist of environments
 
 ## Related schema notes
 
