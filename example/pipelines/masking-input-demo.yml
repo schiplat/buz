@@ -18,6 +18,7 @@
 #   deploy_token should look like "buzenc:v1:…" not plaintext.
 
 name: masking-input-demo
+environments: [default]
 description: Demo for masking:true trigger inputs (logs + audit + DB encrypt)
 team: default
 

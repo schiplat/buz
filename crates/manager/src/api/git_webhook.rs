@@ -33,7 +33,7 @@ pub async fn handle(
         .ok_or_else(|| AppError::NotFound(format!("unknown git provider '{provider_raw}'")))?;
 
     let row = sqlx::query(
-        "SELECT h.pipeline_id, h.secret_ciphertext, h.branch_filter, h.enabled, h.provider, p.name, p.is_active
+        "SELECT h.pipeline_id, h.secret_ciphertext, h.branch_filter, h.enabled, h.provider, p.name, p.is_active, h.environment
          FROM pipeline_git_hooks h
          JOIN pipelines p ON p.id = h.pipeline_id
          WHERE h.hook_key = ?",
@@ -50,6 +50,7 @@ pub async fn handle(
     let configured_provider: String = row.get(4);
     let pipeline_name: String = row.get(5);
     let is_active: i64 = row.get(6);
+    let environment: String = row.get(7);
 
     if configured_provider != provider {
         return Err(AppError::NotFound(format!(
@@ -163,6 +164,7 @@ pub async fn handle(
                 provider,
                 &branch_filter,
                 &event,
+                &environment,
             )
             .await;
         }
@@ -177,6 +179,7 @@ async fn finish_claimed(
     provider: &str,
     branch_filter: &str,
     event: &NormalizedGitEvent,
+    environment: &str,
 ) -> Result<axum::response::Response, AppError> {
     if event.is_ping {
         finalize_event(&state.pool, event_id, "skipped", "ping", None).await?;
@@ -242,7 +245,7 @@ async fn finish_claimed(
         &inputs,
         false,
         false,
-        None,
+        Some(environment),
         None,
         None,
     )

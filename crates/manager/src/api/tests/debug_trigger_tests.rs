@@ -125,6 +125,7 @@ async fn read_body(response: axum::response::Response) -> serde_json::Value {
 const CREATE_PAYLOAD: &str = r#"{
     "name": "debug-trigger",
     "trigger_type": "manual",
+    "environments": ["default"],
     "runner_labels": ["linux-x64"],
     "team_id": "team-1",
     "env": [],
@@ -169,7 +170,7 @@ async fn trigger(
                 .header(AUTHORIZATION, bearer(jwt))
                 .header("Content-Type", "application/json")
                 .body(Body::from(format!(
-                    r#"{{"inputs": {{}}, "debug": {debug}}}"#
+                    r#"{{"inputs": {{}}, "debug": {debug}, "environment": "default"}}"#
                 )))
                 .unwrap(),
         )

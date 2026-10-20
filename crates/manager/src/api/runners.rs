@@ -629,11 +629,27 @@ pub async fn poll(
     let candidates = sqlx::query(
         "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
                 j.debug_unredact, j.verbose_logs, j.trigger_by, p.name, p.team_id, p.trigger_type,
-                j.run_number, j.run_attempt
+                j.environment_id, j.run_number, j.run_attempt
          FROM jobs j
          JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.status = 'pending'
-         ORDER BY j.created_at ASC
+           AND (
+             j.environment_id IS NULL
+             OR COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress'
+             OR j.rowid = (
+                 SELECT MAX(latest.rowid) FROM jobs latest
+                 WHERE latest.environment_id = j.environment_id AND latest.status = 'pending'
+             )
+           )
+           AND NOT (
+             COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') = 'queue'
+             AND EXISTS (SELECT 1 FROM jobs running WHERE running.environment_id = j.environment_id AND running.status = 'running')
+           )
+           AND NOT (
+             COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress'
+             AND EXISTS (SELECT 1 FROM jobs running WHERE running.pipeline_id = j.pipeline_id AND running.environment_id = j.environment_id AND running.status = 'running')
+           )
+         ORDER BY j.created_at ASC, j.rowid ASC
          LIMIT 50",
     )
     .fetch_all(&state.pool)
@@ -651,6 +667,146 @@ pub async fn poll(
             continue;
         }
 
+        // Serialize environment gate evaluation with the claim. SQLite's
+        // immediate transaction reserves the writer before checking blockers,
+        // so another poller must re-evaluate after this transaction commits.
+        let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let candidate = sqlx::query(
+            "SELECT pipeline_id, environment_id FROM jobs WHERE id = ? AND status = 'pending'",
+        )
+        .bind(&job_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(candidate) = candidate else {
+            tx.rollback().await?;
+            continue;
+        };
+        let candidate_pipeline_id: String = candidate.get(0);
+        let candidate_environment_id: Option<String> = candidate.get(1);
+        let mut superseded_ids: Vec<String> = Vec::new();
+
+        if let Some(env_id) = candidate_environment_id.as_deref() {
+            let deployment_concurrency: String = sqlx::query_scalar(
+                "SELECT COALESCE(deployment_concurrency, 'off') FROM environments WHERE id = ?",
+            )
+            .bind(env_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .unwrap_or_else(|| "off".to_string());
+
+            if deployment_concurrency == "cancel_in_progress" {
+                let newest_pending: Option<String> = sqlx::query_scalar(
+                    "SELECT id FROM jobs WHERE environment_id = ? AND status = 'pending' \
+                     ORDER BY rowid DESC LIMIT 1",
+                )
+                .bind(env_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if newest_pending.as_deref() != Some(job_id.as_str()) {
+                    tx.rollback().await?;
+                    continue;
+                }
+
+                let superseded_rows = sqlx::query(
+                    "SELECT id, status, step_statuses, COALESCE(snapshot, '{}') \
+                     FROM jobs WHERE environment_id = ? AND id != ? \
+                     AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
+                )
+                .bind(env_id)
+                .bind(&job_id)
+                .fetch_all(&mut *tx)
+                .await?;
+                for superseded in superseded_rows {
+                    let superseded_id: String = superseded.get(0);
+                    let old_status: String = superseded.get(1);
+                    let step_statuses_raw: String = superseded.get(2);
+                    let snapshot_raw: String = superseded.get(3);
+                    let mut step_statuses: Vec<serde_json::Value> =
+                        serde_json::from_str(&step_statuses_raw).unwrap_or_default();
+                    for step in &mut step_statuses {
+                        if step.get("status").and_then(serde_json::Value::as_str) == Some("running")
+                        {
+                            step["status"] = serde_json::json!("cancelled");
+                            step["finished_at"] =
+                                serde_json::json!(chrono::Utc::now().to_rfc3339());
+                        }
+                    }
+                    let mut snapshot: serde_json::Value =
+                        serde_json::from_str(&snapshot_raw).unwrap_or(serde_json::json!({}));
+                    if old_status == "waiting_approval" {
+                        let received = snapshot
+                            .get("approval")
+                            .and_then(|approval| approval.get("received"))
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0);
+                        if let Some(object) = snapshot.as_object_mut() {
+                            object.insert(
+                                "approval".into(),
+                                serde_json::json!({
+                                    "required": true,
+                                    "received": received,
+                                    "outcome": "cancelled",
+                                }),
+                            );
+                        }
+                    }
+                    let updated = sqlx::query(
+                        "UPDATE jobs SET status = 'cancelled', step_statuses = ?, snapshot = ?, \
+                         end_time = datetime('now'), updated_at = datetime('now') \
+                         WHERE id = ? AND status IN \
+                         ('pending', 'queued', 'waiting_approval', 'running')",
+                    )
+                    .bind(serde_json::to_string(&step_statuses).unwrap_or_else(|_| "[]".into()))
+                    .bind(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
+                    .bind(&superseded_id)
+                    .execute(&mut *tx)
+                    .await?;
+                    if updated.rows_affected() > 0 {
+                        if old_status == "waiting_approval" {
+                            sqlx::query(
+                                "INSERT OR IGNORE INTO job_approvals \
+                                 (id, job_id, user_id, username, action, comment) \
+                                 VALUES (?, ?, 'system:environment', 'environment concurrency', \
+                                         'cancel', 'superseded by cancel_in_progress')",
+                            )
+                            .bind(Uuid::new_v4().to_string())
+                            .bind(&superseded_id)
+                            .execute(&mut *tx)
+                            .await?;
+                        }
+                        superseded_ids.push(superseded_id);
+                    }
+                }
+            } else {
+                let pair_running: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM jobs \
+                     WHERE pipeline_id = ? AND environment_id = ? AND status = 'running' AND id != ?",
+                )
+                .bind(&candidate_pipeline_id)
+                .bind(env_id)
+                .bind(&job_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                if pair_running > 0 {
+                    tx.rollback().await?;
+                    continue;
+                }
+
+                if deployment_concurrency == "queue" {
+                    let env_running: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM jobs WHERE environment_id = ? AND status = 'running'",
+                    )
+                    .bind(env_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    if env_running > 0 {
+                        tx.rollback().await?;
+                        continue;
+                    }
+                }
+            }
+        }
+
         let got = sqlx::query(
             "UPDATE jobs SET status = 'running', runner_id = ?, start_time = datetime('now'),
              updated_at = datetime('now')
@@ -659,10 +815,60 @@ pub async fn poll(
         )
         .bind(&auth.runner_id)
         .bind(&job_id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if let Some(r) = got {
+            tx.commit().await?;
+            for superseded_id in &superseded_ids {
+                crate::services::notify::spawn_job_notify(
+                    state.pool.clone(),
+                    state.config.auth.jwt_secret.clone(),
+                    state.config.server.public_base_url.clone(),
+                    superseded_id.clone(),
+                    "cancelled".to_string(),
+                );
+                if let Ok(Some(cancelled)) = sqlx::query(
+                    "SELECT pipeline_id, step_statuses, end_time, debug_unredact \
+                     FROM jobs WHERE id = ?",
+                )
+                .bind(superseded_id)
+                .fetch_optional(&state.pool)
+                .await
+                {
+                    let payload = serde_json::json!({
+                        "id": superseded_id,
+                        "status": "cancelled",
+                        "step_statuses": serde_json::from_str::<serde_json::Value>(
+                            &cancelled.get::<String, _>(1),
+                        ).unwrap_or_default(),
+                        "end_time": cancelled.get::<Option<String>, _>(2),
+                        "debug_unredact": cancelled.get::<i64, _>(3) != 0,
+                    });
+                    let cancelled_pipeline_id: String = cancelled.get(0);
+                    state.log_broadcast.broadcast_status(
+                        superseded_id,
+                        &cancelled_pipeline_id,
+                        &serde_json::to_string(&payload).unwrap_or_default(),
+                    );
+                }
+                crate::audit::record(
+                    &state.pool,
+                    crate::audit::AuditEvent::system("environment.concurrency_cancel").resource(
+                        "job",
+                        superseded_id,
+                        "superseded by cancel_in_progress",
+                    ),
+                )
+                .await;
+            }
+            if !superseded_ids.is_empty() {
+                tracing::info!(
+                    environment = ?candidate_environment_id,
+                    superseded = superseded_ids.len(),
+                    "cancel_in_progress superseded in-flight deployments"
+                );
+            }
             tracing::info!(
                 runner = %auth.runner_id,
                 job = %job_id,
@@ -684,6 +890,7 @@ pub async fn poll(
             ));
             break;
         }
+        tx.rollback().await?;
         // Lost the race — try next matching candidate
     }
 

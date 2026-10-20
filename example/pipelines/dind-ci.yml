@@ -12,6 +12,7 @@
 # Secrets (UPPER_SNAKE_CASE): create under Secrets & Variables → Secrets.
 
 name: CI Build and Push
+environments: [default]
 description: Build a Docker image with DinD, push to registry, then deploy via SSH.
 
 team: default

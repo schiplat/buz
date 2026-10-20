@@ -22,6 +22,7 @@
 # as $INPUT_<KEY> (and also as $<KEY>).
 
 name: Git Clone & Build
+environments: [default]
 description: Clone private repo via SSH key, run tests, and build.
 
 team: default

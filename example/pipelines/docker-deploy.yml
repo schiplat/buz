@@ -8,6 +8,7 @@
 # Run blocks: $INPUT_<KEY>. host: field: $target (trigger input name, not $INPUT_TARGET).
 
 name: Docker Deploy
+environments: [default]
 description: Build, push, and deploy a Docker container to target environment.
 
 team: default

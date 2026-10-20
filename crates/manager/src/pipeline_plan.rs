@@ -233,6 +233,7 @@ run: echo "$INPUT_SOURCE"
 
     fn pipeline_yaml() -> &'static str {
         r#"name: Plugin plan test
+environments: [default]
 steps:
   - name: Check endpoint
     uses: buz/http-check@1.0.0
@@ -271,7 +272,7 @@ steps:
         write_plugin_index(index.path());
         assert!(plan("name: [invalid", index.path(), None, false).is_err());
         assert!(plan(
-            "name: Missing\nsteps:\n  - name: Missing\n    uses: buz/missing@1.0.0\n",
+            "name: Missing\nenvironments: [default]\nsteps:\n  - name: Missing\n    uses: buz/missing@1.0.0\n",
             index.path(),
             None,
             false
@@ -279,11 +280,11 @@ steps:
         .unwrap_err()
         .contains("not found in local step index"));
         let missing_input =
-            "name: Missing input\nsteps:\n  - name: Upload\n    uses: buz/oss-upload@1.0.0\n";
+            "name: Missing input\nenvironments: [default]\nsteps:\n  - name: Upload\n    uses: buz/oss-upload@1.0.0\n";
         assert!(plan(missing_input, index.path(), None, false)
             .unwrap_err()
             .contains("missing required input 'source'"));
-        let unknown_input = "name: Unknown input\nsteps:\n  - name: Check\n    uses: buz/http-check@1.0.0\n    with:\n      url: https://example.invalid\n      undeclared: value\n";
+        let unknown_input = "name: Unknown input\nenvironments: [default]\nsteps:\n  - name: Check\n    uses: buz/http-check@1.0.0\n    with:\n      url: https://example.invalid\n      undeclared: value\n";
         assert!(plan(unknown_input, index.path(), None, false)
             .unwrap_err()
             .contains("with.undeclared: template 'buz/http-check' does not declare this input"));
@@ -319,6 +320,7 @@ steps:
     fn direct_docker_steps_are_included_in_image_check_list() {
         let index = tempfile::tempdir().unwrap();
         let raw = r#"name: Direct Docker
+environments: [default]
 steps:
   - name: Inspect
     engine: docker

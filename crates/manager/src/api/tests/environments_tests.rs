@@ -131,6 +131,60 @@ async fn json_req(
 }
 
 #[tokio::test]
+async fn environment_create_and_update_reject_surrounding_slug_whitespace() {
+    let (app, _pool) = test_app().await;
+    let jwt = admin_jwt();
+
+    for slug in [" production", "production ", "\tproduction"] {
+        let response = json_req(
+            &app,
+            "POST",
+            "/api/v1/environments",
+            &jwt,
+            Some(serde_json::json!({
+                "name": format!("Bad {slug:?}"),
+                "slug": slug,
+            })),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "slug={slug:?}"
+        );
+    }
+
+    let created = json_req(
+        &app,
+        "POST",
+        "/api/v1/environments",
+        &jwt,
+        Some(serde_json::json!({ "name": "Production", "slug": "production" })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let env_id = read_body(created).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for slug in [" production", "production "] {
+        let response = json_req(
+            &app,
+            "PUT",
+            &format!("/api/v1/environments/{env_id}"),
+            &jwt,
+            Some(serde_json::json!({ "slug": slug })),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "slug={slug:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn environment_crud_and_override_roundtrip() {
     let (app, _pool) = test_app().await;
     let jwt = admin_jwt();
@@ -208,28 +262,36 @@ async fn environment_crud_and_override_roundtrip() {
     let list = json_req(&app, "GET", "/api/v1/environments", &jwt, None).await;
     assert_eq!(list.status(), StatusCode::OK);
     let listed = read_body(list).await;
-    assert_eq!(listed["data"].as_array().unwrap().len(), 1);
-    assert_eq!(listed["data"][0]["override_count"], 0);
+    assert_eq!(listed["data"].as_array().unwrap().len(), 2);
+    let production = listed["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|environment| environment["slug"] == "production")
+        .expect("production environment");
+    assert_eq!(production["override_count"], 0);
 }
 
 #[tokio::test]
-async fn trigger_unknown_environment_returns_404() {
+async fn trigger_undeclared_environment_is_rejected() {
     let (app, _pool) = test_app().await;
     let jwt = admin_jwt();
 
+    let mut pipeline_body = serde_json::json!({
+        "name": "env-404",
+        "trigger_type": "manual",
+        "runner_labels": ["linux-x64"],
+        "team_id": "team-1",
+        "environments": ["default"],
+        "env": [],
+        "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
+    });
     let pipe = json_req(
         &app,
         "POST",
         "/api/v1/pipelines",
         &jwt,
-        Some(serde_json::json!({
-            "name": "env-404",
-            "trigger_type": "manual",
-            "runner_labels": ["linux-x64"],
-            "team_id": "team-1",
-            "env": [],
-            "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
-        })),
+        Some(pipeline_body.take()),
     )
     .await;
     assert_eq!(pipe.status(), StatusCode::OK);
@@ -249,7 +311,96 @@ async fn trigger_unknown_environment_returns_404() {
         })),
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "unknown env → 404");
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = read_body(resp).await;
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("not in this pipeline"));
+}
+
+#[tokio::test]
+async fn restricted_environment_rejects_dynamic_host_targets() {
+    let (app, pool) = test_app().await;
+    let jwt = admin_jwt();
+
+    sqlx::query(
+        "INSERT INTO hosts (id, name, host, port, username, credential_type, credential_data)
+         VALUES ('host-prod', 'prod-01', '10.0.0.1', 22, 'root', 'none', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed host");
+
+    let environment = json_req(
+        &app,
+        "POST",
+        "/api/v1/environments",
+        &jwt,
+        Some(serde_json::json!({ "name": "Production", "slug": "production" })),
+    )
+    .await;
+    let env_id = read_body(environment).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let allow_host = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/environments/{env_id}/host-allowlist"),
+        &jwt,
+        Some(serde_json::json!({ "kind": "name", "value": "allowed-01" })),
+    )
+    .await;
+    assert_eq!(allow_host.status(), StatusCode::OK);
+
+    let pipeline = json_req(
+        &app,
+        "POST",
+        "/api/v1/pipelines",
+        &jwt,
+        Some(serde_json::json!({
+            "name": "dynamic-host",
+            "trigger_type": "manual",
+            "runner_labels": ["linux-x64"],
+            "team_id": "team-1",
+            "environments": ["production"],
+            "input_defs": [{ "name": "target", "required": true }],
+            "env": [],
+            "steps": [{
+                "name": "deploy",
+                "run": "echo deploy",
+                "engine": "ssh",
+                "host": "$target"
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(pipeline.status(), StatusCode::OK, "create pipeline");
+    let pipeline_id = read_body(pipeline).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let trigger = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipeline_id}/trigger"),
+        &jwt,
+        Some(serde_json::json!({
+            "inputs": { "target": "prod-01" },
+            "environment": "production"
+        })),
+    )
+    .await;
+    assert_eq!(trigger.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = read_body(trigger).await;
+    assert!(body["message"].as_str().unwrap().contains("dynamic host"));
+    let job_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(job_count, 0, "rejected host must not create a job");
 }
 
 #[tokio::test]
@@ -329,6 +480,7 @@ async fn claim_applies_environment_overrides_bound_keys_only() {
             "trigger_type": "manual",
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
+            "environments": ["staging"],
             "var_ids": [bound_id],
             "env": [{ "name": "INLINE_KEY", "value": "from-yaml" }],
             "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
@@ -392,7 +544,7 @@ async fn claim_applies_environment_overrides_bound_keys_only() {
 }
 
 #[tokio::test]
-async fn trigger_without_environment_keeps_defaults() {
+async fn trigger_without_environment_is_rejected() {
     let (app, _pool) = test_app().await;
     let jwt = admin_jwt();
 
@@ -443,12 +595,14 @@ async fn trigger_without_environment_keeps_defaults() {
             "trigger_type": "manual",
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
+            "environments": ["production"],
             "var_ids": [var_id],
             "env": [],
             "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
         })),
     )
     .await;
+    assert_eq!(pipe.status(), StatusCode::OK, "create pipeline");
     let pid = read_body(pipe).await["data"]["id"]
         .as_str()
         .unwrap()
@@ -462,14 +616,12 @@ async fn trigger_without_environment_keeps_defaults() {
         Some(serde_json::json!({ "inputs": {} })),
     )
     .await;
-    assert_eq!(trig.status(), StatusCode::OK);
-
-    let poll = json_req(&app, "GET", "/api/v1/runners/poll", &runner_jwt(), None).await;
-    let env = &read_body(poll).await["data"]["env"];
-    assert_eq!(
-        env["REGION"], "default-region",
-        "no environment selected → platform default: {env}"
-    );
+    assert_eq!(trig.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let message = read_body(trig).await["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("environment is required"), "{message}");
 }
 
 #[tokio::test]
@@ -550,7 +702,14 @@ async fn secret_override_roundtrip_never_returns_plaintext() {
 
     let list = json_req(&app, "GET", "/api/v1/environments", &jwt, None).await;
     let listed = read_body(list).await;
-    assert_eq!(listed["data"][0]["secret_override_count"], 1);
+    assert_eq!(listed["data"][0]["secret_override_count"], 0);
+    let production = listed["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|environment| environment["slug"] == "production")
+        .expect("production environment");
+    assert_eq!(production["secret_override_count"], 1);
 }
 
 #[tokio::test]
@@ -627,6 +786,7 @@ async fn claim_applies_environment_secret_overrides_allowlisted_only() {
             "trigger_type": "manual",
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
+            "environments": ["staging"],
             "secret_ids": [bound_id],
             "env": [{ "name": "TOKEN", "value": "${secrets.DEPLOY_TOKEN}" }],
             "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]

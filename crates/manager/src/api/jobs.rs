@@ -413,108 +413,91 @@ pub async fn cancel(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    // Fetch job + pipeline context before the update so we can log rich details
-    let ctx = sqlx::query(
-        "SELECT j.status, j.step_statuses, j.pipeline_id, p.name
-         FROM jobs j
-         LEFT JOIN pipelines p ON p.id = j.pipeline_id
-         WHERE j.id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let ctx = sqlx::query("SELECT j.pipeline_id, p.name FROM jobs j LEFT JOIN pipelines p ON p.id = j.pipeline_id WHERE j.id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?;
 
-    let (old_status, step_statuses_str, pipeline_id, pipeline_name) = match ctx {
-        Some(row) => {
-            let s: String = row.get(0);
-            let ss: String = row.get(1);
-            let pid: String = row.get(2);
-            let p: Option<String> = row.try_get(3).ok();
-            (s, ss, pid, p)
-        }
+    let (pipeline_id, pipeline_name) = match ctx {
+        Some(row) => (
+            row.get::<String, _>(0),
+            row.try_get::<Option<String>, _>(1).ok().flatten(),
+        ),
         None => return Err(AppError::NotFound("job not found".into())),
     };
 
     let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
-    // If a step is currently "running" in step_statuses, flip it to "cancelled"
-    let mut step_statuses: Vec<serde_json::Value> =
-        serde_json::from_str(&step_statuses_str).unwrap_or_default();
-    let mut changed = false;
-    for s in &mut step_statuses {
-        if s["status"].as_str() == Some("running") {
-            s["status"] = serde_json::json!("cancelled");
-            s["finished_at"] = serde_json::json!(now_utc());
-            changed = true;
-            break; // only one step can be running at a time
-        }
-    }
-
-    let result = sqlx::query(
-        "UPDATE jobs SET status = 'cancelled', end_time = datetime('now'), updated_at = datetime('now')
-         WHERE id = ? AND status IN ('pending', 'running', 'queued', 'waiting_approval')",
-    )
-    .bind(&id)
-    .execute(&state.pool)
-    .await?;
-
-    if result.rows_affected() == 0 {
-        tracing::warn!(
-            operator = %auth.username,
-            job_id = %id,
-            pipeline = ?pipeline_name,
-            prev_status = %old_status,
-            "Cancel request ignored — job already in terminal state"
-        );
+    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let current = sqlx::query("SELECT status, step_statuses, snapshot FROM jobs WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let old_status: String = current.get(0);
+    if !matches!(
+        old_status.as_str(),
+        "pending" | "running" | "queued" | "waiting_approval"
+    ) {
+        tx.rollback().await?;
         return Err(AppError::NotFound(
             "job not found or already finished".into(),
         ));
     }
+    let step_statuses_str: String = current.get(1);
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(&current.get::<String, _>(2)).unwrap_or(serde_json::json!({}));
 
-    // Append-only approval trail when cancelling a protected-env wait.
+    // If a step is currently "running" in step_statuses, flip it to "cancelled".
+    let mut step_statuses: Vec<serde_json::Value> =
+        serde_json::from_str(&step_statuses_str).unwrap_or_default();
+    for s in &mut step_statuses {
+        if s["status"].as_str() == Some("running") {
+            s["status"] = serde_json::json!("cancelled");
+            s["finished_at"] = serde_json::json!(now_utc());
+            break;
+        }
+    }
     if old_status == "waiting_approval" {
-        if let Err(e) =
-            record_job_approval(&state.pool, &id, &auth.id, &auth.username, "cancel", "").await
-        {
-            tracing::warn!(
-                job_id = %id,
-                error = %e,
-                "environments: failed to record cancel approval event"
-            );
-        }
-        // Best-effort snapshot outcome for Job Detail summary.
-        if let Ok(Some(snap_row)) = sqlx::query("SELECT snapshot FROM jobs WHERE id = ?")
-            .bind(&id)
-            .fetch_optional(&state.pool)
-            .await
-        {
-            let raw: String = snap_row.get(0);
-            let mut snapshot: serde_json::Value =
-                serde_json::from_str(&raw).unwrap_or(serde_json::json!({}));
-            let received = snapshot
-                .get("approval")
-                .and_then(|a| a.get("received"))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            set_snapshot_approval(&mut snapshot, received, Some("cancelled"));
-            let _ = sqlx::query("UPDATE jobs SET snapshot = ? WHERE id = ?")
-                .bind(serde_json::to_string(&snapshot).unwrap_or_default())
-                .bind(&id)
-                .execute(&state.pool)
-                .await;
-        }
+        let received = snapshot
+            .get("approval")
+            .and_then(|approval| approval.get("received"))
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        set_snapshot_approval(&mut snapshot, received, Some("cancelled"));
     }
 
-    // Update step_statuses if we flipped a running step
-    if changed {
-        let updated = serde_json::to_string(&step_statuses).unwrap_or_default();
-        sqlx::query("UPDATE jobs SET step_statuses = ? WHERE id = ?")
-            .bind(&updated)
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'cancelled', step_statuses = ?, snapshot = ?,
+         end_time = datetime('now'), updated_at = datetime('now')
+         WHERE id = ? AND status IN ('pending', 'running', 'queued', 'waiting_approval')",
+    )
+    .bind(serde_json::to_string(&step_statuses).unwrap_or_else(|_| "[]".into()))
+    .bind(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
+    .bind(&id)
+    .execute(&mut *tx)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Err(AppError::NotFound(
+            "job not found or already finished".into(),
+        ));
     }
+    if old_status == "waiting_approval" {
+        sqlx::query(
+            "INSERT OR IGNORE INTO job_approvals (id, job_id, user_id, username, action, comment)
+             VALUES (?, ?, ?, ?, 'cancel', '')",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&id)
+        .bind(&auth.id)
+        .bind(&auth.username)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
 
     tracing::info!(
         operator = %auth.username,
@@ -605,41 +588,6 @@ fn set_snapshot_approval(snapshot: &mut serde_json::Value, received: i64, outcom
     if let Some(map) = snapshot.as_object_mut() {
         map.insert("approval".into(), approval);
     }
-}
-
-/// Append-only approval event. `user_id` / `username` are `"system"` for timeout.
-async fn record_job_approval(
-    pool: &sqlx::SqlitePool,
-    job_id: &str,
-    user_id: &str,
-    username: &str,
-    action: &str,
-    comment: &str,
-) -> Result<String, AppError> {
-    let id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
-         VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(job_id)
-    .bind(user_id)
-    .bind(username)
-    .bind(action)
-    .bind(comment)
-    .execute(pool)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::Database(db) = &e {
-            if db.message().contains("UNIQUE") {
-                return AppError::Conflict(format!(
-                    "duplicate approval action '{action}' for this user on job {job_id}"
-                ));
-            }
-        }
-        AppError::from(e)
-    })?;
-    Ok(id)
 }
 
 async fn list_job_approvals_json(
@@ -743,6 +691,17 @@ pub async fn approve(
     }
 
     let approval_id = Uuid::new_v4().to_string();
+    let mut approval_tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let current_status: Option<String> = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&mut *approval_tx)
+        .await?;
+    if current_status.as_deref() != Some("waiting_approval") {
+        approval_tx.rollback().await?;
+        return Err(AppError::Conflict(
+            "job is no longer waiting for approval".into(),
+        ));
+    }
     let insert = sqlx::query(
         "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
          VALUES (?, ?, ?, ?, 'approve', ?)",
@@ -752,7 +711,7 @@ pub async fn approve(
     .bind(&auth.id)
     .bind(&auth.username)
     .bind(&comment)
-    .execute(&state.pool)
+    .execute(&mut *approval_tx)
     .await;
 
     if let Err(e) = insert {
@@ -770,15 +729,15 @@ pub async fn approve(
         "SELECT COUNT(*) FROM job_approvals WHERE job_id = ? AND action = 'approve'",
     )
     .bind(&id)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *approval_tx)
     .await?;
 
     let required = protection_require_approvals(&snapshot);
     let mut new_status = status.clone();
 
     if received >= required {
-        match super::pipelines::resolve_concurrency_status(
-            &state.pool,
+        match super::pipelines::resolve_concurrency_status_in_tx(
+            &mut approval_tx,
             &pipeline_id,
             concurrency_group.as_deref(),
             &concurrency_mode,
@@ -789,15 +748,22 @@ pub async fn approve(
             Ok(next) => {
                 set_snapshot_approval(&mut snapshot, received, Some("approved"));
                 let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
-                sqlx::query(
+                let result = sqlx::query(
                     "UPDATE jobs SET status = ?, snapshot = ?, updated_at = datetime('now')
                      WHERE id = ? AND status = 'waiting_approval'",
                 )
                 .bind(next)
                 .bind(&snapshot_str)
                 .bind(&id)
-                .execute(&state.pool)
+                .execute(&mut *approval_tx)
                 .await?;
+                if result.rows_affected() == 0 {
+                    approval_tx.rollback().await?;
+                    return Err(AppError::Conflict(
+                        "job is no longer waiting for approval".into(),
+                    ));
+                }
+                approval_tx.commit().await?;
                 new_status = next.to_string();
                 broadcast_job_status(&state, &id, &pipeline_id, next);
             }
@@ -805,13 +771,21 @@ pub async fn approve(
                 // Keep waiting_approval; approval is recorded but concurrency blocked.
                 set_snapshot_approval(&mut snapshot, received, None);
                 let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
-                sqlx::query(
-                    "UPDATE jobs SET snapshot = ?, updated_at = datetime('now') WHERE id = ?",
+                let result = sqlx::query(
+                    "UPDATE jobs SET snapshot = ?, updated_at = datetime('now') \
+                     WHERE id = ? AND status = 'waiting_approval'",
                 )
                 .bind(&snapshot_str)
                 .bind(&id)
-                .execute(&state.pool)
+                .execute(&mut *approval_tx)
                 .await?;
+                if result.rows_affected() == 0 {
+                    approval_tx.rollback().await?;
+                    return Err(AppError::Conflict(
+                        "job is no longer waiting for approval".into(),
+                    ));
+                }
+                approval_tx.commit().await?;
                 tracing::warn!(
                     job_id = %id,
                     pipeline = %pipeline_name,
@@ -825,11 +799,21 @@ pub async fn approve(
     } else {
         set_snapshot_approval(&mut snapshot, received, None);
         let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
-        sqlx::query("UPDATE jobs SET snapshot = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(&snapshot_str)
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
+        let result = sqlx::query(
+            "UPDATE jobs SET snapshot = ?, updated_at = datetime('now') \
+             WHERE id = ? AND status = 'waiting_approval'",
+        )
+        .bind(&snapshot_str)
+        .bind(&id)
+        .execute(&mut *approval_tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            approval_tx.rollback().await?;
+            return Err(AppError::Conflict(
+                "job is no longer waiting for approval".into(),
+            ));
+        }
+        approval_tx.commit().await?;
     }
 
     audit::record(
@@ -899,7 +883,7 @@ pub async fn reject(
     let team_id: String = row.get(4);
     let pipeline_name: String = row.get(5);
 
-    let mut snapshot: serde_json::Value =
+    let snapshot: serde_json::Value =
         serde_json::from_str(&snapshot_raw).unwrap_or(serde_json::json!({}));
     let min_approve = parse_min_approve_role(&snapshot);
     auth.check_team_role(&team_id, min_approve)?;
@@ -913,8 +897,48 @@ pub async fn reject(
         ));
     }
 
+    let mut reject_tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let current = sqlx::query("SELECT status, snapshot FROM jobs WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&mut *reject_tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let current_status: Option<String> = current.get(0);
+    if current_status.as_deref() != Some("waiting_approval") {
+        reject_tx.rollback().await?;
+        return Err(AppError::Conflict(
+            "job is no longer waiting for approval".into(),
+        ));
+    }
+    // Re-read the snapshot inside the transaction: an approval recorded after
+    // our first read must not be clobbered by the reject.
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(&current.get::<String, _>(1)).unwrap_or(serde_json::json!({}));
+    let received: i64 = snapshot
+        .get("approval")
+        .and_then(|approval| approval.get("received"))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    set_snapshot_approval(&mut snapshot, received, Some("rejected"));
+    let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'cancelled', snapshot = ?,
+                end_time = datetime('now'), updated_at = datetime('now')
+         WHERE id = ? AND status = 'waiting_approval'",
+    )
+    .bind(&snapshot_str)
+    .bind(&id)
+    .execute(&mut *reject_tx)
+    .await?;
+    if result.rows_affected() == 0 {
+        reject_tx.rollback().await?;
+        return Err(AppError::Conflict(
+            "job is no longer waiting for approval".into(),
+        ));
+    }
+
     let approval_id = Uuid::new_v4().to_string();
-    sqlx::query(
+    let insert = sqlx::query(
         "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
          VALUES (?, ?, ?, ?, 'reject', ?)",
     )
@@ -923,26 +947,20 @@ pub async fn reject(
     .bind(&auth.id)
     .bind(&auth.username)
     .bind(&comment)
-    .execute(&state.pool)
-    .await?;
-
-    let received: i64 = snapshot
-        .get("approval")
-        .and_then(|a| a.get("received"))
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
-    set_snapshot_approval(&mut snapshot, received, Some("rejected"));
-    let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
-
-    sqlx::query(
-        "UPDATE jobs SET status = 'cancelled', snapshot = ?,
-                end_time = datetime('now'), updated_at = datetime('now')
-         WHERE id = ? AND status = 'waiting_approval'",
-    )
-    .bind(&snapshot_str)
-    .bind(&id)
-    .execute(&state.pool)
-    .await?;
+    .execute(&mut *reject_tx)
+    .await;
+    if let Err(e) = insert {
+        if let sqlx::Error::Database(db) = &e {
+            if db.message().contains("UNIQUE") {
+                reject_tx.rollback().await?;
+                return Err(AppError::Conflict(
+                    "you have already acted on this job".into(),
+                ));
+            }
+        }
+        return Err(e.into());
+    }
+    reject_tx.commit().await?;
 
     broadcast_job_status(&state, &id, &pipeline_id, "cancelled");
 
@@ -1058,16 +1076,21 @@ pub async fn update_status(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     // If the job has been manually cancelled via the UI, silently ignore
     // Runner status updates so the cancellation sticks.
+    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
     let row = sqlx::query("SELECT status FROM jobs WHERE id = ?")
         .bind(&job_id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
 
     let current_status: String = row.get(0);
 
-    // Terminal states win — don't let the Runner overwrite a cancellation
-    if current_status == "cancelled" || current_status == "success" || current_status == "failed" {
+    // Terminal states win — don't let the Runner overwrite a cancellation or completion.
+    if matches!(
+        current_status.as_str(),
+        "cancelled" | "success" | "failed" | "timeout"
+    ) {
+        tx.rollback().await?;
         return Ok(Json(ApiResponse::success(())));
     }
 
@@ -1075,7 +1098,7 @@ pub async fn update_status(
         // Per-step status update
         let row2 = sqlx::query("SELECT step_statuses FROM jobs WHERE id = ?")
             .bind(&job_id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&mut *tx)
             .await?
             .ok_or_else(|| AppError::NotFound("job not found".into()))?;
 
@@ -1115,7 +1138,7 @@ pub async fn update_status(
         sqlx::query("UPDATE jobs SET step_statuses = ?, updated_at = datetime('now') WHERE id = ?")
             .bind(&updated)
             .bind(&job_id)
-            .execute(&state.pool)
+            .execute(&mut *tx)
             .await?;
     } else {
         // Overall status update
@@ -1130,17 +1153,19 @@ pub async fn update_status(
         };
 
         let query = format!(
-            "UPDATE jobs SET status = ?, {end_expr} updated_at = {now}, retry_times = retry_times + 1 WHERE id = ?"
+            "UPDATE jobs SET status = ?, {end_expr} updated_at = {now}, retry_times = retry_times + 1 \
+             WHERE id = ? AND status NOT IN ('cancelled', 'success', 'failed', 'timeout')"
         );
 
         let result = sqlx::query(&query)
             .bind(&req.status)
             .bind(&job_id)
-            .execute(&state.pool)
+            .execute(&mut *tx)
             .await?;
 
         if result.rows_affected() == 0 {
-            return Err(AppError::NotFound("job not found".into()));
+            tx.rollback().await?;
+            return Ok(Json(ApiResponse::success(())));
         }
 
         // Safety net: if the job transitions to a terminal state, mark any
@@ -1148,7 +1173,7 @@ pub async fn update_status(
         if matches!(req.status.as_str(), "failed") {
             let row3 = sqlx::query("SELECT step_statuses FROM jobs WHERE id = ?")
                 .bind(&job_id)
-                .fetch_optional(&state.pool)
+                .fetch_optional(&mut *tx)
                 .await?;
             if let Some(row3) = row3 {
                 let raw: String = row3.get(0);
@@ -1167,7 +1192,7 @@ pub async fn update_status(
                     sqlx::query("UPDATE jobs SET step_statuses = ? WHERE id = ?")
                         .bind(&updated)
                         .bind(&job_id)
-                        .execute(&state.pool)
+                        .execute(&mut *tx)
                         .await?;
                 }
             }
@@ -1187,6 +1212,7 @@ pub async fn update_status(
             );
         }
     }
+    tx.commit().await?;
 
     tracing::info!("Job status updated: {job_id} → {}", req.status);
 

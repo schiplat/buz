@@ -34,6 +34,7 @@
 #   - render template missing at dest  → config_render: template '…' not found
 
 name: OSS Config Delivery Demo
+environments: [default]
 description: "Config flow: presigned OSS URL → fetch → render-only into $BUZ_CONFIG_DIR."
 
 team: default

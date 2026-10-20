@@ -76,6 +76,10 @@ async fn enrich_referential_errors(
         .filter(|s| !s.is_empty())
         .unwrap_or("default");
 
+    if matches!(&mode, ReferentialMode::Full) {
+        check_environment_slugs(pool, parsed, result, false).await?;
+    }
+
     let team_row = sqlx::query("SELECT id FROM teams WHERE slug = ?")
         .bind(team_slug)
         .fetch_optional(pool)
@@ -107,7 +111,8 @@ async fn enrich_referential_errors(
     };
     let team_id: String = team_row.get(0);
 
-    if let ReferentialMode::Viewer { auth } = mode {
+    let viewer_mode = matches!(&mode, ReferentialMode::Viewer { .. });
+    if let ReferentialMode::Viewer { auth } = &mode {
         if auth.check_team(&team_id, Perm::TeamView).is_err() {
             result.errors.push(YamlValidationError {
                 field: "team".into(),
@@ -115,6 +120,10 @@ async fn enrich_referential_errors(
             });
             return Ok(());
         }
+    }
+
+    if viewer_mode {
+        check_environment_slugs(pool, parsed, result, true).await?;
     }
 
     let secret_names = collect_effective_secret_names(parsed);
@@ -141,6 +150,38 @@ async fn enrich_referential_errors(
     }
 
     check_platform_variables(pool, parsed, result).await?;
+    Ok(())
+}
+
+async fn check_environment_slugs(
+    pool: &SqlitePool,
+    parsed: &PipelineYaml,
+    result: &mut YamlValidationResult,
+    generic_errors: bool,
+) -> Result<(), AppError> {
+    for slug in &parsed.environments {
+        let slug = slug.trim();
+        if slug.is_empty() {
+            continue;
+        }
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM environments WHERE slug = ?)")
+                .bind(slug)
+                .fetch_one(pool)
+                .await?;
+        if !exists {
+            result.errors.push(YamlValidationError {
+                field: "environments".into(),
+                message: if generic_errors {
+                    "one or more declared environments do not exist".into()
+                } else {
+                    format!(
+                        "environment '{slug}' does not exist — create it under Environments first"
+                    )
+                },
+            });
+        }
+    }
     Ok(())
 }
 

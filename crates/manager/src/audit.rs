@@ -44,6 +44,23 @@ pub struct AuditEvent {
 }
 
 impl AuditEvent {
+    /// System-initiated event (no human actor) — scheduler gates, cleanup, ….
+    pub fn system(action: impl Into<String>) -> Self {
+        Self {
+            actor_user_id: "system".into(),
+            actor_username: "system".into(),
+            action: action.into(),
+            resource_type: String::new(),
+            resource_id: String::new(),
+            resource_name: String::new(),
+            team_id: None,
+            before: None,
+            after: None,
+            meta: None,
+            ip: String::new(),
+        }
+    }
+
     pub fn from_auth(auth: &AuthUser, action: impl Into<String>) -> Self {
         Self {
             actor_user_id: auth.id.clone(),

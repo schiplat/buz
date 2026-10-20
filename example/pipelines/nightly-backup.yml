@@ -6,6 +6,7 @@
 # Note: Buz has no $GITHUB_ENV — pass state with ordinary shell vars / files.
 
 name: Nightly Backup
+environments: [default]
 description: Automated daily backup of databases, logs, and configs to remote storage.
 
 team: default
@@ -13,6 +14,7 @@ team: default
 on:
   cron:
     schedule: "0 2 * * *"
+    environment: default
 
 runner:
   labels: [linux-x64]

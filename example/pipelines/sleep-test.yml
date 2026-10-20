@@ -5,6 +5,7 @@
 # Trigger: manual (no params)
 
 name: Sleep Test
+environments: [default]
 description: Simple sleep-based pipeline for testing cancel and log streaming.
 
 team: default

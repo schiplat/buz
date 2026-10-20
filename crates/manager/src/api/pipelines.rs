@@ -47,7 +47,7 @@ pub async fn list(
                 COALESCE(js.job_total, 0) as job_total,
                 COALESCE(js.job_success, 0) as job_success,
                 p.concurrency_mode, p.concurrency_max_queue, p.concurrency_queue_timeout_seconds,
-                p.yaml_path
+                p.yaml_path, p.environments
          FROM pipelines p
          LEFT JOIN (
              SELECT pipeline_id, MAX(created_at) as max_created
@@ -114,6 +114,7 @@ pub async fn list(
                 "concurrency_max_queue": r.get::<Option<i64>, _>(20),
                 "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(21),
                 "yaml_path": r.get::<Option<String>, _>(22),
+                "environments": serde_json::from_str::<Vec<String>>(&r.get::<String, _>(23)).unwrap_or_default(),
             })
         })
         .collect();
@@ -134,8 +135,11 @@ pub async fn create(
     .await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
     verify_pipeline_secret_bindings(&state.pool, &auth, &team_id, req.secret_ids.as_ref()).await?;
+    super::environments::validate_environment_slugs(&state.pool, &req.environments).await?;
 
     let pipeline_id = Uuid::new_v4().to_string();
+    let environments_json =
+        serde_json::to_string(&req.environments).unwrap_or_else(|_| "[]".into());
     let labels_json = serde_json::to_string(&req.runner_labels).unwrap_or_else(|_| "[]".into());
     let input_defs_json =
         serde_json::to_string(&req.input_defs.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
@@ -145,8 +149,8 @@ pub async fn create(
         "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path, cron_expr,
          runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
          concurrency_max_queue, concurrency_queue_timeout_seconds,
-         owner_group, team_id, input_defs, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+         owner_group, team_id, input_defs, environments, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(&pipeline_id)
     .bind(&req.name)
@@ -163,6 +167,7 @@ pub async fn create(
     .bind(&owner_group)
     .bind(&team_id)
     .bind(&input_defs_json)
+    .bind(&environments_json)
     .execute(&mut *tx)
     .await?;
 
@@ -245,6 +250,7 @@ pub async fn create(
         "concurrency_group": req.concurrency_group,
         "owner_group": owner_group,
         "team_id": team_id,
+        "environments": req.environments,
         "steps": steps,
     }))))
 }
@@ -262,7 +268,7 @@ pub async fn get_one(
                 runner_labels, timeout_seconds, source, input_defs, concurrency_group, is_active,
                 owner_group, team_id, created_at, updated_at,
                 concurrency_mode, concurrency_max_queue, concurrency_queue_timeout_seconds,
-                yaml_path
+                yaml_path, environments
          FROM pipelines WHERE id = ?",
     )
     .bind(&id)
@@ -378,6 +384,7 @@ pub async fn get_one(
         "concurrency_max_queue": r.get::<Option<i64>, _>(17),
         "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(18),
         "yaml_path": r.get::<Option<String>, _>(19),
+        "environments": serde_json::from_str::<Vec<String>>(&r.get::<String, _>(20)).unwrap_or_default(),
         "tasks": tasks,
         "env": envs,
         "yaml_sync": crate::services::pipeline_scanner::yaml_sync_status(
@@ -447,10 +454,13 @@ pub async fn update(
     };
 
     verify_pipeline_secret_bindings(&state.pool, &auth, &team_id, req.secret_ids.as_ref()).await?;
+    super::environments::validate_environment_slugs(&state.pool, &req.environments).await?;
 
     let labels_json = serde_json::to_string(&req.runner_labels).unwrap_or_else(|_| "[]".into());
     let input_defs_json =
         serde_json::to_string(&req.input_defs.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+    let environments_json =
+        serde_json::to_string(&req.environments).unwrap_or_else(|_| "[]".into());
 
     let resolved_steps = crate::services::step_resolver::resolve_uses_steps(
         req.steps,
@@ -466,7 +476,8 @@ pub async fn update(
         "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?, webhook_path = ?,
          cron_expr = ?, runner_labels = ?, timeout_seconds = ?, concurrency_group = ?,
          concurrency_mode = ?, concurrency_max_queue = ?, concurrency_queue_timeout_seconds = ?,
-         owner_group = ?, team_id = ?, input_defs = ?, updated_at = datetime('now')
+         owner_group = ?, team_id = ?, input_defs = ?, environments = ?,
+         updated_at = datetime('now')
          WHERE id = ?",
     )
     .bind(&req.name)
@@ -483,6 +494,7 @@ pub async fn update(
     .bind(&owner_group)
     .bind(&team_id)
     .bind(&input_defs_json)
+    .bind(&environments_json)
     .bind(&id)
     .execute(&mut *tx)
     .await?;
@@ -560,6 +572,7 @@ pub async fn update(
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": id,
         "name": req.name,
+        "environments": req.environments,
         "steps": steps,
     }))))
 }
@@ -766,11 +779,8 @@ pub async fn trigger(
     Ok(result)
 }
 
-/// Resolve concurrency into initial job status (`pending` / `queued`).
-/// May cancel queued jobs when mode is `discard-old`.
-/// Returns `Conflict` when discard-new blocks or the queue is full.
-pub(crate) async fn resolve_concurrency_status(
-    pool: &sqlx::SqlitePool,
+pub(crate) async fn resolve_concurrency_status_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     pipeline_id: &str,
     concurrency_group: Option<&str>,
     concurrency_mode: &str,
@@ -793,7 +803,7 @@ pub(crate) async fn resolve_concurrency_status(
                  WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued')",
             )
             .bind(pipeline_id)
-            .fetch_one(pool)
+            .fetch_one(&mut **tx)
             .await?;
             let count: i64 = running.get(0);
             if count > 0 {
@@ -810,7 +820,7 @@ pub(crate) async fn resolve_concurrency_status(
                  WHERE pipeline_id = ? AND status = 'queued'",
             )
             .bind(pipeline_id)
-            .execute(pool)
+            .execute(&mut **tx)
             .await?;
             Ok("pending")
         }
@@ -821,7 +831,7 @@ pub(crate) async fn resolve_concurrency_status(
                  WHERE pipeline_id = ? AND status = 'queued'",
             )
             .bind(pipeline_id)
-            .fetch_one(pool)
+            .fetch_one(&mut **tx)
             .await?;
 
             if queued_count >= concurrency_max_queue {
@@ -835,7 +845,7 @@ pub(crate) async fn resolve_concurrency_status(
                  WHERE pipeline_id = ? AND status IN ('pending', 'running')",
             )
             .bind(pipeline_id)
-            .fetch_one(pool)
+            .fetch_one(&mut **tx)
             .await?;
 
             if running_count == 0 {
@@ -882,7 +892,8 @@ pub(crate) async fn do_trigger(
 
     let pipeline = sqlx::query(
         "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
-                concurrency_max_queue, concurrency_queue_timeout_seconds, input_defs, team_id
+                concurrency_max_queue, concurrency_queue_timeout_seconds, input_defs, team_id,
+                environments
          FROM pipelines WHERE id = ? AND is_active = 1",
     )
     .bind(pipeline_id)
@@ -896,6 +907,8 @@ pub(crate) async fn do_trigger(
     let concurrency_queue_timeout: i64 = pipeline.get(6);
     let input_defs_raw: String = pipeline.get(7);
     let team_id: String = pipeline.get(8);
+    let declared_environments: Vec<String> =
+        serde_json::from_str(&pipeline.get::<String, _>(9)).unwrap_or_default();
     let input_defs: Vec<PipelineInputDef> =
         serde_json::from_str(&input_defs_raw).unwrap_or_default();
     let masking_keys = masking_input_names(&input_defs);
@@ -953,6 +966,28 @@ pub(crate) async fn do_trigger(
             }
         });
 
+    // Multi-env governance: every run must explicitly pick one of the
+    // pipeline's declared environments (GHA binds environment in code; buz
+    // binds it in the pipeline definition and enforces at trigger time).
+    let environment = if declared_environments.is_empty() {
+        // Legacy unbound pipeline (pre-migration row) — keep old behavior.
+        environment
+    } else {
+        let Some(env_slug) = environment.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Err(AppError::ValidationFailed(format!(
+                "environment is required — pipeline targets {}",
+                declared_environments.join(", ")
+            )));
+        };
+        if !declared_environments.iter().any(|e| e == env_slug) {
+            return Err(AppError::ValidationFailed(format!(
+                "environment '{env_slug}' is not in this pipeline's declared environments [{}]",
+                declared_environments.join(", ")
+            )));
+        }
+        Some(env_slug)
+    };
+
     let env_resolved = super::environments::resolve_environment(&state.pool, environment).await?;
     let (environment_id, environment_slug, env_protection) = match &env_resolved {
         Some(e) => (
@@ -979,14 +1014,17 @@ pub(crate) async fn do_trigger(
         }
         "waiting_approval"
     } else {
-        resolve_concurrency_status(
-            &state.pool,
+        let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let status = resolve_concurrency_status_in_tx(
+            &mut tx,
             pipeline_id,
             concurrency_group.as_deref(),
             &concurrency_mode,
             concurrency_max_queue,
         )
-        .await?
+        .await?;
+        tx.commit().await?;
+        status
     };
 
     // ── Freeze snapshot ──
@@ -1066,6 +1104,97 @@ pub(crate) async fn do_trigger(
                     &resolution.get::<String, _>(6),
                 ).unwrap_or(serde_json::json!([])),
             });
+        }
+    }
+
+    // ── Environment host allowlist ──────────────────────────────────────────
+    // A deployment to the chosen environment may only touch hosts the
+    // environment declares (by name, or by host label). Empty allowlist =
+    // unrestricted. Static `host:` / `host_labels:` declarations are checked
+    // Static host declarations are checked at trigger time. Dynamic host
+    // references resolve only when a Runner claims the job, so restricted
+    // environments reject them rather than allowing an unchecked target.
+    if let Some(env_id) = environment_id.as_deref() {
+        let allowed: Vec<(String, String)> =
+            sqlx::query("SELECT kind, value FROM environment_hosts WHERE environment_id = ?")
+                .bind(env_id)
+                .fetch_all(&state.pool)
+                .await?
+                .into_iter()
+                .map(|r| (r.get::<String, _>(0), r.get::<String, _>(1)))
+                .collect();
+        if !allowed.is_empty() {
+            let allowed_names: std::collections::HashSet<&str> = allowed
+                .iter()
+                .filter(|(kind, _)| kind == "name")
+                .map(|(_, v)| v.as_str())
+                .collect();
+            let allowed_labels: std::collections::HashSet<&str> = allowed
+                .iter()
+                .filter(|(kind, _)| kind == "label")
+                .map(|(_, v)| v.as_str())
+                .collect();
+            // Preload host → labels once so label membership is checked in
+            // memory (hosts.labels is a JSON string array).
+            let host_label_sets: std::collections::HashMap<
+                String,
+                std::collections::HashSet<String>,
+            > = sqlx::query("SELECT name, labels FROM hosts")
+                .fetch_all(&state.pool)
+                .await?
+                .into_iter()
+                .map(|r| {
+                    let name: String = r.get(0);
+                    let labels: Vec<String> =
+                        serde_json::from_str(&r.get::<String, _>(1)).unwrap_or_default();
+                    (name, labels.into_iter().collect())
+                })
+                .collect();
+            let mut offenders: Vec<String> = Vec::new();
+            for task in &tasks_snapshot {
+                let step = task["name"].as_str().unwrap_or("unnamed");
+                for name in task["host_names"]
+                    .as_str()
+                    .unwrap_or("")
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                {
+                    if name.contains('$') {
+                        offenders.push(format!("step '{step}' → dynamic host '{name}'"));
+                        continue;
+                    }
+                    let ok = allowed_names.contains(name)
+                        || host_label_sets.get(name).is_some_and(|host_labels| {
+                            host_labels
+                                .iter()
+                                .any(|host_label| allowed_labels.contains(host_label.as_str()))
+                        });
+                    if !ok {
+                        offenders.push(format!("step '{step}' → host '{name}'"));
+                    }
+                }
+                for label in task["host_labels"]
+                    .as_str()
+                    .unwrap_or("")
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                {
+                    if label.contains('$') {
+                        offenders.push(format!("step '{step}' → dynamic host label '{label}'"));
+                    } else if !allowed_labels.contains(label) {
+                        offenders.push(format!("step '{step}' → host label '{label}'"));
+                    }
+                }
+            }
+            if !offenders.is_empty() {
+                return Err(AppError::ValidationFailed(format!(
+                    "environment '{}' host allowlist rejects: {}",
+                    environment_slug.unwrap_or("default"),
+                    offenders.join("; ")
+                )));
+            }
         }
     }
 

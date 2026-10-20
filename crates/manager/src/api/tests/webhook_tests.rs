@@ -1,6 +1,20 @@
 use super::merge_hook_inputs;
 
 #[test]
+fn environment_selector_is_reserved_not_a_business_input() {
+    let mut query = std::collections::HashMap::new();
+    query.insert("environment".into(), "production".into());
+    query.insert("version".into(), "1.0".into());
+    let body = serde_json::json!({
+        "environment": "staging",
+        "inputs": { "environment": "development", "version": "2.0" }
+    });
+    let result = merge_hook_inputs(&query, &body);
+    assert!(!result.contains_key("environment"));
+    assert_eq!(result.get("version").map(String::as_str), Some("2.0"));
+}
+
+#[test]
 fn merge_empty() {
     let query = std::collections::HashMap::new();
     let body = serde_json::json!({});

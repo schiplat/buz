@@ -11,7 +11,8 @@ use sqlx::Row;
 
 use crate::state::AppState;
 
-/// Query params accepted by the webhook endpoint.
+/// Query params accepted by the webhook endpoint. `environment` is reserved for
+/// deployment targeting; other parameters are passed as pipeline inputs.
 #[derive(serde::Deserialize, Default)]
 pub struct HookQuery {
     /// Input values passed as query parameters, e.g. ?version=1.0&env=staging
@@ -20,9 +21,9 @@ pub struct HookQuery {
 }
 
 /// Accept webhook triggers. Supports:
-/// - Query params:     POST /api/v1/hooks/deploy-prod?version=1.2&env=staging
-/// - JSON body inputs: POST /api/v1/hooks/deploy-prod {"inputs":{"version":"1.2"}}
-/// - Both (JSON wins for overlapping keys)
+/// - Query params:     POST /api/v1/hooks/deploy-prod?version=1.2&environment=staging
+/// - JSON body:        POST /api/v1/hooks/deploy-prod {"environment":"staging","inputs":{"version":"1.2"}}
+/// - Both (query selector wins over body selector; body inputs override query inputs)
 ///
 /// When the pipeline declares `on.webhook.secret: <NAME>`, requests must also carry
 /// `X-Buz-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. The secret value is
@@ -36,7 +37,7 @@ pub async fn handle(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     // Look up pipeline by webhook_path (case-sensitive exact match)
     let pipeline = sqlx::query(
-        "SELECT id, name, is_active, input_defs, webhook_secret, team_id \
+        "SELECT id, name, is_active, input_defs, webhook_secret, team_id, webhook_environment \
          FROM pipelines WHERE trigger_type = 'webhook' AND webhook_path = ?",
     )
     .bind(&webhook_path)
@@ -53,6 +54,8 @@ pub async fn handle(
     let is_active: i64 = pipeline.get(2);
     let webhook_secret_name: String = pipeline.get(4);
     let team_id: String = pipeline.get(5);
+    let configured_environment: String = pipeline.get(6);
+    let mut environment = query.inputs.get("environment").cloned();
 
     if is_active == 0 {
         return Err(AppError::Conflict(format!(
@@ -109,7 +112,18 @@ pub async fn handle(
             .map_err(|e| AppError::ValidationFailed(format!("invalid JSON body: {e}")))?
     };
 
-    let inputs = merge_hook_inputs(&query.inputs, &body_json);
+    let mut inputs = merge_hook_inputs(&query.inputs, &body_json);
+    if environment.is_none() {
+        environment = body_json
+            .get("environment")
+            .or_else(|| body_json.get("inputs").and_then(|v| v.get("environment")))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+    }
+    if environment.is_none() && !configured_environment.is_empty() {
+        environment = Some(configured_environment);
+    }
+    inputs.remove("environment");
 
     tracing::info!(
         "Webhook trigger: pipeline={pipeline_name} path=/{webhook_path} inputs={:?}",
@@ -123,7 +137,7 @@ pub async fn handle(
         &inputs,
         false,
         false,
-        None,
+        environment.as_deref(),
         None,
         None,
     )
@@ -137,12 +151,16 @@ pub fn merge_hook_inputs(
     body: &serde_json::Value,
 ) -> std::collections::HashMap<String, String> {
     let mut inputs = query_inputs.clone();
+    inputs.remove("environment");
 
-    // JSON body "inputs" object overrides query params
+    // JSON body "inputs" object overrides query params. The environment
+    // selector is handled separately and never enters business inputs.
     if let Some(body_inputs) = body.get("inputs").and_then(|v| v.as_object()) {
         for (k, v) in body_inputs {
-            if let Some(s) = v.as_str() {
-                inputs.insert(k.clone(), s.to_string());
+            if k != "environment" {
+                if let Some(s) = v.as_str() {
+                    inputs.insert(k.clone(), s.to_string());
+                }
             }
         }
     }
@@ -150,7 +168,7 @@ pub fn merge_hook_inputs(
     // Flat JSON body keys (GitHub/CI style) — only set if not already present
     if let Some(obj) = body.as_object() {
         for (k, v) in obj {
-            if k != "inputs" {
+            if k != "inputs" && k != "environment" {
                 if let Some(s) = v.as_str() {
                     inputs.entry(k.clone()).or_insert_with(|| s.to_string());
                 }

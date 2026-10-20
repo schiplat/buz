@@ -335,7 +335,11 @@ pub struct CreatePipelineRequest {
     pub description: Option<String>,
     pub trigger_type: String,
     pub webhook_path: Option<String>,
+    #[serde(default)]
+    pub webhook_environment: Option<String>,
     pub cron_expr: Option<String>,
+    #[serde(default)]
+    pub cron_environment: Option<String>,
     pub runner_labels: Vec<String>,
     pub timeout_seconds: Option<i32>,
     pub concurrency_group: Option<String>,
@@ -364,6 +368,11 @@ pub struct CreatePipelineRequest {
     /// Input parameter definitions for manual triggers.
     #[serde(default)]
     pub input_defs: Option<Vec<PipelineInputDef>>,
+    /// Environments this pipeline may target (mandatory multi-env governance):
+    /// every trigger must explicitly pick one; omitted/unknown values are
+    /// rejected. Slugs must exist in the environments registry.
+    #[serde(default)]
+    pub environments: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -638,8 +647,8 @@ pub fn validate_input_values(
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TriggerPipelineRequest {
-    /// Optional key-value inputs (e.g. version, branch, environment).
-    /// These are stored in the job snapshot and exported as INPUT_* env vars on the Runner.
+    /// Optional key-value inputs (e.g. version, branch). These are stored in
+    /// the job snapshot and exported as INPUT_* env vars on the Runner.
     #[serde(default)]
     pub inputs: std::collections::HashMap<String, String>,
     /// Admin-only: when true, the Runner skips secret redaction in logs for this job.
@@ -651,9 +660,8 @@ pub struct TriggerPipelineRequest {
     /// secret redaction intact.
     #[serde(default)]
     pub verbose: Option<bool>,
-    /// Optional platform Environment slug (or id). When set, Variable defaults
-    /// are overlaid with that environment's overrides at claim time.
-    /// Omit / empty = shared defaults only (legacy behavior).
+    /// Platform Environment slug (or id). Pipelines with declared environments
+    /// require one of those slugs; missing or undeclared values are rejected.
     #[serde(default)]
     pub environment: Option<String>,
 }

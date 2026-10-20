@@ -99,6 +99,7 @@ fn create_payload(env: &str) -> String {
         r#"{{
         "name": "env-roundtrip",
         "trigger_type": "manual",
+    "environments": ["default"],
         "runner_labels": ["linux-x64"],
         "team_id": "team-1",
         "env": {env},
@@ -132,8 +133,13 @@ async fn create_persists_env_and_get_returns_it() {
     assert_eq!(resp.status(), StatusCode::OK, "create should succeed");
     let created = read_body(resp).await;
     let id = created["data"]["id"].as_str().expect("pipeline id");
+    assert_eq!(
+        created["data"]["environments"],
+        serde_json::json!(["default"])
+    );
 
     let got = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/api/v1/pipelines/{id}"))
@@ -143,8 +149,8 @@ async fn create_persists_env_and_get_returns_it() {
         )
         .await
         .unwrap();
-    assert_eq!(got.status(), StatusCode::OK, "get should succeed");
     let body = read_body(got).await;
+    assert_eq!(body["data"]["environments"], serde_json::json!(["default"]));
     let env = body["data"]["env"].as_array().expect("env array");
     assert_eq!(env.len(), 2, "get returns the saved env vars");
     assert_eq!(env[0]["name"], "DEPLOY_DIR");
@@ -208,6 +214,7 @@ async fn update_replaces_env_without_losing_it() {
         .await
         .unwrap();
     let body = read_body(got).await;
+    assert_eq!(body["data"]["environments"], serde_json::json!(["default"]));
     let env = body["data"]["env"].as_array().expect("env array");
     assert_eq!(env.len(), 1, "env is fully replaced on update");
     assert_eq!(env[0]["name"], "DEPLOY_DIR");

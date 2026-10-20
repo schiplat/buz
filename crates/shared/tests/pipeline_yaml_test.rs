@@ -1,4 +1,116 @@
-use shared::pipeline_yaml::parse_and_validate;
+/// Validate a fixture; fixtures that predate mandatory environments get
+/// `environments: [default]` injected (dedicated tests cover the rule itself).
+fn validate_fixture(yaml: &str) -> shared::pipeline_yaml::YamlValidationResult {
+    let injected = if yaml.contains("environments:") {
+        yaml.to_string()
+    } else {
+        yaml.replacen("steps:", "environments: [default]\nsteps:", 1)
+    };
+    shared::pipeline_yaml::parse_and_validate(&injected)
+}
+
+#[test]
+fn manual_trigger_declares_environment_allowlist() {
+    let yaml = r#"
+name: Deploy
+environments: [staging, production]
+on:
+  manual: {}
+steps:
+  - name: deploy
+    run: deploy.sh
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(r.valid, "errors: {:?}", r.errors);
+    assert_eq!(r.parsed.unwrap().environments, ["staging", "production"]);
+}
+
+#[test]
+fn webhook_environment_must_be_declared_and_unpadded() {
+    for (environment, expected_fragment) in [
+        ("qa", "must appear in the top-level"),
+        (" staging", "surrounding whitespace"),
+        ("   ", "must not be empty"),
+    ] {
+        let yaml = format!(
+            "name: Hook\nenvironments: [staging]\non:\n  webhook:\n    path: deploy\n    environment: {:?}\nsteps:\n  - name: deploy\n    run: deploy.sh\n",
+            environment
+        );
+        let r = shared::pipeline_yaml::parse_and_validate(&yaml);
+        assert!(!r.valid, "environment {environment:?} should fail");
+        assert!(
+            r.errors.iter().any(|error| {
+                error.field == "on.webhook.environment" && error.message.contains(expected_fragment)
+            }),
+            "errors: {:?}",
+            r.errors
+        );
+    }
+}
+
+#[test]
+fn cron_requires_a_declared_explicit_environment() {
+    let missing = r#"
+name: Nightly
+environments: [default]
+on:
+  cron:
+    schedule: "0 2 * * *"
+steps:
+  - name: backup
+    run: backup.sh
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(missing);
+    assert!(!r.valid);
+    assert!(r.errors.iter().any(|e| e.field == "on.cron.environment"));
+
+    let undeclared = missing.replace(
+        "    schedule: \"0 2 * * *\"",
+        "    schedule: \"0 2 * * *\"\n    environment: production",
+    );
+    let r = shared::pipeline_yaml::parse_and_validate(&undeclared);
+    assert!(!r.valid);
+    assert!(r.errors.iter().any(|e| {
+        e.field == "on.cron.environment" && e.message.contains("must appear in the top-level")
+    }));
+}
+
+#[test]
+fn trigger_environments_preserve_config_projection() {
+    let webhook = r#"
+name: Hook
+environments: [staging]
+on:
+  webhook:
+    path: deploy
+    environment: staging
+steps:
+  - name: deploy
+    run: deploy.sh
+"#;
+    let parsed = shared::pipeline_yaml::parse_and_validate(webhook)
+        .parsed
+        .expect("webhook parse");
+    let config = parsed.trigger_config.expect("webhook config");
+    assert_eq!(config.webhook_environment.as_deref(), Some("staging"));
+
+    let cron = r#"
+name: Nightly
+environments: [production]
+on:
+  cron:
+    schedule: "0 2 * * *"
+    environment: production
+steps:
+  - name: backup
+    run: backup.sh
+"#;
+    let parsed = shared::pipeline_yaml::parse_and_validate(cron)
+        .parsed
+        .expect("cron parse");
+    let config = parsed.trigger_config.expect("cron config");
+    assert_eq!(config.cron_environment.as_deref(), Some("production"));
+}
 
 #[test]
 fn valid_minimal_yaml() {
@@ -8,7 +120,7 @@ steps:
   - name: greet
     run: echo hello
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid);
     assert_eq!(r.errors.len(), 0);
 }
@@ -45,7 +157,7 @@ name: ""
 steps:
   - run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(r.errors.iter().any(|e| e.field == "name"));
 }
@@ -53,7 +165,7 @@ steps:
 #[test]
 fn empty_steps() {
     let yaml = "name: test\nsteps: []\n";
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
 }
 
@@ -64,7 +176,7 @@ name: test
 steps:
   - name: noop
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors
@@ -86,7 +198,7 @@ steps:
     ru: |
       echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid, "typo `ru:` must fail validation");
     let msg = r
         .errors
@@ -115,7 +227,7 @@ steps:
   - name: noop
     engine: shell
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.message.contains("'run'")),
@@ -125,7 +237,7 @@ steps:
 }
 
 fn assert_unknown_key_rejected(yaml: &str, unknown_token: &str) {
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(
         !r.valid,
         "expected rejection for unknown key `{unknown_token}`"
@@ -270,7 +382,7 @@ steps:
     engine: shel
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors
@@ -294,7 +406,7 @@ steps:
   - name: a
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "{:?}", r.errors);
 }
 
@@ -307,7 +419,7 @@ steps:
     engine: ssh
     run: docker push
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
 }
 
@@ -323,7 +435,7 @@ steps:
       - prod-02
     run: docker push
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
 }
 
@@ -375,7 +487,7 @@ steps:
     run: docker-compose up -d
     retry: 1
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(r.parsed.is_some());
     let parsed = r.parsed.unwrap();
@@ -416,7 +528,7 @@ steps:
   - name: echo
     run: echo triggered
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(r.parsed.is_some());
     let parsed = r.parsed.unwrap();
@@ -429,14 +541,16 @@ steps:
 fn cron_trigger() {
     let yaml = r#"
 name: Nightly Backup
+environments: [default]
 on:
   cron:
     schedule: "0 2 * * *"
+    environment: default
 steps:
   - name: backup
     run: pg_dump > backup.sql
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(r.parsed.is_some());
     let parsed = r.parsed.unwrap();
@@ -455,7 +569,7 @@ steps:
     host_labels: [prod, web]
     run: deploy.sh
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(r.parsed.is_some());
     let parsed = r.parsed.unwrap();
@@ -472,7 +586,7 @@ steps:
     host: a
     run: true
 "#;
-    let r = parse_and_validate(omitted);
+    let r = validate_fixture(omitted);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(
         r.parsed.as_ref().unwrap().steps[0].hosts_strategy.is_none(),
@@ -497,7 +611,7 @@ steps:
     hosts_strategy: parallel
     run: true
 "#;
-    let r2 = parse_and_validate(parallel);
+    let r2 = validate_fixture(parallel);
     assert!(r2.valid, "Errors: {:?}", r2.errors);
     assert_eq!(
         r2.parsed.as_ref().unwrap().steps[0]
@@ -515,7 +629,7 @@ steps:
     hosts_strategy: chain
     run: true
 "#;
-    let r3 = parse_and_validate(chain);
+    let r3 = validate_fixture(chain);
     assert!(r3.valid, "Errors: {:?}", r3.errors);
     assert_eq!(
         r3.parsed.as_ref().unwrap().steps[0]
@@ -536,7 +650,7 @@ steps:
     hosts_strategy: zigzag
     run: true
 "#;
-    let r = parse_and_validate(bad);
+    let r = validate_fixture(bad);
     assert!(!r.valid);
     assert!(
         r.errors
@@ -554,7 +668,7 @@ steps:
     hosts_strategy: parallel
     run: true
 "#;
-    let r2 = parse_and_validate(on_shell);
+    let r2 = validate_fixture(on_shell);
     assert!(!r2.valid);
     assert!(
         r2.errors
@@ -574,7 +688,7 @@ steps:
     run: cargo build
     work_dir: ./src
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(r.parsed.is_some());
     let parsed = r.parsed.unwrap();
@@ -590,7 +704,7 @@ steps:
     run: cargo build
     dir: ./src
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(r.parsed.is_some());
     let parsed = r.parsed.unwrap();
@@ -605,7 +719,7 @@ steps:
   - name: hello
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid);
     assert!(r.parsed.is_some());
     let parsed = r.parsed.unwrap();
@@ -622,7 +736,7 @@ steps:
     image: alpine:3.20
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     let parsed = r.parsed.unwrap();
     assert_eq!(parsed.steps[0].engine.as_deref(), Some("docker"));
@@ -638,7 +752,7 @@ steps:
     engine: docker
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.message.contains("image")),
@@ -658,7 +772,7 @@ steps:
     host: prod-01
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors
@@ -680,7 +794,7 @@ steps:
     privileged: true
     run: dockerd &
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
 }
 
@@ -694,7 +808,7 @@ steps:
     privileged: true
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.message.contains("privileged")),
@@ -714,7 +828,7 @@ steps:
     registry_secret: acr-personal
     run: echo ok
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     let parsed = r.parsed.unwrap();
     assert_eq!(
@@ -733,7 +847,7 @@ steps:
     registry_secret: acr-personal
     run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert_eq!(
         r.parsed.unwrap().steps[0].registry_secret.as_deref(),
@@ -773,7 +887,7 @@ steps:
   - name: build
     run: docker build .
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     let parsed = r.parsed.unwrap();
     assert_eq!(parsed.concurrency.as_deref(), Some("dind-build"));
@@ -816,7 +930,7 @@ steps:
   - name: hi
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.field == "concurrency.mode"),
@@ -858,7 +972,7 @@ steps:
     host: prod-01
     run: docker-compose up -d
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(r.parsed.is_some());
     let parsed = r.parsed.unwrap();
@@ -874,7 +988,7 @@ fn masking_input_demo_example_file() {
     let yaml = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!("read {}: {e}", path.display());
     });
-    let r = parse_and_validate(&yaml);
+    let r = validate_fixture(&yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     let inputs = r
         .parsed
@@ -903,7 +1017,7 @@ steps:
       dest: /tmp/cfg
     run: ls "$BUZ_CONFIG_DIR"
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(
         r.warnings
@@ -933,7 +1047,7 @@ steps:
       dest: /tmp/cfg
     run: ls
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(
         !r.warnings.iter().any(|w| w.contains("key_path")),
@@ -955,7 +1069,7 @@ steps:
       dest: /tmp/cfg
     run: ls
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors
@@ -984,7 +1098,7 @@ steps:
         backup_keep: 2
     run: cat "$BUZ_CONFIG_DIR/.env"
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     let step = &r.parsed.unwrap().steps[0];
     assert!(step.config_source.is_none());
@@ -1018,7 +1132,7 @@ steps:
           on_missing: warn
     run: echo ok
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     let parsed = r.parsed.unwrap();
     let render = parsed.steps[0].config_render.as_ref().unwrap();
@@ -1045,7 +1159,7 @@ steps:
           on_missing: fail
     run: echo ok
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     let step = &r.parsed.unwrap().steps[0];
     assert_eq!(step.config_source.as_deref(), Some("OSS_CONFIG"));
@@ -1063,7 +1177,7 @@ steps:
     config_path: config_tpl/demo/v1
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.message.contains("config:")),
@@ -1084,7 +1198,7 @@ steps:
       dest: /tmp/x
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors
@@ -1108,7 +1222,7 @@ steps:
         output: .env
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.message.contains("dest")),
@@ -1128,7 +1242,7 @@ steps:
       dest: /opt/manager
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
 }
 
@@ -1146,7 +1260,7 @@ steps:
         on_missing: fail
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.message.contains("template")),
@@ -1169,7 +1283,7 @@ steps:
         on_missing: ignore
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.message.contains("on_missing")),
@@ -1193,7 +1307,7 @@ steps:
         output: .env
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.message.contains("render")),
@@ -1221,7 +1335,7 @@ steps:
     registry_secret: ${secrets.ACR_PERSONAL}
     run: docker push example.com/app:1
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     let parsed = r.parsed.unwrap();
     let env = parsed.steps[0].env.as_ref().unwrap();
@@ -1244,7 +1358,7 @@ steps:
     secrets: [GIT_SSH_KEY]
     run: echo "${secrets.GIT_SSH_KEY}"
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors
@@ -1264,7 +1378,7 @@ steps:
     run: echo hi
     timeout: 10x m
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors
@@ -1289,7 +1403,7 @@ steps:
     timeout: {t}
 "#
         );
-        let r = parse_and_validate(&yaml);
+        let r = validate_fixture(&yaml);
         assert!(r.valid, "timeout={t} errors: {:?}", r.errors);
     }
 }
@@ -1354,7 +1468,7 @@ steps:
   - name: ok
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "{:?}", r.errors);
     let parsed = r.parsed.unwrap();
     let notify = parsed.notify.unwrap();
@@ -1378,7 +1492,7 @@ notify:
 steps:
   - run: echo x
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors
@@ -1400,7 +1514,7 @@ notify:
 steps:
   - run: echo x
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.message.contains("unknown field")),
@@ -1420,7 +1534,7 @@ notify:
 steps:
   - run: echo x
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.field.contains("webhook")),
@@ -1446,7 +1560,7 @@ fn notify_should_send_helpers() {
 // ── Manual input type reminders ──────────────────────────────────────
 
 fn warnings_for(yaml: &str) -> Vec<String> {
-    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     r.warnings
 }
@@ -1607,7 +1721,7 @@ steps:
       webhook: ${secrets.FEISHU_WEBHOOK}
       title: deploy done
 "#;
-    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
 }
 
@@ -1620,7 +1734,7 @@ steps:
     uses: buz/feishu@1.2
     image: alpine:3
 "#;
-    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid, "image must conflict with uses");
     assert!(
         r.errors.iter().any(|e| e.field == "steps[0].image"),
@@ -1640,7 +1754,7 @@ steps:
     host: $deploy_host
     run: echo appended
 "#;
-    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(
         r.valid,
         "engine/run with uses must be valid: {:?}",
@@ -1659,7 +1773,7 @@ steps:
     with:
       key: value
 "#;
-    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors.iter().any(|e| e.field == "steps[0].with"),
@@ -1709,7 +1823,7 @@ steps:
   - name: notify
     uses: buz/feishu@latest
 "#;
-    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
         r.errors
@@ -1733,7 +1847,7 @@ steps:
     registry_secret: ACR_CREDS
     run: echo hi
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(
         r.warnings
@@ -1760,7 +1874,7 @@ steps:
       dest: /opt/app
     run: ls "$BUZ_CONFIG_DIR"
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(
         r.warnings
@@ -1793,11 +1907,59 @@ steps:
           output: .env
     run: ls "$BUZ_CONFIG_DIR"
 "#;
-    let r = parse_and_validate(yaml);
+    let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(
         !r.warnings.iter().any(|w| w.contains("deprecated")),
         "unexpected deprecation warnings: {:?}",
         r.warnings
     );
+}
+
+#[test]
+fn environments_are_mandatory_with_charset_and_dedupe_rules() {
+    let base = r#"
+name: env-mandatory
+on:
+  manual: {}
+{body}
+steps:
+  - name: echo
+    run: echo hi
+"#;
+
+    // missing environments is a validation error (the field is mandatory)
+    let raw = base.replace("{body}", "");
+    let direct = shared::pipeline_yaml::parse_and_validate(&raw);
+    assert!(!direct.valid);
+    assert!(direct
+        .errors
+        .iter()
+        .any(|e| e.field == "environments" && e.message.contains("environments is required")));
+
+    // happy path
+    let r = shared::pipeline_yaml::parse_and_validate(
+        &base.replace("{body}", "environments: [staging, production]"),
+    );
+    assert!(r.valid, "{:?}", r.errors);
+
+    // invalid slug charset
+    let r = shared::pipeline_yaml::parse_and_validate(
+        &base.replace("{body}", "environments: [Prod Env]"),
+    );
+    assert!(!r.valid);
+    assert!(r
+        .errors
+        .iter()
+        .any(|e| e.message.contains("invalid — use lowercase")));
+
+    // duplicates rejected
+    let r = shared::pipeline_yaml::parse_and_validate(
+        &base.replace("{body}", "environments: [prod, prod]"),
+    );
+    assert!(!r.valid);
+    assert!(r
+        .errors
+        .iter()
+        .any(|e| e.message.contains("more than once")));
 }

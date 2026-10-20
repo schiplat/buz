@@ -92,6 +92,7 @@ async fn read_body(response: axum::response::Response) -> serde_json::Value {
 
 const SAMPLE_YAML: &str = r#"
 name: file-backed-demo
+environments: [default]
 team: default
 runner:
   labels: [linux-x64]
@@ -567,6 +568,7 @@ async fn create_rejects_target_team_without_write_before_file_exists() {
 
     let yaml = r#"
 name: steal
+environments: [default]
 team: other
 steps:
   - name: x

@@ -149,6 +149,7 @@ async fn create_pipeline(app: &Router, input_defs_json: &str) -> String {
         r#"{{
             "name": "input-validate",
             "trigger_type": "manual",
+    "environments": ["default"],
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
             "env": [],
@@ -189,7 +190,9 @@ async fn trigger_with_inputs(
                 .uri(format!("/api/v1/pipelines/{pipeline_id}/trigger"))
                 .header(AUTHORIZATION, bearer(&admin_jwt()))
                 .header("Content-Type", "application/json")
-                .body(Body::from(format!(r#"{{"inputs": {inputs_json}}}"#)))
+                .body(Body::from(format!(
+                    r#"{{"environment":"default","inputs": {inputs_json}}}"#
+                )))
                 .unwrap(),
         )
         .await
@@ -378,6 +381,7 @@ async fn webhook_path_enforces_required() {
         r#"{{
             "name": "hook-validate",
             "trigger_type": "webhook",
+    "environments": ["default"],
             "webhook_path": "deploy-prod",
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
@@ -427,9 +431,7 @@ async fn webhook_path_enforces_required() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!(
-                    "/api/v1/hooks/deploy-prod?tag=1.2.3&deploy_host=prod-01"
-                ))
+                .uri("/api/v1/hooks/deploy-prod?tag=1.2.3&deploy_host=prod-01&environment=default")
                 .header("Content-Type", "application/json")
                 .body(Body::from(r#"{}"#))
                 .unwrap(),

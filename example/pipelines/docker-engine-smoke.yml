@@ -4,6 +4,7 @@
 # Prefer runner.labels: [linux-x64]. Runner still needs engine.docker_enabled.
 
 name: Docker Engine Smoke
+environments: [default]
 description: "Verify engine: docker executes run: inside alpine on the runner."
 
 team: default

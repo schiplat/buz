@@ -12,6 +12,7 @@
 # trigger input names as $key (not $INPUT_KEY) — e.g. host: $target_env.
 
 name: Integration Smoke Test
+environments: [default]
 description: Validates all Phase 1 pipeline features across local and SSH engines.
 
 team: default

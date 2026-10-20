@@ -64,7 +64,7 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
 
             let now = chrono::Utc::now();
 
-            for (pipeline_id, pipeline_name, cron_expr) in &pipelines {
+            for (pipeline_id, pipeline_name, cron_expr, environment) in &pipelines {
                 let expr = match cron_expr {
                     Some(e) => e,
                     None => continue,
@@ -112,11 +112,20 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                     }
                 }
 
+                if environment.is_empty() {
+                    tracing::error!(
+                        pipeline = %pipeline_name,
+                        "Cron trigger rejected: explicit environment is not configured"
+                    );
+                    continue;
+                }
+
                 tracing::info!(
-                    "Cron scheduler: triggering pipeline '{}' ({}) via cron '{}'",
+                    "Cron scheduler: triggering pipeline '{}' ({}) via cron '{}' for '{}'",
                     pipeline_name,
                     pipeline_id,
-                    expr
+                    expr,
+                    environment
                 );
 
                 match crate::api::do_trigger(
@@ -126,7 +135,7 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                     &HashMap::new(),
                     false,
                     false,
-                    None,
+                    Some(environment.as_str()),
                     None,
                     None,
                 )
@@ -161,9 +170,9 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
 
 async fn fetch_active_cron_pipelines(
     pool: &SqlitePool,
-) -> Result<Vec<(String, String, Option<String>)>, sqlx::Error> {
+) -> Result<Vec<(String, String, Option<String>, String)>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT p.id, p.name, p.cron_expr
+        "SELECT p.id, p.name, p.cron_expr, p.cron_environment
          FROM pipelines p
          WHERE p.trigger_type = 'cron'
            AND p.is_active = 1
@@ -180,6 +189,7 @@ async fn fetch_active_cron_pipelines(
                 r.get::<String, _>(0),
                 r.get::<String, _>(1),
                 r.get::<Option<String>, _>(2),
+                r.get::<String, _>(3),
             )
         })
         .collect())

@@ -163,7 +163,12 @@ const ENV_PROTECTION_SELECT: &str = "protection_enabled, min_trigger_role, min_a
      require_approvals, forbid_self_approve, approval_timeout_seconds";
 
 fn validate_slug(slug: &str) -> Result<(), AppError> {
-    let s = slug.trim();
+    if slug != slug.trim() {
+        return Err(AppError::ValidationFailed(
+            "slug must not contain surrounding whitespace".into(),
+        ));
+    }
+    let s = slug;
     if s.is_empty() {
         return Err(AppError::ValidationFailed("slug is required".into()));
     }
@@ -226,6 +231,10 @@ pub struct CreateEnvironmentRequest {
     pub require_approvals: Option<i64>,
     pub forbid_self_approve: Option<bool>,
     pub approval_timeout_seconds: Option<i64>,
+    /// Deployment concurrency across pipelines targeting this environment:
+    /// off (default) | queue | cancel_in_progress.
+    #[serde(default)]
+    pub deployment_concurrency: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -239,6 +248,31 @@ pub struct UpdateEnvironmentRequest {
     pub require_approvals: Option<i64>,
     pub forbid_self_approve: Option<bool>,
     pub approval_timeout_seconds: Option<i64>,
+    #[serde(default)]
+    pub deployment_concurrency: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HostAllowlistEntry {
+    /// `name` (host name) or `label` (host label).
+    pub kind: String,
+    pub value: String,
+}
+
+/// Validate the deployment concurrency mode value.
+pub(crate) fn validate_deployment_concurrency(raw: Option<&str>) -> Result<String, AppError> {
+    match raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("off")
+    {
+        "off" => Ok("off".into()),
+        "queue" => Ok("queue".into()),
+        "cancel_in_progress" => Ok("cancel_in_progress".into()),
+        other => Err(AppError::ValidationFailed(format!(
+            "deployment_concurrency '{other}' is invalid — use off, queue or cancel_in_progress"
+        ))),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -263,7 +297,9 @@ pub async fn list(
                 (SELECT COUNT(*) FROM environment_var_overrides o WHERE o.environment_id = e.id) AS var_override_count,
                 (SELECT COUNT(*) FROM environment_secret_overrides o WHERE o.environment_id = e.id) AS secret_override_count,
                 e.protection_enabled, e.min_trigger_role, e.min_approve_role,
-                e.require_approvals, e.forbid_self_approve, e.approval_timeout_seconds
+                e.require_approvals, e.forbid_self_approve, e.approval_timeout_seconds,
+                COALESCE(e.deployment_concurrency, 'off') AS deployment_concurrency,
+                (SELECT COUNT(*) FROM environment_hosts h WHERE h.environment_id = e.id) AS host_allowlist_count
          FROM environments e
          ORDER BY e.name ASC",
     )
@@ -293,6 +329,8 @@ pub async fn list(
                 "secret_override_count": secret_n,
                 // Backward-compatible total for list badges.
                 "override_count": var_n + secret_n,
+                "deployment_concurrency": r.get::<String, _>(13),
+                "host_allowlist_count": r.get::<i64, _>(14),
             });
             if let Some(map) = obj.as_object_mut() {
                 map.extend(protection.to_api_fields());
@@ -310,7 +348,8 @@ pub async fn get_one(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let row = sqlx::query(&format!(
-        "SELECT id, name, slug, description, updated_at, {ENV_PROTECTION_SELECT}
+        "SELECT id, name, slug, description, updated_at, {ENV_PROTECTION_SELECT},
+                COALESCE(deployment_concurrency, 'off')
          FROM environments WHERE id = ?"
     ))
     .bind(&id)
@@ -336,11 +375,123 @@ pub async fn get_one(
         "updated_at": row.get::<Option<String>, _>(4),
         "overrides": overrides,
         "secret_overrides": secret_overrides,
+        "deployment_concurrency": row.get::<String, _>(11),
+        "host_allowlist": list_host_allowlist_json(&state.pool, &id).await?,
     });
     if let Some(map) = obj.as_object_mut() {
         map.extend(protection.to_api_fields());
     }
     Ok(Json(ApiResponse::success(obj)))
+}
+
+/// GET /environments/{id}/host-allowlist
+pub async fn list_host_allowlist(
+    _auth: AuthUser,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    Ok(Json(ApiResponse::success(
+        list_host_allowlist_json(&state.pool, &id).await?,
+    )))
+}
+
+async fn list_host_allowlist_json(
+    pool: &sqlx::SqlitePool,
+    environment_id: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let rows = sqlx::query(
+        "SELECT kind, value, created_at FROM environment_hosts \
+         WHERE environment_id = ? ORDER BY kind, value",
+    )
+    .bind(environment_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "kind": r.get::<String, _>(0),
+                "value": r.get::<String, _>(1),
+                "created_at": r.get::<Option<String>, _>(2),
+            })
+        })
+        .collect())
+}
+
+/// POST /environments/{id}/host-allowlist — add a name or label entry.
+pub async fn add_host_allowlist(
+    auth: PlatformAdmin,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(req): Json<HostAllowlistEntry>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let kind = req.kind.trim().to_lowercase();
+    let value = req.value.trim().to_string();
+    if !matches!(kind.as_str(), "name" | "label") {
+        return Err(AppError::ValidationFailed(
+            "kind must be 'name' or 'label'".into(),
+        ));
+    }
+    if value.is_empty() {
+        return Err(AppError::ValidationFailed("value must not be empty".into()));
+    }
+    let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM environments WHERE id = ?")
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await?;
+    if exists == 0 {
+        return Err(AppError::NotFound("environment not found".into()));
+    }
+    sqlx::query(
+        "INSERT INTO environment_hosts (environment_id, kind, value) VALUES (?, ?, ?) \
+         ON CONFLICT (environment_id, kind, value) DO NOTHING",
+    )
+    .bind(&id)
+    .bind(&kind)
+    .bind(&value)
+    .execute(&state.pool)
+    .await?;
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "environment.host_allowlist.add")
+            .resource("environment", &id, &kind)
+            .after(Some(serde_json::json!({ "kind": kind, "value": value }))),
+    )
+    .await;
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "kind": kind,
+        "value": value,
+    }))))
+}
+
+/// DELETE /environments/{id}/host-allowlist/{kind}/{value} — remove an entry.
+pub async fn delete_host_allowlist(
+    auth: PlatformAdmin,
+    Path((id, kind, value)): Path<(String, String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let result = sqlx::query(
+        "DELETE FROM environment_hosts WHERE environment_id = ? AND kind = ? AND value = ?",
+    )
+    .bind(&id)
+    .bind(&kind)
+    .bind(&value)
+    .execute(&state.pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("allowlist entry not found".into()));
+    }
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, "environment.host_allowlist.remove")
+            .resource("environment", &id, &kind)
+            .before(Some(serde_json::json!({ "kind": kind, "value": value }))),
+    )
+    .await;
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "kind": kind,
+        "value": value,
+    }))))
 }
 
 async fn list_overrides_json(
@@ -409,7 +560,12 @@ pub async fn create(
     if name.is_empty() {
         return Err(AppError::ValidationFailed("name is required".into()));
     }
-    let slug = req.slug.trim().to_lowercase();
+    let slug = req.slug.to_lowercase();
+    if req.slug != req.slug.trim() {
+        return Err(AppError::ValidationFailed(
+            "slug must not contain leading or trailing whitespace".into(),
+        ));
+    }
     validate_slug(&slug)?;
 
     let dup = sqlx::query("SELECT id FROM environments WHERE slug = ? OR name = ?")
@@ -435,12 +591,15 @@ pub async fn create(
 
     let id = Uuid::new_v4().to_string();
     let description = req.description.trim().to_string();
+    let deployment_concurrency =
+        validate_deployment_concurrency(req.deployment_concurrency.as_deref())?;
     sqlx::query(
         "INSERT INTO environments (
             id, name, slug, description,
             protection_enabled, min_trigger_role, min_approve_role,
-            require_approvals, forbid_self_approve, approval_timeout_seconds
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            require_approvals, forbid_self_approve, approval_timeout_seconds,
+            deployment_concurrency
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&name)
@@ -452,6 +611,7 @@ pub async fn create(
     .bind(protection.require_approvals)
     .bind(if protection.forbid_self_approve { 1 } else { 0 })
     .bind(protection.approval_timeout_seconds)
+    .bind(&deployment_concurrency)
     .execute(&state.pool)
     .await?;
 
@@ -476,6 +636,7 @@ pub async fn create(
         "override_count": 0,
         "var_override_count": 0,
         "secret_override_count": 0,
+        "deployment_concurrency": deployment_concurrency,
     });
     if let Some(map) = obj.as_object_mut() {
         map.extend(protection.to_api_fields());
@@ -517,7 +678,12 @@ pub async fn update(
         .to_string();
     let slug = match &req.slug {
         Some(s) => {
-            let slug = s.trim().to_lowercase();
+            if s != s.trim() {
+                return Err(AppError::ValidationFailed(
+                    "slug must not contain leading or trailing whitespace".into(),
+                ));
+            }
+            let slug = s.to_lowercase();
             validate_slug(&slug)?;
             slug
         }
@@ -538,6 +704,19 @@ pub async fn update(
         req.forbid_self_approve,
         req.approval_timeout_seconds,
     )?;
+    // Omitted → keep the current mode (partial-update semantics like the
+    // protection fields).
+    let deployment_concurrency = if req.deployment_concurrency.is_some() {
+        validate_deployment_concurrency(req.deployment_concurrency.as_deref())?
+    } else {
+        sqlx::query_scalar(
+            "SELECT COALESCE(deployment_concurrency, 'off') FROM environments WHERE id = ?",
+        )
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or_else(|_| "off".to_string())
+    };
 
     if name != old_name || slug != old_slug {
         let dup =
@@ -559,7 +738,7 @@ pub async fn update(
             name = ?, slug = ?, description = ?,
             protection_enabled = ?, min_trigger_role = ?, min_approve_role = ?,
             require_approvals = ?, forbid_self_approve = ?, approval_timeout_seconds = ?,
-            updated_at = datetime('now')
+            deployment_concurrency = ?, updated_at = datetime('now')
          WHERE id = ?",
     )
     .bind(&name)
@@ -571,6 +750,7 @@ pub async fn update(
     .bind(protection.require_approvals)
     .bind(if protection.forbid_self_approve { 1 } else { 0 })
     .bind(protection.approval_timeout_seconds)
+    .bind(&deployment_concurrency)
     .bind(&id)
     .execute(&state.pool)
     .await?;
@@ -880,6 +1060,51 @@ pub(crate) struct ResolvedEnvironment {
 }
 
 /// Resolve environment slug/id → id + slug + protection. Empty/None → None.
+/// Validate the slugs a pipeline declares under `environments`: non-empty and
+/// all present in the environments registry (same bar as team slugs).
+pub(crate) async fn validate_environment_slugs(
+    pool: &sqlx::SqlitePool,
+    slugs: &[String],
+) -> Result<(), AppError> {
+    if slugs.is_empty() {
+        return Err(AppError::ValidationFailed(
+            "environments is required — declare which environments this pipeline targets".into(),
+        ));
+    }
+    let mut missing: Vec<String> = Vec::new();
+    for raw_slug in slugs {
+        let slug = raw_slug.trim();
+        if slug.is_empty() || raw_slug != slug {
+            missing.push(raw_slug.to_string());
+            continue;
+        }
+        if !slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+            || slug.starts_with('-')
+            || slug.ends_with('-')
+            || slug.len() > 64
+        {
+            missing.push(raw_slug.to_string());
+            continue;
+        }
+        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM environments WHERE slug = ?")
+            .bind(slug)
+            .fetch_one(pool)
+            .await?;
+        if exists == 0 {
+            missing.push(slug.to_string());
+        }
+    }
+    if !missing.is_empty() {
+        return Err(AppError::ValidationFailed(format!(
+            "unknown environment(s): {} — create them under Environments first",
+            missing.join(", ")
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) async fn resolve_environment(
     pool: &sqlx::SqlitePool,
     slug_or_id: Option<&str>,

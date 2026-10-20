@@ -38,6 +38,7 @@ fn public_hook_view(
     provider: &str,
     hook_key: &str,
     branch_filter: &str,
+    environment: &str,
     enabled: bool,
     plaintext_secret: Option<&str>,
 ) -> serde_json::Value {
@@ -48,6 +49,7 @@ fn public_hook_view(
         "hook_key": hook_key,
         "url_path": format!("/api/v1/hooks/git/{provider}/{hook_key}"),
         "branch_filter": branch_filter,
+        "environment": environment,
         "enabled": enabled,
         "has_secret": true,
     });
@@ -68,7 +70,7 @@ pub async fn list_hooks(
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let rows = sqlx::query(
-        "SELECT id, label, provider, hook_key, branch_filter, enabled
+        "SELECT id, label, provider, hook_key, branch_filter, enabled, environment
          FROM pipeline_git_hooks WHERE pipeline_id = ?
          ORDER BY created_at ASC",
     )
@@ -85,12 +87,14 @@ pub async fn list_hooks(
             let hook_key: String = r.get(3);
             let branch_filter: String = r.get(4);
             let enabled: i64 = r.get(5);
+            let environment: String = r.get(6);
             public_hook_view(
                 &id,
                 &label,
                 &provider,
                 &hook_key,
                 &branch_filter,
+                &environment,
                 enabled != 0,
                 None,
             )
@@ -110,6 +114,7 @@ pub struct CreateGitHookRequest {
     pub label: Option<String>,
     #[serde(default)]
     pub branch_filter: Option<String>,
+    pub environment: String,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -131,6 +136,23 @@ pub async fn create_hook(
     })?;
     let label = req.label.unwrap_or_default().trim().to_string();
     let branch_filter = req.branch_filter.unwrap_or_default();
+    let environment = req.environment.trim().to_string();
+    if environment.is_empty() {
+        return Err(AppError::ValidationFailed(
+            "git hook environment is required".into(),
+        ));
+    }
+    let declared_raw: String =
+        sqlx::query_scalar("SELECT environments FROM pipelines WHERE id = ?")
+            .bind(&pipeline_id)
+            .fetch_one(&state.pool)
+            .await?;
+    let declared: Vec<String> = serde_json::from_str(&declared_raw).unwrap_or_default();
+    if !declared.iter().any(|slug| slug == &environment) {
+        return Err(AppError::ValidationFailed(format!(
+            "git hook environment '{environment}' is not declared by this pipeline"
+        )));
+    }
     let enabled = req.enabled.unwrap_or(true);
 
     let id = Uuid::new_v4().to_string();
@@ -141,8 +163,8 @@ pub async fn create_hook(
 
     sqlx::query(
         "INSERT INTO pipeline_git_hooks
-         (id, pipeline_id, label, provider, hook_key, secret_ciphertext, branch_filter, enabled)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, pipeline_id, label, provider, hook_key, secret_ciphertext, branch_filter, environment, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&pipeline_id)
@@ -151,6 +173,7 @@ pub async fn create_hook(
     .bind(&hook_key)
     .bind(&cipher)
     .bind(&branch_filter)
+    .bind(&environment)
     .bind(if enabled { 1 } else { 0 })
     .execute(&state.pool)
     .await?;
@@ -172,6 +195,7 @@ pub async fn create_hook(
                 "provider": provider,
                 "hook_key": &hook_key,
                 "branch_filter": &branch_filter,
+                "environment": &environment,
                 "enabled": enabled,
             }))),
     )
@@ -183,8 +207,9 @@ pub async fn create_hook(
         provider,
         &hook_key,
         &branch_filter,
+        &environment,
         enabled,
-        Some(&secret),
+        Some(secret.as_str()),
     ))))
 }
 
@@ -197,7 +222,7 @@ pub async fn delete_hook(
     let team_id = pipeline_team(&state.pool, &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
     let before_row = sqlx::query(
-        "SELECT label, provider, hook_key, branch_filter, enabled FROM pipeline_git_hooks
+        "SELECT label, provider, hook_key, branch_filter, environment, enabled FROM pipeline_git_hooks
          WHERE id = ? AND pipeline_id = ?",
     )
     .bind(&hook_id)
@@ -212,7 +237,8 @@ pub async fn delete_hook(
             "provider": r.get::<String, _>(1),
             "hook_key": r.get::<String, _>(2),
             "branch_filter": r.get::<String, _>(3),
-            "enabled": r.get::<i64, _>(4) != 0,
+            "environment": r.get::<String, _>(4),
+            "enabled": r.get::<i64, _>(5) != 0,
         })
     });
     let name = before_row

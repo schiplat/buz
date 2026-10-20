@@ -162,6 +162,14 @@ pub fn router(state: AppState) -> Router {
             "/environments/{id}/secret-overrides/{secret_id}",
             delete(environments::delete_secret_override),
         )
+        .route(
+            "/environments/{id}/host-allowlist",
+            get(environments::list_host_allowlist).post(environments::add_host_allowlist),
+        )
+        .route(
+            "/environments/{id}/host-allowlist/{kind}/{value}",
+            delete(environments::delete_host_allowlist),
+        )
         // Audit logs (platform admin; super admin sees all, others only their own)
         .route("/audit-logs", get(audit_logs::list))
         // GitHub Actions sync (platform admin; secret binds use SecretManage)
@@ -286,6 +294,22 @@ mod environments_integration_tests;
 #[cfg(test)]
 #[path = "tests/environment_approval_tests.rs"]
 mod environment_approval_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/runner_terminal_status_tests.rs"]
+mod runner_terminal_status_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/cancel_in_progress_tests.rs"]
+mod cancel_in_progress_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/approval_race_tests.rs"]
+mod approval_race_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/webhook_environment_tests.rs"]
+mod webhook_environment_integration_tests;
 
 #[cfg(test)]
 #[path = "tests/jobs_stats_tests.rs"]

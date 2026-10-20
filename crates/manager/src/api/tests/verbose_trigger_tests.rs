@@ -142,6 +142,7 @@ async fn read_body(response: axum::response::Response) -> serde_json::Value {
 const CREATE_PAYLOAD: &str = r#"{
     "name": "verbose-trigger",
     "trigger_type": "manual",
+    "environments": ["default"],
     "runner_labels": ["linux-x64"],
     "team_id": "team-1",
     "env": [],
@@ -186,7 +187,7 @@ async fn trigger(
                 .header(AUTHORIZATION, bearer(jwt))
                 .header("Content-Type", "application/json")
                 .body(Body::from(format!(
-                    r#"{{"inputs": {{}}, "verbose": {verbose}}}"#
+                    r#"{{"environment":"default","inputs": {{}}, "verbose": {verbose}}}"#
                 )))
                 .unwrap(),
         )
@@ -202,7 +203,9 @@ async fn trigger_debug(app: &Router, jwt: &str, pipeline_id: &str) -> axum::resp
                 .uri(format!("/api/v1/pipelines/{pipeline_id}/trigger"))
                 .header(AUTHORIZATION, bearer(jwt))
                 .header("Content-Type", "application/json")
-                .body(Body::from(r#"{"inputs": {}, "debug": true}"#))
+                .body(Body::from(
+                    r#"{"environment":"default","inputs": {}, "debug": true}"#,
+                ))
                 .unwrap(),
         )
         .await

@@ -19,6 +19,16 @@ async fn pool_with_default_team() -> SqlitePool {
     .await
     .expect("teams");
     sqlx::query(
+        "CREATE TABLE environments (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            slug TEXT NOT NULL UNIQUE
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("environments");
+    sqlx::query(
         "CREATE TABLE secrets (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -44,7 +54,50 @@ async fn pool_with_default_team() -> SqlitePool {
         .execute(&pool)
         .await
         .expect("seed default team");
+    sqlx::query("INSERT INTO environments (id, name, slug) VALUES ('e1', 'Default', 'default')")
+        .execute(&pool)
+        .await
+        .expect("seed default environment");
     pool
+}
+
+#[tokio::test]
+async fn unknown_environment_is_validation_error() {
+    let pool = pool_with_default_team().await;
+    let yaml = r#"
+name: demo
+environments: [production]
+steps:
+  - name: a
+    run: echo hi
+"#;
+    let r = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| { e.field == "environments" && e.message.contains("production") }),
+        "errors: {:?}",
+        r.errors
+    );
+}
+
+#[tokio::test]
+async fn existing_environment_slug_is_valid() {
+    let pool = pool_with_default_team().await;
+    sqlx::query("INSERT INTO environments (id, name, slug) VALUES ('e2', 'Staging', 'staging')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let yaml = r#"
+name: demo
+environments: [default, staging]
+steps:
+  - name: a
+    run: echo hi
+"#;
+    let r = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    assert!(r.valid, "errors: {:?}", r.errors);
 }
 
 #[tokio::test]
@@ -73,6 +126,7 @@ async fn default_team_ok_when_omitted() {
     let pool = pool_with_default_team().await;
     let yaml = r#"
 name: demo
+environments: [default]
 steps:
   - name: a
     run: echo hi
@@ -86,6 +140,7 @@ async fn missing_secret_is_validation_error() {
     let pool = pool_with_default_team().await;
     let yaml = r#"
 name: demo
+environments: [default]
 steps:
   - name: push
     engine: shell
@@ -155,6 +210,7 @@ async fn viewer_without_team_access_gets_generic_error_no_secret_oracle() {
 
     let yaml = r#"
 name: probe
+environments: [default]
 team: victim
 steps:
   - name: x
@@ -197,6 +253,7 @@ async fn viewer_with_team_access_sees_secret_errors() {
     };
     let yaml = r#"
 name: demo
+environments: [default]
 steps:
   - name: push
     engine: shell

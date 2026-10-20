@@ -10,6 +10,7 @@
 # Personal Edition uses a fixed password (not temporary GetAuthorizationToken).
 
 name: acr-personal-pull
+environments: [default]
 description: Pull a private ACR Personal Edition image (inline registry login)
 team: default
 

@@ -11,6 +11,7 @@
 # plugins into the Manager's step scan dir) so templates resolve at claim time.
 
 name: acr-personal-build-push
+environments: [default]
 description: Orchestrated docker build + push to ACR Personal Edition (inline registry login)
 team: default
 

@@ -20,6 +20,7 @@
 #      Override with `team: <slug>` below if you created another team.
 
 name: SSH Verify — r1-agent
+environments: [default]
 description: Verify SSH remote execution on r1-agent.
 
 # Team slug (optional). Omit to use "default".

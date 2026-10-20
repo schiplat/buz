@@ -209,7 +209,7 @@ async fn create_protected_env(app: &Router, jwt: &str, slug: &str) -> String {
     body["data"]["id"].as_str().unwrap().to_string()
 }
 
-async fn create_pipeline(app: &Router, jwt: &str, name: &str) -> String {
+async fn create_pipeline(app: &Router, jwt: &str, name: &str, environment: &str) -> String {
     let pipe = json_req(
         app,
         "POST",
@@ -220,6 +220,7 @@ async fn create_pipeline(app: &Router, jwt: &str, name: &str) -> String {
             "trigger_type": "manual",
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
+            "environments": [environment],
             "env": [],
             "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
         })),
@@ -248,7 +249,7 @@ async fn developer_cannot_trigger_when_min_trigger_is_maintainer() {
     .await;
     assert_eq!(upd.status(), StatusCode::OK);
 
-    let pid = create_pipeline(&app, &admin, "need-maint-trigger").await;
+    let pid = create_pipeline(&app, &admin, "need-maint-trigger", "staging").await;
     let trig = json_req(
         &app,
         "POST",
@@ -265,7 +266,7 @@ async fn protected_trigger_waits_approval_and_is_not_pollable() {
     let (app, pool, _state) = test_app().await;
     let admin = admin_jwt();
     let _env_id = create_protected_env(&app, &admin, "production").await;
-    let pid = create_pipeline(&app, &admin, "gated-pipe").await;
+    let pid = create_pipeline(&app, &admin, "gated-pipe", "production").await;
 
     let trig = json_req(
         &app,
@@ -302,7 +303,7 @@ async fn maintainer_approve_promotes_to_pending_and_pollable() {
     let (app, _pool, _state) = test_app().await;
     let admin = admin_jwt();
     let _env_id = create_protected_env(&app, &admin, "prod").await;
-    let pid = create_pipeline(&app, &admin, "approve-pipe").await;
+    let pid = create_pipeline(&app, &admin, "approve-pipe", "prod").await;
 
     let trig = json_req(
         &app,
@@ -352,7 +353,7 @@ async fn self_approve_forbidden() {
     let (app, _pool, _state) = test_app().await;
     let admin = admin_jwt();
     let _env_id = create_protected_env(&app, &admin, "locked").await;
-    let pid = create_pipeline(&app, &admin, "self-approve-pipe").await;
+    let pid = create_pipeline(&app, &admin, "self-approve-pipe", "locked").await;
 
     // Maintainer triggers (role >= min_trigger=developer) then tries to self-approve.
     let trig = json_req(
@@ -385,7 +386,7 @@ async fn platform_admin_may_self_approve() {
     let (app, _pool, _state) = test_app().await;
     let admin = admin_jwt();
     let _env_id = create_protected_env(&app, &admin, "admin-self").await;
-    let pid = create_pipeline(&app, &admin, "admin-self-pipe").await;
+    let pid = create_pipeline(&app, &admin, "admin-self-pipe", "admin-self").await;
 
     let trig = json_req(
         &app,
@@ -419,7 +420,7 @@ async fn automated_trigger_rejected_on_protected_env() {
     // Need HTTP only to seed env + pipeline; reuse app from state via router.
     let app = Router::new().nest("/api/v1", api::router(state.clone()));
     let _env_id = create_protected_env(&app, &admin, "auto-block").await;
-    let pid = create_pipeline(&app, &admin, "auto-pipe").await;
+    let pid = create_pipeline(&app, &admin, "auto-pipe", "auto-block").await;
 
     let err = do_trigger(
         &state,
@@ -446,7 +447,7 @@ async fn reject_cancels_waiting_job() {
     let (app, pool, _state) = test_app().await;
     let admin = admin_jwt();
     let _env_id = create_protected_env(&app, &admin, "reject-env").await;
-    let pid = create_pipeline(&app, &admin, "reject-pipe").await;
+    let pid = create_pipeline(&app, &admin, "reject-pipe", "reject-env").await;
 
     let trig = json_req(
         &app,

@@ -5,6 +5,7 @@
 # Trigger: manual
 
 name: Notify Feishu Demo
+environments: [default]
 description: Sample showing end-of-build Feishu notify (channel disabled by default).
 
 team: default

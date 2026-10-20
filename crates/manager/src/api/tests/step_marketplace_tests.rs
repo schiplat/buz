@@ -113,6 +113,7 @@ fn create_payload(steps: &str) -> String {
         r#"{{
         "name": "uses-smoke",
         "trigger_type": "manual",
+    "environments": ["default"],
         "runner_labels": ["linux-x64"],
         "team_id": "team-1",
         "steps": {steps}
@@ -210,7 +211,7 @@ async fn uses_step_resolves_expands_and_locks_provenance() {
                 .uri(&format!("/api/v1/pipelines/{pipeline_id}/trigger"))
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
-                .body(Body::from(r#"{"inputs":{}}"#))
+                .body(Body::from(r#"{"environment":"default","inputs":{}}"#))
                 .unwrap(),
         )
         .await
@@ -325,7 +326,7 @@ async fn frozen_docker_task_claim_preserves_privileged_and_nullable_host_id() {
                 .uri(&format!("/api/v1/pipelines/{pipeline_id}/trigger"))
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
-                .body(Body::from(r#"{"inputs":{}}"#))
+                .body(Body::from(r#"{"environment":"default","inputs":{}}"#))
                 .unwrap(),
         )
         .await
@@ -391,17 +392,18 @@ run: echo "$INPUT_RETRIES"
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "name": "vars-input",
-                        "trigger_type": "manual",
-                        "runner_labels": ["linux-x64"],
-                        "team_id": "team-1",
-                        "env": [{"name": "RETRIES", "value": "not-a-number"}],
-                        "steps": [{
-                            "name": "retry-step",
-                            "uses": "buz/retries@1",
-                            "with": {"retries": "${vars.RETRIES}"}
-                        }]
-                    })
+                                        "name": "vars-input",
+                                        "trigger_type": "manual",
+                    "environments": ["default"],
+                                        "runner_labels": ["linux-x64"],
+                                        "team_id": "team-1",
+                                        "env": [{"name": "RETRIES", "value": "not-a-number"}],
+                                        "steps": [{
+                                            "name": "retry-step",
+                                            "uses": "buz/retries@1",
+                                            "with": {"retries": "${vars.RETRIES}"}
+                                        }]
+                                    })
                     .to_string(),
                 ))
                 .unwrap(),
@@ -420,7 +422,7 @@ run: echo "$INPUT_RETRIES"
                 .uri(&format!("/api/v1/pipelines/{pipeline_id}/trigger"))
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
-                .body(Body::from(r#"{"inputs":{}}"#))
+                .body(Body::from(r#"{"environment":"default","inputs":{}}"#))
                 .unwrap(),
         )
         .await

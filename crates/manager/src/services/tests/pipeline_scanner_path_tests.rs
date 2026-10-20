@@ -1,7 +1,108 @@
 use crate::services::pipeline_scanner::{
     filename_from_pipeline_name, lock_yaml_file, normalize_yaml_path_key, read_yaml_for_scan,
-    validate_yaml_filename, yaml_content_etag, yaml_path_storage,
+    upsert_from_yaml, validate_yaml_filename, yaml_content_etag, yaml_path_storage,
 };
+use sqlx::sqlite::SqlitePoolOptions;
+use std::path::Path;
+
+#[tokio::test]
+async fn scanner_projects_automatic_trigger_environments_on_insert_and_update() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory sqlite");
+    crate::db::run_migrations(&pool, "test-secret-0123456789-abcdefghijklmnop")
+        .await
+        .expect("migrate");
+    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-default', 'Default', 'default')")
+        .execute(&pool)
+        .await
+        .expect("seed default team");
+
+    let cron_yaml = r#"
+name: scanner-projection
+team: default
+environments: [default, staging, production]
+on:
+  cron:
+    schedule: "0 2 * * *"
+    environment: production
+steps:
+  - name: run
+    run: echo cron
+"#;
+    let parsed = serde_yaml::from_str(cron_yaml).expect("parse cron YAML");
+    let pipeline_id = upsert_from_yaml(
+        &pool,
+        "scanner-projection.yml",
+        &parsed,
+        Path::new("."),
+        cron_yaml,
+    )
+    .await
+    .expect("insert projection");
+
+    let projected: (String, String, String) = sqlx::query_as(
+        "SELECT webhook_environment, cron_environment, environments FROM pipelines WHERE id = ?",
+    )
+    .bind(&pipeline_id)
+    .fetch_one(&pool)
+    .await
+    .expect("read cron projection");
+    assert_eq!(projected.0, "");
+    assert_eq!(projected.1, "production");
+    assert_eq!(projected.2, r#"["default","staging","production"]"#);
+
+    sqlx::query("UPDATE pipelines SET cron_environment = '' WHERE id = ?")
+        .bind(&pipeline_id)
+        .execute(&pool)
+        .await
+        .expect("simulate stale projection");
+    let parsed = serde_yaml::from_str(cron_yaml).expect("parse same cron YAML");
+    let same_id = upsert_from_yaml(
+        &pool,
+        "scanner-projection.yml",
+        &parsed,
+        Path::new("."),
+        cron_yaml,
+    )
+    .await
+    .expect("repair same-hash projection");
+    assert_eq!(same_id, pipeline_id);
+    let cron_environment: String =
+        sqlx::query_scalar("SELECT cron_environment FROM pipelines WHERE id = ?")
+            .bind(&pipeline_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read repaired projection");
+    assert_eq!(cron_environment, "production");
+
+    let webhook_yaml = cron_yaml
+        .replace(
+            "  cron:\n    schedule: \"0 2 * * *\"\n    environment: production",
+            "  webhook:\n    path: deploy\n    environment: staging",
+        )
+        .replace("echo cron", "echo webhook");
+    let parsed = serde_yaml::from_str(&webhook_yaml).expect("parse webhook YAML");
+    let updated_id = upsert_from_yaml(
+        &pool,
+        "scanner-projection.yml",
+        &parsed,
+        Path::new("."),
+        &webhook_yaml,
+    )
+    .await
+    .expect("update projection");
+    assert_eq!(updated_id, pipeline_id);
+    let projected: (String, String) =
+        sqlx::query_as("SELECT webhook_environment, cron_environment FROM pipelines WHERE id = ?")
+            .bind(&pipeline_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read webhook projection");
+    assert_eq!(projected, ("staging".into(), "".into()));
+}
 
 #[tokio::test]
 async fn scanner_read_waits_for_file_lock_and_observes_replaced_content() {

@@ -32,6 +32,13 @@ pub struct PipelineYaml {
     /// Unknown slug fails Validate / create / update (no silent fallback).
     #[serde(default, alias = "owner_group")]
     pub team: Option<String>,
+    /// Environments this pipeline may target (Phase 2 multi-env governance).
+    /// Mandatory: every run must explicitly pick one of these at trigger time
+    /// — a missing environment is rejected, so protection/approval/override
+    /// gates can never be bypassed by omitting the field. Slugs are validated
+    /// (charset + existence) by the Manager at save/scan time.
+    #[serde(default)]
+    pub environments: Vec<String>,
     /// End-of-build notification channels (`notify:`). Sent by Manager on
     /// job terminal status; webhook URLs must reference Secrets.
     #[serde(default)]
@@ -199,6 +206,9 @@ pub struct WebhookTriggerYaml {
     /// Only the name is stored; the value is resolved at trigger time.
     #[serde(default)]
     pub secret: Option<String>,
+    /// Registered pipeline environment to use when the caller omits one.
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +216,9 @@ pub struct WebhookTriggerYaml {
 pub struct CronTriggerYaml {
     #[serde(default)]
     pub schedule: Option<String>,
+    /// Registered pipeline environment to deploy to on each scheduled run.
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +458,8 @@ pub struct YamlValidationResult {
 /// Serializable subset of PipelineYaml for the frontend to import into the form.
 #[derive(Debug, Clone, Serialize)]
 pub struct PipelineYamlData {
+    /// Environments this pipeline may target at trigger time.
+    pub environments: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -488,7 +503,11 @@ pub struct TriggerConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub webhook_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_environment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cron_expr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cron_environment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inputs: Option<Vec<InputData>>,
 }
@@ -1066,6 +1085,93 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         });
     }
 
+    // 2b. environments — mandatory target binding (multi-env governance).
+    // Every run must explicitly pick one of the declared environments so the
+    // protection/approval/override gates can never be bypassed by omission.
+    {
+        let envs = &parsed.environments;
+        if envs.is_empty() {
+            errors.push(YamlValidationError {
+                field: "environments".into(),
+                message: "environments is required — declare which environments this \
+                          pipeline may target (e.g. environments: [staging, production])"
+                    .into(),
+            });
+        }
+        if let Some(on) = parsed.on.as_ref() {
+            if let Some(webhook) = on.webhook.as_ref() {
+                if let Some(target) = webhook.environment.as_deref() {
+                    if target.trim().is_empty() {
+                        errors.push(YamlValidationError {
+                            field: "on.webhook.environment".into(),
+                            message: "webhook environment must not be empty or whitespace".into(),
+                        });
+                    } else if target != target.trim() {
+                        errors.push(YamlValidationError {
+                            field: "on.webhook.environment".into(),
+                            message: "webhook environment must not contain surrounding whitespace"
+                                .into(),
+                        });
+                    } else if !envs.iter().any(|declared| declared == target) {
+                        errors.push(YamlValidationError {
+                            field: "on.webhook.environment".into(),
+                            message: format!("webhook environment '{target}' must appear in the top-level environments allowlist"),
+                        });
+                    }
+                }
+            }
+            if let Some(cron) = on.cron.as_ref() {
+                match cron.environment.as_deref() {
+                    Some(target) if target.trim().is_empty() => errors.push(YamlValidationError {
+                        field: "on.cron.environment".into(),
+                        message: "cron environment must not be empty or whitespace".into(),
+                    }),
+                    Some(target) if target != target.trim() => errors.push(YamlValidationError {
+                        field: "on.cron.environment".into(),
+                        message: "cron environment must not contain surrounding whitespace".into(),
+                    }),
+                    Some(target) if envs.iter().any(|declared| declared == target) => {}
+                    Some(target) => errors.push(YamlValidationError {
+                        field: "on.cron.environment".into(),
+                        message: format!("cron environment '{target}' must appear in the top-level environments allowlist"),
+                    }),
+                    None => errors.push(YamlValidationError {
+                        field: "on.cron.environment".into(),
+                        message: "cron triggers require an explicit registered environment".into(),
+                    }),
+                }
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for raw_slug in envs {
+            let slug = raw_slug.trim();
+            let valid_slug = !slug.is_empty()
+                && raw_slug == slug
+                && slug.len() <= 64
+                && !slug.starts_with('-')
+                && !slug.ends_with('-')
+                && slug.chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_')
+                });
+            if !valid_slug {
+                errors.push(YamlValidationError {
+                    field: "environments".into(),
+                    message: format!(
+                        "environment slug {slug:?} is invalid — use lowercase letters, \
+                         numbers, '-' or '_'"
+                    ),
+                });
+            }
+            if !seen.insert(slug.to_string()) {
+                errors.push(YamlValidationError {
+                    field: "environments".into(),
+                    message: format!("environment '{slug}' is declared more than once"),
+                });
+            }
+        }
+    }
+
     // 3. Each step must have `run`; `engine` must be a known value when set.
     const VALID_ENGINES: &[&str] = &["shell", "local", "ssh", "docker"];
     for (i, step) in parsed.steps.iter().enumerate() {
@@ -1491,6 +1597,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     });
 
     let parsed_data = PipelineYamlData {
+        environments: parsed.environments.clone(),
         description: parsed.description.clone(),
         concurrency: concurrency_group,
         concurrency_config,
@@ -1520,7 +1627,9 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         ),
         trigger_config: parsed.on.as_ref().map(|on| TriggerConfig {
             webhook_path: on.webhook.as_ref().and_then(|w| w.path.clone()),
+            webhook_environment: on.webhook.as_ref().and_then(|w| w.environment.clone()),
             cron_expr: on.cron.as_ref().and_then(|c| c.schedule.clone()),
+            cron_environment: on.cron.as_ref().and_then(|c| c.environment.clone()),
             inputs: on.manual.as_ref().and_then(|m| {
                 m.inputs.as_ref().map(|inputs| {
                     inputs
