@@ -28,7 +28,7 @@ function go(p: number) {
     <span class="text-[11px] text-muted-foreground">{{ start }}–{{ end }} of {{ total }}</span>
     <div class="flex items-center gap-1">
       <button
-        class="px-2.5 py-1 rounded text-[11px] transition-colors"
+        class="px-2.5 py-1 rounded-sm text-[11px] transition-colors"
         :class="page === 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
         :disabled="page === 1"
         @click="go(page - 1)"
@@ -36,12 +36,12 @@ function go(p: number) {
       <button
         v-for="p in totalPages"
         :key="p"
-        class="w-7 h-7 rounded text-[11px] tabular-nums transition-colors"
+        class="w-7 h-7 rounded-sm text-[11px] tabular-nums transition-colors"
         :class="p === page ? 'bg-primary text-primary-foreground font-semibold' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
         @click="go(p)"
       >{{ p }}</button>
       <button
-        class="px-2.5 py-1 rounded text-[11px] transition-colors"
+        class="px-2.5 py-1 rounded-sm text-[11px] transition-colors"
         :class="page === totalPages ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
         :disabled="page === totalPages"
         @click="go(page + 1)"

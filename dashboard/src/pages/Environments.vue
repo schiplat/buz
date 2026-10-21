@@ -190,7 +190,7 @@ onMounted(() => {
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
 
-    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
       <div v-if="environments.length === 0" class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <Layers class="h-10 w-10 mb-3 text-muted-foreground/20" />
         <p class="text-sm">No environments yet</p>
@@ -266,21 +266,21 @@ onMounted(() => {
     <!-- Create / Edit environment -->
     <Teleport to="body">
       <div v-if="showEnvDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showEnvDialog = false" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showEnvDialog = false" />
         <div class="relative z-10 w-full max-w-lg mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6 max-h-[90vh] overflow-y-auto">
           <h3 class="text-[15px] font-semibold mb-5">{{ editingEnv ? 'Edit Environment' : 'New Environment' }}</h3>
           <div class="space-y-4">
             <div>
               <label class="block text-[12px] font-medium mb-1">Name <span class="text-red-500">*</span></label>
-              <input v-model="formName" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50" placeholder="Production" />
+              <input v-model="formName" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50" placeholder="Production" />
             </div>
             <div>
               <label class="block text-[12px] font-medium mb-1">Slug <span class="text-red-500">*</span></label>
-              <input v-model="formSlug" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50" placeholder="production" />
+              <input v-model="formSlug" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50" placeholder="production" />
             </div>
             <div>
               <label class="block text-[12px] font-medium mb-1">Description</label>
-              <input v-model="formDescription" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50" placeholder="Optional" />
+              <input v-model="formDescription" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50" placeholder="Optional" />
             </div>
 
             <div v-if="auth.isPlatformAdmin" class="rounded-lg border border-border/40 bg-muted/20 p-3 space-y-3">
@@ -295,7 +295,7 @@ onMounted(() => {
             </label>
             <div>
               <label class="block text-[12px] font-medium mb-1">Deployment concurrency</label>
-              <select v-model="formDeploymentConcurrency" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50">
+              <select v-model="formDeploymentConcurrency" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
                 <option value="off">off — do not serialize across pipelines</option>
                 <option value="queue">queue — FIFO across pipelines</option>
                 <option value="cancel_in_progress">cancel_in_progress — replace active deployment</option>
@@ -305,13 +305,13 @@ onMounted(() => {
                 <div class="grid grid-cols-2 gap-3">
                   <div>
                     <label class="block text-[12px] font-medium mb-1">Min trigger role <span class="text-red-500">*</span></label>
-                    <select v-model="formMinTriggerRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50">
+                    <select v-model="formMinTriggerRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
                       <option v-for="r in ROLE_OPTIONS" :key="r" :value="r">{{ r }}</option>
                     </select>
                   </div>
                   <div>
                     <label class="block text-[12px] font-medium mb-1">Min approve role <span class="text-red-500">*</span></label>
-                    <select v-model="formMinApproveRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50">
+                    <select v-model="formMinApproveRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
                       <option v-for="r in ROLE_OPTIONS" :key="r" :value="r">{{ r }}</option>
                     </select>
                   </div>
@@ -323,7 +323,7 @@ onMounted(() => {
                       v-model.number="formRequireApprovals"
                       type="number"
                       min="1"
-                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                     />
                   </div>
                   <div>
@@ -332,7 +332,7 @@ onMounted(() => {
                       v-model.number="formApprovalTimeoutSeconds"
                       type="number"
                       min="60"
-                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                     />
                   </div>
                 </div>

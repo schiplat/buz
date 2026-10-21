@@ -1,44 +1,238 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
 
-:root {
+@theme {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+
+  --color-success: hsl(var(--success));
+  --color-success-foreground: hsl(var(--success-foreground));
+
+  --color-warning: hsl(var(--warning));
+  --color-warning-foreground: hsl(var(--warning-foreground));
+
+  --color-info: hsl(var(--info));
+  --color-info-foreground: hsl(var(--info-foreground));
+
+  --color-notice: hsl(var(--notice));
+  --color-notice-foreground: hsl(var(--notice-foreground));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+
+  --radius-xl: var(--radius, 0.75rem);
+  --radius-2xl: calc(var(--radius, 0.75rem) + 4px);
+}
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+}
+
+@utility scrollbar-sidebar {
   /*
+   * Side panels (app nav, page left/right rails, drawers):
+   * thinner + fainter than the global scrollbar so chrome stays quiet.
+   */
+  scrollbar-width: thin;
+  scrollbar-color: hsl(32 8% 82% / 0.55) transparent;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: hsl(32 8% 78% / 0.55);
+    border-radius: 9999px;
+    border: 1.5px solid transparent;
+    background-clip: content-box;
+  }
+
+  &::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(28 7% 36% / 0.28);
+  }
+}
+
+@utility surface-card {
+  @apply rounded-2xl bg-card;
+}
+
+@utility surface-muted {
+  @apply rounded-2xl bg-muted;
+}
+
+@utility surface-inset {
+  @apply rounded-xl bg-muted;
+}
+
+@utility page-stack {
+  @apply w-full max-w-none space-y-7;
+}
+
+@utility shell-inset {
+  @apply px-6 md:px-8;
+}
+
+@utility type-meta {
+  @apply text-xs leading-relaxed text-muted-foreground;
+}
+
+@utility type-label {
+  @apply text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground;
+}
+
+@utility type-eyebrow {
+  @apply text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70;
+}
+
+@utility field-error {
+  @apply rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive;
+}
+
+@utility data-table-scroll {
+  @apply overflow-x-auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@utility data-table {
+  @apply w-full min-w-[640px] text-left text-sm;
+
+  & thead {
+    @apply bg-transparent;
+  }
+
+  & th {
+    @apply px-3.5 py-2.5 text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground;
+  }
+
+  & td {
+    @apply px-3.5 py-3 align-middle text-sm;
+  }
+
+  & tbody tr {
+    @apply transition-colors;
+  }
+  & tbody tr + tr td {
+    @apply border-0;
+  }
+
+  & tbody tr.clickable {
+    @apply cursor-pointer hover:bg-muted/80;
+  }
+
+  & tbody tr.clickable td:first-child {
+    @apply rounded-l-xl;
+  }
+  & tbody tr.clickable td:last-child {
+    @apply rounded-r-xl;
+  }
+}
+
+@utility clickable {
+  .data-table tbody &tr {
+    @apply cursor-pointer hover:bg-muted/80;
+  }
+
+  .data-table tbody &tr td:first-child {
+    @apply rounded-l-xl;
+  }
+  .data-table tbody &tr td:last-child {
+    @apply rounded-r-xl;
+  }
+}
+
+@utility soft-panel {
+  @apply rounded-2xl bg-card p-1;
+  box-shadow: 0 12px 40px rgba(28, 25, 23, 0.08);
+}
+
+@utility mono-chip {
+  @apply inline-flex max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs leading-tight tracking-tight text-foreground/75;
+}
+
+@layer utilities {
+  :root {
+    /*
    * Warm stone ops console — low chroma, fill over outline.
    * Hue ~32 keeps warmth without drifting into yellow-cream.
    */
-  --background: 34 12% 97%;
-  --foreground: 28 10% 12%;
-  --card: 0 0% 100%;
-  --card-foreground: 28 10% 12%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 28 10% 12%;
-  --primary: 28 10% 15%;
-  --primary-foreground: 40 18% 98%;
-  --secondary: 34 10% 93%;
-  --secondary-foreground: 28 9% 22%;
-  --muted: 34 10% 93%;
-  --muted-foreground: 28 7% 36%;
-  --accent: 34 9% 91%;
-  --accent-foreground: 28 10% 14%;
-  --border: 32 9% 86%;
-  --input: 0 0% 100%;
-  --ring: 28 9% 32%;
-  --radius: 0.75rem;
-  --sidebar: 34 11% 95%;
-  --sidebar-foreground: 28 9% 18%;
-  --sidebar-border: 32 8% 89%;
-  --sidebar-accent: 34 10% 91%;
-  --destructive: 4 66% 44%;
-  --destructive-foreground: 0 0% 100%;
-  --success: 152 42% 32%;
-  --success-foreground: 152 35% 96%;
-  --warning: 34 72% 36%;
-  --warning-foreground: 40 40% 97%;
-  --info: 205 48% 38%;
-  --info-foreground: 205 40% 97%;
-  --notice: 272 32% 42%;
-  --notice-foreground: 280 30% 97%;
+    --background: 34 12% 97%;
+    --foreground: 28 10% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 28 10% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 28 10% 12%;
+    --primary: 28 10% 15%;
+    --primary-foreground: 40 18% 98%;
+    --secondary: 34 10% 93%;
+    --secondary-foreground: 28 9% 22%;
+    --muted: 34 10% 93%;
+    --muted-foreground: 28 7% 36%;
+    --accent: 34 9% 91%;
+    --accent-foreground: 28 10% 14%;
+    --border: 32 9% 86%;
+    --input: 0 0% 100%;
+    --ring: 28 9% 32%;
+    --radius: 0.75rem;
+    --sidebar: 34 11% 95%;
+    --sidebar-foreground: 28 9% 18%;
+    --sidebar-border: 32 8% 89%;
+    --sidebar-accent: 34 10% 91%;
+    --destructive: 4 66% 44%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 152 42% 32%;
+    --success-foreground: 152 35% 96%;
+    --warning: 34 72% 36%;
+    --warning-foreground: 40 40% 97%;
+    --info: 205 48% 38%;
+    --info-foreground: 205 40% 97%;
+    --notice: 272 32% 42%;
+    --notice-foreground: 280 30% 97%;
+  }
 }
 
 @layer base {
@@ -104,91 +298,9 @@
 }
 
 @layer components {
-  /*
-   * Side panels (app nav, page left/right rails, drawers):
-   * thinner + fainter than the global scrollbar so chrome stays quiet.
-   */
-  .scrollbar-sidebar {
-    scrollbar-width: thin;
-    scrollbar-color: hsl(32 8% 82% / 0.55) transparent;
-  }
-
-  .scrollbar-sidebar::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-
-  .scrollbar-sidebar::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .scrollbar-sidebar::-webkit-scrollbar-thumb {
-    background-color: hsl(32 8% 78% / 0.55);
-    border-radius: 9999px;
-    border: 1.5px solid transparent;
-    background-clip: content-box;
-  }
-
-  .scrollbar-sidebar::-webkit-scrollbar-thumb:hover {
-    background-color: hsl(28 7% 36% / 0.28);
-  }
-
-  .surface-card { @apply rounded-2xl bg-card; }
-  .surface-muted { @apply rounded-2xl bg-muted; }
-  .surface-inset { @apply rounded-xl bg-muted; }
-
-  .page-stack { @apply w-full max-w-none space-y-7; }
-  .shell-inset { @apply px-6 md:px-8; }
-
-  .type-meta { @apply text-xs leading-relaxed text-muted-foreground; }
-  .type-label { @apply text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground; }
-  .type-eyebrow { @apply text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70; }
-
-  .field-error {
-    @apply rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive;
-  }
-
-  .data-table-scroll {
-    @apply overflow-x-auto;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .data-table {
-    @apply w-full min-w-[640px] text-left text-sm;
-  }
-
-  .data-table thead { @apply bg-transparent; }
-
-  .data-table th {
-    @apply px-3.5 py-2.5 text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground;
-  }
-
-  .data-table td {
-    @apply px-3.5 py-3 align-middle text-sm;
-  }
-
   /* All dashboard tables: row content vertically centered */
   table th,
   table td {
     @apply align-middle;
-  }
-
-  .data-table tbody tr { @apply transition-colors; }
-  .data-table tbody tr + tr td { @apply border-0; }
-  
-  .data-table tbody tr.clickable {
-    @apply cursor-pointer hover:bg-muted/80;
-  }
-
-  .data-table tbody tr.clickable td:first-child { @apply rounded-l-xl; }
-  .data-table tbody tr.clickable td:last-child { @apply rounded-r-xl; }
-
-  .soft-panel {
-    @apply rounded-2xl bg-card p-1;
-    box-shadow: 0 12px 40px rgba(28, 25, 23, 0.08);
-  }
-
-  .mono-chip {
-    @apply inline-flex max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs leading-tight tracking-tight text-foreground/75;
   }
 }

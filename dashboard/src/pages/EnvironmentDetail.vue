@@ -408,7 +408,7 @@ onMounted(() => {
 
     <template v-else-if="env">
       <!-- Environment info (editable) -->
-      <div class="rounded-xl border border-border/50 bg-card shadow-sm overflow-hidden">
+      <div class="rounded-xl border border-border/50 bg-card shadow-xs overflow-hidden">
         <template v-if="!editingEnv">
           <div class="px-5 py-4 space-y-4">
             <div>
@@ -477,16 +477,16 @@ onMounted(() => {
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label class="block text-[12px] font-medium mb-1">Name <span class="text-red-500">*</span></label>
-                <input v-model="formName" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50" placeholder="Production" />
+                <input v-model="formName" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50" placeholder="Production" />
               </div>
               <div>
                 <label class="block text-[12px] font-medium mb-1">Slug <span class="text-red-500">*</span></label>
-                <input v-model="formSlug" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50" placeholder="production" />
+                <input v-model="formSlug" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50" placeholder="production" />
               </div>
             </div>
             <div>
               <label class="block text-[12px] font-medium mb-1">Description</label>
-              <input v-model="formDescription" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50" placeholder="Optional" />
+              <input v-model="formDescription" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50" placeholder="Optional" />
             </div>
 
             <div class="rounded-lg border border-border/40 bg-muted/20 p-3 space-y-3">
@@ -501,7 +501,7 @@ onMounted(() => {
               </label>
               <div>
                 <label class="block text-[12px] font-medium mb-1">Deployment concurrency</label>
-                <select v-model="formDeploymentConcurrency" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50">
+                <select v-model="formDeploymentConcurrency" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
                   <option value="off">off — no cross-pipeline serialization</option>
                   <option value="queue">queue — FIFO across pipelines</option>
                   <option value="cancel_in_progress">cancel_in_progress — replace active deployment</option>
@@ -511,13 +511,13 @@ onMounted(() => {
                 <div class="grid grid-cols-2 gap-3">
                   <div>
                     <label class="block text-[12px] font-medium mb-1">Min trigger role <span class="text-red-500">*</span></label>
-                    <select v-model="formMinTriggerRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50">
+                    <select v-model="formMinTriggerRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
                       <option v-for="r in ROLE_OPTIONS" :key="r" :value="r">{{ r }}</option>
                     </select>
                   </div>
                   <div>
                     <label class="block text-[12px] font-medium mb-1">Min approve role <span class="text-red-500">*</span></label>
-                    <select v-model="formMinApproveRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50">
+                    <select v-model="formMinApproveRole" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
                       <option v-for="r in ROLE_OPTIONS" :key="r" :value="r">{{ r }}</option>
                     </select>
                   </div>
@@ -529,7 +529,7 @@ onMounted(() => {
                       v-model.number="formRequireApprovals"
                       type="number"
                       min="1"
-                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                     />
                   </div>
                   <div>
@@ -538,7 +538,7 @@ onMounted(() => {
                       v-model.number="formApprovalTimeoutSeconds"
                       type="number"
                       min="60"
-                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                      class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                     />
                   </div>
                 </div>
@@ -562,7 +562,7 @@ onMounted(() => {
         </template>
       </div>
 
-      <div class="rounded-xl border border-border/50 bg-card shadow-sm overflow-hidden">
+      <div class="rounded-xl border border-border/50 bg-card shadow-xs overflow-hidden">
         <div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-border/30">
           <div>
             <p class="text-[13px] font-medium">Host name / label allowlist</p>
@@ -576,11 +576,11 @@ onMounted(() => {
             {{ allowlistError }}
           </p>
           <form v-if="auth.isPlatformAdmin" class="flex flex-col sm:flex-row gap-2" @submit.prevent="addHostAllowlistEntry">
-            <select v-model="allowlistKind" class="rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50">
+            <select v-model="allowlistKind" class="rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50">
               <option value="name">Host name</option>
               <option value="label">Host label</option>
             </select>
-            <input v-model="allowlistValue" class="flex-1 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50" :placeholder="allowlistKind === 'name' ? 'prod-01' : 'production'" />
+            <input v-model="allowlistValue" class="flex-1 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50" :placeholder="allowlistKind === 'name' ? 'prod-01' : 'production'" />
             <UiButton type="submit" size="sm" :disabled="savingAllowlist || !allowlistValue.trim()"><Plus class="h-3.5 w-3.5" /> Add</UiButton>
           </form>
           <div v-if="env.host_allowlist.length" class="divide-y divide-border/20 rounded-lg border border-border/30">
@@ -598,7 +598,7 @@ onMounted(() => {
 
       <!-- Variable | Secret overrides (left / right) -->
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
-        <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm flex flex-col min-w-0">
+        <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs flex flex-col min-w-0">
           <div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-border/30 shrink-0">
             <div class="min-w-0">
               <p class="text-[13px] font-medium">Variable overrides</p>
@@ -680,7 +680,7 @@ onMounted(() => {
           </template>
         </div>
 
-        <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm flex flex-col min-w-0">
+        <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs flex flex-col min-w-0">
           <div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-border/30 shrink-0">
             <div class="min-w-0">
               <p class="text-[13px] font-medium">Secret overrides</p>
@@ -769,7 +769,7 @@ onMounted(() => {
     <!-- Add Variable override -->
     <Teleport to="body">
       <div v-if="showOverrideDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showOverrideDialog = false" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showOverrideDialog = false" />
         <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
           <h3 class="text-[15px] font-semibold mb-5">Add Variable override</h3>
           <p
@@ -781,13 +781,13 @@ onMounted(() => {
           <div class="space-y-4">
             <div>
               <label class="block text-[12px] font-medium mb-1">Variable <span class="text-red-500">*</span></label>
-              <select v-model="overrideVarId" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50">
+              <select v-model="overrideVarId" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50">
                 <option v-for="v in unboundVars" :key="v.id" :value="v.id">{{ v.name }}</option>
               </select>
             </div>
             <div>
               <label class="block text-[12px] font-medium mb-1">Override value <span class="text-red-500">*</span></label>
-              <textarea v-model="overrideValue" rows="4" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 resize-y" />
+              <textarea v-model="overrideValue" rows="4" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 resize-y" />
             </div>
           </div>
           <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/30">
@@ -801,7 +801,7 @@ onMounted(() => {
     <!-- Add Secret override -->
     <Teleport to="body">
       <div v-if="showSecretOverrideDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showSecretOverrideDialog = false" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showSecretOverrideDialog = false" />
         <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
           <h3 class="text-[15px] font-semibold mb-5">Add Secret override</h3>
           <p
@@ -813,7 +813,7 @@ onMounted(() => {
           <div class="space-y-4">
             <div>
               <label class="block text-[12px] font-medium mb-1">Secret <span class="text-red-500">*</span></label>
-              <select v-model="overrideSecretId" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50">
+              <select v-model="overrideSecretId" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50">
                 <option v-for="s in unboundSecrets" :key="s.id" :value="s.id">{{ s.name }} ({{ s.kind }})</option>
               </select>
             </div>
@@ -822,7 +822,7 @@ onMounted(() => {
               <textarea
                 v-model="overrideSecretValue"
                 rows="4"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 resize-y"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 resize-y"
                 placeholder="Enter the environment-specific secret value"
                 autocomplete="off"
               />

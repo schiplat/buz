@@ -75,8 +75,8 @@ const empty = computed(() => !props.loading && props.jobs.length === 0)
     <div class="mt-3 px-2 pb-2">
       <div v-if="loading" class="space-y-1 px-3 py-1">
         <div v-for="n in 6" :key="n" class="animate-pulse">
-          <div class="h-4 w-3/4 rounded bg-muted" />
-          <div class="mt-1.5 h-3 w-1/2 rounded bg-muted/70" />
+          <div class="h-4 w-3/4 rounded-sm bg-muted" />
+          <div class="mt-1.5 h-3 w-1/2 rounded-sm bg-muted/70" />
         </div>
       </div>
 
@@ -98,7 +98,7 @@ const empty = computed(() => !props.loading && props.jobs.length === 0)
               </span>
               <span class="mt-0.5 flex items-center gap-1.5">
                 <span
-                  class="rounded border border-border bg-muted/60 px-1 py-px text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                  class="rounded-sm border border-border bg-muted/60 px-1 py-px text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
                 >
                   {{ triggerLabel(j.trigger_by) }}
                 </span>

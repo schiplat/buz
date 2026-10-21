@@ -49,7 +49,7 @@ async function handleLogin() {
             type="text"
             autocomplete="username"
             placeholder="admin"
-            class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
+            class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
           />
         </div>
         <div class="space-y-1.5">
@@ -60,7 +60,7 @@ async function handleLogin() {
               :type="showPassword ? 'text' : 'password'"
               autocomplete="current-password"
               placeholder="Enter password"
-              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 pr-14 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
+              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 pr-14 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:border-foreground/35 focus-visible:ring-2 focus-visible:ring-ring/30"
             />
             <button
               type="button"

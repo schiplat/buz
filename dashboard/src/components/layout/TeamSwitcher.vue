@@ -43,7 +43,7 @@ function onChange(e: Event) {
   >
     <Users class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
     <select
-      class="max-w-[10.5rem] cursor-pointer appearance-none bg-transparent text-xs font-medium text-foreground outline-none"
+      class="max-w-42 cursor-pointer appearance-none bg-transparent text-xs font-medium text-foreground outline-hidden"
       :value="auth.activeTeamId"
       aria-label="Active team filter"
       @change="onChange"

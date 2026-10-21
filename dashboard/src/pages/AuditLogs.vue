@@ -166,18 +166,18 @@ onMounted(load)
           v-model="searchQuery"
           type="text"
           placeholder="Search resource, action, actor…"
-          class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+          class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
         />
         <select
           v-model="filterAction"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50"
+          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50"
         >
           <option value="">All actions</option>
           <option v-for="a in ACTION_OPTIONS.filter(Boolean)" :key="a" :value="a">{{ a }}</option>
         </select>
         <select
           v-model="filterResourceType"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50"
+          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50"
         >
           <option value="">All resources</option>
           <option v-for="r in RESOURCE_TYPE_OPTIONS.filter(Boolean)" :key="r" :value="r">{{ r }}</option>
@@ -186,18 +186,18 @@ onMounted(load)
           v-model="filterActor"
           type="text"
           placeholder="Actor…"
-          class="w-36 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50"
+          class="w-36 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50"
         />
         <input
           v-model="filterFrom"
           type="datetime-local"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50"
+          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50"
           title="From"
         />
         <input
           v-model="filterTo"
           type="datetime-local"
-          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-none transition-colors focus:border-primary/50"
+          class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-[13px] outline-hidden transition-colors focus:border-primary/50"
           title="To"
         />
       </div>
@@ -212,12 +212,12 @@ onMounted(load)
           <table class="data-table min-w-[720px]">
             <thead>
               <tr>
-                <th class="w-[11rem]">Time</th>
-                <th class="w-[8rem]">Actor</th>
-                <th class="w-[10rem]">Action</th>
+                <th class="w-44">Time</th>
+                <th class="w-32">Actor</th>
+                <th class="w-40">Action</th>
                 <th>Resource</th>
-                <th class="w-[6rem]">Team</th>
-                <th class="w-[4.5rem] text-right" />
+                <th class="w-24">Team</th>
+                <th class="w-18 text-right" />
               </tr>
             </thead>
             <tbody>

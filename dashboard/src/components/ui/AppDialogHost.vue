@@ -72,11 +72,11 @@ function onCancel() {
   <Teleport to="body">
     <div
       v-if="dialog"
-      class="fixed inset-0 z-[100] flex items-center justify-center"
+      class="fixed inset-0 z-100 flex items-center justify-center"
       role="dialog"
       aria-modal="true"
     >
-      <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="onBackdrop" />
+      <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="onBackdrop" />
       <div
         class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6"
         @click.stop
@@ -94,7 +94,7 @@ function onCancel() {
             ref="inputEl"
             v-model="promptDraft"
             rows="4"
-            class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 resize-y"
+            class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 resize-y"
             :placeholder="dialog.placeholder"
             @keydown.meta.enter.prevent="onPrimary"
           />
@@ -103,7 +103,7 @@ function onCancel() {
             ref="inputEl"
             v-model="promptDraft"
             type="text"
-            class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+            class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
             :placeholder="dialog.placeholder"
             @keydown.enter.prevent="onPrimary"
           />
@@ -116,7 +116,7 @@ function onCancel() {
           <input
             v-model="checkboxDraft"
             type="checkbox"
-            class="h-4 w-4 rounded border-border/60 accent-primary cursor-pointer"
+            class="h-4 w-4 rounded-sm border-border/60 accent-primary cursor-pointer"
           />
           {{ dialog.checkboxLabel }}
         </label>

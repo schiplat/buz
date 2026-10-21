@@ -257,16 +257,16 @@ onMounted(async () => {
 
     <!-- Table -->
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
-    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
       <!-- Filter bar -->
       <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
         <input
           v-model="searchQuery"
           type="text"
           placeholder="Search hosts…"
-          class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+          class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
         />
-        <select v-model="filterCredentialType" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+        <select v-model="filterCredentialType" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
           <option value="">All auth types</option>
           <option value="key_path">SSH Key</option>
           <option value="password">Password</option>
@@ -383,32 +383,32 @@ onMounted(async () => {
     <!-- Dialog overlay -->
     <Teleport to="body">
       <div v-if="showDialog" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-8">
-        <div class="fixed inset-0 bg-black/30 backdrop-blur-sm" @click="showDialog = false" />
+        <div class="fixed inset-0 bg-black/30 backdrop-blur-xs" @click="showDialog = false" />
         <div class="relative z-10 w-full max-w-lg mx-4 my-auto rounded-2xl border border-border/50 bg-card shadow-2xl flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
           <h3 class="shrink-0 text-[15px] font-semibold px-6 pt-6 pb-4">{{ editing ? 'Edit Host' : 'New Host' }}</h3>
           <div class="flex-1 min-h-0 overflow-y-auto px-6 space-y-4">
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-red-400">*</span></label>
-              <input v-model="form.name" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="e.g. prod-server-01" />
+              <input v-model="form.name" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="e.g. prod-server-01" />
             </div>
             <div class="grid grid-cols-2 gap-3">
               <div>
                 <label class="block text-[12px] font-medium text-foreground mb-1">Address <span class="text-red-400">*</span></label>
-                <input v-model="form.host" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="10.0.0.1" />
+                <input v-model="form.host" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="10.0.0.1" />
               </div>
               <div>
                 <label class="block text-[12px] font-medium text-foreground mb-1">Port</label>
-                <input v-model.number="form.port" type="number" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="22" />
+                <input v-model.number="form.port" type="number" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="22" />
               </div>
             </div>
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">Username <span class="text-red-400">*</span></label>
-              <input v-model="form.username" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="root" />
+              <input v-model="form.username" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="root" />
             </div>
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">Auth Type</label>
               <div class="relative">
-                <select v-model="form.credential_type" class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 pr-8 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer">
+                <select v-model="form.credential_type" class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 pr-8 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer">
                   <option value="key_path">SSH Key</option>
                   <option value="vault">Password</option>
                   <option value="agent">SSH Agent</option>
@@ -445,7 +445,7 @@ onMounted(async () => {
               </label>
               <textarea
                 v-model="form.credential_data"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 font-mono text-xs outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 font-mono text-xs outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 rows="6"
                 :placeholder="editing?.credential_stored ? 'Leave blank to keep existing credential' : (form.credential_type === 'key_path' ? '-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----' : 'Enter password')"
               ></textarea>
@@ -461,14 +461,14 @@ onMounted(async () => {
               <input
                 v-model="form.credential_passphrase"
                 type="password"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 :placeholder="editing?.credential_stored ? 'Leave blank to keep existing' : 'Key passphrase (if any)'"
               />
             </div>
             <div>
               <label class="block text-[12px] font-medium text-foreground mb-1">Team</label>
               <div class="relative">
-                <select v-model="form.team_id" class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 pr-8 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer">
+                <select v-model="form.team_id" class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 pr-8 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer">
                   <option value="">Shared (admin)</option>
                   <option v-for="t in availableTeams" :key="t.id" :value="t.id">
                     {{ t.name }} ({{ t.slug }})
@@ -482,7 +482,7 @@ onMounted(async () => {
             </div>
             <div class="pb-1">
               <label class="block text-[12px] font-medium text-foreground mb-1">Labels <span class="text-muted-foreground/60 font-normal">(comma-separated)</span></label>
-              <input v-model="form.labels" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="linux, x64, prod" />
+              <input v-model="form.labels" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20" placeholder="linux, x64, prod" />
             </div>
           </div>
           <div class="shrink-0 px-6 py-5 border-t border-border/30 space-y-3">

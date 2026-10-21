@@ -112,7 +112,7 @@ onMounted(load)
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
     <div v-else class="grid gap-6 lg:grid-cols-2">
-      <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+      <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
         <div v-if="teams.length === 0" class="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <Users class="h-10 w-10 mb-3 text-muted-foreground/20" />
           <p class="text-sm">No teams yet</p>
@@ -143,7 +143,7 @@ onMounted(load)
         </ul>
       </div>
 
-      <div v-if="selected" class="rounded-xl border border-border/50 bg-card p-5 shadow-sm space-y-4">
+      <div v-if="selected" class="rounded-xl border border-border/50 bg-card p-5 shadow-xs space-y-4">
         <div>
           <h3 class="font-semibold">{{ selected.name }}</h3>
           <p class="text-xs text-muted-foreground font-mono">{{ selected.slug }}</p>
@@ -181,7 +181,7 @@ onMounted(load)
 
     <Teleport to="body">
       <div v-if="showCreate" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showCreate = false" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showCreate = false" />
         <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
           <h3 class="text-[15px] font-semibold mb-5">New Team</h3>
           <div class="space-y-4">

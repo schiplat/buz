@@ -238,12 +238,12 @@ defineExpose({ refresh: buildGraph })
 <template>
   <div
     ref="graphRoot"
-    class="pipeline-topology h-[360px] w-full rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm relative"
+    class="pipeline-topology h-[360px] w-full rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs relative"
     :class="{ 'pipeline-topology--fullscreen': isFullscreen }"
   >
     <div
       v-if="tasks.length > 0"
-      class="absolute top-3 left-3 z-10 flex items-center gap-1.5 rounded-lg bg-card/95 border border-border/50 px-2 py-1.5 shadow-sm backdrop-blur"
+      class="absolute top-3 left-3 z-10 flex items-center gap-1.5 rounded-lg bg-card/95 border border-border/50 px-2 py-1.5 shadow-xs backdrop-blur-sm"
     >
       <button
         v-for="opt in filterOptions"
@@ -262,7 +262,7 @@ defineExpose({ refresh: buildGraph })
 
     <button
       v-if="tasks.length > 0"
-      class="absolute top-3 right-3 z-10 flex items-center justify-center w-7 h-7 rounded-lg bg-card/95 border border-border/50 shadow-sm backdrop-blur text-muted-foreground hover:text-foreground transition-colors"
+      class="absolute top-3 right-3 z-10 flex items-center justify-center w-7 h-7 rounded-lg bg-card/95 border border-border/50 shadow-xs backdrop-blur-sm text-muted-foreground hover:text-foreground transition-colors"
       :title="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'"
       @click="toggleFullscreen"
     >
@@ -290,7 +290,7 @@ defineExpose({ refresh: buildGraph })
       @node-click="onNodeClick"
     >
       <Background :pattern-color="isDark ? '#3f3f46' : '#e4e4e7'" :gap="20" :size="1" />
-      <Controls class="!bg-card !border-border !shadow-lg !m-4 !rounded-lg overflow-hidden !bottom-4 !left-4" />
+      <Controls class="bg-card! border-border! shadow-lg! m-4! rounded-lg! overflow-hidden bottom-4! left-4!" />
     </VueFlow>
   </div>
 </template>

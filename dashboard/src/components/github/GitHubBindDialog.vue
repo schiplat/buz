@@ -307,7 +307,7 @@ watch(
   <Teleport to="body">
     <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center">
       <div
-        class="absolute inset-0 bg-black/30 backdrop-blur-sm"
+        class="absolute inset-0 bg-black/30 backdrop-blur-xs"
         :class="{ 'pointer-events-none': pushing }"
         @click="close"
       />
@@ -416,7 +416,7 @@ watch(
                     v-model="overrideDraft[b.id].text"
                     :type="isSecret ? 'password' : 'text'"
                     autocomplete="off"
-                    class="flex-1 min-w-0 rounded-lg border border-border/60 bg-background px-2.5 py-1.5 font-mono text-[11px] outline-none transition-colors focus:border-primary/50 disabled:opacity-60"
+                    class="flex-1 min-w-0 rounded-lg border border-border/60 bg-background px-2.5 py-1.5 font-mono text-[11px] outline-hidden transition-colors focus:border-primary/50 disabled:opacity-60"
                     :disabled="!canManage || overrideDraft[b.id].mode === 'inherit' || pushing || overrideDraft[b.id].saving"
                     :placeholder="
                       overrideDraft[b.id].mode === 'inherit'
@@ -440,7 +440,7 @@ watch(
                 </div>
               </div>
 
-              <p v-if="b.last_error" class="mt-1.5 text-[11px] text-red-600 dark:text-red-400 break-words">{{ b.last_error }}</p>
+              <p v-if="b.last_error" class="mt-1.5 text-[11px] text-red-600 dark:text-red-400 wrap-break-word">{{ b.last_error }}</p>
               <p v-else-if="b.last_pushed_at" class="mt-1.5 text-[11px] text-muted-foreground">
                 Last pushed {{ formatLocalDateTime(b.last_pushed_at) }}
               </p>
@@ -461,7 +461,7 @@ watch(
               v-model="repoSearch"
               type="text"
               placeholder="Search repos…"
-              class="w-full rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+              class="w-full rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
             />
             <div class="mt-2 max-h-36 overflow-y-auto rounded-lg border border-border/60 bg-background divide-y divide-border/20">
               <label
@@ -503,7 +503,7 @@ watch(
         </div>
 
         <div v-if="error" class="shrink-0 px-6 pb-2">
-          <p class="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[11px] text-red-700 dark:text-red-400 break-words">{{ error }}</p>
+          <p class="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[11px] text-red-700 dark:text-red-400 wrap-break-word">{{ error }}</p>
         </div>
 
         <div class="shrink-0 flex items-center gap-3 px-6 py-5 border-t border-border/30">

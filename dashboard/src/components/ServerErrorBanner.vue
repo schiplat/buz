@@ -26,7 +26,7 @@ function describe(f: { status: number; message: string }): string {
             : 'Server error'
         }}
       </p>
-      <p class="mt-0.5 break-words text-muted-foreground">
+      <p class="mt-0.5 wrap-break-word text-muted-foreground">
         {{ describe(failures.current) }}
       </p>
     </div>

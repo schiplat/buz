@@ -23,7 +23,7 @@ defineProps<{
         <span class="sm:hidden">Rows</span>
         <select
           v-model.number="pageSize"
-          class="h-8 w-auto min-w-[3.75rem] rounded-lg border border-border/60 bg-background px-2 py-1 text-xs outline-none focus:border-primary/50"
+          class="h-8 w-auto min-w-15 rounded-lg border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50"
         >
           <option v-for="n in PAGE_SIZE_OPTIONS" :key="n" :value="n">{{ n }}</option>
         </select>
@@ -37,7 +37,7 @@ defineProps<{
         >
           Prev
         </button>
-        <span class="text-[11px] min-w-[3.25rem] px-1 text-center tabular-nums text-muted-foreground sm:min-w-[4.5rem]">
+        <span class="text-[11px] min-w-13 px-1 text-center tabular-nums text-muted-foreground sm:min-w-18">
           {{ page }} / {{ pageCount }}
         </span>
         <button

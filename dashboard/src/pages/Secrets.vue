@@ -280,20 +280,20 @@ onMounted(loadSecrets)
     </PageHeader>
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
-    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
       <!-- Filter bar -->
       <div class="px-5 py-3 border-b border-border/30 flex items-center gap-3 flex-wrap">
         <input
           v-model="searchQuery"
           type="text"
           placeholder="Search secrets…"
-          class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+          class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
         />
-        <select v-model="filterTeam" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+        <select v-model="filterTeam" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
           <option value="">All teams</option>
           <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }}</option>
         </select>
-        <select v-model="filterGithub" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50" title="Filter by GitHub sync status">
+        <select v-model="filterGithub" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50" title="Filter by GitHub sync status">
           <option value="">All GitHub status</option>
           <option value="needs_push">Needs push</option>
         </select>
@@ -306,7 +306,7 @@ onMounted(loadSecrets)
           <table class="w-full text-[13px]">
             <thead>
               <tr class="border-b border-border/30 bg-muted/10">
-                <th class="text-left px-4 py-2.5 w-44 min-w-[9rem]">
+                <th class="text-left px-4 py-2.5 w-44 min-w-36">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('name')">
                     Name
                     <span class="font-mono text-xs">{{ sortIndicator('name') }}</span>
@@ -347,7 +347,7 @@ onMounted(loadSecrets)
             </thead>
             <tbody class="divide-y divide-border/20">
               <tr v-for="s in pageItems" :key="s.id" class="hover:bg-muted/5 transition-colors">
-                <td class="px-4 py-3 w-44 min-w-[9rem]">
+                <td class="px-4 py-3 w-44 min-w-36">
                   <div class="flex flex-col gap-1 min-w-0">
                     <span
                       class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
@@ -427,7 +427,7 @@ onMounted(loadSecrets)
     <!-- Dialog -->
     <Teleport to="body">
       <div v-if="showDialog" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-8">
-        <div class="fixed inset-0 bg-black/30 backdrop-blur-sm" @click="showDialog = false" />
+        <div class="fixed inset-0 bg-black/30 backdrop-blur-xs" @click="showDialog = false" />
         <div class="relative z-10 w-full max-w-md mx-4 my-auto rounded-2xl border border-border/50 bg-card shadow-2xl flex flex-col max-h-[min(85vh,calc(100vh-4rem))]">
           <h3 class="shrink-0 text-[15px] font-semibold px-6 pt-6 pb-4">{{ editing ? 'Update Secret' : 'New Secret' }}</h3>
           <div class="flex-1 min-h-0 overflow-y-auto px-6 space-y-4">
@@ -437,7 +437,7 @@ onMounted(loadSecrets)
                 :value="formName"
                 :disabled="!!editing"
                 @input="onNameInput"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono uppercase outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 disabled:bg-muted/30 disabled:cursor-not-allowed"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono uppercase outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 disabled:bg-muted/30 disabled:cursor-not-allowed"
                 placeholder="POSTGRES_PASSWORD"
               />
               <p class="text-[10px] text-muted-foreground mt-1 leading-relaxed">
@@ -450,7 +450,7 @@ onMounted(loadSecrets)
               <label class="block text-[12px] font-medium text-foreground mb-1">Team <span class="text-red-500">*</span></label>
               <select
                 v-model="formTeamId"
-                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
+                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
               >
                 <option disabled value="">Select a team</option>
                 <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }} ({{ t.slug }})</option>
@@ -461,7 +461,7 @@ onMounted(loadSecrets)
               <label class="block text-[12px] font-medium text-foreground mb-1">Kind <span class="text-red-500">*</span></label>
               <select
                 v-model="formKind"
-                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
+                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
               >
                 <option value="generic">Generic — plugin with / env / config.render</option>
                 <option v-if="editingLegacyKind === 'registry'" value="registry">Registry (Deprecated)</option>
@@ -482,7 +482,7 @@ onMounted(loadSecrets)
                 <input
                   v-model="formTeamShared"
                   type="checkbox"
-                  class="mt-0.5 h-3.5 w-3.5 rounded border-border accent-primary cursor-pointer"
+                  class="mt-0.5 h-3.5 w-3.5 rounded-sm border-border accent-primary cursor-pointer"
                 />
                 <span>
                   <span class="block text-[12px] font-medium text-foreground">Team share</span>
@@ -507,7 +507,7 @@ onMounted(loadSecrets)
                   v-model="formValue"
                   rows="6"
                   spellcheck="false"
-                  class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 pr-14 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 resize-y min-h-[7.5rem]"
+                  class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 pr-14 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 resize-y min-h-30"
                   :style="showValue ? '' : '-webkit-text-security: disc'"
                   :placeholder="valuePlaceholder"
                 />

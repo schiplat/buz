@@ -548,7 +548,7 @@ defineExpose({ openCreate, openEdit, close })
       @click.self="close"
     >
       <div
-        class="soft-panel w-full max-w-6xl h-[min(92vh,calc(100vh-2rem))] max-h-[min(92vh,calc(100vh-2rem))] !p-0 flex flex-col overflow-hidden min-h-0"
+        class="soft-panel w-full max-w-6xl h-[min(92vh,calc(100vh-2rem))] max-h-[min(92vh,calc(100vh-2rem))] p-0! flex flex-col overflow-hidden min-h-0"
         role="dialog"
         aria-modal="true"
       >
@@ -575,7 +575,7 @@ defineExpose({ openCreate, openEdit, close })
                 cn(
                   'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all cursor-pointer',
                   dialogTab === 'editor'
-                    ? 'bg-background text-foreground shadow-sm'
+                    ? 'bg-background text-foreground shadow-xs'
                     : 'text-muted-foreground hover:text-foreground hover:bg-background/60',
                 )
               "
@@ -592,9 +592,9 @@ defineExpose({ openCreate, openEdit, close })
                   cn(
                     'relative z-20 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all cursor-pointer',
                     dialogTab === 'reference'
-                      ? 'bg-background text-foreground shadow-sm'
+                      ? 'bg-background text-foreground shadow-xs'
                       : 'text-muted-foreground hover:text-foreground hover:bg-background/60',
-                    showRefGuide && 'ring-2 ring-amber-500/50 ring-offset-2 ring-offset-background shadow-sm bg-background text-foreground',
+                    showRefGuide && 'ring-2 ring-amber-500/50 ring-offset-2 ring-offset-background shadow-xs bg-background text-foreground',
                   )
                 "
                 @click="selectDialogTab('reference')"
@@ -666,7 +666,7 @@ defineExpose({ openCreate, openEdit, close })
               type="text"
               :readonly="yamlFileLocked"
               placeholder="e.g. hello-world.yml"
-              class="w-full rounded-xl border bg-input px-3 py-2 text-sm font-mono outline-none transition-colors disabled:opacity-70"
+              class="w-full rounded-xl border bg-input px-3 py-2 text-sm font-mono outline-hidden transition-colors disabled:opacity-70"
               :class="
                 yamlFileLocked
                   ? 'opacity-70 cursor-not-allowed border-border'
@@ -706,7 +706,7 @@ defineExpose({ openCreate, openEdit, close })
           <label class="type-label block mb-1.5 shrink-0">Pipeline YAML <span class="text-red-500">*</span></label>
           <div
             ref="editorShellRef"
-            class="relative w-full h-[min(50vh,28rem)] min-h-[16rem] shrink-0 rounded-xl border border-border bg-input overflow-hidden transition-colors focus-within:border-ring/40 focus-within:ring-2 focus-within:ring-ring/15 mb-3"
+            class="relative w-full h-[min(50vh,28rem)] min-h-64 shrink-0 rounded-xl border border-border bg-input overflow-hidden transition-colors focus-within:border-ring/40 focus-within:ring-2 focus-within:ring-ring/15 mb-3"
           >
             <PipelineYamlCodeEditor
               v-if="open"
@@ -725,7 +725,7 @@ defineExpose({ openCreate, openEdit, close })
               type="button"
               :class="
                 cn(
-                  'absolute top-3 right-3 z-20 inline-flex items-center gap-1.5 rounded-lg bg-background/95 px-2.5 py-1.5 text-xs font-medium shadow-md backdrop-blur-sm',
+                  'absolute top-3 right-3 z-20 inline-flex items-center gap-1.5 rounded-lg bg-background/95 px-2.5 py-1.5 text-xs font-medium shadow-md backdrop-blur-xs',
                   floatWarningsOnly
                     ? 'border border-amber-500/35 text-amber-700 dark:text-amber-400 hover:bg-amber-500/5'
                     : 'border border-destructive/30 text-destructive hover:bg-destructive/5',
@@ -1056,7 +1056,7 @@ steps:
           ref="floatPanelRef"
           :class="
             cn(
-              'fixed z-[60] flex w-[min(22rem,calc(100vw-1.5rem))] max-h-[min(70vh,24rem)] flex-col overflow-hidden rounded-xl bg-background/95 shadow-xl backdrop-blur-sm',
+              'fixed z-60 flex w-[min(22rem,calc(100vw-1.5rem))] max-h-[min(70vh,24rem)] flex-col overflow-hidden rounded-xl bg-background/95 shadow-xl backdrop-blur-xs',
               floatWarningsOnly ? 'border border-amber-500/40' : 'border border-destructive/35',
             )
           "
@@ -1146,7 +1146,7 @@ steps:
               <span
                 :class="
                   cn(
-                    'mt-0.5 shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide uppercase ring-1 ring-inset',
+                    'mt-0.5 shrink-0 inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-bold tracking-wide uppercase ring-1 ring-inset',
                     severityBadgeClass('error'),
                   )
                 "
@@ -1154,7 +1154,7 @@ steps:
               <div class="min-w-0 flex-1">
                 <span
                   v-if="e.field && e.field !== 'yaml' && e.field !== 'yaml.keys'"
-                  class="font-mono font-semibold text-destructive bg-destructive/15 rounded px-1 py-px"
+                  class="font-mono font-semibold text-destructive bg-destructive/15 rounded-sm px-1 py-px"
                 >{{ e.field }}</span>
                 <span
                   v-if="e.field && e.field !== 'yaml' && e.field !== 'yaml.keys'"
@@ -1177,7 +1177,7 @@ steps:
               <span
                 :class="
                   cn(
-                    'mt-0.5 shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide uppercase ring-1 ring-inset',
+                    'mt-0.5 shrink-0 inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-bold tracking-wide uppercase ring-1 ring-inset',
                     severityBadgeClass('warning'),
                   )
                 "

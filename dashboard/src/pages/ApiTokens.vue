@@ -98,7 +98,7 @@ onMounted(load)
       Loading…
     </div>
 
-    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
       <div v-if="tokens.length === 0" class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <KeyRound class="h-10 w-10 mb-3 text-muted-foreground/20" />
         <p class="text-sm">No API tokens</p>
@@ -162,7 +162,7 @@ onMounted(load)
                 v-model="newName"
                 type="text"
                 placeholder="e.g. ci-script"
-                class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                 @keyup.enter="handleCreate"
               />
               <p class="text-xs text-muted-foreground mt-1.5">The token is shown only once after creation. Store it somewhere safe.</p>

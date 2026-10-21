@@ -107,13 +107,13 @@ watch(
 <template>
   <div
     :id="`hist-job-${job.id}`"
-    class="rounded-xl border border-border/50 bg-card shadow-sm overflow-hidden"
+    class="rounded-xl border border-border/50 bg-card shadow-xs overflow-hidden"
     :class="highlighted ? 'ring-2 ring-primary/40' : ''"
   >
     <!-- Run header bar -->
     <div
       class="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/20 transition-colors"
-      :class="job.status === 'running' ? 'bg-amber-500/[0.04]' : job.status === 'failed' ? 'bg-red-500/[0.03]' : ''"
+      :class="job.status === 'running' ? 'bg-amber-500/4' : job.status === 'failed' ? 'bg-red-500/3' : ''"
       @click="toggle"
     >
       <ChevronDown v-if="expanded" class="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -215,7 +215,7 @@ watch(
           :key="task.step_order"
           class="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors shrink-0"
           :class="expandedStep === task.step_order
-            ? 'bg-background text-foreground shadow-sm'
+            ? 'bg-background text-foreground shadow-xs'
             : 'text-muted-foreground hover:text-foreground hover:bg-background/50'"
           @click="toggleStepLog(task.step_order)"
         >

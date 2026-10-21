@@ -759,10 +759,10 @@ function execLabel(t: string): string {
 
 function stepStatusColor(status: string): string {
   switch (status) {
-    case 'success': return 'border-emerald-400/40 bg-emerald-500/[0.04] text-emerald-500'
-    case 'failed': return 'border-red-400/40 bg-red-500/[0.04] text-red-500'
-    case 'running': return 'border-amber-400/40 bg-amber-500/[0.04] text-amber-500'
-    case 'cancelled': return 'border-slate-400/30 bg-slate-500/[0.03] text-slate-400'
+    case 'success': return 'border-emerald-400/40 bg-emerald-500/4 text-emerald-500'
+    case 'failed': return 'border-red-400/40 bg-red-500/4 text-red-500'
+    case 'running': return 'border-amber-400/40 bg-amber-500/4 text-amber-500'
+    case 'cancelled': return 'border-slate-400/30 bg-slate-500/3 text-slate-400'
     default: return 'border-border/50 bg-muted/30 text-muted-foreground'
   }
 }
@@ -932,39 +932,39 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
       </div>
 
       <!-- Job Info -->
-      <div class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-sm p-6">
+      <div class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-xs p-6">
         <h3 class="text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground/70 mb-5">Job Info</h3>
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-8 gap-y-4">
           <div>
-            <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Status</div>
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Status</div>
             <StatusBadge :status="job.status" />
           </div>
           <div>
-            <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Pipeline</div>
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Pipeline</div>
             <div class="text-sm font-medium text-foreground/90">{{ job.pipeline_name || job.pipeline_id }}<span v-if="job.run_number" class="ml-1 text-xs text-muted-foreground">#{{ job.run_number }}</span></div>
           </div>
           <div>
-            <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Runner</div>
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Runner</div>
             <div class="font-mono text-xs text-muted-foreground">{{ job.runner_id ? String(job.runner_id).slice(0, 8) + '...' : '\u2014' }}</div>
           </div>
           <div>
-            <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Trigger</div>
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Trigger</div>
             <div class="font-mono text-xs text-muted-foreground">{{ job.trigger_by }}</div>
           </div>
           <div>
-            <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Retry</div>
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Retry</div>
             <div class="font-mono text-sm tabular-nums text-foreground/80">{{ job.retry_times }}</div>
           </div>
           <div>
-            <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Started</div>
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Started</div>
             <div class="text-xs text-muted-foreground">{{ formatLocalDateTime(job.start_time) }}</div>
           </div>
           <div>
-            <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Ended</div>
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Ended</div>
             <div class="text-xs text-muted-foreground">{{ formatLocalDateTime(job.end_time) }}</div>
           </div>
           <div>
-            <div class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 mb-1.5 font-medium">Created</div>
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Created</div>
             <div class="text-xs text-muted-foreground">{{ formatLocalDateTime(job.created_at) }}</div>
           </div>
         </div>
@@ -972,7 +972,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
         <!-- Concurrency: always show — configured policy or "not set" + knobs -->
         <div v-if="concurrencyInfo" class="mt-5 pt-5 border-t border-border/30">
           <div class="flex items-center gap-2 mb-3">
-            <h4 class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 font-medium">Concurrency</h4>
+            <h4 class="text-[10px] uppercase tracking-widest text-muted-foreground/50 font-medium">Concurrency</h4>
             <button
               type="button"
               class="inline-flex items-center text-muted-foreground/50 hover:text-foreground transition-colors"
@@ -1053,7 +1053,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
       </div>
 
       <!-- Pipeline Snapshot + Steps with embedded terminals -->
-      <div v-if="job.snapshot && job.snapshot.tasks && job.snapshot.tasks.length > 0" class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-sm">
+      <div v-if="job.snapshot && job.snapshot.tasks && job.snapshot.tasks.length > 0" class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-xs">
         <!-- Section header -->
         <div class="flex items-center justify-between px-6 py-4 border-b border-border/30">
           <div class="flex items-center gap-3">
@@ -1071,7 +1071,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
         <div class="px-6 py-5 space-y-4">
           <!-- Runner Labels -->
           <div v-if="job.snapshot.runner_labels && job.snapshot.runner_labels.length > 0" class="flex items-center gap-2">
-            <span class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 font-medium">Runner</span>
+            <span class="text-[10px] uppercase tracking-widest text-muted-foreground/50 font-medium">Runner</span>
             <div class="flex flex-wrap gap-1.5">
               <span v-for="l in job.snapshot.runner_labels" :key="l" class="text-[10px] font-mono bg-muted rounded-md px-2 py-0.5 text-muted-foreground">{{ l }}</span>
             </div>
@@ -1088,7 +1088,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
                     ? 'border-border/40 bg-muted/20 opacity-50 cursor-not-allowed'
                     : 'cursor-pointer',
                   targetStep === t.step_order
-                    ? 'border-primary/30 bg-primary/[0.03] shadow-sm'
+                    ? 'border-primary/30 bg-primary/3 shadow-xs'
                     : (getStepStatus(t.step_order) === 'pending'
                       ? ''
                       : 'border-border/40 bg-transparent hover:bg-muted/40 hover:border-border')
@@ -1129,7 +1129,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
                   </div>
                   <div v-else-if="t.capabilities?.length" class="mt-2 rounded-lg border border-red-500/25 bg-red-500/5 px-2.5 py-2 text-[10px] font-mono font-semibold text-red-600" title="Execution capabilities are requests only; the Runner authorizes them locally.">High privilege request (not grant): {{ t.capabilities.join(', ') }}<div v-if="t.capabilities.includes('docker-socket')" class="mt-1 font-normal text-amber-700">Docker socket access gives root-equivalent control of the Runner's Docker host; Runner-admin local authorization is required.</div></div>
                   <div v-if="t.fail_strategy === 'continue'" class="mt-1.5">
-                    <span class="inline-flex items-center gap-1 text-[10px] text-amber-600 bg-amber-500/[0.06] border border-amber-500/20 rounded-md px-2 py-0 font-medium">continue-on-error</span>
+                    <span class="inline-flex items-center gap-1 text-[10px] text-amber-600 bg-amber-500/6 border border-amber-500/20 rounded-md px-2 py-0 font-medium">continue-on-error</span>
                   </div>
                 </div>
 
@@ -1159,7 +1159,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
               >
                 <div class="flex items-center gap-2 h-8 px-3 border-b border-border/60 bg-muted/40 select-none">
                   <span class="text-[11px] font-medium text-muted-foreground truncate">{{ t.name }}</span>
-                  <span class="text-[9px] font-mono uppercase rounded px-1.5 py-0 border border-border/50 text-muted-foreground/70 leading-normal">{{ execLabel(t.exec_type) }}</span>
+                  <span class="text-[9px] font-mono uppercase rounded-sm px-1.5 py-0 border border-border/50 text-muted-foreground/70 leading-normal">{{ execLabel(t.exec_type) }}</span>
                   <div class="flex-1" />
                   <div class="flex items-center gap-1.5 shrink-0">
                     <span class="inline-block w-1.5 h-1.5 rounded-full" :class="terminalTitleStatus(getStepStatus(t.step_order)).dot" />
@@ -1189,14 +1189,14 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
 
           <!-- Trigger Inputs -->
           <div v-if="job.snapshot.inputs && Object.keys(job.snapshot.inputs).length > 0" class="pt-1 border-t border-border/20">
-            <span class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 font-medium">Trigger Inputs</span>
+            <span class="text-[10px] uppercase tracking-widest text-muted-foreground/50 font-medium">Trigger Inputs</span>
             <div class="flex flex-wrap gap-1.5 mt-2">
               <span
                 v-for="(val, key) in job.snapshot.inputs" :key="key"
                 class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-mono"
                 :class="isMaskedInput(String(key))
-                  ? 'border-violet-500/20 bg-violet-500/[0.04] text-violet-700/90'
-                  : 'border-primary/15 bg-primary/[0.03]'"
+                  ? 'border-violet-500/20 bg-violet-500/4 text-violet-700/90'
+                  : 'border-primary/15 bg-primary/3'"
               >
                 <span class="text-muted-foreground/70">{{ key }}</span>
                 <span
@@ -1210,13 +1210,13 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
 
           <!-- Env & Secrets -->
           <div v-if="job.snapshot.env && job.snapshot.env.length > 0" class="pt-1 border-t border-border/20">
-            <span class="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/50 font-medium">Environment &amp; Secrets</span>
+            <span class="text-[10px] uppercase tracking-widest text-muted-foreground/50 font-medium">Environment &amp; Secrets</span>
             <div class="flex flex-wrap gap-1.5 mt-2">
               <span
                 v-for="e in job.snapshot.env" :key="e.name"
                 class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-mono"
                 :class="e.is_secret
-                  ? 'border-amber-400/15 bg-amber-400/[0.03] text-amber-500/80'
+                  ? 'border-amber-400/15 bg-amber-400/3 text-amber-500/80'
                   : 'border-border/40 bg-muted/30 text-foreground/70'"
               >
                 <span v-if="e.is_secret" class="text-[10px]">&#x1f512;</span>
@@ -1227,7 +1227,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
         </div>
       </div>
 
-      <div v-else class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-sm p-12 text-center">
+      <div v-else class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-xs p-12 text-center">
         <p class="text-sm text-muted-foreground">No snapshot data</p>
       </div>
         </div>
@@ -1235,7 +1235,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
         <!-- Approval history — right sidebar (no pagination: few events per job) -->
         <aside
           v-if="showApprovalSidebar"
-          class="w-full lg:w-[22rem] xl:w-96 shrink-0 lg:sticky lg:top-4 rounded-2xl border border-border/50 bg-card shadow-sm overflow-hidden flex flex-col max-h-[min(70vh,40rem)]"
+          class="w-full lg:w-88 xl:w-96 shrink-0 lg:sticky lg:top-4 rounded-2xl border border-border/50 bg-card shadow-xs overflow-hidden flex flex-col max-h-[min(70vh,40rem)]"
         >
           <div class="px-4 py-3 border-b border-border/30 shrink-0">
             <div class="flex items-center gap-2">
@@ -1272,7 +1272,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
                 </div>
                 <p
                   v-if="a.comment"
-                  class="mt-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap break-words"
+                  class="mt-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap wrap-break-word"
                 >{{ a.comment }}</p>
               </li>
             </ul>
@@ -1281,7 +1281,7 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
       </div>
     </template>
 
-    <div v-else class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-sm p-12 text-center">
+    <div v-else class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-xs p-12 text-center">
       <p class="text-sm text-muted-foreground">Job not found</p>
     </div>
   </div>

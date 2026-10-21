@@ -200,7 +200,7 @@ onUnmounted(() => {
               v-model="currentPassword"
               type="password"
               autocomplete="current-password"
-              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
               placeholder="Enter current password"
             />
           </div>
@@ -212,7 +212,7 @@ onUnmounted(() => {
               v-model="newPassword"
               type="password"
               autocomplete="new-password"
-              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
               placeholder="At least 6 characters"
             />
           </div>
@@ -224,7 +224,7 @@ onUnmounted(() => {
               v-model="confirmPassword"
               type="password"
               autocomplete="new-password"
-              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+              class="flex h-10 w-full rounded-xl border border-border bg-card px-3 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/30"
               placeholder="Re-enter new password"
             />
           </div>

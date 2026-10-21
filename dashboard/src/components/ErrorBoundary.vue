@@ -46,7 +46,7 @@ function errorDetail(err: unknown): string {
     </p>
     <p
       v-if="errorDetail(error)"
-      class="mt-3 max-w-lg break-words rounded-lg bg-muted px-3 py-2 font-mono text-xs text-muted-foreground"
+      class="mt-3 max-w-lg wrap-break-word rounded-lg bg-muted px-3 py-2 font-mono text-xs text-muted-foreground"
     >
       {{ errorDetail(error) }}
     </p>

@@ -27,7 +27,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScroll))
     v-if="visible"
     aria-label="Back to top"
     title="Back to top"
-    class="fixed bottom-6 right-6 z-50 flex h-10 w-10 items-center justify-center rounded-full border border-border/60 bg-card/90 text-muted-foreground shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 hover:bg-accent hover:text-foreground"
+    class="fixed bottom-6 right-6 z-50 flex h-10 w-10 items-center justify-center rounded-full border border-border/60 bg-card/90 text-muted-foreground shadow-lg backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:bg-accent hover:text-foreground"
     @click="scrollToTop"
   >
     <ArrowUp class="h-4.5 w-4.5" />

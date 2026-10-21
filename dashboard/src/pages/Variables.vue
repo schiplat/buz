@@ -170,7 +170,7 @@ onMounted(loadVars)
     </PageHeader>
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
-    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
       <div v-if="variables.length === 0" class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <SlidersHorizontal class="h-10 w-10 mb-3 text-muted-foreground/20" />
         <p class="text-sm">No variables configured yet</p>
@@ -186,9 +186,9 @@ onMounted(loadVars)
             v-model="searchQuery"
             type="text"
             placeholder="Search variables…"
-            class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+            class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
           />
-          <select v-model="filterGithub" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50" title="Filter by GitHub sync status">
+          <select v-model="filterGithub" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50" title="Filter by GitHub sync status">
             <option value="">All GitHub status</option>
             <option value="needs_push">Needs push</option>
           </select>
@@ -265,7 +265,7 @@ onMounted(loadVars)
     <!-- Dialog -->
     <Teleport to="body">
       <div v-if="showDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showDialog = false" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showDialog = false" />
         <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
           <h3 class="text-[15px] font-semibold mb-5">{{ editing ? 'Edit Variable' : 'New Variable' }}</h3>
           <div class="space-y-4">
@@ -274,7 +274,7 @@ onMounted(loadVars)
               <input
                 v-model="formName"
                 :disabled="!!editing"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 disabled:bg-muted/30 disabled:cursor-not-allowed"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 disabled:bg-muted/30 disabled:cursor-not-allowed"
                 placeholder="DOCKER_REGISTRY"
               />
             </div>
@@ -287,7 +287,7 @@ onMounted(loadVars)
                 v-model="formValue"
                 rows="6"
                 spellcheck="false"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 resize-y min-h-[7.5rem]"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 resize-y min-h-30"
                 :placeholder="editing ? '(keep current value)' : 'e.g. registry.example.com'"
               />
             </div>

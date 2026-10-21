@@ -131,7 +131,7 @@ onMounted(load)
     </PageHeader>
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
-    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+    <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
       <div v-if="users.length === 0" class="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <UserRound class="h-10 w-10 mb-3 text-muted-foreground/20" />
         <p class="text-sm">No users</p>
@@ -143,7 +143,7 @@ onMounted(load)
             v-model="searchQuery"
             type="text"
             placeholder="Search users…"
-            class="w-full max-w-xs rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+            class="w-full max-w-xs rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
           />
         </div>
         <div class="overflow-x-auto">
@@ -206,7 +206,7 @@ onMounted(load)
 
     <Teleport to="body">
       <div v-if="showCreate" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showCreate = false" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showCreate = false" />
         <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
           <h3 class="text-[15px] font-semibold mb-5">New User</h3>
           <div class="space-y-4">
@@ -223,11 +223,11 @@ onMounted(load)
               <input v-model="formDisplay" class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm" />
             </div>
             <label class="flex items-center gap-2 text-sm">
-              <input v-model="formAdmin" type="checkbox" class="rounded" />
+              <input v-model="formAdmin" type="checkbox" class="rounded-sm" />
               Platform admin
             </label>
             <label v-if="auth.isSuperAdmin" class="flex items-center gap-2 text-sm">
-              <input v-model="formSuper" type="checkbox" class="rounded" />
+              <input v-model="formSuper" type="checkbox" class="rounded-sm" />
               Super admin (sees all API tokens &amp; audit logs)
             </label>
           </div>

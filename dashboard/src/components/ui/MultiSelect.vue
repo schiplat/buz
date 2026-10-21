@@ -114,7 +114,7 @@ onUnmounted(() => document.removeEventListener('click', onBodyClick))
         v-if="open"
         ref="dropdownRef"
         :style="dropdownStyle"
-        class="z-[9999] rounded-xl border border-border bg-popover shadow-lg"
+        class="z-9999 rounded-xl border border-border bg-popover shadow-lg"
       >
         <div class="flex items-center gap-2 border-b border-border px-3 py-2">
           <Search class="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -123,7 +123,7 @@ onUnmounted(() => document.removeEventListener('click', onBodyClick))
             v-model="search"
             type="text"
             placeholder="Search..."
-            class="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+            class="flex-1 bg-transparent text-xs outline-hidden placeholder:text-muted-foreground"
             @click.stop
           />
         </div>

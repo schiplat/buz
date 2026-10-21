@@ -40,7 +40,7 @@ const statusRing = computed(() => {
 
 <template>
   <div
-    class="step-node relative box-border rounded-xl border bg-card shadow-sm transition-all overflow-hidden cursor-pointer hover:shadow-md"
+    class="step-node relative box-border rounded-xl border bg-card shadow-xs transition-all overflow-hidden cursor-pointer hover:shadow-md"
     :class="[statusRing, data.dimmed && !data.selected ? 'opacity-40' : 'opacity-100']"
     :style="{ width: `${STEP_NODE_WIDTH}px`, height: `${STEP_NODE_HEIGHT}px` }"
     :title="data.name"
@@ -88,7 +88,7 @@ const statusRing = computed(() => {
       </div>
     </div>
 
-    <Handle type="target" :position="Position.Left" class="!w-2 !h-2 !border-none !bg-foreground/20" />
-    <Handle type="source" :position="Position.Right" class="!w-2 !h-2 !border-none !bg-foreground/20" />
+    <Handle type="target" :position="Position.Left" class="w-2! h-2! border-none! bg-foreground/20!" />
+    <Handle type="source" :position="Position.Right" class="w-2! h-2! border-none! bg-foreground/20!" />
   </div>
 </template>

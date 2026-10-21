@@ -166,7 +166,7 @@ function pointTooltip(p: DailyBuildPoint): string {
           :key="d"
           type="button"
           class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
-          :class="days === d ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+          :class="days === d ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
           @click="emit('update:days', d)"
         >
           {{ d }}d

@@ -361,7 +361,7 @@ onMounted(loadAll)
 
     <template v-else>
       <!-- Connections -->
-      <section class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+      <section class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
         <div class="px-5 py-3.5 border-b border-border/30 flex items-center gap-2">
           <Cable class="h-4 w-4 text-muted-foreground" />
           <h2 class="text-sm font-semibold">Connections</h2>
@@ -372,7 +372,7 @@ onMounted(loadAll)
             v-model="connSearch"
             type="text"
             placeholder="Search connections…"
-            class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+            class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
           />
         </div>
         <div v-if="connections.length === 0" class="flex flex-col items-center justify-center py-12 text-muted-foreground">
@@ -449,7 +449,7 @@ onMounted(loadAll)
       </section>
 
       <!-- Repos -->
-      <section class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+      <section class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
         <div class="px-5 py-3.5 border-b border-border/30 flex items-center gap-2">
           <GitBranch class="h-4 w-4 text-muted-foreground" />
           <h2 class="text-sm font-semibold">Repositories</h2>
@@ -460,7 +460,7 @@ onMounted(loadAll)
             v-model="repoSearch"
             type="text"
             placeholder="Search repos…"
-            class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+            class="w-full max-w-56 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
           />
         </div>
         <div v-if="repos.length === 0" class="flex flex-col items-center justify-center py-12 text-muted-foreground">
@@ -544,7 +544,7 @@ onMounted(loadAll)
     <!-- Connection dialog -->
     <Teleport to="body">
       <div v-if="showConnDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showConnDialog = false" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showConnDialog = false" />
         <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
           <h3 class="text-[15px] font-semibold mb-5">{{ editingConn ? 'Edit Connection' : 'New Connection' }}</h3>
           <div class="space-y-4">
@@ -552,7 +552,7 @@ onMounted(loadAll)
               <label class="block text-[12px] font-medium text-foreground mb-1">Name <span class="text-red-500">*</span></label>
               <input
                 v-model="connName"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 placeholder="e.g. github-com-free-org"
               />
             </div>
@@ -560,7 +560,7 @@ onMounted(loadAll)
               <label class="block text-[12px] font-medium text-foreground mb-1">API Base URL</label>
               <input
                 v-model="connBaseUrl"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 placeholder="https://api.github.com"
               />
               <p class="text-[10px] text-muted-foreground mt-1">Defaults to api.github.com; change for GitHub Enterprise.</p>
@@ -574,7 +574,7 @@ onMounted(loadAll)
                 v-model="connToken"
                 type="password"
                 autocomplete="new-password"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 placeholder="ghp_… or github_pat_…"
               />
               <p class="text-[10px] text-muted-foreground mt-1 leading-relaxed">
@@ -589,7 +589,7 @@ onMounted(loadAll)
                 <textarea
                   v-model="connFetchOwners"
                   rows="2"
-                  class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 resize-none"
+                  class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 resize-none"
                   placeholder="org1, org2 — comma or newline separated"
                 />
                 <p class="text-[10px] text-muted-foreground mt-1">Owners pulled on the interval below; leave empty to disable. Auto-fetch only runs when both an interval and at least one owner are set.</p>
@@ -600,7 +600,7 @@ onMounted(loadAll)
                   v-model="connFetchIntervalInput"
                   type="number"
                   min="1"
-                  class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                  class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                   placeholder="e.g. 30"
                 />
                 <p class="text-[10px] text-muted-foreground mt-1">Poll GitHub every N minutes; empty disables auto-fetch. Requires at least one Fetch Owner to take effect.</p>
@@ -618,7 +618,7 @@ onMounted(loadAll)
     <!-- Repo dialog -->
     <Teleport to="body">
       <div v-if="showRepoDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showRepoDialog = false" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showRepoDialog = false" />
         <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
           <h3 class="text-[15px] font-semibold mb-5">{{ editingRepo ? 'Edit Repo' : 'Register Repo' }}</h3>
           <div class="space-y-4">
@@ -627,7 +627,7 @@ onMounted(loadAll)
               <select
                 v-model="repoConnId"
                 :disabled="!!editingRepo"
-                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer disabled:bg-muted/30 disabled:cursor-not-allowed"
+                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer disabled:bg-muted/30 disabled:cursor-not-allowed"
               >
                 <option disabled value="">Select a connection…</option>
                 <option v-for="c in connections" :key="c.id" :value="c.id">{{ c.name }}</option>
@@ -638,7 +638,7 @@ onMounted(loadAll)
               <label class="block text-[12px] font-medium text-foreground mb-1">Owner <span class="text-red-500">*</span></label>
               <input
                 v-model="repoOwner"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 placeholder="org-name or username"
               />
             </div>
@@ -646,7 +646,7 @@ onMounted(loadAll)
               <label class="block text-[12px] font-medium text-foreground mb-1">Repo <span class="text-red-500">*</span></label>
               <input
                 v-model="repoName"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 placeholder="my-service"
               />
             </div>
@@ -662,7 +662,7 @@ onMounted(loadAll)
     <!-- Fetch repos dialog -->
     <Teleport to="body">
       <div v-if="showFetchDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showFetchDialog = false" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showFetchDialog = false" />
         <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
           <h3 class="text-[15px] font-semibold mb-5">Fetch Repositories</h3>
           <div class="space-y-4">
@@ -670,7 +670,7 @@ onMounted(loadAll)
               <label class="block text-[12px] font-medium text-foreground mb-1">Connection <span class="text-red-500">*</span></label>
               <select
                 v-model="fetchConnId"
-                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
+                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
               >
                 <option v-for="c in connections" :key="c.id" :value="c.id">{{ c.name }}</option>
               </select>
@@ -679,7 +679,7 @@ onMounted(loadAll)
               <label class="block text-[12px] font-medium text-foreground mb-1">Owner (org or user) <span class="text-red-500">*</span></label>
               <input
                 v-model="fetchOwner"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 placeholder="my-org"
               />
               <p class="text-[10px] text-muted-foreground mt-1 leading-relaxed">
@@ -704,7 +704,7 @@ onMounted(loadAll)
     <!-- Test dialog -->
     <Teleport to="body">
       <div v-if="showTestDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showTestDialog = false" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showTestDialog = false" />
         <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6">
           <h3 class="text-[15px] font-semibold mb-5">Test Connection</h3>
           <div class="space-y-4">
@@ -712,7 +712,7 @@ onMounted(loadAll)
               <label class="block text-[12px] font-medium text-foreground mb-1">Connection <span class="text-red-500">*</span></label>
               <select
                 v-model="testConnId"
-                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
+                class="w-full appearance-none rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20 cursor-pointer"
               >
                 <option v-for="c in connections" :key="c.id" :value="c.id">{{ c.name }}</option>
               </select>
@@ -721,7 +721,7 @@ onMounted(loadAll)
               <label class="block text-[12px] font-medium text-foreground mb-1">Owner</label>
               <input
                 v-model="testOwner"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 placeholder="my-org"
               />
               <p class="text-[10px] text-muted-foreground mt-1">Optional — leave empty to just validate the token.</p>
@@ -730,7 +730,7 @@ onMounted(loadAll)
               <label class="block text-[12px] font-medium text-foreground mb-1">Repo</label>
               <input
                 v-model="testRepo"
-                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm font-mono outline-hidden focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 placeholder="(optional) verify a specific repo"
               />
             </div>

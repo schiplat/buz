@@ -13,7 +13,7 @@ describe('not-found catch-all route', () => {
     expect((await router.resolve('/login')).name).toBe('login')
   })
 
-  it('does not shadow known prefixes', async () => {
+  it('does not shadow-sm known prefixes', async () => {
     expect((await router.resolve('/jobs/abc')).name).toBe('job-detail')
     expect((await router.resolve('/pipelines/p1/definition')).name).toBe('pipeline-detail')
   })

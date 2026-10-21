@@ -89,9 +89,9 @@ function normalizeSeverityKind(raw: string): string {
 export function severityWordClass(kind: string | null): string {
   switch (kind) {
     case 'problem':
-      return 'font-mono font-semibold text-destructive bg-destructive/15 rounded px-1 py-px'
+      return 'font-mono font-semibold text-destructive bg-destructive/15 rounded-sm px-1 py-px'
     case 'path':
-      return 'font-mono font-medium text-destructive/90 bg-destructive/10 rounded px-1 py-px'
+      return 'font-mono font-medium text-destructive/90 bg-destructive/10 rounded-sm px-1 py-px'
     case 'error':
     case 'failed':
     case 'invalid':

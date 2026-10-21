@@ -120,7 +120,7 @@ function onLogoClick(e: MouseEvent) {
       cn(
         'sticky top-0 z-20 flex h-screen shrink-0 flex-col bg-sidebar text-sidebar-foreground',
         'transition-[width] duration-200 ease-out',
-        ui.isCollapsed ? 'w-[4.25rem]' : 'w-[15.5rem]',
+        ui.isCollapsed ? 'w-17' : 'w-62',
       )
     "
   >
@@ -135,7 +135,7 @@ function onLogoClick(e: MouseEvent) {
     >
       <a
         href="/"
-        class="group flex min-w-0 items-center gap-2.5 rounded-xl px-1 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+        class="group flex min-w-0 items-center gap-2.5 rounded-xl px-1 py-1 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-ring/25"
         :title="ui.isCollapsed ? 'Buz' : undefined"
         @click="onLogoClick"
       >

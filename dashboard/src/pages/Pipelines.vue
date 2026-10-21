@@ -503,7 +503,7 @@ async function handleToggleActive(p: Pipeline) {
                 <Clock class="h-3.5 w-3.5 inline mr-0.5 -mt-px" />{{ elapsed(j.start_time) }}
               </span>
               <button
-                class="shrink-0 ml-1 rounded p-0.5 hover:bg-red-500/10 transition-colors"
+                class="shrink-0 ml-1 rounded-sm p-0.5 hover:bg-red-500/10 transition-colors"
                 title="Cancel"
                 @click.stop="cancelStatsJob(j.id)"
               >
@@ -530,7 +530,7 @@ async function handleToggleActive(p: Pipeline) {
               <span class="flex-1 font-medium text-foreground/80 truncate">{{ jogNameLabel(j) }}</span>
               <span class="text-xs font-mono tabular-nums text-muted-foreground/50 shrink-0">{{ elapsed(j.created_at) }} ago</span>
               <button
-                class="shrink-0 ml-1 rounded p-0.5 hover:bg-red-500/10 transition-colors"
+                class="shrink-0 ml-1 rounded-sm p-0.5 hover:bg-red-500/10 transition-colors"
                 title="Cancel"
                 @click.stop="cancelStatsJob(j.id)"
               >
@@ -557,7 +557,7 @@ async function handleToggleActive(p: Pipeline) {
               <span class="flex-1 font-medium text-foreground/80 truncate">{{ jogNameLabel(j) }}</span>
               <span class="text-xs font-mono tabular-nums text-muted-foreground/50 shrink-0">{{ elapsed(j.created_at) }} ago</span>
               <button
-                class="shrink-0 ml-1 rounded p-0.5 hover:bg-red-500/10 transition-colors"
+                class="shrink-0 ml-1 rounded-sm p-0.5 hover:bg-red-500/10 transition-colors"
                 title="Cancel"
                 @click.stop="cancelStatsJob(j.id)"
               >
@@ -590,20 +590,20 @@ async function handleToggleActive(p: Pipeline) {
             v-model="searchQuery"
             type="text"
             placeholder="Search pipelines…"
-            class="w-full max-w-52 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+            class="w-full max-w-52 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
           />
-          <select v-model="filterTrigger" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+          <select v-model="filterTrigger" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
             <option value="">All triggers</option>
             <option value="manual">Manual</option>
             <option value="webhook">Webhook</option>
             <option value="cron">Cron</option>
           </select>
-          <select v-model="filterSource" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+          <select v-model="filterSource" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
             <option value="">All sources</option>
             <option value="form">Form</option>
             <option value="yaml">YAML</option>
           </select>
-          <select v-model="filterActive" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+          <select v-model="filterActive" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
             <option value="">All</option>
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
@@ -769,7 +769,7 @@ async function handleToggleActive(p: Pipeline) {
     <!-- Trigger dialog -->
     <Teleport to="body">
       <div v-if="triggerTarget" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="cancelTriggerDialog()" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="cancelTriggerDialog()" />
         <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6 max-h-[90vh] overflow-y-auto">
           <h2 class="text-[15px] font-semibold tracking-tight">Trigger Pipeline</h2>
           <p v-if="triggerHasInputDefs" class="mt-1.5 text-[12px] text-muted-foreground leading-relaxed">
@@ -797,7 +797,7 @@ async function handleToggleActive(p: Pipeline) {
               >
                 <code
                   v-if="item.field"
-                  class="mb-0.5 inline-block rounded bg-destructive/15 px-1.5 py-0.5 font-mono text-[11px] text-destructive"
+                  class="mb-0.5 inline-block rounded-sm bg-destructive/15 px-1.5 py-0.5 font-mono text-[11px] text-destructive"
                 >{{ item.field }}</code>
                 <p :class="item.field ? 'mt-0.5 pl-0.5 opacity-95' : 'opacity-95'">{{ item.message }}</p>
               </li>
@@ -817,17 +817,17 @@ async function handleToggleActive(p: Pipeline) {
                 <span v-else class="text-[11px] text-muted-foreground/70">(optional)</span>
                 <span
                   v-if="pair.masking"
-                  class="rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide bg-violet-500/10 text-violet-600 border border-violet-500/20"
+                  class="rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide bg-violet-500/10 text-violet-600 border border-violet-500/20"
                 >masking</span>
                 <span
                   v-if="pair.type"
-                  class="rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/10 text-sky-600 border border-sky-500/20"
+                  class="rounded-sm px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/10 text-sky-600 border border-sky-500/20"
                 >{{ pair.type }}</span>
               </div>
               <select
                 v-if="pair.type === 'choice' || pair.type === 'boolean'"
                 v-model="pair.value"
-                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                 :class="triggerErrorFields.has(pair.key) ? 'border-destructive' : 'border-border/60'"
                 :disabled="triggeringId !== null"
               >
@@ -845,7 +845,7 @@ async function handleToggleActive(p: Pipeline) {
                 v-model="pair.value"
                 :type="pair.masking ? 'password' : pair.type === 'number' ? 'number' : 'text'"
                 :placeholder="pair.required ? 'required' : 'enter value (leave empty for default)'"
-                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                 :class="triggerErrorFields.has(pair.key) ? 'border-destructive' : 'border-border/60'"
                 :disabled="triggeringId !== null"
                 :autocomplete="pair.masking ? 'new-password' : 'off'"
@@ -879,14 +879,14 @@ async function handleToggleActive(p: Pipeline) {
                 <input
                   v-model="pair.key"
                   placeholder="key"
-                  class="flex-1 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                  class="flex-1 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                   :disabled="triggeringId !== null"
                 />
                 <input
                   v-model="pair.value"
                   type="text"
                   placeholder="value"
-                  class="flex-[2] rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                  class="flex-2 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                   :disabled="triggeringId !== null"
                 />
                 <button
@@ -913,7 +913,7 @@ async function handleToggleActive(p: Pipeline) {
             <label class="mb-1.5 block text-[12px] font-medium">Environment <span class="text-red-500">*</span></label>
             <select
               v-model="triggerEnvironment"
-              class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+              class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
               :disabled="triggeringId !== null"
             >
               <option value="" disabled>Select a declared environment…</option>

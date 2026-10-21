@@ -367,7 +367,7 @@ const eventBadge = (t: string) => {
       </template>
     </PageHeader>
 
-    <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-sm">
+    <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
       <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
 
       <template v-else-if="runners.length > 0">
@@ -377,15 +377,15 @@ const eventBadge = (t: string) => {
             v-model="searchQuery"
             type="text"
             placeholder="Search runners…"
-            class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
+            class="w-full max-w-44 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/10"
           />
-          <select v-model="filterStatus" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+          <select v-model="filterStatus" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
             <option value="">All statuses</option>
             <option value="online">Online</option>
             <option value="offline">Offline</option>
             <option value="error">Error</option>
           </select>
-          <select v-model="filterFrozen" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-none transition-colors focus:border-primary/50">
+          <select v-model="filterFrozen" class="rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs outline-hidden transition-colors focus:border-primary/50">
             <option value="">All</option>
             <option value="frozen">Frozen</option>
             <option value="active">Active</option>
@@ -538,7 +538,7 @@ const eventBadge = (t: string) => {
                   v-model="editLabels"
                   type="text"
                   placeholder="linux-x64, prod"
-                  class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-none focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                  class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                 />
                 <p class="text-[10px] text-muted-foreground mt-1">Comma-separated. Used when matching pipeline <code class="font-mono">runner.labels</code>.</p>
               </div>
@@ -549,14 +549,14 @@ const eventBadge = (t: string) => {
                   type="number"
                   min="1"
                   max="32"
-                  class="w-24 rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-none focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                  class="w-24 rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                 />
                 <span class="text-[11px] text-muted-foreground tabular-nums">
                   running {{ activeRunner.running_jobs ?? 0 }} / max {{ activeRunner.max_concurrent_jobs ?? 1 }}
                 </span>
               </div>
               <label class="flex items-start gap-2 text-xs cursor-pointer">
-                <input v-model="editCleanWorkspace" type="checkbox" class="rounded border-border mt-0.5" />
+                <input v-model="editCleanWorkspace" type="checkbox" class="rounded-sm border-border mt-0.5" />
                 <span>
                   <span class="font-medium">Clean workspace after each job</span>
                   <span class="block text-muted-foreground mt-0.5 leading-relaxed">
@@ -571,13 +571,13 @@ const eventBadge = (t: string) => {
                 <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Engines</div>
                 <div class="grid grid-cols-2 gap-2">
                   <label class="flex items-center gap-2 text-xs cursor-pointer">
-                    <input v-model="editShellEnabled" type="checkbox" class="rounded border-border" /> Shell
+                    <input v-model="editShellEnabled" type="checkbox" class="rounded-sm border-border" /> Shell
                   </label>
                   <label class="flex items-center gap-2 text-xs cursor-pointer">
-                    <input v-model="editSshEnabled" type="checkbox" class="rounded border-border" /> SSH
+                    <input v-model="editSshEnabled" type="checkbox" class="rounded-sm border-border" /> SSH
                   </label>
                   <label class="flex items-start gap-2 text-xs cursor-pointer col-span-2">
-                    <input v-model="editDockerEnabled" type="checkbox" class="rounded border-border mt-0.5" />
+                    <input v-model="editDockerEnabled" type="checkbox" class="rounded-sm border-border mt-0.5" />
                     <span>
                       Docker
                       <span class="block text-muted-foreground mt-0.5 leading-relaxed">
@@ -592,7 +592,7 @@ const eventBadge = (t: string) => {
                 <label class="text-xs text-muted-foreground w-28 shrink-0">SSH host key</label>
                 <select
                   v-model="editSshHostKeyPolicy"
-                  class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs outline-none focus:border-ring/40"
+                  class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs outline-hidden focus:border-ring/40"
                 >
                   <option value="insecure">insecure (accept any)</option>
                   <option value="known_hosts">known_hosts</option>
@@ -627,17 +627,17 @@ const eventBadge = (t: string) => {
               <div class="flex rounded-xl bg-muted p-1">
                 <button
                   class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-                  :class="detailTab === 'overview' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+                  :class="detailTab === 'overview' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
                   @click="detailTab = 'overview'"
                 >Overview</button>
                 <button
                   class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-                  :class="detailTab === 'network' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+                  :class="detailTab === 'network' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
                   @click="detailTab = 'network'"
                 >Network</button>
                 <button
                   class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-                  :class="detailTab === 'logs' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+                  :class="detailTab === 'logs' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
                   @click="detailTab = 'logs'"
                 >Log</button>
               </div>
@@ -772,7 +772,7 @@ const eventBadge = (t: string) => {
                   <!-- Pagination -->
                   <div v-if="eventsTotalPages > 1" class="flex items-center justify-center gap-1 pt-2 pb-1">
                     <button
-                      class="px-2 py-1 rounded text-[10px] transition-colors"
+                      class="px-2 py-1 rounded-sm text-[10px] transition-colors"
                       :class="eventsPage === 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
                       :disabled="eventsPage === 1"
                       @click="eventsGo(eventsPage - 1)"
@@ -780,12 +780,12 @@ const eventBadge = (t: string) => {
                     <button
                       v-for="p in Math.min(eventsTotalPages, 5)"
                       :key="'ep-'+p"
-                      class="w-6 h-6 rounded text-[10px] tabular-nums transition-colors"
+                      class="w-6 h-6 rounded-sm text-[10px] tabular-nums transition-colors"
                       :class="p === eventsPage ? 'bg-primary text-primary-foreground font-semibold' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
                       @click="eventsGo(p)"
                     >{{ p }}</button>
                     <button
-                      class="px-2 py-1 rounded text-[10px] transition-colors"
+                      class="px-2 py-1 rounded-sm text-[10px] transition-colors"
                       :class="eventsPage === eventsTotalPages ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
                       :disabled="eventsPage === eventsTotalPages"
                       @click="eventsGo(eventsPage + 1)"
@@ -802,7 +802,7 @@ const eventBadge = (t: string) => {
 
     <!-- ── Reissued register token dialog ── -->
     <Teleport to="body">
-      <div v-if="reissuedToken" class="fixed inset-0 z-[60] flex items-start justify-center bg-black/40 pt-[15vh]" @click.self="closeReissuedToken">
+      <div v-if="reissuedToken" class="fixed inset-0 z-60 flex items-start justify-center bg-black/40 pt-[15vh]" @click.self="closeReissuedToken">
         <div class="soft-panel w-full max-w-md p-6 space-y-4">
           <div class="flex items-center justify-between">
             <h2 class="text-base font-semibold tracking-tight">Register token reissued</h2>
@@ -813,8 +813,8 @@ const eventBadge = (t: string) => {
             <p class="type-eyebrow mb-1.5">Register Token</p>
             <p class="font-mono text-sm break-all text-foreground select-all">{{ reissuedToken }}</p>
           </div>
-          <p class="type-meta leading-relaxed">Replace the effective <code class="font-mono bg-muted px-1 rounded">register_token</code> in <code class="font-mono bg-muted px-1 rounded">conf/runner.toml</code> (or <code class="font-mono bg-muted px-1 rounded">BUZ_REGISTER_TOKEN</code>) and restart the Runner. This revokes the previous token.</p>
-          <code class="block font-mono text-xs bg-muted px-2 py-2 rounded break-all select-all">{{ reissuedTokenTomlLine }}</code>
+          <p class="type-meta leading-relaxed">Replace the effective <code class="font-mono bg-muted px-1 rounded-sm">register_token</code> in <code class="font-mono bg-muted px-1 rounded-sm">conf/runner.toml</code> (or <code class="font-mono bg-muted px-1 rounded-sm">BUZ_REGISTER_TOKEN</code>) and restart the Runner. This revokes the previous token.</p>
+          <code class="block font-mono text-xs bg-muted px-2 py-2 rounded-sm break-all select-all">{{ reissuedTokenTomlLine }}</code>
           <div class="flex justify-end gap-2">
             <UiButton variant="outline" @click="copyReissuedToken">
               <Copy v-if="!reissuedCopied" class="h-4 w-4" />
@@ -840,11 +840,11 @@ const eventBadge = (t: string) => {
             <div class="space-y-4">
               <div>
                 <label class="type-label block mb-1.5">Name <span class="text-red-500">*</span></label>
-                <input v-model="newName" type="text" placeholder="e.g. prod-runner-01" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15" @keyup.enter="handleCreate" />
+                <input v-model="newName" type="text" placeholder="e.g. prod-runner-01" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15" @keyup.enter="handleCreate" />
               </div>
               <div>
                 <label class="type-label block mb-1.5">Labels</label>
-                <input v-model="newLabels" type="text" placeholder="linux-x64, prod" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15" @keyup.enter="handleCreate" />
+                <input v-model="newLabels" type="text" placeholder="linux-x64, prod" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15" @keyup.enter="handleCreate" />
                 <p class="text-[11px] text-muted-foreground mt-1">Configured in UI only (not in runner.toml). Match pipeline runner.labels.</p>
               </div>
               <div>
@@ -854,14 +854,14 @@ const eventBadge = (t: string) => {
                   type="number"
                   min="1"
                   max="32"
-                  class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
+                  class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                 />
                 <p class="text-[11px] text-muted-foreground mt-1">How many jobs this runner may run in parallel (1–32). Default 1.</p>
               </div>
               <div class="space-y-2 rounded-xl border border-border/50 bg-muted/20 px-3 py-3">
                 <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Policy</div>
                 <label class="flex items-start gap-2 text-xs cursor-pointer">
-                  <input v-model="newCleanWorkspace" type="checkbox" class="rounded border-border mt-0.5" />
+                  <input v-model="newCleanWorkspace" type="checkbox" class="rounded-sm border-border mt-0.5" />
                   <span>
                     <span class="font-medium">Clean workspace after each job</span>
                     <span class="block text-muted-foreground mt-0.5 leading-relaxed">
@@ -873,13 +873,13 @@ const eventBadge = (t: string) => {
                 </label>
                 <div class="grid grid-cols-2 gap-2 pt-1">
                   <label class="flex items-center gap-2 text-xs cursor-pointer">
-                    <input v-model="newShellEnabled" type="checkbox" class="rounded border-border" /> Shell
+                    <input v-model="newShellEnabled" type="checkbox" class="rounded-sm border-border" /> Shell
                   </label>
                   <label class="flex items-center gap-2 text-xs cursor-pointer">
-                    <input v-model="newSshEnabled" type="checkbox" class="rounded border-border" /> SSH
+                    <input v-model="newSshEnabled" type="checkbox" class="rounded-sm border-border" /> SSH
                   </label>
                   <label class="flex items-start gap-2 text-xs cursor-pointer col-span-2">
-                    <input v-model="newDockerEnabled" type="checkbox" class="rounded border-border mt-0.5" />
+                    <input v-model="newDockerEnabled" type="checkbox" class="rounded-sm border-border mt-0.5" />
                     <span>
                       Docker
                       <span class="block text-muted-foreground mt-0.5">
@@ -892,7 +892,7 @@ const eventBadge = (t: string) => {
                   <label class="type-label block mb-1.5 mt-1">SSH host key policy</label>
                   <select
                     v-model="newSshHostKeyPolicy"
-                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-none"
+                    class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden"
                   >
                     <option value="insecure">insecure (accept any)</option>
                     <option value="known_hosts">known_hosts</option>
@@ -913,8 +913,8 @@ const eventBadge = (t: string) => {
                 <p class="font-mono text-sm break-all text-foreground">{{ createdToken }}</p>
               </div>
               <p class="type-meta leading-relaxed">
-                Paste this line into your Runner's <code class="font-mono bg-muted px-1 rounded">conf/runner.toml</code>:
-                <code class="block mt-1.5 font-mono bg-muted px-1 rounded break-all select-all">{{ registerTokenTomlLine }}</code>
+                Paste this line into your Runner's <code class="font-mono bg-muted px-1 rounded-sm">conf/runner.toml</code>:
+                <code class="block mt-1.5 font-mono bg-muted px-1 rounded-sm break-all select-all">{{ registerTokenTomlLine }}</code>
               </p>
               <div class="flex gap-2">
                 <UiButton variant="outline" class="flex-1" @click="copyToken">

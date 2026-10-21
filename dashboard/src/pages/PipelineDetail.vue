@@ -1084,7 +1084,7 @@ async function handleTrigger() {
     <!-- Trigger Dialog -->
     <Teleport to="body">
       <div v-if="showTriggerDialog" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" @click="showTriggerDialog = false" />
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-xs" @click="showTriggerDialog = false" />
         <div class="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-border/50 bg-card shadow-2xl p-6 max-h-[90vh] overflow-y-auto">
           <h2 class="text-[15px] font-semibold tracking-tight">Trigger Pipeline</h2>
           <p v-if="hasInputDefs" class="mt-1.5 text-[12px] text-muted-foreground leading-relaxed">
@@ -1112,7 +1112,7 @@ async function handleTrigger() {
               >
                 <code
                   v-if="item.field"
-                  class="mb-0.5 inline-block rounded bg-destructive/15 px-1.5 py-0.5 font-mono text-[11px] text-destructive"
+                  class="mb-0.5 inline-block rounded-sm bg-destructive/15 px-1.5 py-0.5 font-mono text-[11px] text-destructive"
                 >{{ item.field }}</code>
                 <p :class="item.field ? 'mt-0.5 pl-0.5 opacity-95' : 'opacity-95'">{{ item.message }}</p>
               </li>
@@ -1133,18 +1133,18 @@ async function handleTrigger() {
                 <span v-else class="text-[11px] text-muted-foreground/70">(optional)</span>
                 <span
                   v-if="pair.masking"
-                  class="rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide bg-violet-500/10 text-violet-600 border border-violet-500/20"
+                  class="rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide bg-violet-500/10 text-violet-600 border border-violet-500/20"
                 >masking</span>
                 <span
                   v-if="pair.type"
-                  class="rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/10 text-sky-600 border border-sky-500/20"
+                  class="rounded-sm px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/10 text-sky-600 border border-sky-500/20"
                 >{{ pair.type }}</span>
               </div>
 
               <select
                 v-if="pair.type === 'choice' || pair.type === 'boolean'"
                 v-model="pair.value"
-                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                 :class="errorFields.has(pair.key) ? 'border-destructive' : 'border-border/60'"
                 :disabled="triggering"
               >
@@ -1163,7 +1163,7 @@ async function handleTrigger() {
                 v-model="pair.value"
                 rows="4"
                 :placeholder="pair.required ? 'required — one item per line' : 'one item per line (leave empty for default)'"
-                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 font-mono"
+                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50 font-mono"
                 :class="errorFields.has(pair.key) ? 'border-destructive' : 'border-border/60'"
                 :disabled="triggering"
               />
@@ -1173,7 +1173,7 @@ async function handleTrigger() {
                 v-model="pair.value"
                 :type="pair.masking ? 'password' : pair.type === 'number' ? 'number' : 'text'"
                 :placeholder="pair.required ? 'required' : 'enter value (leave empty for default)'"
-                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                class="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                 :class="errorFields.has(pair.key) ? 'border-destructive' : 'border-border/60'"
                 :disabled="triggering"
                 :autocomplete="pair.masking ? 'new-password' : 'off'"
@@ -1204,14 +1204,14 @@ async function handleTrigger() {
                 <input
                   v-model="pair.key"
                   placeholder="key"
-                  class="flex-1 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                  class="flex-1 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                   :disabled="triggering"
                 />
                 <input
                   v-model="pair.value"
                   type="text"
                   placeholder="value"
-                  class="flex-[2] rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                  class="flex-2 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
                   :disabled="triggering"
                 />
                 <button
@@ -1238,7 +1238,7 @@ async function handleTrigger() {
             <label class="mb-1.5 block text-[12px] font-medium">Environment <span class="text-red-500">*</span></label>
             <select
               v-model="triggerEnvironment"
-              class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+              class="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm outline-hidden focus:border-primary/50"
               :disabled="triggering"
             >
               <option value="" disabled>Select a declared environment…</option>
@@ -1312,14 +1312,14 @@ async function handleTrigger() {
           <div class="space-y-0.5 mt-1">
             <button
               class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors"
-              :class="activeTab === 'stage' ? 'bg-card shadow-sm font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
+              :class="activeTab === 'stage' ? 'bg-card shadow-xs font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
               @click="navigateTab('stage')"
             >
               Stage View
             </button>
             <button
               class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center justify-between"
-              :class="activeTab === 'history' ? 'bg-card shadow-sm font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
+              :class="activeTab === 'history' ? 'bg-card shadow-xs font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
               @click="navigateTab('history')"
             >
               <span>Build History</span>
@@ -1327,14 +1327,14 @@ async function handleTrigger() {
             </button>
             <button
               class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors"
-              :class="activeTab === 'definition' ? 'bg-card shadow-sm font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
+              :class="activeTab === 'definition' ? 'bg-card shadow-xs font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
               @click="navigateTab('definition')"
             >
               Definition
             </button>
             <button
               class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center justify-between"
-              :class="activeTab === 'trigger-events' ? 'bg-card shadow-sm font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
+              :class="activeTab === 'trigger-events' ? 'bg-card shadow-xs font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
               @click="navigateTab('trigger-events')"
             >
               <span>Trigger events</span>
@@ -1367,7 +1367,7 @@ async function handleTrigger() {
                     v-for="j in group.jobs"
                     :key="j.id"
                     class="rounded-lg transition-colors hover:bg-muted/60 group flex items-start gap-2 py-2 pl-2.5 pr-2"
-                    :class="j.status === 'running' ? 'ring-1 ring-amber-400/30 bg-amber-500/[0.04]' : ''"
+                    :class="j.status === 'running' ? 'ring-1 ring-amber-400/30 bg-amber-500/4' : ''"
                     @click="navToJob(j.id)"
                   >
                     <!-- Status icon -->
@@ -1408,12 +1408,12 @@ async function handleTrigger() {
                         <!-- Compact Verbose / Debug — square letter -->
                         <span
                           v-if="j.verbose_logs"
-                          class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-sky-500/40 text-[9px] font-mono leading-none lowercase text-sky-600"
+                          class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-xs border border-sky-500/40 text-[9px] font-mono leading-none lowercase text-sky-600"
                           title="Verbose mode: extra per-step detail in logs; secrets stay redacted."
                         >v</span>
                         <span
                           v-if="j.debug_unredact"
-                          class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-amber-500/45 text-[9px] font-mono leading-none lowercase text-amber-700"
+                          class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-xs border border-amber-500/45 text-[9px] font-mono leading-none lowercase text-amber-700"
                           title="Debug mode: logs are unredacted, platform-admin-only, and purged after 24h."
                         >d</span>
 
@@ -1460,7 +1460,7 @@ async function handleTrigger() {
                         <span
                           v-for="l in j.snapshot.runner_labels.slice(0, 2)"
                           :key="l"
-                          class="mono-chip text-[10px] text-muted-foreground/60 max-w-[7rem] truncate"
+                          class="mono-chip text-[10px] text-muted-foreground/60 max-w-28 truncate"
                           :title="l"
                         >{{ l }}</span>
                         <span
@@ -1500,17 +1500,17 @@ async function handleTrigger() {
             </div>
             <div v-else>
               <!-- Overview card -->
-              <div class="rounded-xl border border-border/50 bg-card p-5 mb-5 flex items-center gap-6 shadow-sm">
+              <div class="rounded-xl border border-border/50 bg-card p-5 mb-5 flex items-center gap-6 shadow-xs">
                 <div class="flex items-center gap-5">
-                  <div class="text-center min-w-[3rem]">
+                  <div class="text-center min-w-12">
                     <div class="text-lg font-bold tabular-nums text-emerald-500">{{ successCount }}</div>
                     <div class="text-xs text-muted-foreground mt-0.5">Passed</div>
                   </div>
-                  <div class="text-center min-w-[3rem]">
+                  <div class="text-center min-w-12">
                     <div class="text-lg font-bold tabular-nums text-red-500">{{ failedCount }}</div>
                     <div class="text-xs text-muted-foreground mt-0.5">Failed</div>
                   </div>
-                  <div class="text-center min-w-[3rem]">
+                  <div class="text-center min-w-12">
                     <div class="text-lg font-bold tabular-nums text-foreground">{{ jobs.length }}</div>
                     <div class="text-xs text-muted-foreground mt-0.5">Total</div>
                   </div>
@@ -1551,7 +1551,7 @@ async function handleTrigger() {
               <!-- Focused step detail + logs -->
               <div
                 v-if="stageFocusStep != null && stageFocusTask"
-                class="mt-4 rounded-xl border border-border/50 bg-card shadow-sm overflow-hidden"
+                class="mt-4 rounded-xl border border-border/50 bg-card shadow-xs overflow-hidden"
               >
                 <div class="flex items-center gap-3 px-4 py-3 border-b border-border/30">
                   <span class="text-[10px] font-mono tabular-nums text-muted-foreground bg-muted rounded-md px-1.5 py-0.5">
@@ -1622,7 +1622,7 @@ async function handleTrigger() {
                 </div>
               </div>
 
-              <div v-if="jobs.length === 0" class="rounded-xl border border-border/50 bg-card shadow-sm flex flex-col items-center justify-center py-20 text-muted-foreground">
+              <div v-if="jobs.length === 0" class="rounded-xl border border-border/50 bg-card shadow-xs flex flex-col items-center justify-center py-20 text-muted-foreground">
                 <Clock class="h-10 w-10 mb-3 text-muted-foreground/20" />
                 <p class="text-sm">No builds yet</p>
               </div>
@@ -1648,7 +1648,7 @@ async function handleTrigger() {
                   </span>
                   <div class="flex items-center gap-1">
                     <button
-                      class="px-2.5 py-1 rounded text-xs transition-colors"
+                      class="px-2.5 py-1 rounded-sm text-xs transition-colors"
                       :class="historyPage === 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
                       :disabled="historyPage === 1"
                       @click="historyGo(historyPage - 1)"
@@ -1656,12 +1656,12 @@ async function handleTrigger() {
                     <button
                       v-for="p in Math.min(historyTotalPages, 7)"
                       :key="'pg-'+p"
-                      class="w-7 h-7 rounded text-xs tabular-nums transition-colors"
+                      class="w-7 h-7 rounded-sm text-xs tabular-nums transition-colors"
                       :class="p === historyPage ? 'bg-primary text-primary-foreground font-semibold' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
                       @click="historyGo(p)"
                     >{{ p }}</button>
                     <button
-                      class="px-2.5 py-1 rounded text-xs transition-colors"
+                      class="px-2.5 py-1 rounded-sm text-xs transition-colors"
                       :class="historyPage === historyTotalPages ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
                       :disabled="historyPage === historyTotalPages"
                       @click="historyGo(historyPage + 1)"
@@ -1756,11 +1756,11 @@ async function handleTrigger() {
                 <div class="flex items-center gap-2 shrink-0 pt-0.5">
                   <span
                     v-if="definitionView.authority === 'file'"
-                    class="text-xs text-muted-foreground bg-muted/60 rounded px-2 py-0.5 font-medium"
+                    class="text-xs text-muted-foreground bg-muted/60 rounded-sm px-2 py-0.5 font-medium"
                   >from file</span>
                   <span
                     v-else-if="hasYamlSource"
-                    class="text-xs text-muted-foreground bg-muted/60 rounded px-2 py-0.5 font-medium"
+                    class="text-xs text-muted-foreground bg-muted/60 rounded-sm px-2 py-0.5 font-medium"
                   >from YAML</span>
                   <button
                     class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
@@ -1901,7 +1901,7 @@ async function handleTrigger() {
                     <code class="mono-chip text-xs">{{ pipelineConcurrency.group }}</code>
                     <span class="text-muted-foreground ml-1">Mode</span>
                     <span
-                      class="font-semibold rounded px-1.5 py-0.5 border"
+                      class="font-semibold rounded-sm px-1.5 py-0.5 border"
                       :class="{
                         'bg-amber-500/10 text-amber-600 border-amber-500/20': pipelineConcurrency.mode === 'queue',
                         'bg-blue-500/10 text-blue-600 border-blue-500/20': pipelineConcurrency.mode === 'discard-new',
@@ -1919,9 +1919,9 @@ async function handleTrigger() {
                 <template v-else>
                   <div class="flex flex-wrap items-center gap-2 text-xs">
                     <span class="text-muted-foreground">Status</span>
-                    <span class="font-semibold rounded px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
+                    <span class="font-semibold rounded-sm px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
                     <span class="text-muted-foreground ml-1">Default mode if enabled</span>
-                    <span class="font-mono rounded px-1.5 py-0.5 border bg-emerald-500/10 text-emerald-700 border-emerald-500/20">discard-old</span>
+                    <span class="font-mono rounded-sm px-1.5 py-0.5 border bg-emerald-500/10 text-emerald-700 border-emerald-500/20">discard-old</span>
                     <span class="text-muted-foreground ml-1">Max queue</span>
                     <span class="font-mono tabular-nums text-foreground/80">3</span>
                     <span class="text-muted-foreground ml-1">Queue timeout</span>
@@ -1993,9 +1993,9 @@ async function handleTrigger() {
                 <template v-else>
                   <div class="flex flex-wrap items-center gap-2 text-xs">
                     <span class="text-muted-foreground">Status</span>
-                    <span class="font-semibold rounded px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
+                    <span class="font-semibold rounded-sm px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
                     <span class="text-muted-foreground ml-1">Add</span>
-                    <code class="font-mono text-[10px] rounded px-1.5 py-0.5 border bg-sky-500/10 text-sky-700 border-sky-500/20">notify:</code>
+                    <code class="font-mono text-[10px] rounded-sm px-1.5 py-0.5 border bg-sky-500/10 text-sky-700 border-sky-500/20">notify:</code>
                     <span class="text-muted-foreground">in YAML (e.g. Feishu webhook via Secrets)</span>
                   </div>
                 </template>
@@ -2128,15 +2128,15 @@ async function handleTrigger() {
                       <span class="flex-1" />
 
                       <!-- Flags: continue-on-error, privileged -->
-                      <span v-if="step.fail_strategy === 'continue'" class="font-medium text-amber-600 bg-amber-500/8 border border-amber-500/20 rounded px-1.5 py-0.5">
+                      <span v-if="step.fail_strategy === 'continue'" class="font-medium text-amber-600 bg-amber-500/8 border border-amber-500/20 rounded-sm px-1.5 py-0.5">
                         continue-on-error
                       </span>
-                      <span v-if="(step as any).privileged" class="font-semibold text-red-500 bg-red-500/8 border border-red-500/20 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                      <span v-if="(step as any).privileged" class="font-semibold text-red-500 bg-red-500/8 border border-red-500/20 rounded-sm px-1.5 py-0.5 uppercase tracking-wider">
                         privileged
                       </span>
                       <span
                         v-if="(step as any).capabilities?.length"
-                        class="font-semibold text-red-600 bg-red-500/10 border border-red-500/25 rounded px-1.5 py-0.5"
+                        class="font-semibold text-red-600 bg-red-500/10 border border-red-500/25 rounded-sm px-1.5 py-0.5"
                         title="Plugin-requested capabilities are not grants; each Runner administrator must separately authorize them locally."
                       >requests: {{ (step as any).capabilities.join(', ') }}</span>
                       <span
@@ -2318,7 +2318,7 @@ async function handleTrigger() {
                     <Copy v-else class="h-3.5 w-3.5" />
                   </button>
                 </div>
-                <p v-else class="text-[11px] text-muted-foreground pl-[3.5rem]">
+                <p v-else class="text-[11px] text-muted-foreground pl-14">
                   Secret was shown once at create. To get a new secret, delete this hook and create again.
                 </p>
               </div>
@@ -2328,24 +2328,24 @@ async function handleTrigger() {
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <div>
                     <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Label</label>
-                    <input v-model="newHookLabel" type="text" placeholder="e.g. github-main" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-none" />
+                    <input v-model="newHookLabel" type="text" placeholder="e.g. github-main" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden" />
                   </div>
                   <div>
                     <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Provider</label>
-                    <select v-model="newHookProvider" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-none">
+                    <select v-model="newHookProvider" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden">
                       <option value="gitee">Gitee</option>
                       <option value="github">GitHub</option>
                     </select>
                   </div>
                   <div>
                     <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Branch filter</label>
-                    <input v-model="newHookBranchFilter" type="text" placeholder="optional" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm font-mono outline-none" />
+                    <input v-model="newHookBranchFilter" type="text" placeholder="optional" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm font-mono outline-hidden" />
                   </div>
                   <div>
                     <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Environment</label>
             <select
               v-model="newHookEnvironment"
-              class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-none"
+              class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden"
               :disabled="environmentLoadFailed || newHookAvailableEnvironments.length === 0"
             >
                       <option value="" disabled>Select a declared environment…</option>
@@ -2459,14 +2459,14 @@ async function handleTrigger() {
               >
                 <button
                   type="button"
-                  class="px-2 py-1 rounded hover:bg-muted disabled:opacity-40"
+                  class="px-2 py-1 rounded-sm hover:bg-muted disabled:opacity-40"
                   :disabled="triggerEventsPage <= 1"
                   @click="triggerEventsPage -= 1; loadTriggerEvents()"
                 >Prev</button>
                 <span class="tabular-nums text-muted-foreground">{{ triggerEventsPage }} / {{ Math.max(1, Math.ceil(triggerEventsTotal / triggerEventsPageSize)) }}</span>
                 <button
                   type="button"
-                  class="px-2 py-1 rounded hover:bg-muted disabled:opacity-40"
+                  class="px-2 py-1 rounded-sm hover:bg-muted disabled:opacity-40"
                   :disabled="triggerEventsPage * triggerEventsPageSize >= triggerEventsTotal"
                   @click="triggerEventsPage += 1; loadTriggerEvents()"
                 >Next</button>
