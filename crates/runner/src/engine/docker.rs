@@ -246,6 +246,59 @@ pub fn preflight(docker_enabled: bool, image: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Pull one image into the Runner's Docker daemon. Output is discarded to
+/// avoid forwarding registry/CLI details into logs. Dropping this future kills
+/// the child, which lets job cancellation stop outstanding prefetch work.
+pub async fn pull_image(image: &str, docker_config_dir: Option<&str>) -> anyhow::Result<()> {
+    pull_image_with_program_and_timeout(
+        std::path::Path::new("docker"),
+        image,
+        docker_config_dir,
+        Duration::from_secs(120),
+    )
+    .await
+}
+
+async fn pull_image_with_program_and_timeout(
+    program: &Path,
+    image: &str,
+    docker_config_dir: Option<&str>,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let image = image.trim();
+    if image.is_empty() {
+        anyhow::bail!("cannot prefetch an empty Docker image reference");
+    }
+
+    let mut command = Command::new(program);
+    command
+        .arg("pull")
+        .arg(image)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    if let Some(dir) = docker_config_dir {
+        command.env("DOCKER_CONFIG", dir);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to spawn docker pull: {e}"))?;
+
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(status)) => anyhow::bail!(
+            "docker pull exited with status {}",
+            status.code().unwrap_or(-1)
+        ),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => {
+            let _ = child.kill().await;
+            anyhow::bail!("docker pull timed out after {}s", timeout.as_secs());
+        }
+    }
+}
+
 /// `docker login --password-stdin` for a private registry.
 ///
 /// `docker_config_dir` — when set, the CLI writes credentials into this

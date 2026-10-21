@@ -784,6 +784,30 @@ async fn execute_job(
     task: &serde_json::Value,
     cancel_rx: &mut watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
+    let tasks = task
+        .get("tasks")
+        .and_then(|tasks| tasks.as_array())
+        .ok_or_else(|| anyhow::anyhow!("missing tasks array"))?;
+    let job_id = task
+        .get("job_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
+    let mut prefetch = crate::client::image_prefetch::ImagePrefetch::start(tasks, config, job_id);
+    let result = execute_job_inner(client, config, token, task, cancel_rx, &mut prefetch).await;
+    if let Some(prefetch) = prefetch.as_mut() {
+        prefetch.abort_and_drain().await;
+    }
+    result
+}
+
+async fn execute_job_inner(
+    client: &Client,
+    config: &Config,
+    token: &str,
+    task: &serde_json::Value,
+    cancel_rx: &mut watch::Receiver<bool>,
+    prefetch: &mut Option<crate::client::image_prefetch::ImagePrefetch>,
+) -> anyhow::Result<()> {
     let job_id = task["job_id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
@@ -2105,6 +2129,34 @@ async fn execute_job(
                         },
                     )
                     .await;
+                }
+
+                let prefetch_result = if let Some(prefetch) = prefetch.as_mut() {
+                    tokio::select! {
+                        result = prefetch.wait_for(image) => result,
+                        _ = cancel_triggered(cancel_rx) => {
+                            prefetch.abort_and_drain().await;
+                            let _ = super::logs::upload_chunk(
+                                client,
+                                config,
+                                token,
+                                job_id,
+                                LogChunk {
+                                    chunk_index: log_base + LOG_STEP_META_A,
+                                    step_order: idx as i32,
+                                    content: "==> CANCELLED\\nJob was cancelled by user.\\n".into(),
+                                },
+                            )
+                            .await;
+                            update_job_status(client, config, token, job_id, "cancelled", Some(idx as i32)).await?;
+                            anyhow::bail!("job cancelled by user");
+                        }
+                    }
+                } else {
+                    None
+                };
+                if let Some(Err(error)) = prefetch_result {
+                    tracing::warn!("Docker image prefetch failed for {image:?}: {error}");
                 }
 
                 let cmd = command.to_string();

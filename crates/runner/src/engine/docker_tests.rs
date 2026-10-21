@@ -1,9 +1,10 @@
 use super::{
-    build_docker_run_args, build_docker_run_args_with_socket, preflight, validate_step_policy,
-    CONTAINER_WORKSPACE,
+    build_docker_run_args, build_docker_run_args_with_socket, preflight,
+    pull_image_with_program_and_timeout, validate_step_policy, CONTAINER_WORKSPACE,
 };
 use crate::config::{DockerMountPolicy, RunnerSection};
 use std::collections::HashMap;
+use std::time::Duration;
 
 #[cfg(unix)]
 fn temp_socket() -> (
@@ -333,4 +334,89 @@ async fn registry_login_rejects_empty_fields() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("registry_auth"), "{err}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn pull_image_uses_config_and_image_argument() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let docker = dir.path().join("docker");
+    let output = dir.path().join("args");
+    std::fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            output.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let config = dir.path().join("anonymous-config");
+    std::fs::create_dir(&config).unwrap();
+
+    pull_image_with_program_and_timeout(
+        &docker,
+        "alpine@sha256:deadbeef",
+        Some(config.to_str().unwrap()),
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(output).unwrap(),
+        "pull\nalpine@sha256:deadbeef\n"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropping_pull_future_kills_child() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let docker = dir.path().join("docker");
+    let pid_file = dir.path().join("pid");
+    std::fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nexec sleep 30\n",
+            pid_file.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let pull = tokio::spawn(async move {
+        pull_image_with_program_and_timeout(
+            &docker,
+            "alpine@sha256:deadbeef",
+            None,
+            Duration::from_secs(30),
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !pid_file.exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("fake docker process should start");
+    let pid: u32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    pull.abort();
+    let _ = pull.await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let result = std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .unwrap();
+    assert!(!result.success(), "pull child process should be terminated");
 }
