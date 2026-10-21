@@ -46,6 +46,7 @@ Create or edit a Runner under **Runners** in the web UI.
 
 | Setting | Default | Notes |
 |---------|---------|-------|
+| `team_id` | *(required at create)* | Dispatch scope: a specific team, or **Shared** (`NULL`). Bound Runners only receive jobs whose trigger-time team matches; `NULL` serves every team. Existing runners keep `NULL`/Shared after upgrade |
 | `labels` | `[]` | Scheduling match for pipeline `runner.labels` (must have **all** required) |
 | `max_concurrent_jobs` | `1` | Parallel job slots, range `1`–`32` |
 | `clean_workspace_after_job` | `false` | Delete `{workspace}/{job_id}` after each job (host files only) |
@@ -74,7 +75,11 @@ Runner process                        │
 1. Admin sets **labels** and policy when creating a Runner, or saves them in the Runner detail drawer.
 2. On `POST /runners/register` and `POST /runners/heartbeat`, Manager returns a `policy` snapshot for engines/concurrency. Labels stay in the DB and are used at poll time; the agent register payload **cannot** overwrite them.
 3. The Runner applies the snapshot on the next poll / job without restart. A failed or successful job **never** stops a persistent runner process.
-4. On `GET /runners/poll`, Manager enforces `running < max_concurrent_jobs` and claims only jobs whose required labels are all present on the runner.
+4. On `GET /runners/poll`, Manager enforces `running < max_concurrent_jobs` and claims only jobs whose required labels are all present on the runner — and whose frozen trigger-time team matches the runner's team binding (Shared/`NULL` matches all).
+
+### Team binding is dispatch scoping, not a sandbox
+
+Team binding and labels answer different questions: **labels** match a job's requested capabilities (`linux-x64`, `gpu`, …); **team binding** restricts which team's jobs the Manager may dispatch to this Runner. Neither isolates running jobs from one another — all jobs on a Runner execute as the Runner's OS user and can access that user's files and process environments. Put mutually untrusted teams on dedicated Runner hosts/users. Jobs freeze their team at trigger time; a pipeline cannot change `team` while it has active (pending/queued/waiting-approval/running) jobs. Jobs created before team freezing carry no frozen team: bound Runners skip them, Shared Runners handle them under the pipeline's current team.
 
 ### Cleanup: workspace vs Docker containers
 

@@ -19,6 +19,7 @@ Runner registry.
 | register_token | TEXT | One-time registration token (cleared after use) |
 | token | TEXT | Long-term communication token |
 | labels | TEXT | JSON array, e.g. `["prod","linux-x64"]` |
+| team_id | TEXT FK → teams.id, nullable | Dispatch scope. `NULL` = Shared (jobs from every team — also the state of pre-binding runners); non-null = only that team's jobs are dispatched here. `ON DELETE RESTRICT`: a team with bound runners cannot be deleted |
 | status | TEXT | `online`, `offline`, `busy` |
 | max_concurrent_jobs | INTEGER | Max parallel jobs (1–32). Default `1`. Configured in Manager UI |
 | clean_workspace_after_job | INTEGER | Wipe job workspace after each job (`0`/`1`). UI-managed |

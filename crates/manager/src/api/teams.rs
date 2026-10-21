@@ -239,9 +239,13 @@ pub async fn delete(
         .bind(&id)
         .fetch_one(&state.pool)
         .await?;
-    if pipe_count > 0 || secret_count > 0 {
+    let runner_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runners WHERE team_id = ?")
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await?;
+    if pipe_count > 0 || secret_count > 0 || runner_count > 0 {
         return Err(AppError::Conflict(format!(
-            "team still has {pipe_count} pipeline(s) and {secret_count} secret(s)"
+            "team still has {pipe_count} pipeline(s), {secret_count} secret(s), and {runner_count} bound runner(s)"
         )));
     }
 

@@ -553,6 +553,16 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
 
+    // Runner team binding: NULL remains the explicit shared/legacy mode.
+    let _ = sqlx::query(
+        "ALTER TABLE runners ADD COLUMN team_id TEXT REFERENCES teams(id) ON DELETE RESTRICT",
+    )
+    .execute(pool)
+    .await;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_runners_team ON runners(team_id)")
+        .execute(pool)
+        .await?;
+
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_pipelines_team ON pipelines(team_id)")
         .execute(pool)
         .await;

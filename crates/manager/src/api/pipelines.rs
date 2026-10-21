@@ -457,6 +457,25 @@ pub async fn update(
     verify_pipeline_secret_bindings(&state.pool, &auth, &team_id, req.secret_ids.as_ref()).await?;
     super::environments::validate_environment_slugs(&state.pool, &req.environments).await?;
 
+    let stored_team_id: String = sqlx::query_scalar("SELECT team_id FROM pipelines WHERE id = ?")
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await?;
+    if team_id != stored_team_id {
+        let active_jobs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
+             AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
+        )
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await?;
+        if active_jobs > 0 {
+            return Err(AppError::Conflict(format!(
+                "pipeline team cannot change while {active_jobs} active job(s) exist; finish or cancel them first"
+            )));
+        }
+    }
+
     let labels_json = serde_json::to_string(&req.runner_labels).unwrap_or_else(|_| "[]".into());
     let input_defs_json =
         serde_json::to_string(&req.input_defs.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
@@ -472,7 +491,22 @@ pub async fn update(
     )
     .await
     .map_err(AppError::ValidationFailed)?;
-    let mut tx = state.pool.begin().await?;
+    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    if team_id != stored_team_id {
+        let active_jobs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
+             AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
+        )
+        .bind(&id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if active_jobs > 0 {
+            tx.rollback().await?;
+            return Err(AppError::Conflict(format!(
+                "pipeline team cannot change while {active_jobs} active job(s) exist; finish or cancel them first"
+            )));
+        }
+    }
     let result = sqlx::query(
         "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?, webhook_path = ?,
          cron_expr = ?, runner_labels = ?, timeout_seconds = ?, concurrency_group = ?,
@@ -1415,6 +1449,7 @@ pub(crate) async fn do_trigger(
 
     let mut snapshot = serde_json::json!({
         "pipeline": pipeline_snapshot,
+        "team_id": team_id,
         "runner_labels": serde_json::from_str::<Vec<String>>(&runner_labels).unwrap_or_default(),
         "concurrency_group": concurrency_group,
         "concurrency_mode": effective_concurrency_mode,

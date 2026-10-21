@@ -1353,6 +1353,28 @@ async fn execute_job_inner(
             anyhow::bail!(msg);
         }
 
+        if let Some(err) = step
+            .get("host_resolution_error")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let msg = format!("SSH host resolution: {err}");
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_ERROR,
+                    step_order: idx as i32,
+                    content: format!("==> ERROR\\n{msg}\\n"),
+                },
+            )
+            .await;
+            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+            anyhow::bail!(msg);
+        }
+
         // Fail fast if Manager could not resolve config_source.
         if let Some(err) = step
             .get("config_auth_error")
@@ -1391,8 +1413,28 @@ async fn execute_job_inner(
             anyhow::bail!(msg);
         }
 
-        // Fail fast if Manager detected a missing render secret (e.g. a secret
-        // created in a different team than the pipeline).
+        if let Some(err) = step
+            .get("host_resolution_error")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let msg = format!("SSH host resolution: {err}");
+            let _ = super::logs::upload_chunk(
+                client,
+                config,
+                token,
+                job_id,
+                LogChunk {
+                    chunk_index: log_base + LOG_STEP_ERROR,
+                    step_order: idx as i32,
+                    content: format!("==> ERROR\\n{msg}\\n"),
+                },
+            )
+            .await;
+            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
+            anyhow::bail!(msg);
+        }
+
         if let Some(err) = step
             .get("config_render_error")
             .and_then(|v| v.as_str())

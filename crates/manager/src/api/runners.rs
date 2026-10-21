@@ -138,6 +138,25 @@ fn i64_bool(v: i64) -> bool {
     v != 0
 }
 
+async fn validate_runner_team(
+    pool: &sqlx::SqlitePool,
+    team_id: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    let Some(team_id) = team_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM teams WHERE id = ?)")
+        .bind(team_id)
+        .fetch_one(pool)
+        .await?;
+    if !exists {
+        return Err(AppError::ValidationFailed(format!(
+            "team '{team_id}' does not exist"
+        )));
+    }
+    Ok(Some(team_id.to_string()))
+}
+
 /// Load UI policy columns for a runner.
 async fn load_runner_policy(
     pool: &sqlx::SqlitePool,
@@ -189,11 +208,16 @@ pub async fn create_runner(
     Json(req): Json<CreateRunnerRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let created = create_runner_record(&state.pool, &req).await?;
+    let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
+        .bind(&created.id)
+        .fetch_one(&state.pool)
+        .await?;
 
     let policy = load_runner_policy(&state.pool, &created.id).await?;
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": created.id,
         "name": created.name,
+        "team_id": team_id,
         "register_token": created.register_token,
         "max_concurrent_jobs": created.max_concurrent_jobs,
         "policy": policy_json(&policy),
@@ -218,18 +242,20 @@ pub(crate) async fn create_runner_record(
     let ssh = bool_i64(req.ssh_enabled, true);
     let docker = bool_i64(req.docker_enabled, false);
     let wasm = bool_i64(req.wasm_enabled, false);
+    let team_id = validate_runner_team(pool, req.team_id.as_deref()).await?;
 
     sqlx::query(
-        "INSERT INTO runners (id, name, register_token, labels, status, version,
+        "INSERT INTO runners (id, name, register_token, labels, status, version, team_id,
          max_concurrent_jobs, clean_workspace_after_job,
          shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy)
-         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&req.name)
     .bind(&register_token)
     .bind(&labels_json)
     .bind(&req.version)
+    .bind(&team_id)
     .bind(max_concurrent as i64)
     .bind(clean)
     .bind(shell)
@@ -303,6 +329,7 @@ pub async fn ensure_standalone_auto_approve(
         let req = CreateRunnerRequest {
             name: name.to_string(),
             labels: Some(vec!["standalone".into()]),
+            team_id: None,
             version: Some(shared::version::VERSION.to_string()),
             max_concurrent_jobs: None,
             clean_workspace_after_job: None,
@@ -712,6 +739,13 @@ async fn poll_once(
         )))));
     }
 
+    // Runner team binding is a dispatch boundary. NULL means explicitly shared.
+    let runner_team_id: Option<String> =
+        sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
+            .bind(&auth.runner_id)
+            .fetch_one(&state.pool)
+            .await?;
+
     // Load this runner's labels for scheduling.
     let runner_labels: Vec<String> =
         sqlx::query_scalar::<_, String>("SELECT labels FROM runners WHERE id = ?")
@@ -725,11 +759,13 @@ async fn poll_once(
     // Claim only if runner has ALL required labels (see runner_satisfies_labels).
     let candidates = sqlx::query(
         "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
-                j.debug_unredact, j.verbose_logs, j.trigger_by, p.name, p.team_id, p.trigger_type,
+                j.debug_unredact, j.verbose_logs, j.trigger_by, p.name,
+                COALESCE(json_extract(j.snapshot, '$.team_id'), p.team_id), p.trigger_type,
                 j.environment_id, j.run_number, j.run_attempt
          FROM jobs j
          JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.status = 'pending'
+           AND (? IS NULL OR json_extract(j.snapshot, '$.team_id') = ?)
            AND (
              j.environment_id IS NULL
              OR COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress'
@@ -749,6 +785,8 @@ async fn poll_once(
          ORDER BY j.created_at ASC, j.rowid ASC
          LIMIT 50",
     )
+    .bind(&runner_team_id)
+    .bind(&runner_team_id)
     .fetch_all(&state.pool)
     .await?;
 
@@ -769,8 +807,12 @@ async fn poll_once(
         // so another poller must re-evaluate after this transaction commits.
         let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
         let candidate = sqlx::query(
-            "SELECT pipeline_id, environment_id FROM jobs WHERE id = ? AND status = 'pending'",
+            "SELECT j.pipeline_id, j.environment_id, r.team_id, \
+                    json_extract(j.snapshot, '$.team_id') \
+             FROM jobs j JOIN runners r ON r.id = ? \
+             WHERE j.id = ? AND j.status = 'pending'",
         )
+        .bind(&auth.runner_id)
         .bind(&job_id)
         .fetch_optional(&mut *tx)
         .await?;
@@ -780,6 +822,12 @@ async fn poll_once(
         };
         let candidate_pipeline_id: String = candidate.get(0);
         let candidate_environment_id: Option<String> = candidate.get(1);
+        let candidate_runner_team: Option<String> = candidate.get(2);
+        let candidate_job_team: Option<String> = candidate.get(3);
+        if candidate_runner_team.is_some() && candidate_runner_team != candidate_job_team {
+            tx.rollback().await?;
+            continue;
+        }
         let mut superseded_ids: Vec<String> = Vec::new();
 
         if let Some(env_id) = candidate_environment_id.as_deref() {
@@ -1641,10 +1689,13 @@ async fn poll_once(
 
                 // Look up resolved names in hosts table
                 for name in &resolved_names {
-                    if let Ok(Some(row)) = sqlx::query("SELECT id FROM hosts WHERE name = ?")
-                        .bind(name)
-                        .fetch_optional(&state.pool)
-                        .await
+                    if let Ok(Some(row)) = sqlx::query(
+                        "SELECT id FROM hosts WHERE name = ? AND (team_id IS NULL OR team_id = ?)",
+                    )
+                    .bind(name)
+                    .bind(team_id.as_deref())
+                    .fetch_optional(&state.pool)
+                    .await
                     {
                         let id: String = row.get(0);
                         if !host_ids.contains(&id) {
@@ -1662,9 +1713,11 @@ async fn poll_once(
                 // Look up resolved labels
                 for label in &resolved_labels {
                     let rows = sqlx::query(
-                        "SELECT id FROM hosts, json_each(hosts.labels) WHERE json_each.value = ?",
+                        "SELECT hosts.id FROM hosts, json_each(hosts.labels) \
+                         WHERE json_each.value = ? AND (hosts.team_id IS NULL OR hosts.team_id = ?)",
                     )
                     .bind(label)
+                    .bind(team_id.as_deref())
                     .fetch_all(&state.pool)
                     .await
                     .unwrap_or_default();
@@ -1681,28 +1734,39 @@ async fn poll_once(
                 // Single host — return as object (backward-compatible)
                 if let Ok(Some(host_row)) = sqlx::query(
                     "SELECT host, port, username, credential_type, credential_data, credential_passphrase
-                     FROM hosts WHERE id = ?",
+                     FROM hosts WHERE id = ? AND (team_id IS NULL OR team_id = ?)",
                 )
                 .bind(&host_ids[0])
+                .bind(team_id.as_deref())
                 .fetch_optional(&state.pool)
                 .await
                 {
                     task_json["host"] = build_host_json(&host_row, &state.config.auth.jwt_secret);
+                } else {
+                    task_json["host_resolution_error"] = serde_json::Value::String(
+                        "one or more hosts are not available to this pipeline team".into(),
+                    );
                 }
             } else if host_ids.len() > 1 {
                 // Multiple hosts — return as array
                 let mut host_list: Vec<serde_json::Value> = Vec::new();
                 for hid in &host_ids {
                     if let Ok(Some(host_row)) = sqlx::query(
-                        "SELECT host, port, username, credential_type, credential_data
-                         FROM hosts WHERE id = ?",
+                        "SELECT host, port, username, credential_type, credential_data \
+                         FROM hosts WHERE id = ? AND (team_id IS NULL OR team_id = ?)",
                     )
                     .bind(hid)
+                    .bind(team_id.as_deref())
                     .fetch_optional(&state.pool)
                     .await
                     {
                         host_list.push(build_host_json(&host_row, &state.config.auth.jwt_secret));
                     }
+                }
+                if host_list.len() != host_ids.len() {
+                    task_json["host_resolution_error"] = serde_json::Value::String(
+                        "one or more hosts are not available to this pipeline team".into(),
+                    );
                 }
                 task_json["host"] = serde_json::Value::Array(host_list);
             } else {
@@ -1712,6 +1776,8 @@ async fn poll_once(
                     "SSH step '{task_name}': no hosts resolved (static host_id='{}', raw names='{}', raw labels='{}')",
                     host_id_str, host_names_raw, host_labels_raw
                 );
+                task_json["host_resolution_error"] =
+                    serde_json::Value::String("no hosts resolved for this pipeline team".into());
                 task_json["host"] = serde_json::Value::Array(vec![]);
             }
         }
@@ -2399,7 +2465,7 @@ pub async fn list_runners(
         "SELECT r.id, r.name, r.labels, r.status, r.version, r.system_info, r.last_seen, r.is_frozen,
                 r.max_concurrent_jobs, r.clean_workspace_after_job,
                 r.shell_enabled, r.ssh_enabled, r.docker_enabled, r.wasm_enabled, r.ssh_host_key_policy,
-                r.created_at, r.updated_at,
+                r.created_at, r.updated_at, r.team_id,
                 (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs
          FROM runners r ORDER BY r.created_at DESC",
     )
@@ -2444,9 +2510,10 @@ pub async fn list_runners(
                 "docker_enabled": policy.docker_enabled,
                 "wasm_enabled": policy.wasm_enabled,
                 "ssh_host_key_policy": policy.ssh_host_key_policy,
+                "team_id": r.get::<Option<String>, _>(17),
                 "created_at": r.get::<Option<String>, _>(15),
                 "updated_at": r.get::<Option<String>, _>(16),
-                "running_jobs": r.get::<i64, _>(17),
+                "running_jobs": r.get::<i64, _>(18),
             })
         })
         .collect();
@@ -2461,7 +2528,7 @@ pub async fn get_runner(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let r = sqlx::query(
         "SELECT id, name, labels, status, version, system_info, last_seen,
-                created_at, updated_at FROM runners WHERE id = ?",
+                created_at, updated_at, team_id FROM runners WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.pool)
@@ -2489,6 +2556,7 @@ pub async fn get_runner(
         "last_seen": r.get::<Option<String>, _>(6),
         "created_at": r.get::<Option<String>, _>(7),
         "updated_at": r.get::<Option<String>, _>(8),
+        "team_id": r.get::<Option<String>, _>(9),
         "running_jobs": running_jobs,
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,
@@ -2512,6 +2580,38 @@ pub async fn update_runner(
         .await?;
     if exists.is_none() {
         return Err(AppError::NotFound("runner not found".into()));
+    }
+
+    if let Some(requested_team) = &req.team_id {
+        let validated = validate_runner_team(&state.pool, requested_team.as_deref()).await?;
+        let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current_team_id: Option<String> =
+            sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
+                .bind(&id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if validated != current_team_id {
+            let running_jobs: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
+            )
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if running_jobs > 0 {
+                tx.rollback().await?;
+                return Err(AppError::Conflict(format!(
+                    "runner team binding cannot change while {running_jobs} job(s) are running"
+                )));
+            }
+            sqlx::query(
+                "UPDATE runners SET team_id = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(validated)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
     }
 
     if let Some(labels) = &req.labels {
@@ -2594,7 +2694,7 @@ pub async fn update_runner(
 
     let r = sqlx::query(
         "SELECT id, name, labels, status, version, system_info, last_seen,
-                created_at, updated_at FROM runners WHERE id = ?",
+                created_at, updated_at, team_id FROM runners WHERE id = ?",
     )
     .bind(&id)
     .fetch_one(&state.pool)
@@ -2621,6 +2721,7 @@ pub async fn update_runner(
         "last_seen": r.get::<Option<String>, _>(6),
         "created_at": r.get::<Option<String>, _>(7),
         "updated_at": r.get::<Option<String>, _>(8),
+        "team_id": r.get::<Option<String>, _>(9),
         "running_jobs": running_jobs,
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,

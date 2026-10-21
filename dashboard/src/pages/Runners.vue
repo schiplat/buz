@@ -6,6 +6,7 @@ import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw, KeyRound } from '@lucide/vue'
 import { runnersApi, type Runner } from '@/api/runners'
+import { teamsApi, type Team } from '@/api/teams'
 import { formatLocalDateTime } from '@/utils/time'
 import { clockSkewInfo, clockToneClass } from '@/utils/runnerClock'
 import { copyText } from '@/utils/copyText'
@@ -15,6 +16,7 @@ import { useAppDialog } from '@/composables/useAppDialog'
 
 const dialog = useAppDialog()
 const runners = ref<Runner[]>([])
+const teams = ref<Team[]>([])
 const loading = ref(true)
 const searchQuery = ref('')
 const filterStatus = ref('')
@@ -32,6 +34,8 @@ const filteredRunners = computed(() => {
       r.system_info?.hostname,
       ...(r.system_info?.ip_addresses || []),
       ...(r.labels || []),
+      teams.value.find((team) => team.id === r.team_id)?.name,
+      r.team_id ? undefined : 'shared',
       r.status,
       r.version,
     ]
@@ -69,6 +73,7 @@ const newShellEnabled = ref(true)
 const newSshEnabled = ref(true)
 const newDockerEnabled = ref(false)
 const newSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
+const newTeamId = ref('')
 const creating = ref(false)
 const createdToken = ref<string | null>(null)
 const copied = ref(false)
@@ -97,9 +102,16 @@ const editShellEnabled = ref(true)
 const editSshEnabled = ref(true)
 const editDockerEnabled = ref(false)
 const editSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
+const editTeamId = ref('shared')
 const savingPolicy = ref(false)
 
-onMounted(async () => { await loadRunners() })
+onMounted(async () => {
+  await Promise.all([loadRunners(), loadTeams()])
+})
+
+async function loadTeams() {
+  try { teams.value = await teamsApi.list() } catch (e) { console.error(e) }
+}
 
 async function loadRunners() {
   loading.value = true
@@ -117,6 +129,7 @@ function openDetail(r: Runner) {
   editSshEnabled.value = r.ssh_enabled !== false
   editDockerEnabled.value = !!r.docker_enabled
   editSshHostKeyPolicy.value = r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure'
+  editTeamId.value = r.team_id ?? 'shared'
   drawerOpen.value = true
   loadRunnerEvents(r.id)
 }
@@ -161,13 +174,14 @@ function openCreate() {
   newSshEnabled.value = true
   newDockerEnabled.value = false
   newSshHostKeyPolicy.value = 'insecure'
+  newTeamId.value = ''
   createdToken.value = null
   copied.value = false
   showCreate.value = true
 }
 
 async function handleCreate() {
-  if (!newName.value.trim()) return
+  if (!newName.value.trim() || !newTeamId.value) return
   creating.value = true
   try {
     const labels = newLabels.value.split(',').map(s => s.trim()).filter(Boolean)
@@ -175,6 +189,7 @@ async function handleCreate() {
     const resp = await runnersApi.create({
       name: newName.value.trim(),
       labels,
+      team_id: newTeamId.value === 'shared' ? null : newTeamId.value,
       max_concurrent_jobs: max,
       clean_workspace_after_job: newCleanWorkspace.value,
       shell_enabled: newShellEnabled.value,
@@ -198,6 +213,7 @@ function policyDirty(): boolean {
     labelsNow.some((l, i) => l !== labelsWas[i])
   return (
     labelsChanged ||
+    editTeamId.value !== (r.team_id ?? 'shared') ||
     editMaxConcurrent.value !== (r.max_concurrent_jobs ?? 1) ||
     editCleanWorkspace.value !== !!r.clean_workspace_after_job ||
     editShellEnabled.value !== (r.shell_enabled !== false) ||
@@ -215,6 +231,7 @@ async function savePolicy() {
   try {
     const updated = await runnersApi.update(activeRunner.value.id, {
       labels,
+      team_id: editTeamId.value === 'shared' ? null : editTeamId.value,
       max_concurrent_jobs: max,
       clean_workspace_after_job: editCleanWorkspace.value,
       shell_enabled: editShellEnabled.value,
@@ -224,6 +241,7 @@ async function savePolicy() {
     })
     activeRunner.value = { ...activeRunner.value, ...updated }
     editLabels.value = (updated.labels || []).join(', ')
+    editTeamId.value = updated.team_id ?? 'shared'
     const idx = runners.value.findIndex(r => r.id === activeRunner.value!.id)
     if (idx >= 0) runners.value[idx] = { ...runners.value[idx], ...updated }
   } catch (e) { console.error(e); await dialog.alert('Failed to update runner policy') }
@@ -367,6 +385,11 @@ const eventBadge = (t: string) => {
       </template>
     </PageHeader>
 
+    <div v-if="runners.some((runner) => !runner.team_id)" role="note" class="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-xs text-muted-foreground">
+      <span class="font-semibold text-warning">Shared Runner trust boundary.</span>
+      Shared Runners can execute jobs from every team. Use only for mutually trusted workloads; bind a Runner to a team to restrict Manager dispatch. Team binding does not sandbox jobs that share the same OS user or host.
+    </div>
+
     <div class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
       <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
 
@@ -404,6 +427,7 @@ const eventBadge = (t: string) => {
                     <span class="font-mono text-xs">{{ sortIndicator('name') }}</span>
                   </button>
                 </th>
+                <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Team</th>
                 <th class="text-left px-5 py-2.5">
                   <button type="button" class="inline-flex items-center gap-1 text-[11px] uppercase text-muted-foreground hover:text-foreground transition-colors" @click="toggleSort('hostname')">
                     Hostname
@@ -455,6 +479,10 @@ const eventBadge = (t: string) => {
                     </button>
                     <span v-if="r.is_frozen" class="text-[10px] text-sky-500 font-normal">(frozen)</span>
                   </div>
+                </td>
+                <td class="px-5 py-3 text-xs">
+                  <span v-if="r.team_id" class="text-foreground">{{ teams.find((team) => team.id === r.team_id)?.name || 'Bound team' }}</span>
+                  <span v-else class="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">Shared</span>
                 </td>
                 <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ r.system_info?.hostname || '—' }}</td>
                 <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ r.system_info?.ip_addresses?.[0] || '—' }}</td>
@@ -532,6 +560,19 @@ const eventBadge = (t: string) => {
             <!-- Runner policy (UI-managed) -->
             <div class="rounded-xl border border-border/60 bg-muted/30 px-3.5 py-3 space-y-3">
               <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Runner Policy</div>
+              <div>
+                <label class="text-xs text-muted-foreground block mb-1">Team scope</label>
+                <select v-model="editTeamId" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden focus:border-ring/40">
+                  <option value="shared">Shared — all teams</option>
+                  <option v-for="team in teams" :key="team.id" :value="team.id">{{ team.name }} ({{ team.slug }})</option>
+                </select>
+                <p v-if="editTeamId === 'shared'" class="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
+                  Shared dispatch crosses teams; use only for mutually trusted workloads.
+                </p>
+                <p v-else class="mt-1 text-[10px] text-muted-foreground">
+                  Only this team’s jobs are dispatched here. This does not isolate jobs sharing the Runner OS user.
+                </p>
+              </div>
               <div>
                 <label class="text-xs text-muted-foreground block mb-1">Labels</label>
                 <input
@@ -843,6 +884,20 @@ const eventBadge = (t: string) => {
                 <input v-model="newName" type="text" placeholder="e.g. prod-runner-01" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15" @keyup.enter="handleCreate" />
               </div>
               <div>
+                <label class="type-label block mb-1.5">Team / isolation scope <span class="text-red-500">*</span></label>
+                <select v-model="newTeamId" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden focus:border-ring/40">
+                  <option disabled value="">Choose a team or Shared</option>
+                  <option value="shared">Shared — jobs from all teams</option>
+                  <option v-for="team in teams" :key="team.id" :value="team.id">{{ team.name }} ({{ team.slug }})</option>
+                </select>
+                <p v-if="newTeamId === 'shared'" class="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+                  Shared Runners may execute any team’s job. Use only when those teams belong to the same trust domain.
+                </p>
+                <p v-else class="mt-1.5 text-[11px] text-muted-foreground">
+                  Dispatch is limited to this team; jobs still share the Runner OS user and are not sandboxed from one another.
+                </p>
+              </div>
+              <div>
                 <label class="type-label block mb-1.5">Labels</label>
                 <input v-model="newLabels" type="text" placeholder="linux-x64, prod" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15" @keyup.enter="handleCreate" />
                 <p class="text-[11px] text-muted-foreground mt-1">Configured in UI only (not in runner.toml). Match pipeline runner.labels.</p>
@@ -902,7 +957,7 @@ const eventBadge = (t: string) => {
             </div>
             <div class="flex justify-end gap-2 pt-1">
               <UiButton variant="outline" @click="showCreate = false">Cancel</UiButton>
-              <UiButton :disabled="creating || !newName.trim()" @click="handleCreate">{{ creating ? 'Creating...' : 'Create Runner' }}</UiButton>
+              <UiButton :disabled="creating || !newName.trim() || !newTeamId" @click="handleCreate">{{ creating ? 'Creating...' : 'Create Runner' }}</UiButton>
             </div>
           </template>
 

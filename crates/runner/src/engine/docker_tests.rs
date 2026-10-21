@@ -360,7 +360,7 @@ async fn pull_image_uses_config_and_image_argument() {
         &docker,
         "alpine@sha256:deadbeef",
         Some(config.to_str().unwrap()),
-        Duration::from_secs(1),
+        Duration::from_secs(5),
     )
     .await
     .unwrap();

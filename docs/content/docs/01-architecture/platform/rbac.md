@@ -45,7 +45,7 @@ Manager (= one deployment)
       └── hosts (optional team_id)
 ```
 
-Runners and Manager config remain **global infrastructure** — Platform Admin only.
+Runner management remains **platform-admin-only** global infrastructure. Job **dispatch** can optionally be scoped per team: each Runner has a nullable `team_id` — `NULL` is the explicit **Shared** mode (jobs from every team, existing runners keep it after upgrade), while a bound Runner only receives jobs whose trigger-time team matches. Team binding limits Manager scheduling only; it is **not** an OS-level sandbox — jobs on one Runner still share the same OS user and host resources.
 
 ---
 

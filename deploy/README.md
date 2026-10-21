@@ -40,6 +40,8 @@ level = "info"
 
 ## Docker (same host)
 
+> **Trust boundary.** Every job on a Runner runs as the Runner container's OS user — jobs are not sandboxed from one another. A Shared Runner (`team_id = NULL`) accepts jobs from every team; bind Runners per team in the Manager UI (Runners → Team scope) and give mutually untrusted teams dedicated Runner hosts. See SECURITY.md → Known limitations.
+
 ```bash
 export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
 docker compose up -d manager

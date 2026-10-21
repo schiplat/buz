@@ -151,6 +151,7 @@ Request:
 {
   "name": "prod-runner-01",
   "labels": ["linux-x64", "prod"],
+  "team_id": "uuid-or-null",
   "version": "1.3.0",
   "max_concurrent_jobs": 3,
   "clean_workspace_after_job": true,
@@ -164,6 +165,8 @@ Request:
 
 Policy fields are optional. Defaults: `max_concurrent_jobs=1`, cleanup off, shell+ssh on, docker+wasm off, `ssh_host_key_policy=known_hosts`.
 
+`team_id` sets the dispatch scope: an existing team id binds the Runner to that team's jobs only; `null` creates an explicitly **Shared** Runner that accepts every team. Omitting the field also yields Shared (UI always sends an explicit choice). The team must exist; deleting a team with bound runners returns `409`.
+
 Response:
 ```json
 {
@@ -171,6 +174,7 @@ Response:
   "data": {
     "id": "uuid",
     "name": "prod-runner-01",
+    "team_id": "uuid-or-null",
     "register_token": "one-time-token",
     "max_concurrent_jobs": 3,
     "policy": { "max_concurrent_jobs": 3, "docker_enabled": true }
@@ -184,15 +188,18 @@ Request (any field optional):
 ```json
 {
   "labels": ["linux-x64", "docker"],
+  "team_id": "uuid-or-null",
   "max_concurrent_jobs": 4,
   "docker_enabled": true,
   "ssh_host_key_policy": "known_hosts"
 }
 ```
 
-Returns the updated runner object (includes `running_jobs` and all policy fields). `register_token` is not included in the response.
+`team_id` is presence-aware: omit it to keep the current binding, send a team id to bind, or send `null` to make the Runner Shared. Changing the binding while jobs are running on the Runner returns `409`.
 
-List/get responses include policy columns (`max_concurrent_jobs`, `clean_workspace_after_job`, engine flags, `ssh_host_key_policy`) and `running_jobs`; runner detail and update responses never expose `register_token`. The one-time token is returned only by runner creation and the explicit reissue endpoint.
+Returns the updated runner object (includes `running_jobs`, `team_id` and all policy fields). `register_token` is not included in the response.
+
+List/get responses include policy columns (`max_concurrent_jobs`, `clean_workspace_after_job`, engine flags, `ssh_host_key_policy`), `team_id` and `running_jobs`; runner detail and update responses never expose `register_token`. The one-time token is returned only by runner creation and the explicit reissue endpoint.
 
 ### POST /runners/register — Runner Registration
 

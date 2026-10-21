@@ -10,12 +10,18 @@ async fn test_pool() -> sqlx::SqlitePool {
         .expect("open in-memory db");
     // Minimal schema needed by create_runner_record (runners + runner_events).
     let sql = r#"
+        CREATE TABLE IF NOT EXISTS teams (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE
+        );
         CREATE TABLE IF NOT EXISTS runners (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
             register_token TEXT NOT NULL,
             token TEXT,
             labels TEXT NOT NULL DEFAULT '[]',
+            team_id TEXT,
             status TEXT NOT NULL DEFAULT 'offline',
             version TEXT,
             system_info TEXT NOT NULL DEFAULT '{}',
@@ -52,11 +58,68 @@ async fn test_pool() -> sqlx::SqlitePool {
 }
 
 #[tokio::test]
+async fn create_runner_record_binds_valid_team() {
+    let pool = test_pool().await;
+    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Alpha', 'alpha')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let req = CreateRunnerRequest {
+        name: "team-runner".into(),
+        labels: Some(vec!["linux-x64".into()]),
+        team_id: Some("team-1".into()),
+        version: None,
+        max_concurrent_jobs: None,
+        clean_workspace_after_job: None,
+        shell_enabled: None,
+        ssh_enabled: None,
+        docker_enabled: None,
+        wasm_enabled: None,
+        ssh_host_key_policy: None,
+    };
+
+    let created = create_runner_record(&pool, &req)
+        .await
+        .expect("create bound runner");
+    let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
+        .bind(created.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(team_id.as_deref(), Some("team-1"));
+}
+
+#[tokio::test]
+async fn create_runner_record_rejects_unknown_team() {
+    let pool = test_pool().await;
+    let req = CreateRunnerRequest {
+        name: "bad-team-runner".into(),
+        labels: None,
+        team_id: Some("missing-team".into()),
+        version: None,
+        max_concurrent_jobs: None,
+        clean_workspace_after_job: None,
+        shell_enabled: None,
+        ssh_enabled: None,
+        docker_enabled: None,
+        wasm_enabled: None,
+        ssh_host_key_policy: None,
+    };
+
+    let error = match create_runner_record(&pool, &req).await {
+        Ok(_) => panic!("unknown team must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("does not exist"));
+}
+
+#[tokio::test]
 async fn create_runner_record_returns_register_token() {
     let pool = test_pool().await;
     let req = CreateRunnerRequest {
         name: "cli-runner-1".into(),
         labels: Some(vec!["linux-x64".into(), "docker".into()]),
+        team_id: None,
         version: Some("1.5.6".into()),
         max_concurrent_jobs: None,
         clean_workspace_after_job: None,
@@ -91,6 +154,7 @@ async fn create_runner_record_rejects_duplicate_name() {
     let req = CreateRunnerRequest {
         name: "dup-runner".into(),
         labels: None,
+        team_id: None,
         version: None,
         max_concurrent_jobs: None,
         clean_workspace_after_job: None,

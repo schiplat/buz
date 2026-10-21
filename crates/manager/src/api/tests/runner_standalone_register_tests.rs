@@ -118,6 +118,7 @@ async fn production_mode_rejects_empty_token() {
         &CreateRunnerRequest {
             name: "prod-runner".into(),
             labels: None,
+            team_id: None,
             version: None,
             max_concurrent_jobs: None,
             clean_workspace_after_job: None,

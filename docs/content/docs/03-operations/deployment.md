@@ -322,6 +322,8 @@ For HTTPS (Manager native TLS, Runner client, reverse proxy, full commands), see
 
 Runners can be deployed on any machine with outbound HTTPS access to the Center.
 
+> **Trust boundary.** A Runner executes every job as its own OS user — jobs are not sandboxed from one another or from the Runner's credentials. A **Shared** Runner (no team binding) runs jobs from every team: use it only when all those teams trust each other. Put mutually untrusted teams on dedicated Runner hosts/OS users, and treat Docker socket access as host-root-equivalent. See [RBAC — Tenancy Model](/docs/01-architecture/platform/rbac/).
+
 ```bash
 # Create config
 mkdir -p conf

@@ -65,6 +65,10 @@ async fn test_app() -> (Router, SqlitePool, AppState) {
         .execute(&pool)
         .await
         .expect("seed team");
+    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-2', 'Other', 'other')")
+        .execute(&pool)
+        .await
+        .expect("seed other team");
 
     sqlx::query(
         "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
@@ -142,6 +146,10 @@ async fn json_req(
 }
 
 async fn create_pipeline(app: &Router, jwt: &str, name: &str) -> String {
+    create_pipeline_in_team(app, jwt, name, "team-1").await
+}
+
+async fn create_pipeline_in_team(app: &Router, jwt: &str, name: &str, team_id: &str) -> String {
     let pipe = json_req(
         app,
         "POST",
@@ -151,7 +159,7 @@ async fn create_pipeline(app: &Router, jwt: &str, name: &str) -> String {
             "name": name,
             "trigger_type": "manual",
             "runner_labels": ["linux-x64"],
-            "team_id": "team-1",
+            "team_id": team_id,
             "environments": ["default"],
             "env": [],
             "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
@@ -647,5 +655,334 @@ async fn unrelated_wakeup_returns_retry_hint_to_refresh_active_count() {
     assert!(
         body["data"]["job_id"].is_null(),
         "no claim with stale capacity: {body}"
+    );
+}
+
+#[tokio::test]
+async fn bound_runner_only_claims_its_frozen_team_and_shared_runner_can_claim_any_team() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    let team1_pipe = create_pipeline_in_team(&app, &admin, "team-one-pipe", "team-1").await;
+    let team2_pipe = create_pipeline_in_team(&app, &admin, "team-two-pipe", "team-2").await;
+
+    sqlx::query("UPDATE runners SET team_id = 'team-1' WHERE id = 'runner-1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let foreign = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{team2_pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let foreign_id = read_body(foreign).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let own = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{team1_pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let own_id = read_body(own).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let poll = negotiated_poll(&app, None).await;
+    let body = read_body(poll).await;
+    assert_eq!(
+        body["data"]["job_id"], own_id,
+        "bound runner claims its team: {body}"
+    );
+    let foreign_status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
+        .bind(&foreign_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        foreign_status, "pending",
+        "foreign team job remains pending"
+    );
+
+    // Remove the first claim and make the runner shared; the same foreign job
+    // becomes eligible without relying on a label convention.
+    sqlx::query("UPDATE jobs SET status = 'success' WHERE id = ?")
+        .bind(own_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE runners SET team_id = NULL WHERE id = 'runner-1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let poll = negotiated_poll(&app, None).await;
+    let body = read_body(poll).await;
+    assert_eq!(
+        body["data"]["job_id"], foreign_id,
+        "shared runner claims cross-team job: {body}"
+    );
+}
+
+#[tokio::test]
+async fn bound_runner_skips_legacy_job_without_frozen_team() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    let pipe = create_pipeline_in_team(&app, &admin, "legacy-team-pipe", "team-1").await;
+    sqlx::query("UPDATE runners SET team_id = 'team-1' WHERE id = 'runner-1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let trigger = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let job_id = read_body(trigger).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sqlx::query("UPDATE jobs SET snapshot = json_remove(snapshot, '$.team_id') WHERE id = ?")
+        .bind(&job_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let poll = json_req(&app, "GET", "/api/v1/runners/poll", &runner_jwt(), None).await;
+    let body = read_body(poll).await;
+    assert!(
+        body["data"]["job_id"].is_null(),
+        "bound runner skips unknown legacy ownership: {body}"
+    );
+    let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = ?")
+        .bind(job_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "pending");
+}
+
+#[tokio::test]
+async fn runner_team_binding_patch_distinguishes_omitted_bound_and_shared() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    let bind = json_req(
+        &app,
+        "PUT",
+        "/api/v1/runners/runner-1",
+        &admin,
+        Some(serde_json::json!({ "team_id": "team-2" })),
+    )
+    .await;
+    assert_eq!(bind.status(), StatusCode::OK);
+    assert_eq!(read_body(bind).await["data"]["team_id"], "team-2");
+
+    let keep = json_req(
+        &app,
+        "PUT",
+        "/api/v1/runners/runner-1",
+        &admin,
+        Some(serde_json::json!({ "labels": ["linux-x64"] })),
+    )
+    .await;
+    assert_eq!(keep.status(), StatusCode::OK);
+    assert_eq!(read_body(keep).await["data"]["team_id"], "team-2");
+
+    let shared = json_req(
+        &app,
+        "PUT",
+        "/api/v1/runners/runner-1",
+        &admin,
+        Some(serde_json::json!({ "team_id": null })),
+    )
+    .await;
+    assert_eq!(shared.status(), StatusCode::OK);
+    assert!(read_body(shared).await["data"]["team_id"].is_null());
+
+    let team_id: Option<String> =
+        sqlx::query_scalar("SELECT team_id FROM runners WHERE id = 'runner-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(team_id, None);
+}
+
+#[tokio::test]
+async fn runner_team_binding_cannot_change_with_running_jobs() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    let pipe = create_pipeline(&app, &admin, "runner-binding-running").await;
+    let trigger = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let job_id = read_body(trigger).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sqlx::query("UPDATE jobs SET status='running', runner_id='runner-1' WHERE id=?")
+        .bind(job_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let update = json_req(
+        &app,
+        "PUT",
+        "/api/v1/runners/runner-1",
+        &admin,
+        Some(serde_json::json!({ "team_id": "team-1" })),
+    )
+    .await;
+    assert_eq!(update.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn team_with_bound_runner_cannot_be_deleted() {
+    let (app, pool, _state) = test_app().await;
+    sqlx::query("UPDATE runners SET team_id='team-2' WHERE id='runner-1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let response = json_req(&app, "DELETE", "/api/v1/teams/team-2", &admin_jwt(), None).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM teams WHERE id='team-2'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(exists, 1);
+}
+
+#[tokio::test]
+async fn migrated_legacy_runner_remains_shared_by_default() {
+    let (_app, pool, _state) = test_app().await;
+    let team_id: Option<String> =
+        sqlx::query_scalar("SELECT team_id FROM runners WHERE id='runner-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        team_id, None,
+        "migration must not silently bind legacy runners"
+    );
+}
+
+#[tokio::test]
+async fn claim_does_not_resolve_foreign_team_ssh_host_credentials() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    sqlx::query(
+        "INSERT INTO hosts (id, name, host, port, username, credential_type, credential_data, team_id) \
+         VALUES ('host-foreign', 'foreign-host', '192.0.2.40', 22, 'deploy', 'vault', 'foreign-secret', 'team-2')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let pipeline = json_req(
+        &app,
+        "POST",
+        "/api/v1/pipelines",
+        &admin,
+        Some(serde_json::json!({
+            "name": "foreign-host-pipeline",
+            "trigger_type": "manual",
+            "runner_labels": ["linux-x64"],
+            "team_id": "team-1",
+            "environments": ["default"],
+            "env": [],
+            "steps": [{ "name": "remote", "run": "echo hi", "engine": "ssh", "host": "foreign-host" }]
+        })),
+    )
+    .await;
+    assert_eq!(pipeline.status(), StatusCode::OK, "create pipeline");
+    let pipeline_id = read_body(pipeline).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let trigger = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipeline_id}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    assert_eq!(trigger.status(), StatusCode::OK);
+
+    let poll = json_req(&app, "GET", "/api/v1/runners/poll", &runner_jwt(), None).await;
+    let body = read_body(poll).await;
+    let step = &body["data"]["tasks"][0];
+    assert!(
+        step["host_resolution_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not available to this pipeline team")),
+        "foreign host should be rejected without revealing its details: {body}"
+    );
+    assert!(
+        step.get("host").is_none(),
+        "foreign host connection details/credentials must not be attached: {step}"
+    );
+    assert!(
+        !body.to_string().contains("foreign-secret"),
+        "foreign host credential must not reach claim payload"
+    );
+}
+
+#[tokio::test]
+async fn foreign_team_backlog_does_not_fill_claim_limit() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    let foreign_pipe = create_pipeline_in_team(&app, &admin, "foreign-backlog", "team-2").await;
+    let own_pipe = create_pipeline_in_team(&app, &admin, "own-after-backlog", "team-1").await;
+    sqlx::query("UPDATE runners SET team_id = 'team-1' WHERE id = 'runner-1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for index in 0..55 {
+        sqlx::query(
+            "INSERT INTO jobs (id, pipeline_id, status, trigger_by, snapshot, created_at) \
+             VALUES (?, ?, 'pending', 'manual', ?, datetime('now', ?))",
+        )
+        .bind(format!("foreign-{index:02}"))
+        .bind(&foreign_pipe)
+        .bind(r#"{"team_id":"team-2","tasks":[]}"#)
+        .bind(format!("+{index} seconds"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let own_trigger = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{own_pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let own_job = read_body(own_trigger).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let poll = json_req(&app, "GET", "/api/v1/runners/poll", &runner_jwt(), None).await;
+    let body = read_body(poll).await;
+    assert_eq!(
+        body["data"]["job_id"], own_job,
+        "eligible job survives foreign backlog: {body}"
     );
 }

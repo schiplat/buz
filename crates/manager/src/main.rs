@@ -416,6 +416,7 @@ async fn gen_runner_token(
     let req = shared::protocol::CreateRunnerRequest {
         name: name.to_string(),
         labels,
+        team_id: None,
         version: Some(shared::version::VERSION.to_string()),
         max_concurrent_jobs: None,
         clean_workspace_after_job: None,

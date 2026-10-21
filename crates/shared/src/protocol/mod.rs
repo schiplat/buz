@@ -2,6 +2,16 @@ pub mod response;
 
 use serde::{Deserialize, Serialize};
 
+/// Deserialize a nullable PATCH field while preserving whether it was omitted:
+/// missing => outer `None`, explicit JSON null => `Some(None)`, value => `Some(Some(value))`.
+pub fn deserialize_nullable_patch<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 /// A field that accepts either a single value or an array.
 /// YAML: `host: prod-01` or `host: [prod-01, prod-02]`
 /// JSON: `"prod-01"` or `["prod-01", "prod-02"]`
@@ -269,6 +279,9 @@ pub struct NetworkInterfaceInfo {
 pub struct CreateRunnerRequest {
     pub name: String,
     pub labels: Option<Vec<String>>,
+    /// `None` creates an explicitly shared Runner; a non-null ID binds dispatch to one team.
+    #[serde(default)]
+    pub team_id: Option<String>,
     pub version: Option<String>,
     /// Max parallel jobs (1..=32). Defaults to 1 when omitted.
     #[serde(default)]
@@ -298,6 +311,9 @@ pub struct CreateRunnerResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateRunnerRequest {
     pub labels: Option<Vec<String>>,
+    /// Omitted = keep binding, null = explicitly share across teams, ID = bind to team.
+    #[serde(default, deserialize_with = "deserialize_nullable_patch")]
+    pub team_id: Option<Option<String>>,
     pub max_concurrent_jobs: Option<u32>,
     pub clean_workspace_after_job: Option<bool>,
     pub shell_enabled: Option<bool>,
@@ -859,4 +875,21 @@ pub struct CreateVariableRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateVariableRequest {
     pub value: String,
+}
+
+#[cfg(test)]
+mod runner_team_patch_tests {
+    use super::UpdateRunnerRequest;
+
+    #[test]
+    fn runner_team_patch_distinguishes_omitted_null_and_value() {
+        let omitted: UpdateRunnerRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(omitted.team_id, None);
+
+        let shared: UpdateRunnerRequest = serde_json::from_str(r#"{"team_id":null}"#).unwrap();
+        assert_eq!(shared.team_id, Some(None));
+
+        let bound: UpdateRunnerRequest = serde_json::from_str(r#"{"team_id":"team-1"}"#).unwrap();
+        assert_eq!(bound.team_id, Some(Some("team-1".to_string())));
+    }
 }

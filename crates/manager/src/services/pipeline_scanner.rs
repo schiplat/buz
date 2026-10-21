@@ -249,9 +249,10 @@ pub async fn upsert_from_yaml(
     let yaml_sha256 = format!("{:x}", Sha256::digest(yaml_content.as_bytes()));
     let yaml_key = normalize_yaml_path_key(file_path);
     let existing = find_yaml_pipeline_row(pool, &yaml_key).await?;
+    let mut team_changed = false;
     if let Some(id) = existing.as_deref() {
         let row = sqlx::query(
-            "SELECT yaml_sha256, webhook_environment, cron_environment FROM pipelines WHERE id = ?",
+            "SELECT yaml_sha256, webhook_environment, cron_environment, team_id FROM pipelines WHERE id = ?",
         )
         .bind(id)
         .fetch_one(pool)
@@ -259,6 +260,22 @@ pub async fn upsert_from_yaml(
         let stored_hash: String = row.get(0);
         let stored_webhook_environment: String = row.get(1);
         let stored_cron_environment: String = row.get(2);
+        let stored_team_id: String = row.get(3);
+        team_changed = stored_team_id != team_id;
+        if team_changed {
+            let active_jobs: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
+                 AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
+            )
+            .bind(id)
+            .fetch_one(pool)
+            .await?;
+            if active_jobs > 0 {
+                anyhow::bail!(
+                    "pipeline team cannot change while {active_jobs} active job(s) exist; finish or cancel them first"
+                );
+            }
+        }
         if stored_hash == yaml_sha256
             && stored_webhook_environment == webhook_environment.as_deref().unwrap_or("")
             && stored_cron_environment == cron_environment.as_deref().unwrap_or("")
@@ -282,7 +299,22 @@ pub async fn upsert_from_yaml(
     let input_defs_json = serde_json::to_string(&input_defs).unwrap_or_else(|_| "[]".into());
 
     if let Some(id) = existing {
-        let mut tx = pool.begin().await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        if team_changed {
+            let active_jobs: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
+                 AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
+            )
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if active_jobs > 0 {
+                tx.rollback().await?;
+                anyhow::bail!(
+                    "pipeline team cannot change while {active_jobs} active job(s) exist; finish or cancel them first"
+                );
+            }
+        }
         sqlx::query(
             "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?,
              webhook_path = ?, webhook_secret = ?, webhook_environment = ?, cron_expr = ?, cron_environment = ?, runner_labels = ?, timeout_seconds = ?,

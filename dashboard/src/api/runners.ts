@@ -48,6 +48,8 @@ export interface Runner {
   id: string
   name: string
   labels: string[]
+  /** null means intentionally shared across all teams; existing legacy runners stay null. */
+  team_id: string | null
   status: string
   version: string | null
   system_info: SystemInfo | null
@@ -70,6 +72,8 @@ export interface Runner {
 export interface CreateRunnerPayload {
   name: string
   labels: string[]
+  /** Must be explicitly selected: null means Shared. */
+  team_id: string | null
   max_concurrent_jobs?: number
   clean_workspace_after_job?: boolean
   shell_enabled?: boolean
@@ -92,6 +96,7 @@ export interface ReissueRegisterTokenResponse {
 
 export type UpdateRunnerPayload = Partial<Omit<RunnerPolicy, never>> & {
   labels?: string[]
+  team_id?: string | null
 }
 
 export const runnersApi = {

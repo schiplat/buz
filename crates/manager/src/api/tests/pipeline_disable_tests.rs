@@ -503,3 +503,115 @@ async fn disable_unknown_pipeline_is_404() {
     let resp = disable(&app, &admin_jwt(), "no-such-id", None).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn pipeline_team_migration_blocked_while_jobs_active_and_allowed_after_terminal() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-2', 'Other', 'other')")
+        .execute(&pool)
+        .await
+        .expect("seed second team");
+
+    let pipe = create_pipeline(&app, &admin, "team-migrate", "default", &["linux-x64"]).await;
+    let trigger = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let job_id = read_body(trigger).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let update_body = serde_json::json!({
+        "name": "team-migrate",
+        "trigger_type": "manual",
+        "runner_labels": ["linux-x64"],
+        "team_id": "team-2",
+        "environments": ["default"],
+        "env": [],
+        "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }],
+    });
+    let blocked = json_req(
+        &app,
+        "PUT",
+        &format!("/api/v1/pipelines/{pipe}"),
+        &admin,
+        Some(update_body.clone()),
+    )
+    .await;
+    assert_eq!(
+        blocked.status(),
+        StatusCode::CONFLICT,
+        "active job must block team migration"
+    );
+    let team_after_block: String = sqlx::query_scalar("SELECT team_id FROM pipelines WHERE id = ?")
+        .bind(&pipe)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(team_after_block, "team-1");
+
+    // Freeze the job's team into the snapshot, then finish it (terminal jobs
+    // do not block migration).
+    sqlx::query("UPDATE jobs SET status = 'success' WHERE id = ?")
+        .bind(&job_id)
+        .execute(&pool)
+        .await
+        .expect("finish job");
+
+    let allowed = json_req(
+        &app,
+        "PUT",
+        &format!("/api/v1/pipelines/{pipe}"),
+        &admin,
+        Some(update_body),
+    )
+    .await;
+    assert_eq!(
+        allowed.status(),
+        StatusCode::OK,
+        "terminal jobs allow team migration"
+    );
+    let team_after_move: String = sqlx::query_scalar("SELECT team_id FROM pipelines WHERE id = ?")
+        .bind(&pipe)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(team_after_move, "team-2");
+}
+
+#[tokio::test]
+async fn job_snapshot_freezes_trigger_time_team() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    let pipe = create_pipeline(&app, &admin, "team-freeze", "default", &["linux-x64"]).await;
+    let trigger = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    assert_eq!(trigger.status(), StatusCode::OK);
+    let job_id = read_body(trigger).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let frozen_team: Option<String> =
+        sqlx::query_scalar("SELECT json_extract(snapshot, '$.team_id') FROM jobs WHERE id = ?")
+            .bind(&job_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        frozen_team.as_deref(),
+        Some("team-1"),
+        "snapshot records trigger-time team"
+    );
+}
