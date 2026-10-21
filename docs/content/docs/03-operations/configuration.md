@@ -42,9 +42,10 @@ yaml_scan_interval_seconds = 30
 # BUZ_PLUGIN_MIRROR to the host-side buz-plugins/plugins directory.
 # Optional local override outside Docker:
 # local_dir = "/srv/buz-plugin-mirror/plugins"
-# Optional review gate:
-# reviewed_manifest = "/etc/buz/reviews.json"
-# require_reviewed = false
+# Review gate — REQUIRED for production. Without it every `uses:` template
+# resolves unreviewed (Manager warns at startup + dashboard shows a banner):
+# reviewed_manifest = "/etc/buz/reviews.json"   # from the buz-plugins repo
+# require_reviewed = true    # strict: reject templates absent from the manifest
 
 [clock]
 enabled = true                 # probe remote clock before signing config URLs

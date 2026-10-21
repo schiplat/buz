@@ -32,29 +32,51 @@ export interface HealthInfo {
   marketplace_url?: string
   uptime_seconds: number
   started_at?: string
+  /** Review-gate posture; absent on managers older than the banner feature. */
+  step_review?: StepReviewHealth
   database: DatabaseHealth
   jobs: JobsBacklogHealth
   ws: WsHealth
 }
 
+export interface StepReviewHealth {
+  manifest_configured: boolean
+  require_reviewed: boolean
+}
+
 export const DEFAULT_MARKETPLACE_URL = 'https://plugins.buz.schiplat.com'
 
-let cachedMarketplaceUrl: string | null = null
+let healthOnce: Promise<HealthInfo | null> | null = null
+
+/**
+ * One `/health` round-trip per page load, shared by every consumer (sidebar
+ * version label, marketplace URL, review-gate banner). Resolves null when the
+ * probe fails so callers can keep their fallbacks.
+ */
+function fetchHealthOnce(): Promise<HealthInfo | null> {
+  if (!healthOnce) {
+    healthOnce = healthApi.get().catch(() => null)
+  }
+  return healthOnce
+}
 
 /**
  * Plugin-marketplace URL configured on the Manager (falls back to the public
- * marketplace). Fetched once per page load; failures keep the default so the
- * YAML editor link works even when the health probe is unreachable.
+ * marketplace). Failures keep the default so the YAML editor link works even
+ * when the health probe is unreachable.
  */
 export async function getMarketplaceUrl(): Promise<string> {
-  if (cachedMarketplaceUrl) return cachedMarketplaceUrl
-  try {
-    const info = await healthApi.get()
-    if (info.marketplace_url) cachedMarketplaceUrl = info.marketplace_url
-  } catch {
-    // keep the default — the link should not break on a failed probe
-  }
-  return cachedMarketplaceUrl ?? DEFAULT_MARKETPLACE_URL
+  const info = await fetchHealthOnce()
+  return info?.marketplace_url ?? DEFAULT_MARKETPLACE_URL
+}
+
+/**
+ * Step review-gate posture for the "gate not enabled" banner. Null when the
+ * probe fails or the manager predates the field — the banner stays silent.
+ */
+export async function getStepReviewGate(): Promise<StepReviewHealth | null> {
+  const info = await fetchHealthOnce()
+  return info?.step_review ?? null
 }
 
 export const healthApi = {

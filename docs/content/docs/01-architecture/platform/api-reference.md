@@ -101,7 +101,8 @@ Rules: both fields required; `new_password` ≥ 6 characters and must differ fro
 
 Liveness probe (no auth). Returns version plus runtime health signals:
 uptime, database connectivity with latency and pool usage, non-terminal job
-backlog, and WebSocket broadcast sink counts.
+backlog, WebSocket broadcast sink counts, and the step review-gate posture
+(booleans only — the manifest path is not exposed).
 
 ```json
 {
@@ -111,6 +112,7 @@ backlog, and WebSocket broadcast sink counts.
   "component": "manager",
   "uptime_seconds": 3600,
   "started_at": "2026-08-30T12:00:00Z",
+  "step_review": { "manifest_configured": false, "require_reviewed": false },
   "database": { "status": "ok", "latency_ms": 1.2, "pool": { "max": 8, "idle": 6, "in_use": 2 } },
   "jobs": { "pending": 0, "running": 1, "queued": 0, "waiting_approval": 0 },
   "ws": { "job_sinks": 1, "pipeline_sinks": 0 }

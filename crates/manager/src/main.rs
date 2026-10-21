@@ -172,6 +172,28 @@ async fn main() -> anyhow::Result<()> {
         reviewed_manifest: config.step_index.reviewed_manifest.clone(),
         require_reviewed: config.step_index.require_reviewed,
     });
+    // Review-gate posture: the gate is silent by default, so say so loudly at
+    // boot — an operator who never configured a manifest must know unreviewed
+    // templates resolve freely (dashboard repeats this as a banner).
+    if config.step_index.reviewed_manifest.trim().is_empty() {
+        tracing::warn!(
+            "step review gate is NOT enabled: [step_index] reviewed_manifest is empty — \
+             every `uses:` template resolves without review checks; production deployments \
+             should set reviewed_manifest to a reviews.json and require_reviewed = true"
+        );
+    } else if !config.step_index.require_reviewed {
+        tracing::info!(
+            manifest = %config.step_index.reviewed_manifest,
+            "step review gate is advisory-only (require_reviewed = false): unreviewed \
+             templates resolve with a log warning instead of being rejected"
+        );
+    } else {
+        tracing::info!(
+            manifest = %config.step_index.reviewed_manifest,
+            "step review gate is strict (require_reviewed = true): templates absent from \
+             the reviewed manifest are rejected at resolution time"
+        );
+    }
     tracing::info!(
         enabled = config.clock.enabled,
         warn_threshold_seconds = config.clock.warn_threshold_seconds,

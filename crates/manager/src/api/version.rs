@@ -149,6 +149,13 @@ pub async fn health(
     } else {
         state.config.marketplace_url.as_str()
     };
+    // Review-gate posture for the dashboard banner. Booleans only — the
+    // manifest path stays private (same policy as the clock section: this
+    // endpoint is unauthenticated).
+    let step_review = serde_json::json!({
+        "manifest_configured": !state.config.step_index.reviewed_manifest.trim().is_empty(),
+        "require_reviewed": state.config.step_index.require_reviewed,
+    });
     let body = Json(serde_json::json!({
         "status": status,
         "name": PRODUCT_NAME,
@@ -157,6 +164,7 @@ pub async fn health(
         "marketplace_url": marketplace_url,
         "uptime_seconds": uptime_seconds,
         "started_at": started.map(|s| s.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        "step_review": step_review,
         "database": {
             "status": if db_ok { "ok" } else { "error" },
             "latency_ms": latency_ms,

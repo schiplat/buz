@@ -36,6 +36,19 @@ export BUZ_REGISTER_TOKEN="your-token"
 
 Prefer the one-container image — see **[Standalone](/docs/03-operations/standalone/)** (`buz-standalone`).
 
+## Before production: the step review gate
+
+Out of the box, Buz resolves every `uses:` template **without review checks** — fine for a local lab, not for a deployment you expose. The Manager logs a warning at startup and the dashboard shows a banner until the gate is configured:
+
+```toml
+[step_index]
+# reviews.json ships in the buz-plugins repo; point this at your checkout
+reviewed_manifest = "/etc/buz/reviews.json"
+require_reviewed = true   # reject templates absent from the manifest
+```
+
+See **[Configuration](/docs/03-operations/configuration/)** for the full `[step_index]` reference.
+
 ## Next
 
 | Guide | When |

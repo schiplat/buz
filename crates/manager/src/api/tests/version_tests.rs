@@ -147,3 +147,38 @@ async fn health_clock_section_leaks_no_internal_endpoint() {
         assert!(clock.get(key).is_some(), "clock.{key} missing: {clock}");
     }
 }
+
+/// Default config ships with the review gate fully off; `/health` must say so
+/// (the dashboard banner keys off `manifest_configured`) without leaking the
+/// manifest path to anonymous callers.
+#[tokio::test]
+async fn health_step_review_section_reports_gate_without_leaking_paths() {
+    let state = test_state().await;
+    let (_, Json(body)) = health(State(state), Query(HealthQuery::default())).await;
+
+    let step_review = &body["step_review"];
+    assert!(
+        step_review.is_object(),
+        "step_review section present: {body}"
+    );
+    assert_eq!(step_review["manifest_configured"], false);
+    assert_eq!(step_review["require_reviewed"], false);
+    for key in ["manifest", "path", "local_dir"] {
+        assert!(
+            step_review.get(key).is_none(),
+            "unauthenticated /health must not expose `{key}`: {step_review}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn health_step_review_section_reflects_configured_gate() {
+    let mut state = test_state().await;
+    state.config.step_index.reviewed_manifest = "/etc/buz/reviews.json".into();
+    state.config.step_index.require_reviewed = true;
+
+    let (_, Json(body)) = health(State(state), Query(HealthQuery::default())).await;
+    let step_review = &body["step_review"];
+    assert_eq!(step_review["manifest_configured"], true);
+    assert_eq!(step_review["require_reviewed"], true);
+}
