@@ -476,7 +476,6 @@ pub async fn run_poll_loop(
     let mut jobs: JoinSet<anyhow::Result<()>> = JoinSet::new();
     // Cancel signals for live jobs; notices arrive on the claim channel.
     let cancels: CancelRegistry = Arc::new(Mutex::new(HashMap::new()));
-    let job_finished = Arc::new(tokio::sync::Notify::new());
     // Manager keeps cancel notices pending until the next poll carries this
     // acknowledgement; retain them across transport errors.
     let mut pending_cancel_acks: Vec<String> = Vec::new();
@@ -516,16 +515,7 @@ pub async fn run_poll_loop(
         // and still delivers cancel notices, which a busy runner must keep
         // receiving (that channel replaces the old per-job status probes).
 
-        let poll_result = tokio::select! {
-            result = poll_for_task(
-                client,
-                config,
-                token,
-                &pending_cancel_acks,
-                active,
-            ) => result,
-            _ = job_finished.notified(), if !jobs.is_empty() => continue,
-        };
+        let poll_result = poll_for_task(client, config, token, &pending_cancel_acks, active).await;
         match poll_result {
             Ok(outcome) => {
                 // Successful response proves Manager received the prior batch
@@ -588,7 +578,6 @@ pub async fn run_poll_loop(
                     .insert(job_id.clone(), cancel_tx);
                 let cancels_for_job = Arc::clone(&cancels);
                 let job_id_for_cleanup = job_id.clone();
-                let job_finished_for_task = Arc::clone(&job_finished);
 
                 jobs.spawn(async move {
                     let result = run_one_job(&c, &job_config, &t, &task, cancel_rx).await;
@@ -604,7 +593,6 @@ pub async fn run_poll_loop(
                         .lock()
                         .expect("cancel registry")
                         .remove(&job_id_for_cleanup);
-                    job_finished_for_task.notify_one();
                     result
                 });
             }
@@ -737,6 +725,17 @@ async fn cancel_triggered(rx: &mut watch::Receiver<bool>) -> bool {
     }
 }
 
+/// Idle runners can hold one long poll for the full client timeout budget.
+/// Active runners refresh their capacity snapshot frequently so a completed
+/// local job makes the next claim eligible without cancelling an in-flight poll.
+fn poll_wait_seconds(active_jobs: u32) -> u64 {
+    if active_jobs == 0 {
+        45
+    } else {
+        2
+    }
+}
+
 async fn poll_for_task(
     client: &Client,
     config: &Config,
@@ -744,10 +743,11 @@ async fn poll_for_task(
     cancel_acks: &[String],
     active_jobs: u32,
 ) -> anyhow::Result<PollOutcome> {
+    let wait_seconds = poll_wait_seconds(active_jobs);
     let mut request = client
         .get(format!("{}/api/v1/runners/poll", config.runner.manager_url))
         .header("Authorization", format!("Bearer {token}"))
-        .header("prefer", "wait=45")
+        .header("prefer", format!("wait={wait_seconds}"))
         .header("x-buz-active-jobs", active_jobs.to_string())
         .timeout(Duration::from_secs(50));
     if !cancel_acks.is_empty() {

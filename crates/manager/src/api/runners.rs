@@ -632,13 +632,12 @@ pub(super) async fn poll_with_wait(
         if frozen != 0 || restarting != 0 {
             return Ok(response);
         }
-
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return Ok(response);
         }
         match tokio::time::timeout(remaining, events.recv()).await {
-            Ok(Ok(())) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Ok(())) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
             Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => {
                 return Ok(response)
             }

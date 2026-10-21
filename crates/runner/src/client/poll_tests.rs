@@ -946,3 +946,10 @@ async fn cancel_triggered_parks_when_sender_drops_without_signal() {
 }
 
 use std::time::Duration;
+
+#[test]
+fn active_runner_uses_short_poll_to_refresh_capacity_snapshot() {
+    assert_eq!(super::poll_wait_seconds(0), 45);
+    assert_eq!(super::poll_wait_seconds(1), 2);
+    assert_eq!(super::poll_wait_seconds(8), 2);
+}

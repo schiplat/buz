@@ -575,3 +575,77 @@ async fn negotiated_long_poll_wakes_when_a_running_job_is_cancelled() {
         "poll carries cancelled job immediately: {body}"
     );
 }
+
+#[tokio::test]
+async fn unrelated_wakeup_returns_retry_hint_to_refresh_active_count() {
+    let (app, pool, state) = test_app().await;
+    let admin = admin_jwt();
+    let busy_pipe = create_pipeline(&app, &admin, "busy-active-snapshot").await;
+    let other_pipe = create_pipeline(&app, &admin, "other-runner-event").await;
+    sqlx::query("UPDATE runners SET max_concurrent_jobs = 1 WHERE id = 'runner-1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let running = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{busy_pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let running_id = read_body(running).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sqlx::query(
+        "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
+         start_time = datetime('now') WHERE id = ?",
+    )
+    .bind(&running_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let poll_state = state.clone();
+    let poll_task = tokio::spawn(async move {
+        let _ = started_tx.send(());
+        crate::api::runners::poll_with_wait(
+            crate::middleware::RunnerClaims {
+                runner_id: "runner-1".into(),
+            },
+            poll_state,
+            1,
+            Vec::new(),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .expect("capacity long poll")
+    });
+    started_rx.await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    // This event wakes the long poll, but its job is blocked by the stale
+    // active_jobs=1 snapshot. The poll must not claim beyond capacity; it
+    // remains parked until its normal deadline for the Runner to refresh.
+    let trigger = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{other_pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    assert_eq!(trigger.status(), StatusCode::OK);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(3), poll_task)
+        .await
+        .expect("poll returns at its deadline after unrelated wakes")
+        .unwrap();
+    let body = read_body(response.into_response()).await;
+    assert!(
+        body["data"]["job_id"].is_null(),
+        "no claim with stale capacity: {body}"
+    );
+}
