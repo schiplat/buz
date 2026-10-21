@@ -9,29 +9,54 @@
 
 use shared::error::AppError;
 use shared::pipeline_yaml::{
-    collect_effective_secret_names, parse_and_validate, PipelineYaml, YamlValidationError,
-    YamlValidationResult,
+    collect_effective_secret_names, PipelineYaml, YamlValidationError, YamlValidationResult,
 };
 use shared::rbac::Perm;
 use sqlx::{Row, SqlitePool};
 
 use crate::rbac::AuthUser;
 
+/// Validation outcome plus the typed document, so callers that need both
+/// (trigger path, scanner) don't pay a second parse. `parsed` is `None`
+/// exactly when the YAML does not deserialize.
+pub struct ValidatedYaml {
+    pub result: YamlValidationResult,
+    pub parsed: Option<PipelineYaml>,
+}
+
 /// Full validation (structure + referential). Use only after the caller is
 /// authorized for the YAML target team, or from the trusted scanner.
+///
+/// The structural half is content-keyed cached (`services::yaml_cache`);
+/// referential checks always run — DB state can change without the file
+/// changing.
 pub async fn validate_pipeline_yaml(
     pool: &SqlitePool,
     yaml: &str,
 ) -> Result<YamlValidationResult, AppError> {
-    let mut result = parse_and_validate(yaml);
-    let parsed: PipelineYaml = match serde_yaml::from_str(yaml) {
-        Ok(p) => p,
-        Err(_) => return Ok(result),
+    Ok(validate_pipeline_yaml_with_parse(pool, yaml).await?.result)
+}
+
+/// [`validate_pipeline_yaml`] retaining the parsed document for reuse.
+pub async fn validate_pipeline_yaml_with_parse(
+    pool: &SqlitePool,
+    yaml: &str,
+) -> Result<ValidatedYaml, AppError> {
+    let cached = crate::services::yaml_cache::parse_cached(yaml);
+    let mut result = cached.structural;
+    let Some(parsed) = cached.parsed else {
+        return Ok(ValidatedYaml {
+            result,
+            parsed: None,
+        });
     };
 
     enrich_referential_errors(pool, &parsed, &mut result, ReferentialMode::Full).await?;
     result.valid = result.errors.is_empty();
-    Ok(result)
+    Ok(ValidatedYaml {
+        result,
+        parsed: Some(parsed),
+    })
 }
 
 /// Validate for an interactive viewer. Without TeamView on the target team,
@@ -41,10 +66,10 @@ pub async fn validate_pipeline_yaml_for_viewer(
     yaml: &str,
     auth: &AuthUser,
 ) -> Result<YamlValidationResult, AppError> {
-    let mut result = parse_and_validate(yaml);
-    let parsed: PipelineYaml = match serde_yaml::from_str(yaml) {
-        Ok(p) => p,
-        Err(_) => return Ok(result),
+    let cached = crate::services::yaml_cache::parse_cached(yaml);
+    let mut result = cached.structural;
+    let Some(parsed) = cached.parsed else {
+        return Ok(result);
     };
 
     let mode = if auth.is_platform_admin {

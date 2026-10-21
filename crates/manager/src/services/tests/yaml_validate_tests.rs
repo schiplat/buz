@@ -272,3 +272,52 @@ steps:
         r.errors
     );
 }
+
+/// The structural half of validation is content-keyed cached; referential
+/// checks must still re-run; deleting a secret has to fail the next
+/// validation of unchanged content (trigger-path freshness guarantee).
+#[tokio::test]
+async fn referential_checks_stay_fresh_for_cached_content() {
+    let pool = pool_with_default_team().await;
+    sqlx::query(
+        "INSERT INTO secrets (id, name, value, team_id, kind)
+         VALUES ('s1', 'DEP_KEY', 'x', 't1', 'generic')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let yaml = r#"
+name: demo
+environments: [default]
+steps:
+  - name: push
+    engine: shell
+    registry_secret: ${secrets.DEP_KEY}
+    run: echo hi
+"#;
+
+    let first = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    assert!(
+        first.valid,
+        "seeds satisfy referential checks: {:?}",
+        first.errors
+    );
+
+    // Same content again — now served from the parse cache.
+    let second = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    assert!(second.valid);
+
+    sqlx::query("DELETE FROM secrets WHERE name = 'DEP_KEY'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let third = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    assert!(!third.valid, "secret deletion must fail unchanged content");
+    assert!(
+        third.errors.iter().any(|e| e.field == "secrets"),
+        "errors: {:?}",
+        third.errors
+    );
+}

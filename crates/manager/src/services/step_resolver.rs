@@ -7,9 +7,10 @@
 //! Remote `https` indexes and the static site are Phase 2 and deliberately
 //! out of scope here.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, Mutex, OnceLock};
+use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
 use shared::pipeline_yaml::{parse_uses_reference, UsesPin};
@@ -50,10 +51,28 @@ pub struct ResolutionPolicy {
 /// (`{ "reviews": [ { "sha256": ... } ] }`). Missing file → empty set
 /// (with `require_reviewed` that fails closed: nothing is reviewed).
 /// Malformed file → warn and continue empty.
+///
+/// Successful parses are cached keyed on the file's `(mtime, len)`: the
+/// manifest is read on every resolution and every `/steps` listing, and a
+/// stat is all an unchanged file needs. Failures are not cached — a file
+/// that appears later must be picked up.
 pub fn load_reviewed_hashes(path: &str) -> HashSet<String> {
     if path.trim().is_empty() {
         return HashSet::new();
     }
+    let Some(stamp) = file_stamp(Path::new(path)) else {
+        tracing::warn!("reviewed manifest {path} unreadable — treating as empty");
+        return HashSet::new();
+    };
+    {
+        let cache = MANIFEST_CACHE.lock().expect("manifest cache poisoned");
+        if let Some(entry) = cache.get(path) {
+            if entry.stamp == stamp {
+                return entry.hashes.clone();
+            }
+        }
+    }
+
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(e) => {
@@ -62,7 +81,7 @@ pub fn load_reviewed_hashes(path: &str) -> HashSet<String> {
         }
     };
     let parsed: Result<ReviewsManifest, _> = serde_json::from_str(&raw);
-    match parsed {
+    let hashes = match parsed {
         Ok(manifest) => manifest
             .reviews
             .into_iter()
@@ -72,8 +91,32 @@ pub fn load_reviewed_hashes(path: &str) -> HashSet<String> {
             tracing::warn!("reviewed manifest {path} malformed: {e} — treating as empty");
             HashSet::new()
         }
-    }
+    };
+
+    let mut cache = MANIFEST_CACHE.lock().expect("manifest cache poisoned");
+    cache.insert(
+        path.to_string(),
+        ManifestCacheEntry {
+            stamp,
+            hashes: hashes.clone(),
+        },
+    );
+    hashes
 }
+
+/// `(mtime, len)` identity of a file, or `None` when it cannot be stat'ed.
+fn file_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+struct ManifestCacheEntry {
+    stamp: (SystemTime, u64),
+    hashes: HashSet<String>,
+}
+
+static MANIFEST_CACHE: LazyLock<Mutex<HashMap<String, ManifestCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Build the resolution policy from startup settings.
 pub fn policy_from_settings() -> ResolutionPolicy {
@@ -130,6 +173,17 @@ struct IndexedSpec {
     content_sha256: String,
 }
 
+/// Cached parse of one index file, keyed on the file's `(mtime, len)`.
+struct IndexCacheEntry {
+    stamp: (SystemTime, u64),
+    entry: IndexedSpec,
+}
+
+/// Parsed index files per index directory. Bounded by the number of template
+/// files on disk — entries are dropped when their file disappears or changes.
+static INDEX_CACHE: LazyLock<Mutex<HashMap<PathBuf, HashMap<PathBuf, IndexCacheEntry>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// The `local` step index: a directory of one-file-one-plugin YAML specs.
 pub struct LocalStepIndex {
     dir: PathBuf,
@@ -143,6 +197,11 @@ impl LocalStepIndex {
     /// Load every parseable spec. Files that fail to parse are skipped with
     /// a warning — one broken file must not take the whole index down
     /// (the `buz step validate` CLI is the tool that reports them loudly).
+    ///
+    /// Parsed specs are cached per file keyed on `(mtime, len)`: resolution
+    /// runs on every save and trigger, and an unchanged directory costs one
+    /// stat per file instead of a full read+parse+hash sweep. Parse failures
+    /// are not cached so a fixed file is picked up immediately.
     fn load(&self) -> Result<Vec<IndexedSpec>, String> {
         let files = shared::yaml_files::discover_yaml_files(&self.dir).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -155,8 +214,43 @@ impl LocalStepIndex {
             }
         })?;
 
-        let mut specs = Vec::new();
-        for file in files {
+        // Stat first, then take the lock only to collect hits — reads and
+        // parses happen without the lock so a cold cache doesn't serialize
+        // concurrent resolutions.
+        let mut stamps: Vec<Option<(SystemTime, u64)>> = Vec::with_capacity(files.len());
+        for file in &files {
+            stamps.push(file_stamp(file));
+        }
+
+        let mut fresh: Vec<IndexedSpec> = Vec::with_capacity(files.len());
+        let mut missing: Vec<(PathBuf, (SystemTime, u64))> = Vec::new();
+        {
+            let mut cache = INDEX_CACHE.lock().expect("index cache poisoned");
+            let dir_cache = cache.entry(self.dir.clone()).or_default();
+            // Drop entries for files that no longer exist in the directory.
+            dir_cache.retain(|p, _| files.contains(p));
+            for (file, stamp) in files.iter().zip(&stamps) {
+                match stamp {
+                    Some(stamp) => {
+                        if let Some(hit) = dir_cache.get(file) {
+                            if hit.stamp == *stamp {
+                                fresh.push(hit.entry.clone());
+                            } else {
+                                missing.push((file.clone(), *stamp));
+                            }
+                        } else {
+                            missing.push((file.clone(), *stamp));
+                        }
+                    }
+                    None => {
+                        tracing::warn!("step index: cannot read {} — skipped", file.display());
+                    }
+                }
+            }
+        }
+
+        let mut loaded: Vec<(PathBuf, (SystemTime, u64), IndexedSpec)> = Vec::new();
+        for (file, stamp) in missing {
             let Ok(raw) = std::fs::read_to_string(&file) else {
                 tracing::warn!("step index: cannot read {} — skipped", file.display());
                 continue;
@@ -169,13 +263,27 @@ impl LocalStepIndex {
                 );
                 continue;
             };
-            specs.push(IndexedSpec {
-                content_sha256: format!("{:x}", Sha256::digest(raw.as_bytes())),
-                source: format!("local:{}", self.dir.display()),
-                spec,
-            });
+            loaded.push((
+                file,
+                stamp,
+                IndexedSpec {
+                    content_sha256: format!("{:x}", Sha256::digest(raw.as_bytes())),
+                    source: format!("local:{}", self.dir.display()),
+                    spec,
+                },
+            ));
         }
-        Ok(specs)
+
+        if !loaded.is_empty() {
+            let mut cache = INDEX_CACHE.lock().expect("index cache poisoned");
+            let dir_cache = cache.entry(self.dir.clone()).or_default();
+            for (file, stamp, entry) in loaded {
+                fresh.push(entry.clone());
+                dir_cache.insert(file, IndexCacheEntry { stamp, entry });
+            }
+        }
+
+        Ok(fresh)
     }
 
     /// Resolve a `uses:` reference against this index.
@@ -539,6 +647,20 @@ pub fn resolve_uses_steps(
         steps: out,
         resolutions,
     })
+}
+
+/// Async entry point for handlers: resolution reads the step index and the
+/// review manifest synchronously, so run it on the blocking pool instead of
+/// stalling a tokio worker (the in-process caches make warm calls cheap, but
+/// cold sweeps of a large index must not block the runtime).
+pub async fn resolve_uses_steps_async(
+    steps: Vec<StepDef>,
+    index_dir: PathBuf,
+) -> Result<ResolvedSteps, String> {
+    let policy = policy_from_settings();
+    tokio::task::spawn_blocking(move || resolve_uses_steps(steps, &index_dir, &policy))
+        .await
+        .map_err(|e| format!("step resolution task panicked: {e}"))?
 }
 
 /// Replace a pipeline's provenance rows inside the caller's transaction.

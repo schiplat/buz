@@ -176,14 +176,14 @@ pub async fn create(
     // them fails (e.g. a `uses:` step that cannot resolve), clean up so a
     // failed save never leaves a half-created pipeline behind.
     let create_result = async {
-        let resolved = crate::services::step_resolver::resolve_uses_steps(
+        let resolved = crate::services::step_resolver::resolve_uses_steps_async(
             req.steps,
-            &crate::services::step_resolver::local_step_index_dir(
+            crate::services::step_resolver::local_step_index_dir(
                 &state.config.pipeline.yaml_scan_dir,
                 &state.config.step_index.local_dir,
             ),
-            &crate::services::step_resolver::policy_from_settings(),
         )
+        .await
         .map_err(AppError::ValidationFailed)?;
         let steps = insert_steps(&mut *tx, &pipeline_id, &resolved.steps).await?;
         crate::services::step_resolver::replace_step_resolutions(
@@ -463,14 +463,14 @@ pub async fn update(
     let environments_json =
         serde_json::to_string(&req.environments).unwrap_or_else(|_| "[]".into());
 
-    let resolved_steps = crate::services::step_resolver::resolve_uses_steps(
+    let resolved_steps = crate::services::step_resolver::resolve_uses_steps_async(
         req.steps,
-        &crate::services::step_resolver::local_step_index_dir(
+        crate::services::step_resolver::local_step_index_dir(
             &state.config.pipeline.yaml_scan_dir,
             &state.config.step_index.local_dir,
         ),
-        &crate::services::step_resolver::policy_from_settings(),
     )
+    .await
     .map_err(AppError::ValidationFailed)?;
     let mut tx = state.pool.begin().await?;
     let result = sqlx::query(

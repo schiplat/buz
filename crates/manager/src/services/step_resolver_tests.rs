@@ -1,4 +1,7 @@
-use super::{expand_uses_step, local_step_index_dir, resolve_uses_steps, LocalStepIndex};
+use super::{
+    expand_uses_step, load_reviewed_hashes, local_step_index_dir, resolve_uses_steps,
+    LocalStepIndex,
+};
 use shared::protocol::StepDef;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -615,4 +618,56 @@ fn expand_without_call_site_engine_uses_template_default() {
 
     let expanded = expand_uses_step(&step, &resolved).unwrap();
     assert_eq!(expanded.engine.as_deref(), Some("shell"));
+}
+
+fn feishu_call() -> StepDef {
+    let mut step = uses_step("buz/feishu@1.2.0");
+    let mut with = BTreeMap::new();
+    with.insert("webhook".to_string(), "${secrets.FEISHU}".to_string());
+    step.with = Some(with);
+    step
+}
+
+#[test]
+fn index_cache_picks_up_changed_template_files() {
+    let dir = seed_index();
+
+    let resolved_v1 =
+        resolve_uses_steps(vec![feishu_call()], dir.path(), &Default::default()).unwrap();
+    let sha_v1 = resolved_v1.resolutions[0].content_sha256.clone();
+    assert!(!sha_v1.is_empty());
+
+    // Rewrite the template with different content (different length, plus a
+    // sleep so (mtime, len) differs even on coarse-grained filesystems).
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // Append an indented line so the run block itself grows (a top-level
+    // comment would only change the raw bytes, not the parsed template).
+    let mut spec_v2 = feishu_spec("buz/feishu", "1.2.0");
+    spec_v2.push_str("  echo cache-invalidated\n");
+    write_spec(dir.path(), "feishu-1.2.0.yaml", &spec_v2);
+
+    let resolved_v2 =
+        resolve_uses_steps(vec![feishu_call()], dir.path(), &Default::default()).unwrap();
+    let sha_v2 = resolved_v2.resolutions[0].content_sha256.clone();
+    assert_ne!(
+        sha_v1, sha_v2,
+        "rewritten template must not serve stale cache"
+    );
+    assert!(resolved_v2.steps[0].run.contains("cache-invalidated"));
+}
+
+#[test]
+fn reviewed_manifest_cache_reloads_when_file_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("reviews.json");
+
+    std::fs::write(&manifest, r#"{"reviews": [{"sha256": "aaaa"}]}"#).unwrap();
+    let first = load_reviewed_hashes(manifest.to_str().unwrap());
+    assert!(first.contains("aaaa"), "initial manifest loads");
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&manifest, r#"{"reviews": [{"sha256": "bbbbbbbb"}]}"#).unwrap();
+    let second = load_reviewed_hashes(manifest.to_str().unwrap());
+    assert!(second.contains("bbbbbbbb"), "rewritten manifest reloads");
+    assert!(!second.contains("aaaa"), "stale hashes are dropped");
 }

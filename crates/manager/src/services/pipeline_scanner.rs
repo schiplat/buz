@@ -138,29 +138,29 @@ async fn scan_and_sync(pool: &SqlitePool, dir: &str, step_index_dir: &Path) {
             }
         };
 
-        match serde_yaml::from_str::<PipelineYaml>(&raw) {
-            Ok(parsed) => {
-                match crate::services::yaml_validate::validate_pipeline_yaml(pool, &raw).await {
-                    Ok(result) if !result.valid => {
-                        tracing::warn!(
-                            "YAML scanner: {filename} has validation errors: {:?}",
-                            result.errors
-                        );
+        match crate::services::yaml_validate::validate_pipeline_yaml_with_parse(pool, &raw).await {
+            Ok(validation) if !validation.result.valid => {
+                tracing::warn!(
+                    "YAML scanner: {filename} has validation errors: {:?}",
+                    validation.result.errors
+                );
+            }
+            Ok(validation) => {
+                // `valid` implies the cached typed parse succeeded.
+                if let Some(parsed) = validation.parsed {
+                    if let Err(e) =
+                        upsert_from_yaml(pool, &yaml_key, &parsed, step_index_dir, &raw).await
+                    {
+                        tracing::error!("YAML scanner: failed to upsert {filename}: {e:#}");
                     }
-                    Ok(_) => {
-                        if let Err(e) =
-                            upsert_from_yaml(pool, &yaml_key, &parsed, step_index_dir, &raw).await
-                        {
-                            tracing::error!("YAML scanner: failed to upsert {filename}: {e:#}");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("YAML scanner: validate {filename} failed: {e}");
-                    }
+                } else {
+                    tracing::warn!(
+                        "YAML scanner: {filename} validated but failed to deserialize — this is a bug"
+                    );
                 }
             }
             Err(e) => {
-                tracing::warn!("YAML scanner: failed to parse {filename}: {e}");
+                tracing::warn!("YAML scanner: validate {filename} failed: {e}");
             }
         }
 
@@ -269,11 +269,11 @@ pub async fn upsert_from_yaml(
 
     // Resolve all templates before mutating the current DB projection. This
     // preserves the previous task set when a new YAML version cannot resolve.
-    let resolved_steps = crate::services::step_resolver::resolve_uses_steps(
+    let resolved_steps = crate::services::step_resolver::resolve_uses_steps_async(
         parsed_steps,
-        step_index_dir,
-        &crate::services::step_resolver::policy_from_settings(),
+        step_index_dir.to_path_buf(),
     )
+    .await
     .map_err(|error| anyhow::Error::new(StepResolutionError(error)))?;
     let steps = resolved_steps.steps;
     let resolutions = resolved_steps.resolutions;
@@ -1041,9 +1041,11 @@ pub async fn sync_yaml_before_trigger(
                 other => other,
             })?;
 
-    let validation = crate::services::yaml_validate::validate_pipeline_yaml(pool, &content).await?;
-    if !validation.valid {
+    let validation =
+        crate::services::yaml_validate::validate_pipeline_yaml_with_parse(pool, &content).await?;
+    if !validation.result.valid {
         let msg = validation
+            .result
             .errors
             .iter()
             .map(|e| format!("{}: {}", e.field, e.message))
@@ -1054,8 +1056,12 @@ pub async fn sync_yaml_before_trigger(
         )));
     }
 
-    let parsed: PipelineYaml = serde_yaml::from_str(&content).map_err(|e| {
-        AppError::ValidationFailed(format!("YAML syntax error in '{filename}': {e}"))
+    // The validator's cached parse is authoritative here — reusing it keeps
+    // the trigger path at zero extra parses for unchanged content.
+    let parsed: PipelineYaml = validation.parsed.ok_or_else(|| {
+        AppError::Internal(format!(
+            "YAML file '{filename}' validated but failed to deserialize — this is a bug"
+        ))
     })?;
     upsert_from_yaml(pool, &filename, &parsed, step_index_dir, &content)
         .await
