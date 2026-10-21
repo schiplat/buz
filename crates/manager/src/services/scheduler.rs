@@ -154,6 +154,7 @@ async fn dispatch_queued_jobs(pool: &SqlitePool) -> anyhow::Result<()> {
             .bind(&job_id)
             .execute(pool)
             .await?;
+            crate::services::poll_events::wake_all();
             tracing::info!("Scheduler: dispatched queued job {job_id} → pending");
         }
     }
@@ -243,6 +244,7 @@ async fn expire_approval_timeouts(pool: &SqlitePool) -> anyhow::Result<()> {
     }
 
     if cancelled > 0 {
+        crate::services::poll_events::wake_all();
         tracing::info!(cancelled, "environments: approval timeout scan finished");
     } else {
         tracing::debug!("environments: approval timeout scan finished (none expired)");

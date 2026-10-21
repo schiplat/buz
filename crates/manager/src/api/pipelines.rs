@@ -778,6 +778,9 @@ pub async fn disable(
         }
     }
     tx.commit().await?;
+    if !cancelled.is_empty() {
+        crate::services::poll_events::wake_all();
+    }
 
     // Post-commit fan-out per cancelled job: notify channels + WebSocket.
     for (job_id, debug_unredact, step_statuses) in &cancelled {
@@ -1500,6 +1503,7 @@ pub(crate) async fn do_trigger(
     tx.commit()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    crate::services::poll_events::wake_all();
 
     tracing::info!("Pipeline triggered: {pipeline_name} → job {job_id} (by: {triggered_by})");
 

@@ -251,6 +251,22 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .execute(pool)
     .await?;
 
+    // ── Cancel delivery over the claim channel ──
+    // `cancel_ack_pending` is 1 from the moment a job flips to `cancelled`
+    // (operator cancel, pipeline disable, cancel_in_progress supersede)
+    // until the owning runner's next claim poll reports the id — one-shot
+    // delivery flag replacing the runner's per-job 2s status-check probes.
+    let _ =
+        sqlx::query("ALTER TABLE jobs ADD COLUMN cancel_ack_pending INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_runner_cancel_ack \
+         ON jobs(runner_id) WHERE cancel_ack_pending = 1",
+    )
+    .execute(pool)
+    .await?;
+
     // ── Pipeline ↔ Secret explicit binding (many-to-many) ──
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS pipeline_secrets (

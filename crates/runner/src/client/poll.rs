@@ -3,8 +3,9 @@ use shared::protocol::{LogChunk, UpdateJobStatusRequest};
 use shared::value_source::ValueMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::watch;
 
 use crate::config::{Config, DockerConfigIsolation};
 use crate::engine;
@@ -458,37 +459,6 @@ pub(crate) fn build_step_failure_message(
     )
 }
 
-/// Poll the manager to check if this job has been cancelled.
-/// Returns `true` if the job is cancelled and execution should stop.
-pub async fn check_job_cancelled(
-    client: &Client,
-    config: &Config,
-    token: &str,
-    job_id: &str,
-) -> anyhow::Result<bool> {
-    let resp = client
-        .get(format!(
-            "{}/api/v1/jobs/{job_id}/status-check",
-            config.runner.manager_url
-        ))
-        .header("Authorization", format!("Bearer {token}"))
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| {
-            super::friendly_reqwest_error(e, &config.runner.manager_url, "Status check failed")
-        })?;
-
-    if !resp.status().is_success() {
-        return Ok(false);
-    }
-
-    let body = resp.json::<serde_json::Value>().await?;
-    let status = body["data"]["status"].as_str().unwrap_or("");
-
-    Ok(status == "cancelled")
-}
-
 /// Poll loop with concurrent job slots and exponential backoff on failures.
 ///
 /// Capacity and strategy (engines, cleanup) come from Manager UI via
@@ -504,6 +474,12 @@ pub async fn run_poll_loop(
 
     let mut consecutive_failures: u32 = 0;
     let mut jobs: JoinSet<anyhow::Result<()>> = JoinSet::new();
+    // Cancel signals for live jobs; notices arrive on the claim channel.
+    let cancels: CancelRegistry = Arc::new(Mutex::new(HashMap::new()));
+    let job_finished = Arc::new(tokio::sync::Notify::new());
+    // Manager keeps cancel notices pending until the next poll carries this
+    // acknowledgement; retain them across transport errors.
+    let mut pending_cancel_acks: Vec<String> = Vec::new();
 
     loop {
         // Reap finished jobs
@@ -536,15 +512,44 @@ pub async fn run_poll_loop(
 
         let local_max = policy::max_concurrent(&shared_policy);
         let active = jobs.len() as u32;
+        // No runner-side capacity gate: the Manager rejects claims at capacity
+        // and still delivers cancel notices, which a busy runner must keep
+        // receiving (that channel replaces the old per-job status probes).
 
-        if active >= local_max {
-            // At capacity — wait briefly for a slot or heartbeat update
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            continue;
-        }
+        let poll_result = tokio::select! {
+            result = poll_for_task(
+                client,
+                config,
+                token,
+                &pending_cancel_acks,
+                active,
+            ) => result,
+            _ = job_finished.notified(), if !jobs.is_empty() => continue,
+        };
+        match poll_result {
+            Ok(outcome) => {
+                // Successful response proves Manager received the prior batch
+                // of acknowledgements. Queue newly observed ids before
+                // signalling so even an already-finished local job is acked.
+                pending_cancel_acks.clear();
+                for job_id in &outcome.cancelled_jobs {
+                    if !pending_cancel_acks.contains(job_id) {
+                        pending_cancel_acks.push(job_id.clone());
+                    }
+                    tracing::info!("Manager reported job {job_id} cancelled — signalling");
+                    signal_cancel(&cancels, job_id);
+                }
+                let Some(task) = outcome.task else {
+                    if consecutive_failures > 0 {
+                        tracing::info!("Poll recovered after {consecutive_failures} failure(s)");
+                    }
+                    consecutive_failures = 0;
+                    if let Some(delay_ms) = outcome.retry_after_ms {
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    }
+                    continue;
+                };
 
-        match poll_for_task(client, config, token).await {
-            Ok(Some(task)) => {
                 consecutive_failures = 0;
 
                 let job_id = task["job_id"].as_str().unwrap_or("unknown").to_string();
@@ -574,8 +579,19 @@ pub async fn run_poll_loop(
                 let t = token.to_string();
                 let clean = snap.clean_workspace_after_job;
 
+                // Cancel signal: registered before spawn so a notice arriving
+                // between claim and first step cannot be missed.
+                let (cancel_tx, cancel_rx) = watch::channel(false);
+                cancels
+                    .lock()
+                    .expect("cancel registry")
+                    .insert(job_id.clone(), cancel_tx);
+                let cancels_for_job = Arc::clone(&cancels);
+                let job_id_for_cleanup = job_id.clone();
+                let job_finished_for_task = Arc::clone(&job_finished);
+
                 jobs.spawn(async move {
-                    let result = run_one_job(&c, &job_config, &t, &task).await;
+                    let result = run_one_job(&c, &job_config, &t, &task, cancel_rx).await;
                     // Unconditional: job-scoped Docker credentials never outlive
                     // the job — independent of clean_workspace_after_job (which
                     // defaults to false).
@@ -584,16 +600,13 @@ pub async fn run_poll_loop(
                         tracing::info!("Cleaning job workspace: {job_ws}");
                         clean_workspace(&job_ws);
                     }
+                    cancels_for_job
+                        .lock()
+                        .expect("cancel registry")
+                        .remove(&job_id_for_cleanup);
+                    job_finished_for_task.notify_one();
                     result
                 });
-            }
-            Ok(None) => {
-                if consecutive_failures > 0 {
-                    tracing::info!("Poll recovered after {consecutive_failures} failure(s)");
-                }
-                consecutive_failures = 0;
-                // Idle: short pause so we don't busy-spin when Manager returns null immediately
-                tokio::time::sleep(Duration::from_secs(2)).await;
             }
             Err(e) => {
                 consecutive_failures += 1;
@@ -621,10 +634,11 @@ async fn run_one_job(
     config: &Config,
     token: &str,
     task: &serde_json::Value,
+    mut cancel_rx: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let job_id = task["job_id"].as_str().unwrap_or("unknown");
 
-    if let Err(e) = execute_job(client, config, token, task).await {
+    if let Err(e) = execute_job(client, config, token, task, &mut cancel_rx).await {
         let msg = format!("{e:#}");
         if msg.contains("job cancelled by user") {
             tracing::warn!("Job {job_id} cancelled by user — skipping error log");
@@ -661,21 +675,91 @@ async fn run_one_job(
     Ok(())
 }
 
+/// One claim poll's outcome: an optional job plus cancel notices the Manager
+/// delivered on the same response (replacing the old per-job 2s probes).
+#[derive(Default)]
+struct PollOutcome {
+    task: Option<serde_json::Value>,
+    cancelled_jobs: Vec<String>,
+    retry_after_ms: Option<u64>,
+}
+
+/// Parse a poll response body (`data` object) into task + cancel notices.
+/// `job_id` presence distinguishes a job payload from a cancel-only payload.
+fn parse_poll_data(data: serde_json::Value) -> PollOutcome {
+    if data.is_null() {
+        return PollOutcome::default();
+    }
+    let retry_after_ms = data.get("retry_after_ms").and_then(|v| v.as_u64());
+    let cancelled_jobs = data
+        .get("cancelled_jobs")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let task = if data.get("job_id").is_some() {
+        Some(data)
+    } else {
+        None
+    };
+    PollOutcome {
+        task,
+        cancelled_jobs,
+        retry_after_ms,
+    }
+}
+
+/// Live jobs' cancel signals, shared between the claim loop (which receives
+/// Manager notices) and the job tasks (which race steps against them).
+type CancelRegistry = Arc<Mutex<HashMap<String, watch::Sender<bool>>>>;
+
+/// Fire (and consume) a job's cancel signal. Unknown ids — already finished
+/// locally, or reported after the task exited — are dropped: the Manager's
+/// terminal-state protection settles the verdict either way.
+fn signal_cancel(registry: &CancelRegistry, job_id: &str) {
+    if let Some(tx) = registry.lock().expect("cancel registry").remove(job_id) {
+        let _ = tx.send(true);
+    }
+}
+
+/// Resolves once the Manager reports this job cancelled via the claim channel.
+async fn cancel_triggered(rx: &mut watch::Receiver<bool>) -> bool {
+    loop {
+        if *rx.borrow() {
+            return true;
+        }
+        if rx.changed().await.is_err() {
+            return std::future::pending().await;
+        }
+    }
+}
+
 async fn poll_for_task(
     client: &Client,
     config: &Config,
     token: &str,
-) -> anyhow::Result<Option<serde_json::Value>> {
-    let resp = client
+    cancel_acks: &[String],
+    active_jobs: u32,
+) -> anyhow::Result<PollOutcome> {
+    let mut request = client
         .get(format!("{}/api/v1/runners/poll", config.runner.manager_url))
         .header("Authorization", format!("Bearer {token}"))
-        .timeout(Duration::from_secs(50))
+        .header("prefer", "wait=45")
+        .header("x-buz-active-jobs", active_jobs.to_string())
+        .timeout(Duration::from_secs(50));
+    if !cancel_acks.is_empty() {
+        request = request.header("x-buz-cancel-ack", cancel_acks.join(","));
+    }
+    let resp = request
         .send()
         .await
         .map_err(|e| super::friendly_reqwest_error(e, &config.runner.manager_url, "Poll failed"))?;
 
     if resp.status() == 204 {
-        return Ok(None);
+        return Ok(PollOutcome::default());
     }
 
     if !resp.status().is_success() {
@@ -688,13 +772,9 @@ async fn poll_for_task(
     }
 
     let body = resp.json::<serde_json::Value>().await?;
-
-    let data = body.get("data").cloned().unwrap_or_default();
-    if data.is_null() {
-        return Ok(None);
-    }
-
-    Ok(Some(data))
+    Ok(parse_poll_data(
+        body.get("data").cloned().unwrap_or_default(),
+    ))
 }
 
 async fn execute_job(
@@ -702,6 +782,7 @@ async fn execute_job(
     config: &Config,
     token: &str,
     task: &serde_json::Value,
+    cancel_rx: &mut watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let job_id = task["job_id"]
         .as_str()
@@ -896,22 +977,6 @@ async fn execute_job(
     base_env
         .entry("DEBIAN_FRONTEND".to_string())
         .or_insert_with(|| "noninteractive".to_string());
-
-    // ---- Cancel watcher helper -------------------------------------------------
-    /// Returns `true` when the job has been cancelled.
-    /// Polls the Manager every 2 s.
-    async fn cancel_watcher(client: &Client, config: &Config, token: &str, job_id: &str) -> bool {
-        loop {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            if check_job_cancelled(client, config, token, job_id)
-                .await
-                .unwrap_or(false)
-            {
-                return true;
-            }
-        }
-    }
-    // ---------------------------------------------------------------------------
 
     // Tracks whether any step failed under fail_strategy = "continue". The job
     // must end as failed even though execution continued past the failing step.
@@ -1336,7 +1401,7 @@ async fn execute_job(
             if !conns.is_empty() {
                 let connect_result = tokio::select! {
                     result = engine::ssh::connect_all(&conns, ssh_hosts_parallel(step)) => Some(result),
-                    _ = cancel_watcher(client, config, token, job_id) => None,
+                    _ = cancel_triggered(cancel_rx) => None,
                 };
                 match connect_result {
                     None => {
@@ -1397,7 +1462,7 @@ async fn execute_job(
                             let probe = engine::ssh::probe_workspaces(&mut sessions, step_timeout);
                             tokio::select! {
                                 t = probe => Some(t),
-                                _ = cancel_watcher(client, config, token, job_id) => None,
+                                _ = cancel_triggered(cancel_rx) => None,
                             }
                         };
                         match targets {
@@ -1479,7 +1544,7 @@ async fn execute_job(
                     );
                     tokio::select! {
                         result = prep_fut => result.map(Some),
-                        _ = cancel_watcher(client, config, token, job_id) => {
+                        _ = cancel_triggered(cancel_rx) => {
                             let _ = super::logs::upload_chunk(
                                 client,
                                 config,
@@ -1769,9 +1834,7 @@ async fn execute_job(
                     .await;
                 }
 
-                let c = client.clone();
-                let cfg = config.clone();
-                let t = token.to_string();
+                let mut cancel_rx_step = cancel_rx.clone();
                 let jid = job_id.to_string();
                 let sname = step_name.to_string();
 
@@ -1835,7 +1898,7 @@ async fn execute_job(
                         let _ = upload_task.await;
                         (code, false, false)
                     }
-                    _ = cancel_watcher(&c, &cfg, &t, &jid) => {
+                    _ = cancel_triggered(&mut cancel_rx_step) => {
                         tracing::warn!("Job {jid} cancelled during step '{sname}' — killing");
                         let _ = child.kill().await;
                         let _ = child.wait().await;
@@ -1910,7 +1973,7 @@ async fn execute_job(
                 } else {
                     command.to_string()
                 };
-                let c = client.clone();
+                let mut cancel_rx_step = cancel_rx.clone();
 
                 // Debug echo — show the command before execution (like bash -x)
                 {
@@ -1934,8 +1997,6 @@ async fn execute_job(
                 // (covers BUZ_REGISTRY_PASSWORD injected into the remote env).
                 output_secret_values = ssh_catalog.secret_values(&ssh_env);
 
-                let cfg = config.clone();
-                let t = token.to_string();
                 let jid = job_id.to_string();
                 let sname = step_name.to_string();
                 let sname2 = sname.clone();
@@ -1963,7 +2024,7 @@ async fn execute_job(
                     ) => {
                         (result?, false)
                     }
-                    _ = cancel_watcher(&c, &cfg, &t, &jid) => {
+                    _ = cancel_triggered(&mut cancel_rx_step) => {
                         tracing::warn!("Job {jid} cancelled during SSH step '{sname2}' — aborting all hosts");
                         (engine::shell::ShellOutput {
                             stdout: String::new(),
@@ -2080,9 +2141,7 @@ async fn execute_job(
 
                 let img = image.to_string();
                 let env = step_env.clone();
-                let c = client.clone();
-                let cfg = config.clone();
-                let t = token.to_string();
+                let mut cancel_rx_step = cancel_rx.clone();
                 let jid = job_id.to_string();
                 let sname = step_name.to_string();
                 let sv_for_upload = secret_values.clone();
@@ -2154,7 +2213,7 @@ async fn execute_job(
                         let _ = upload_task.await;
                         (code, false, false)
                     }
-                    _ = cancel_watcher(&c, &cfg, &t, &jid) => {
+                    _ = cancel_triggered(&mut cancel_rx_step) => {
                         tracing::warn!("Job {jid} cancelled during docker step '{sname}' — killing container process");
                         let _ = child.kill().await;
                         let _ = child.wait().await;

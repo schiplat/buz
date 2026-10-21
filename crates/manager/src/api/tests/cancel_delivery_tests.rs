@@ -1,0 +1,577 @@
+//! Cancel delivery over the claim channel: cancellations (operator cancel /
+//! pipeline disable / cancel_in_progress supersede) ride on every
+//! `/runners/poll` response via the one-shot `cancel_ack_pending` flag,
+//! replacing the runner's former per-job 2s status-check probes. Included
+//! via `api/mod.rs` under `#[cfg(test)]`.
+
+use axum::{
+    body::Body,
+    http::{header::AUTHORIZATION, Request, StatusCode},
+    Router,
+};
+use http_body_util::BodyExt;
+use shared::auth::{Role, TokenManager};
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use tower::ServiceExt;
+
+use crate::api;
+use crate::config::{AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig};
+use crate::db::run_migrations;
+use crate::services::log_broadcast::LogBroadcaster;
+use crate::state::AppState;
+
+const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
+const SUPER_ADMIN_ID: &str = "admin-1";
+
+fn test_config() -> Config {
+    Config {
+        server: ServerConfig::default(),
+        database: Default::default(),
+        auth: AuthConfig {
+            jwt_secret: JWT_SECRET.into(),
+            jwt_ttl_hours: 24,
+            runner_register_token_ttl_hours: 24,
+        },
+        runner: RunnerConfig::default(),
+        pipeline: PipelineConfig::default(),
+        standalone: Default::default(),
+        step_index: Default::default(),
+        clock: Default::default(),
+        logging: Default::default(),
+        marketplace_url: String::new(),
+    }
+}
+
+async fn test_app() -> (Router, SqlitePool, AppState) {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+
+    sqlx::query(
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
+         VALUES (?, ?, 'hash', ?, 1, 1, 1)",
+    )
+    .bind(SUPER_ADMIN_ID)
+    .bind("boss")
+    .bind("boss")
+    .execute(&pool)
+    .await
+    .expect("seed admin");
+
+    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Default', 'default')")
+        .execute(&pool)
+        .await
+        .expect("seed team");
+
+    sqlx::query(
+        "INSERT INTO runners (id, name, register_token, labels, status, max_concurrent_jobs)
+         VALUES ('runner-1', 'r1', 'tok', '[\"linux-x64\"]', 'online', 4)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed runner");
+
+    let state = AppState {
+        pool: pool.clone(),
+        config: test_config(),
+        log_broadcast: LogBroadcaster::new(),
+    };
+    let app = Router::new().nest("/api/v1", api::router(state.clone()));
+    (app, pool, state)
+}
+
+fn admin_jwt() -> String {
+    TokenManager::new(JWT_SECRET)
+        .create_token(SUPER_ADMIN_ID, Role::Admin, 1)
+        .expect("mint admin jwt")
+}
+
+fn runner_jwt() -> String {
+    TokenManager::new(JWT_SECRET)
+        .create_token("runner-1", Role::Runner, 1)
+        .expect("mint runner jwt")
+}
+
+async fn negotiated_poll(app: &Router, ack: Option<&str>) -> axum::response::Response {
+    let mut builder = Request::builder()
+        .method("GET")
+        .uri("/api/v1/runners/poll")
+        .header(AUTHORIZATION, format!("Bearer {}", runner_jwt()))
+        .header("prefer", "wait=45");
+    if let Some(ack) = ack {
+        builder = builder.header("x-buz-cancel-ack", ack);
+    }
+    app.clone()
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn read_body(response: axum::response::Response) -> serde_json::Value {
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("read body")
+        .to_bytes();
+    serde_json::from_slice(&body).expect("json body")
+}
+
+async fn json_req(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    jwt: &str,
+    body: Option<serde_json::Value>,
+) -> axum::response::Response {
+    let builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(AUTHORIZATION, format!("Bearer {jwt}"));
+    let request = match body {
+        Some(payload) => builder
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .unwrap(),
+        None => builder.body(Body::empty()).unwrap(),
+    };
+    app.clone().oneshot(request).await.unwrap()
+}
+
+async fn create_pipeline(app: &Router, jwt: &str, name: &str) -> String {
+    let pipe = json_req(
+        app,
+        "POST",
+        "/api/v1/pipelines",
+        jwt,
+        Some(serde_json::json!({
+            "name": name,
+            "trigger_type": "manual",
+            "runner_labels": ["linux-x64"],
+            "team_id": "team-1",
+            "environments": ["default"],
+            "env": [],
+            "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
+        })),
+    )
+    .await;
+    assert_eq!(pipe.status(), StatusCode::OK, "create pipeline {name}");
+    read_body(pipe).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn poll_delivers_operator_cancel_once_and_clears_the_flag() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    let pipe = create_pipeline(&app, &admin, "cancel-delivery").await;
+
+    let trig = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let job_id = read_body(trig).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sqlx::query(
+        "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
+         start_time = datetime('now') WHERE id = ?",
+    )
+    .bind(&job_id)
+    .execute(&pool)
+    .await
+    .expect("force running");
+
+    let cancel = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/jobs/{job_id}/cancel"),
+        &admin,
+        None,
+    )
+    .await;
+    assert_eq!(cancel.status(), StatusCode::OK, "cancel job");
+
+    // First poll delivers the notice.
+    let poll = negotiated_poll(&app, None).await;
+    assert_eq!(poll.status(), StatusCode::OK);
+    let body = read_body(poll).await;
+    let delivered = body["data"]["cancelled_jobs"]
+        .as_array()
+        .expect("cancelled_jobs array")
+        .clone();
+    assert!(
+        delivered
+            .iter()
+            .any(|v| v.as_str() == Some(job_id.as_str())),
+        "first poll delivers: {body}"
+    );
+
+    // Unacked notices repeat (response-loss retry semantics).
+    let poll2 = negotiated_poll(&app, None).await;
+    let body2 = read_body(poll2).await;
+    assert!(
+        body2["data"]["cancelled_jobs"]
+            .as_array()
+            .map(|a| a.iter().any(|v| v.as_str() == Some(job_id.as_str())))
+            .unwrap_or(false),
+        "unacked notice repeats: {body2}"
+    );
+
+    // Ack clears the durable pending flag. Queue fresh work so the same poll
+    // can return immediately with a claim instead of entering another wait.
+    let pipe2 = create_pipeline(&app, &admin, "cancel-ack-followup").await;
+    let followup = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipe2}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let followup_id = read_body(followup).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let poll3 = negotiated_poll(&app, Some(&job_id)).await;
+    let body3 = read_body(poll3).await;
+    assert_eq!(
+        body3["data"]["job_id"], followup_id,
+        "new job is claimed: {body3}"
+    );
+    assert!(
+        body3["data"]["cancelled_jobs"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "acked notice is not repeated: {body3}"
+    );
+    let pending: i64 = sqlx::query_scalar("SELECT cancel_ack_pending FROM jobs WHERE id = ?")
+        .bind(&job_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(pending, 0);
+}
+
+#[tokio::test]
+async fn poll_delivers_cancels_even_at_capacity() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    let target_pipe = create_pipeline(&app, &admin, "capacity-cancel-target").await;
+    let busy_pipe = create_pipeline(&app, &admin, "capacity-cancel-busy").await;
+
+    // Capacity 1 with one *uncancelled* running job → every poll hits the
+    // capacity gate, while a second runner-owned cancellation must be delivered.
+    sqlx::query("UPDATE runners SET max_concurrent_jobs = 1 WHERE id = 'runner-1'")
+        .execute(&pool)
+        .await
+        .expect("cap runner");
+
+    async fn running_job(app: &Router, pool: &SqlitePool, admin: &str, pipe: &str) -> String {
+        let trig = json_req(
+            app,
+            "POST",
+            &format!("/api/v1/pipelines/{pipe}/trigger"),
+            admin,
+            Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+        )
+        .await;
+        let job_id = read_body(trig).await["data"]["job_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        sqlx::query(
+            "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
+             start_time = datetime('now') WHERE id = ?",
+        )
+        .bind(&job_id)
+        .execute(pool)
+        .await
+        .expect("force running");
+        job_id
+    }
+
+    let _busy_job = running_job(&app, &pool, &admin, &busy_pipe).await;
+    let job_id = running_job(&app, &pool, &admin, &target_pipe).await;
+
+    let cancel = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/jobs/{job_id}/cancel"),
+        &admin,
+        None,
+    )
+    .await;
+    assert_eq!(cancel.status(), StatusCode::OK, "cancel job");
+
+    let poll = negotiated_poll(&app, None).await;
+    assert_eq!(poll.status(), StatusCode::OK);
+    let body = read_body(poll).await;
+    assert!(
+        body["data"]["job_id"].is_null(),
+        "capacity gate must not dispatch: {body}"
+    );
+    assert!(
+        body["data"]["cancelled_jobs"]
+            .as_array()
+            .map(|a| a.iter().any(|v| v.as_str() == Some(job_id.as_str())))
+            .unwrap_or(false),
+        "cancel notice rides the capacity-gated poll: {body}"
+    );
+}
+
+#[tokio::test]
+async fn claim_response_carries_cancel_notices_alongside_the_job() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    let pipe_a = create_pipeline(&app, &admin, "claim-cancel-a").await;
+    let pipe_b = create_pipeline(&app, &admin, "claim-cancel-b").await;
+
+    // One running job that gets cancelled, plus one fresh pending job.
+    let trig_a = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipe_a}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let running = read_body(trig_a).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sqlx::query(
+        "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
+         start_time = datetime('now') WHERE id = ?",
+    )
+    .bind(&running)
+    .execute(&pool)
+    .await
+    .expect("force running");
+    let cancel = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/jobs/{running}/cancel"),
+        &admin,
+        None,
+    )
+    .await;
+    assert_eq!(cancel.status(), StatusCode::OK, "cancel running job");
+
+    let trig_b = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipe_b}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let pending = read_body(trig_b).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let poll = negotiated_poll(&app, None).await;
+    assert_eq!(poll.status(), StatusCode::OK);
+    let body = read_body(poll).await;
+    assert_eq!(
+        body["data"]["job_id"].as_str(),
+        Some(pending.as_str()),
+        "pending job is claimed: {body}"
+    );
+    assert!(
+        body["data"]["cancelled_jobs"]
+            .as_array()
+            .map(|a| a.iter().any(|v| v.as_str() == Some(running.as_str())))
+            .unwrap_or(false),
+        "cancel notice rides the claim response: {body}"
+    );
+}
+
+#[tokio::test]
+async fn negotiated_long_poll_wakes_when_a_new_job_is_committed() {
+    let (app, _pool, state) = test_app().await;
+    let admin = admin_jwt();
+    let pipe = create_pipeline(&app, &admin, "long-poll-wakeup").await;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let app_for_poll = app.clone();
+    let state_for_poll = state.clone();
+
+    let poll_task = tokio::spawn(async move {
+        let _ = started_tx.send(());
+        let auth = crate::middleware::RunnerClaims {
+            runner_id: "runner-1".into(),
+        };
+        let response = crate::api::runners::poll_with_wait(
+            auth,
+            state_for_poll,
+            0,
+            Vec::new(),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .expect("long poll");
+        let body = read_body(response.into_response()).await;
+        body
+    });
+    started_rx.await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let trigger = json_req(
+        &app_for_poll,
+        "POST",
+        &format!("/api/v1/pipelines/{pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    assert_eq!(trigger.status(), StatusCode::OK);
+    let job_id = read_body(trigger).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let body = tokio::time::timeout(std::time::Duration::from_millis(500), poll_task)
+        .await
+        .expect("poll should wake immediately, not wait for its timeout")
+        .unwrap();
+    assert_eq!(body["data"]["job_id"], job_id);
+}
+
+#[tokio::test]
+async fn claim_poll_delivers_cancel_notices_without_legacy_compat_mode() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    let pipe = create_pipeline(&app, &admin, "legacy-cancel").await;
+    let trigger = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let job_id = read_body(trigger).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sqlx::query(
+        "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
+         start_time = datetime('now') WHERE id = ?",
+    )
+    .bind(&job_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let cancel = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/jobs/{job_id}/cancel"),
+        &admin,
+        None,
+    )
+    .await;
+    assert_eq!(cancel.status(), StatusCode::OK);
+
+    let poll = json_req(&app, "GET", "/api/v1/runners/poll", &runner_jwt(), None).await;
+    let body = read_body(poll).await;
+    assert!(
+        body["data"]["cancelled_jobs"]
+            .as_array()
+            .map(|ids| ids.iter().any(|id| id.as_str() == Some(job_id.as_str())))
+            .unwrap_or(false),
+        "claim channel delivers cancellation notice: {body}"
+    );
+    let pending: i64 = sqlx::query_scalar("SELECT cancel_ack_pending FROM jobs WHERE id = ?")
+        .bind(&job_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        pending, 1,
+        "legacy poll must not consume new-protocol notice"
+    );
+}
+
+use axum::response::IntoResponse;
+
+#[tokio::test]
+async fn negotiated_long_poll_wakes_when_a_running_job_is_cancelled() {
+    let (app, pool, state) = test_app().await;
+    let admin = admin_jwt();
+    let pipe = create_pipeline(&app, &admin, "cancel-wakeup").await;
+    let trigger = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipe}/trigger"),
+        &admin,
+        Some(serde_json::json!({ "inputs": {}, "environment": "default" })),
+    )
+    .await;
+    let job_id = read_body(trigger).await["data"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sqlx::query(
+        "UPDATE jobs SET status = 'running', runner_id = 'runner-1', \
+         start_time = datetime('now') WHERE id = ?",
+    )
+    .bind(&job_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // A separate pipeline avoids the cancelled job's same-pipeline capacity gate.
+    let _other = create_pipeline(&app, &admin, "cancel-wakeup-other").await;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let state_for_poll = state.clone();
+    let poll_task = tokio::spawn(async move {
+        let _ = started_tx.send(());
+        crate::api::runners::poll_with_wait(
+            crate::middleware::RunnerClaims {
+                runner_id: "runner-1".into(),
+            },
+            state_for_poll,
+            0,
+            Vec::new(),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .expect("cancel long poll")
+    });
+    started_rx.await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let cancel = json_req(
+        &app,
+        "POST",
+        &format!("/api/v1/jobs/{job_id}/cancel"),
+        &admin,
+        None,
+    )
+    .await;
+    assert_eq!(cancel.status(), StatusCode::OK);
+    let response = tokio::time::timeout(std::time::Duration::from_millis(500), poll_task)
+        .await
+        .expect("cancel should wake the poll")
+        .unwrap();
+    let body = read_body(response.into_response()).await;
+    assert!(
+        body["data"]["cancelled_jobs"]
+            .as_array()
+            .map(|a| a.iter().any(|v| v.as_str() == Some(job_id.as_str())))
+            .unwrap_or(false),
+        "poll carries cancelled job immediately: {body}"
+    );
+}

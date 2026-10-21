@@ -437,6 +437,7 @@ pub async fn cancel(
         ));
     };
     tx.commit().await?;
+    crate::services::poll_events::wake_all();
 
     tracing::info!(
         operator = %auth.username,
@@ -540,11 +541,13 @@ pub(crate) async fn cancel_job_in_tx(
 
     let result = sqlx::query(
         "UPDATE jobs SET status = 'cancelled', step_statuses = ?, snapshot = ?,
+         cancel_ack_pending = ?,
          end_time = datetime('now'), updated_at = datetime('now')
          WHERE id = ? AND status IN ('pending', 'running', 'queued', 'waiting_approval')",
     )
     .bind(serde_json::to_string(&step_statuses).unwrap_or_else(|_| "[]".into()))
     .bind(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
+    .bind(i64::from(old_status == "running"))
     .bind(job_id)
     .execute(&mut **tx)
     .await?;
@@ -791,6 +794,9 @@ pub async fn approve(
                     ));
                 }
                 approval_tx.commit().await?;
+                if next == "pending" {
+                    crate::services::poll_events::wake_all();
+                }
                 new_status = next.to_string();
                 broadcast_job_status(&state, &id, &pipeline_id, next);
             }
@@ -988,6 +994,7 @@ pub async fn reject(
         return Err(e.into());
     }
     reject_tx.commit().await?;
+    crate::services::poll_events::wake_all();
 
     broadcast_job_status(&state, &id, &pipeline_id, "cancelled");
 
@@ -1240,6 +1247,12 @@ pub async fn update_status(
         }
     }
     tx.commit().await?;
+    if matches!(
+        req.status.as_str(),
+        "success" | "failed" | "cancelled" | "timeout"
+    ) {
+        crate::services::poll_events::wake_all();
+    }
 
     tracing::info!("Job status updated: {job_id} → {}", req.status);
 

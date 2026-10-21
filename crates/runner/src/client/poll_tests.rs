@@ -796,7 +796,8 @@ async fn marketplace_input_validation_error_logs_and_fails_job_before_execution(
         ]
     });
 
-    let error = super::execute_job(&client, &config, "runner-token", &task)
+    let (_cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    let error = super::execute_job(&client, &config, "runner-token", &task, &mut cancel_rx)
         .await
         .unwrap_err();
     assert!(error.to_string().contains("marketplace input validation"));
@@ -886,3 +887,62 @@ fn ssh_env_command_creates_docker_config_dir_before_exports() {
         .expect("docker config export");
     assert!(mkdir_pos < export_pos, "mkdir must precede exports: {cmd}");
 }
+
+// ── Cancel delivery over the claim channel ──
+
+#[test]
+fn parse_poll_data_splits_job_and_cancel_notices() {
+    // Cancel-only payload (no-job paths: idle / frozen / capacity gate).
+    let out = super::parse_poll_data(serde_json::json!({
+        "cancelled_jobs": ["j1", "j2"],
+    }));
+    assert!(out.task.is_none());
+    assert_eq!(out.cancelled_jobs, vec!["j1".to_string(), "j2".to_string()]);
+
+    // Claim payload carries notices alongside the job.
+    let out = super::parse_poll_data(serde_json::json!({
+        "job_id": "j3",
+        "cancelled_jobs": ["j1"],
+    }));
+    assert_eq!(out.task.unwrap()["job_id"], "j3");
+    assert_eq!(out.cancelled_jobs, vec!["j1".to_string()]);
+
+    // Defensive: null data and missing fields parse to nothing.
+    let out = super::parse_poll_data(serde_json::Value::Null);
+    assert!(out.task.is_none() && out.cancelled_jobs.is_empty());
+    let out = super::parse_poll_data(serde_json::json!({}));
+    assert!(out.task.is_none() && out.cancelled_jobs.is_empty());
+}
+
+#[tokio::test]
+async fn registry_signals_live_jobs_and_ignores_unknown_ids() {
+    let registry: super::CancelRegistry = Default::default();
+    let (tx, mut rx) = tokio::sync::watch::channel(false);
+    registry.lock().unwrap().insert("job-1".to_string(), tx);
+
+    // Unknown ids (already finished locally) are dropped silently.
+    super::signal_cancel(&registry, "gone-job");
+
+    super::signal_cancel(&registry, "job-1");
+    assert!(super::cancel_triggered(&mut rx).await, "live job signalled");
+
+    // The registry consumed the entry — a repeat notice finds nothing.
+    super::signal_cancel(&registry, "job-1");
+}
+
+#[tokio::test]
+async fn cancel_triggered_parks_when_sender_drops_without_signal() {
+    let (tx, mut rx) = tokio::sync::watch::channel(false);
+    drop(tx);
+
+    // Sender dropped, no cancellation latched: the arm must stay silent so
+    // the step future's own completion ends any select race.
+    let mut fired = false;
+    tokio::select! {
+        _ = super::cancel_triggered(&mut rx) => fired = true,
+        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+    }
+    assert!(!fired, "dropped sender without signal must never fire");
+}
+
+use std::time::Duration;

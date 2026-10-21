@@ -561,10 +561,100 @@ pub async fn heartbeat(
     ))
 }
 
+/// Long-poll for a task or cancellation. Subscribe before checking the DB so
+/// a commit racing the check is buffered by broadcast and cannot be missed.
 pub async fn poll(
     auth: RunnerClaims,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<ApiResponse<Option<serde_json::Value>>>, AppError> {
+    let long_poll = headers
+        .get("prefer")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.split(',')
+                .map(str::trim)
+                .find_map(|item| item.strip_prefix("wait="))
+        })
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|seconds| std::time::Duration::from_secs(seconds.min(45)))
+        .unwrap_or_default();
+    let active_jobs = headers
+        .get("x-buz-active-jobs")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0)
+        .max(0);
+    let acks: Vec<String> = headers
+        .get("x-buz-cancel-ack")
+        .and_then(|v| v.to_str().ok())
+        .map(|raw| {
+            raw.split(',')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    poll_with_wait(auth, state, active_jobs, acks, long_poll).await
+}
+
+pub(super) async fn poll_with_wait(
+    auth: RunnerClaims,
+    state: AppState,
+    active_jobs: i64,
+    mut pending_acks: Vec<String>,
+    wait: std::time::Duration,
+) -> Result<Json<ApiResponse<Option<serde_json::Value>>>, AppError> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let mut events = crate::services::poll_events::subscribe();
+        let response = poll_once(auth.clone(), state.clone(), &pending_acks, active_jobs).await?;
+        pending_acks.clear();
+
+        let payload = response.0.data.as_ref().and_then(|value| value.as_ref());
+        let has_job = payload.and_then(|v| v.get("job_id")).is_some();
+        let has_cancels = payload
+            .and_then(|v| v.get("cancelled_jobs"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|jobs| !jobs.is_empty());
+        if has_job || has_cancels {
+            return Ok(response);
+        }
+
+        // Frozen/restarting runners must stop dispatch immediately; restart is
+        // also signalled through the restart API, but don't hold up its response.
+        let (frozen, restarting): (i64, i64) =
+            sqlx::query_as("SELECT is_frozen, restart_requested FROM runners WHERE id = ?")
+                .bind(&auth.runner_id)
+                .fetch_optional(&state.pool)
+                .await?
+                .unwrap_or((0, 0));
+        if frozen != 0 || restarting != 0 {
+            return Ok(response);
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(response);
+        }
+        match tokio::time::timeout(remaining, events.recv()).await {
+            Ok(Ok(())) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => {
+                return Ok(response)
+            }
+        }
+    }
+}
+
+async fn poll_once(
+    auth: RunnerClaims,
+    state: AppState,
+    cancel_acks: &[String],
+    active_jobs: i64,
+) -> Result<Json<ApiResponse<Option<serde_json::Value>>>, AppError> {
+    acknowledge_cancelled(&state.pool, &auth.runner_id, cancel_acks).await?;
+    let cancelled_jobs = pending_cancelled_for_delivery(&state.pool, &auth.runner_id).await?;
+
     // Reject frozen runners — they should not be dispatched work.
     // Also skip dispatch while a restart is pending: otherwise the window between
     // the restart request and the next heartbeat (up to 30s) would let this
@@ -579,14 +669,20 @@ pub async fn poll(
 
     if frozen {
         tracing::debug!("Runner {} is frozen — skipping poll", auth.runner_id);
-        return Ok(Json(ApiResponse::success(None)));
+        return Ok(Json(ApiResponse::success(Some(serde_json::json!({
+            "cancelled_jobs": cancelled_jobs,
+            "retry_after_ms": 2000,
+        })))));
     }
     if restart_requested {
         tracing::debug!(
             "Runner {} has a pending restart — skipping poll",
             auth.runner_id
         );
-        return Ok(Json(ApiResponse::success(None)));
+        return Ok(Json(ApiResponse::success(Some(serde_json::json!({
+            "cancelled_jobs": cancelled_jobs,
+            "retry_after_ms": 2000,
+        })))));
     }
 
     // Capacity gate: do not claim when this runner is already at max concurrent jobs.
@@ -605,14 +701,16 @@ pub async fn poll(
             .await
             .unwrap_or(0);
 
-    if running_count >= max_concurrent {
+    if running_count >= max_concurrent || active_jobs >= max_concurrent {
         tracing::debug!(
             runner = %auth.runner_id,
             running = running_count,
             max = max_concurrent,
             "Runner at capacity — skipping poll"
         );
-        return Ok(Json(ApiResponse::success(None)));
+        return Ok(Json(ApiResponse::success(Some(cancel_only_response(
+            cancelled_jobs,
+        )))));
     }
 
     // Load this runner's labels for scheduling.
@@ -752,12 +850,14 @@ pub async fn poll(
                     }
                     let updated = sqlx::query(
                         "UPDATE jobs SET status = 'cancelled', step_statuses = ?, snapshot = ?, \
+                         cancel_ack_pending = ?, \
                          end_time = datetime('now'), updated_at = datetime('now') \
                          WHERE id = ? AND status IN \
                          ('pending', 'queued', 'waiting_approval', 'running')",
                     )
                     .bind(serde_json::to_string(&step_statuses).unwrap_or_else(|_| "[]".into()))
                     .bind(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
+                    .bind(i64::from(old_status == "running"))
                     .bind(&superseded_id)
                     .execute(&mut *tx)
                     .await?;
@@ -820,6 +920,9 @@ pub async fn poll(
 
         if let Some(r) = got {
             tx.commit().await?;
+            if !superseded_ids.is_empty() {
+                crate::services::poll_events::wake_all();
+            }
             for superseded_id in &superseded_ids {
                 crate::services::notify::spawn_job_notify(
                     state.pool.clone(),
@@ -863,6 +966,7 @@ pub async fn poll(
                 .await;
             }
             if !superseded_ids.is_empty() {
+                crate::services::poll_events::wake_all();
                 tracing::info!(
                     environment = ?candidate_environment_id,
                     superseded = superseded_ids.len(),
@@ -905,8 +1009,10 @@ pub async fn poll(
         pipeline_trigger_type,
     )) = claimed
     else {
-        // No matching pending job
-        return Ok(Json(ApiResponse::success(None)));
+        // No matching pending job — still a delivery point for cancels.
+        return Ok(Json(ApiResponse::success(Some(cancel_only_response(
+            cancelled_jobs,
+        )))));
     };
 
     let job_id: String = row.get(0);
@@ -1980,6 +2086,7 @@ pub async fn poll(
 
     Ok(Json(ApiResponse::success(Some(serde_json::json!({
         "job_id": job_id,
+        "cancelled_jobs": cancelled_jobs,
         "pipeline_id": pipeline_id,
         "metadata": {
             "pipeline_name": pipeline_name,
@@ -2570,6 +2677,7 @@ pub async fn toggle_freeze(
         .bind(&id)
         .execute(&state.pool)
         .await?;
+    crate::services::poll_events::wake_all();
 
     let action = if new_frozen != 0 {
         "frozen"
@@ -2623,6 +2731,7 @@ pub async fn restart(
     .execute(&state.pool)
     .await?;
 
+    crate::services::poll_events::wake_all();
     tracing::info!("Runner {name} ({id}) restart requested");
     log_runner_event(
         &state.pool,
@@ -2759,3 +2868,43 @@ mod create_tests;
 #[cfg(test)]
 #[path = "tests/runner_reregister_tests.rs"]
 mod reregister_tests;
+
+/// Poll response envelope for no-job paths; cancel notices ride the claim channel.
+fn cancel_only_response(cancelled_jobs: Vec<String>) -> serde_json::Value {
+    serde_json::json!({ "cancelled_jobs": cancelled_jobs })
+}
+
+/// Clear only the notices this runner explicitly acked after applying them.
+async fn acknowledge_cancelled(
+    pool: &sqlx::SqlitePool,
+    runner_id: &str,
+    ids: &[String],
+) -> Result<(), AppError> {
+    for id in ids {
+        sqlx::query(
+            "UPDATE jobs SET cancel_ack_pending = 0 \
+             WHERE id = ? AND runner_id = ? AND status = 'cancelled' AND cancel_ack_pending = 1",
+        )
+        .bind(id)
+        .bind(runner_id)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Read undelivered cancellation IDs. They remain pending until a subsequent
+/// Runner poll acknowledges receipt, so a lost response is safely retried.
+async fn pending_cancelled_for_delivery(
+    pool: &sqlx::SqlitePool,
+    runner_id: &str,
+) -> Result<Vec<String>, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM jobs \
+         WHERE runner_id = ? AND status = 'cancelled' AND cancel_ack_pending = 1 \
+         ORDER BY updated_at, id LIMIT 32",
+    )
+    .bind(runner_id)
+    .fetch_all(pool)
+    .await?)
+}

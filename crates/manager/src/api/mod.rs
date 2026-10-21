@@ -306,6 +306,10 @@ mod environment_approval_integration_tests;
 mod runner_terminal_status_integration_tests;
 
 #[cfg(test)]
+#[path = "tests/cancel_delivery_tests.rs"]
+mod cancel_delivery_tests;
+
+#[cfg(test)]
 #[path = "tests/cancel_in_progress_tests.rs"]
 mod cancel_in_progress_integration_tests;
 

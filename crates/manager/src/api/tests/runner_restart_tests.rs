@@ -287,9 +287,8 @@ async fn poll_is_blocked_while_restart_pending() {
 
     // Poll must return no task while the flag is set.
     let body = poll(&app).await;
-    assert_eq!(
-        body["data"],
-        serde_json::Value::Null,
+    assert!(
+        body["data"]["job_id"].is_null(),
         "dispatch blocked while restart pending: {body}"
     );
 }

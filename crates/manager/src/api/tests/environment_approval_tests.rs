@@ -293,7 +293,7 @@ async fn protected_trigger_waits_approval_and_is_not_pollable() {
     assert_eq!(poll.status(), StatusCode::OK);
     let poll_body = read_body(poll).await;
     assert!(
-        poll_body["data"].is_null(),
+        poll_body["data"]["job_id"].is_null(),
         "waiting_approval must not be claimed: {poll_body}"
     );
 }
