@@ -22,6 +22,7 @@ async fn test_pool() -> sqlx::SqlitePool {
             token TEXT,
             labels TEXT NOT NULL DEFAULT '[]',
             team_id TEXT,
+            execution_mode TEXT NOT NULL DEFAULT 'host',
             status TEXT NOT NULL DEFAULT 'offline',
             version TEXT,
             system_info TEXT NOT NULL DEFAULT '{}',
@@ -58,6 +59,57 @@ async fn test_pool() -> sqlx::SqlitePool {
 }
 
 #[tokio::test]
+async fn create_runner_record_defaults_execution_mode_to_host() {
+    let pool = test_pool().await;
+    let req = CreateRunnerRequest {
+        name: "host-runner".into(),
+        labels: None,
+        team_id: None,
+        execution_mode: None,
+        version: None,
+        max_concurrent_jobs: None,
+        clean_workspace_after_job: None,
+        shell_enabled: None,
+        ssh_enabled: None,
+        docker_enabled: None,
+        wasm_enabled: None,
+        ssh_host_key_policy: None,
+    };
+    let created = create_runner_record(&pool, &req).await.unwrap();
+    let mode: String = sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id = ?")
+        .bind(created.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(mode, "host");
+}
+
+#[tokio::test]
+async fn create_runner_record_rejects_non_host_execution_mode() {
+    use shared::protocol::RunnerExecutionMode;
+    let pool = test_pool().await;
+    let req = CreateRunnerRequest {
+        name: "premature-container-runner".into(),
+        labels: None,
+        team_id: None,
+        execution_mode: Some(RunnerExecutionMode::Container),
+        version: None,
+        max_concurrent_jobs: None,
+        clean_workspace_after_job: None,
+        shell_enabled: None,
+        ssh_enabled: None,
+        docker_enabled: None,
+        wasm_enabled: None,
+        ssh_host_key_policy: None,
+    };
+    let error = match create_runner_record(&pool, &req).await {
+        Ok(_) => panic!("Container mode must wait for reported host capability"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("start in Host mode"));
+}
+
+#[tokio::test]
 async fn create_runner_record_binds_valid_team() {
     let pool = test_pool().await;
     sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-1', 'Alpha', 'alpha')")
@@ -68,6 +120,7 @@ async fn create_runner_record_binds_valid_team() {
         name: "team-runner".into(),
         labels: Some(vec!["linux-x64".into()]),
         team_id: Some("team-1".into()),
+        execution_mode: None,
         version: None,
         max_concurrent_jobs: None,
         clean_workspace_after_job: None,
@@ -96,6 +149,7 @@ async fn create_runner_record_rejects_unknown_team() {
         name: "bad-team-runner".into(),
         labels: None,
         team_id: Some("missing-team".into()),
+        execution_mode: None,
         version: None,
         max_concurrent_jobs: None,
         clean_workspace_after_job: None,
@@ -120,6 +174,7 @@ async fn create_runner_record_returns_register_token() {
         name: "cli-runner-1".into(),
         labels: Some(vec!["linux-x64".into(), "docker".into()]),
         team_id: None,
+        execution_mode: None,
         version: Some("1.5.6".into()),
         max_concurrent_jobs: None,
         clean_workspace_after_job: None,
@@ -155,6 +210,7 @@ async fn create_runner_record_rejects_duplicate_name() {
         name: "dup-runner".into(),
         labels: None,
         team_id: None,
+        execution_mode: None,
         version: None,
         max_concurrent_jobs: None,
         clean_workspace_after_job: None,

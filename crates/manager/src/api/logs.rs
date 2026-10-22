@@ -8,7 +8,7 @@ use serde::Deserialize;
 use shared::auth::{Role, TokenManager};
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
-use shared::protocol::LogChunk;
+use shared::protocol::{LogChunk, LogLevel};
 use shared::rbac::Perm;
 use sqlx::Row;
 use tokio::sync::broadcast;
@@ -52,21 +52,25 @@ pub async fn upload(
     Json(chunk): Json<LogChunk>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     sqlx::query(
-        "INSERT OR REPLACE INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked)
-         VALUES (?, ?, ?, ?, ?, 1)",
+        "INSERT OR REPLACE INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
+         VALUES (?, ?, ?, ?, ?, 1, ?)",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(&job_id)
     .bind(chunk.chunk_index)
     .bind(chunk.step_order)
     .bind(&chunk.content)
+    .bind(chunk.level.map(|l| l.as_str()))
     .execute(&state.pool)
     .await?;
 
     // Broadcast the log chunk to connected WebSocket clients
-    state
-        .log_broadcast
-        .broadcast(&job_id, chunk.step_order, &chunk.content);
+    state.log_broadcast.broadcast(
+        &job_id,
+        chunk.step_order,
+        chunk.level.map(|l| l.as_str()),
+        &chunk.content,
+    );
 
     Ok(Json(ApiResponse::success(())))
 }
@@ -79,7 +83,7 @@ pub async fn get_logs(
     assert_job_team_view(&state.pool, &auth, &job_id).await?;
 
     let rows = sqlx::query(
-        "SELECT chunk_index, step_order, log_content, created_at
+        "SELECT chunk_index, step_order, log_content, level, created_at
          FROM job_logs WHERE job_id = ?
          ORDER BY step_order, chunk_index",
     )
@@ -94,7 +98,8 @@ pub async fn get_logs(
                 "chunk_index": r.get::<i64, _>(0),
                 "step_order": r.get::<i64, _>(1),
                 "content": r.get::<String, _>(2),
-                "created_at": r.get::<Option<String>, _>(3),
+                "level": LogLevel::parse(r.get::<Option<String>, _>(3).as_deref()),
+                "created_at": r.get::<Option<String>, _>(4),
             })
         })
         .collect();

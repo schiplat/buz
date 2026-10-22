@@ -96,6 +96,7 @@ async fn run_loop(config: config::Config) -> anyhow::Result<()> {
                 manager_url: config.runner.manager_url.clone(),
                 prefer_interfaces: config.runner.prefer_interfaces.clone(),
                 clock_skew_seconds: clock_monitor.skew_secs(),
+                execution_capabilities: None,
             },
         );
         tracing::info!(

@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use shared::protocol::{NetworkInterfaceInfo, SystemInfo};
+use shared::protocol::{NetworkInterfaceInfo, RunnerExecutionCapabilities, SystemInfo};
 use sysinfo::{Disks, Networks, System};
 
 /// Options controlling which IPs are advertised first to the Manager UI.
@@ -13,6 +13,7 @@ pub struct SysInfoOpts {
     /// Last measured Runner↔Manager clock skew (`remote - local`); positive
     /// means this Runner is behind. `None` when not measured yet.
     pub clock_skew_seconds: Option<i64>,
+    pub execution_capabilities: Option<RunnerExecutionCapabilities>,
 }
 
 /// Human-readable OS description for the startup banner, e.g. "Ubuntu 24.04.4 LTS".
@@ -146,6 +147,7 @@ pub fn collect_system_info(started_at: std::time::Instant, opts: &SysInfoOpts) -
         ip_addresses,
         uptime_seconds: uptime,
         clock_skew_seconds: opts.clock_skew_seconds,
+        execution_capabilities: opts.execution_capabilities.clone(),
     }
 }
 

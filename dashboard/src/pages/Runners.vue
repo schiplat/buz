@@ -5,7 +5,7 @@ import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw, KeyRound } from '@lucide/vue'
-import { runnersApi, type Runner } from '@/api/runners'
+import { runnersApi, type Runner, type RunnerExecutionMode } from '@/api/runners'
 import { teamsApi, type Team } from '@/api/teams'
 import { formatLocalDateTime } from '@/utils/time'
 import { clockSkewInfo, clockToneClass } from '@/utils/runnerClock'
@@ -74,6 +74,7 @@ const newSshEnabled = ref(true)
 const newDockerEnabled = ref(false)
 const newSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
 const newTeamId = ref('')
+const newExecutionMode = ref<RunnerExecutionMode>('host')
 const creating = ref(false)
 const createdToken = ref<string | null>(null)
 const copied = ref(false)
@@ -103,7 +104,39 @@ const editSshEnabled = ref(true)
 const editDockerEnabled = ref(false)
 const editSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
 const editTeamId = ref('shared')
+const editExecutionMode = ref<RunnerExecutionMode>('host')
 const savingPolicy = ref(false)
+
+function backendSupport(runner: Runner | null, mode: 'container' | 'vm') {
+  const caps = runner?.system_info?.execution_capabilities
+  const checkedAt = caps?.checked_at ? Date.parse(caps.checked_at) : Number.NaN
+  const fresh = Number.isFinite(checkedAt) && Date.now() - checkedAt <= 300_000 && checkedAt - Date.now() <= 30_000
+  const status = caps?.[mode] ?? 'unknown'
+  const reason = mode === 'container' ? caps?.container_reason : caps?.vm_reason
+  return {
+    supported: runner?.status === 'online' && fresh && status === 'supported',
+    status: runner?.status !== 'online' || !fresh ? 'unknown' : status,
+    reason: reason || (runner?.status !== 'online'
+      ? 'Runner is offline.'
+      : !fresh ? 'Waiting for a fresh capability check.' : 'No reason was reported.'),
+    checkedAt: caps?.checked_at,
+  }
+}
+const containerSupport = computed(() => backendSupport(activeRunner.value, 'container'))
+const vmSupport = computed(() => backendSupport(activeRunner.value, 'vm'))
+function canSelectMode(mode: RunnerExecutionMode) {
+  return mode === 'host' || (mode === 'container' ? containerSupport.value.supported : vmSupport.value.supported)
+}
+function modeBlockReason(mode: RunnerExecutionMode) {
+  if (mode === 'container') return containerSupport.value.reason
+  if (mode === 'vm') return vmSupport.value.reason
+  return ''
+}
+function formatCapabilityTime(value?: string | null) {
+  if (!value) return 'Not checked'
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? formatLocalDateTime(new Date(time).toISOString()) : value
+}
 
 onMounted(async () => {
   await Promise.all([loadRunners(), loadTeams()])
@@ -130,6 +163,7 @@ function openDetail(r: Runner) {
   editDockerEnabled.value = !!r.docker_enabled
   editSshHostKeyPolicy.value = r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure'
   editTeamId.value = r.team_id ?? 'shared'
+  editExecutionMode.value = r.execution_mode ?? 'host'
   drawerOpen.value = true
   loadRunnerEvents(r.id)
 }
@@ -175,6 +209,7 @@ function openCreate() {
   newDockerEnabled.value = false
   newSshHostKeyPolicy.value = 'insecure'
   newTeamId.value = ''
+  newExecutionMode.value = 'host'
   createdToken.value = null
   copied.value = false
   showCreate.value = true
@@ -190,6 +225,7 @@ async function handleCreate() {
       name: newName.value.trim(),
       labels,
       team_id: newTeamId.value === 'shared' ? null : newTeamId.value,
+      execution_mode: newExecutionMode.value,
       max_concurrent_jobs: max,
       clean_workspace_after_job: newCleanWorkspace.value,
       shell_enabled: newShellEnabled.value,
@@ -214,6 +250,7 @@ function policyDirty(): boolean {
   return (
     labelsChanged ||
     editTeamId.value !== (r.team_id ?? 'shared') ||
+    editExecutionMode.value !== (r.execution_mode ?? 'host') ||
     editMaxConcurrent.value !== (r.max_concurrent_jobs ?? 1) ||
     editCleanWorkspace.value !== !!r.clean_workspace_after_job ||
     editShellEnabled.value !== (r.shell_enabled !== false) ||
@@ -232,6 +269,7 @@ async function savePolicy() {
     const updated = await runnersApi.update(activeRunner.value.id, {
       labels,
       team_id: editTeamId.value === 'shared' ? null : editTeamId.value,
+      execution_mode: editExecutionMode.value,
       max_concurrent_jobs: max,
       clean_workspace_after_job: editCleanWorkspace.value,
       shell_enabled: editShellEnabled.value,
@@ -242,6 +280,7 @@ async function savePolicy() {
     activeRunner.value = { ...activeRunner.value, ...updated }
     editLabels.value = (updated.labels || []).join(', ')
     editTeamId.value = updated.team_id ?? 'shared'
+    editExecutionMode.value = updated.execution_mode ?? 'host'
     const idx = runners.value.findIndex(r => r.id === activeRunner.value!.id)
     if (idx >= 0) runners.value[idx] = { ...runners.value[idx], ...updated }
   } catch (e) { console.error(e); await dialog.alert('Failed to update runner policy') }
@@ -573,6 +612,33 @@ const eventBadge = (t: string) => {
                   Only this team’s jobs are dispatched here. This does not isolate jobs sharing the Runner OS user.
                 </p>
               </div>
+              <div class="rounded-lg border border-border/50 bg-background/70 p-3 space-y-2">
+                <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Sandbox environment checks</div>
+                <div v-for="item in [
+                  { key: 'container', label: 'Container', support: containerSupport },
+                  { key: 'vm', label: 'VM / Firecracker-compatible OCI runtime', support: vmSupport },
+                ]" :key="item.key" class="flex items-start justify-between gap-3 text-[11px]">
+                  <div class="min-w-0">
+                    <div class="font-medium">{{ item.label }} · {{ item.support.status }}</div>
+                    <div v-if="item.support.status !== 'supported'" class="text-muted-foreground break-words">{{ item.support.reason }}</div>
+                  </div>
+                  <span class="shrink-0 text-muted-foreground">{{ formatCapabilityTime(item.support.checkedAt) }}</span>
+                </div>
+              </div>
+              <div>
+                <label class="text-xs text-muted-foreground block mb-1">Job execution mode</label>
+                <select v-model="editExecutionMode" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden focus:border-ring/40">
+                  <option value="host">Host (current behavior)</option>
+                  <option value="container" :disabled="!containerSupport.supported">Job container</option>
+                  <option value="vm" :disabled="!vmSupport.supported">VM (Firecracker-compatible OCI runtime)</option>
+                </select>
+                <p v-if="!canSelectMode(editExecutionMode)" class="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
+                  {{ modeBlockReason(editExecutionMode) }}
+                </p>
+                <p class="mt-1 text-[10px] text-muted-foreground">
+                  Container/VM supports local shell steps only; SSH, per-step Docker, registry auth and host-side config prep fail closed. VM mode delegates to a host-provided Firecracker-compatible OCI runtime.
+                </p>
+              </div>
               <div>
                 <label class="text-xs text-muted-foreground block mb-1">Labels</label>
                 <input
@@ -895,6 +961,15 @@ const eventBadge = (t: string) => {
                 </p>
                 <p v-else class="mt-1.5 text-[11px] text-muted-foreground">
                   Dispatch is limited to this team; jobs still share the Runner OS user and are not sandboxed from one another.
+                </p>
+              </div>
+              <div>
+                <label class="type-label block mb-1.5">Job execution mode</label>
+                <select v-model="newExecutionMode" disabled class="w-full rounded-xl border border-border bg-muted px-3 py-2 text-sm opacity-70">
+                  <option value="host">Host (initial mode)</option>
+                </select>
+                <p class="mt-1.5 text-[11px] text-muted-foreground">
+                  New Runners start in Host mode. Register the Runner and wait for its first sandbox environment check; supported Container/VM modes can then be selected in its details.
                 </p>
               </div>
               <div>

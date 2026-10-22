@@ -1,6 +1,6 @@
 name: Docker / ACR + Docker Hub
 
-# Build and push Manager + Runner images to two registries:
+# Build and push Manager, Runner, and sandboxd images to two registries:
 #   1. Alibaba Cloud Container Registry (personal) — existing deploy channel.
 #   2. Docker Hub (official public channel, schiplat namespace).
 # Supports linux/amd64 + linux/arm64 (native builds on GitHub-hosted runners,
@@ -24,8 +24,10 @@ name: Docker / ACR + Docker Hub
 # Images:
 #   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-manager:<tag>  (linux/amd64, linux/arm64)
 #   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-runner:<tag>   (linux/amd64, linux/arm64)
+#   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-sandboxd:<tag> (linux/amd64, linux/arm64)
 #   ${DOCKERHUB_NAMESPACE}/buz-manager:<tag>            (only when DOCKERHUB_USERNAME is set)
 #   ${DOCKERHUB_NAMESPACE}/buz-runner:<tag>             (only when DOCKERHUB_USERNAME is set)
+#   ${DOCKERHUB_NAMESPACE}/buz-sandboxd:<tag>           (only when DOCKERHUB_USERNAME is set)
 
 on:
   push:
@@ -89,6 +91,7 @@ jobs:
           SUFFIX="${{ matrix.name }}"
           MANAGER="${REGISTRY}/${NAMESPACE}/buz-manager"
           RUNNER="${REGISTRY}/${NAMESPACE}/buz-runner"
+          SANDBOXD="${REGISTRY}/${NAMESPACE}/buz-sandboxd"
 
           {
             echo "${MANAGER}:${PRIMARY}-${SUFFIX}"
@@ -106,12 +109,21 @@ jobs:
             fi
           } > /tmp/tags-runner.txt
 
+          {
+            echo "${SANDBOXD}:${PRIMARY}-${SUFFIX}"
+            echo "${SANDBOXD}:latest-${SUFFIX}"
+            if [[ "$PRIMARY" == v* ]]; then
+              echo "${SANDBOXD}:${PRIMARY#v}-${SUFFIX}"
+            fi
+          } > /tmp/tags-sandboxd.txt
+
           # Docker Hub tags are appended only when DOCKERHUB_USERNAME is set,
           # so the workflow keeps working (ACR only) until the secrets exist.
           DH_NAMESPACE="${{ vars.DOCKERHUB_NAMESPACE || 'schiplat' }}"
           if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
             DH_MANAGER="${DH_NAMESPACE}/buz-manager"
             DH_RUNNER="${DH_NAMESPACE}/buz-runner"
+            DH_SANDBOXD="${DH_NAMESPACE}/buz-sandboxd"
             {
               echo "${DH_MANAGER}:${PRIMARY}-${SUFFIX}"
               echo "${DH_MANAGER}:latest-${SUFFIX}"
@@ -126,6 +138,13 @@ jobs:
                 echo "${DH_RUNNER}:${PRIMARY#v}-${SUFFIX}"
               fi
             } >> /tmp/tags-runner.txt
+            {
+              echo "${DH_SANDBOXD}:${PRIMARY}-${SUFFIX}"
+              echo "${DH_SANDBOXD}:latest-${SUFFIX}"
+              if [[ "$PRIMARY" == v* ]]; then
+                echo "${DH_SANDBOXD}:${PRIMARY#v}-${SUFFIX}"
+              fi
+            } >> /tmp/tags-sandboxd.txt
           fi
 
           # docker/build-push-action wants comma-separated or multiline via file
@@ -135,10 +154,14 @@ jobs:
           echo "runner_tags<<EOF" >> "$GITHUB_OUTPUT"
           cat /tmp/tags-runner.txt >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "sandboxd_tags<<EOF" >> "$GITHUB_OUTPUT"
+          cat /tmp/tags-sandboxd.txt >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
           echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
           echo "primary=${PRIMARY}" >> "$GITHUB_OUTPUT"
           echo "Manager tags:"; cat /tmp/tags-manager.txt
           echo "Runner tags:"; cat /tmp/tags-runner.txt
+          echo "Sandboxd tags:"; cat /tmp/tags-sandboxd.txt
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -185,6 +208,19 @@ jobs:
           sbom: false
           cache-from: type=gha,scope=buz-runner-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=buz-runner-${{ matrix.name }}
+
+      - name: Build & push buz-sandboxd
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.sandboxd
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.meta.outputs.sandboxd_tags }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=buz-sandboxd-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=buz-sandboxd-${{ matrix.name }}
 
   # Assemble the final multi-arch tags from the platform-specific tags pushed by
   # the matrix jobs. A single `buildx imagetools create` writes an index that
@@ -234,7 +270,7 @@ jobs:
             TAGS+=("${PRIMARY#v}")
           fi
 
-          for IMG in buz-manager buz-runner; do
+          for IMG in buz-manager buz-runner buz-sandboxd; do
             for T in "${TAGS[@]}"; do
               echo "Merging ${REGISTRY}/${NAMESPACE}/${IMG}:${T}"
               docker buildx imagetools create \
@@ -246,7 +282,7 @@ jobs:
 
           if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
             DH_NAMESPACE="${{ vars.DOCKERHUB_NAMESPACE || 'schiplat' }}"
-            for IMG in buz-manager buz-runner; do
+            for IMG in buz-manager buz-runner buz-sandboxd; do
               for T in "${TAGS[@]}"; do
                 echo "Merging ${DH_NAMESPACE}/${IMG}:${T}"
                 docker buildx imagetools create \
@@ -257,6 +293,6 @@ jobs:
             done
           fi
 
-          echo "Merged manifests for ${REGISTRY}/${NAMESPACE}/buz-manager:${PRIMARY}:"
+          echo "Merged manifests for ${REGISTRY}/${NAMESPACE}/buz-sandboxd:${PRIMARY}:"
           docker buildx imagetools inspect \
-            "${REGISTRY}/${NAMESPACE}/buz-manager:${PRIMARY}"
+            "${REGISTRY}/${NAMESPACE}/buz-sandboxd:${PRIMARY}"

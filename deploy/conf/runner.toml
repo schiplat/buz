@@ -38,6 +38,18 @@ warn_threshold_seconds = 60
 max_skew_seconds = 300
 # fail_on_skew = true
 
+# Job-wide Container/VM modes are selected in Manager UI → Runners.
+# Docker/VM runtime capabilities are probed by sandboxd and reported in the Runner
+# details page; Manager permits non-Host modes only after a fresh supported check.
+# VM mode requires Linux + accessible /dev/kvm and an installed Firecracker-compatible OCI runtime.
+# Sandbox jobs reject SSH, per-step Docker, registry auth, and host config preparation.
+[sandbox]
+supervisor_socket = "/run/buz-sandboxd/sandboxd.sock"
+workspace_root = "/app/buz/workspace"
+# container_image = "docker.io/library/debian@sha256:<digest>"
+# firecracker_guest_image = "docker.io/library/debian@sha256:<digest>"
+# firecracker_runtime = "<Firecracker-compatible Docker runtime name>"
+
 [logging]
 level = "info"
 file = "./logs/runner.log"

@@ -107,7 +107,7 @@ jobs:
         run: |
           cargo build --locked --release \
             --target ${{ matrix.target }} \
-            -p manager -p runner
+            -p manager -p runner --bin buz-manager --bin buz-runner --bin buz-sandboxd
 
       - name: Package archive
         env:

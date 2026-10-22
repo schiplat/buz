@@ -412,7 +412,7 @@ function startRefreshTimer() {
             st.seenContent.add(c.content)
             const ts = formatLogClock(c.created_at, nowTimeStr())
             pending += 1
-            st.term.write(formatLogChunkForTerminal(ts, c.content), () => {
+            st.term.write(formatLogChunkForTerminal(ts, c), () => {
               pending -= 1
               if (pending === 0) finishFits()
             })
@@ -484,7 +484,7 @@ function initSingleTerminal(stepOrder: number) {
   let remaining = chunks.length
   for (const chunk of chunks) {
     const ts = formatLogClock(chunk.created_at, nowTimeStr())
-    const text = formatLogChunkForTerminal(ts, chunk.content)
+    const text = formatLogChunkForTerminal(ts, chunk)
     seen.add(chunk.content)
     term.write(text, () => {
       remaining -= 1
@@ -564,7 +564,7 @@ function handleWsMessage(raw: string) {
     if (st && !st.seenContent.has(chunk.content)) {
       st.seenContent.add(chunk.content)
       const ts = formatLogClock(chunk.created_at, nowTimeStr())
-      st.term.write(formatLogChunkForTerminal(ts, chunk.content), () => {
+      st.term.write(formatLogChunkForTerminal(ts, chunk), () => {
         fitTerminalHeight(displayStep)
       })
     }
@@ -574,7 +574,7 @@ function handleWsMessage(raw: string) {
     const running = stepTerminals.value.find(t => getStepStatus(t.stepOrder) === 'running')
     if (running && !running.seenContent.has(raw)) {
       running.seenContent.add(raw)
-      running.term.write(formatLogChunkForTerminal(nowTimeStr(), raw), () => {
+      running.term.write(formatLogChunkForTerminal(nowTimeStr(), { content: raw }), () => {
         fitTerminalHeight(running.stepOrder)
       })
     }

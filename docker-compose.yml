@@ -40,11 +40,15 @@ services:
     depends_on:
       manager:
         condition: service_healthy
+      sandboxd:
+        condition: service_healthy
+        required: false
     volumes:
       - ${BUZ_RUNNER_CONF:-./deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
-      - ${BUZ_RUNNER_WS:-buz-runner-ws}:/app/buz/workspace
+      - ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}:/app/buz/workspace
       - ${BUZ_RUNNER_LOGS:-buz-runner-logs}:/app/buz/logs
       - ${BUZ_RUNNER_STATE:-buz-runner-state}:/app/buz/state
+      - buz-sandboxd-socket:/run/buz-sandboxd:ro
     restart: unless-stopped
     # Optional host Docker for uses:docker steps:
     # user: root
@@ -55,9 +59,36 @@ services:
     #   - ${BUZ_RUNNER_LOGS:-buz-runner-logs}:/app/buz/logs
     #   - ${BUZ_RUNNER_STATE:-buz-runner-state}:/app/buz/state
 
+  # Optional host-side job sandbox supervisor. Docker socket access is
+  # host-root-equivalent: protect this profile/config as a privileged service.
+  sandboxd:
+    profiles: ["sandbox"]
+    image: ${BUZ_IMAGE_SANDBOXD:-buz-sandboxd:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.sandboxd
+    user: "0:0"
+    environment:
+      BUZ_SANDBOXD_WORKSPACE_VOLUME: ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}
+      BUZ_SANDBOXD_INSTANCE_ID: ${BUZ_SANDBOXD_INSTANCE_ID:-compose-sandboxd}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}:/app/buz/workspace
+      - buz-sandboxd-socket:/run/buz-sandboxd
+      - ./deploy/conf/sandboxd.toml:/app/buz/conf/sandboxd.toml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/buz-sandboxd", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+    restart: unless-stopped
+
 volumes:
   buz-data:
   buz-pipelines:
   buz-runner-ws:
+    name: ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}
   buz-runner-logs:
   buz-runner-state:

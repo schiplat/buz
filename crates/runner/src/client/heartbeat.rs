@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::client::clock::ClockMonitor;
 use crate::config::Config;
 use crate::policy::{self, SharedPolicy};
+use shared::protocol::RunnerExecutionCapabilities;
 
 pub async fn run_heartbeat_loop(
     client: &Client,
@@ -16,7 +17,13 @@ pub async fn run_heartbeat_loop(
     restart_requested: Arc<AtomicBool>,
     clock_monitor: Arc<ClockMonitor>,
 ) {
+    let mut capabilities = probe_execution_capabilities(config).await;
+    let mut last_capability_check = std::time::Instant::now();
     loop {
+        if last_capability_check.elapsed() >= std::time::Duration::from_secs(300) {
+            capabilities = probe_execution_capabilities(config).await;
+            last_capability_check = std::time::Instant::now();
+        }
         // Refresh system info on every heartbeat so CPU/mem/disk stay current;
         // the clock skew measured on the previous heartbeat rides along so the
         // Manager UI can show how far this Runner drifts.
@@ -26,6 +33,7 @@ pub async fn run_heartbeat_loop(
                 manager_url: config.runner.manager_url.clone(),
                 prefer_interfaces: config.runner.prefer_interfaces.clone(),
                 clock_skew_seconds: clock_monitor.skew_secs(),
+                execution_capabilities: Some(capabilities.clone()),
             },
         );
 
@@ -39,26 +47,26 @@ pub async fn run_heartbeat_loop(
                     restart_requested.store(true, Ordering::SeqCst);
                 }
 
-                if prev.max_concurrent_jobs != next.max_concurrent_jobs
-                    || prev.clean_workspace_after_job != next.clean_workspace_after_job
-                    || prev.shell_enabled != next.shell_enabled
-                    || prev.ssh_enabled != next.ssh_enabled
-                    || prev.docker_enabled != next.docker_enabled
-                    || prev.wasm_enabled != next.wasm_enabled
-                    || prev.ssh_host_key_policy != next.ssh_host_key_policy
-                {
+                if prev != next {
                     tracing::info!(
                         "Runner policy updated from Manager: max_concurrent={}→{} \
-                         clean={}→{} engines=[shell={},ssh={},docker={},wasm={}] ssh_host_key={}",
+                         clean={}→{} engines=[shell={}→{},ssh={}→{},docker={}→{},wasm={}→{}] \
+                         ssh_host_key={}→{} mode={}",
                         prev.max_concurrent_jobs,
                         next.max_concurrent_jobs,
                         prev.clean_workspace_after_job,
                         next.clean_workspace_after_job,
+                        prev.shell_enabled,
                         next.shell_enabled,
+                        prev.ssh_enabled,
                         next.ssh_enabled,
+                        prev.docker_enabled,
                         next.docker_enabled,
+                        prev.wasm_enabled,
                         next.wasm_enabled,
+                        prev.ssh_host_key_policy,
                         next.ssh_host_key_policy,
+                        next.execution_mode.as_str(),
                     );
                 } else {
                     tracing::debug!(
@@ -71,6 +79,19 @@ pub async fn run_heartbeat_loop(
         }
 
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    }
+}
+
+async fn probe_execution_capabilities(config: &Config) -> RunnerExecutionCapabilities {
+    match crate::client::sandbox_client::probe_capabilities(&config.sandbox).await {
+        Ok(capabilities) => capabilities,
+        Err(error) => RunnerExecutionCapabilities {
+            container: shared::protocol::ExecutionBackendStatus::Unsupported,
+            container_reason: Some(format!("sandbox supervisor probe failed: {error:#}")),
+            vm: shared::protocol::ExecutionBackendStatus::Unsupported,
+            vm_reason: Some(format!("sandbox supervisor probe failed: {error:#}")),
+            checked_at: Some(chrono::Utc::now().to_rfc3339()),
+        },
     }
 }
 

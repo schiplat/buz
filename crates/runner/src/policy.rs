@@ -15,6 +15,7 @@ pub fn new_shared(policy: RunnerPolicyConfig) -> SharedPolicy {
 /// Apply Manager UI policy onto a config clone used for job execution.
 /// Machine-local paths (`workspace_dir`, `ssh_known_hosts_path`, etc.) are kept.
 pub fn apply_to_config(config: &mut Config, policy: &RunnerPolicyConfig) {
+    config.execution_mode = policy.execution_mode;
     config.runner.clean_workspace_after_job = policy.clean_workspace_after_job;
     config.engine.shell_enabled = policy.shell_enabled;
     config.engine.ssh_enabled = policy.ssh_enabled;

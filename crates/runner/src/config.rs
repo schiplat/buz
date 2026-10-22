@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 use shared::logging::LoggingConfig;
+use shared::protocol::RunnerExecutionMode;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Config {
@@ -13,6 +14,54 @@ pub struct Config {
     pub clock: ClockSection,
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// Manager-selected job-wide executor; older policy snapshots default to Host.
+    #[serde(default)]
+    pub execution_mode: RunnerExecutionMode,
+    /// Machine-local sandbox runtime settings. Never sent to Manager.
+    #[serde(default)]
+    pub sandbox: SandboxSection,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SandboxSection {
+    /// Local socket exposed by the privileged, host-side buz-sandboxd service.
+    #[serde(default = "default_sandbox_socket")]
+    pub supervisor_socket: String,
+    /// Locally provisioned, digest-pinned job image for Container mode.
+    #[serde(default)]
+    pub container_image: String,
+    /// Read-only guest rootfs/image provisioned for Firecracker VM mode.
+    #[serde(default)]
+    pub firecracker_guest_image: String,
+    /// Firecracker-compatible OCI runtime name used for VM jobs.
+    #[serde(default)]
+    pub firecracker_runtime: String,
+    /// Workspace root accepted by the host-side supervisor.
+    #[serde(default = "default_workspace_dir")]
+    pub workspace_root: String,
+    #[serde(default = "default_sandbox_timeout")]
+    pub request_timeout_seconds: u64,
+}
+
+impl Default for SandboxSection {
+    fn default() -> Self {
+        Self {
+            supervisor_socket: default_sandbox_socket(),
+            container_image: String::new(),
+            firecracker_guest_image: String::new(),
+            firecracker_runtime: String::new(),
+            workspace_root: default_workspace_dir(),
+            request_timeout_seconds: default_sandbox_timeout(),
+        }
+    }
+}
+
+fn default_sandbox_socket() -> String {
+    "/run/buz-sandboxd/sandboxd.sock".into()
+}
+
+fn default_sandbox_timeout() -> u64 {
+    30
 }
 
 /// `[clock]` — Runner↔Manager clock consistency.

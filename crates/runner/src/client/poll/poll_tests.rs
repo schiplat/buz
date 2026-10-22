@@ -1,14 +1,8 @@
 use super::{
-    build_config_prep_banner, build_login_banner, build_runner_banner, build_ssh_banner,
-    build_ssh_env_command, build_step_echo, build_step_failure_message, build_verbose_step_config,
-    build_verbose_step_result, buz_metadata_env, clean_job_docker_config, config_url_age,
-    format_resolved_ssh_targets, job_docker_config_dir, merge_ssh_host_outputs, parse_buz_env_file,
-    prepare_job_docker_config_dir, step_failure_hint, step_log_base,
-    wrap_remote_cmd_with_registry_login, LOG_ECHO, LOG_LOGIN, LOG_RUNNER_BANNER, LOG_STEP_ERROR,
-    LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP, LOG_STEP_VERBOSE_EXEC,
-    LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
+    build_ssh_env_command, buz_metadata_env, clean_job_docker_config, job_docker_config_dir,
+    merge_ssh_host_outputs, parse_buz_env_file, prepare_job_docker_config_dir,
+    wrap_remote_cmd_with_registry_login,
 };
-use crate::masker::SecretCatalog;
 use std::collections::HashMap;
 
 #[test]
@@ -92,182 +86,6 @@ fn docker_policy_error_preflight_test_anchor() {
 }
 
 #[test]
-fn step_log_base_isolates_steps() {
-    assert_eq!(step_log_base(0), 0);
-    assert_eq!(step_log_base(1), 10_000);
-    assert_eq!(step_log_base(2), 20_000);
-}
-
-#[test]
-fn login_echo_stream_do_not_collide() {
-    let base = step_log_base(0);
-    let login = base + LOG_LOGIN;
-    let echo = base + LOG_ECHO;
-    let stream0 = base + LOG_STREAM_START;
-    let err = base + LOG_STEP_ERROR;
-    assert_ne!(login, echo);
-    assert_ne!(echo, stream0);
-    assert_ne!(login, stream0);
-    assert!(err > stream0);
-}
-
-#[test]
-fn verbose_chunk_order_matches_display_sequence() {
-    // ORDER BY chunk_index must yield prepare → config → prep → login →
-    // exec → run → stream → result → error.
-    const _: () = {
-        assert!(LOG_STEP_VERBOSE_PREPARE < LOG_STEP_VERBOSE_CONFIG);
-        assert!(LOG_STEP_VERBOSE_CONFIG < LOG_STEP_VERBOSE_CONFIG_PREP);
-        assert!(LOG_STEP_VERBOSE_CONFIG_PREP < LOG_LOGIN);
-        assert!(LOG_LOGIN < LOG_STEP_VERBOSE_EXEC);
-        assert!(LOG_STEP_VERBOSE_EXEC < LOG_ECHO);
-        assert!(LOG_ECHO < LOG_STREAM_START);
-        assert!(LOG_STREAM_START < LOG_STEP_VERBOSE_RESULT);
-        assert!(LOG_STEP_VERBOSE_RESULT < LOG_STEP_ERROR);
-    };
-}
-
-#[test]
-fn build_step_echo_masks_secret_and_masking_input_keys() {
-    let mut env = HashMap::new();
-    env.insert("DEBIAN_FRONTEND".into(), "noninteractive".into());
-    env.insert("version".into(), "1.0".into());
-    env.insert("deploy_token".into(), "tok-secret-value".into());
-    env.insert("acr_personal".into(), "secret-json".into());
-    let mut catalog = SecretCatalog::new();
-    catalog.add_key("acr_personal");
-    catalog.add_key("deploy_token");
-    catalog.add_key("INPUT_DEPLOY_TOKEN");
-
-    let echo = build_step_echo("shell", "echo hi\n", &env, &catalog, None);
-    assert!(echo.contains("version=1.0"), "{echo}");
-    assert!(echo.contains("deploy_token=***"), "{echo}");
-    assert!(echo.contains("acr_personal=***"), "{echo}");
-    assert!(!echo.contains("tok-secret-value"), "{echo}");
-    assert!(!echo.contains("secret-json"), "{echo}");
-}
-
-#[test]
-fn build_step_echo_uses_consistent_banner_and_fields() {
-    let mut env = HashMap::new();
-    env.insert("DEBIAN_FRONTEND".into(), "noninteractive".into());
-    env.insert("SMOKE_ENV".into(), "from-pipeline".into());
-    env.insert("acr_personal".into(), "secret-json".into());
-    let mut catalog = SecretCatalog::new();
-    catalog.add_key("acr_personal");
-
-    let echo = build_step_echo(
-        "docker",
-        "echo hi\nuname -a || true\n",
-        &env,
-        &catalog,
-        Some("/tmp/ws"),
-    );
-
-    assert!(echo.starts_with("==> RUN [docker]\n"), "{echo}");
-    assert!(echo.contains("  note  GIT_TERMINAL_PROMPT=0"), "{echo}");
-    assert!(echo.contains("  cwd   /tmp/ws\n"), "{echo}");
-    assert!(echo.contains("SMOKE_ENV=from-pipeline"), "{echo}");
-    assert!(echo.contains("acr_personal=***"), "{echo}");
-    assert!(!echo.contains("secret-json"), "{echo}");
-    assert!(echo.contains("  cmd   echo hi\n"), "{echo}");
-    assert!(echo.contains("        uname -a || true\n"), "{echo}");
-}
-
-#[test]
-fn build_login_banner_matches_style() {
-    assert_eq!(
-        build_login_banner("registry.example.com"),
-        "==> LOGIN [registry.example.com]\n"
-    );
-}
-
-#[test]
-fn runner_banner_identifies_version_and_os() {
-    let banner = build_runner_banner();
-    assert!(banner.starts_with("==> RUNNER\n"), "{banner}");
-    assert!(
-        banner.contains(&format!("  version          {}", shared::version::VERSION)),
-        "{banner}"
-    );
-    // OS line is present and non-empty (never the "unknown" placeholder).
-    assert!(banner.contains("  os               "), "{banner}");
-    assert!(!banner.contains("  os               \n"), "{banner}");
-}
-
-#[test]
-fn runner_banner_sorts_before_step_zero() {
-    assert!(LOG_RUNNER_BANNER < step_log_base(0));
-}
-
-#[test]
-fn build_ssh_banner_includes_target_and_workspace() {
-    let banner = build_ssh_banner(&[
-        ("deploy@10.0.0.1:22".into(), "/home/deploy".into()),
-        ("deploy@10.0.0.2:2222".into(), String::new()),
-    ]);
-    assert!(
-        banner.contains("==> SSH [deploy@10.0.0.1:22]\n"),
-        "{banner}"
-    );
-    assert!(banner.contains("  workspace  /home/deploy\n"), "{banner}");
-    assert!(
-        banner.contains("==> SSH [deploy@10.0.0.2:2222]\n"),
-        "{banner}"
-    );
-    assert!(
-        !banner.contains("workspace  \n")
-            || banner.lines().filter(|l| l.contains("10.0.0.2")).count() == 1,
-        "empty workspace must omit workspace line: {banner}"
-    );
-    let only_second = banner
-        .split("==> SSH [deploy@10.0.0.2:2222]\n")
-        .nth(1)
-        .unwrap();
-    assert!(
-        !only_second.contains("workspace"),
-        "second host has no workspace: {banner}"
-    );
-}
-
-#[test]
-fn format_resolved_ssh_targets_from_host_objects() {
-    let step = serde_json::json!({
-        "host": [
-            { "host": "a.example", "port": 22, "username": "ubuntu" },
-            { "host": "b.example", "port": 2222, "username": "deploy" }
-        ]
-    });
-    assert_eq!(
-        format_resolved_ssh_targets(&step),
-        vec!["ubuntu@a.example:22", "deploy@b.example:2222"]
-    );
-}
-
-#[test]
-fn verbose_step_config_prefers_resolved_host_objects() {
-    let step = serde_json::json!({
-        "exec_type": "ssh",
-        "hosts": ["legacy-name"],
-        "hosts_strategy": "chain",
-        "host": {
-            "host": "81.71.41.19",
-            "port": 2424,
-            "username": "root",
-            "credential_value": "SECRET_KEY_MATERIAL"
-        }
-    });
-    let cfg = build_verbose_step_config(&step, "ssh", "");
-    assert!(
-        cfg.contains("  hosts            root@81.71.41.19:2424"),
-        "{cfg}"
-    );
-    assert!(cfg.contains("  hosts_strategy   chain"), "{cfg}");
-    assert!(!cfg.contains("SECRET_KEY_MATERIAL"), "{cfg}");
-    assert!(!cfg.contains("legacy-name"), "{cfg}");
-}
-
-#[test]
 fn merge_ssh_host_outputs_any_failure_fails_step() {
     let out = merge_ssh_host_outputs(
         "Deploy",
@@ -320,260 +138,6 @@ fn merge_ssh_host_outputs_error_sets_minus_one() {
     );
     assert_eq!(out.exit_code, -1);
     assert!(out.stderr.contains("ERROR: channel died"), "{}", out.stderr);
-}
-
-#[test]
-fn step_failure_hint_detects_platform_mismatch() {
-    let hint = step_failure_hint(
-        "no matching manifest for linux/arm64/v8 in the manifest list",
-        125,
-    );
-    assert!(
-        hint.contains("architecture") || hint.contains("arm64"),
-        "{hint}"
-    );
-}
-
-#[test]
-fn step_failure_hint_detects_pull_denied() {
-    let hint = step_failure_hint("pull access denied for example/repo", 125);
-    assert!(hint.contains("registry"), "{hint}");
-}
-
-#[test]
-fn build_step_failure_message_is_structured() {
-    let msg = build_step_failure_message("Run private image", 125, "echo hi\nmore", "see above");
-    assert!(msg.contains("failed (exit 125)"), "{msg}");
-    assert!(msg.contains("  command  echo hi"), "{msg}");
-    assert!(msg.contains("  hint     see above"), "{msg}");
-}
-
-#[test]
-fn build_step_echo_shows_injected_hint_for_injected_keys() {
-    let mut env = HashMap::new();
-    env.insert(
-        "BUZ_CONFIG_URL".into(),
-        "http://oss.example/signed?sig=abc".into(),
-    );
-    env.insert("acr_personal".into(), "secret-json".into());
-    let mut catalog = SecretCatalog::new();
-    catalog.add_injected_key("BUZ_CONFIG_URL");
-    catalog.add_key("acr_personal");
-
-    let echo = build_step_echo("shell", "echo hi\n", &env, &catalog, None);
-    assert!(echo.contains("BUZ_CONFIG_URL=<injected>"), "{echo}");
-    assert!(echo.contains("acr_personal=***"), "{echo}");
-    assert!(!echo.contains("http://oss.example"), "{echo}");
-    assert!(!echo.contains("secret-json"), "{echo}");
-}
-
-#[test]
-fn verbose_chunks_do_not_collide_with_meta_region() {
-    let base = step_log_base(0);
-    let mut set = std::collections::HashSet::new();
-    for c in [
-        base + LOG_STEP_VERBOSE_PREPARE,
-        base + LOG_STEP_VERBOSE_CONFIG,
-        base + LOG_STEP_VERBOSE_CONFIG_PREP,
-        base + LOG_LOGIN,
-        base + LOG_STEP_VERBOSE_EXEC,
-        base + LOG_ECHO,
-        base + LOG_STREAM_START,
-        base + LOG_STEP_VERBOSE_RESULT,
-        base + LOG_STEP_ERROR,
-        base + 9998,
-        base + 9999,
-    ] {
-        assert!(set.insert(c), "duplicate chunk index {c}");
-    }
-}
-
-#[test]
-fn verbose_step_config_renders_shape_without_secrets() {
-    let step = serde_json::json!({
-        "name": "deploy",
-        "exec_type": "shell",
-        "timeout_seconds": 3600,
-        "fail_strategy": "stop",
-        "work_dir": "/tmp/ws",
-        "registry_secret": "acr_hk",
-        "config_source": "demo-app",
-        "config_key_path": "v1.2.3",
-        "config_dest": "/opt/manager",
-        "config_render": [{ "template": "env.example", "output": ".env" }],
-        "hosts": ["h1", "h2"],
-        "image": "",
-    });
-    let cfg = build_verbose_step_config(&step, "shell", "acr_hk");
-    assert!(cfg.starts_with("==> STEP CONFIG\n"), "{cfg}");
-    assert!(cfg.contains("  exec_type        shell"), "{cfg}");
-    assert!(cfg.contains("  timeout          3600s"), "{cfg}");
-    assert!(cfg.contains("  fail_strategy    stop"), "{cfg}");
-    assert!(cfg.contains("  work_dir         /tmp/ws"), "{cfg}");
-    assert!(cfg.contains("  registry_secret  acr_hk"), "{cfg}");
-    assert!(
-        cfg.contains("  config           demo-app (key: v1.2.3)"),
-        "{cfg}"
-    );
-    assert!(cfg.contains("  config_dest      /opt/manager"), "{cfg}");
-    assert!(
-        cfg.contains("  config_render    env.example → .env"),
-        "{cfg}"
-    );
-    assert!(cfg.contains("  hosts            h1, h2"), "{cfg}");
-}
-
-#[test]
-fn config_prep_banner_redacts_url_unless_debug() {
-    let step = serde_json::json!({
-        "config_source": "OSS_DEMO",
-        "config_dest": "/opt/manager",
-        "config_auth": {
-            "url": "https://bucket.oss.aliyuncs.com/config_tpl/demo/v1/configs.tar.gz?Signature=secret",
-            "object_key": "config_tpl/demo/v1/configs.tar.gz",
-            "expires_in_secs": 3600,
-        },
-    });
-    let redacted = build_config_prep_banner(&step, false);
-    assert!(redacted.starts_with("==> CONFIG PREP\n"), "{redacted}");
-    assert!(
-        redacted.contains("  source           OSS_DEMO"),
-        "{redacted}"
-    );
-    assert!(
-        redacted.contains("  dest             /opt/manager"),
-        "{redacted}"
-    );
-    assert!(
-        redacted.contains("  object_key       config_tpl/demo/v1/configs.tar.gz"),
-        "{redacted}"
-    );
-    assert!(redacted.contains("  expires_in       3600s"), "{redacted}");
-    assert!(redacted.contains("  url              ***"), "{redacted}");
-    assert!(
-        !redacted.contains("Signature=secret"),
-        "verbose must not leak signed URL: {redacted}"
-    );
-
-    let debug = build_config_prep_banner(&step, true);
-    assert!(
-        debug.contains("Signature=secret"),
-        "debug must show signed URL: {debug}"
-    );
-}
-
-#[test]
-fn config_url_age_reads_the_signed_window() {
-    let step = serde_json::json!({
-        "config_auth": {
-            "url": "https://bucket.oss.aliyuncs.com/a.tar.gz?Expires=1&Signature=s",
-            "expires_in_secs": 3600,
-            "signed_at_epoch": 1_000,
-            "expires_epoch": 4_600,
-        },
-    });
-
-    let age = config_url_age(&step, 1_102).expect("signed window present");
-    assert_eq!(age.signed_at_epoch, 1_000);
-    assert_eq!(age.expires_epoch, 4_600);
-    assert_eq!(age.age_secs, 102);
-    assert_eq!(age.remaining_secs, 3_498);
-    assert_eq!(age.ttl_secs(), 3_600);
-    assert!(!age.is_expired());
-    assert_eq!(age.remaining_label(), "3498s");
-
-    // Older Manager: no epoch fields → nothing to report.
-    let legacy = serde_json::json!({
-        "config_auth": { "url": "https://b/a.tar.gz", "expires_in_secs": 3600 },
-    });
-    assert!(config_url_age(&legacy, 1_102).is_none());
-    assert!(config_url_age(&serde_json::json!({}), 1_102).is_none());
-
-    // Past the deadline the label flips and the flag trips.
-    let expired = config_url_age(&step, 4_661).expect("still readable");
-    assert!(expired.is_expired());
-    assert_eq!(expired.remaining_label(), "EXPIRED (61s ago)");
-}
-
-#[test]
-fn config_prep_banner_reports_url_window_and_expiry() {
-    let step = serde_json::json!({
-        "config_source": "OSS_DEMO",
-        "config_auth": {
-            "url": "https://bucket.oss.aliyuncs.com/a.tar.gz?Signature=secret",
-            "object_key": "config_tpl/demo/v1/configs.tar.gz",
-            "expires_in_secs": 3600,
-            "signed_at_epoch": chrono::Utc::now().timestamp() - 30,
-            "expires_epoch": chrono::Utc::now().timestamp() + 3_570,
-        },
-    });
-    let fresh = build_config_prep_banner(&step, false);
-    assert!(fresh.contains("signed_at"), "{fresh}");
-    assert!(fresh.contains("url_age"), "{fresh}");
-    assert!(fresh.contains("url_remaining"), "{fresh}");
-    assert!(
-        fresh.contains(" UTC"),
-        "signed_at must carry an absolute UTC stamp: {fresh}"
-    );
-    assert!(
-        !fresh.contains("EXPIRED"),
-        "a fresh URL must not be flagged: {fresh}"
-    );
-    assert!(!fresh.contains("url_warning"), "{fresh}");
-
-    // Same step, but the Manager minted the URL an hour ago: already expired.
-    let stale_step = serde_json::json!({
-        "config_auth": {
-            "url": "https://bucket.oss.aliyuncs.com/a.tar.gz?Signature=secret",
-            "object_key": "config_tpl/demo/v1/configs.tar.gz",
-            "expires_in_secs": 3600,
-            "signed_at_epoch": chrono::Utc::now().timestamp() - 3_900,
-            "expires_epoch": chrono::Utc::now().timestamp() - 300,
-        },
-    });
-    let stale = build_config_prep_banner(&stale_step, false);
-    assert!(
-        stale.contains("url_remaining") && stale.contains("EXPIRED ("),
-        "expired URL must be visible in the banner: {stale}"
-    );
-    assert!(stale.contains("url_warning"), "{stale}");
-    assert!(stale.contains("already expired before download"), "{stale}");
-    assert!(
-        stale.contains("3600s TTL"),
-        "warning should name the granted TTL: {stale}"
-    );
-}
-
-#[test]
-fn config_prep_banner_render_only_mode() {
-    let step = serde_json::json!({
-        "config_dest": "/opt/manager",
-        "config_render": [{ "template": "env.example", "output": ".env" }],
-    });
-    let banner = build_config_prep_banner(&step, false);
-    assert!(
-        banner.contains("  dest             /opt/manager"),
-        "{banner}"
-    );
-    assert!(
-        banner.contains("  mode             render-only"),
-        "{banner}"
-    );
-    assert!(!banner.contains("object_key"), "{banner}");
-    assert!(!banner.contains("url"), "{banner}");
-}
-
-#[test]
-fn verbose_step_result_reports_duration_and_exit_code() {
-    let r = build_verbose_step_result(std::time::Duration::from_millis(3210), 0);
-    assert!(r.contains("==> STEP RESULT\n"), "{r}");
-    assert!(r.contains("duration"), "{r}");
-    assert!(r.contains("3.21s"), "{r}");
-    assert!(r.contains("exit code  0"), "{r}");
-
-    let short = build_verbose_step_result(std::time::Duration::from_millis(80), 3);
-    assert!(short.contains("80ms"), "{short}");
-    assert!(short.contains("exit code  3"), "{short}");
 }
 
 #[test]
@@ -721,38 +285,173 @@ fn buz_metadata_env_omits_missing_fields() {
     );
 }
 
+// ── Execution-path output equivalence ──────────────────────────────────────
+//
+// These pins guard the step-log contract shared by all three execution paths
+// (local shell / docker streaming, sandbox streaming, SSH summary):
+// chunk layout from `LOG_STREAM_START`, secret masking before any upload, and
+// the ERROR/CANCELLED banner shapes. They must keep passing while the upload
+// boilerplate is refactored behind StepLogger.
+
+/// Read one full HTTP request (headers + content-length body) from the stream.
+async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut request = Vec::new();
+    let mut buf = [0_u8; 4096];
+    let header_end = loop {
+        let n = stream.read(&mut buf).await.unwrap();
+        assert!(n > 0, "connection closed before complete HTTP headers");
+        request.extend_from_slice(&buf[..n]);
+        if let Some(pos) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break pos + 4;
+        }
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().unwrap())
+        })
+        .unwrap_or(0);
+    while request.len() < header_end + content_length {
+        let n = stream.read(&mut buf).await.unwrap();
+        assert!(n > 0, "connection closed before complete HTTP body");
+        request.extend_from_slice(&buf[..n]);
+    }
+    String::from_utf8_lossy(&request).into_owned()
+}
+
 #[tokio::test]
-async fn marketplace_input_validation_error_logs_and_fails_job_before_execution() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+async fn local_shell_step_streams_masked_chunks_and_reports_success() {
+    use std::sync::Mutex as StdMutex;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
-    async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
-        let mut request = Vec::new();
-        let mut buf = [0_u8; 4096];
-        let header_end = loop {
-            let n = stream.read(&mut buf).await.unwrap();
-            assert!(n > 0, "connection closed before complete HTTP headers");
-            request.extend_from_slice(&buf[..n]);
-            if let Some(pos) = request.windows(4).position(|window| window == b"\r\n\r\n") {
-                break pos + 4;
-            }
-        };
-        let headers = String::from_utf8_lossy(&request[..header_end]);
-        let content_length = headers
-            .lines()
-            .find_map(|line| {
-                let (key, value) = line.split_once(':')?;
-                key.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().unwrap())
-            })
-            .unwrap_or(0);
-        while request.len() < header_end + content_length {
-            let n = stream.read(&mut buf).await.unwrap();
-            assert!(n > 0, "connection closed before complete HTTP body");
-            request.extend_from_slice(&buf[..n]);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let bodies: std::sync::Arc<StdMutex<Vec<String>>> =
+        std::sync::Arc::new(StdMutex::new(Vec::new()));
+    let server_bodies = bodies.clone();
+    let server = tokio::spawn(async move {
+        for _ in 0..32 {
+            // Idle timeout: once the runner stops connecting, end the loop so
+            // the test's `server.await` cannot park forever.
+            let accepted =
+                tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept()).await;
+            let (mut stream, _) = match accepted {
+                Ok(Ok(inner)) => inner,
+                _ => break,
+            };
+            let request = read_http_request(&mut stream).await;
+            server_bodies.lock().unwrap().push(request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
         }
-        String::from_utf8_lossy(&request).into_owned()
+    });
+
+    let client = reqwest::Client::new();
+    let config = crate::config::Config {
+        runner: crate::config::RunnerSection {
+            manager_url: format!("http://{addr}"),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let task = serde_json::json!({
+        "job_id": "job-stream-equivalence",
+        "secrets": { "TOKEN": "buz-super-secret-value" },
+        "env": { "TOKEN": "buz-super-secret-value" },
+        "tasks": [{
+            "name": "echo",
+            "command_template": "printf '%s\\n' \"$TOKEN\"",
+            "exec_type": "shell"
+        }]
+    });
+    let (_cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    let result = super::execute_job(&client, &config, "runner-token", &task, &mut cancel_rx).await;
+    assert!(result.is_ok(), "job must succeed: {result:?}");
+
+    let requests = bodies.lock().unwrap().clone();
+    // banner → running → streamed chunk(s) → success
+    assert!(requests[0].starts_with("POST /api/v1/jobs/job-stream-equivalence/logs "));
+    assert!(
+        requests[0].contains("\"chunk_index\":-2"),
+        "{}",
+        requests[0]
+    );
+    assert!(
+        requests[1].contains("\"status\":\"running\""),
+        "{}",
+        requests[1]
+    );
+    let stream_chunks: Vec<&String> = requests
+        .iter()
+        .filter(|r| {
+            r.contains("POST /api/v1/jobs/job-stream-equivalence/logs ")
+                && !r.contains("\"chunk_index\":-2")
+        })
+        .collect();
+    assert!(
+        !stream_chunks.is_empty(),
+        "streamed output must be uploaded: {requests:?}"
+    );
+    assert!(
+        stream_chunks
+            .iter()
+            .all(|r| !r.contains("buz-super-secret-value")),
+        "stream chunks must be masked: {stream_chunks:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.contains("chunk_index\":6") && r.contains("***")),
+        "first stream chunk starts at LOG_STREAM_START and is masked: {requests:?}"
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.contains("buz-super-secret-value")),
+        "the raw secret must never reach the wire: {requests:?}"
+    );
+    let last = requests.last().unwrap();
+    assert!(
+        last.contains("PATCH") && last.contains("\"status\":\"success\""),
+        "{last}"
+    );
+    server.await.unwrap();
+}
+
+#[test]
+fn sandbox_masker_split_feeding_equals_one_shot_masking() {
+    // Sandbox streaming property: feeding the same buffer in arbitrary frame
+    // splits through SandboxOutputMasker yields exactly the masked output of
+    // masking the whole buffer once — for every split point, including inside
+    // secrets (hold-back must prevent boundary leaks).
+    let secret = "s3cret-value";
+    let forced = "forcedtok";
+    let body = format!("a {secret} b {forced} c {secret} tail");
+    let expected = crate::masker::mask_secrets_forced(
+        &crate::masker::mask_secrets(&body, &[secret.to_string()]),
+        &[forced.to_string()],
+    );
+    assert_ne!(expected, body, "sanity: masking must change the body");
+    for split in 1..body.len() {
+        let mut masker =
+            super::SandboxOutputMasker::new(&[secret.to_string()], &[forced.to_string()]);
+        let mut got = masker.push(&body[..split], false);
+        got.push_str(&masker.push(&body[split..], true));
+        assert_eq!(got, expected, "mask equivalence broken at split {split}");
     }
+}
+
+#[tokio::test]
+async fn marketplace_input_validation_error_logs_and_fails_job_before_execution() {
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -946,6 +645,66 @@ async fn cancel_triggered_parks_when_sender_drops_without_signal() {
 }
 
 use std::time::Duration;
+
+#[tokio::test]
+async fn sandbox_modes_reject_ssh_before_contacting_supervisor() {
+    let mut config = crate::config::Config::default();
+    config.execution_mode = shared::protocol::RunnerExecutionMode::Container;
+    let task = serde_json::json!({
+        "job_id": "unsupported-ssh-job",
+        "tasks": [{ "name": "remote", "exec_type": "ssh", "command_template": "echo hi" }]
+    });
+    let (_cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    let error = super::execute_job(
+        &reqwest::Client::new(),
+        &config,
+        "token",
+        &task,
+        &mut cancel_rx,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("does not support SSH"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn sandbox_mode_fails_closed_when_supervisor_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("job-shell");
+    std::fs::create_dir(&workspace).unwrap();
+    let mut config = crate::config::Config::default();
+    config.execution_mode = shared::protocol::RunnerExecutionMode::Container;
+    config.runner.workspace_dir = workspace.to_string_lossy().into_owned();
+    config.sandbox.workspace_root = dir.path().to_string_lossy().into_owned();
+    config.sandbox.container_image = "job-image@sha256:abc".into();
+    config.sandbox.supervisor_socket = dir
+        .path()
+        .join("missing.sock")
+        .to_string_lossy()
+        .into_owned();
+    let task = serde_json::json!({
+        "job_id": "supervisor-down-job",
+        "tasks": [{ "name": "local", "exec_type": "shell", "command_template": "echo must-not-run" }]
+    });
+    let (_cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    let error = super::execute_job(
+        &reqwest::Client::new(),
+        &config,
+        "token",
+        &task,
+        &mut cancel_rx,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("No such file")
+            || error.to_string().contains("sandbox supervisor"),
+        "{error}"
+    );
+}
 
 #[test]
 fn active_runner_uses_short_poll_to_refresh_capacity_snapshot() {

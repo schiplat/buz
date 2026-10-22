@@ -15,6 +15,7 @@ fn apply_to_config_overwrites_strategy_keeps_paths() {
     let policy = RunnerPolicyConfig {
         max_concurrent_jobs: 4,
         clean_workspace_after_job: true,
+        execution_mode: shared::protocol::RunnerExecutionMode::Host,
         shell_enabled: true,
         ssh_enabled: false,
         docker_enabled: true,

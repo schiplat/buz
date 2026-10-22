@@ -192,13 +192,35 @@ pub struct HeartbeatResponse {
     pub restart: bool,
 }
 
+/// Job-wide execution isolation selected by the Runner's Manager policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerExecutionMode {
+    #[default]
+    Host,
+    Container,
+    Vm,
+}
+
+impl RunnerExecutionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Container => "container",
+            Self::Vm => "vm",
+        }
+    }
+}
+
 /// Runner strategy settings controlled from Manager UI (not machine-local paths).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunnerPolicyConfig {
     #[serde(default = "default_max_concurrent_jobs")]
     pub max_concurrent_jobs: u32,
     #[serde(default)]
     pub clean_workspace_after_job: bool,
+    #[serde(default)]
+    pub execution_mode: RunnerExecutionMode,
     #[serde(default = "default_true")]
     pub shell_enabled: bool,
     #[serde(default = "default_true")]
@@ -217,6 +239,7 @@ impl Default for RunnerPolicyConfig {
         Self {
             max_concurrent_jobs: 1,
             clean_workspace_after_job: false,
+            execution_mode: RunnerExecutionMode::Host,
             shell_enabled: true,
             ssh_enabled: true,
             docker_enabled: false,
@@ -238,7 +261,35 @@ fn default_ssh_host_key_policy() -> String {
     "insecure".into()
 }
 
-/// Hardware / OS information collected by the Runner and reported to the Center.
+/// Whether a Runner host can execute jobs using one sandbox backend.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionBackendStatus {
+    #[default]
+    Unknown,
+    Supported,
+    Unsupported,
+}
+
+/// Fresh host-side verification results for the sandbox execution backends.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RunnerExecutionCapabilities {
+    #[serde(default)]
+    pub container: ExecutionBackendStatus,
+    #[serde(default)]
+    pub container_reason: Option<String>,
+    #[serde(default)]
+    pub vm: ExecutionBackendStatus,
+    #[serde(default)]
+    pub vm_reason: Option<String>,
+    #[serde(default)]
+    pub checked_at: Option<String>,
+}
+
+#[cfg(test)]
+#[path = "execution_capabilities_tests.rs"]
+mod execution_capabilities_tests;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemInfo {
     pub runner_version: String,
@@ -264,6 +315,9 @@ pub struct SystemInfo {
     /// when the check is disabled (`[clock] enabled = false`).
     #[serde(default)]
     pub clock_skew_seconds: Option<i64>,
+    /// Host-verified support for job-wide sandbox backends. Absent on older Runners.
+    #[serde(default)]
+    pub execution_capabilities: Option<RunnerExecutionCapabilities>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +350,9 @@ pub struct CreateRunnerRequest {
     pub docker_enabled: Option<bool>,
     #[serde(default)]
     pub wasm_enabled: Option<bool>,
+    /// `host` (default), `container`, or `vm`; Runner-local config supplies the runtime backend.
+    #[serde(default)]
+    pub execution_mode: Option<RunnerExecutionMode>,
     /// `insecure` | `known_hosts`
     #[serde(default)]
     pub ssh_host_key_policy: Option<String>,
@@ -320,6 +377,8 @@ pub struct UpdateRunnerRequest {
     pub ssh_enabled: Option<bool>,
     pub docker_enabled: Option<bool>,
     pub wasm_enabled: Option<bool>,
+    #[serde(default)]
+    pub execution_mode: Option<RunnerExecutionMode>,
     pub ssh_host_key_policy: Option<String>,
 }
 
@@ -338,11 +397,84 @@ pub struct UpdateJobStatusRequest {
 
 // --- Log ---
 
+/// Severity of a job log chunk.
+///
+/// The Runner stamps it on every chunk it uploads; the Job Detail terminal
+/// renders by level first and falls back to banner-text classification for
+/// legacy chunks written before the field existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    /// Verbose-only diagnostic detail (stage markers, step config).
+    Debug,
+    /// Ordinary progress: banners, streamed output, summaries.
+    Info,
+    /// The step was cancelled or timed out.
+    Warn,
+    /// A failure inside this step's terminal.
+    Error,
+}
+
+impl LogLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+
+    /// Parse back the `job_logs.level` TEXT column (SQLite storage form).
+    /// Unknown or NULL values degrade to `None` so legacy/foreign rows still
+    /// render through text classification.
+    pub fn parse(value: Option<&str>) -> Option<Self> {
+        match value? {
+            "debug" => Some(Self::Debug),
+            "info" => Some(Self::Info),
+            "warn" => Some(Self::Warn),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+
+/// Per-step log chunk layout (`UNIQUE(job_id, chunk_index)`).
+///
+/// Manager / Job Detail display logs with `ORDER BY step_order, chunk_index`,
+/// so these offsets must match **semantic** order (not merely upload time):
+///
+/// ```text
+///   0     ==> STAGE prepare     (verbose)
+///   1     ==> STEP CONFIG       (verbose)
+///   2     ==> CONFIG PREP       (verbose / debug)
+///   3     ==> LOGIN […]         (registry)
+///   4     ==> STAGE exec        (verbose)
+///   5     ==> RUN […]
+///   6…    streamed stdout/stderr
+///   9993  ==> STEP RESULT       (verbose; after stream)
+///   9997  ==> ERROR
+///   9998  ==> CANCELLED (cancel marker)
+///   9999  ==> output summary
+///
+/// The job-start runner identity banner uses `step_order = 0` with a negative
+/// `chunk_index` (see `LOG_RUNNER_BANNER`), so it sorts before step 0's first
+/// chunk. It must NOT reuse `-1`, which is reserved for the global
+/// `step_order = -1` error path — `UNIQUE(job_id, chunk_index)` +
+/// `INSERT OR REPLACE` would otherwise let the error chunk overwrite the banner.
+/// ```
+///
+/// Verbose prep/config used to live at 9990+, which sorted **after** RUN +
+/// stream and made Verbose look "out of order" once the job reloaded from DB.
+/// (Runner-side layout constants: `runner::client::poll::step_log`.)
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LogChunk {
     pub chunk_index: i32,
     pub step_order: i32,
     pub content: String,
+    /// Chunk severity; absent on chunks written by older runners.
+    #[serde(default)]
+    pub level: Option<LogLevel>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -879,7 +1011,28 @@ pub struct UpdateVariableRequest {
 
 #[cfg(test)]
 mod runner_team_patch_tests {
-    use super::UpdateRunnerRequest;
+    use super::{LogChunk, LogLevel, UpdateRunnerRequest};
+
+    #[test]
+    fn log_chunk_level_defaults_to_none_for_legacy_payloads() {
+        let legacy: LogChunk =
+            serde_json::from_str(r#"{"chunk_index":1,"step_order":0,"content":"x"}"#).unwrap();
+        assert_eq!(legacy.level, None);
+
+        let stamped: LogChunk = serde_json::from_str(
+            r#"{"chunk_index":1,"step_order":0,"content":"x","level":"error"}"#,
+        )
+        .unwrap();
+        assert_eq!(stamped.level, Some(LogLevel::Error));
+
+        // Round-trip keeps the lowercase wire form and rejects junk levels.
+        let wire = serde_json::to_string(&stamped).unwrap();
+        assert!(wire.contains(r#""level":"error""#), "{wire}");
+        let bad = serde_json::from_str::<LogChunk>(
+            r#"{"chunk_index":1,"step_order":0,"content":"x","level":"fatal"}"#,
+        );
+        assert!(bad.is_err());
+    }
 
     #[test]
     fn runner_team_patch_distinguishes_omitted_null_and_value() {
