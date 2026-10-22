@@ -94,6 +94,8 @@ Team binding and labels answer different questions: **labels** match a job's req
 
 Container/VM modes fail closed if the supervisor/runtime is missing and currently reject jobs containing SSH or per-step Docker engine steps, registry-auth handoff, or Runner-host config preparation. These paths are not silently executed on the host. Step output is returned through the supervisor and masked by Runner before upload; cancellation tears down the job sandbox. Network egress is still available on the configured container network unless the operator restricts it externally. The sandbox daemon has Docker-daemon access and is itself a privileged trust component; protect its Unix socket/config and pin runtime images.
 
+Runner capability checks create, start, execute a shell/timeout check in, and remove a short-lived pinned-image workload on startup and every five minutes. VM additionally verifies Linux and `/dev/kvm` and exercises the configured external Firecracker-compatible OCI runtime. Runner details display each backend's latest result and reason. Manager permits switching to Container/VM only for an online Runner with a successful check no older than five minutes; execution performs its normal backend create checks again.
+
 A Container shares the host kernel and must not be represented as a strong boundary against a malicious host/container-runtime exploit. Use separate Runner host/OS identities or disposable VM-backed jobs for mutually untrusted workloads; SSH targets always require their own isolation controls.
 
 ### Cleanup: workspace vs Docker containers

@@ -39,10 +39,10 @@ max_skew_seconds = 300
 # fail_on_skew = true
 
 # Job-wide Container/VM modes are selected in Manager UI → Runners.
-# Host is the default and needs no supervisor. For Container/VM modes, start
-# the optional sandboxd Compose profile and configure matching image/runtime
-# artifacts in deploy/conf/sandboxd.toml. These backends reject SSH, per-step
-# Docker engine, and host-side config preparation rather than falling back.
+# Docker/VM runtime capabilities are probed by sandboxd and reported in the Runner
+# details page; Manager permits non-Host modes only after a fresh supported check.
+# VM mode requires Linux + accessible /dev/kvm and an installed Firecracker-compatible OCI runtime.
+# Sandbox jobs reject SSH, per-step Docker, registry auth, and host config preparation.
 [sandbox]
 supervisor_socket = "/run/buz-sandboxd/sandboxd.sock"
 workspace_root = "/app/buz/workspace"

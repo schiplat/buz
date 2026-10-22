@@ -129,8 +129,69 @@ describe('Runner team binding', () => {
     }))
   })
 
-  it('shows Shared warning for legacy runners and allows explicit bind/unbind', async () => {
+  it('only enables sandbox modes after a fresh online capability report', async () => {
     const root = await mountPage([runner()])
+    root.querySelector<HTMLButtonElement>('button[title="Open runner-one"]')!.click()
+    await nextTick()
+    const mode = [...document.body.querySelectorAll<HTMLSelectElement>('select')]
+      .find((select) => [...select.options].some((option) => option.value === 'container'))!
+    expect(mode.querySelector<HTMLOptionElement>('option[value="container"]')!.disabled).toBe(true)
+    expect(mode.querySelector<HTMLOptionElement>('option[value="vm"]')!.disabled).toBe(true)
+    expect(document.body.textContent).toContain('Runner is offline.')
+
+    const checkedAt = new Date().toISOString()
+    const lastSeen = new Date().toISOString()
+    app?.unmount()
+    app = undefined
+    document.body.innerHTML = ''
+    await mountPage([runner({
+      status: 'online',
+      last_seen: lastSeen,
+      system_info: {
+        runner_version: '1.10.0', hostname: 'runner-one', os: 'Linux', kernel_version: 'k',
+        cpu_arch: 'x86_64', cpu_cores: 2, cpu_model: 'cpu', cpu_usage_percent: 1,
+        memory_total_mb: 1024, memory_used_mb: 1, swap_total_mb: 0, swap_used_mb: 0,
+        disk_total_gb: 10, disk_used_gb: 1, network_interfaces: [], ip_addresses: [], uptime_seconds: 1,
+        execution_capabilities: {
+          container: 'supported', vm: 'unsupported', vm_reason: 'KVM is unavailable', checked_at: checkedAt,
+        },
+      },
+    })])
+    const onlineRunnerButton = document.querySelector<HTMLButtonElement>('button[title="Open runner-one"]')!
+    onlineRunnerButton.click()
+    await nextTick()
+    const onlineMode = [...document.body.querySelectorAll<HTMLSelectElement>('select')]
+      .find((select) => [...select.options].some((option) => option.value === 'container'))!
+    expect(onlineMode.querySelector<HTMLOptionElement>('option[value="container"]')!.disabled).toBe(false)
+    expect(onlineMode.querySelector<HTMLOptionElement>('option[value="vm"]')!.disabled).toBe(true)
+    expect(document.body.textContent).toContain('KVM is unavailable')
+    expect(document.body.textContent).toContain('Container · supported')
+  })
+
+  it('creates new runners in Host mode only', async () => {
+    await mountPage()
+    button('New Runner').click()
+    await nextTick()
+    const mode = [...document.body.querySelectorAll<HTMLSelectElement>('select')]
+      .find((select) => [...select.options].some((option) => option.value === 'host'))!
+    expect(mode.disabled).toBe(true)
+    expect(mode.options).toHaveLength(1)
+    expect(document.body.textContent).toContain('wait for its first sandbox environment check')
+  })
+  it('shows Shared warning for legacy runners and allows explicit bind/unbind', async () => {
+    const root = await mountPage([runner({
+      status: 'online',
+      last_seen: new Date().toISOString(),
+      system_info: {
+        runner_version: '1.10.0', hostname: 'runner-one', os: 'Linux', kernel_version: 'k',
+        cpu_arch: 'x86_64', cpu_cores: 2, cpu_model: 'cpu', cpu_usage_percent: 1,
+        memory_total_mb: 1024, memory_used_mb: 1, swap_total_mb: 0, swap_used_mb: 0,
+        disk_total_gb: 10, disk_used_gb: 1, network_interfaces: [], ip_addresses: [], uptime_seconds: 1,
+        execution_capabilities: {
+          container: 'supported', vm: 'supported', checked_at: new Date().toISOString(),
+        },
+      },
+    })])
     expect(root.textContent).toContain('Shared Runner trust boundary')
     root.querySelector<HTMLButtonElement>('button[title="Open runner-one"]')!.click()
     await nextTick()

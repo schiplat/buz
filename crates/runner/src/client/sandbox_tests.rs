@@ -24,4 +24,18 @@ fn supervisor_response_defaults_optional_fields() {
     assert_eq!(response.handle, "h1");
     assert_eq!(response.content, "");
     assert_eq!(response.error, "");
+    assert!(response.capabilities.is_none());
+}
+
+#[test]
+fn capability_probe_request_uses_machine_local_pinned_runtime_config() {
+    let request = Request::ProbeCapabilities {
+        container_image: "job@sha256:abc",
+        vm_image: "guest@sha256:def",
+        firecracker_runtime: "firecracker",
+    };
+    let value = serde_json::to_value(request).unwrap();
+    assert_eq!(value["op"], "probe_capabilities");
+    assert_eq!(value["container_image"], "job@sha256:abc");
+    assert_eq!(value["firecracker_runtime"], "firecracker");
 }

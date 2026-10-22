@@ -17,7 +17,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use shared::protocol::RunnerExecutionMode;
+use shared::protocol::{ExecutionBackendStatus, RunnerExecutionCapabilities, RunnerExecutionMode};
 
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_EXEC_SECONDS: u64 = 24 * 60 * 60;
@@ -73,13 +73,13 @@ fn default_cpu_limit() -> String {
 }
 
 #[derive(Clone)]
-struct Service {
-    config: Arc<SandboxdConfig>,
-    jobs: Arc<Mutex<HashMap<String, JobRuntime>>>,
+pub(super) struct Service {
+    pub(super) config: Arc<SandboxdConfig>,
+    pub(super) jobs: Arc<Mutex<HashMap<String, JobRuntime>>>,
 }
 
 #[derive(Clone)]
-struct JobRuntime {
+pub(super) struct JobRuntime {
     container: String,
     workspace: PathBuf,
 }
@@ -211,10 +211,194 @@ async fn process_request(
         .unwrap_or_default()
     {
         "create_job" => create_job(service, &request, uid, gid).await,
+        "probe_capabilities" => probe_capabilities(service, &request).await,
         "read_file" => read_file(service, &request).await,
         "destroy_job" => destroy_job(service, &request).await,
         _ => anyhow::bail!("unsupported sandbox operation"),
     }
+}
+
+pub(super) fn validate_vm_prerequisites(
+    os: &str,
+    kvm_path: &Path,
+    requested_runtime: &str,
+    configured_runtime: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(os == "linux", "VM mode requires a Linux host");
+    anyhow::ensure!(
+        kvm_path.exists(),
+        "VM mode requires an available /dev/kvm device"
+    );
+    anyhow::ensure!(
+        !requested_runtime.trim().is_empty() && requested_runtime == configured_runtime,
+        "configured Firecracker-compatible OCI runtime does not match sandboxd policy"
+    );
+    Ok(())
+}
+
+pub(super) async fn probe_capabilities(
+    service: &Service,
+    request: &Value,
+) -> anyhow::Result<Value> {
+    let container_image = request
+        .get("container_image")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let vm_image = request
+        .get("vm_image")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let requested_runtime = request
+        .get("firecracker_runtime")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut capabilities = RunnerExecutionCapabilities::default();
+    let checked_at = chrono::Utc::now().to_rfc3339();
+
+    match probe_backend(service, RunnerExecutionMode::Container, container_image, "").await {
+        Ok(()) => capabilities.container = ExecutionBackendStatus::Supported,
+        Err(error) => {
+            capabilities.container = ExecutionBackendStatus::Unsupported;
+            capabilities.container_reason = Some(error.to_string());
+        }
+    }
+
+    let vm_result = async {
+        validate_vm_prerequisites(
+            std::env::consts::OS,
+            Path::new("/dev/kvm"),
+            requested_runtime,
+            &service.config.firecracker_runtime,
+        )?;
+        probe_backend(
+            service,
+            RunnerExecutionMode::Vm,
+            vm_image,
+            requested_runtime,
+        )
+        .await
+    }
+    .await;
+    match vm_result {
+        Ok(()) => capabilities.vm = ExecutionBackendStatus::Supported,
+        Err(error) => {
+            capabilities.vm = ExecutionBackendStatus::Unsupported;
+            capabilities.vm_reason = Some(error.to_string());
+        }
+    }
+    capabilities.checked_at = Some(checked_at);
+    Ok(json!({"ok": true, "capabilities": capabilities}))
+}
+
+pub(super) async fn probe_backend(
+    service: &Service,
+    mode: RunnerExecutionMode,
+    image: &str,
+    runtime: &str,
+) -> anyhow::Result<()> {
+    let expected = match mode {
+        RunnerExecutionMode::Container => &service.config.container_image,
+        RunnerExecutionMode::Vm => &service.config.firecracker_guest_image,
+        RunnerExecutionMode::Host => anyhow::bail!("Host mode does not use a sandbox backend"),
+    };
+    anyhow::ensure!(
+        !expected.trim().is_empty(),
+        "sandbox image is not configured"
+    );
+    anyhow::ensure!(
+        image == expected,
+        "sandbox image does not match sandboxd configuration"
+    );
+    anyhow::ensure!(
+        image.contains("@sha256:"),
+        "sandbox image must be pinned by sha256 digest"
+    );
+
+    let probe_name = format!("buz-sandbox-probe-{}", uuid::Uuid::new_v4());
+    let create_result = async {
+        let mut create = Command::new(&service.config.docker_cli);
+        create.args([
+            "create",
+            "--name",
+            &probe_name,
+            "--label",
+            "buz.sandboxd.probe=true",
+            "--user",
+            "10001:10001",
+            "--workdir",
+            "/buz/workspace",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=128m",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "256",
+            "--memory",
+            &service.config.memory_limit,
+            "--cpus",
+            &service.config.cpu_limit,
+            "--network",
+            &service.config.container_network,
+        ]);
+        if mode == RunnerExecutionMode::Vm {
+            create.arg("--runtime").arg(runtime);
+        }
+        create
+            .args(["--entrypoint", "sh", image, "-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let output = tokio::time::timeout(Duration::from_secs(60), create.output())
+            .await
+            .map_err(|_| anyhow::anyhow!("sandbox probe create timed out"))??;
+        anyhow::ensure!(
+            output.status.success(),
+            "sandbox runtime create failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        let mut start = Command::new(&service.config.docker_cli);
+        start
+            .args(["start", &probe_name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let output = tokio::time::timeout(Duration::from_secs(30), start.output())
+            .await
+            .map_err(|_| anyhow::anyhow!("sandbox probe start timed out"))??;
+        anyhow::ensure!(
+            output.status.success(),
+            "sandbox runtime start failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        let mut exec = Command::new(&service.config.docker_cli);
+        exec.args([
+            "exec",
+            &probe_name,
+            "sh",
+            "-c",
+            "command -v timeout >/dev/null",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+        let output = tokio::time::timeout(Duration::from_secs(15), exec.output())
+            .await
+            .map_err(|_| anyhow::anyhow!("sandbox probe exec timed out"))??;
+        anyhow::ensure!(
+            output.status.success(),
+            "sandbox image must provide sh and timeout: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        Ok(())
+    }
+    .await;
+    let cleanup_result = remove_container(&service.config.docker_cli, &probe_name).await;
+    create_result?;
+    cleanup_result?;
+    Ok(())
 }
 
 async fn create_job(

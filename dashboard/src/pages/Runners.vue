@@ -107,6 +107,37 @@ const editTeamId = ref('shared')
 const editExecutionMode = ref<RunnerExecutionMode>('host')
 const savingPolicy = ref(false)
 
+function backendSupport(runner: Runner | null, mode: 'container' | 'vm') {
+  const caps = runner?.system_info?.execution_capabilities
+  const checkedAt = caps?.checked_at ? Date.parse(caps.checked_at) : Number.NaN
+  const fresh = Number.isFinite(checkedAt) && Date.now() - checkedAt <= 300_000 && checkedAt - Date.now() <= 30_000
+  const status = caps?.[mode] ?? 'unknown'
+  const reason = mode === 'container' ? caps?.container_reason : caps?.vm_reason
+  return {
+    supported: runner?.status === 'online' && fresh && status === 'supported',
+    status: runner?.status !== 'online' || !fresh ? 'unknown' : status,
+    reason: reason || (runner?.status !== 'online'
+      ? 'Runner is offline.'
+      : !fresh ? 'Waiting for a fresh capability check.' : 'No reason was reported.'),
+    checkedAt: caps?.checked_at,
+  }
+}
+const containerSupport = computed(() => backendSupport(activeRunner.value, 'container'))
+const vmSupport = computed(() => backendSupport(activeRunner.value, 'vm'))
+function canSelectMode(mode: RunnerExecutionMode) {
+  return mode === 'host' || (mode === 'container' ? containerSupport.value.supported : vmSupport.value.supported)
+}
+function modeBlockReason(mode: RunnerExecutionMode) {
+  if (mode === 'container') return containerSupport.value.reason
+  if (mode === 'vm') return vmSupport.value.reason
+  return ''
+}
+function formatCapabilityTime(value?: string | null) {
+  if (!value) return 'Not checked'
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? formatLocalDateTime(new Date(time).toISOString()) : value
+}
+
 onMounted(async () => {
   await Promise.all([loadRunners(), loadTeams()])
 })
@@ -581,15 +612,31 @@ const eventBadge = (t: string) => {
                   Only this team’s jobs are dispatched here. This does not isolate jobs sharing the Runner OS user.
                 </p>
               </div>
+              <div class="rounded-lg border border-border/50 bg-background/70 p-3 space-y-2">
+                <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Sandbox environment checks</div>
+                <div v-for="item in [
+                  { key: 'container', label: 'Container', support: containerSupport },
+                  { key: 'vm', label: 'VM / Firecracker-compatible OCI runtime', support: vmSupport },
+                ]" :key="item.key" class="flex items-start justify-between gap-3 text-[11px]">
+                  <div class="min-w-0">
+                    <div class="font-medium">{{ item.label }} · {{ item.support.status }}</div>
+                    <div v-if="item.support.status !== 'supported'" class="text-muted-foreground break-words">{{ item.support.reason }}</div>
+                  </div>
+                  <span class="shrink-0 text-muted-foreground">{{ formatCapabilityTime(item.support.checkedAt) }}</span>
+                </div>
+              </div>
               <div>
                 <label class="text-xs text-muted-foreground block mb-1">Job execution mode</label>
                 <select v-model="editExecutionMode" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden focus:border-ring/40">
                   <option value="host">Host (current behavior)</option>
-                  <option value="container">Job container</option>
-                  <option value="vm">Firecracker VM</option>
+                  <option value="container" :disabled="!containerSupport.supported">Job container</option>
+                  <option value="vm" :disabled="!vmSupport.supported">VM (Firecracker-compatible OCI runtime)</option>
                 </select>
+                <p v-if="!canSelectMode(editExecutionMode)" class="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
+                  {{ modeBlockReason(editExecutionMode) }}
+                </p>
                 <p class="mt-1 text-[10px] text-muted-foreground">
-                  Container/VM supports local shell steps only. SSH or per-step Docker jobs fail closed. Runtime images and supervisor must be configured on the Runner host.
+                  Container/VM supports local shell steps only; SSH, per-step Docker, registry auth and host-side config prep fail closed. VM mode delegates to a host-provided Firecracker-compatible OCI runtime.
                 </p>
               </div>
               <div>
@@ -918,13 +965,11 @@ const eventBadge = (t: string) => {
               </div>
               <div>
                 <label class="type-label block mb-1.5">Job execution mode</label>
-                <select v-model="newExecutionMode" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden focus:border-ring/40">
-                  <option value="host">Host (current behavior)</option>
-                  <option value="container">Job container</option>
-                  <option value="vm">Firecracker VM</option>
+                <select v-model="newExecutionMode" disabled class="w-full rounded-xl border border-border bg-muted px-3 py-2 text-sm opacity-70">
+                  <option value="host">Host (initial mode)</option>
                 </select>
                 <p class="mt-1.5 text-[11px] text-muted-foreground">
-                  Container/VM runs local shell steps in one job-wide sandbox; SSH and per-step Docker jobs are rejected. Requires the matching local sandbox runtime and image configuration.
+                  New Runners start in Host mode. Register the Runner and wait for its first sandbox environment check; supported Container/VM modes can then be selected in its details.
                 </p>
               </div>
               <div>

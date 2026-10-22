@@ -173,6 +173,8 @@ level = "info"
 # file = "./logs/runner.log"   # Runner default if omitted: ./logs/runner.log
 ```
 
+The supervisor actively probes each configured backend at startup and every five minutes by creating, starting, executing in, and removing a short-lived digest-pinned image. Capability results and failure reasons are reported on heartbeat and displayed in Runner details. VM requires Linux, readable `/dev/kvm`, and a successfully exercised Firecracker-compatible OCI runtime; this is host-provided runtime delegation, not Buz-managed Firecracker/jailer. Manager allows selecting Container/VM only when the Runner is online and its capability check is no older than five minutes. A real job still performs normal create-time checks and fails closed if the host changed after the probe.
+
 The optional host-side `buz-sandboxd` service uses a separate `conf/sandboxd.toml` (not the Runner policy file). It must share the same workspace volume as Runner and be permissioned to accept only the Runner UID. In Compose, build/start the `sandboxd` profile and keep its Docker socket private; Docker-daemon access is host-root-equivalent. Set the pinned `container_image` and, if using VM mode, the digest-pinned `firecracker_guest_image` plus a Firecracker-compatible runtime registered with the Docker daemon. VM mode requires Linux KVM and a pre-provisioned Firecracker-compatible OCI runtime; Buz does not bundle a guest kernel/image or configure KVM for you.
 
 Example:

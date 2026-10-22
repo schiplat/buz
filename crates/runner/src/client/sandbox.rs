@@ -41,6 +41,11 @@ enum Request<'a> {
     DestroyJob {
         handle: &'a str,
     },
+    ProbeCapabilities {
+        container_image: &'a str,
+        vm_image: &'a str,
+        firecracker_runtime: &'a str,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +57,8 @@ struct Response {
     content: String,
     #[serde(default)]
     error: String,
+    #[serde(default)]
+    capabilities: Option<shared::protocol::RunnerExecutionCapabilities>,
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +239,23 @@ pub async fn exec_step(
             reader,
         })
     }
+}
+
+pub async fn probe_capabilities(
+    config: &SandboxSection,
+) -> anyhow::Result<shared::protocol::RunnerExecutionCapabilities> {
+    let response = request(
+        config,
+        Request::ProbeCapabilities {
+            container_image: &config.container_image,
+            vm_image: &config.firecracker_guest_image,
+            firecracker_runtime: &config.firecracker_runtime,
+        },
+    )
+    .await?;
+    response
+        .capabilities
+        .ok_or_else(|| anyhow::anyhow!("sandbox supervisor omitted execution capabilities"))
 }
 
 pub async fn read_job_file(

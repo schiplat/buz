@@ -261,7 +261,35 @@ fn default_ssh_host_key_policy() -> String {
     "insecure".into()
 }
 
-/// Hardware / OS information collected by the Runner and reported to the Center.
+/// Whether a Runner host can execute jobs using one sandbox backend.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionBackendStatus {
+    #[default]
+    Unknown,
+    Supported,
+    Unsupported,
+}
+
+/// Fresh host-side verification results for the sandbox execution backends.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RunnerExecutionCapabilities {
+    #[serde(default)]
+    pub container: ExecutionBackendStatus,
+    #[serde(default)]
+    pub container_reason: Option<String>,
+    #[serde(default)]
+    pub vm: ExecutionBackendStatus,
+    #[serde(default)]
+    pub vm_reason: Option<String>,
+    #[serde(default)]
+    pub checked_at: Option<String>,
+}
+
+#[cfg(test)]
+#[path = "execution_capabilities_tests.rs"]
+mod execution_capabilities_tests;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemInfo {
     pub runner_version: String,
@@ -287,6 +315,9 @@ pub struct SystemInfo {
     /// when the check is disabled (`[clock] enabled = false`).
     #[serde(default)]
     pub clock_skew_seconds: Option<i64>,
+    /// Host-verified support for job-wide sandbox backends. Absent on older Runners.
+    #[serde(default)]
+    pub execution_capabilities: Option<RunnerExecutionCapabilities>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

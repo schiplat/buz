@@ -988,17 +988,73 @@ async fn foreign_team_backlog_does_not_fill_claim_limit() {
 }
 
 #[tokio::test]
-async fn runner_execution_mode_policy_roundtrips_through_update_api() {
-    let (app, pool, _state) = test_app().await;
+async fn runner_execution_mode_requires_fresh_supported_capability() {
+    use shared::protocol::{ExecutionBackendStatus, RunnerExecutionCapabilities, SystemInfo};
+    let (app, _pool, _state) = test_app().await;
     let admin = admin_jwt();
-    let initial: String =
-        sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id='runner-1'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(initial, "host", "legacy/default runner mode is Host");
 
-    let response = json_req(
+    let unknown = json_req(
+        &app,
+        "PUT",
+        "/api/v1/runners/runner-1",
+        &admin,
+        Some(serde_json::json!({ "execution_mode": "container" })),
+    )
+    .await;
+    assert_eq!(unknown.status(), StatusCode::CONFLICT);
+
+    let info = SystemInfo {
+        runner_version: "test".into(),
+        hostname: "runner-1".into(),
+        os: "Linux".into(),
+        kernel_version: "test".into(),
+        cpu_arch: "x86_64".into(),
+        cpu_cores: 1,
+        cpu_model: "test".into(),
+        cpu_usage_percent: 0.0,
+        memory_total_mb: 1024,
+        memory_used_mb: 1,
+        swap_total_mb: 0,
+        swap_used_mb: 0,
+        disk_total_gb: 1.0,
+        disk_used_gb: 0.0,
+        network_interfaces: vec![],
+        ip_addresses: vec![],
+        uptime_seconds: 1,
+        clock_skew_seconds: None,
+        execution_capabilities: Some(RunnerExecutionCapabilities {
+            container: ExecutionBackendStatus::Supported,
+            container_reason: None,
+            vm: ExecutionBackendStatus::Unsupported,
+            vm_reason: Some("KVM unavailable".into()),
+            checked_at: Some(chrono::Utc::now().to_rfc3339()),
+        }),
+    };
+    let heartbeat = json_req(
+        &app,
+        "POST",
+        "/api/v1/runners/heartbeat",
+        &runner_jwt(),
+        Some(serde_json::json!({ "status": "online", "system_info": info })),
+    )
+    .await;
+    assert_eq!(heartbeat.status(), StatusCode::OK);
+
+    let allowed = json_req(
+        &app,
+        "PUT",
+        "/api/v1/runners/runner-1",
+        &admin,
+        Some(serde_json::json!({ "execution_mode": "container" })),
+    )
+    .await;
+    assert_eq!(allowed.status(), StatusCode::OK);
+    assert_eq!(
+        read_body(allowed).await["data"]["execution_mode"],
+        "container"
+    );
+
+    let denied_vm = json_req(
         &app,
         "PUT",
         "/api/v1/runners/runner-1",
@@ -1006,26 +1062,30 @@ async fn runner_execution_mode_policy_roundtrips_through_update_api() {
         Some(serde_json::json!({ "execution_mode": "vm" })),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = read_body(response).await;
-    assert_eq!(body["data"]["execution_mode"], "vm");
+    assert_eq!(denied_vm.status(), StatusCode::CONFLICT);
 
-    let stored: String =
-        sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id='runner-1'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(stored, "vm");
-
-    let heartbeat = json_req(
+    let mut stale_info = info.clone();
+    stale_info
+        .execution_capabilities
+        .as_mut()
+        .unwrap()
+        .checked_at = Some((chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339());
+    let stale = json_req(
         &app,
         "POST",
         "/api/v1/runners/heartbeat",
         &runner_jwt(),
-        Some(serde_json::json!({ "status": "online" })),
+        Some(serde_json::json!({ "status": "online", "system_info": stale_info })),
     )
     .await;
-    let heartbeat_body = read_body(heartbeat).await;
-    assert_eq!(heartbeat_body["code"], 0, "{heartbeat_body}");
-    assert_eq!(heartbeat_body["data"]["policy"]["execution_mode"], "vm");
+    assert_eq!(stale.status(), StatusCode::OK);
+    let denied_stale = json_req(
+        &app,
+        "PUT",
+        "/api/v1/runners/runner-1",
+        &admin,
+        Some(serde_json::json!({ "execution_mode": "vm" })),
+    )
+    .await;
+    assert_eq!(denied_stale.status(), StatusCode::CONFLICT);
 }

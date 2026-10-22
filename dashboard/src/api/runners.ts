@@ -6,6 +6,16 @@ export interface NetworkInterfaceInfo {
   ips: string[]
 }
 
+export type ExecutionBackendStatus = 'unknown' | 'supported' | 'unsupported'
+
+export interface RunnerExecutionCapabilities {
+  container: ExecutionBackendStatus
+  container_reason?: string | null
+  vm: ExecutionBackendStatus
+  vm_reason?: string | null
+  checked_at?: string | null
+}
+
 export interface SystemInfo {
   runner_version: string
   hostname: string
@@ -30,6 +40,7 @@ export interface SystemInfo {
    * refuses to start when it exceeds its `[clock] max_skew_seconds`.
    */
   clock_skew_seconds?: number | null
+  execution_capabilities?: RunnerExecutionCapabilities | null
 }
 
 export type RunnerExecutionMode = 'host' | 'container' | 'vm'
