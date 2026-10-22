@@ -135,8 +135,6 @@ jobs:
           # application/vnd.oci.empty.v1+json`). Disable both.
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=buz-standalone-arm64
-          cache-to: type=gha,mode=max,scope=buz-standalone-arm64
 
       - name: Inspect image
         run: |
