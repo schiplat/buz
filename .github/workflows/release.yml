@@ -126,6 +126,7 @@ jobs:
             dist/release/${{ steps.meta.outputs.archive }}.tar.gz
             dist/release/${{ steps.meta.outputs.archive }}.tar.gz.sha256
           if-no-files-found: error
+          retention-days: 7
 
   publish:
     name: Publish GitHub Release
