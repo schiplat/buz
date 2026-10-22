@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS runners (
     token TEXT,
     labels TEXT NOT NULL DEFAULT '[]',
     team_id TEXT REFERENCES teams(id) ON DELETE RESTRICT,
+    execution_mode TEXT NOT NULL DEFAULT 'host',
     status TEXT NOT NULL DEFAULT 'offline',
     version TEXT,
     system_info TEXT NOT NULL DEFAULT '{}',

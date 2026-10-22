@@ -1,0 +1,19 @@
+# Host-side sandbox supervisor. Run this only when a Runner uses Container or VM mode.
+[sandboxd]
+socket = "/run/buz-sandboxd/sandboxd.sock"
+workspace_root = "/app/buz/workspace"
+docker_cli = "/usr/local/bin/docker"
+# Must match the Docker named volume mounted at /app/buz/workspace. The Compose
+# sandbox profile overrides this with BUZ_SANDBOXD_WORKSPACE_VOLUME.
+workspace_volume = "buz-runner-ws"
+# Runner container UID/GID (deploy Dockerfile.runner defaults to 10001).
+socket_gid = 10001
+allowed_runner_uid = 10001
+
+# Administrator-pinned OCI job images; Runner requests must match these exactly.
+# Use digest-pinned images and ensure the image contains /bin/sh.
+container_image = ""  # set to an admin-pinned image digest before enabling Container mode
+firecracker_guest_image = ""  # set to an admin-pinned guest image digest for VM mode
+# Configure this runtime in the host Docker daemon to use a Firecracker/KVM-backed OCI runtime.
+# Example names are runtime-installation-specific; leave empty until provisioned.
+firecracker_runtime = ""

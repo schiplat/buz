@@ -31,18 +31,20 @@ need() {
 
 need "$BIN_DIR/buz-manager"
 need "$BIN_DIR/buz-runner"
+need "$BIN_DIR/buz-sandboxd"
 need "$ROOT/deploy/conf/manager.toml"
 need "$ROOT/deploy/conf/runner.toml"
+need "$ROOT/deploy/conf/sandboxd.toml"
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/bin" "$STAGE/conf" "$STAGE/data" "$STAGE/pipelines"
 
-cp -a "$BIN_DIR/buz-manager" "$BIN_DIR/buz-runner" "$STAGE/bin/"
-chmod +x "$STAGE/bin/buz-manager" "$STAGE/bin/buz-runner"
+cp -a "$BIN_DIR/buz-manager" "$BIN_DIR/buz-runner" "$BIN_DIR/buz-sandboxd" "$STAGE/bin/"
+chmod +x "$STAGE/bin/buz-manager" "$STAGE/bin/buz-runner" "$STAGE/bin/buz-sandboxd"
 # Best-effort strip (may be a no-op for foreign targets)
-strip "$STAGE/bin/buz-manager" "$STAGE/bin/buz-runner" 2>/dev/null || true
+strip "$STAGE/bin/buz-manager" "$STAGE/bin/buz-runner" "$STAGE/bin/buz-sandboxd" 2>/dev/null || true
 
-cp -a "$ROOT/deploy/conf/manager.toml" "$ROOT/deploy/conf/runner.toml" "$STAGE/conf/"
+cp -a "$ROOT/deploy/conf/manager.toml" "$ROOT/deploy/conf/runner.toml" "$ROOT/deploy/conf/sandboxd.toml" "$STAGE/conf/"
 cp -a "$ROOT/deploy/README.md" "$STAGE/README.md"
 # UI is embedded in buz-manager — no dashboard/ directory in the archive.
 

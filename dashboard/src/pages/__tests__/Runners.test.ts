@@ -34,6 +34,7 @@ const runner = (overrides: Partial<Runner> = {}): Runner => ({
   name: 'runner-one',
   labels: ['linux-x64'],
   team_id: null,
+  execution_mode: 'host',
   status: 'offline',
   version: null,
   system_info: null,
@@ -124,6 +125,7 @@ describe('Runner team binding', () => {
     expect(runnersApi.create).toHaveBeenCalledWith(expect.objectContaining({
       name: 'team-runner',
       team_id: 'team-a',
+      execution_mode: 'host',
     }))
   })
 
@@ -136,14 +138,23 @@ describe('Runner team binding', () => {
 
     const team = [...document.body.querySelectorAll<HTMLSelectElement>('select')]
       .find((select) => [...select.options].some((option) => option.value === 'team-a'))!
+    const mode = [...document.body.querySelectorAll<HTMLSelectElement>('select')]
+      .find((select) => [...select.options].some((option) => option.value === 'container'))!
+    await setSelect(mode, 'container')
     await setSelect(team, 'team-a')
     button('Save Policy').click()
     await flush()
-    expect(runnersApi.update).toHaveBeenLastCalledWith('runner-1', expect.objectContaining({ team_id: 'team-a' }))
+    expect(runnersApi.update).toHaveBeenLastCalledWith('runner-1', expect.objectContaining({
+      team_id: 'team-a',
+      execution_mode: 'container',
+    }))
 
     await setSelect(team, 'shared')
     button('Save Policy').click()
     await flush()
-    expect(runnersApi.update).toHaveBeenLastCalledWith('runner-1', expect.objectContaining({ team_id: null }))
+    expect(runnersApi.update).toHaveBeenLastCalledWith('runner-1', expect.objectContaining({
+      team_id: null,
+      execution_mode: 'container',
+    }))
   })
 })

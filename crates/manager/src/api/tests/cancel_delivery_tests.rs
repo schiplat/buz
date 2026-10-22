@@ -986,3 +986,46 @@ async fn foreign_team_backlog_does_not_fill_claim_limit() {
         "eligible job survives foreign backlog: {body}"
     );
 }
+
+#[tokio::test]
+async fn runner_execution_mode_policy_roundtrips_through_update_api() {
+    let (app, pool, _state) = test_app().await;
+    let admin = admin_jwt();
+    let initial: String =
+        sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id='runner-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(initial, "host", "legacy/default runner mode is Host");
+
+    let response = json_req(
+        &app,
+        "PUT",
+        "/api/v1/runners/runner-1",
+        &admin,
+        Some(serde_json::json!({ "execution_mode": "vm" })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = read_body(response).await;
+    assert_eq!(body["data"]["execution_mode"], "vm");
+
+    let stored: String =
+        sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id='runner-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, "vm");
+
+    let heartbeat = json_req(
+        &app,
+        "POST",
+        "/api/v1/runners/heartbeat",
+        &runner_jwt(),
+        Some(serde_json::json!({ "status": "online" })),
+    )
+    .await;
+    let heartbeat_body = read_body(heartbeat).await;
+    assert_eq!(heartbeat_body["code"], 0, "{heartbeat_body}");
+    assert_eq!(heartbeat_body["data"]["policy"]["execution_mode"], "vm");
+}

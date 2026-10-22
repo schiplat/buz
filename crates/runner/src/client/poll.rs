@@ -792,10 +792,63 @@ async fn execute_job(
         .get("job_id")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
+    let sandbox_handle = if config.execution_mode == shared::protocol::RunnerExecutionMode::Host {
+        None
+    } else {
+        let unsupported: Vec<String> = tasks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| {
+                let engine = step
+                    .get("exec_type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("shell");
+                let has_step_registry_auth = step
+                    .get("registry_auth")
+                    .is_some_and(|value| !value.is_null())
+                    || step
+                        .get("registry_secret")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty());
+                if matches!(engine, "ssh" | "docker")
+                    || crate::client::config_source::needs_prepare(step)
+                    || has_step_registry_auth
+                {
+                    Some(format!("step {} ({engine})", index + 1))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        anyhow::ensure!(
+            unsupported.is_empty(),
+            "job mode '{}' does not support SSH, Docker-engine, step registry auth, or host-side config preparation: {}",
+            config.execution_mode.as_str(),
+            unsupported.join(", ")
+        );
+        Some(
+            crate::client::sandbox::create_job(config, job_id, &config.runner.workspace_dir)
+                .await?,
+        )
+    };
     let mut prefetch = crate::client::image_prefetch::ImagePrefetch::start(tasks, config, job_id);
-    let result = execute_job_inner(client, config, token, task, cancel_rx, &mut prefetch).await;
+    let result = execute_job_inner(
+        client,
+        config,
+        token,
+        task,
+        cancel_rx,
+        &mut prefetch,
+        sandbox_handle.as_ref(),
+    )
+    .await;
     if let Some(prefetch) = prefetch.as_mut() {
         prefetch.abort_and_drain().await;
+    }
+    if let Some(handle) = sandbox_handle.as_ref() {
+        if let Err(error) = crate::client::sandbox::destroy_job(&config.sandbox, handle).await {
+            tracing::error!(job_id, error = %error, "failed to destroy job sandbox");
+        }
     }
     result
 }
@@ -807,6 +860,7 @@ async fn execute_job_inner(
     task: &serde_json::Value,
     cancel_rx: &mut watch::Receiver<bool>,
     prefetch: &mut Option<crate::client::image_prefetch::ImagePrefetch>,
+    sandbox_handle: Option<&crate::client::sandbox::SandboxHandle>,
 ) -> anyhow::Result<()> {
     let job_id = task["job_id"]
         .as_str()
@@ -1818,74 +1872,19 @@ async fn execute_job_inner(
         let mut output_secret_values = secret_values.clone();
         let (output, was_cancelled): (engine::shell::ShellOutput, bool) = match exec_type {
             "local" | "shell" => {
-                if let Some((ref registry, ref username, ref password)) = registry_login {
-                    if let Err(e) = engine::docker::registry_login(
-                        registry,
-                        username,
-                        password,
-                        docker_config_dir.as_deref(),
-                    )
-                    .await
-                    {
-                        let msg = format!("{e:#}");
-                        let masked = crate::masker::mask_secrets_forced(
-                            &crate::masker::mask_secrets(&msg, &secret_values),
-                            &forced_values,
-                        );
-                        let _ = super::logs::upload_chunk(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            LogChunk {
-                                chunk_index: log_base + LOG_STEP_ERROR,
-                                step_order: idx as i32,
-                                content: format!("==> ERROR\n{masked}\n"),
-                            },
-                        )
-                        .await;
-                        update_job_status(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            "failed",
-                            Some(idx as i32),
-                        )
-                        .await?;
-                        anyhow::bail!(masked);
-                    }
-                    let _ = super::logs::upload_chunk(
-                        client,
-                        config,
-                        token,
-                        job_id,
-                        LogChunk {
-                            chunk_index: log_base + LOG_LOGIN,
-                            step_order: idx as i32,
-                            content: build_login_banner(registry),
-                        },
-                    )
-                    .await;
-                }
-
-                let cmd = command.to_string();
-                let wd = work_dir.map(|s| s.to_string());
-                let mut env = step_env.clone();
-                if let Some(dir) = &docker_config_dir {
-                    env.insert("DOCKER_CONFIG".into(), dir.clone());
-                }
-                env.insert("BUZ_STEP_ENGINE".into(), exec_type.to_string());
-                // Inside the container the workspace mounts at CONTAINER_WORKSPACE;
-                // point $BUZ_ENV at the same physical file the host parses.
-                env.insert(
-                    "BUZ_ENV".into(),
-                    format!("{}/.buz/env", engine::docker::CONTAINER_WORKSPACE),
-                );
-
-                // Debug echo — show the command before execution (like bash -x)
-                {
-                    let echo_line = build_step_echo(exec_type, &cmd, &env, &catalog, work_dir);
+                if let Some(handle) = sandbox_handle {
+                    let mut sandbox_env = step_env.clone();
+                    sandbox_env.insert("BUZ_STEP_ENGINE".into(), exec_type.to_string());
+                    sandbox_env.insert(
+                        "BUZ_ENV".into(),
+                        format!("{}/.buz/env", engine::docker::CONTAINER_WORKSPACE),
+                    );
+                    sandbox_env.insert(
+                        "DOCKER_CONFIG".into(),
+                        format!("{}/.docker", engine::docker::CONTAINER_WORKSPACE),
+                    );
+                    let echo_line =
+                        build_step_echo(exec_type, command, &sandbox_env, &catalog, work_dir);
                     let _ = super::logs::upload_chunk(
                         client,
                         config,
@@ -1898,111 +1897,255 @@ async fn execute_job_inner(
                         },
                     )
                     .await;
-                }
+                    let environment = serde_json::to_value(&sandbox_env)?;
+                    let timeout_seconds = if has_timeout { step_timeout_secs } else { 0 };
+                    run_sandbox_step(
+                        client,
+                        config,
+                        token,
+                        job_id,
+                        idx as i32,
+                        log_base + LOG_STREAM_START,
+                        command,
+                        work_dir.unwrap_or(""),
+                        &environment,
+                        timeout_seconds,
+                        &secret_values,
+                        &forced_values,
+                        cancel_rx,
+                        handle,
+                    )
+                    .await?
+                } else {
+                    if let Some((ref registry, ref username, ref password)) = registry_login {
+                        if let Err(e) = engine::docker::registry_login(
+                            registry,
+                            username,
+                            password,
+                            docker_config_dir.as_deref(),
+                        )
+                        .await
+                        {
+                            let msg = format!("{e:#}");
+                            let masked = crate::masker::mask_secrets_forced(
+                                &crate::masker::mask_secrets(&msg, &secret_values),
+                                &forced_values,
+                            );
+                            let _ = super::logs::upload_chunk(
+                                client,
+                                config,
+                                token,
+                                job_id,
+                                LogChunk {
+                                    chunk_index: log_base + LOG_STEP_ERROR,
+                                    step_order: idx as i32,
+                                    content: format!("==> ERROR\n{masked}\n"),
+                                },
+                            )
+                            .await;
+                            update_job_status(
+                                client,
+                                config,
+                                token,
+                                job_id,
+                                "failed",
+                                Some(idx as i32),
+                            )
+                            .await?;
+                            anyhow::bail!(masked);
+                        }
+                        let _ = super::logs::upload_chunk(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            LogChunk {
+                                chunk_index: log_base + LOG_LOGIN,
+                                step_order: idx as i32,
+                                content: build_login_banner(registry),
+                            },
+                        )
+                        .await;
+                    }
 
-                let mut cancel_rx_step = cancel_rx.clone();
-                let jid = job_id.to_string();
-                let sname = step_name.to_string();
+                    let cmd = command.to_string();
+                    let wd = work_dir.map(|s| s.to_string());
+                    let mut env = step_env.clone();
+                    if let Some(dir) = &docker_config_dir {
+                        let docker_config = if sandbox_handle.is_some() {
+                            format!("{}/.docker", engine::docker::CONTAINER_WORKSPACE)
+                        } else {
+                            dir.clone()
+                        };
+                        env.insert("DOCKER_CONFIG".into(), docker_config);
+                    }
+                    env.insert("BUZ_STEP_ENGINE".into(), exec_type.to_string());
+                    // Inside the job container/VM, the shared workspace is mounted
+                    // at CONTAINER_WORKSPACE; the host runner uses the real path.
+                    env.insert(
+                        "BUZ_ENV".into(),
+                        if sandbox_handle.is_some() {
+                            format!("{}/.buz/env", engine::docker::CONTAINER_WORKSPACE)
+                        } else {
+                            buz_env_path.clone()
+                        },
+                    );
 
-                let exec_result =
-                    engine::shell::execute_streaming(&cmd, wd.as_deref(), Some(&env)).await;
-                let (mut child, mut output_rx, read_guard) = match exec_result {
-                    Ok(v) => v,
-                    Err(e) => {
+                    // Debug echo — show the command before execution (like bash -x)
+                    {
+                        let echo_line = build_step_echo(exec_type, &cmd, &env, &catalog, work_dir);
+                        let _ = super::logs::upload_chunk(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            LogChunk {
+                                chunk_index: log_base + LOG_ECHO,
+                                step_order: idx as i32,
+                                content: echo_line,
+                            },
+                        )
+                        .await;
+                    }
+
+                    let mut cancel_rx_step = cancel_rx.clone();
+                    let jid = job_id.to_string();
+                    let sname = step_name.to_string();
+
+                    if let Some(handle) = sandbox_handle {
+                        let mut sandbox_env = env.clone();
+                        if docker_config_dir.is_some() {
+                            sandbox_env.insert(
+                                "DOCKER_CONFIG".into(),
+                                format!("{}/.docker", engine::docker::CONTAINER_WORKSPACE),
+                            );
+                        }
+                        let environment = serde_json::to_value(&sandbox_env)?;
+                        run_sandbox_step(
+                            client,
+                            config,
+                            token,
+                            job_id,
+                            idx as i32,
+                            log_base + LOG_STREAM_START,
+                            &cmd,
+                            wd.as_deref().unwrap_or(""),
+                            &environment,
+                            if has_timeout { step_timeout_secs } else { 0 },
+                            &secret_values,
+                            &forced_values,
+                            &mut cancel_rx_step,
+                            handle,
+                        )
+                        .await?
+                    } else {
+                        let exec_result =
+                            engine::shell::execute_streaming(&cmd, wd.as_deref(), Some(&env)).await;
+                        let (mut child, mut output_rx, read_guard) = match exec_result {
+                            Ok(v) => v,
+                            Err(e) => {
+                                if let Some((ref reg, _, _)) = registry_login {
+                                    engine::docker::registry_logout(
+                                        reg,
+                                        docker_config_dir.as_deref(),
+                                    )
+                                    .await;
+                                }
+                                return Err(e);
+                            }
+                        };
+
+                        // Clone secret values for use in the async upload task
+                        let sv_for_upload = secret_values.clone();
+                        let forced_for_upload = forced_values.clone();
+
+                        // Background task: stream output chunks to the manager in real time
+                        let c_log = client.clone();
+                        let cfg_log = config.clone();
+                        let t_log = token.to_string();
+                        let jid_log = job_id.to_string();
+                        let idx_i32 = idx as i32;
+                        let stream_base = log_base + LOG_STREAM_START;
+                        let upload_task = tokio::spawn(async move {
+                            let mut chunk_num = stream_base;
+                            while let Some(chunk) = output_rx.recv().await {
+                                let masked_chunk = crate::masker::mask_secrets_forced(
+                                    &crate::masker::mask_secrets(&chunk, &sv_for_upload),
+                                    &forced_for_upload,
+                                );
+                                match super::logs::upload_chunk(
+                                    &c_log,
+                                    &cfg_log,
+                                    &t_log,
+                                    &jid_log,
+                                    LogChunk {
+                                        chunk_index: chunk_num,
+                                        step_order: idx_i32,
+                                        content: masked_chunk,
+                                    },
+                                )
+                                .await
+                                {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        tracing::warn!("Log upload chunk {chunk_num} failed: {e}")
+                                    }
+                                }
+                                chunk_num += 1;
+                            }
+                        });
+
+                        // Race: child completion vs cancellation vs timeout
+                        let (exit_code, was_cancelled_local, was_timeout) = tokio::select! {
+                            status = child.wait() => {
+                                let code = status?.code().unwrap_or(-1);
+                                // Ensure all pipe data is read before proceeding
+                                let _ = read_guard.join().await;
+                                let _ = upload_task.await;
+                                (code, false, false)
+                            }
+                            _ = cancel_triggered(&mut cancel_rx_step) => {
+                                tracing::warn!("Job {jid} cancelled during step '{sname}' — killing");
+                                let _ = child.kill().await;
+                                let _ = child.wait().await;
+                                upload_task.abort();
+                                (-1, true, false)
+                            }
+                            _ = tokio::time::sleep(step_timeout.unwrap_or(Duration::from_secs(3600))), if has_timeout => {
+                                tracing::warn!("Step '{sname}' timed out after {step_timeout_secs}s — killing process");
+                                let _ = child.kill().await;
+                                let _ = child.wait().await;
+                                let _ = read_guard.join().await;
+                                upload_task.abort();
+                                (-1, false, true)
+                            }
+                        };
+
                         if let Some((ref reg, _, _)) = registry_login {
                             engine::docker::registry_logout(reg, docker_config_dir.as_deref())
                                 .await;
                         }
-                        return Err(e);
-                    }
-                };
 
-                // Clone secret values for use in the async upload task
-                let sv_for_upload = secret_values.clone();
-                let forced_for_upload = forced_values.clone();
-
-                // Background task: stream output chunks to the manager in real time
-                let c_log = client.clone();
-                let cfg_log = config.clone();
-                let t_log = token.to_string();
-                let jid_log = job_id.to_string();
-                let idx_i32 = idx as i32;
-                let stream_base = log_base + LOG_STREAM_START;
-                let upload_task = tokio::spawn(async move {
-                    let mut chunk_num = stream_base;
-                    while let Some(chunk) = output_rx.recv().await {
-                        let masked_chunk = crate::masker::mask_secrets_forced(
-                            &crate::masker::mask_secrets(&chunk, &sv_for_upload),
-                            &forced_for_upload,
-                        );
-                        match super::logs::upload_chunk(
-                            &c_log,
-                            &cfg_log,
-                            &t_log,
-                            &jid_log,
-                            LogChunk {
-                                chunk_index: chunk_num,
-                                step_order: idx_i32,
-                                content: masked_chunk,
+                        (
+                            engine::shell::ShellOutput {
+                                stdout: String::new(),
+                                stderr: if was_cancelled_local {
+                                    "==> CANCELLED\n".into()
+                                } else if was_timeout {
+                                    format!("==> TIMEOUT [{step_timeout_secs}s]\n")
+                                } else {
+                                    String::new()
+                                },
+                                exit_code: if was_cancelled_local || was_timeout {
+                                    -1
+                                } else {
+                                    exit_code
+                                },
                             },
+                            was_cancelled_local,
                         )
-                        .await
-                        {
-                            Ok(_) => {}
-                            Err(e) => tracing::warn!("Log upload chunk {chunk_num} failed: {e}"),
-                        }
-                        chunk_num += 1;
                     }
-                });
-
-                // Race: child completion vs cancellation vs timeout
-                let (exit_code, was_cancelled_local, was_timeout) = tokio::select! {
-                    status = child.wait() => {
-                        let code = status?.code().unwrap_or(-1);
-                        // Ensure all pipe data is read before proceeding
-                        let _ = read_guard.join().await;
-                        let _ = upload_task.await;
-                        (code, false, false)
-                    }
-                    _ = cancel_triggered(&mut cancel_rx_step) => {
-                        tracing::warn!("Job {jid} cancelled during step '{sname}' — killing");
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
-                        upload_task.abort();
-                        (-1, true, false)
-                    }
-                    _ = tokio::time::sleep(step_timeout.unwrap_or(Duration::from_secs(3600))), if has_timeout => {
-                        tracing::warn!("Step '{sname}' timed out after {step_timeout_secs}s — killing process");
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
-                        let _ = read_guard.join().await;
-                        upload_task.abort();
-                        (-1, false, true)
-                    }
-                };
-
-                if let Some((ref reg, _, _)) = registry_login {
-                    engine::docker::registry_logout(reg, docker_config_dir.as_deref()).await;
                 }
-
-                (
-                    engine::shell::ShellOutput {
-                        stdout: String::new(),
-                        stderr: if was_cancelled_local {
-                            "==> CANCELLED\n".into()
-                        } else if was_timeout {
-                            format!("==> TIMEOUT [{step_timeout_secs}s]\n")
-                        } else {
-                            String::new()
-                        },
-                        exit_code: if was_cancelled_local || was_timeout {
-                            -1
-                        } else {
-                            exit_code
-                        },
-                    },
-                    was_cancelled_local,
-                )
             }
             "ssh" => {
                 if ssh_sessions.is_empty() {
@@ -2375,7 +2518,7 @@ async fn execute_job_inner(
 
         // For SSH steps, upload the accumulated output as a summary chunk.
         // Local steps are fully streamed so we skip this redundant upload.
-        if exec_type == "ssh" {
+        if exec_type == "ssh" || sandbox_handle.is_some() {
             let combined = format!("==> {step_name}\n{}\n{}", output.stdout, output.stderr);
             let masked = crate::masker::mask_secrets_forced(
                 &crate::masker::mask_secrets(&combined, &output_secret_values),
@@ -2444,7 +2587,15 @@ async fn execute_job_inner(
         // Shell and Docker steps share the same physical file (the Docker
         // container sees it via the workspace mount). Values are not
         // auto-masked — route sensitive data through Secrets instead.
-        match parse_buz_env_file(&buz_env_path) {
+        let dynamic_env = match sandbox_handle {
+            Some(handle) if handle.mode() == shared::protocol::RunnerExecutionMode::Vm => {
+                crate::client::sandbox::read_job_file(&config.sandbox, handle, ".buz/env")
+                    .await
+                    .and_then(|content| parse_buz_env_content(&content))
+            }
+            _ => parse_buz_env_file(&buz_env_path),
+        };
+        match dynamic_env {
             Ok(dynamic) => {
                 for (key, value) in dynamic {
                     base_env.insert(key, value);
@@ -2471,6 +2622,181 @@ async fn execute_job_inner(
     Ok(())
 }
 
+struct SandboxOutputMasker {
+    pending: String,
+    max_secret_bytes: usize,
+    secret_values: Vec<String>,
+    forced_values: Vec<String>,
+}
+
+impl SandboxOutputMasker {
+    fn new(secret_values: &[String], forced_values: &[String]) -> Self {
+        let max_secret_bytes = secret_values
+            .iter()
+            .chain(forced_values)
+            .map(String::len)
+            .max()
+            .unwrap_or_default();
+        Self {
+            pending: String::new(),
+            max_secret_bytes,
+            secret_values: secret_values.to_vec(),
+            forced_values: forced_values.to_vec(),
+        }
+    }
+
+    fn push(&mut self, chunk: &str, flush: bool) -> String {
+        self.pending.push_str(chunk);
+        let mut safe_bytes = if flush || self.max_secret_bytes <= 1 {
+            self.pending.len()
+        } else {
+            self.pending.len().saturating_sub(self.max_secret_bytes - 1)
+        };
+        while !self.pending.is_char_boundary(safe_bytes) {
+            safe_bytes -= 1;
+        }
+        loop {
+            let previous = safe_bytes;
+            for secret in self.secret_values.iter().chain(&self.forced_values) {
+                let secret_len = secret.len();
+                if secret_len == 0 {
+                    continue;
+                }
+                let first_start = safe_bytes.saturating_sub(secret_len - 1);
+                for start in first_start..safe_bytes {
+                    let end = start.saturating_add(secret_len);
+                    if end > safe_bytes && self.pending.get(start..end) == Some(secret.as_str()) {
+                        safe_bytes = start;
+                        break;
+                    }
+                }
+            }
+            while !self.pending.is_char_boundary(safe_bytes) {
+                safe_bytes -= 1;
+            }
+            if safe_bytes == previous {
+                break;
+            }
+        }
+        let remainder = self.pending.split_off(safe_bytes);
+        let ready = std::mem::replace(&mut self.pending, remainder);
+        let masked = crate::masker::mask_secrets_forced(
+            &crate::masker::mask_secrets(&ready, &self.secret_values),
+            &self.forced_values,
+        );
+        if flush {
+            let tail = std::mem::take(&mut self.pending);
+            masked
+                + &crate::masker::mask_secrets_forced(
+                    &crate::masker::mask_secrets(&tail, &self.secret_values),
+                    &self.forced_values,
+                )
+        } else {
+            masked
+        }
+    }
+}
+
+async fn run_sandbox_step(
+    client: &Client,
+    config: &Config,
+    token: &str,
+    job_id: &str,
+    step_order: i32,
+    chunk_start: i32,
+    command: &str,
+    work_dir: &str,
+    environment: &serde_json::Value,
+    timeout_seconds: u64,
+    secret_values: &[String],
+    forced_values: &[String],
+    cancel_rx: &mut watch::Receiver<bool>,
+    handle: &crate::client::sandbox::SandboxHandle,
+) -> anyhow::Result<(engine::shell::ShellOutput, bool)> {
+    let mut stream = crate::client::sandbox::exec_step(
+        &config.sandbox,
+        handle,
+        command,
+        work_dir,
+        environment,
+        timeout_seconds,
+    )
+    .await?;
+    let mut chunk_num = chunk_start;
+    let mut output_masker = SandboxOutputMasker::new(secret_values, forced_values);
+    loop {
+        tokio::select! {
+            frame = stream.recv() => {
+                match frame {
+                    Some(Ok(crate::client::sandbox::SandboxExecEvent::Output { content, .. })) => {
+                        let masked = output_masker.push(&content, false);
+                        if !masked.is_empty() {
+                            if let Err(error) = super::logs::upload_chunk(
+                                client,
+                                config,
+                                token,
+                                job_id,
+                                LogChunk { chunk_index: chunk_num, step_order, content: masked },
+                            ).await {
+                                tracing::warn!("Sandbox output chunk {chunk_num} upload failed: {error}");
+                            }
+                            chunk_num += 1;
+                        }
+                    }
+                    Some(Ok(crate::client::sandbox::SandboxExecEvent::Exit { code, timed_out })) => {
+                        let tail = output_masker.push("", true);
+                        if !tail.is_empty() {
+                            let _ = super::logs::upload_chunk(
+                                client,
+                                config,
+                                token,
+                                job_id,
+                                LogChunk { chunk_index: chunk_num, step_order, content: tail },
+                            ).await;
+                        }
+                        return Ok((
+                            engine::shell::ShellOutput {
+                                stdout: String::new(),
+                                stderr: if timed_out { format!("==> TIMEOUT [{timeout_seconds}s]\\n") } else { String::new() },
+                                exit_code: if timed_out { -1 } else { code },
+                            },
+                            false,
+                        ));
+                    }
+                    Some(Ok(crate::client::sandbox::SandboxExecEvent::Error { error })) => {
+                        anyhow::bail!("sandbox step failed: {error}");
+                    }
+                    Some(Err(error)) => return Err(error),
+                    None => anyhow::bail!("sandbox supervisor closed the step stream"),
+                }
+            }
+            _ = cancel_triggered(cancel_rx) => {
+                stream.abort();
+                return Ok((
+                    engine::shell::ShellOutput {
+                        stdout: String::new(),
+                        stderr: "==> CANCELLED\\n".into(),
+                        exit_code: -1,
+                    },
+                    true,
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod sandbox_output_masker_tests {
+    use super::SandboxOutputMasker;
+
+    #[test]
+    fn catches_secrets_split_across_frames() {
+        let mut masker = SandboxOutputMasker::new(&["secret123".to_string()], &[]);
+        assert_eq!(masker.push("before secre", false), "befo");
+        assert_eq!(masker.push("t123 after", true), "re *** after");
+    }
+}
+
 /// Parse a `$BUZ_ENV` file (GHA `$GITHUB_ENV` format).
 ///
 /// - `KEY=value` — everything after the first `=` is the value (no quote
@@ -2485,6 +2811,10 @@ pub(crate) fn parse_buz_env_file(path: &str) -> anyhow::Result<Vec<(String, Stri
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => anyhow::bail!("cannot read {path}: {e}"),
     };
+    parse_buz_env_content(&content)
+}
+
+fn parse_buz_env_content(content: &str) -> anyhow::Result<Vec<(String, String)>> {
     let valid_key = |key: &str| {
         let mut chars = key.chars();
         matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')

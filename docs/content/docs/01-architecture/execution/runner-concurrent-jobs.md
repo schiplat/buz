@@ -47,6 +47,7 @@ Create or edit a Runner under **Runners** in the web UI.
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `team_id` | *(required at create)* | Dispatch scope: a specific team, or **Shared** (`NULL`). Bound Runners only receive jobs whose trigger-time team matches; `NULL` serves every team. Existing runners keep `NULL`/Shared after upgrade |
+| `execution_mode` | `host` | Job-wide executor: direct Host, persistent job Container, or a VM-backed OCI runtime configured on the host. Per-step `engine` remains a separate choice and is checked for compatibility |
 | `labels` | `[]` | Scheduling match for pipeline `runner.labels` (must have **all** required) |
 | `max_concurrent_jobs` | `1` | Parallel job slots, range `1`–`32` |
 | `clean_workspace_after_job` | `false` | Delete `{workspace}/{job_id}` after each job (host files only) |
@@ -80,6 +81,20 @@ Runner process                        │
 ### Team binding is dispatch scoping, not a sandbox
 
 Team binding and labels answer different questions: **labels** match a job's requested capabilities (`linux-x64`, `gpu`, …); **team binding** restricts which team's jobs the Manager may dispatch to this Runner. Neither isolates running jobs from one another — all jobs on a Runner execute as the Runner's OS user and can access that user's files and process environments. Put mutually untrusted teams on dedicated Runner hosts/users. Jobs freeze their team at trigger time; a pipeline cannot change `team` while it has active (pending/queued/waiting-approval/running) jobs. Jobs created before team freezing carry no frozen team: bound Runners skip them, Shared Runners handle them under the pipeline's current team.
+
+### Job-wide execution modes
+
+`execution_mode` is selected by a platform admin in Runner Policy; it does **not** rewrite a pipeline's per-step `engine` and a job never falls back to Host when its selected backend is unavailable.
+
+| Mode | Job behavior | Host requirements / limits |
+|------|--------------|----------------------------|
+| `host` | Current behavior: local/shell steps run as the Runner OS user; Docker engine remains one `docker run --rm` per Docker step; SSH runs on the configured remote host. | Default for new and existing Runners; no sandbox. |
+| `container` | All local/shell steps in one job execute in one persistent job container with the shared job workspace. | Requires the host-side `buz-sandboxd`, Docker CLI/daemon, a pinned `sandbox.container_image`, and matching shared workspace volume configuration when sandboxd is containerized. Container shares the host kernel; it is containment, not VM isolation. |
+| `vm` | Local/shell steps execute in one job-scoped OCI container dispatched through the host's configured Firecracker-compatible runtime. | Requires KVM, a host Docker-compatible runtime registered with the daemon, `sandbox.firecracker_guest_image`, `sandbox.firecracker_runtime`, and `buz-sandboxd`. Buz currently delegates OCI container creation to that runtime; it does not directly launch Firecracker/jailer or provision a guest kernel/image. |
+
+Container/VM modes fail closed if the supervisor/runtime is missing and currently reject jobs containing SSH or per-step Docker engine steps, registry-auth handoff, or Runner-host config preparation. These paths are not silently executed on the host. Step output is returned through the supervisor and masked by Runner before upload; cancellation tears down the job sandbox. Network egress is still available on the configured container network unless the operator restricts it externally. The sandbox daemon has Docker-daemon access and is itself a privileged trust component; protect its Unix socket/config and pin runtime images.
+
+A Container shares the host kernel and must not be represented as a strong boundary against a malicious host/container-runtime exploit. Use separate Runner host/OS identities or disposable VM-backed jobs for mutually untrusted workloads; SSH targets always require their own isolation controls.
 
 ### Cleanup: workspace vs Docker containers
 

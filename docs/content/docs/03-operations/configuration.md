@@ -132,7 +132,7 @@ Machine-local only. Strategy is **not** configured here — see [Runner Policy](
 |---------------|-----------------------------------------------------|
 | `labels` | `manager_url`, `register_token`, `tls_skip_verify`, `standalone` |
 | `max_concurrent_jobs`, cleanup | `name`, `workspace_dir`, `token_cache_path` |
-| engine enable flags + `ssh_host_key_policy` | `prefer_interfaces`, `ssh_known_hosts_path`, `docker_config_isolation` |
+| engine enable flags + `ssh_host_key_policy` + `execution_mode` | `prefer_interfaces`, `ssh_known_hosts_path`, `docker_config_isolation`, `[sandbox]` runtime paths/images |
 
 ```toml
 [runner]
@@ -153,6 +153,15 @@ token_cache_path = "./state/runner-token" # durable Manager-issued JWT cache
 # ~/.docker/config.json (for credential-store-based setups).
 # docker_config_isolation = "per_job"
 
+[sandbox]
+# Used only when Manager UI → Runners selects container or vm mode.
+supervisor_socket = "/run/buz-sandboxd/sandboxd.sock"
+workspace_root = "/app/buz/workspace"
+# Set to the same immutable image digest configured in sandboxd.toml.
+# container_image = "docker.io/library/debian@sha256:<digest>"
+# firecracker_guest_image = "docker.io/library/debian@sha256:<digest>"
+# firecracker_runtime = "<host Docker daemon Firecracker-compatible runtime name>"
+
 [clock]
 enabled = true                 # validate this host's clock against the Manager
 warn_threshold_seconds = 60    # warn when this Runner drifts this far
@@ -163,6 +172,23 @@ max_skew_seconds = 300         # gross skew → refuse to start (NTP required)
 level = "info"
 # file = "./logs/runner.log"   # Runner default if omitted: ./logs/runner.log
 ```
+
+The optional host-side `buz-sandboxd` service uses a separate `conf/sandboxd.toml` (not the Runner policy file). It must share the same workspace volume as Runner and be permissioned to accept only the Runner UID. In Compose, build/start the `sandboxd` profile and keep its Docker socket private; Docker-daemon access is host-root-equivalent. Set the pinned `container_image` and, if using VM mode, the digest-pinned `firecracker_guest_image` plus a Firecracker-compatible runtime registered with the Docker daemon. VM mode requires Linux KVM and a pre-provisioned Firecracker-compatible OCI runtime; Buz does not bundle a guest kernel/image or configure KVM for you.
+
+Example:
+
+```toml
+[sandboxd]
+socket = "/run/buz-sandboxd/sandboxd.sock"
+workspace_root = "/app/buz/workspace"
+workspace_volume = "buz-runner-ws"
+allowed_runner_uid = 10001
+container_image = "docker.io/library/debian@sha256:<digest>"
+firecracker_guest_image = "docker.io/library/debian@sha256:<digest>"
+firecracker_runtime = "<runtime configured in Docker daemon>"
+```
+
+Both sandbox modes currently support local shell steps only: SSH, per-step Docker engine, registry-auth handoff, and host-side config preparation are rejected before the job starts. See [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes) for the full compatibility/security boundary.
 
 | Key | Notes |
 |-----|-------|

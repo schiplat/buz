@@ -138,6 +138,17 @@ fn i64_bool(v: i64) -> bool {
     v != 0
 }
 
+fn parse_execution_mode(value: String) -> Result<shared::protocol::RunnerExecutionMode, AppError> {
+    match value.as_str() {
+        "host" => Ok(shared::protocol::RunnerExecutionMode::Host),
+        "container" => Ok(shared::protocol::RunnerExecutionMode::Container),
+        "vm" => Ok(shared::protocol::RunnerExecutionMode::Vm),
+        _ => Err(AppError::Internal(format!(
+            "invalid runner execution_mode '{value}'"
+        ))),
+    }
+}
+
 async fn validate_runner_team(
     pool: &sqlx::SqlitePool,
     team_id: Option<&str>,
@@ -164,7 +175,8 @@ async fn load_runner_policy(
 ) -> Result<RunnerPolicyConfig, AppError> {
     let row = sqlx::query(
         "SELECT max_concurrent_jobs, clean_workspace_after_job,
-                shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy
+                shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy,
+                execution_mode
          FROM runners WHERE id = ?",
     )
     .bind(runner_id)
@@ -187,6 +199,7 @@ async fn load_runner_policy(
                 "known_hosts".into()
             }
         },
+        execution_mode: parse_execution_mode(row.get::<String, _>(7))?,
     })
 }
 
@@ -194,6 +207,7 @@ fn policy_json(p: &RunnerPolicyConfig) -> serde_json::Value {
     serde_json::json!({
         "max_concurrent_jobs": p.max_concurrent_jobs,
         "clean_workspace_after_job": p.clean_workspace_after_job,
+        "execution_mode": p.execution_mode.as_str(),
         "shell_enabled": p.shell_enabled,
         "ssh_enabled": p.ssh_enabled,
         "docker_enabled": p.docker_enabled,
@@ -243,12 +257,13 @@ pub(crate) async fn create_runner_record(
     let docker = bool_i64(req.docker_enabled, false);
     let wasm = bool_i64(req.wasm_enabled, false);
     let team_id = validate_runner_team(pool, req.team_id.as_deref()).await?;
+    let execution_mode = req.execution_mode.unwrap_or_default().as_str();
 
     sqlx::query(
-        "INSERT INTO runners (id, name, register_token, labels, status, version, team_id,
+        "INSERT INTO runners (id, name, register_token, labels, status, version, team_id, execution_mode,
          max_concurrent_jobs, clean_workspace_after_job,
          shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy)
-         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&req.name)
@@ -256,6 +271,7 @@ pub(crate) async fn create_runner_record(
     .bind(&labels_json)
     .bind(&req.version)
     .bind(&team_id)
+    .bind(execution_mode)
     .bind(max_concurrent as i64)
     .bind(clean)
     .bind(shell)
@@ -330,6 +346,7 @@ pub async fn ensure_standalone_auto_approve(
             name: name.to_string(),
             labels: Some(vec!["standalone".into()]),
             team_id: None,
+            execution_mode: None,
             version: Some(shared::version::VERSION.to_string()),
             max_concurrent_jobs: None,
             clean_workspace_after_job: None,
@@ -2466,7 +2483,8 @@ pub async fn list_runners(
                 r.max_concurrent_jobs, r.clean_workspace_after_job,
                 r.shell_enabled, r.ssh_enabled, r.docker_enabled, r.wasm_enabled, r.ssh_host_key_policy,
                 r.created_at, r.updated_at, r.team_id,
-                (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs
+                (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs,
+                r.execution_mode
          FROM runners r ORDER BY r.created_at DESC",
     )
     .fetch_all(&state.pool)
@@ -2474,7 +2492,7 @@ pub async fn list_runners(
 
     let runners: Vec<serde_json::Value> = rows
         .into_iter()
-        .map(|r| {
+        .map(|r| -> Result<serde_json::Value, AppError> {
             let labels: String = r.get(2);
             let system_info_raw: String = r.get(5);
             let system_info = serde_json::from_str::<serde_json::Value>(&system_info_raw).ok();
@@ -2493,8 +2511,9 @@ pub async fn list_runners(
                         "known_hosts".into()
                     }
                 },
+                execution_mode: parse_execution_mode(r.get::<String, _>(19))?,
             };
-            serde_json::json!({
+            Ok(serde_json::json!({
                 "id": r.get::<String, _>(0),
                 "name": r.get::<String, _>(1),
                 "labels": serde_json::from_str::<Vec<String>>(&labels).unwrap_or_default(),
@@ -2510,13 +2529,14 @@ pub async fn list_runners(
                 "docker_enabled": policy.docker_enabled,
                 "wasm_enabled": policy.wasm_enabled,
                 "ssh_host_key_policy": policy.ssh_host_key_policy,
+                "execution_mode": policy.execution_mode.as_str(),
                 "team_id": r.get::<Option<String>, _>(17),
                 "created_at": r.get::<Option<String>, _>(15),
                 "updated_at": r.get::<Option<String>, _>(16),
                 "running_jobs": r.get::<i64, _>(18),
-            })
+            }))
         })
-        .collect();
+        .collect::<Result<Vec<_>, AppError>>()?;
 
     Ok(Json(ApiResponse::success(runners)))
 }
@@ -2565,6 +2585,7 @@ pub async fn get_runner(
         "docker_enabled": policy.docker_enabled,
         "wasm_enabled": policy.wasm_enabled,
         "ssh_host_key_policy": policy.ssh_host_key_policy,
+        "execution_mode": policy.execution_mode.as_str(),
     }))))
 }
 
@@ -2632,6 +2653,36 @@ pub async fn update_runner(
         .bind(&id)
         .execute(&state.pool)
         .await?;
+    }
+
+    if let Some(mode) = req.execution_mode {
+        let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current: String = sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if current != mode.as_str() {
+            let running: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
+            )
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if running > 0 {
+                tx.rollback().await?;
+                return Err(AppError::Conflict(format!(
+                    "execution mode cannot change while {running} job(s) are running"
+                )));
+            }
+        }
+        sqlx::query(
+            "UPDATE runners SET execution_mode = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(mode.as_str())
+        .bind(&id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
     }
 
     if let Some(v) = req.clean_workspace_after_job {
@@ -2730,6 +2781,7 @@ pub async fn update_runner(
         "docker_enabled": policy.docker_enabled,
         "wasm_enabled": policy.wasm_enabled,
         "ssh_host_key_policy": policy.ssh_host_key_policy,
+        "execution_mode": policy.execution_mode.as_str(),
     }))))
 }
 

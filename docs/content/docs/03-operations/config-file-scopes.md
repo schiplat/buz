@@ -89,6 +89,9 @@ Precedence: **UI policy > `runner.toml` > built-in default** — but the UI poli
 | `prefer_interfaces` | `runner.toml → [runner]` | Multi-NIC IP ordering | — |
 | `ssh_known_hosts_path` | `runner.toml → [engine]` | Host-key file when policy = `known_hosts` | — |
 | `docker_config_isolation` | `runner.toml → [engine]` | Docker CLI config scope: `per_job` (default) / `shared` | — |
+| `sandbox.supervisor_socket` / `workspace_root` | `runner.toml → [sandbox]` | Local sandboxd Unix socket and workspace allow-root | — |
+| `sandbox.container_image` | `runner.toml → [sandbox]` | Locally provisioned job Container image (pin by digest) | — |
+| `sandbox.firecracker_guest_image` / `firecracker_runtime` | `runner.toml → [sandbox]` | Guest OCI image and host-installed Firecracker-compatible OCI runtime | — |
 | `tls_skip_verify` | `runner.toml → [runner]` | TLS verification — **dev only** | — |
 | `standalone` | `runner.toml → [runner]` | Empty-token lab mode — **lab only** | — |
 
@@ -96,10 +99,13 @@ Precedence: **UI policy > `runner.toml` > built-in default** — but the UI poli
 
 | Key | Declared in | Takes effect on | Overrides |
 |---|---|---|---|
+| `execution_mode` | UI policy (`host` default / `container` / `vm`) | Job-wide executor selected per Runner | — |
 | `shell_enabled` / `ssh_enabled` / `docker_enabled` | UI policy (TOML fallback) | Engine capability of this Runner | `runner.toml → [engine]` |
 | `ssh_host_key_policy` | UI policy (`known_hosts` default / `insecure`) | SSH host-key verification | `runner.toml → [engine]` |
 | `max_concurrent_jobs` | UI policy | Parallel jobs on this Runner | — |
 | `clean_workspace_after_job` | UI policy | Whole-workspace cleanup at job end (**default false**) | — |
+
+`execution_mode=host` preserves current behavior. Container/VM modes require the local `[sandbox]` runtime and fail closed when it is unavailable; they currently reject SSH, per-step Docker, step registry auth, and host-side config preparation. The local socket/image/runtime paths constrain the UI-selected mode and are never weakened by Manager policy. See [Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes).
 
 Job-scoped Docker credentials (`.docker` in the job workspace) are removed **unconditionally** at job end regardless of `clean_workspace_after_job`.
 

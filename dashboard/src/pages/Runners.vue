@@ -5,7 +5,7 @@ import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw, KeyRound } from '@lucide/vue'
-import { runnersApi, type Runner } from '@/api/runners'
+import { runnersApi, type Runner, type RunnerExecutionMode } from '@/api/runners'
 import { teamsApi, type Team } from '@/api/teams'
 import { formatLocalDateTime } from '@/utils/time'
 import { clockSkewInfo, clockToneClass } from '@/utils/runnerClock'
@@ -74,6 +74,7 @@ const newSshEnabled = ref(true)
 const newDockerEnabled = ref(false)
 const newSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
 const newTeamId = ref('')
+const newExecutionMode = ref<RunnerExecutionMode>('host')
 const creating = ref(false)
 const createdToken = ref<string | null>(null)
 const copied = ref(false)
@@ -103,6 +104,7 @@ const editSshEnabled = ref(true)
 const editDockerEnabled = ref(false)
 const editSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
 const editTeamId = ref('shared')
+const editExecutionMode = ref<RunnerExecutionMode>('host')
 const savingPolicy = ref(false)
 
 onMounted(async () => {
@@ -130,6 +132,7 @@ function openDetail(r: Runner) {
   editDockerEnabled.value = !!r.docker_enabled
   editSshHostKeyPolicy.value = r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure'
   editTeamId.value = r.team_id ?? 'shared'
+  editExecutionMode.value = r.execution_mode ?? 'host'
   drawerOpen.value = true
   loadRunnerEvents(r.id)
 }
@@ -175,6 +178,7 @@ function openCreate() {
   newDockerEnabled.value = false
   newSshHostKeyPolicy.value = 'insecure'
   newTeamId.value = ''
+  newExecutionMode.value = 'host'
   createdToken.value = null
   copied.value = false
   showCreate.value = true
@@ -190,6 +194,7 @@ async function handleCreate() {
       name: newName.value.trim(),
       labels,
       team_id: newTeamId.value === 'shared' ? null : newTeamId.value,
+      execution_mode: newExecutionMode.value,
       max_concurrent_jobs: max,
       clean_workspace_after_job: newCleanWorkspace.value,
       shell_enabled: newShellEnabled.value,
@@ -214,6 +219,7 @@ function policyDirty(): boolean {
   return (
     labelsChanged ||
     editTeamId.value !== (r.team_id ?? 'shared') ||
+    editExecutionMode.value !== (r.execution_mode ?? 'host') ||
     editMaxConcurrent.value !== (r.max_concurrent_jobs ?? 1) ||
     editCleanWorkspace.value !== !!r.clean_workspace_after_job ||
     editShellEnabled.value !== (r.shell_enabled !== false) ||
@@ -232,6 +238,7 @@ async function savePolicy() {
     const updated = await runnersApi.update(activeRunner.value.id, {
       labels,
       team_id: editTeamId.value === 'shared' ? null : editTeamId.value,
+      execution_mode: editExecutionMode.value,
       max_concurrent_jobs: max,
       clean_workspace_after_job: editCleanWorkspace.value,
       shell_enabled: editShellEnabled.value,
@@ -242,6 +249,7 @@ async function savePolicy() {
     activeRunner.value = { ...activeRunner.value, ...updated }
     editLabels.value = (updated.labels || []).join(', ')
     editTeamId.value = updated.team_id ?? 'shared'
+    editExecutionMode.value = updated.execution_mode ?? 'host'
     const idx = runners.value.findIndex(r => r.id === activeRunner.value!.id)
     if (idx >= 0) runners.value[idx] = { ...runners.value[idx], ...updated }
   } catch (e) { console.error(e); await dialog.alert('Failed to update runner policy') }
@@ -574,6 +582,17 @@ const eventBadge = (t: string) => {
                 </p>
               </div>
               <div>
+                <label class="text-xs text-muted-foreground block mb-1">Job execution mode</label>
+                <select v-model="editExecutionMode" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden focus:border-ring/40">
+                  <option value="host">Host (current behavior)</option>
+                  <option value="container">Job container</option>
+                  <option value="vm">Firecracker VM</option>
+                </select>
+                <p class="mt-1 text-[10px] text-muted-foreground">
+                  Container/VM supports local shell steps only. SSH or per-step Docker jobs fail closed. Runtime images and supervisor must be configured on the Runner host.
+                </p>
+              </div>
+              <div>
                 <label class="text-xs text-muted-foreground block mb-1">Labels</label>
                 <input
                   v-model="editLabels"
@@ -895,6 +914,17 @@ const eventBadge = (t: string) => {
                 </p>
                 <p v-else class="mt-1.5 text-[11px] text-muted-foreground">
                   Dispatch is limited to this team; jobs still share the Runner OS user and are not sandboxed from one another.
+                </p>
+              </div>
+              <div>
+                <label class="type-label block mb-1.5">Job execution mode</label>
+                <select v-model="newExecutionMode" class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden focus:border-ring/40">
+                  <option value="host">Host (current behavior)</option>
+                  <option value="container">Job container</option>
+                  <option value="vm">Firecracker VM</option>
+                </select>
+                <p class="mt-1.5 text-[11px] text-muted-foreground">
+                  Container/VM runs local shell steps in one job-wide sandbox; SSH and per-step Docker jobs are rejected. Requires the matching local sandbox runtime and image configuration.
                 </p>
               </div>
               <div>

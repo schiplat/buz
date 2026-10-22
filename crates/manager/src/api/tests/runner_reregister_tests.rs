@@ -72,6 +72,7 @@ async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
             name: "lab-runner-01".into(),
             labels: None,
             team_id: None,
+            execution_mode: None,
             version: None,
             max_concurrent_jobs: None,
             clean_workspace_after_job: None,

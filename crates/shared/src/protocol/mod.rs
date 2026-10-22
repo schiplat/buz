@@ -192,6 +192,26 @@ pub struct HeartbeatResponse {
     pub restart: bool,
 }
 
+/// Job-wide execution isolation selected by the Runner's Manager policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerExecutionMode {
+    #[default]
+    Host,
+    Container,
+    Vm,
+}
+
+impl RunnerExecutionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Container => "container",
+            Self::Vm => "vm",
+        }
+    }
+}
+
 /// Runner strategy settings controlled from Manager UI (not machine-local paths).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunnerPolicyConfig {
@@ -199,6 +219,8 @@ pub struct RunnerPolicyConfig {
     pub max_concurrent_jobs: u32,
     #[serde(default)]
     pub clean_workspace_after_job: bool,
+    #[serde(default)]
+    pub execution_mode: RunnerExecutionMode,
     #[serde(default = "default_true")]
     pub shell_enabled: bool,
     #[serde(default = "default_true")]
@@ -217,6 +239,7 @@ impl Default for RunnerPolicyConfig {
         Self {
             max_concurrent_jobs: 1,
             clean_workspace_after_job: false,
+            execution_mode: RunnerExecutionMode::Host,
             shell_enabled: true,
             ssh_enabled: true,
             docker_enabled: false,
@@ -296,6 +319,9 @@ pub struct CreateRunnerRequest {
     pub docker_enabled: Option<bool>,
     #[serde(default)]
     pub wasm_enabled: Option<bool>,
+    /// `host` (default), `container`, or `vm`; Runner-local config supplies the runtime backend.
+    #[serde(default)]
+    pub execution_mode: Option<RunnerExecutionMode>,
     /// `insecure` | `known_hosts`
     #[serde(default)]
     pub ssh_host_key_policy: Option<String>,
@@ -320,6 +346,8 @@ pub struct UpdateRunnerRequest {
     pub ssh_enabled: Option<bool>,
     pub docker_enabled: Option<bool>,
     pub wasm_enabled: Option<bool>,
+    #[serde(default)]
+    pub execution_mode: Option<RunnerExecutionMode>,
     pub ssh_host_key_policy: Option<String>,
 }
 

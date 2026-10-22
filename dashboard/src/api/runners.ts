@@ -32,8 +32,11 @@ export interface SystemInfo {
   clock_skew_seconds?: number | null
 }
 
+export type RunnerExecutionMode = 'host' | 'container' | 'vm'
+
 /** UI-managed runner strategy (synced to the agent via register/heartbeat). */
 export interface RunnerPolicy {
+  execution_mode: RunnerExecutionMode
   max_concurrent_jobs: number
   clean_workspace_after_job: boolean
   shell_enabled: boolean
@@ -50,6 +53,7 @@ export interface Runner {
   labels: string[]
   /** null means intentionally shared across all teams; existing legacy runners stay null. */
   team_id: string | null
+  execution_mode: RunnerExecutionMode
   status: string
   version: string | null
   system_info: SystemInfo | null
@@ -74,6 +78,7 @@ export interface CreateRunnerPayload {
   labels: string[]
   /** Must be explicitly selected: null means Shared. */
   team_id: string | null
+  execution_mode?: RunnerExecutionMode
   max_concurrent_jobs?: number
   clean_workspace_after_job?: boolean
   shell_enabled?: boolean

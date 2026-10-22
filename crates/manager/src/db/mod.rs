@@ -559,6 +559,10 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     )
     .execute(pool)
     .await;
+    let _ =
+        sqlx::query("ALTER TABLE runners ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'host'")
+            .execute(pool)
+            .await;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_runners_team ON runners(team_id)")
         .execute(pool)
         .await?;

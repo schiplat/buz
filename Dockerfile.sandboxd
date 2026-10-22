@@ -1,0 +1,20 @@
+# Host-side sandbox supervisor image. Run only when Container/VM job modes are enabled.
+FROM docker:27-cli AS docker_cli
+
+FROM rust:bookworm AS builder
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo build --locked --release -p runner --bin buz-sandboxd
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --gid 10001 buz \
+ && mkdir -p /app/buz/conf /app/buz/workspace /run/buz-sandboxd
+COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=builder /src/target/release/buz-sandboxd /usr/local/bin/buz-sandboxd
+COPY deploy/conf/sandboxd.toml /app/buz/conf/sandboxd.toml
+ENTRYPOINT ["/usr/local/bin/buz-sandboxd"]
+CMD ["--config", "/app/buz/conf/sandboxd.toml"]

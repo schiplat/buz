@@ -947,6 +947,66 @@ async fn cancel_triggered_parks_when_sender_drops_without_signal() {
 
 use std::time::Duration;
 
+#[tokio::test]
+async fn sandbox_modes_reject_ssh_before_contacting_supervisor() {
+    let mut config = crate::config::Config::default();
+    config.execution_mode = shared::protocol::RunnerExecutionMode::Container;
+    let task = serde_json::json!({
+        "job_id": "unsupported-ssh-job",
+        "tasks": [{ "name": "remote", "exec_type": "ssh", "command_template": "echo hi" }]
+    });
+    let (_cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    let error = super::execute_job(
+        &reqwest::Client::new(),
+        &config,
+        "token",
+        &task,
+        &mut cancel_rx,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("does not support SSH"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn sandbox_mode_fails_closed_when_supervisor_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("job-shell");
+    std::fs::create_dir(&workspace).unwrap();
+    let mut config = crate::config::Config::default();
+    config.execution_mode = shared::protocol::RunnerExecutionMode::Container;
+    config.runner.workspace_dir = workspace.to_string_lossy().into_owned();
+    config.sandbox.workspace_root = dir.path().to_string_lossy().into_owned();
+    config.sandbox.container_image = "job-image@sha256:abc".into();
+    config.sandbox.supervisor_socket = dir
+        .path()
+        .join("missing.sock")
+        .to_string_lossy()
+        .into_owned();
+    let task = serde_json::json!({
+        "job_id": "supervisor-down-job",
+        "tasks": [{ "name": "local", "exec_type": "shell", "command_template": "echo must-not-run" }]
+    });
+    let (_cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    let error = super::execute_job(
+        &reqwest::Client::new(),
+        &config,
+        "token",
+        &task,
+        &mut cancel_rx,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("No such file")
+            || error.to_string().contains("sandbox supervisor"),
+        "{error}"
+    );
+}
+
 #[test]
 fn active_runner_uses_short_poll_to_refresh_capacity_snapshot() {
     assert_eq!(super::poll_wait_seconds(0), 45);

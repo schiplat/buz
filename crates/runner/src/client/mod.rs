@@ -6,6 +6,7 @@ pub mod image_prefetch;
 pub mod logs;
 pub mod poll;
 pub mod register;
+pub mod sandbox;
 
 /// Wrap a reqwest error into a user-friendly message.
 /// Detects connection errors and produces a readable diagnostic
