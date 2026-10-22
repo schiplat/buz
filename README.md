@@ -6,14 +6,6 @@ Lightweight Cross-Network Orchestration Platform.
 
 Check the installed version any time: `buz-manager --version` / `buz-runner --version` — also shown in the Web UI (sidebar footer / login page) and via `GET /health`.
 
-## Security / 安全报告
-
-**Please do not report security vulnerabilities through public GitHub issues.**
-
-Use [Private vulnerability reporting](https://github.com/schiplat/buz/security/advisories/new) — reports stay private between you and the maintainers, with a first response targeted within **7 days**.
-
-**请勿通过公开 issue 报告安全漏洞。** 请使用上方"私有漏洞报告"私下提交（7 天内首次响应）。社区插件的疑似恶意内容同样走 [buz-plugins 私有举报](https://github.com/schiplat/buz-plugins/security/advisories/new)。
-
 ## Quick Start
 
 ```bash
@@ -80,6 +72,27 @@ buz/
 ├── Dockerfile                 # buz-manager image
 ├── Dockerfile.runner          # buz-runner image
 ├── Dockerfile.standalone      # Manager + Runner (arm64 lab image)
+├── Dockerfile.sandboxd        # buz-sandboxd image (container/VM execution modes)
 ├── docker-compose.yml
+├── docker-compose.vm.yml      # sandbox (VM mode) compose example
 └── .github/workflows/         # CI, Docker, release
 ```
+
+## Security / 安全报告
+
+**Please do not report security vulnerabilities through public GitHub issues.**
+
+Use [Private vulnerability reporting](https://github.com/schiplat/buz/security/advisories/new) — reports stay private between you and the maintainers, with a first response targeted within **7 days**.
+
+**请勿通过公开 issue 报告安全漏洞。** 请使用上方"私有漏洞报告"私下提交（7 天内首次响应）。社区插件的疑似恶意内容同样走 [buz-plugins 私有举报](https://github.com/schiplat/buz-plugins/security/advisories/new)。
+
+### Security posture / 安全状态（2026-10-22）
+
+| Scope | Status |
+|-------|--------|
+| Rust (`cargo audit`) | No known highs · 2 known mediums: RUSTSEC-2023-0071 (`rsa` Marvin Attack, via `russh`, no upstream fix — accepted & documented) |
+| Frontend (`npm audit`, incl. `--omit=dev`) | 0 vulnerabilities |
+
+Recent dependency-security fixes (rustls-webpki, follow-redirects, vite, Tailwind v4 chain) ship with the latest release — **deploy the newest tag**. The full policy, safe-harbor terms, and the complete known-limitations list (rate limiting, JWT secret handling, debug mode, CORS, WebSocket auth) live in [SECURITY.md](SECURITY.md).
+
+依赖漏洞随每个版本发布修复，请部署最新 tag；完整安全策略、安全港条款与已知限制清单见 [SECURITY.md](SECURITY.md)。
