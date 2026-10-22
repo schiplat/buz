@@ -22,7 +22,7 @@ use shared::protocol::{ExecutionBackendStatus, RunnerExecutionCapabilities, Runn
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_EXEC_SECONDS: u64 = 24 * 60 * 60;
 
-pub(super) async fn cleanup_stale_containers(config: &SandboxdConfig) -> anyhow::Result<()> {
+pub async fn cleanup_stale_containers(config: &SandboxdConfig) -> anyhow::Result<()> {
     let output = Command::new(&config.docker_cli)
         .args([
             "ps",
@@ -121,15 +121,15 @@ fn default_cpu_limit() -> String {
 }
 
 #[derive(Clone)]
-pub(super) struct Service {
-    pub(super) config: Arc<SandboxdConfig>,
-    pub(super) jobs: Arc<Mutex<HashMap<String, JobRuntime>>>,
+pub struct Service {
+    pub config: Arc<SandboxdConfig>,
+    pub jobs: Arc<Mutex<HashMap<String, JobRuntime>>>,
 }
 
 #[derive(Clone)]
-pub(super) struct JobRuntime {
-    container: String,
-    workspace: PathBuf,
+pub struct JobRuntime {
+    pub container: String,
+    pub workspace: PathBuf,
 }
 
 async fn health_response(stream: UnixStream) -> anyhow::Result<()> {
@@ -312,7 +312,7 @@ async fn process_request(
     }
 }
 
-pub(super) fn validate_vm_prerequisites(
+pub fn validate_vm_prerequisites(
     os: &str,
     kvm_path: &Path,
     requested_runtime: &str,
@@ -330,10 +330,7 @@ pub(super) fn validate_vm_prerequisites(
     Ok(())
 }
 
-pub(super) async fn probe_capabilities(
-    service: &Service,
-    request: &Value,
-) -> anyhow::Result<Value> {
+pub async fn probe_capabilities(service: &Service, request: &Value) -> anyhow::Result<Value> {
     let container_image = request
         .get("container_image")
         .and_then(Value::as_str)
@@ -384,7 +381,7 @@ pub(super) async fn probe_capabilities(
     Ok(json!({"ok": true, "capabilities": capabilities}))
 }
 
-pub(super) async fn probe_backend(
+pub async fn probe_backend(
     service: &Service,
     mode: RunnerExecutionMode,
     image: &str,
@@ -499,7 +496,7 @@ pub(super) async fn probe_backend(
     Ok(())
 }
 
-async fn create_job(
+pub async fn create_job(
     service: &Service,
     request: &Value,
     uid: u32,
@@ -687,7 +684,7 @@ async fn kill_exec_and_container(
     let _ = kill_container(docker_cli, container).await;
 }
 
-async fn exec_step_stream(
+pub async fn exec_step_stream(
     service: &Service,
     request: &Value,
     stream: UnixStream,
@@ -881,7 +878,7 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-async fn read_file(service: &Service, request: &Value) -> anyhow::Result<Value> {
+pub async fn read_file(service: &Service, request: &Value) -> anyhow::Result<Value> {
     let handle = request
         .get("handle")
         .and_then(Value::as_str)
@@ -912,7 +909,7 @@ async fn read_file(service: &Service, request: &Value) -> anyhow::Result<Value> 
     Ok(json!({"ok": true,"content":content}))
 }
 
-async fn destroy_job(service: &Service, request: &Value) -> anyhow::Result<Value> {
+pub async fn destroy_job(service: &Service, request: &Value) -> anyhow::Result<Value> {
     let handle = request
         .get("handle")
         .and_then(Value::as_str)
@@ -926,7 +923,7 @@ async fn destroy_job(service: &Service, request: &Value) -> anyhow::Result<Value
     Ok(json!({"ok": true}))
 }
 
-fn safe_work_dir(path: &str) -> anyhow::Result<String> {
+pub fn safe_work_dir(path: &str) -> anyhow::Result<String> {
     let path = Path::new(path);
     anyhow::ensure!(
         !path.is_absolute(),
@@ -999,7 +996,3 @@ async fn remove_container(docker: &str, container: &str) -> anyhow::Result<()> {
         stderr.trim()
     )
 }
-
-#[cfg(all(test, unix))]
-#[path = "sandboxd_tests.rs"]
-mod tests;
