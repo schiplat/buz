@@ -909,7 +909,7 @@ const eventBadge = (t: string) => {
 
     <!-- ── Reissued register token dialog ── -->
     <Teleport to="body">
-      <div v-if="reissuedToken" class="fixed inset-0 z-60 flex items-start justify-center bg-black/40 pt-[15vh]" @click.self="closeReissuedToken">
+      <div v-if="reissuedToken" class="fixed inset-0 z-60 flex items-start justify-center overflow-y-auto bg-black/40 py-8" @click.self="closeReissuedToken">
         <div class="soft-panel w-full max-w-md p-6 space-y-4">
           <div class="flex items-center justify-between">
             <h2 class="text-base font-semibold tracking-tight">Register token reissued</h2>
@@ -936,7 +936,7 @@ const eventBadge = (t: string) => {
 
     <!-- ── Create dialog ── -->
     <Teleport to="body">
-      <div v-if="showCreate" class="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]" @click.self="showCreate = false">
+      <div v-if="showCreate" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-8" @click.self="showCreate = false">
         <div class="soft-panel w-full max-w-md p-6 space-y-5">
           <div class="flex items-center justify-between">
             <h2 class="text-base font-semibold tracking-tight">New Runner</h2>

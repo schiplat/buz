@@ -168,6 +168,20 @@ describe('Runner team binding', () => {
     expect(document.body.textContent).toContain('Container · supported')
   })
 
+  it('create dialog backdrop scrolls when the form exceeds the viewport', async () => {
+    await mountPage()
+    button('New Runner').click()
+    await nextTick()
+    const backdrop = [...document.body.querySelectorAll('div')].find((el) =>
+      typeof el.className === 'string'
+        && el.className.includes('fixed inset-0')
+        && el.className.includes('items-start')
+        && el.className.includes('justify-center'),
+    )
+    expect(backdrop, 'create dialog backdrop mounted').toBeTruthy()
+    expect(backdrop!.className).toContain('overflow-y-auto')
+  })
+
   it('creates new runners in Host mode only', async () => {
     await mountPage()
     button('New Runner').click()

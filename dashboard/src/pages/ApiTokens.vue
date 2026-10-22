@@ -146,7 +146,7 @@ onMounted(load)
     </div>
 
     <Teleport to="body">
-      <div v-if="showCreate" class="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]" @click.self="closeCreate">
+      <div v-if="showCreate" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-8" @click.self="closeCreate">
         <div class="soft-panel w-full max-w-md p-6 space-y-5">
           <div class="flex items-center justify-between">
             <h2 class="text-base font-semibold tracking-tight">New API Token</h2>
