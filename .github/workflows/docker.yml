@@ -193,8 +193,6 @@ jobs:
           # application/vnd.oci.empty.v1+json`). Disable both.
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=buz-manager-${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=buz-manager-${{ matrix.name }}
 
       - name: Build & push buz-runner
         uses: docker/build-push-action@v6
@@ -206,8 +204,6 @@ jobs:
           tags: ${{ steps.meta.outputs.runner_tags }}
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=buz-runner-${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=buz-runner-${{ matrix.name }}
 
       - name: Build & push buz-sandboxd
         uses: docker/build-push-action@v6
@@ -219,8 +215,6 @@ jobs:
           tags: ${{ steps.meta.outputs.sandboxd_tags }}
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=buz-sandboxd-${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=buz-sandboxd-${{ matrix.name }}
 
   # Assemble the final multi-arch tags from the platform-specific tags pushed by
   # the matrix jobs. A single `buildx imagetools create` writes an index that
