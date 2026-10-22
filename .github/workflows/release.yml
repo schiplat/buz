@@ -81,9 +81,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-${{ matrix.target }}
+      # Swatinem/rust-cache removed: one entry (~500MB) alone exceeds the org free-plan storage quota (500MB); see KNOWN_ISSUES.md
 
       - uses: actions/setup-node@v4
         with:

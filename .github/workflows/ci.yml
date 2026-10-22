@@ -56,9 +56,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       # Bounded cache (prunes workspace crates / incremental before save).
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-backend-stable
+      # Swatinem/rust-cache removed: one entry (~500MB) alone exceeds the org free-plan storage quota (500MB); see KNOWN_ISSUES.md
 
       # `cargo test --all` typechecks + builds; no separate `cargo check`.
       - name: Run tests
