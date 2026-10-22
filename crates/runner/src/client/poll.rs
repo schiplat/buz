@@ -1007,6 +1007,147 @@ async fn execute_job(
     result
 }
 
+/// Base process env for every step: trigger inputs + pipeline `env:` (already
+/// expanded at claim — may contain secret values via mapping) + `BUZ_*` job
+/// metadata, forced non-interactive. Secrets are NOT auto-injected as `$NAME`
+/// — Manager expands `env: KEY: ${secrets.NAME}` before claim; scripts use
+/// `$KEY`.
+fn build_base_env(
+    task: &serde_json::Value,
+    job_id: &str,
+    manager_url: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut base_env: std::collections::HashMap<String, String> = task
+        .get("inputs")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if let Some(env_obj) = task.get("env").and_then(|v| v.as_object()) {
+        for (k, v) in env_obj {
+            if let Some(s) = v.as_str() {
+                base_env.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+
+    // BUZ_* job metadata (ADR §5.2) — plugins render "build #<job> passed"
+    // style messages from these. Never secret values, safe to echo.
+    for (key, value) in buz_metadata_env(task, job_id, manager_url) {
+        base_env.insert(key, value);
+    }
+
+    // Force non-interactive mode for common tools. When a step tries to read
+    // from stdin (e.g. `git clone` prompting for credentials), these env vars
+    // make the tool fail immediately with a clear error instead of hanging.
+    base_env
+        .entry("GIT_TERMINAL_PROMPT".to_string())
+        .or_insert_with(|| "0".to_string());
+    base_env
+        .entry("DEBIAN_FRONTEND".to_string())
+        .or_insert_with(|| "noninteractive".to_string());
+    base_env
+}
+
+/// Secret catalog keys + raw mask values for the whole job (log redaction
+/// only — never process env injection).
+fn job_secret_mask_inputs(task: &serde_json::Value) -> (HashSet<String>, Vec<String>) {
+    let mut pipeline_secret_keys: HashSet<String> = HashSet::new();
+    let mut secret_mask_values: Vec<String> = Vec::new();
+    if let Some(secrets_obj) = task.get("secrets").and_then(|v| v.as_object()) {
+        for (k, v) in secrets_obj {
+            if let Some(s) = v.as_str() {
+                pipeline_secret_keys.insert(k.clone());
+                if !s.is_empty() {
+                    secret_mask_values.push(s.to_string());
+                }
+            }
+        }
+    }
+    // Env keys that Manager marked as sourced from `${secrets.…}` mappings.
+    if let Some(keys) = task.get("secret_env_keys").and_then(|v| v.as_array()) {
+        for key in keys.iter().filter_map(|v| v.as_str()) {
+            if !key.is_empty() {
+                pipeline_secret_keys.insert(key.to_string());
+            }
+        }
+    }
+    // Trigger inputs marked masking: true — same redaction as secrets in logs/echo.
+    if let Some(keys) = task.get("masking_input_keys").and_then(|v| v.as_array()) {
+        for key in keys.iter().filter_map(|v| v.as_str()) {
+            if key.is_empty() {
+                continue;
+            }
+            pipeline_secret_keys.insert(key.to_string());
+            // Engines also export INPUT_<NAME>; cover both key forms in env echo.
+            pipeline_secret_keys.insert(shared::protocol::input_env_key(key));
+        }
+    }
+    (pipeline_secret_keys, secret_mask_values)
+}
+
+/// Build the `config_render` ValueMap once per job:
+/// - `secrets` domain resolves `${secrets.X}` by logical name from job
+///   `secrets` plus per-step `render_env_secrets` (Manager attaches the
+///   latter when a step has `config_render`);
+/// - `vars` domain is pipeline env + trigger inputs (both `NAME` /
+///   `INPUT_NAME` forms), with `masking: true` inputs excluded so a
+///   sensitive trigger value can never route into `.env` via the
+///   non-sensitive namespace.
+fn build_render_values(task: &serde_json::Value, tasks: &[serde_json::Value]) -> ValueMap {
+    let mut render_values = ValueMap::new();
+    if let Some(obj) = task.get("secrets").and_then(|v| v.as_object()) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                render_values.secrets.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    for step in tasks {
+        if let Some(obj) = step.get("render_env_secrets").and_then(|v| v.as_object()) {
+            for (k, v) in obj {
+                if let Some(s) = v.as_str() {
+                    render_values.secrets.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+    }
+    if let Some(obj) = task.get("env").and_then(|v| v.as_object()) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                render_values.vars.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    let masking_input_keys: HashSet<String> = task
+        .get("masking_input_keys")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(obj) = task.get("inputs").and_then(|v| v.as_object()) {
+        for (k, v) in obj {
+            if masking_input_keys.contains(k) {
+                continue;
+            }
+            if let Some(s) = v.as_str() {
+                render_values.vars.insert(k.clone(), s.to_string());
+                render_values
+                    .vars
+                    .insert(shared::protocol::input_env_key(k), s.to_string());
+            }
+        }
+    }
+    render_values
+}
+
 async fn execute_job_inner(
     client: &Client,
     config: &Config,
@@ -1067,30 +1208,7 @@ async fn execute_job_inner(
     // Build base env from trigger inputs + expanded pipeline `env:` only.
     // Secrets are NOT auto-injected as `$NAME` — Manager expands
     // `env: KEY: ${secrets.NAME}` before claim; scripts use `$KEY`.
-    let mut base_env: std::collections::HashMap<String, String> = task
-        .get("inputs")
-        .and_then(|v| v.as_object())
-        .map(|obj| {
-            obj.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // Pipeline env (already expanded at claim — may contain secret values via mapping)
-    if let Some(env_obj) = task.get("env").and_then(|v| v.as_object()) {
-        for (k, v) in env_obj {
-            if let Some(s) = v.as_str() {
-                base_env.insert(k.clone(), s.to_string());
-            }
-        }
-    }
-
-    // BUZ_* job metadata (ADR §5.2) — plugins render "build #<job> passed"
-    // style messages from these. Never secret values, safe to echo.
-    for (key, value) in buz_metadata_env(task, job_id, &config.runner.manager_url) {
-        base_env.insert(key, value);
-    }
+    let mut base_env = build_base_env(task, job_id, &config.runner.manager_url);
 
     // Job-scoped dynamic env file ($BUZ_ENV, GHA $GITHUB_ENV style): steps
     // append KEY=value lines; parsed after each step and merged into the base
@@ -1112,517 +1230,82 @@ async fn execute_job_inner(
     base_env.insert("BUZ_ENV".into(), buz_env_path.clone());
 
     // Secret catalog keys/values for log redaction (not process env injection).
-    let mut pipeline_secret_keys: HashSet<String> = HashSet::new();
-    let mut secret_mask_values: Vec<String> = Vec::new();
-    if let Some(secrets_obj) = task.get("secrets").and_then(|v| v.as_object()) {
-        for (k, v) in secrets_obj {
-            if let Some(s) = v.as_str() {
-                pipeline_secret_keys.insert(k.clone());
-                if !s.is_empty() {
-                    secret_mask_values.push(s.to_string());
-                }
-            }
-        }
-    }
-    // Env keys that Manager marked as sourced from `${secrets.…}` mappings.
-    if let Some(keys) = task.get("secret_env_keys").and_then(|v| v.as_array()) {
-        for key in keys.iter().filter_map(|v| v.as_str()) {
-            if !key.is_empty() {
-                pipeline_secret_keys.insert(key.to_string());
-            }
-        }
-    }
-
-    // Trigger inputs marked masking: true — same redaction as secrets in logs/echo.
-    if let Some(keys) = task.get("masking_input_keys").and_then(|v| v.as_array()) {
-        for key in keys.iter().filter_map(|v| v.as_str()) {
-            if key.is_empty() {
-                continue;
-            }
-            pipeline_secret_keys.insert(key.to_string());
-            // Engines also export INPUT_<NAME>; cover both key forms in env echo.
-            pipeline_secret_keys.insert(shared::protocol::input_env_key(key));
-        }
-    }
-
-    // Build the `config_render` ValueMap once per job:
-    // - `secrets` domain resolves `${secrets.X}` by logical name from job
-    //   `secrets` plus per-step `render_env_secrets` (Manager attaches the
-    //   latter when a step has `config_render`);
-    // - `vars` domain is pipeline env + trigger inputs (both `NAME` /
-    //   `INPUT_NAME` forms), with `masking: true` inputs excluded so a
-    //   sensitive trigger value can never route into `.env` via the
-    //   non-sensitive namespace.
-    let mut render_values = ValueMap::new();
-    if let Some(obj) = task.get("secrets").and_then(|v| v.as_object()) {
-        for (k, v) in obj {
-            if let Some(s) = v.as_str() {
-                render_values.secrets.insert(k.clone(), s.to_string());
-            }
-        }
-    }
-    for step in tasks {
-        if let Some(obj) = step.get("render_env_secrets").and_then(|v| v.as_object()) {
-            for (k, v) in obj {
-                if let Some(s) = v.as_str() {
-                    render_values.secrets.insert(k.clone(), s.to_string());
-                }
-            }
-        }
-    }
-    if let Some(obj) = task.get("env").and_then(|v| v.as_object()) {
-        for (k, v) in obj {
-            if let Some(s) = v.as_str() {
-                render_values.vars.insert(k.clone(), s.to_string());
-            }
-        }
-    }
-    let masking_input_keys: HashSet<String> = task
-        .get("masking_input_keys")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    if let Some(obj) = task.get("inputs").and_then(|v| v.as_object()) {
-        for (k, v) in obj {
-            if masking_input_keys.contains(k) {
-                continue;
-            }
-            if let Some(s) = v.as_str() {
-                render_values.vars.insert(k.clone(), s.to_string());
-                render_values
-                    .vars
-                    .insert(shared::protocol::input_env_key(k), s.to_string());
-            }
-        }
-    }
-
-    // Force non-interactive mode for common tools. When a step tries to read
-    // from stdin (e.g. `git clone` prompting for credentials), these env vars
-    // make the tool fail immediately with a clear error instead of hanging.
-    base_env
-        .entry("GIT_TERMINAL_PROMPT".to_string())
-        .or_insert_with(|| "0".to_string());
-    base_env
-        .entry("DEBIAN_FRONTEND".to_string())
-        .or_insert_with(|| "noninteractive".to_string());
+    let (pipeline_secret_keys, secret_mask_values) = job_secret_mask_inputs(task);
+    let render_values = build_render_values(task, tasks);
 
     // Tracks whether any step failed under fail_strategy = "continue". The job
     // must end as failed even though execution continued past the failing step.
     let mut any_step_failed = false;
 
     for (idx, step) in tasks.iter().enumerate() {
-        let step_name = step["name"].as_str().unwrap_or("unnamed");
-        let command = step["command_template"].as_str().unwrap_or("");
-        let work_dir = step["work_dir"].as_str().filter(|s| !s.is_empty());
-        let exec_type = step["exec_type"].as_str().unwrap_or("shell");
-        let fail_strategy = step["fail_strategy"].as_str().unwrap_or("stop");
-        let step_timeout_secs = step["timeout_seconds"].as_u64().unwrap_or(0);
-        let step_timeout = if step_timeout_secs > 0 {
-            Some(Duration::from_secs(step_timeout_secs))
-        } else {
-            None
-        };
-        let has_timeout = step_timeout.is_some();
-        let privileged = step
-            .get("privileged")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let volumes: Vec<String> = step
-            .get("volumes")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let capabilities: Vec<String> = step
-            .get("capabilities")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let has_host_prepare = super::config_source::needs_prepare(step);
         let log = StepLogger::new(client, config, token, job_id, idx);
-        let docker_socket_path = if exec_type == "docker" {
-            match engine::docker::validate_step_policy(
-                &config.runner,
-                &capabilities,
-                &volumes,
-                privileged,
-                has_host_prepare,
-            ) {
-                Ok(value) => value,
-                Err(e) => {
-                    return Err(log.fail_step(format!("{e:#}")).await);
-                }
-            }
-        } else {
-            if !capabilities.is_empty() {
-                anyhow::bail!("execution capabilities are only valid for Docker engine steps");
-            }
-            None
-        };
-        if exec_type == "docker" {
-            let image = step.get("image").and_then(|v| v.as_str()).unwrap_or("");
-            if let Err(e) = engine::docker::preflight(config.engine.docker_enabled, image) {
-                return Err(log.fail_step(format!("{e:#}")).await);
-            }
-        }
-        if work_dir.is_some_and(|dir| !is_safe_workspace_subdir(dir)) {
-            let msg = format!(
-                "step work_dir must be a relative path inside the job workspace: {work_dir:?}"
-            );
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            anyhow::bail!(msg);
-        }
+        let spec = parse_step_spec(idx, step);
+        let docker_socket_path = validate_step_constraints(&log, config, step, &spec).await?;
+        let mut secrets = build_step_secrets(
+            &log,
+            step,
+            &base_env,
+            &pipeline_secret_keys,
+            &secret_mask_values,
+            debug_unredact,
+        )
+        .await?;
 
-        // ── Step env: base + expanded step `env:` map (no auto-inject from secrets:) ──
-        let mut step_env = base_env.clone();
-        let mut catalog = SecretCatalog::new();
-        catalog.add_keys(pipeline_secret_keys.iter().cloned());
-        for v in &secret_mask_values {
-            catalog.add_value(v.clone());
-        }
-        if let Some(se_obj) = step.get("step_env").and_then(|v| v.as_object()) {
-            for (k, v) in se_obj {
-                if let Some(s) = v.as_str() {
-                    // `with:` values may reference dynamic env written by
-                    // earlier steps ($BUZ_ENV) via `${env.NAME}` — resolve
-                    // now, when those values exist. Fail closed on unknown.
-                    if k.starts_with("INPUT_") && s.contains("${env.") {
-                        match shared::secret_ref::expand_env_refs(s, &step_env) {
-                            Ok(expanded) => {
-                                step_env.insert(k.clone(), expanded);
-                            }
-                            Err(msg) => {
-                                let error =
-                                    format!("with input {}: {msg}", k.trim_start_matches("INPUT_"));
-                                return Err(log.fail_step(error).await);
-                            }
-                        }
-                    } else {
-                        step_env.insert(k.clone(), s.to_string());
-                    }
-                }
-            }
-        }
-        if let Some(keys) = step.get("secret_env_keys").and_then(|v| v.as_array()) {
-            for key in keys.iter().filter_map(|v| v.as_str()) {
-                if !key.is_empty() {
-                    catalog.add_key(key.to_string());
-                }
-            }
-        }
-        if let Some(keys) = step.get("masking_env_keys").and_then(|v| v.as_array()) {
-            for key in keys.iter().filter_map(|v| v.as_str()) {
-                if !key.is_empty() {
-                    catalog.add_key(key.to_string());
-                }
-            }
-        }
-        // step_secrets values are for render/mask only — do not inject as `$NAME`.
-        if let Some(ss_obj) = step.get("step_secrets").and_then(|v| v.as_object()) {
-            for (k, v) in ss_obj {
-                if let Some(s) = v.as_str() {
-                    catalog.add_key(k.clone());
-                    if !s.is_empty() {
-                        catalog.add_value(s.to_string());
-                    }
-                }
-            }
-        }
-
-        // OSS config delivery: expose the signed GET URL as $BUZ_CONFIG_URL for this
-        // step. The key is registered as "injected" so the RUN echo shows a readable
-        // `BUZ_CONFIG_URL=<injected>` hint instead of `***`, while the URL value
-        // still joins value-based redaction via `log_mask_values`.
-        if let Some(url) = step
-            .get("config_auth")
-            .and_then(|a| a.get("url"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            step_env.insert("BUZ_CONFIG_URL".to_string(), url.to_string());
-            catalog.add_injected_key("BUZ_CONFIG_URL".to_string());
-        }
-
-        // Sensitive values are registered by the Manager per step in
-        // `log_mask_values` (registry password, OSS signed URL, …).
-        if let Some(values) = step.get("log_mask_values").and_then(|v| v.as_array()) {
-            for v in values.iter().filter_map(|x| x.as_str()) {
-                catalog.add_value(v.to_string());
-            }
-        }
-
-        // Debug mode: RUN echo + streams show real values, so the catalog is emptied.
-        if debug_unredact {
-            catalog = SecretCatalog::new();
-        }
-
-        // Collect values for log masking — secrets, registry passwords, masking inputs.
-        let secret_values = catalog.secret_values(&step_env);
-        // Forced values: rendered `.env` secret values that must be masked
-        // regardless of length (plaintext `.env` content may be echoed by the
-        // run block, e.g. `cat .env`).
-        let forced_values = catalog.forced_secret_values();
-
-        // Verbose mode: stage marker + STEP CONFIG up front (before prepare /
-        // registry fail-fast) so a prepare-stage failure still shows the step
-        // shape. Debug alone does not emit these — it only unmasks values.
         let step_started = std::time::Instant::now();
-        let registry_secret_ref_early = step
+        let registry_secret_ref = step
             .get("registry_secret")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .trim();
-        if verbose {
-            log.emit(LOG_STEP_VERBOSE_PREPARE, build_verbose_stage("prepare"))
-                .await;
-            let cfg = build_verbose_step_config(step, exec_type, registry_secret_ref_early);
-            log.emit(LOG_STEP_VERBOSE_CONFIG, cfg).await;
-        }
-
-        if let Err(e) = config.engine.ensure_enabled(exec_type) {
-            return Err(log.fail_step(format!("{e:#}")).await);
-        }
-
-        let env_count = step_env.len();
-        tracing::info!(
-            "Step {idx}: {step_name} ({exec_type}){}",
-            if env_count > 0 {
-                format!(" [with {env_count} env vars]")
-            } else {
-                String::new()
-            }
-        );
-
-        update_job_status(client, config, token, job_id, "running", Some(idx as i32)).await?;
-
-        if let Some(err) = step
-            .get("input_validation_error")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            return Err(log
-                .fail_step(format!("marketplace input validation: {err}"))
-                .await);
-        }
-
-        // Fail fast if Manager could not resolve step `env:` (`${secrets.X}`).
-        if let Some(err) = step
-            .get("env_expand_error")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            return Err(log.fail_step(format!("step env: {err}")).await);
-        }
-
-        // Fail fast if Manager could not resolve registry_secret.
-        if let Some(err) = step
-            .get("registry_auth_error")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            return Err(log.fail_step(format!("registry_secret: {err}")).await);
-        }
-
-        if let Some(err) = step
-            .get("host_resolution_error")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            return Err(log.fail_step(format!("SSH host resolution: {err}")).await);
-        }
-
-        // Fail fast if Manager could not resolve config_source.
-        if let Some(err) = step
-            .get("config_auth_error")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            let msg = format!("config_source: {err}");
-            if verbose {
-                log.emit(
-                    LOG_STEP_VERBOSE_RESULT,
-                    build_verbose_step_result(step_started.elapsed(), -1),
-                )
-                .await;
-            }
-            return Err(log.fail_step(msg).await);
-        }
-
-        if let Some(err) = step
-            .get("config_render_error")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            return Err(log.fail_step(format!("config_render: {err}")).await);
-        }
+        announce_step(
+            &log,
+            config,
+            step,
+            &spec,
+            &secrets.env,
+            registry_secret_ref,
+            verbose,
+            step_started,
+        )
+        .await?;
 
         // ── SSH step session (one TCP connect per host for prepare + run) ──
-        // Open before config prepare so deliver/render share the same session as
-        // the run block (avoids reconnect storms / fail2ban / MaxStartups).
-        // Multi-host: connect in parallel; cancel aborts all in-flight connects.
-        let mut ssh_sessions: Vec<SshSession> = Vec::new();
-        if exec_type == "ssh" {
-            let conns = resolve_ssh_conns(step, config);
-            if !conns.is_empty() {
-                let connect_result = tokio::select! {
-                    result = engine::ssh::connect_all(&conns, ssh_hosts_parallel(step)) => Some(result),
-                    _ = cancel_triggered(cancel_rx) => None,
-                };
-                match connect_result {
-                    None => {
-                        return Err(log.cancel_step().await);
-                    }
-                    Some(Err(e)) => {
-                        return Err(log.fail_step(format!("{e:#}")).await);
-                    }
-                    Some(Ok(mut sessions)) => {
-                        tracing::info!(
-                            hosts = sessions.len(),
-                            "SSH step '{step_name}': opened step session(s)"
-                        );
-                        let targets = {
-                            let probe = engine::ssh::probe_workspaces(&mut sessions, step_timeout);
-                            tokio::select! {
-                                t = probe => Some(t),
-                                _ = cancel_triggered(cancel_rx) => None,
-                            }
-                        };
-                        match targets {
-                            None => {
-                                drop(sessions);
-                                return Err(log.cancel_step().await);
-                            }
-                            Some(targets) => {
-                                let banner = build_ssh_banner(&targets);
-                                if !banner.is_empty() {
-                                    log.emit(LOG_LOGIN, banner).await;
-                                }
-                                ssh_sessions = sessions;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Open before config prepare so deliver/render share the same session
+        // as the run block.
+        let mut ssh_sessions = open_ssh_sessions(&log, config, step, &spec, cancel_rx).await?;
 
         // ── config prepare: OSS deliver and/or config_render ─────────────────
-        // OSS: download → unpack → [render] → run.
-        // Render-only: templates already at dest (shell in place / SSH fetch→
-        // render on Runner → upload). See config-block.md.
-        //
-        // Prepare failures MUST be reported with this step's `step_order` (not
-        // the job-level -1 catch in `run_one_job`) so Job Detail attaches the
-        // ERROR to the correct terminal without frontend guessing.
-        let mut config_prep: Option<super::config_source::ConfigPrep> = None;
-        if super::config_source::needs_prepare(step) {
-            let prep_result = if exec_type == "ssh" {
-                if ssh_sessions.is_empty() {
-                    // The SSH branch below reports the missing-host error.
-                    Ok(None)
-                } else {
-                    let prep_fut = super::config_source::prepare_ssh(
-                        client,
-                        step,
-                        &mut ssh_sessions,
-                        Path::new(&config.runner.workspace_dir),
-                        job_id,
-                        idx,
-                        &render_values,
-                        step_timeout,
-                        ssh_hosts_parallel(step),
-                    );
-                    tokio::select! {
-                        result = prep_fut => result.map(Some),
-                        _ = cancel_triggered(cancel_rx) => {
-                            return Err(log.cancel_step().await);
-                        }
-                    }
-                }
-            } else {
-                super::config_source::prepare_local(
-                    client,
-                    step,
-                    Path::new(&config.runner.workspace_dir),
-                    idx,
-                    &render_values,
-                )
-                .await
-                .map(Some)
-            };
-            match prep_result {
-                Ok(prep) => {
-                    // Emit the CONFIG PREP chunk once, on success: the Verbose /
-                    // Debug banner (dest / object_key) plus the always-visible
-                    // progress (download result, render, readiness). Progress is
-                    // collected by the prepare functions and never leaks secrets.
-                    if let Some(p) = &prep {
-                        let mut content = String::new();
-                        if verbose || debug_unredact {
-                            content.push_str(&build_config_prep_banner(step, debug_unredact));
-                        }
-                        if !p.logs.is_empty() {
-                            let progress = build_config_prep_progress(&p.logs, verbose);
-                            if !progress.is_empty() {
-                                if !content.is_empty() && !content.ends_with('\n') {
-                                    content.push('\n');
-                                }
-                                content.push_str(&progress);
-                            }
-                        }
-                        if !content.is_empty() {
-                            log.emit(LOG_STEP_VERBOSE_CONFIG_PREP, content).await;
-                        }
-                    }
-                    config_prep = prep;
-                }
-                Err(e) => {
-                    // Verbose / Debug: still surface the dest / object_key shape
-                    // on a prepare-only failure (banner chunk is otherwise empty).
-                    if verbose || debug_unredact {
-                        log.emit(
-                            LOG_STEP_VERBOSE_CONFIG_PREP,
-                            build_config_prep_banner(step, debug_unredact),
-                        )
-                        .await;
-                    }
-                    if verbose {
-                        log.emit(
-                            LOG_STEP_VERBOSE_RESULT,
-                            build_verbose_step_result(step_started.elapsed(), -1),
-                        )
-                        .await;
-                    }
-                    return Err(log.fail_step(format!("{e:#}")).await);
-                }
-            }
-        }
+        let config_prep = prepare_step_config(
+            &log,
+            config,
+            step,
+            &spec,
+            &mut ssh_sessions,
+            &render_values,
+            verbose,
+            debug_unredact,
+            step_started,
+            cancel_rx,
+        )
+        .await?;
 
         // Inject BUZ_CONFIG_DIR / BUZ_ENV_CHANGED(_KEYS) into the step env and
         // register every rendered secret value for forced value redaction.
         if let Some(prep) = &config_prep {
             for (k, v) in &prep.env {
-                step_env.insert(k.clone(), v.clone());
+                secrets.env.insert(k.clone(), v.clone());
             }
             // Debug mode disables all redaction, forced values included.
             if !debug_unredact {
                 for v in &prep.forced_redact {
-                    catalog.add_forced_value(v.clone());
+                    secrets.catalog.add_forced_value(v.clone());
                 }
+                // The mask lists were snapshotted before prepare ran; refresh
+                // so the just-registered rendered values actually reach the
+                // engine runners and the summary chunk.
+                secrets.forced_values = secrets.catalog.forced_secret_values();
             }
         }
-
-        let registry_secret_ref = registry_secret_ref_early;
 
         let registry_login = step.get("registry_auth").and_then(|a| {
             let registry = a.get("registry")?.as_str()?.trim();
@@ -1662,435 +1345,43 @@ async fn execute_job_inner(
         }
 
         // ── Race step execution against cancel polling ────────────────────────
-        // SSH output is uploaded as one combined chunk — mask it with the SSH env
-        // catalog (which includes BUZ_REGISTRY_PASSWORD), not the local one.
-        let mut output_secret_values = secret_values.clone();
-        let (output, was_cancelled): (engine::shell::ShellOutput, bool) = match exec_type {
-            "local" | "shell" => {
-                if let Some(handle) = sandbox_handle {
-                    let mut sandbox_env = step_env.clone();
-                    sandbox_env.insert("BUZ_STEP_ENGINE".into(), exec_type.to_string());
-                    sandbox_env.insert(
-                        "BUZ_ENV".into(),
-                        format!("{}/.buz/env", engine::docker::CONTAINER_WORKSPACE),
-                    );
-                    sandbox_env.insert(
-                        "DOCKER_CONFIG".into(),
-                        format!("{}/.docker", engine::docker::CONTAINER_WORKSPACE),
-                    );
-                    let echo_line =
-                        build_step_echo(exec_type, command, &sandbox_env, &catalog, work_dir);
-                    log.emit(LOG_ECHO, echo_line).await;
-                    let environment = serde_json::to_value(&sandbox_env)?;
-                    let timeout_seconds = if has_timeout { step_timeout_secs } else { 0 };
-                    run_sandbox_step(
-                        &log,
-                        config,
-                        command,
-                        work_dir.unwrap_or(""),
-                        &environment,
-                        timeout_seconds,
-                        &secret_values,
-                        &forced_values,
-                        cancel_rx,
-                        handle,
-                    )
-                    .await?
-                } else {
-                    if let Some((ref registry, ref username, ref password)) = registry_login {
-                        if let Err(e) = engine::docker::registry_login(
-                            registry,
-                            username,
-                            password,
-                            docker_config_dir.as_deref(),
-                        )
-                        .await
-                        {
-                            let masked =
-                                mask_output(&format!("{e:#}"), &secret_values, &forced_values);
-                            return Err(log.fail_step(masked).await);
-                        }
-                        log.emit(LOG_LOGIN, build_login_banner(registry)).await;
-                    }
-
-                    let cmd = command.to_string();
-                    let wd = work_dir.map(|s| s.to_string());
-                    let mut env = step_env.clone();
-                    if let Some(dir) = &docker_config_dir {
-                        let docker_config = if sandbox_handle.is_some() {
-                            format!("{}/.docker", engine::docker::CONTAINER_WORKSPACE)
-                        } else {
-                            dir.clone()
-                        };
-                        env.insert("DOCKER_CONFIG".into(), docker_config);
-                    }
-                    env.insert("BUZ_STEP_ENGINE".into(), exec_type.to_string());
-                    // Inside the job container/VM, the shared workspace is mounted
-                    // at CONTAINER_WORKSPACE; the host runner uses the real path.
-                    env.insert(
-                        "BUZ_ENV".into(),
-                        if sandbox_handle.is_some() {
-                            format!("{}/.buz/env", engine::docker::CONTAINER_WORKSPACE)
-                        } else {
-                            buz_env_path.clone()
-                        },
-                    );
-
-                    // Debug echo — show the command before execution (like bash -x)
-                    {
-                        let echo_line = build_step_echo(exec_type, &cmd, &env, &catalog, work_dir);
-                        log.emit(LOG_ECHO, echo_line).await;
-                    }
-
-                    let mut cancel_rx_step = cancel_rx.clone();
-                    let jid = job_id.to_string();
-                    let sname = step_name.to_string();
-
-                    {
-                        let exec_result =
-                            engine::shell::execute_streaming(&cmd, wd.as_deref(), Some(&env)).await;
-                        let (mut child, mut output_rx, read_guard) = match exec_result {
-                            Ok(v) => v,
-                            Err(e) => {
-                                if let Some((ref reg, _, _)) = registry_login {
-                                    engine::docker::registry_logout(
-                                        reg,
-                                        docker_config_dir.as_deref(),
-                                    )
-                                    .await;
-                                }
-                                return Err(e);
-                            }
-                        };
-
-                        // Background task: stream output chunks to the manager in real time
-                        let upload_task = {
-                            let logger = log.clone();
-                            let secret_values = secret_values.clone();
-                            let forced_values = forced_values.clone();
-                            tokio::spawn(async move {
-                                logger
-                                    .stream_chunks(&mut output_rx, &secret_values, &forced_values)
-                                    .await;
-                            })
-                        };
-
-                        // Race: child completion vs cancellation vs timeout
-                        let (exit_code, was_cancelled_local, was_timeout) = tokio::select! {
-                            status = child.wait() => {
-                                let code = status?.code().unwrap_or(-1);
-                                // Ensure all pipe data is read before proceeding
-                                let _ = read_guard.join().await;
-                                let _ = upload_task.await;
-                                (code, false, false)
-                            }
-                            _ = cancel_triggered(&mut cancel_rx_step) => {
-                                tracing::warn!("Job {jid} cancelled during step '{sname}' — killing");
-                                let _ = child.kill().await;
-                                let _ = child.wait().await;
-                                upload_task.abort();
-                                (-1, true, false)
-                            }
-                            _ = tokio::time::sleep(step_timeout.unwrap_or(Duration::from_secs(3600))), if has_timeout => {
-                                tracing::warn!("Step '{sname}' timed out after {step_timeout_secs}s — killing process");
-                                let _ = child.kill().await;
-                                let _ = child.wait().await;
-                                let _ = read_guard.join().await;
-                                upload_task.abort();
-                                (-1, false, true)
-                            }
-                        };
-
-                        if let Some((ref reg, _, _)) = registry_login {
-                            engine::docker::registry_logout(reg, docker_config_dir.as_deref())
-                                .await;
-                        }
-
-                        (
-                            engine::shell::ShellOutput {
-                                stdout: String::new(),
-                                stderr: if was_cancelled_local {
-                                    "==> CANCELLED\n".into()
-                                } else if was_timeout {
-                                    format!("==> TIMEOUT [{step_timeout_secs}s]\n")
-                                } else {
-                                    String::new()
-                                },
-                                exit_code: if was_cancelled_local || was_timeout {
-                                    -1
-                                } else {
-                                    exit_code
-                                },
-                            },
-                            was_cancelled_local,
-                        )
-                    }
-                }
-            }
-            "ssh" => {
-                if ssh_sessions.is_empty() {
-                    let msg = if step["host"].is_null() {
-                        format!("SSH step '{step_name}' missing host connection details")
-                    } else {
-                        format!("SSH step '{step_name}': no hosts resolved from the database. Register your hosts in the Manager UI first.")
-                    };
-                    return Err(log.fail_step(msg).await);
-                }
-
-                let mut ssh_env = step_env.clone();
-                let mut ssh_catalog = catalog.clone();
-                let cmd = if let Some((ref registry, ref username, ref password)) = registry_login {
-                    ssh_env.insert("BUZ_REGISTRY_HOST".into(), registry.clone());
-                    ssh_env.insert("BUZ_REGISTRY_USER".into(), username.clone());
-                    ssh_env.insert("BUZ_REGISTRY_PASSWORD".into(), password.clone());
-                    ssh_catalog.add_key("BUZ_REGISTRY_PASSWORD".to_string());
-                    wrap_remote_cmd_with_registry_login(command)
-                } else {
-                    command.to_string()
-                };
-                let mut cancel_rx_step = cancel_rx.clone();
-
-                // Debug echo — show the command before execution (like bash -x)
-                {
-                    let echo_line =
-                        build_step_echo(exec_type, &cmd, &ssh_env, &ssh_catalog, work_dir);
-                    log.emit(LOG_ECHO, echo_line).await;
-                }
-
-                // Remote output is uploaded combined — mask with the SSH catalog
-                // (covers BUZ_REGISTRY_PASSWORD injected into the remote env).
-                output_secret_values = ssh_catalog.secret_values(&ssh_env);
-
-                let jid = job_id.to_string();
-                let sname = step_name.to_string();
-                let sname2 = sname.clone();
-                let mut step_env_ssh = ssh_env;
-                // Job-scoped remote Docker config (per-host copy of the same
-                // path): plugin/step logins on the target host stay inside the
-                // job; inserted after masking setup — a path, not a secret.
-                if docker_config_dir.is_some() {
-                    step_env_ssh
-                        .insert("DOCKER_CONFIG".into(), format!("/tmp/buz-docker-{job_id}"));
-                }
-                step_env_ssh.insert("BUZ_STEP_ENGINE".into(), "ssh".into());
-                // Parallel fan-out inside execute_ssh_step; cancelling this
-                // select arm drops join_all and aborts every in-flight host.
-                let sessions_for_run = std::mem::take(&mut ssh_sessions);
-
-                tokio::select! {
-                    result = execute_ssh_step(
-                        sessions_for_run,
-                        &cmd,
-                        step_timeout,
-                        &sname,
-                        &step_env_ssh,
-                        ssh_hosts_parallel(step),
-                    ) => {
-                        (result?, false)
-                    }
-                    _ = cancel_triggered(&mut cancel_rx_step) => {
-                        tracing::warn!("Job {jid} cancelled during SSH step '{sname2}' — aborting all hosts");
-                        (engine::shell::ShellOutput {
-                            stdout: String::new(),
-                            stderr: "==> CANCELLED\n".to_string(),
-                            exit_code: -1,
-                        }, true)
-                    }
-                }
-            }
+        let exec_type = spec.exec_type;
+        let step_name = spec.name;
+        let run = StepRun {
+            log: &log,
+            config,
+            spec: spec.clone(),
+            env: secrets.env,
+            catalog: &secrets.catalog,
+            secret_values: &secrets.secret_values,
+            forced_values: &secrets.forced_values,
+            registry_login: registry_login.as_ref(),
+            docker_config_dir: docker_config_dir.as_deref(),
+            buz_env_path: &buz_env_path,
+            sandbox_handle,
+        };
+        let execution = match exec_type {
+            "local" | "shell" => run_shell_step(run, cancel_rx).await?,
+            "ssh" => run_ssh_step(run, &mut ssh_sessions, cancel_rx).await?,
             "docker" => {
-                let image = step["image"].as_str().unwrap_or("").trim();
-                if let Err(e) = engine::docker::preflight(config.engine.docker_enabled, image) {
-                    return Err(log.fail_step(format!("{e:#}")).await);
-                }
-
-                let pull_registry = registry_login.as_ref().map(|(r, _, _)| r.clone());
-                if let Some((ref registry, ref username, ref password)) = registry_login {
-                    if let Err(e) = engine::docker::registry_login(
-                        registry,
-                        username,
-                        password,
-                        docker_config_dir.as_deref(),
-                    )
-                    .await
-                    {
-                        let masked = mask_output(&format!("{e:#}"), &secret_values, &forced_values);
-                        return Err(log.fail_step(masked).await);
-                    }
-                    log.emit(LOG_LOGIN, build_login_banner(registry)).await;
-                }
-
-                let prefetch_result = if let Some(prefetch) = prefetch.as_mut() {
-                    tokio::select! {
-                        result = prefetch.wait_for(image) => result,
-                        _ = cancel_triggered(cancel_rx) => {
-                            prefetch.abort_and_drain().await;
-                            return Err(log.cancel_step().await);
-                        }
-                    }
-                } else {
-                    None
-                };
-                if let Some(Err(error)) = prefetch_result {
-                    tracing::warn!("Docker image prefetch failed for {image:?}: {error}");
-                }
-
-                let cmd = command.to_string();
-                let volumes: Vec<String> = step
-                    .get("volumes")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|x| x.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let privileged = step
-                    .get("privileged")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-
-                // Debug echo — show the command before execution (like bash -x)
-                {
-                    let echo_line = build_step_echo(exec_type, &cmd, &step_env, &catalog, work_dir);
-                    log.emit(LOG_ECHO, echo_line).await;
-                }
-
-                let img = image.to_string();
-                let env = step_env.clone();
-                let mut cancel_rx_step = cancel_rx.clone();
-                let jid = job_id.to_string();
-                let sname = step_name.to_string();
-
-                let container_name = format!("buz-{}-{}", job_id, idx);
-                let exec_result = engine::docker::execute_streaming_with_socket(
-                    &img,
-                    Path::new(&config.runner.workspace_dir),
-                    &cmd,
-                    &env,
-                    &volumes,
-                    work_dir,
-                    privileged,
-                    docker_config_dir.as_deref(),
-                    docker_socket_path.as_deref(),
-                    Some(&container_name),
-                )
-                .await;
-
-                let (mut child, mut output_rx, read_guard) = match exec_result {
-                    Ok(v) => v,
-                    Err(e) => {
-                        if let Some(reg) = &pull_registry {
-                            engine::docker::registry_logout(reg, docker_config_dir.as_deref())
-                                .await;
-                        }
-                        return Err(e);
-                    }
-                };
-
-                let upload_task = {
-                    let logger = log.clone();
-                    let secret_values = secret_values.clone();
-                    let forced_values = forced_values.clone();
-                    tokio::spawn(async move {
-                        logger
-                            .stream_chunks(&mut output_rx, &secret_values, &forced_values)
-                            .await;
-                    })
-                };
-
-                let (exit_code, was_cancelled_docker, was_timeout_docker) = tokio::select! {
-                    status = child.wait() => {
-                        let code = status?.code().unwrap_or(-1);
-                        let _ = read_guard.join().await;
-                        let _ = upload_task.await;
-                        (code, false, false)
-                    }
-                    _ = cancel_triggered(&mut cancel_rx_step) => {
-                        tracing::warn!("Job {jid} cancelled during docker step '{sname}' — killing container process");
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
-                        engine::docker::stop_container(&container_name, docker_config_dir.as_deref()).await;
-                        upload_task.abort();
-                        (-1, true, false)
-                    }
-                    _ = tokio::time::sleep(step_timeout.unwrap_or(Duration::from_secs(3600))), if has_timeout => {
-                        tracing::warn!("Docker step '{sname}' timed out after {step_timeout_secs}s — killing container");
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
-                        engine::docker::stop_container(&container_name, docker_config_dir.as_deref()).await;
-                        let _ = read_guard.join().await;
-                        upload_task.abort();
-                        (-1, false, true)
-                    }
-                };
-
-                if let Some(reg) = &pull_registry {
-                    engine::docker::registry_logout(reg, docker_config_dir.as_deref()).await;
-                }
-
-                (
-                    engine::shell::ShellOutput {
-                        stdout: String::new(),
-                        stderr: if was_cancelled_docker {
-                            "==> CANCELLED\n".into()
-                        } else if was_timeout_docker {
-                            format!("==> TIMEOUT [{step_timeout_secs}s]\n")
-                        } else {
-                            String::new()
-                        },
-                        exit_code: if was_cancelled_docker || was_timeout_docker {
-                            -1
-                        } else {
-                            exit_code
-                        },
-                    },
-                    was_cancelled_docker,
-                )
+                run_docker_step(run, prefetch, docker_socket_path.as_deref(), cancel_rx).await?
             }
             "wasm" => anyhow::bail!(
                 "wasm engine is not implemented in this release — step '{step_name}' cannot run"
             ),
             other => anyhow::bail!("unsupported engine type: {other}"),
         };
-        // ─────────────────────────────────────────────────────────────────────
 
-        if was_cancelled {
-            return Err(log.cancel_step().await);
-        }
-
-        // For SSH steps, upload the accumulated output as a summary chunk.
-        // Local steps are fully streamed so we skip this redundant upload.
-        if exec_type == "ssh" || sandbox_handle.is_some() {
-            let combined = format!("==> {step_name}\n{}\n{}", output.stdout, output.stderr);
-            let masked = mask_output(&combined, &output_secret_values, &forced_values);
-            log.try_emit(LOG_STEP_META_B, masked).await?;
-        }
-
-        // Verbose mode: result summary (duration + exit code). Uploaded even on
-        // failure so troubleshooting users see exactly how long the step ran.
-        if verbose && !was_cancelled {
-            log.emit(
-                LOG_STEP_VERBOSE_RESULT,
-                build_verbose_step_result(step_started.elapsed(), output.exit_code),
-            )
-            .await;
-        }
-
-        if output.exit_code != 0 && fail_strategy == "stop" {
-            let hint = step_failure_hint(&output.stderr, output.exit_code);
-            let msg = build_step_failure_message(step_name, output.exit_code, command, &hint);
-            // fail_step uploads the failure into this step's terminal so it is
-            // visible in the UI. Prefer step_order=idx over run_one_job's global
-            // -1 catch — the frontend maps -1 as a fallback, but per-step errors
-            // must not rely on it.
-            return Err(log.fail_step(msg).await);
-        } else if output.exit_code != 0 && fail_strategy == "continue" {
-            any_step_failed = true;
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-        } else {
-            update_job_status(client, config, token, job_id, "success", Some(idx as i32)).await?;
-        }
+        any_step_failed |= finalize_step(
+            &log,
+            &spec,
+            execution,
+            &secrets.forced_values,
+            sandbox_handle,
+            verbose,
+            step_started,
+        )
+        .await?;
 
         // ── $BUZ_ENV merge: what this step wrote becomes env for later steps ──
         // Shell and Docker steps share the same physical file (the Docker
@@ -2129,6 +1420,1008 @@ async fn execute_job_inner(
     tracing::info!("Job {job_id} completed successfully");
 
     Ok(())
+}
+
+/// Parsed per-step fields from the claim payload (`tasks[i]`). Strings borrow
+/// from the step JSON; collections are owned. Cloned into `StepRun` so the
+/// loop keeps `spec` for `finalize_step`.
+#[derive(Clone)]
+struct StepSpec<'a> {
+    idx: usize,
+    step: &'a serde_json::Value,
+    name: &'a str,
+    command: &'a str,
+    work_dir: Option<&'a str>,
+    exec_type: &'a str,
+    fail_strategy: &'a str,
+    timeout_secs: u64,
+    timeout: Option<Duration>,
+    privileged: bool,
+    volumes: Vec<String>,
+    capabilities: Vec<String>,
+}
+
+fn parse_step_spec(idx: usize, step: &serde_json::Value) -> StepSpec<'_> {
+    let timeout_secs = step["timeout_seconds"].as_u64().unwrap_or(0);
+    StepSpec {
+        idx,
+        step,
+        name: step["name"].as_str().unwrap_or("unnamed"),
+        command: step["command_template"].as_str().unwrap_or(""),
+        work_dir: step["work_dir"].as_str().filter(|s| !s.is_empty()),
+        exec_type: step["exec_type"].as_str().unwrap_or("shell"),
+        fail_strategy: step["fail_strategy"].as_str().unwrap_or("stop"),
+        timeout_secs,
+        timeout: (timeout_secs > 0).then(|| Duration::from_secs(timeout_secs)),
+        privileged: step
+            .get("privileged")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        volumes: string_list(step, "volumes"),
+        capabilities: string_list(step, "capabilities"),
+    }
+}
+
+fn string_list(step: &serde_json::Value, key: &str) -> Vec<String> {
+    step.get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Enforce engine policy before anything runs: Docker mount/socket policy,
+/// image preflight, and work_dir containment. Returns the Docker socket path
+/// for docker steps. Policy errors report the step failed via `fail_step`;
+/// the work_dir check keeps its historical status-only failure path.
+async fn validate_step_constraints(
+    log: &StepLogger,
+    config: &Config,
+    step: &serde_json::Value,
+    spec: &StepSpec<'_>,
+) -> anyhow::Result<Option<std::path::PathBuf>> {
+    let docker_socket_path = if spec.exec_type == "docker" {
+        let has_host_prepare = super::config_source::needs_prepare(step);
+        match engine::docker::validate_step_policy(
+            &config.runner,
+            &spec.capabilities,
+            &spec.volumes,
+            spec.privileged,
+            has_host_prepare,
+        ) {
+            Ok(value) => value,
+            Err(e) => return Err(log.fail_step(format!("{e:#}")).await),
+        }
+    } else {
+        anyhow::ensure!(
+            spec.capabilities.is_empty(),
+            "execution capabilities are only valid for Docker engine steps"
+        );
+        None
+    };
+    if spec.exec_type == "docker" {
+        let image = step.get("image").and_then(|v| v.as_str()).unwrap_or("");
+        if let Err(e) = engine::docker::preflight(config.engine.docker_enabled, image) {
+            return Err(log.fail_step(format!("{e:#}")).await);
+        }
+    }
+    if spec
+        .work_dir
+        .is_some_and(|dir| !is_safe_workspace_subdir(dir))
+    {
+        let msg = format!(
+            "step work_dir must be a relative path inside the job workspace: {:?}",
+            spec.work_dir
+        );
+        update_job_status(
+            &log.client,
+            &log.config,
+            &log.token,
+            &log.job_id,
+            "failed",
+            Some(log.step_order),
+        )
+        .await?;
+        anyhow::bail!(msg);
+    }
+    Ok(docker_socket_path)
+}
+
+/// Per-step env + redaction state: base env plus the step `env:` map, the
+/// secret catalog (keys + forced values), and the resolved mask lists the
+/// engine runners and `finalize_step` mask with.
+struct StepSecrets {
+    env: std::collections::HashMap<String, String>,
+    catalog: SecretCatalog,
+    secret_values: Vec<String>,
+    forced_values: Vec<String>,
+}
+
+/// ── Step env: base + expanded step `env:` map (no auto-inject from secrets:) ──
+async fn build_step_secrets(
+    log: &StepLogger,
+    step: &serde_json::Value,
+    base_env: &std::collections::HashMap<String, String>,
+    pipeline_secret_keys: &HashSet<String>,
+    secret_mask_values: &[String],
+    debug_unredact: bool,
+) -> anyhow::Result<StepSecrets> {
+    let mut env = base_env.clone();
+    let mut catalog = SecretCatalog::new();
+    catalog.add_keys(pipeline_secret_keys.iter().cloned());
+    for v in secret_mask_values {
+        catalog.add_value(v.clone());
+    }
+    if let Some(se_obj) = step.get("step_env").and_then(|v| v.as_object()) {
+        for (k, v) in se_obj {
+            if let Some(s) = v.as_str() {
+                // `with:` values may reference dynamic env written by
+                // earlier steps ($BUZ_ENV) via `${env.NAME}` — resolve
+                // now, when those values exist. Fail closed on unknown.
+                if k.starts_with("INPUT_") && s.contains("${env.") {
+                    match shared::secret_ref::expand_env_refs(s, &env) {
+                        Ok(expanded) => {
+                            env.insert(k.clone(), expanded);
+                        }
+                        Err(msg) => {
+                            let error =
+                                format!("with input {}: {msg}", k.trim_start_matches("INPUT_"));
+                            return Err(log.fail_step(error).await);
+                        }
+                    }
+                } else {
+                    env.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+    }
+    if let Some(keys) = step.get("secret_env_keys").and_then(|v| v.as_array()) {
+        for key in keys.iter().filter_map(|v| v.as_str()) {
+            if !key.is_empty() {
+                catalog.add_key(key.to_string());
+            }
+        }
+    }
+    if let Some(keys) = step.get("masking_env_keys").and_then(|v| v.as_array()) {
+        for key in keys.iter().filter_map(|v| v.as_str()) {
+            if !key.is_empty() {
+                catalog.add_key(key.to_string());
+            }
+        }
+    }
+    // step_secrets values are for render/mask only — do not inject as `$NAME`.
+    if let Some(ss_obj) = step.get("step_secrets").and_then(|v| v.as_object()) {
+        for (k, v) in ss_obj {
+            if let Some(s) = v.as_str() {
+                catalog.add_key(k.clone());
+                if !s.is_empty() {
+                    catalog.add_value(s.to_string());
+                }
+            }
+        }
+    }
+
+    // OSS config delivery: expose the signed GET URL as $BUZ_CONFIG_URL for this
+    // step. The key is registered as "injected" so the RUN echo shows a readable
+    // `BUZ_CONFIG_URL=<injected>` hint instead of `***`, while the URL value
+    // still joins value-based redaction via `log_mask_values`.
+    if let Some(url) = step
+        .get("config_auth")
+        .and_then(|a| a.get("url"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        env.insert("BUZ_CONFIG_URL".to_string(), url.to_string());
+        catalog.add_injected_key("BUZ_CONFIG_URL".to_string());
+    }
+
+    // Sensitive values are registered by the Manager per step in
+    // `log_mask_values` (registry password, OSS signed URL, …).
+    if let Some(values) = step.get("log_mask_values").and_then(|v| v.as_array()) {
+        for v in values.iter().filter_map(|x| x.as_str()) {
+            catalog.add_value(v.to_string());
+        }
+    }
+
+    // Debug mode: RUN echo + streams show real values, so the catalog is emptied.
+    if debug_unredact {
+        catalog = SecretCatalog::new();
+    }
+
+    // Collect values for log masking — secrets, registry passwords, masking inputs.
+    let secret_values = catalog.secret_values(&env);
+    // Forced values: rendered `.env` secret values that must be masked
+    // regardless of length (plaintext `.env` content may be echoed by the
+    // run block, e.g. `cat .env`).
+    let forced_values = catalog.forced_secret_values();
+    Ok(StepSecrets {
+        env,
+        catalog,
+        secret_values,
+        forced_values,
+    })
+}
+
+/// Verbose stage markers, engine enablement, the "running" status transition,
+/// and the Manager-attached fail-fast errors (input validation, env
+/// expansion, registry auth, host resolution, config auth/render). Every
+/// error here has already been reported via StepLogger before returning.
+async fn announce_step(
+    log: &StepLogger,
+    config: &Config,
+    step: &serde_json::Value,
+    spec: &StepSpec<'_>,
+    env: &std::collections::HashMap<String, String>,
+    registry_secret_ref: &str,
+    verbose: bool,
+    step_started: std::time::Instant,
+) -> anyhow::Result<()> {
+    // Verbose mode: stage marker + STEP CONFIG up front (before prepare /
+    // registry fail-fast) so a prepare-stage failure still shows the step
+    // shape. Debug alone does not emit these — it only unmasks values.
+    if verbose {
+        log.emit(LOG_STEP_VERBOSE_PREPARE, build_verbose_stage("prepare"))
+            .await;
+        let cfg = build_verbose_step_config(step, spec.exec_type, registry_secret_ref);
+        log.emit(LOG_STEP_VERBOSE_CONFIG, cfg).await;
+    }
+
+    if let Err(e) = config.engine.ensure_enabled(spec.exec_type) {
+        return Err(log.fail_step(format!("{e:#}")).await);
+    }
+
+    let env_count = env.len();
+    tracing::info!(
+        "Step {idx}: {name} ({exec_type}){}",
+        if env_count > 0 {
+            format!(" [with {env_count} env vars]")
+        } else {
+            String::new()
+        },
+        idx = spec.idx,
+        name = spec.name,
+        exec_type = spec.exec_type,
+    );
+
+    update_job_status(
+        &log.client,
+        &log.config,
+        &log.token,
+        &log.job_id,
+        "running",
+        Some(log.step_order),
+    )
+    .await?;
+
+    if let Some(err) = step
+        .get("input_validation_error")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return Err(log
+            .fail_step(format!("marketplace input validation: {err}"))
+            .await);
+    }
+
+    // Fail fast if Manager could not resolve step `env:` (`${secrets.X}`).
+    if let Some(err) = step
+        .get("env_expand_error")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return Err(log.fail_step(format!("step env: {err}")).await);
+    }
+
+    // Fail fast if Manager could not resolve registry_secret.
+    if let Some(err) = step
+        .get("registry_auth_error")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return Err(log.fail_step(format!("registry_secret: {err}")).await);
+    }
+
+    if let Some(err) = step
+        .get("host_resolution_error")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return Err(log.fail_step(format!("SSH host resolution: {err}")).await);
+    }
+
+    // Fail fast if Manager could not resolve config_source.
+    if let Some(err) = step
+        .get("config_auth_error")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        let msg = format!("config_source: {err}");
+        if verbose {
+            log.emit(
+                LOG_STEP_VERBOSE_RESULT,
+                build_verbose_step_result(step_started.elapsed(), -1),
+            )
+            .await;
+        }
+        return Err(log.fail_step(msg).await);
+    }
+
+    if let Some(err) = step
+        .get("config_render_error")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return Err(log.fail_step(format!("config_render: {err}")).await);
+    }
+    Ok(())
+}
+
+/// Open the step's SSH sessions (one TCP connect per host, shared by config
+/// prepare and the run block to avoid reconnect storms / fail2ban /
+/// MaxStartups). Non-SSH steps get an empty vector. Cancel aborts in-flight
+/// connects and reports the step cancelled.
+async fn open_ssh_sessions(
+    log: &StepLogger,
+    config: &Config,
+    step: &serde_json::Value,
+    spec: &StepSpec<'_>,
+    cancel_rx: &mut watch::Receiver<bool>,
+) -> anyhow::Result<Vec<SshSession>> {
+    let mut ssh_sessions: Vec<SshSession> = Vec::new();
+    if spec.exec_type != "ssh" {
+        return Ok(ssh_sessions);
+    }
+    let conns = resolve_ssh_conns(step, config);
+    if conns.is_empty() {
+        return Ok(ssh_sessions);
+    }
+    // Multi-host: connect in parallel; cancel aborts all in-flight connects.
+    let connect_result = tokio::select! {
+        result = engine::ssh::connect_all(&conns, ssh_hosts_parallel(step)) => Some(result),
+        _ = cancel_triggered(cancel_rx) => None,
+    };
+    match connect_result {
+        None => {
+            return Err(log.cancel_step().await);
+        }
+        Some(Err(e)) => {
+            return Err(log.fail_step(format!("{e:#}")).await);
+        }
+        Some(Ok(mut sessions)) => {
+            tracing::info!(
+                hosts = sessions.len(),
+                "SSH step '{}': opened step session(s)",
+                spec.name
+            );
+            let targets = {
+                let probe = engine::ssh::probe_workspaces(&mut sessions, spec.timeout);
+                tokio::select! {
+                    t = probe => Some(t),
+                    _ = cancel_triggered(cancel_rx) => None,
+                }
+            };
+            match targets {
+                None => {
+                    drop(sessions);
+                    return Err(log.cancel_step().await);
+                }
+                Some(targets) => {
+                    let banner = build_ssh_banner(&targets);
+                    if !banner.is_empty() {
+                        log.emit(LOG_LOGIN, banner).await;
+                    }
+                    ssh_sessions = sessions;
+                }
+            }
+        }
+    }
+    Ok(ssh_sessions)
+}
+
+/// Config prepare: OSS deliver and/or config_render.
+/// OSS: download → unpack → [render] → run.
+/// Render-only: templates already at dest (shell in place / SSH fetch→
+/// render on Runner → upload). See config-block.md.
+///
+/// Prepare failures MUST be reported with this step's `step_order` (not
+/// the job-level -1 catch in `run_one_job`) so Job Detail attaches the
+/// ERROR to the correct terminal without frontend guessing.
+async fn prepare_step_config(
+    log: &StepLogger,
+    config: &Config,
+    step: &serde_json::Value,
+    spec: &StepSpec<'_>,
+    ssh_sessions: &mut Vec<SshSession>,
+    render_values: &ValueMap,
+    verbose: bool,
+    debug_unredact: bool,
+    step_started: std::time::Instant,
+    cancel_rx: &mut watch::Receiver<bool>,
+) -> anyhow::Result<Option<super::config_source::ConfigPrep>> {
+    if !super::config_source::needs_prepare(step) {
+        return Ok(None);
+    }
+    let prep_result = if spec.exec_type == "ssh" {
+        if ssh_sessions.is_empty() {
+            // The SSH branch below reports the missing-host error.
+            Ok(None)
+        } else {
+            let prep_fut = super::config_source::prepare_ssh(
+                &log.client,
+                step,
+                ssh_sessions,
+                Path::new(&config.runner.workspace_dir),
+                &log.job_id,
+                spec.idx,
+                render_values,
+                spec.timeout,
+                ssh_hosts_parallel(step),
+            );
+            tokio::select! {
+                result = prep_fut => result.map(Some),
+                _ = cancel_triggered(cancel_rx) => {
+                    return Err(log.cancel_step().await);
+                }
+            }
+        }
+    } else {
+        super::config_source::prepare_local(
+            &log.client,
+            step,
+            Path::new(&config.runner.workspace_dir),
+            spec.idx,
+            render_values,
+        )
+        .await
+        .map(Some)
+    };
+    match prep_result {
+        Ok(prep) => {
+            // Emit the CONFIG PREP chunk once, on success: the Verbose /
+            // Debug banner (dest / object_key) plus the always-visible
+            // progress (download result, render, readiness). Progress is
+            // collected by the prepare functions and never leaks secrets.
+            if let Some(p) = &prep {
+                let mut content = String::new();
+                if verbose || debug_unredact {
+                    content.push_str(&build_config_prep_banner(step, debug_unredact));
+                }
+                if !p.logs.is_empty() {
+                    let progress = build_config_prep_progress(&p.logs, verbose);
+                    if !progress.is_empty() {
+                        if !content.is_empty() && !content.ends_with('\n') {
+                            content.push('\n');
+                        }
+                        content.push_str(&progress);
+                    }
+                }
+                if !content.is_empty() {
+                    log.emit(LOG_STEP_VERBOSE_CONFIG_PREP, content).await;
+                }
+            }
+            Ok(prep)
+        }
+        Err(e) => {
+            // Verbose / Debug: still surface the dest / object_key shape
+            // on a prepare-only failure (banner chunk is otherwise empty).
+            if verbose || debug_unredact {
+                log.emit(
+                    LOG_STEP_VERBOSE_CONFIG_PREP,
+                    build_config_prep_banner(step, debug_unredact),
+                )
+                .await;
+            }
+            if verbose {
+                log.emit(
+                    LOG_STEP_VERBOSE_RESULT,
+                    build_verbose_step_result(step_started.elapsed(), -1),
+                )
+                .await;
+            }
+            Err(log.fail_step(format!("{e:#}")).await)
+        }
+    }
+}
+
+/// Shared inputs for one step's engine execution. Each engine mutates its own
+/// copy of `env`; cancel racing happens on the separately passed receiver.
+struct StepRun<'a> {
+    log: &'a StepLogger,
+    config: &'a Config,
+    spec: StepSpec<'a>,
+    env: std::collections::HashMap<String, String>,
+    catalog: &'a SecretCatalog,
+    secret_values: &'a [String],
+    forced_values: &'a [String],
+    registry_login: Option<&'a (String, String, String)>,
+    docker_config_dir: Option<&'a str>,
+    buz_env_path: &'a str,
+    sandbox_handle: Option<&'a crate::client::sandbox_client::SandboxHandle>,
+}
+
+/// What one engine produced for the step. `output_secret_values` carries the
+/// mask list for the summary chunk — SSH swaps in its own catalog view so
+/// `BUZ_REGISTRY_PASSWORD` is covered.
+struct StepExecution {
+    output: engine::shell::ShellOutput,
+    was_cancelled: bool,
+    output_secret_values: Vec<String>,
+}
+
+/// `local`/`shell` engine: inside the job sandbox when one exists, otherwise
+/// streamed on the runner host.
+async fn run_shell_step(
+    run: StepRun<'_>,
+    cancel_rx: &mut watch::Receiver<bool>,
+) -> anyhow::Result<StepExecution> {
+    let exec_type = run.spec.exec_type;
+    if let Some(handle) = run.sandbox_handle {
+        let mut sandbox_env = run.env.clone();
+        sandbox_env.insert("BUZ_STEP_ENGINE".into(), exec_type.to_string());
+        sandbox_env.insert(
+            "BUZ_ENV".into(),
+            format!("{}/.buz/env", engine::docker::CONTAINER_WORKSPACE),
+        );
+        sandbox_env.insert(
+            "DOCKER_CONFIG".into(),
+            format!("{}/.docker", engine::docker::CONTAINER_WORKSPACE),
+        );
+        let echo_line = build_step_echo(
+            exec_type,
+            run.spec.command,
+            &sandbox_env,
+            run.catalog,
+            run.spec.work_dir,
+        );
+        run.log.emit(LOG_ECHO, echo_line).await;
+        let environment = serde_json::to_value(&sandbox_env)?;
+        let timeout_seconds = if run.spec.timeout.is_some() {
+            run.spec.timeout_secs
+        } else {
+            0
+        };
+        let (output, was_cancelled) = run_sandbox_step(
+            run.log,
+            run.config,
+            run.spec.command,
+            run.spec.work_dir.unwrap_or(""),
+            &environment,
+            timeout_seconds,
+            run.secret_values,
+            run.forced_values,
+            cancel_rx,
+            handle,
+        )
+        .await?;
+        return Ok(StepExecution {
+            output,
+            was_cancelled,
+            output_secret_values: run.secret_values.to_vec(),
+        });
+    }
+
+    if let Some((ref registry, ref username, ref password)) = run.registry_login {
+        if let Err(e) =
+            engine::docker::registry_login(registry, username, password, run.docker_config_dir)
+                .await
+        {
+            let masked = mask_output(&format!("{e:#}"), run.secret_values, run.forced_values);
+            return Err(run.log.fail_step(masked).await);
+        }
+        run.log.emit(LOG_LOGIN, build_login_banner(registry)).await;
+    }
+
+    let mut env = run.env.clone();
+    if let Some(dir) = run.docker_config_dir {
+        env.insert("DOCKER_CONFIG".into(), dir.to_string());
+    }
+    env.insert("BUZ_STEP_ENGINE".into(), exec_type.to_string());
+    // The host runner reads $BUZ_ENV at its real workspace path (the sandbox
+    // branch above swaps in the container mount path instead).
+    env.insert("BUZ_ENV".into(), run.buz_env_path.to_string());
+
+    // Debug echo — show the command before execution (like bash -x)
+    {
+        let echo_line = build_step_echo(
+            exec_type,
+            run.spec.command,
+            &env,
+            run.catalog,
+            run.spec.work_dir,
+        );
+        run.log.emit(LOG_ECHO, echo_line).await;
+    }
+
+    let mut cancel_rx_step = cancel_rx.clone();
+    let jid = run.log.job_id.clone();
+    let sname = run.spec.name.to_string();
+
+    let exec_result =
+        engine::shell::execute_streaming(run.spec.command, run.spec.work_dir, Some(&env)).await;
+    let (mut child, mut output_rx, read_guard) = match exec_result {
+        Ok(v) => v,
+        Err(e) => {
+            if let Some((ref reg, _, _)) = run.registry_login {
+                engine::docker::registry_logout(reg, run.docker_config_dir).await;
+            }
+            return Err(e);
+        }
+    };
+
+    // Background task: stream output chunks to the manager in real time
+    let upload_task = {
+        let logger = run.log.clone();
+        let secret_values = run.secret_values.to_vec();
+        let forced_values = run.forced_values.to_vec();
+        tokio::spawn(async move {
+            logger
+                .stream_chunks(&mut output_rx, &secret_values, &forced_values)
+                .await;
+        })
+    };
+
+    // Race: child completion vs cancellation vs timeout
+    let (exit_code, was_cancelled_local, was_timeout) = tokio::select! {
+        status = child.wait() => {
+            let code = status?.code().unwrap_or(-1);
+            // Ensure all pipe data is read before proceeding
+            let _ = read_guard.join().await;
+            let _ = upload_task.await;
+            (code, false, false)
+        }
+        _ = cancel_triggered(&mut cancel_rx_step) => {
+            tracing::warn!("Job {jid} cancelled during step '{sname}' — killing");
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            upload_task.abort();
+            (-1, true, false)
+        }
+        _ = tokio::time::sleep(run.spec.timeout.unwrap_or(Duration::from_secs(3600))), if run.spec.timeout.is_some() => {
+            tracing::warn!("Step '{sname}' timed out after {}s — killing process", run.spec.timeout_secs);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = read_guard.join().await;
+            upload_task.abort();
+            (-1, false, true)
+        }
+    };
+
+    if let Some((ref reg, _, _)) = run.registry_login {
+        engine::docker::registry_logout(reg, run.docker_config_dir).await;
+    }
+
+    Ok(StepExecution {
+        output: engine::shell::ShellOutput {
+            stdout: String::new(),
+            stderr: if was_cancelled_local {
+                "==> CANCELLED\n".into()
+            } else if was_timeout {
+                step_timeout_content(run.spec.timeout_secs)
+            } else {
+                String::new()
+            },
+            exit_code: if was_cancelled_local || was_timeout {
+                -1
+            } else {
+                exit_code
+            },
+        },
+        was_cancelled: was_cancelled_local,
+        output_secret_values: run.secret_values.to_vec(),
+    })
+}
+
+/// SSH engine: one combined output upload (masked with the SSH catalog);
+/// parallel fan-out per host inside `execute_ssh_step`.
+async fn run_ssh_step(
+    run: StepRun<'_>,
+    ssh_sessions: &mut Vec<SshSession>,
+    cancel_rx: &mut watch::Receiver<bool>,
+) -> anyhow::Result<StepExecution> {
+    if ssh_sessions.is_empty() {
+        let msg = if run.spec.step["host"].is_null() {
+            format!(
+                "SSH step '{}' missing host connection details",
+                run.spec.name
+            )
+        } else {
+            format!("SSH step '{}': no hosts resolved from the database. Register your hosts in the Manager UI first.", run.spec.name)
+        };
+        return Err(run.log.fail_step(msg).await);
+    }
+
+    let mut ssh_env = run.env.clone();
+    let mut ssh_catalog = run.catalog.clone();
+    let cmd = if let Some((ref registry, ref username, ref password)) = run.registry_login {
+        ssh_env.insert("BUZ_REGISTRY_HOST".into(), registry.clone());
+        ssh_env.insert("BUZ_REGISTRY_USER".into(), username.clone());
+        ssh_env.insert("BUZ_REGISTRY_PASSWORD".into(), password.clone());
+        ssh_catalog.add_key("BUZ_REGISTRY_PASSWORD".to_string());
+        wrap_remote_cmd_with_registry_login(run.spec.command)
+    } else {
+        run.spec.command.to_string()
+    };
+    let mut cancel_rx_step = cancel_rx.clone();
+
+    // Debug echo — show the command before execution (like bash -x)
+    {
+        let echo_line = build_step_echo(
+            run.spec.exec_type,
+            &cmd,
+            &ssh_env,
+            &ssh_catalog,
+            run.spec.work_dir,
+        );
+        run.log.emit(LOG_ECHO, echo_line).await;
+    }
+
+    // Remote output is uploaded combined — mask with the SSH catalog
+    // (covers BUZ_REGISTRY_PASSWORD injected into the remote env).
+    let output_secret_values = ssh_catalog.secret_values(&ssh_env);
+
+    let jid = run.log.job_id.clone();
+    let sname = run.spec.name.to_string();
+    let sname2 = sname.clone();
+    // Job-scoped remote Docker config (per-host copy of the same
+    // path): plugin/step logins on the target host stay inside the
+    // job; inserted after masking setup — a path, not a secret.
+    if run.docker_config_dir.is_some() {
+        ssh_env.insert(
+            "DOCKER_CONFIG".into(),
+            format!("/tmp/buz-docker-{}", run.log.job_id),
+        );
+    }
+    ssh_env.insert("BUZ_STEP_ENGINE".into(), "ssh".into());
+    // Parallel fan-out inside execute_ssh_step; cancelling this
+    // select arm drops join_all and aborts every in-flight host.
+    let sessions_for_run = std::mem::take(ssh_sessions);
+
+    let (output, was_cancelled) = tokio::select! {
+        result = execute_ssh_step(
+            sessions_for_run,
+            &cmd,
+            run.spec.timeout,
+            &sname,
+            &ssh_env,
+            ssh_hosts_parallel(run.spec.step),
+        ) => {
+            (result?, false)
+        }
+        _ = cancel_triggered(&mut cancel_rx_step) => {
+            tracing::warn!("Job {jid} cancelled during SSH step '{sname2}' — aborting all hosts");
+            (engine::shell::ShellOutput {
+                stdout: String::new(),
+                stderr: "==> CANCELLED\n".to_string(),
+                exit_code: -1,
+            }, true)
+        }
+    };
+    Ok(StepExecution {
+        output,
+        was_cancelled,
+        output_secret_values,
+    })
+}
+
+/// Docker engine: registry login, image prefetch, streaming run with the
+/// step-scoped container name; cancel/timeout also stops the container.
+async fn run_docker_step(
+    run: StepRun<'_>,
+    prefetch: &mut Option<crate::client::image_prefetch::ImagePrefetch>,
+    docker_socket_path: Option<&Path>,
+    cancel_rx: &mut watch::Receiver<bool>,
+) -> anyhow::Result<StepExecution> {
+    let image = run.spec.step["image"].as_str().unwrap_or("").trim();
+    if let Err(e) = engine::docker::preflight(run.config.engine.docker_enabled, image) {
+        return Err(run.log.fail_step(format!("{e:#}")).await);
+    }
+
+    let pull_registry = run.registry_login.as_ref().map(|(r, _, _)| r.clone());
+    if let Some((ref registry, ref username, ref password)) = run.registry_login {
+        if let Err(e) =
+            engine::docker::registry_login(registry, username, password, run.docker_config_dir)
+                .await
+        {
+            let masked = mask_output(&format!("{e:#}"), run.secret_values, run.forced_values);
+            return Err(run.log.fail_step(masked).await);
+        }
+        run.log.emit(LOG_LOGIN, build_login_banner(registry)).await;
+    }
+
+    let prefetch_result = if let Some(prefetch) = prefetch.as_mut() {
+        tokio::select! {
+            result = prefetch.wait_for(image) => result,
+            _ = cancel_triggered(cancel_rx) => {
+                prefetch.abort_and_drain().await;
+                return Err(run.log.cancel_step().await);
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(Err(error)) = prefetch_result {
+        tracing::warn!("Docker image prefetch failed for {image:?}: {error}");
+    }
+
+    // Debug echo — show the command before execution (like bash -x)
+    {
+        let echo_line = build_step_echo(
+            run.spec.exec_type,
+            run.spec.command,
+            &run.env,
+            run.catalog,
+            run.spec.work_dir,
+        );
+        run.log.emit(LOG_ECHO, echo_line).await;
+    }
+
+    let mut cancel_rx_step = cancel_rx.clone();
+    let jid = run.log.job_id.clone();
+    let sname = run.spec.name.to_string();
+
+    let container_name = format!("buz-{}-{}", run.log.job_id, run.spec.idx);
+    let exec_result = engine::docker::execute_streaming_with_socket(
+        image,
+        Path::new(&run.config.runner.workspace_dir),
+        run.spec.command,
+        &run.env,
+        &run.spec.volumes,
+        run.spec.work_dir,
+        run.spec.privileged,
+        run.docker_config_dir,
+        docker_socket_path,
+        Some(&container_name),
+    )
+    .await;
+
+    let (mut child, mut output_rx, read_guard) = match exec_result {
+        Ok(v) => v,
+        Err(e) => {
+            if let Some(reg) = &pull_registry {
+                engine::docker::registry_logout(reg, run.docker_config_dir).await;
+            }
+            return Err(e);
+        }
+    };
+
+    let upload_task = {
+        let logger = run.log.clone();
+        let secret_values = run.secret_values.to_vec();
+        let forced_values = run.forced_values.to_vec();
+        tokio::spawn(async move {
+            logger
+                .stream_chunks(&mut output_rx, &secret_values, &forced_values)
+                .await;
+        })
+    };
+
+    let (exit_code, was_cancelled_docker, was_timeout_docker) = tokio::select! {
+        status = child.wait() => {
+            let code = status?.code().unwrap_or(-1);
+            let _ = read_guard.join().await;
+            let _ = upload_task.await;
+            (code, false, false)
+        }
+        _ = cancel_triggered(&mut cancel_rx_step) => {
+            tracing::warn!("Job {jid} cancelled during docker step '{sname}' — killing container process");
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            engine::docker::stop_container(&container_name, run.docker_config_dir).await;
+            upload_task.abort();
+            (-1, true, false)
+        }
+        _ = tokio::time::sleep(run.spec.timeout.unwrap_or(Duration::from_secs(3600))), if run.spec.timeout.is_some() => {
+            tracing::warn!("Docker step '{sname}' timed out after {}s — killing container", run.spec.timeout_secs);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            engine::docker::stop_container(&container_name, run.docker_config_dir).await;
+            let _ = read_guard.join().await;
+            upload_task.abort();
+            (-1, false, true)
+        }
+    };
+
+    if let Some(reg) = &pull_registry {
+        engine::docker::registry_logout(reg, run.docker_config_dir).await;
+    }
+
+    Ok(StepExecution {
+        output: engine::shell::ShellOutput {
+            stdout: String::new(),
+            stderr: if was_cancelled_docker {
+                "==> CANCELLED\n".into()
+            } else if was_timeout_docker {
+                step_timeout_content(run.spec.timeout_secs)
+            } else {
+                String::new()
+            },
+            exit_code: if was_cancelled_docker || was_timeout_docker {
+                -1
+            } else {
+                exit_code
+            },
+        },
+        was_cancelled: was_cancelled_docker,
+        output_secret_values: run.secret_values.to_vec(),
+    })
+}
+
+/// Post-execution bookkeeping: cancel short-circuit, SSH/sandbox summary
+/// chunk, Verbose result, and the exit-code verdict. Returns `true` when the
+/// step failed under `fail_strategy = "continue"` (the job must still end as
+/// failed); stop-strategy failures and cancels return an already-reported
+/// error.
+async fn finalize_step(
+    log: &StepLogger,
+    spec: &StepSpec<'_>,
+    execution: StepExecution,
+    forced_values: &[String],
+    sandbox_handle: Option<&crate::client::sandbox_client::SandboxHandle>,
+    verbose: bool,
+    step_started: std::time::Instant,
+) -> anyhow::Result<bool> {
+    let StepExecution {
+        output,
+        was_cancelled,
+        output_secret_values,
+    } = execution;
+    if was_cancelled {
+        return Err(log.cancel_step().await);
+    }
+
+    // For SSH steps, upload the accumulated output as a summary chunk.
+    // Local steps are fully streamed so we skip this redundant upload.
+    if spec.exec_type == "ssh" || sandbox_handle.is_some() {
+        let combined = format!("==> {}\n{}\n{}", spec.name, output.stdout, output.stderr);
+        let masked = mask_output(&combined, &output_secret_values, forced_values);
+        log.try_emit(LOG_STEP_META_B, masked).await?;
+    }
+
+    // Verbose mode: result summary (duration + exit code). Uploaded even on
+    // failure so troubleshooting users see exactly how long the step ran.
+    if verbose && !was_cancelled {
+        log.emit(
+            LOG_STEP_VERBOSE_RESULT,
+            build_verbose_step_result(step_started.elapsed(), output.exit_code),
+        )
+        .await;
+    }
+
+    if output.exit_code != 0 && spec.fail_strategy == "stop" {
+        let hint = step_failure_hint(&output.stderr, output.exit_code);
+        let msg = build_step_failure_message(spec.name, output.exit_code, spec.command, &hint);
+        // fail_step uploads the failure into this step's terminal so it is
+        // visible in the UI. Prefer step_order=idx over run_one_job's global
+        // -1 catch — the frontend maps -1 as a fallback, but per-step errors
+        // must not rely on it.
+        return Err(log.fail_step(msg).await);
+    }
+    if output.exit_code != 0 {
+        // fail_strategy = "continue": keep going, but the job ends failed.
+        update_job_status(
+            &log.client,
+            &log.config,
+            &log.token,
+            &log.job_id,
+            "failed",
+            Some(log.step_order),
+        )
+        .await?;
+        return Ok(true);
+    }
+    update_job_status(
+        &log.client,
+        &log.config,
+        &log.token,
+        &log.job_id,
+        "success",
+        Some(log.step_order),
+    )
+    .await?;
+    Ok(false)
 }
 
 struct SandboxOutputMasker {
