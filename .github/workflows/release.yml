@@ -126,6 +126,10 @@ jobs:
             dist/release/${{ steps.meta.outputs.archive }}.tar.gz
             dist/release/${{ steps.meta.outputs.archive }}.tar.gz.sha256
           if-no-files-found: error
+          # The publish job consumes these within the same run and attaches
+          # them to the GitHub Release; keeping them a day bounds storage
+          # usage without risking the hand-off.
+          retention-days: 1
 
   publish:
     name: Publish GitHub Release
