@@ -3,10 +3,9 @@ import { colorizeLogLine, formatLogChunkForTerminal } from '@/utils/logFormat'
 
 describe('formatLogChunkForTerminal', () => {
   it('prefixes every non-empty line with the same clock and strips banner marker', () => {
-    const out = formatLogChunkForTerminal(
-      '11:56:55',
-      '==> RUN [docker]\n  cmd  echo hi\n',
-    )
+    const out = formatLogChunkForTerminal('11:56:55', {
+      content: '==> RUN [docker]\n  cmd  echo hi\n',
+    })
     const lines = out.replace(/\r\n$/, '').split('\r\n')
     expect(lines).toHaveLength(2)
     expect(lines[0]).toContain('[11:56:55]')
@@ -17,7 +16,7 @@ describe('formatLogChunkForTerminal', () => {
   })
 
   it('handles a single line without trailing newline', () => {
-    const out = formatLogChunkForTerminal('01:02:03', 'hello')
+    const out = formatLogChunkForTerminal('01:02:03', { content: 'hello' })
     expect(out).toBe('\x1b[2m[01:02:03]\x1b[0m hello\r\n')
   })
 })
@@ -67,6 +66,40 @@ describe('colorizeLogLine — banner classification', () => {
 
   it('colors generic `==> <step_name>` banner bold blue', () => {
     expect(colorizeLogLine('==> deploy')).toBe('\x1b[1;34mdeploy\x1b[0m')
+  })
+})
+
+describe('colorizeLogLine — chunk level classification', () => {
+  it('colors error-level banners red even when the wording is unknown', () => {
+    // A future runner banner that no keyword rule knows about must still be
+    // red as long as the runner stamped level=error.
+    expect(colorizeLogLine('==> STEP ABORTED', 'error')).toBe('\x1b[1;31mSTEP ABORTED\x1b[0m')
+  })
+
+  it('colors warn-level banners yellow regardless of wording', () => {
+    expect(colorizeLogLine('==> STEP ABORTED', 'warn')).toBe('\x1b[1;33mSTEP ABORTED\x1b[0m')
+    expect(colorizeLogLine('==> TIMEOUT [30s]', 'warn')).toBe('\x1b[1;33mTIMEOUT [30s]\x1b[0m')
+  })
+
+  it('keeps per-category keyword colors for debug/info levels', () => {
+    expect(colorizeLogLine('==> RUN [shell]', 'info')).toBe('\x1b[1;32mRUN [shell]\x1b[0m')
+    expect(colorizeLogLine('==> STAGE exec', 'debug')).toContain('\x1b[2m')
+    expect(colorizeLogLine('==> STEP RESULT', 'debug')).toContain('\x1b[1;37m')
+  })
+
+  it('falls back to keyword classification for legacy chunks without a level', () => {
+    expect(colorizeLogLine('==> ERROR', null)).toBe('\x1b[1;31mERROR\x1b[0m')
+    expect(colorizeLogLine('==> CANCELLED', undefined)).toBe('\x1b[1;33mCANCELLED\x1b[0m')
+  })
+
+  it('applies the chunk level to every banner line of the chunk', () => {
+    const out = formatLogChunkForTerminal('10:00:00', {
+      content: '==> FUTURE BANNER\nplain output\n',
+      level: 'error',
+    })
+    expect(out).toContain('\x1b[1;31mFUTURE BANNER\x1b[0m')
+    // Non-banner body lines keep their ordinary formatting.
+    expect(out).toContain('plain output')
   })
 })
 

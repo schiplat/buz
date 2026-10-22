@@ -8,6 +8,14 @@
 //!   2. `BANNER_RULES`   — ordered classifier for `==> …` banner lines; the
 //!                         `==>` marker is stripped for a cleaner display.
 //!   3. `FIELD_KEYS`     — every `  key   value` field key the runner emits.
+//!
+//! Since runners stamp a severity on every chunk (`LogChunk.level`), error and
+//! warn banners are colored straight from that level — wording changes
+//! upstream can no longer misclassify them. Debug/info banners keep their
+//! per-category colors via the keyword table; legacy chunks (no level) also
+//! fall through to keywords.
+
+import type { LogLevel } from '@/api/jobs'
 
 /** Central ANSI palette. */
 const ANSI = {
@@ -95,9 +103,11 @@ function stripBannerMarker(line: string): string | null {
   return trimmed.slice(BANNER_MARKER.length).replace(/^\s+/, '')
 }
 
-/** Color a `==> …` banner line via the central classifier (marker removed). */
-function colorizeBannerLine(line: string): string {
+/** Color a `==> …` banner line: chunk level first, keyword classifier fallback. */
+function colorizeBannerLine(line: string, level?: LogLevel | null): string {
   const body = stripBannerMarker(line)!
+  if (level === 'error') return `${ANSI.boldRed}${body}${ANSI.reset}`
+  if (level === 'warn') return `${ANSI.boldYellow}${body}${ANSI.reset}`
   const upper = body.toUpperCase()
   for (const rule of BANNER_RULES) {
     if (rule.match(upper)) {
@@ -109,10 +119,10 @@ function colorizeBannerLine(line: string): string {
 }
 
 /** Color a single log line: banner / separator / field / continuation. */
-export function colorizeLogLine(line: string): string {
+export function colorizeLogLine(line: string, level?: LogLevel | null): string {
   const trimmed = line.trimStart()
   if (trimmed.startsWith(BANNER_MARKER)) {
-    return colorizeBannerLine(line)
+    return colorizeBannerLine(line, level)
   }
   // Multi-host separator / summary lines (`--- host ---`, `--- summary ---`).
   if (trimmed.startsWith('---')) {
@@ -129,11 +139,17 @@ export function colorizeLogLine(line: string): string {
   return line
 }
 
+/** The slice of a log chunk the terminal formatter needs. */
+export interface LogChunkLike {
+  content: string
+  level?: LogLevel | null
+}
+
 /** Dim clock + optional ANSI for banner / body lines. */
-export function formatLogChunkForTerminal(ts: string, content: string): string {
+export function formatLogChunkForTerminal(ts: string, chunk: LogChunkLike): string {
   const dim = ANSI.dim
   const reset = ANSI.reset
-  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const normalized = chunk.content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
   const lines = normalized.split('\n')
   if (lines.length > 0 && lines[lines.length - 1] === '') {
     lines.pop()
@@ -142,7 +158,8 @@ export function formatLogChunkForTerminal(ts: string, content: string): string {
     return `${dim}[${ts}]${reset}\r\n`
   }
   return (
-    lines.map((line) => `${dim}[${ts}]${reset} ${colorizeLogLine(line)}`).join('\r\n') +
-    '\r\n'
+    lines
+      .map((line) => `${dim}[${ts}]${reset} ${colorizeLogLine(line, chunk.level)}`)
+      .join('\r\n') + '\r\n'
   )
 }

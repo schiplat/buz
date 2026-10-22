@@ -92,7 +92,7 @@ async fn purges_only_expired_debug_jobs() {
 
     // Simulate a debug job whose unredacted chunks were broadcast before any
     // WS client connected (the sink retains them in memory).
-    broadcaster.broadcast("old-debug", 0, "plaintext-secret");
+    broadcaster.broadcast("old-debug", 0, None, "plaintext-secret");
 
     let purged = purge_expired_debug_logs(&pool, &broadcaster)
         .await

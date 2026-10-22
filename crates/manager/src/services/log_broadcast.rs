@@ -10,14 +10,17 @@ const REPLAY_CAPACITY: usize = 256;
 pub struct LogEntry {
     pub step_order: i32,
     pub content: String,
+    /// Chunk severity (lowercase, e.g. `"error"`); `None` = legacy chunk.
+    pub level: Option<String>,
     /// RFC3339 UTC timestamp so Job Detail can render `[HH:MM:SS]`.
     pub created_at: String,
 }
 
 impl LogEntry {
-    pub fn new(step_order: i32, content: impl Into<String>) -> Self {
+    pub fn new(step_order: i32, level: Option<&str>, content: impl Into<String>) -> Self {
         Self {
             step_order,
+            level: level.map(str::to_string),
             content: content.into(),
             created_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         }
@@ -27,6 +30,7 @@ impl LogEntry {
         serde_json::json!({
             "step_order": self.step_order,
             "content": self.content,
+            "level": self.level,
             "created_at": self.created_at,
         })
         .to_string()
@@ -86,11 +90,11 @@ impl LogBroadcaster {
 
     /// Push a new log entry to all subscribers of the given job.
     /// Lazily creates the sink so history is retained even before any WS client connects.
-    pub fn broadcast(&self, job_id: &str, step_order: i32, content: &str) {
+    pub fn broadcast(&self, job_id: &str, step_order: i32, level: Option<&str>, content: &str) {
         Self::get_or_create(&self.sinks, job_id);
         let mut map = self.sinks.write().unwrap();
         if let Some(sink) = map.get_mut(job_id) {
-            let entry = LogEntry::new(step_order, content);
+            let entry = LogEntry::new(step_order, level, content);
             let json = entry.to_json_string();
             // Keep a bounded history ring for late joiners
             if sink.history.len() >= REPLAY_CAPACITY {

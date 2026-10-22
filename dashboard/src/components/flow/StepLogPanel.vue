@@ -42,7 +42,7 @@ function syncLogs() {
   for (let i = writtenCount; i < filtered.length; i++) {
     const chunk = filtered[i]
     const ts = clockFor(chunk)
-    term.write(formatLogChunkForTerminal(ts, chunk.content))
+    term.write(formatLogChunkForTerminal(ts, chunk))
   }
   writtenCount = filtered.length
 }

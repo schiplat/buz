@@ -1,5 +1,5 @@
 use reqwest::Client;
-use shared::protocol::{LogChunk, UpdateJobStatusRequest};
+use shared::protocol::{LogChunk, LogLevel, UpdateJobStatusRequest};
 use shared::value_source::ValueMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -218,6 +218,7 @@ async fn run_one_job(
                     chunk_index: -1,
                     step_order: -1,
                     content: format!("==> ERROR\n{e:#}\n"),
+                    level: Some(LogLevel::Error),
                 },
             )
             .await
@@ -619,6 +620,7 @@ async fn execute_job_inner(
             chunk_index: LOG_RUNNER_BANNER,
             step_order: 0,
             content: build_runner_banner(),
+            level: Some(LogLevel::Info),
         },
     )
     .await;

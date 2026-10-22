@@ -127,10 +127,14 @@ export interface SnapshotEnv {
   is_secret: boolean
 }
 
+/** Chunk severity, stamped by the runner; absent on legacy chunks. */
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+
 export interface LogChunk {
   chunk_index: number
   step_order: number
   content: string
+  level?: LogLevel | null
   created_at?: string | null
 }
 

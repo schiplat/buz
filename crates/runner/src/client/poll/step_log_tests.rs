@@ -433,3 +433,22 @@ fn verbose_step_result_reports_duration_and_exit_code() {
     assert!(short.contains("80ms"), "{short}");
     assert!(short.contains("exit code  3"), "{short}");
 }
+
+#[test]
+fn chunk_levels_follow_layout_offsets() {
+    use shared::protocol::LogLevel as L;
+    assert_eq!(level_for_offset(LOG_STEP_ERROR), L::Error);
+    assert_eq!(level_for_offset(LOG_STEP_CANCELLED), L::Warn);
+    for offset in [
+        LOG_STEP_VERBOSE_PREPARE,
+        LOG_STEP_VERBOSE_CONFIG,
+        LOG_STEP_VERBOSE_CONFIG_PREP,
+        LOG_STEP_VERBOSE_EXEC,
+        LOG_STEP_VERBOSE_RESULT,
+    ] {
+        assert_eq!(level_for_offset(offset), L::Debug, "offset {offset}");
+    }
+    for offset in [LOG_LOGIN, LOG_ECHO, LOG_STREAM_START, LOG_STEP_SUMMARY] {
+        assert_eq!(level_for_offset(offset), L::Info, "offset {offset}");
+    }
+}

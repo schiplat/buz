@@ -5,7 +5,7 @@
 //! wire semantics (`LogChunk` fields, ordering) live in `shared::protocol`.
 
 use reqwest::Client;
-use shared::protocol::LogChunk;
+use shared::protocol::{LogChunk, LogLevel};
 use std::time::Duration;
 
 use crate::config::Config;
@@ -14,33 +14,23 @@ use std::collections::HashMap;
 
 use super::update_job_status;
 
-/// Per-step log chunk layout (`UNIQUE(job_id, chunk_index)`).
-///
-/// Manager / Job Detail display logs with `ORDER BY step_order, chunk_index`,
-/// so these offsets must match **semantic** order (not merely upload time):
-///
-/// ```text
-///   0     ==> STAGE prepare     (verbose)
-///   1     ==> STEP CONFIG       (verbose)
-///   2     ==> CONFIG PREP       (verbose / debug)
-///   3     ==> LOGIN […]         (registry)
-///   4     ==> STAGE exec        (verbose)
-///   5     ==> RUN […]
-///   6…    streamed stdout/stderr
-///   9993  ==> STEP RESULT       (verbose; after stream)
-///   9997  ==> ERROR
-///   9998  ==> CANCELLED (cancel marker)
-///   9999  ==> output summary
-///
-/// The job-start runner identity banner uses `step_order = 0` with a negative
-/// `chunk_index` (see `LOG_RUNNER_BANNER`), so it sorts before step 0's first
-/// chunk. It must NOT reuse `-1`, which is reserved for the global
-/// `step_order = -1` error path — `UNIQUE(job_id, chunk_index)` +
-/// `INSERT OR REPLACE` would otherwise let the error chunk overwrite the banner.
-/// ```
-///
-/// Verbose prep/config used to live at 9990+, which sorted **after** RUN +
-/// stream and made Verbose look "out of order" once the job reloaded from DB.
+/// Severity implied by a chunk-layout offset: verbose extras are Debug,
+/// the cancel marker is Warn, errors are Error, everything else Info.
+fn level_for_offset(offset: i32) -> LogLevel {
+    match offset {
+        LOG_STEP_ERROR => LogLevel::Error,
+        LOG_STEP_CANCELLED => LogLevel::Warn,
+        LOG_STEP_VERBOSE_PREPARE
+        | LOG_STEP_VERBOSE_CONFIG
+        | LOG_STEP_VERBOSE_CONFIG_PREP
+        | LOG_STEP_VERBOSE_EXEC
+        | LOG_STEP_VERBOSE_RESULT => LogLevel::Debug,
+        _ => LogLevel::Info,
+    }
+}
+
+/// Chunk layout contract lives on `shared::protocol::LogChunk` — the
+/// Manager and the terminal both read it from there.
 pub(crate) fn step_log_base(step_idx: usize) -> i32 {
     (step_idx * 10_000) as i32
 }
@@ -136,10 +126,32 @@ impl StepLogger {
         }
     }
 
-    /// Emit at an absolute chunk index (streamed-output numbering).
+    /// Emit at an absolute chunk index (streamed-output numbering —
+    /// always Info severity).
     pub(super) async fn emit_at(
         &self,
         chunk_index: i32,
+        content: impl Into<String>,
+    ) -> anyhow::Result<()> {
+        self.upload(chunk_index, LogLevel::Info, content).await
+    }
+
+    /// Emit at `log_base + offset`, propagating upload errors (for the few
+    /// callers where a failed upload must fail the step). The severity comes
+    /// from the layout offset so every site stays consistent by construction.
+    pub(super) async fn try_emit(
+        &self,
+        offset: i32,
+        content: impl Into<String>,
+    ) -> anyhow::Result<()> {
+        self.upload(self.log_base + offset, level_for_offset(offset), content)
+            .await
+    }
+
+    async fn upload(
+        &self,
+        chunk_index: i32,
+        level: LogLevel,
         content: impl Into<String>,
     ) -> anyhow::Result<()> {
         crate::client::logs::upload_chunk(
@@ -151,19 +163,10 @@ impl StepLogger {
                 chunk_index,
                 step_order: self.step_order,
                 content: content.into(),
+                level: Some(level),
             },
         )
         .await
-    }
-
-    /// Emit at `log_base + offset`, propagating upload errors (for the few
-    /// callers where a failed upload must fail the step).
-    pub(super) async fn try_emit(
-        &self,
-        offset: i32,
-        content: impl Into<String>,
-    ) -> anyhow::Result<()> {
-        self.emit_at(self.log_base + offset, content).await
     }
 
     /// Step-failure boilerplate: ERROR chunk → job status "failed" → the error
