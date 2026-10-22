@@ -1,5 +1,8 @@
 # Host-side sandbox supervisor. Run this only when a Runner uses Container or VM mode.
 [sandboxd]
+# Unique per sandboxd deployment sharing the same Docker daemon. Startup recovery
+# only removes containers labelled with this instance id.
+instance_id = "sandboxd-01"
 socket = "/run/buz-sandboxd/sandboxd.sock"
 workspace_root = "/app/buz/workspace"
 docker_cli = "/usr/local/bin/docker"

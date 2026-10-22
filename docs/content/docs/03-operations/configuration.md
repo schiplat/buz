@@ -177,10 +177,13 @@ The supervisor actively probes each configured backend at startup and every five
 
 The optional host-side `buz-sandboxd` service uses a separate `conf/sandboxd.toml` (not the Runner policy file). It must share the same workspace volume as Runner and be permissioned to accept only the Runner UID. In Compose, build/start the `sandboxd` profile and keep its Docker socket private; Docker-daemon access is host-root-equivalent. Set the pinned `container_image` and, if using VM mode, the digest-pinned `firecracker_guest_image` plus a Firecracker-compatible runtime registered with the Docker daemon. VM mode requires Linux KVM and a pre-provisioned Firecracker-compatible OCI runtime; Buz does not bundle a guest kernel/image or configure KVM for you.
 
+`sandboxd.instance_id` must be unique per sandboxd deployment sharing one Docker daemon. On startup sandboxd refuses to take over a socket whose live peer answers a `health` probe, removes stale sockets only when nothing is listening, and force-removes leftover `buz.sandboxd.managed=true` containers carrying its own `buz.sandboxd.instance=<id>` label — it never touches other instances' containers. Compose sets the id via `BUZ_SANDBOXD_INSTANCE_ID` (default `compose-sandboxd`) and exposes `/dev/kvm` to sandboxd only through the optional `docker-compose.vm.yml` override (`docker compose -f docker-compose.yml -f docker-compose.vm.yml --profile sandbox up -d`), because the default Compose path cannot reach the host KVM device. The container image ships a `buz-sandboxd --healthcheck` subcommand used as the Compose healthcheck; the Runner waits for it via an optional `depends_on` condition, so Host-only deployments are unaffected.
+
 Example:
 
 ```toml
 [sandboxd]
+instance_id = "sandboxd-01"
 socket = "/run/buz-sandboxd/sandboxd.sock"
 workspace_root = "/app/buz/workspace"
 workspace_volume = "buz-runner-ws"

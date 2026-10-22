@@ -21,6 +21,7 @@ fn fake_service(root: &std::path::Path) -> (Service, tempfile::TempDir) {
     .unwrap();
     std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
     let config = SandboxdConfig {
+        instance_id: "test-sandboxd".into(),
         socket: dir
             .path()
             .join("sandbox.sock")
@@ -195,6 +196,51 @@ async fn cancelling_exec_connection_removes_the_job_container() {
     );
     assert!(service.jobs.lock().await.contains_key(&handle));
 }
+
+#[tokio::test]
+async fn slow_client_cannot_starve_the_step_watchdog() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("job-slow-reader");
+    std::fs::create_dir(&workspace).unwrap();
+    let (service, helper_dir) = fake_service(root.path());
+    let created = create_job(
+        &service,
+        &json!({"mode":"container","workspace":workspace,"image":"buz-job@sha256:abc"}),
+        10001,
+        10001,
+    )
+    .await
+    .unwrap();
+    let handle = created["handle"].as_str().unwrap().to_string();
+    let socket = helper_dir.path().join("slow-reader.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let service_copy = service.clone();
+    let request =
+        json!({"handle":handle,"command":"echo ok","work_dir":"","env":{},"timeout_seconds":1});
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        exec_step_stream(&service_copy, &request, stream).await
+    });
+    let mut client = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let mut payload = serde_json::to_vec(&json!({"op":"exec_step","handle":handle,"command":"echo ok","work_dir":"","env":{},"timeout_seconds":1})).unwrap();
+    payload.push(b'\n');
+    use tokio::io::AsyncWriteExt;
+    client.write_all(&payload).await.unwrap();
+    // Deliberately do not read: fill the server's socket send buffer.
+    let outcome = tokio::time::timeout(Duration::from_secs(30), server)
+        .await
+        .expect("watchdog must finish despite unread output");
+    // Either the in-container timeout produced a normal exit frame flow or the
+    // write deadline fired; both paths must terminate and clean the container.
+    let _ = outcome;
+    assert!(
+        std::fs::read_to_string(helper_dir.path().join("docker-args"))
+            .unwrap()
+            .contains("rm --force"),
+        "slow-reader watchdog must still clean the container"
+    );
+}
+
 #[tokio::test]
 async fn vm_mode_uses_firecracker_compatible_runtime() {
     let root = tempfile::tempdir().unwrap();

@@ -22,8 +22,52 @@ use shared::protocol::{ExecutionBackendStatus, RunnerExecutionCapabilities, Runn
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_EXEC_SECONDS: u64 = 24 * 60 * 60;
 
+pub(super) async fn cleanup_stale_containers(config: &SandboxdConfig) -> anyhow::Result<()> {
+    let output = Command::new(&config.docker_cli)
+        .args([
+            "ps",
+            "--all",
+            "--quiet",
+            "--filter",
+            &format!("label=buz.sandboxd.instance={}", config.instance_id),
+            "--filter",
+            "label=buz.sandboxd.managed=true",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "cannot list stale sandbox containers"
+    );
+    for id in String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        let mut remove = Command::new(&config.docker_cli);
+        remove
+            .args(["rm", "--force", id])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let result = tokio::time::timeout(Duration::from_secs(30), remove.output())
+            .await
+            .map_err(|_| anyhow::anyhow!("stale sandbox cleanup timed out"))??;
+        anyhow::ensure!(
+            result.status.success(),
+            "failed to remove stale sandbox container {id}: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SandboxdConfig {
+    #[serde(default = "default_instance_id")]
+    pub instance_id: String,
     #[serde(default = "default_socket")]
     pub socket: String,
     #[serde(default = "default_workspace_root")]
@@ -48,6 +92,10 @@ pub struct SandboxdConfig {
     pub memory_limit: String,
     #[serde(default = "default_cpu_limit")]
     pub cpu_limit: String,
+}
+
+fn default_instance_id() -> String {
+    "default".into()
 }
 
 fn default_socket() -> String {
@@ -84,6 +132,34 @@ pub(super) struct JobRuntime {
     workspace: PathBuf,
 }
 
+async fn health_response(stream: UnixStream) -> anyhow::Result<()> {
+    let mut request = serde_json::to_vec(&json!({"op":"health"}))?;
+    request.push(b'\n');
+    let mut stream = stream;
+    stream.write_all(&request).await?;
+    stream.shutdown().await?;
+    let mut line = String::new();
+    let count = tokio::time::timeout(
+        Duration::from_secs(2),
+        BufReader::new(stream).read_line(&mut line),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("sandboxd health response timed out"))??;
+    anyhow::ensure!(count > 0, "sandboxd returned no health response");
+    let response: Value = serde_json::from_str(&line)?;
+    anyhow::ensure!(
+        response["ok"] == true,
+        "sandboxd health response is not healthy"
+    );
+    Ok(())
+}
+
+pub async fn healthcheck(socket: &str) -> anyhow::Result<()> {
+    let stream = tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(socket))
+        .await
+        .map_err(|_| anyhow::anyhow!("sandboxd healthcheck connect timed out"))??;
+    health_response(stream).await
+}
 pub async fn serve(config: SandboxdConfig) -> anyhow::Result<()> {
     anyhow::ensure!(
         config.allowed_runner_uid.is_some(),
@@ -92,11 +168,25 @@ pub async fn serve(config: SandboxdConfig) -> anyhow::Result<()> {
     let workspace_root = Path::new(&config.workspace_root);
     std::fs::create_dir_all(workspace_root)?;
     let root = std::fs::canonicalize(workspace_root)?;
+    anyhow::ensure!(
+        !config.instance_id.trim().is_empty(),
+        "sandboxd instance_id cannot be empty"
+    );
     let socket = Path::new(&config.socket);
     std::fs::create_dir_all(socket.parent().unwrap_or(Path::new("/run")))?;
     if std::fs::symlink_metadata(socket).is_ok() {
-        std::fs::remove_file(socket)?;
+        match UnixStream::connect(socket).await {
+            Ok(active) => {
+                health_response(active).await?;
+                anyhow::bail!(
+                    "another sandboxd instance is already listening at {}",
+                    socket.display()
+                );
+            }
+            Err(_) => std::fs::remove_file(socket)?,
+        }
     }
+    cleanup_stale_containers(&config).await?;
     let listener = UnixListener::bind(socket)?;
     #[cfg(unix)]
     {
@@ -165,6 +255,9 @@ async fn handle_connection(service: Service, mut stream: UnixStream) -> anyhow::
         .get("op")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if operation == "health" {
+        return write_response(&mut stream, json!({"ok": true})).await;
+    }
     if operation == "exec_step" {
         return exec_step_stream(&service, &request, stream).await;
     }
@@ -210,6 +303,7 @@ async fn process_request(
         .and_then(Value::as_str)
         .unwrap_or_default()
     {
+        "health" => Ok(json!({"ok": true})),
         "create_job" => create_job(service, &request, uid, gid).await,
         "probe_capabilities" => probe_capabilities(service, &request).await,
         "read_file" => read_file(service, &request).await,
@@ -323,6 +417,10 @@ pub(super) async fn probe_backend(
             &probe_name,
             "--label",
             "buz.sandboxd.probe=true",
+            "--label",
+            "buz.sandboxd.managed=true",
+            "--label",
+            &format!("buz.sandboxd.instance={}", service.config.instance_id),
             "--user",
             "10001:10001",
             "--workdir",
@@ -482,6 +580,8 @@ async fn create_job(
         &container,
         "--label",
         "buz.sandboxd.managed=true",
+        "--label",
+        &format!("buz.sandboxd.instance={}", service.config.instance_id),
         "--user",
         &user,
         "--workdir",
@@ -518,12 +618,16 @@ async fn create_job(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    run_status(
+    let create_result = run_status(
         command,
         Duration::from_secs(120),
         "create sandbox container",
     )
-    .await?;
+    .await;
+    if let Err(error) = create_result {
+        let _ = remove_container(&service.config.docker_cli, &container).await;
+        return Err(error);
+    }
     let mut start = Command::new(&service.config.docker_cli);
     start
         .args(["start", &container])
@@ -569,12 +673,27 @@ async fn create_job(
     Ok(json!({"ok": true, "handle": handle}))
 }
 
+async fn kill_exec_and_container(
+    child: &mut tokio::process::Child,
+    container: &str,
+    docker_cli: &str,
+    out_reader: &tokio::task::JoinHandle<anyhow::Result<()>>,
+    err_reader: &tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    out_reader.abort();
+    err_reader.abort();
+    let _ = kill_container(docker_cli, container).await;
+}
+
 async fn exec_step_stream(
     service: &Service,
     request: &Value,
     stream: UnixStream,
 ) -> anyhow::Result<()> {
-    let (mut disconnect_reader, mut stream_writer) = stream.into_split();
+    let (mut disconnect_reader, stream_writer) = stream.into_split();
+    let stream_writer = Arc::new(tokio::sync::Mutex::new(stream_writer));
     let handle = request
         .get("handle")
         .and_then(Value::as_str)
@@ -668,37 +787,48 @@ async fn exec_step_stream(
             output = output_rx.recv(), if !output_closed => {
                 match output {
                     Some((stream_name, content)) => {
-                        if let Err(error) = write_response(&mut stream_writer, json!({
+                        let frame = json!({
                             "event": "output",
                             "stream": stream_name,
                             "content": content,
-                        })).await {
-                            let _ = kill_container(&service.config.docker_cli, &job.container).await;
-                            return Err(error);
+                        });
+                        tokio::select! {
+                            result = tokio::time::timeout(Duration::from_secs(30), async {
+                                let mut writer = stream_writer.lock().await;
+                                write_response(&mut *writer, frame).await
+                            }) => {
+                                match result {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(error)) => {
+                                        kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                                        return Err(error);
+                                    }
+                                    Err(_) => {
+                                        kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                                        return Err(anyhow::anyhow!("sandbox output write timed out; job container was removed"));
+                                    }
+                                }
+                            }
+                            _ = async { tokio::time::sleep_until(deadline.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(MAX_EXEC_SECONDS + 10))).await }, if deadline.is_some() && status.is_none() => {
+                                kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                                return Err(anyhow::anyhow!("sandbox exec watchdog exceeded the step timeout; job container was removed"));
+                            }
+                            _ = disconnect_reader.read_u8() => {
+                                kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                                return Ok(());
+                            }
                         }
                     }
                     None => output_closed = true,
                 }
             }
             _ = async { tokio::time::sleep_until(deadline.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(MAX_EXEC_SECONDS + 10))).await }, if deadline.is_some() && status.is_none() => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                out_reader.abort();
-                err_reader.abort();
-                kill_container(&service.config.docker_cli, &job.container).await?;
-                write_response(&mut stream_writer, json!({
-                    "event": "error",
-                    "error": "sandbox exec watchdog exceeded the step timeout; the job container was removed",
-                })).await?;
-                return Ok(());
+                kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                return Err(anyhow::anyhow!("sandbox exec watchdog exceeded the step timeout; job container was removed"));
             }
-            result = disconnect_reader.read_u8() => {
-                if result.is_ok() || result.is_err() {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    let _ = kill_container(&service.config.docker_cli, &job.container).await;
-                    return Ok(());
-                }
+            _result = disconnect_reader.read_u8() => {
+                kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                return Ok(());
             }
         }
     }
@@ -706,15 +836,20 @@ async fn exec_step_stream(
     let _ = err_reader.await?;
     let status = status.expect("process completion observed");
     let code = status.code().unwrap_or(-1);
-    write_response(
-        &mut stream_writer,
-        json!({
-            "event": "exit",
-            "code": code,
-            "timed_out": timeout_seconds > 0 && matches!(code, 124 | 137),
-        }),
+    let mut writer = stream_writer.lock().await;
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        write_response(
+            &mut *writer,
+            json!({
+                "event": "exit",
+                "code": code,
+                "timed_out": timeout_seconds > 0 && matches!(code, 124 | 137),
+            }),
+        ),
     )
-    .await?;
+    .await
+    .map_err(|_| anyhow::anyhow!("sandbox exit frame write timed out"))??;
     Ok(())
 }
 
@@ -847,12 +982,22 @@ async fn remove_container(docker: &str, container: &str) -> anyhow::Result<()> {
         .args(["rm", "--force", container])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    match run_status(command, Duration::from_secs(30), "remove sandbox container").await {
-        Ok(()) => Ok(()),
-        Err(error) if error.to_string().contains("status 1") => Ok(()),
-        Err(error) => Err(error),
+        .stderr(Stdio::piped());
+    let output = tokio::time::timeout(Duration::from_secs(30), command.output())
+        .await
+        .map_err(|_| anyhow::anyhow!("remove sandbox container timed out"))??;
+    if output.status.success() {
+        return Ok(());
     }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("No such container") || stderr.contains("is not running") {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "remove sandbox container failed with status {}: {}",
+        output.status.code().unwrap_or(-1),
+        stderr.trim()
+    )
 }
 
 #[cfg(all(test, unix))]

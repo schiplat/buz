@@ -40,6 +40,9 @@ services:
     depends_on:
       manager:
         condition: service_healthy
+      sandboxd:
+        condition: service_healthy
+        required: false
     volumes:
       - ${BUZ_RUNNER_CONF:-./deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
       - ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}:/app/buz/workspace
@@ -67,11 +70,19 @@ services:
     user: "0:0"
     environment:
       BUZ_SANDBOXD_WORKSPACE_VOLUME: ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}
+      BUZ_SANDBOXD_INSTANCE_ID: ${BUZ_SANDBOXD_INSTANCE_ID:-compose-sandboxd}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}:/app/buz/workspace
       - buz-sandboxd-socket:/run/buz-sandboxd
       - ./deploy/conf/sandboxd.toml:/app/buz/conf/sandboxd.toml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/buz-sandboxd", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
     restart: unless-stopped
 
 volumes:
