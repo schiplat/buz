@@ -311,7 +311,8 @@ pub(crate) fn describe_download_failure(
 /// expired (Manager clock lagged at signing, or the task waited too long) must
 /// be obvious in the job log instead of only resurfacing as an opaque OSS 403.
 fn push_url_window_log(logs: &mut Vec<PrepLogLine>, step: &serde_json::Value) {
-    let Some(age) = super::poll::config_url_age(step, chrono::Utc::now().timestamp()) else {
+    let Some(age) = super::poll::step_log::config_url_age(step, chrono::Utc::now().timestamp())
+    else {
         return;
     };
     let mut text = format!(
