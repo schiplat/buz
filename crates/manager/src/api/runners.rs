@@ -2596,6 +2596,76 @@ pub async fn get_runner(
     }))))
 }
 
+/// Validates switching `runner_id` to `mode` against the runner's live state:
+/// sandbox capability freshness for non-Host modes and no running jobs. Must
+/// be called inside the caller's `BEGIN IMMEDIATE` transaction that also
+/// performs the update; on error the caller must roll the transaction back.
+async fn validate_execution_mode_transition(
+    tx: &mut sqlx::SqliteConnection,
+    runner_id: &str,
+    mode: RunnerExecutionMode,
+) -> Result<(), AppError> {
+    let (status, last_seen, system_info_raw): (String, Option<String>, String) =
+        sqlx::query_as("SELECT status, last_seen, system_info FROM runners WHERE id = ?")
+            .bind(runner_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if mode != RunnerExecutionMode::Host {
+        if status != "online" {
+            return Err(AppError::Conflict(
+                "runner must be online and report fresh sandbox capabilities before selecting this execution mode".into(),
+            ));
+        }
+        let fresh: bool =
+            sqlx::query_scalar("SELECT COALESCE(datetime(?) >= datetime('now', '-90 seconds'), 0)")
+                .bind(last_seen.as_deref())
+                .fetch_one(&mut *tx)
+                .await?;
+        let capabilities = serde_json::from_str::<SystemInfo>(&system_info_raw)
+            .ok()
+            .and_then(|info| info.execution_capabilities);
+        let Some(capabilities) = capabilities else {
+            return Err(AppError::Conflict(
+                "runner has not reported sandbox capabilities yet; wait for its next heartbeat"
+                    .into(),
+            ));
+        };
+        let (backend, reason) = match mode {
+            RunnerExecutionMode::Container => {
+                (capabilities.container, capabilities.container_reason)
+            }
+            RunnerExecutionMode::Vm => (capabilities.vm, capabilities.vm_reason),
+            RunnerExecutionMode::Host => unreachable!(),
+        };
+        let checked_fresh: bool = sqlx::query_scalar(
+            "SELECT COALESCE(datetime(?) >= datetime('now', '-5 minutes') AND datetime(?) <= datetime('now', '+30 seconds'), 0)",
+        )
+        .bind(capabilities.checked_at.as_deref())
+        .bind(capabilities.checked_at.as_deref())
+        .fetch_one(&mut *tx)
+        .await?;
+        if !fresh || !checked_fresh || backend != ExecutionBackendStatus::Supported {
+            let detail =
+                reason.unwrap_or_else(|| "capability check is stale or unsupported".into());
+            return Err(AppError::Conflict(format!(
+                "runner does not support {} execution: {detail}",
+                mode.as_str()
+            )));
+        }
+    }
+    let running: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
+            .bind(runner_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if running > 0 {
+        return Err(AppError::Conflict(format!(
+            "execution mode cannot change while {running} job(s) are running"
+        )));
+    }
+    Ok(())
+}
+
 pub async fn update_runner(
     _auth: PlatformAdmin,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -2669,68 +2739,9 @@ pub async fn update_runner(
             .fetch_one(&mut *tx)
             .await?;
         if current != mode.as_str() {
-            let (status, last_seen, system_info_raw): (String, Option<String>, String) =
-                sqlx::query_as("SELECT status, last_seen, system_info FROM runners WHERE id = ?")
-                    .bind(&id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-            if mode != RunnerExecutionMode::Host {
-                if status != "online" {
-                    tx.rollback().await?;
-                    return Err(AppError::Conflict(
-                        "runner must be online and report fresh sandbox capabilities before selecting this execution mode".into(),
-                    ));
-                }
-                let fresh: bool = sqlx::query_scalar(
-                    "SELECT COALESCE(datetime(?) >= datetime('now', '-90 seconds'), 0)",
-                )
-                .bind(last_seen.as_deref())
-                .fetch_one(&mut *tx)
-                .await?;
-                let capabilities = serde_json::from_str::<SystemInfo>(&system_info_raw)
-                    .ok()
-                    .and_then(|info| info.execution_capabilities);
-                let Some(capabilities) = capabilities else {
-                    tx.rollback().await?;
-                    return Err(AppError::Conflict(
-                        "runner has not reported sandbox capabilities yet; wait for its next heartbeat".into(),
-                    ));
-                };
-                let (backend, reason) = match mode {
-                    RunnerExecutionMode::Container => {
-                        (capabilities.container, capabilities.container_reason)
-                    }
-                    RunnerExecutionMode::Vm => (capabilities.vm, capabilities.vm_reason),
-                    RunnerExecutionMode::Host => unreachable!(),
-                };
-                let checked_fresh: bool = sqlx::query_scalar(
-                    "SELECT COALESCE(datetime(?) >= datetime('now', '-5 minutes') AND datetime(?) <= datetime('now', '+30 seconds'), 0)",
-                )
-                .bind(capabilities.checked_at.as_deref())
-                .bind(capabilities.checked_at.as_deref())
-                .fetch_one(&mut *tx)
-                .await?;
-                if !fresh || !checked_fresh || backend != ExecutionBackendStatus::Supported {
-                    tx.rollback().await?;
-                    let detail =
-                        reason.unwrap_or_else(|| "capability check is stale or unsupported".into());
-                    return Err(AppError::Conflict(format!(
-                        "runner does not support {} execution: {detail}",
-                        mode.as_str()
-                    )));
-                }
-            }
-            let running: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
-            )
-            .bind(&id)
-            .fetch_one(&mut *tx)
-            .await?;
-            if running > 0 {
+            if let Err(error) = validate_execution_mode_transition(&mut *tx, &id, mode).await {
                 tx.rollback().await?;
-                return Err(AppError::Conflict(format!(
-                    "execution mode cannot change while {running} job(s) are running"
-                )));
+                return Err(error);
             }
         }
         sqlx::query(

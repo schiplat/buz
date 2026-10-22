@@ -721,38 +721,173 @@ fn buz_metadata_env_omits_missing_fields() {
     );
 }
 
+// ── Execution-path output equivalence ──────────────────────────────────────
+//
+// These pins guard the step-log contract shared by all three execution paths
+// (local shell / docker streaming, sandbox streaming, SSH summary):
+// chunk layout from `LOG_STREAM_START`, secret masking before any upload, and
+// the ERROR/CANCELLED banner shapes. They must keep passing while the upload
+// boilerplate is refactored behind StepLogger.
+
+/// Read one full HTTP request (headers + content-length body) from the stream.
+async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut request = Vec::new();
+    let mut buf = [0_u8; 4096];
+    let header_end = loop {
+        let n = stream.read(&mut buf).await.unwrap();
+        assert!(n > 0, "connection closed before complete HTTP headers");
+        request.extend_from_slice(&buf[..n]);
+        if let Some(pos) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break pos + 4;
+        }
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().unwrap())
+        })
+        .unwrap_or(0);
+    while request.len() < header_end + content_length {
+        let n = stream.read(&mut buf).await.unwrap();
+        assert!(n > 0, "connection closed before complete HTTP body");
+        request.extend_from_slice(&buf[..n]);
+    }
+    String::from_utf8_lossy(&request).into_owned()
+}
+
 #[tokio::test]
-async fn marketplace_input_validation_error_logs_and_fails_job_before_execution() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+async fn local_shell_step_streams_masked_chunks_and_reports_success() {
+    use std::sync::Mutex as StdMutex;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
-    async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
-        let mut request = Vec::new();
-        let mut buf = [0_u8; 4096];
-        let header_end = loop {
-            let n = stream.read(&mut buf).await.unwrap();
-            assert!(n > 0, "connection closed before complete HTTP headers");
-            request.extend_from_slice(&buf[..n]);
-            if let Some(pos) = request.windows(4).position(|window| window == b"\r\n\r\n") {
-                break pos + 4;
-            }
-        };
-        let headers = String::from_utf8_lossy(&request[..header_end]);
-        let content_length = headers
-            .lines()
-            .find_map(|line| {
-                let (key, value) = line.split_once(':')?;
-                key.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().unwrap())
-            })
-            .unwrap_or(0);
-        while request.len() < header_end + content_length {
-            let n = stream.read(&mut buf).await.unwrap();
-            assert!(n > 0, "connection closed before complete HTTP body");
-            request.extend_from_slice(&buf[..n]);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let bodies: std::sync::Arc<StdMutex<Vec<String>>> =
+        std::sync::Arc::new(StdMutex::new(Vec::new()));
+    let server_bodies = bodies.clone();
+    let server = tokio::spawn(async move {
+        for _ in 0..32 {
+            // Idle timeout: once the runner stops connecting, end the loop so
+            // the test's `server.await` cannot park forever.
+            let accepted =
+                tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept()).await;
+            let (mut stream, _) = match accepted {
+                Ok(Ok(inner)) => inner,
+                _ => break,
+            };
+            let request = read_http_request(&mut stream).await;
+            server_bodies.lock().unwrap().push(request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
         }
-        String::from_utf8_lossy(&request).into_owned()
+    });
+
+    let client = reqwest::Client::new();
+    let config = crate::config::Config {
+        runner: crate::config::RunnerSection {
+            manager_url: format!("http://{addr}"),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let task = serde_json::json!({
+        "job_id": "job-stream-equivalence",
+        "secrets": { "TOKEN": "buz-super-secret-value" },
+        "env": { "TOKEN": "buz-super-secret-value" },
+        "tasks": [{
+            "name": "echo",
+            "command_template": "printf '%s\\n' \"$TOKEN\"",
+            "exec_type": "shell"
+        }]
+    });
+    let (_cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    let result = super::execute_job(&client, &config, "runner-token", &task, &mut cancel_rx).await;
+    assert!(result.is_ok(), "job must succeed: {result:?}");
+
+    let requests = bodies.lock().unwrap().clone();
+    // banner → running → streamed chunk(s) → success
+    assert!(requests[0].starts_with("POST /api/v1/jobs/job-stream-equivalence/logs "));
+    assert!(
+        requests[0].contains("\"chunk_index\":-2"),
+        "{}",
+        requests[0]
+    );
+    assert!(
+        requests[1].contains("\"status\":\"running\""),
+        "{}",
+        requests[1]
+    );
+    let stream_chunks: Vec<&String> = requests
+        .iter()
+        .filter(|r| {
+            r.contains("POST /api/v1/jobs/job-stream-equivalence/logs ")
+                && !r.contains("\"chunk_index\":-2")
+        })
+        .collect();
+    assert!(
+        !stream_chunks.is_empty(),
+        "streamed output must be uploaded: {requests:?}"
+    );
+    assert!(
+        stream_chunks
+            .iter()
+            .all(|r| !r.contains("buz-super-secret-value")),
+        "stream chunks must be masked: {stream_chunks:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.contains("chunk_index\":6") && r.contains("***")),
+        "first stream chunk starts at LOG_STREAM_START and is masked: {requests:?}"
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.contains("buz-super-secret-value")),
+        "the raw secret must never reach the wire: {requests:?}"
+    );
+    let last = requests.last().unwrap();
+    assert!(
+        last.contains("PATCH") && last.contains("\"status\":\"success\""),
+        "{last}"
+    );
+    server.await.unwrap();
+}
+
+#[test]
+fn sandbox_masker_split_feeding_equals_one_shot_masking() {
+    // Sandbox streaming property: feeding the same buffer in arbitrary frame
+    // splits through SandboxOutputMasker yields exactly the masked output of
+    // masking the whole buffer once — for every split point, including inside
+    // secrets (hold-back must prevent boundary leaks).
+    let secret = "s3cret-value";
+    let forced = "forcedtok";
+    let body = format!("a {secret} b {forced} c {secret} tail");
+    let expected = crate::masker::mask_secrets_forced(
+        &crate::masker::mask_secrets(&body, &[secret.to_string()]),
+        &[forced.to_string()],
+    );
+    assert_ne!(expected, body, "sanity: masking must change the body");
+    for split in 1..body.len() {
+        let mut masker =
+            super::SandboxOutputMasker::new(&[secret.to_string()], &[forced.to_string()]);
+        let mut got = masker.push(&body[..split], false);
+        got.push_str(&masker.push(&body[split..], true));
+        assert_eq!(got, expected, "mask equivalence broken at split {split}");
     }
+}
+
+#[tokio::test]
+async fn marketplace_input_validation_error_logs_and_fails_job_before_execution() {
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

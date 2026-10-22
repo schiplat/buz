@@ -1,8 +1,10 @@
-//! Host-side job sandbox supervisor.
+//! Host-side job sandbox supervisor (`buz-sandboxd` binary).
 //!
-//! Run this service under an operator-managed account with access to the
-//! selected container daemon/runtime. The Runner connects over a permissioned
-//! Unix socket and never receives daemon, root, or KVM access itself.
+//! This is the **server half** of the sandbox protocol; the Runner-side client
+//! lives in `crate::client::sandbox_client`. Run this service under an
+//! operator-managed account with access to the selected container
+//! daemon/runtime. The Runner connects over a permissioned Unix socket and
+//! never receives daemon, root, or KVM access itself.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -381,6 +383,69 @@ pub async fn probe_capabilities(service: &Service, request: &Value) -> anyhow::R
     Ok(json!({"ok": true, "capabilities": capabilities}))
 }
 
+/// Parameters for building a hardened `docker create` command for a sandbox
+/// container (probe or job). The hardening flags (read-only root, dropped
+/// capabilities, resource limits, …) are shared so probes exercise the same
+/// container policy as real jobs.
+struct SandboxCreateSpec<'a> {
+    container: &'a str,
+    image: &'a str,
+    runtime: Option<&'a str>,
+    user: &'a str,
+    mount: Option<&'a str>,
+    probe: bool,
+    entrypoint_command: &'a str,
+}
+
+fn sandbox_create_command(service: &Service, spec: SandboxCreateSpec<'_>) -> Command {
+    let mut command = Command::new(&service.config.docker_cli);
+    command.args(["create", "--name", spec.container]);
+    if spec.probe {
+        command.args(["--label", "buz.sandboxd.probe=true"]);
+    }
+    command.args([
+        "--label",
+        "buz.sandboxd.managed=true",
+        "--label",
+        &format!("buz.sandboxd.instance={}", service.config.instance_id),
+        "--user",
+        spec.user,
+        "--workdir",
+        "/buz/workspace",
+    ]);
+    if let Some(mount) = spec.mount {
+        command.args(["--mount", mount]);
+    }
+    command.args([
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,size=128m",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "256",
+        "--memory",
+        &service.config.memory_limit,
+        "--cpus",
+        &service.config.cpu_limit,
+        "--network",
+        &service.config.container_network,
+    ]);
+    if let Some(runtime) = spec.runtime {
+        command.arg("--runtime").arg(runtime);
+    }
+    command.args([
+        "--entrypoint",
+        "sh",
+        spec.image,
+        "-c",
+        spec.entrypoint_command,
+    ]);
+    command
+}
+
 pub async fn probe_backend(
     service: &Service,
     mode: RunnerExecutionMode,
@@ -407,42 +472,19 @@ pub async fn probe_backend(
 
     let probe_name = format!("buz-sandbox-probe-{}", uuid::Uuid::new_v4());
     let create_result = async {
-        let mut create = Command::new(&service.config.docker_cli);
-        create.args([
-            "create",
-            "--name",
-            &probe_name,
-            "--label",
-            "buz.sandboxd.probe=true",
-            "--label",
-            "buz.sandboxd.managed=true",
-            "--label",
-            &format!("buz.sandboxd.instance={}", service.config.instance_id),
-            "--user",
-            "10001:10001",
-            "--workdir",
-            "/buz/workspace",
-            "--read-only",
-            "--tmpfs",
-            "/tmp:rw,nosuid,nodev,size=128m",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--pids-limit",
-            "256",
-            "--memory",
-            &service.config.memory_limit,
-            "--cpus",
-            &service.config.cpu_limit,
-            "--network",
-            &service.config.container_network,
-        ]);
-        if mode == RunnerExecutionMode::Vm {
-            create.arg("--runtime").arg(runtime);
-        }
+        let mut create = sandbox_create_command(
+            service,
+            SandboxCreateSpec {
+                container: &probe_name,
+                image,
+                runtime: (mode == RunnerExecutionMode::Vm).then_some(runtime),
+                user: "10001:10001",
+                mount: None,
+                probe: true,
+                entrypoint_command: "sleep 30",
+            },
+        );
         create
-            .args(["--entrypoint", "sh", image, "-c", "sleep 30"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -490,7 +532,7 @@ pub async fn probe_backend(
         Ok(())
     }
     .await;
-    let cleanup_result = remove_container(&service.config.docker_cli, &probe_name).await;
+    let cleanup_result = destroy_container(&service.config.docker_cli, &probe_name).await;
     create_result?;
     cleanup_result?;
     Ok(())
@@ -570,48 +612,19 @@ pub async fn create_job(
         format!("type=bind,src={},dst=/buz/workspace", workspace.display())
     };
     let user = format!("{uid}:{gid}");
-    let mut command = Command::new(&service.config.docker_cli);
-    command.args([
-        "create",
-        "--name",
-        &container,
-        "--label",
-        "buz.sandboxd.managed=true",
-        "--label",
-        &format!("buz.sandboxd.instance={}", service.config.instance_id),
-        "--user",
-        &user,
-        "--workdir",
-        "/buz/workspace",
-        "--mount",
-        &workspace_arg,
-        "--read-only",
-        "--tmpfs",
-        "/tmp:rw,nosuid,nodev,size=128m",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--pids-limit",
-        "256",
-        "--memory",
-        &service.config.memory_limit,
-        "--cpus",
-        &service.config.cpu_limit,
-        "--network",
-        &service.config.container_network,
-    ]);
-    if let Some(runtime) = runtime {
-        command.arg("--runtime").arg(runtime);
-    }
+    let mut command = sandbox_create_command(
+        service,
+        SandboxCreateSpec {
+            container: &container,
+            image: requested_image,
+            runtime,
+            user: &user,
+            mount: Some(&workspace_arg),
+            probe: false,
+            entrypoint_command: "while :; do sleep 3600; done",
+        },
+    );
     command
-        .args([
-            "--entrypoint",
-            "sh",
-            requested_image,
-            "-c",
-            "while :; do sleep 3600; done",
-        ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -622,7 +635,7 @@ pub async fn create_job(
     )
     .await;
     if let Err(error) = create_result {
-        let _ = remove_container(&service.config.docker_cli, &container).await;
+        let _ = destroy_container(&service.config.docker_cli, &container).await;
         return Err(error);
     }
     let mut start = Command::new(&service.config.docker_cli);
@@ -633,7 +646,7 @@ pub async fn create_job(
         .stderr(Stdio::null());
     if let Err(error) = run_status(start, Duration::from_secs(60), "start sandbox container").await
     {
-        let _ = remove_container(&service.config.docker_cli, &container).await;
+        let _ = destroy_container(&service.config.docker_cli, &container).await;
         return Err(error);
     }
     let mut verify_image = Command::new(&service.config.docker_cli);
@@ -655,7 +668,7 @@ pub async fn create_job(
     )
     .await
     {
-        let _ = remove_container(&service.config.docker_cli, &container).await;
+        let _ = destroy_container(&service.config.docker_cli, &container).await;
         return Err(anyhow::anyhow!(
             "sandbox image must provide sh and the timeout utility: {error}"
         ));
@@ -681,7 +694,7 @@ async fn kill_exec_and_container(
     let _ = child.wait().await;
     out_reader.abort();
     err_reader.abort();
-    let _ = kill_container(docker_cli, container).await;
+    let _ = destroy_container(docker_cli, container).await;
 }
 
 pub async fn exec_step_stream(
@@ -918,7 +931,7 @@ pub async fn destroy_job(service: &Service, request: &Value) -> anyhow::Result<V
     let Some(job) = job else {
         return Ok(json!({"ok": true}));
     };
-    remove_container(&service.config.docker_cli, &job.container).await?;
+    destroy_container(&service.config.docker_cli, &job.container).await?;
     service.jobs.lock().await.remove(handle);
     Ok(json!({"ok": true}))
 }
@@ -963,17 +976,9 @@ async fn run_status(
     Ok(())
 }
 
-async fn kill_container(docker: &str, container: &str) -> anyhow::Result<()> {
-    let mut command = Command::new(docker);
-    command
-        .args(["rm", "--force", container])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    run_status(command, Duration::from_secs(30), "kill sandbox container").await
-}
-
-async fn remove_container(docker: &str, container: &str) -> anyhow::Result<()> {
+/// Force-removes a sandbox container. Idempotent: a container that is already
+/// gone (or already stopped) is treated as success.
+async fn destroy_container(docker: &str, container: &str) -> anyhow::Result<()> {
     let mut command = Command::new(docker);
     command
         .args(["rm", "--force", container])

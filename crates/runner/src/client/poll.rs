@@ -61,6 +61,158 @@ pub(crate) const LOG_STEP_ERROR: i32 = 9997;
 const LOG_STEP_META_A: i32 = 9998;
 const LOG_STEP_META_B: i32 = 9999;
 
+/// Two-pass output redaction shared by every execution path: value masking
+/// first, then forced masking (rendered `.env` secret values,
+/// length-independent).
+pub(crate) fn mask_output(
+    content: &str,
+    secret_values: &[String],
+    forced_values: &[String],
+) -> String {
+    crate::masker::mask_secrets_forced(
+        &crate::masker::mask_secrets(content, secret_values),
+        forced_values,
+    )
+}
+
+/// `==> ERROR` banner content inside a step's log terminal.
+pub(crate) fn step_error_content(msg: &str) -> String {
+    format!("==> ERROR\n{msg}\n")
+}
+
+/// `==> CANCELLED` banner content for a user-cancelled step.
+fn step_cancelled_content() -> String {
+    "==> CANCELLED\nJob was cancelled by user.\n".into()
+}
+
+/// `==> TIMEOUT` stderr marker for a step killed at its deadline.
+fn step_timeout_content(timeout_secs: u64) -> String {
+    format!("==> TIMEOUT [{timeout_secs}s]\n")
+}
+
+/// Per-step log emitter.
+///
+/// Binds the job-level upload context (client / config / token / job_id) to a
+/// step's chunk layout (`log_base` + `step_order`), collapsing the five-arg
+/// `upload_chunk` + hand-built `LogChunk` boilerplate to one call. Cheap to
+/// clone for the spawned streaming-upload task.
+#[derive(Clone)]
+struct StepLogger {
+    client: Client,
+    config: Config,
+    token: String,
+    job_id: String,
+    log_base: i32,
+    step_order: i32,
+}
+
+impl StepLogger {
+    fn new(client: &Client, config: &Config, token: &str, job_id: &str, idx: usize) -> Self {
+        Self {
+            client: client.clone(),
+            config: config.clone(),
+            token: token.to_string(),
+            job_id: job_id.to_string(),
+            log_base: step_log_base(idx),
+            step_order: idx as i32,
+        }
+    }
+
+    /// Best-effort emit at `log_base + offset`: upload failures are logged,
+    /// never fail the step.
+    async fn emit(&self, offset: i32, content: impl Into<String>) {
+        if let Err(error) = self.try_emit(offset, content).await {
+            tracing::warn!(
+                step = self.step_order,
+                "step log chunk upload failed: {error}"
+            );
+        }
+    }
+
+    /// Emit at an absolute chunk index (streamed-output numbering).
+    async fn emit_at(&self, chunk_index: i32, content: impl Into<String>) -> anyhow::Result<()> {
+        super::logs::upload_chunk(
+            &self.client,
+            &self.config,
+            &self.token,
+            &self.job_id,
+            LogChunk {
+                chunk_index,
+                step_order: self.step_order,
+                content: content.into(),
+            },
+        )
+        .await
+    }
+
+    /// Emit at `log_base + offset`, propagating upload errors (for the few
+    /// callers where a failed upload must fail the step).
+    async fn try_emit(&self, offset: i32, content: impl Into<String>) -> anyhow::Result<()> {
+        self.emit_at(self.log_base + offset, content).await
+    }
+
+    /// Step-failure boilerplate: ERROR chunk → job status "failed" → the error
+    /// the caller propagates (`return Err(log.fail_step(&msg).await)`). `msg`
+    /// must already be masked when it can contain secret values. A failed
+    /// status update takes precedence, matching the previous
+    /// `update_job_status(...).await?` + `bail!` sequence.
+    async fn fail_step(&self, msg: impl Into<String>) -> anyhow::Error {
+        let msg = msg.into();
+        self.emit(LOG_STEP_ERROR, step_error_content(&msg)).await;
+        if let Err(status_error) = update_job_status(
+            &self.client,
+            &self.config,
+            &self.token,
+            &self.job_id,
+            "failed",
+            Some(self.step_order),
+        )
+        .await
+        {
+            return status_error;
+        }
+        anyhow::anyhow!(msg)
+    }
+
+    /// Cancel boilerplate: CANCELLED chunk → job status "cancelled" → the
+    /// sentinel error `run_one_job` maps to a cancelled report.
+    async fn cancel_step(&self) -> anyhow::Error {
+        self.emit(LOG_STEP_META_A, step_cancelled_content()).await;
+        if let Err(status_error) = update_job_status(
+            &self.client,
+            &self.config,
+            &self.token,
+            &self.job_id,
+            "cancelled",
+            Some(self.step_order),
+        )
+        .await
+        {
+            return status_error;
+        }
+        anyhow::anyhow!("job cancelled by user")
+    }
+
+    /// Stream engine output: mask each chunk, upload under consecutive indexes
+    /// from `LOG_STREAM_START`. Spawned as the background upload task; upload
+    /// failures are logged, never fatal.
+    async fn stream_chunks(
+        &self,
+        output_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+        secret_values: &[String],
+        forced_values: &[String],
+    ) {
+        let mut chunk_num = self.log_base + LOG_STREAM_START;
+        while let Some(chunk) = output_rx.recv().await {
+            let masked = mask_output(&chunk, secret_values, forced_values);
+            if let Err(error) = self.emit_at(chunk_num, masked).await {
+                tracing::warn!("Log upload chunk {chunk_num} failed: {error}");
+            }
+            chunk_num += 1;
+        }
+    }
+}
+
 /// Build a structured step header (shown before command output).
 ///
 /// Format (aligned with LOGIN / ERROR / CANCELLED banners):
@@ -827,7 +979,7 @@ async fn execute_job(
             unsupported.join(", ")
         );
         Some(
-            crate::client::sandbox::create_job(config, job_id, &config.runner.workspace_dir)
+            crate::client::sandbox_client::create_job(config, job_id, &config.runner.workspace_dir)
                 .await?,
         )
     };
@@ -846,7 +998,9 @@ async fn execute_job(
         prefetch.abort_and_drain().await;
     }
     if let Some(handle) = sandbox_handle.as_ref() {
-        if let Err(error) = crate::client::sandbox::destroy_job(&config.sandbox, handle).await {
+        if let Err(error) =
+            crate::client::sandbox_client::destroy_job(&config.sandbox, handle).await
+        {
             tracing::error!(job_id, error = %error, "failed to destroy job sandbox");
         }
     }
@@ -860,7 +1014,7 @@ async fn execute_job_inner(
     task: &serde_json::Value,
     cancel_rx: &mut watch::Receiver<bool>,
     prefetch: &mut Option<crate::client::image_prefetch::ImagePrefetch>,
-    sandbox_handle: Option<&crate::client::sandbox::SandboxHandle>,
+    sandbox_handle: Option<&crate::client::sandbox_client::SandboxHandle>,
 ) -> anyhow::Result<()> {
     let job_id = task["job_id"]
         .as_str()
@@ -1096,6 +1250,7 @@ async fn execute_job_inner(
             })
             .unwrap_or_default();
         let has_host_prepare = super::config_source::needs_prepare(step);
+        let log = StepLogger::new(client, config, token, job_id, idx);
         let docker_socket_path = if exec_type == "docker" {
             match engine::docker::validate_step_policy(
                 &config.runner,
@@ -1106,22 +1261,7 @@ async fn execute_job_inner(
             ) {
                 Ok(value) => value,
                 Err(e) => {
-                    let msg = format!("{e:#}");
-                    let _ = super::logs::upload_chunk(
-                        client,
-                        config,
-                        token,
-                        job_id,
-                        LogChunk {
-                            chunk_index: step_log_base(idx) + LOG_STEP_ERROR,
-                            step_order: idx as i32,
-                            content: format!("==> ERROR\\n{msg}\\n"),
-                        },
-                    )
-                    .await;
-                    update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
-                        .await?;
-                    anyhow::bail!(msg);
+                    return Err(log.fail_step(format!("{e:#}")).await);
                 }
             }
         } else {
@@ -1133,22 +1273,7 @@ async fn execute_job_inner(
         if exec_type == "docker" {
             let image = step.get("image").and_then(|v| v.as_str()).unwrap_or("");
             if let Err(e) = engine::docker::preflight(config.engine.docker_enabled, image) {
-                let msg = format!("{e:#}");
-                let _ = super::logs::upload_chunk(
-                    client,
-                    config,
-                    token,
-                    job_id,
-                    LogChunk {
-                        chunk_index: step_log_base(idx) + LOG_STEP_ERROR,
-                        step_order: idx as i32,
-                        content: format!("==> ERROR\\n{msg}\\n"),
-                    },
-                )
-                .await;
-                update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
-                    .await?;
-                anyhow::bail!(msg);
+                return Err(log.fail_step(format!("{e:#}")).await);
             }
         }
         if work_dir.is_some_and(|dir| !is_safe_workspace_subdir(dir)) {
@@ -1180,28 +1305,7 @@ async fn execute_job_inner(
                             Err(msg) => {
                                 let error =
                                     format!("with input {}: {msg}", k.trim_start_matches("INPUT_"));
-                                let _ = super::logs::upload_chunk(
-                                    client,
-                                    config,
-                                    token,
-                                    job_id,
-                                    LogChunk {
-                                        chunk_index: step_log_base(idx) + LOG_STEP_ERROR,
-                                        step_order: idx as i32,
-                                        content: format!("==> ERROR\n{error}\n"),
-                                    },
-                                )
-                                .await;
-                                update_job_status(
-                                    client,
-                                    config,
-                                    token,
-                                    job_id,
-                                    "failed",
-                                    Some(idx as i32),
-                                )
-                                .await?;
-                                anyhow::bail!(error);
+                                return Err(log.fail_step(error).await);
                             }
                         }
                     } else {
@@ -1270,8 +1374,6 @@ async fn execute_job_inner(
         // run block, e.g. `cat .env`).
         let forced_values = catalog.forced_secret_values();
 
-        let log_base = step_log_base(idx);
-
         // Verbose mode: stage marker + STEP CONFIG up front (before prepare /
         // registry fail-fast) so a prepare-stage failure still shows the step
         // shape. Debug alone does not emit these — it only unmasks values.
@@ -1282,49 +1384,14 @@ async fn execute_job_inner(
             .unwrap_or("")
             .trim();
         if verbose {
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_VERBOSE_PREPARE,
-                    step_order: idx as i32,
-                    content: build_verbose_stage("prepare"),
-                },
-            )
-            .await;
+            log.emit(LOG_STEP_VERBOSE_PREPARE, build_verbose_stage("prepare"))
+                .await;
             let cfg = build_verbose_step_config(step, exec_type, registry_secret_ref_early);
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_VERBOSE_CONFIG,
-                    step_order: idx as i32,
-                    content: cfg,
-                },
-            )
-            .await;
+            log.emit(LOG_STEP_VERBOSE_CONFIG, cfg).await;
         }
 
         if let Err(e) = config.engine.ensure_enabled(exec_type) {
-            let msg = format!("{e:#}");
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_ERROR,
-                    step_order: idx as i32,
-                    content: format!("==> ERROR\n{msg}\n"),
-                },
-            )
-            .await;
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            anyhow::bail!(msg);
+            return Err(log.fail_step(format!("{e:#}")).await);
         }
 
         let env_count = step_env.len();
@@ -1344,21 +1411,9 @@ async fn execute_job_inner(
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
         {
-            let msg = format!("marketplace input validation: {err}");
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_ERROR,
-                    step_order: idx as i32,
-                    content: format!("==> ERROR\\n{msg}\\n"),
-                },
-            )
-            .await;
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            anyhow::bail!(msg);
+            return Err(log
+                .fail_step(format!("marketplace input validation: {err}"))
+                .await);
         }
 
         // Fail fast if Manager could not resolve step `env:` (`${secrets.X}`).
@@ -1367,21 +1422,7 @@ async fn execute_job_inner(
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
         {
-            let msg = format!("step env: {err}");
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_ERROR,
-                    step_order: idx as i32,
-                    content: format!("==> ERROR\n{msg}\n"),
-                },
-            )
-            .await;
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            anyhow::bail!(msg);
+            return Err(log.fail_step(format!("step env: {err}")).await);
         }
 
         // Fail fast if Manager could not resolve registry_secret.
@@ -1390,21 +1431,7 @@ async fn execute_job_inner(
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
         {
-            let msg = format!("registry_secret: {err}");
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_ERROR,
-                    step_order: idx as i32,
-                    content: format!("==> ERROR\n{msg}\n"),
-                },
-            )
-            .await;
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            anyhow::bail!(msg);
+            return Err(log.fail_step(format!("registry_secret: {err}")).await);
         }
 
         if let Some(err) = step
@@ -1412,21 +1439,7 @@ async fn execute_job_inner(
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
         {
-            let msg = format!("SSH host resolution: {err}");
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_ERROR,
-                    step_order: idx as i32,
-                    content: format!("==> ERROR\\n{msg}\\n"),
-                },
-            )
-            .await;
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            anyhow::bail!(msg);
+            return Err(log.fail_step(format!("SSH host resolution: {err}")).await);
         }
 
         // Fail fast if Manager could not resolve config_source.
@@ -1436,57 +1449,14 @@ async fn execute_job_inner(
             .filter(|s| !s.is_empty())
         {
             let msg = format!("config_source: {err}");
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_ERROR,
-                    step_order: idx as i32,
-                    content: format!("==> ERROR\n{msg}\n"),
-                },
-            )
-            .await;
             if verbose {
-                let result = build_verbose_step_result(step_started.elapsed(), -1);
-                let _ = super::logs::upload_chunk(
-                    client,
-                    config,
-                    token,
-                    job_id,
-                    LogChunk {
-                        chunk_index: log_base + LOG_STEP_VERBOSE_RESULT,
-                        step_order: idx as i32,
-                        content: result,
-                    },
+                log.emit(
+                    LOG_STEP_VERBOSE_RESULT,
+                    build_verbose_step_result(step_started.elapsed(), -1),
                 )
                 .await;
             }
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            anyhow::bail!(msg);
-        }
-
-        if let Some(err) = step
-            .get("host_resolution_error")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            let msg = format!("SSH host resolution: {err}");
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_ERROR,
-                    step_order: idx as i32,
-                    content: format!("==> ERROR\\n{msg}\\n"),
-                },
-            )
-            .await;
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            anyhow::bail!(msg);
+            return Err(log.fail_step(msg).await);
         }
 
         if let Some(err) = step
@@ -1494,21 +1464,7 @@ async fn execute_job_inner(
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
         {
-            let msg = format!("config_render: {err}");
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_ERROR,
-                    step_order: idx as i32,
-                    content: format!("==> ERROR\n{msg}\n"),
-                },
-            )
-            .await;
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            anyhow::bail!(msg);
+            return Err(log.fail_step(format!("config_render: {err}")).await);
         }
 
         // ── SSH step session (one TCP connect per host for prepare + run) ──
@@ -1525,53 +1481,10 @@ async fn execute_job_inner(
                 };
                 match connect_result {
                     None => {
-                        let _ = super::logs::upload_chunk(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            LogChunk {
-                                chunk_index: log_base + LOG_STEP_META_A,
-                                step_order: idx as i32,
-                                content: "==> CANCELLED\nJob was cancelled by user.\n".into(),
-                            },
-                        )
-                        .await;
-                        update_job_status(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            "cancelled",
-                            Some(idx as i32),
-                        )
-                        .await?;
-                        anyhow::bail!("job cancelled by user");
+                        return Err(log.cancel_step().await);
                     }
                     Some(Err(e)) => {
-                        let msg = format!("{e:#}");
-                        let _ = super::logs::upload_chunk(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            LogChunk {
-                                chunk_index: log_base + LOG_STEP_ERROR,
-                                step_order: idx as i32,
-                                content: format!("==> ERROR\n{msg}\n"),
-                            },
-                        )
-                        .await;
-                        update_job_status(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            "failed",
-                            Some(idx as i32),
-                        )
-                        .await?;
-                        anyhow::bail!(msg);
+                        return Err(log.fail_step(format!("{e:#}")).await);
                     }
                     Some(Ok(mut sessions)) => {
                         tracing::info!(
@@ -1588,45 +1501,12 @@ async fn execute_job_inner(
                         match targets {
                             None => {
                                 drop(sessions);
-                                let _ = super::logs::upload_chunk(
-                                    client,
-                                    config,
-                                    token,
-                                    job_id,
-                                    LogChunk {
-                                        chunk_index: log_base + LOG_STEP_META_A,
-                                        step_order: idx as i32,
-                                        content: "==> CANCELLED\nJob was cancelled by user.\n"
-                                            .into(),
-                                    },
-                                )
-                                .await;
-                                update_job_status(
-                                    client,
-                                    config,
-                                    token,
-                                    job_id,
-                                    "cancelled",
-                                    Some(idx as i32),
-                                )
-                                .await?;
-                                anyhow::bail!("job cancelled by user");
+                                return Err(log.cancel_step().await);
                             }
                             Some(targets) => {
                                 let banner = build_ssh_banner(&targets);
                                 if !banner.is_empty() {
-                                    let _ = super::logs::upload_chunk(
-                                        client,
-                                        config,
-                                        token,
-                                        job_id,
-                                        LogChunk {
-                                            chunk_index: log_base + LOG_LOGIN,
-                                            step_order: idx as i32,
-                                            content: banner,
-                                        },
-                                    )
-                                    .await;
+                                    log.emit(LOG_LOGIN, banner).await;
                                 }
                                 ssh_sessions = sessions;
                             }
@@ -1665,28 +1545,7 @@ async fn execute_job_inner(
                     tokio::select! {
                         result = prep_fut => result.map(Some),
                         _ = cancel_triggered(cancel_rx) => {
-                            let _ = super::logs::upload_chunk(
-                                client,
-                                config,
-                                token,
-                                job_id,
-                                LogChunk {
-                                    chunk_index: log_base + LOG_STEP_META_A,
-                                    step_order: idx as i32,
-                                    content: "==> CANCELLED\nJob was cancelled by user.\n".into(),
-                                },
-                            )
-                            .await;
-                            update_job_status(
-                                client,
-                                config,
-                                token,
-                                job_id,
-                                "cancelled",
-                                Some(idx as i32),
-                            )
-                            .await?;
-                            anyhow::bail!("job cancelled by user");
+                            return Err(log.cancel_step().await);
                         }
                     }
                 }
@@ -1722,18 +1581,7 @@ async fn execute_job_inner(
                             }
                         }
                         if !content.is_empty() {
-                            let _ = super::logs::upload_chunk(
-                                client,
-                                config,
-                                token,
-                                job_id,
-                                LogChunk {
-                                    chunk_index: log_base + LOG_STEP_VERBOSE_CONFIG_PREP,
-                                    step_order: idx as i32,
-                                    content,
-                                },
-                            )
-                            .await;
+                            log.emit(LOG_STEP_VERBOSE_CONFIG_PREP, content).await;
                         }
                     }
                     config_prep = prep;
@@ -1742,50 +1590,20 @@ async fn execute_job_inner(
                     // Verbose / Debug: still surface the dest / object_key shape
                     // on a prepare-only failure (banner chunk is otherwise empty).
                     if verbose || debug_unredact {
-                        let _ = super::logs::upload_chunk(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            LogChunk {
-                                chunk_index: log_base + LOG_STEP_VERBOSE_CONFIG_PREP,
-                                step_order: idx as i32,
-                                content: build_config_prep_banner(step, debug_unredact),
-                            },
+                        log.emit(
+                            LOG_STEP_VERBOSE_CONFIG_PREP,
+                            build_config_prep_banner(step, debug_unredact),
                         )
                         .await;
                     }
-                    let msg = format!("{e:#}");
-                    let _ = super::logs::upload_chunk(
-                        client,
-                        config,
-                        token,
-                        job_id,
-                        LogChunk {
-                            chunk_index: log_base + LOG_STEP_ERROR,
-                            step_order: idx as i32,
-                            content: format!("==> ERROR\n{msg}\n"),
-                        },
-                    )
-                    .await;
                     if verbose {
-                        let result = build_verbose_step_result(step_started.elapsed(), -1);
-                        let _ = super::logs::upload_chunk(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            LogChunk {
-                                chunk_index: log_base + LOG_STEP_VERBOSE_RESULT,
-                                step_order: idx as i32,
-                                content: result,
-                            },
+                        log.emit(
+                            LOG_STEP_VERBOSE_RESULT,
+                            build_verbose_step_result(step_started.elapsed(), -1),
                         )
                         .await;
                     }
-                    update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
-                        .await?;
-                    anyhow::bail!(msg);
+                    return Err(log.fail_step(format!("{e:#}")).await);
                 }
             }
         }
@@ -1834,36 +1652,13 @@ async fn execute_job_inner(
                      registry_secret at claim time"
                 )
             };
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_ERROR,
-                    step_order: idx as i32,
-                    content: format!("==> ERROR\n{msg}\n"),
-                },
-            )
-            .await;
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
-            anyhow::bail!(msg);
+            return Err(log.fail_step(msg).await);
         }
 
         // Verbose: exec-stage marker only (STEP CONFIG already uploaded above).
         if verbose {
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_VERBOSE_EXEC,
-                    step_order: idx as i32,
-                    content: build_verbose_stage("exec"),
-                },
-            )
-            .await;
+            log.emit(LOG_STEP_VERBOSE_EXEC, build_verbose_stage("exec"))
+                .await;
         }
 
         // ── Race step execution against cancel polling ────────────────────────
@@ -1885,27 +1680,12 @@ async fn execute_job_inner(
                     );
                     let echo_line =
                         build_step_echo(exec_type, command, &sandbox_env, &catalog, work_dir);
-                    let _ = super::logs::upload_chunk(
-                        client,
-                        config,
-                        token,
-                        job_id,
-                        LogChunk {
-                            chunk_index: log_base + LOG_ECHO,
-                            step_order: idx as i32,
-                            content: echo_line,
-                        },
-                    )
-                    .await;
+                    log.emit(LOG_ECHO, echo_line).await;
                     let environment = serde_json::to_value(&sandbox_env)?;
                     let timeout_seconds = if has_timeout { step_timeout_secs } else { 0 };
                     run_sandbox_step(
-                        client,
+                        &log,
                         config,
-                        token,
-                        job_id,
-                        idx as i32,
-                        log_base + LOG_STREAM_START,
                         command,
                         work_dir.unwrap_or(""),
                         &environment,
@@ -1926,46 +1706,11 @@ async fn execute_job_inner(
                         )
                         .await
                         {
-                            let msg = format!("{e:#}");
-                            let masked = crate::masker::mask_secrets_forced(
-                                &crate::masker::mask_secrets(&msg, &secret_values),
-                                &forced_values,
-                            );
-                            let _ = super::logs::upload_chunk(
-                                client,
-                                config,
-                                token,
-                                job_id,
-                                LogChunk {
-                                    chunk_index: log_base + LOG_STEP_ERROR,
-                                    step_order: idx as i32,
-                                    content: format!("==> ERROR\n{masked}\n"),
-                                },
-                            )
-                            .await;
-                            update_job_status(
-                                client,
-                                config,
-                                token,
-                                job_id,
-                                "failed",
-                                Some(idx as i32),
-                            )
-                            .await?;
-                            anyhow::bail!(masked);
+                            let masked =
+                                mask_output(&format!("{e:#}"), &secret_values, &forced_values);
+                            return Err(log.fail_step(masked).await);
                         }
-                        let _ = super::logs::upload_chunk(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            LogChunk {
-                                chunk_index: log_base + LOG_LOGIN,
-                                step_order: idx as i32,
-                                content: build_login_banner(registry),
-                            },
-                        )
-                        .await;
+                        log.emit(LOG_LOGIN, build_login_banner(registry)).await;
                     }
 
                     let cmd = command.to_string();
@@ -1994,51 +1739,14 @@ async fn execute_job_inner(
                     // Debug echo — show the command before execution (like bash -x)
                     {
                         let echo_line = build_step_echo(exec_type, &cmd, &env, &catalog, work_dir);
-                        let _ = super::logs::upload_chunk(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            LogChunk {
-                                chunk_index: log_base + LOG_ECHO,
-                                step_order: idx as i32,
-                                content: echo_line,
-                            },
-                        )
-                        .await;
+                        log.emit(LOG_ECHO, echo_line).await;
                     }
 
                     let mut cancel_rx_step = cancel_rx.clone();
                     let jid = job_id.to_string();
                     let sname = step_name.to_string();
 
-                    if let Some(handle) = sandbox_handle {
-                        let mut sandbox_env = env.clone();
-                        if docker_config_dir.is_some() {
-                            sandbox_env.insert(
-                                "DOCKER_CONFIG".into(),
-                                format!("{}/.docker", engine::docker::CONTAINER_WORKSPACE),
-                            );
-                        }
-                        let environment = serde_json::to_value(&sandbox_env)?;
-                        run_sandbox_step(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            idx as i32,
-                            log_base + LOG_STREAM_START,
-                            &cmd,
-                            wd.as_deref().unwrap_or(""),
-                            &environment,
-                            if has_timeout { step_timeout_secs } else { 0 },
-                            &secret_values,
-                            &forced_values,
-                            &mut cancel_rx_step,
-                            handle,
-                        )
-                        .await?
-                    } else {
+                    {
                         let exec_result =
                             engine::shell::execute_streaming(&cmd, wd.as_deref(), Some(&env)).await;
                         let (mut child, mut output_rx, read_guard) = match exec_result {
@@ -2055,45 +1763,17 @@ async fn execute_job_inner(
                             }
                         };
 
-                        // Clone secret values for use in the async upload task
-                        let sv_for_upload = secret_values.clone();
-                        let forced_for_upload = forced_values.clone();
-
                         // Background task: stream output chunks to the manager in real time
-                        let c_log = client.clone();
-                        let cfg_log = config.clone();
-                        let t_log = token.to_string();
-                        let jid_log = job_id.to_string();
-                        let idx_i32 = idx as i32;
-                        let stream_base = log_base + LOG_STREAM_START;
-                        let upload_task = tokio::spawn(async move {
-                            let mut chunk_num = stream_base;
-                            while let Some(chunk) = output_rx.recv().await {
-                                let masked_chunk = crate::masker::mask_secrets_forced(
-                                    &crate::masker::mask_secrets(&chunk, &sv_for_upload),
-                                    &forced_for_upload,
-                                );
-                                match super::logs::upload_chunk(
-                                    &c_log,
-                                    &cfg_log,
-                                    &t_log,
-                                    &jid_log,
-                                    LogChunk {
-                                        chunk_index: chunk_num,
-                                        step_order: idx_i32,
-                                        content: masked_chunk,
-                                    },
-                                )
-                                .await
-                                {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        tracing::warn!("Log upload chunk {chunk_num} failed: {e}")
-                                    }
-                                }
-                                chunk_num += 1;
-                            }
-                        });
+                        let upload_task = {
+                            let logger = log.clone();
+                            let secret_values = secret_values.clone();
+                            let forced_values = forced_values.clone();
+                            tokio::spawn(async move {
+                                logger
+                                    .stream_chunks(&mut output_rx, &secret_values, &forced_values)
+                                    .await;
+                            })
+                        };
 
                         // Race: child completion vs cancellation vs timeout
                         let (exit_code, was_cancelled_local, was_timeout) = tokio::select! {
@@ -2154,21 +1834,7 @@ async fn execute_job_inner(
                     } else {
                         format!("SSH step '{step_name}': no hosts resolved from the database. Register your hosts in the Manager UI first.")
                     };
-                    let _ = super::logs::upload_chunk(
-                        client,
-                        config,
-                        token,
-                        job_id,
-                        LogChunk {
-                            chunk_index: log_base + LOG_STEP_ERROR,
-                            step_order: idx as i32,
-                            content: format!("==> ERROR\n{msg}\n"),
-                        },
-                    )
-                    .await;
-                    update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
-                        .await?;
-                    anyhow::bail!(msg);
+                    return Err(log.fail_step(msg).await);
                 }
 
                 let mut ssh_env = step_env.clone();
@@ -2188,18 +1854,7 @@ async fn execute_job_inner(
                 {
                     let echo_line =
                         build_step_echo(exec_type, &cmd, &ssh_env, &ssh_catalog, work_dir);
-                    let _ = super::logs::upload_chunk(
-                        client,
-                        config,
-                        token,
-                        job_id,
-                        LogChunk {
-                            chunk_index: log_base + LOG_ECHO,
-                            step_order: idx as i32,
-                            content: echo_line,
-                        },
-                    )
-                    .await;
+                    log.emit(LOG_ECHO, echo_line).await;
                 }
 
                 // Remote output is uploaded combined — mask with the SSH catalog
@@ -2246,22 +1901,7 @@ async fn execute_job_inner(
             "docker" => {
                 let image = step["image"].as_str().unwrap_or("").trim();
                 if let Err(e) = engine::docker::preflight(config.engine.docker_enabled, image) {
-                    let msg = format!("{e:#}");
-                    let _ = super::logs::upload_chunk(
-                        client,
-                        config,
-                        token,
-                        job_id,
-                        LogChunk {
-                            chunk_index: log_base + LOG_STEP_ERROR,
-                            step_order: idx as i32,
-                            content: format!("==> ERROR\n{msg}\n"),
-                        },
-                    )
-                    .await;
-                    update_job_status(client, config, token, job_id, "failed", Some(idx as i32))
-                        .await?;
-                    anyhow::bail!(msg);
+                    return Err(log.fail_step(format!("{e:#}")).await);
                 }
 
                 let pull_registry = registry_login.as_ref().map(|(r, _, _)| r.clone());
@@ -2274,46 +1914,10 @@ async fn execute_job_inner(
                     )
                     .await
                     {
-                        let msg = format!("{e:#}");
-                        let masked = crate::masker::mask_secrets_forced(
-                            &crate::masker::mask_secrets(&msg, &secret_values),
-                            &forced_values,
-                        );
-                        let _ = super::logs::upload_chunk(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            LogChunk {
-                                chunk_index: log_base + LOG_STEP_ERROR,
-                                step_order: idx as i32,
-                                content: format!("==> ERROR\n{masked}\n"),
-                            },
-                        )
-                        .await;
-                        update_job_status(
-                            client,
-                            config,
-                            token,
-                            job_id,
-                            "failed",
-                            Some(idx as i32),
-                        )
-                        .await?;
-                        anyhow::bail!(masked);
+                        let masked = mask_output(&format!("{e:#}"), &secret_values, &forced_values);
+                        return Err(log.fail_step(masked).await);
                     }
-                    let _ = super::logs::upload_chunk(
-                        client,
-                        config,
-                        token,
-                        job_id,
-                        LogChunk {
-                            chunk_index: log_base + LOG_LOGIN,
-                            step_order: idx as i32,
-                            content: build_login_banner(registry),
-                        },
-                    )
-                    .await;
+                    log.emit(LOG_LOGIN, build_login_banner(registry)).await;
                 }
 
                 let prefetch_result = if let Some(prefetch) = prefetch.as_mut() {
@@ -2321,20 +1925,7 @@ async fn execute_job_inner(
                         result = prefetch.wait_for(image) => result,
                         _ = cancel_triggered(cancel_rx) => {
                             prefetch.abort_and_drain().await;
-                            let _ = super::logs::upload_chunk(
-                                client,
-                                config,
-                                token,
-                                job_id,
-                                LogChunk {
-                                    chunk_index: log_base + LOG_STEP_META_A,
-                                    step_order: idx as i32,
-                                    content: "==> CANCELLED\\nJob was cancelled by user.\\n".into(),
-                                },
-                            )
-                            .await;
-                            update_job_status(client, config, token, job_id, "cancelled", Some(idx as i32)).await?;
-                            anyhow::bail!("job cancelled by user");
+                            return Err(log.cancel_step().await);
                         }
                     }
                 } else {
@@ -2362,18 +1953,7 @@ async fn execute_job_inner(
                 // Debug echo — show the command before execution (like bash -x)
                 {
                     let echo_line = build_step_echo(exec_type, &cmd, &step_env, &catalog, work_dir);
-                    let _ = super::logs::upload_chunk(
-                        client,
-                        config,
-                        token,
-                        job_id,
-                        LogChunk {
-                            chunk_index: log_base + LOG_ECHO,
-                            step_order: idx as i32,
-                            content: echo_line,
-                        },
-                    )
-                    .await;
+                    log.emit(LOG_ECHO, echo_line).await;
                 }
 
                 let img = image.to_string();
@@ -2381,8 +1961,6 @@ async fn execute_job_inner(
                 let mut cancel_rx_step = cancel_rx.clone();
                 let jid = job_id.to_string();
                 let sname = step_name.to_string();
-                let sv_for_upload = secret_values.clone();
-                let forced_for_upload = forced_values.clone();
 
                 let container_name = format!("buz-{}-{}", job_id, idx);
                 let exec_result = engine::docker::execute_streaming_with_socket(
@@ -2410,38 +1988,16 @@ async fn execute_job_inner(
                     }
                 };
 
-                let c_log = client.clone();
-                let cfg_log = config.clone();
-                let t_log = token.to_string();
-                let jid_log = job_id.to_string();
-                let idx_i32 = idx as i32;
-                let stream_base = log_base + LOG_STREAM_START;
-                let upload_task = tokio::spawn(async move {
-                    let mut chunk_num = stream_base;
-                    while let Some(chunk) = output_rx.recv().await {
-                        let masked_chunk = crate::masker::mask_secrets_forced(
-                            &crate::masker::mask_secrets(&chunk, &sv_for_upload),
-                            &forced_for_upload,
-                        );
-                        match super::logs::upload_chunk(
-                            &c_log,
-                            &cfg_log,
-                            &t_log,
-                            &jid_log,
-                            LogChunk {
-                                chunk_index: chunk_num,
-                                step_order: idx_i32,
-                                content: masked_chunk,
-                            },
-                        )
-                        .await
-                        {
-                            Ok(_) => {}
-                            Err(e) => tracing::warn!("Log upload chunk {chunk_num} failed: {e}"),
-                        }
-                        chunk_num += 1;
-                    }
-                });
+                let upload_task = {
+                    let logger = log.clone();
+                    let secret_values = secret_values.clone();
+                    let forced_values = forced_values.clone();
+                    tokio::spawn(async move {
+                        logger
+                            .stream_chunks(&mut output_rx, &secret_values, &forced_values)
+                            .await;
+                    })
+                };
 
                 let (exit_code, was_cancelled_docker, was_timeout_docker) = tokio::select! {
                     status = child.wait() => {
@@ -2500,82 +2056,35 @@ async fn execute_job_inner(
         // ─────────────────────────────────────────────────────────────────────
 
         if was_cancelled {
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_META_A,
-                    step_order: idx as i32,
-                    content: "==> CANCELLED\nJob was cancelled by user.\n".into(),
-                },
-            )
-            .await;
-            update_job_status(client, config, token, job_id, "cancelled", Some(idx as i32)).await?;
-            anyhow::bail!("job cancelled by user");
+            return Err(log.cancel_step().await);
         }
 
         // For SSH steps, upload the accumulated output as a summary chunk.
         // Local steps are fully streamed so we skip this redundant upload.
         if exec_type == "ssh" || sandbox_handle.is_some() {
             let combined = format!("==> {step_name}\n{}\n{}", output.stdout, output.stderr);
-            let masked = crate::masker::mask_secrets_forced(
-                &crate::masker::mask_secrets(&combined, &output_secret_values),
-                &forced_values,
-            );
-            super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_META_B,
-                    step_order: idx as i32,
-                    content: masked,
-                },
-            )
-            .await?;
+            let masked = mask_output(&combined, &output_secret_values, &forced_values);
+            log.try_emit(LOG_STEP_META_B, masked).await?;
         }
 
         // Verbose mode: result summary (duration + exit code). Uploaded even on
         // failure so troubleshooting users see exactly how long the step ran.
         if verbose && !was_cancelled {
-            let result = build_verbose_step_result(step_started.elapsed(), output.exit_code);
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_VERBOSE_RESULT,
-                    step_order: idx as i32,
-                    content: result,
-                },
+            log.emit(
+                LOG_STEP_VERBOSE_RESULT,
+                build_verbose_step_result(step_started.elapsed(), output.exit_code),
             )
             .await;
         }
 
         if output.exit_code != 0 && fail_strategy == "stop" {
-            update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
             let hint = step_failure_hint(&output.stderr, output.exit_code);
             let msg = build_step_failure_message(step_name, output.exit_code, command, &hint);
-            // Upload the failure into this step's terminal so it is visible in the
-            // UI. Prefer step_order=idx over run_one_job's global -1 catch — the
-            // frontend maps -1 as a fallback, but per-step errors must not rely on it.
-            let _ = super::logs::upload_chunk(
-                client,
-                config,
-                token,
-                job_id,
-                LogChunk {
-                    chunk_index: log_base + LOG_STEP_ERROR,
-                    step_order: idx as i32,
-                    content: format!("==> ERROR\n{msg}\n"),
-                },
-            )
-            .await;
-            anyhow::bail!("{}", msg);
+            // fail_step uploads the failure into this step's terminal so it is
+            // visible in the UI. Prefer step_order=idx over run_one_job's global
+            // -1 catch — the frontend maps -1 as a fallback, but per-step errors
+            // must not rely on it.
+            return Err(log.fail_step(msg).await);
         } else if output.exit_code != 0 && fail_strategy == "continue" {
             any_step_failed = true;
             update_job_status(client, config, token, job_id, "failed", Some(idx as i32)).await?;
@@ -2589,7 +2098,7 @@ async fn execute_job_inner(
         // auto-masked — route sensitive data through Secrets instead.
         let dynamic_env = match sandbox_handle {
             Some(handle) if handle.mode() == shared::protocol::RunnerExecutionMode::Vm => {
-                crate::client::sandbox::read_job_file(&config.sandbox, handle, ".buz/env")
+                crate::client::sandbox_client::read_job_file(&config.sandbox, handle, ".buz/env")
                     .await
                     .and_then(|content| parse_buz_env_content(&content))
             }
@@ -2698,12 +2207,8 @@ impl SandboxOutputMasker {
 }
 
 async fn run_sandbox_step(
-    client: &Client,
+    log: &StepLogger,
     config: &Config,
-    token: &str,
-    job_id: &str,
-    step_order: i32,
-    chunk_start: i32,
     command: &str,
     work_dir: &str,
     environment: &serde_json::Value,
@@ -2711,9 +2216,9 @@ async fn run_sandbox_step(
     secret_values: &[String],
     forced_values: &[String],
     cancel_rx: &mut watch::Receiver<bool>,
-    handle: &crate::client::sandbox::SandboxHandle,
+    handle: &crate::client::sandbox_client::SandboxHandle,
 ) -> anyhow::Result<(engine::shell::ShellOutput, bool)> {
-    let mut stream = crate::client::sandbox::exec_step(
+    let mut stream = crate::client::sandbox_client::exec_step(
         &config.sandbox,
         handle,
         command,
@@ -2722,48 +2227,40 @@ async fn run_sandbox_step(
         timeout_seconds,
     )
     .await?;
-    let mut chunk_num = chunk_start;
+    let mut chunk_num = log.log_base + LOG_STREAM_START;
     let mut output_masker = SandboxOutputMasker::new(secret_values, forced_values);
     loop {
         tokio::select! {
             frame = stream.recv() => {
                 match frame {
-                    Some(Ok(crate::client::sandbox::SandboxExecEvent::Output { content, .. })) => {
+                    Some(Ok(crate::client::sandbox_client::SandboxExecEvent::Output { content, .. })) => {
                         let masked = output_masker.push(&content, false);
                         if !masked.is_empty() {
-                            if let Err(error) = super::logs::upload_chunk(
-                                client,
-                                config,
-                                token,
-                                job_id,
-                                LogChunk { chunk_index: chunk_num, step_order, content: masked },
-                            ).await {
+                            if let Err(error) = log.emit_at(chunk_num, masked).await {
                                 tracing::warn!("Sandbox output chunk {chunk_num} upload failed: {error}");
                             }
                             chunk_num += 1;
                         }
                     }
-                    Some(Ok(crate::client::sandbox::SandboxExecEvent::Exit { code, timed_out })) => {
+                    Some(Ok(crate::client::sandbox_client::SandboxExecEvent::Exit { code, timed_out })) => {
                         let tail = output_masker.push("", true);
                         if !tail.is_empty() {
-                            let _ = super::logs::upload_chunk(
-                                client,
-                                config,
-                                token,
-                                job_id,
-                                LogChunk { chunk_index: chunk_num, step_order, content: tail },
-                            ).await;
+                            let _ = log.emit_at(chunk_num, tail).await;
                         }
                         return Ok((
                             engine::shell::ShellOutput {
                                 stdout: String::new(),
-                                stderr: if timed_out { format!("==> TIMEOUT [{timeout_seconds}s]\\n") } else { String::new() },
+                                stderr: if timed_out {
+                                    step_timeout_content(timeout_seconds)
+                                } else {
+                                    String::new()
+                                },
                                 exit_code: if timed_out { -1 } else { code },
                             },
                             false,
                         ));
                     }
-                    Some(Ok(crate::client::sandbox::SandboxExecEvent::Error { error })) => {
+                    Some(Ok(crate::client::sandbox_client::SandboxExecEvent::Error { error })) => {
                         anyhow::bail!("sandbox step failed: {error}");
                     }
                     Some(Err(error)) => return Err(error),
@@ -2775,7 +2272,7 @@ async fn run_sandbox_step(
                 return Ok((
                     engine::shell::ShellOutput {
                         stdout: String::new(),
-                        stderr: "==> CANCELLED\\n".into(),
+                        stderr: "==> CANCELLED\n".into(),
                         exit_code: -1,
                     },
                     true,

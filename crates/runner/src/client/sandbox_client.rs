@@ -1,9 +1,11 @@
-//! Local Runner ↔ host-side sandbox supervisor protocol.
+//! Runner-side client for the host-side sandbox supervisor (`buz-sandboxd`).
 //!
-//! The Runner remains the control plane and does not receive KVM/root access.
-//! A privileged host service owns job containers/VMs behind a permissioned
-//! Unix socket. The wire format is newline-delimited JSON, one request/response
-//! per connection so a dropped request is scoped to one operation.
+//! This is the **client half** of the protocol; the server half lives in
+//! `crate::sandbox` (shipped as the `buz-sandboxd` binary). The Runner remains
+//! the control plane and never receives KVM/root access: a privileged host
+//! service owns job containers/VMs behind a permissioned Unix socket. The wire
+//! format is newline-delimited JSON, one request/response per connection so a
+//! dropped request is scoped to one operation.
 
 use std::path::Path;
 

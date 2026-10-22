@@ -47,26 +47,26 @@ pub async fn run_heartbeat_loop(
                     restart_requested.store(true, Ordering::SeqCst);
                 }
 
-                if prev.max_concurrent_jobs != next.max_concurrent_jobs
-                    || prev.clean_workspace_after_job != next.clean_workspace_after_job
-                    || prev.shell_enabled != next.shell_enabled
-                    || prev.ssh_enabled != next.ssh_enabled
-                    || prev.docker_enabled != next.docker_enabled
-                    || prev.wasm_enabled != next.wasm_enabled
-                    || prev.ssh_host_key_policy != next.ssh_host_key_policy
-                {
+                if prev != next {
                     tracing::info!(
                         "Runner policy updated from Manager: max_concurrent={}→{} \
-                         clean={}→{} engines=[shell={},ssh={},docker={},wasm={}] ssh_host_key={}",
+                         clean={}→{} engines=[shell={}→{},ssh={}→{},docker={}→{},wasm={}→{}] \
+                         ssh_host_key={}→{} mode={}",
                         prev.max_concurrent_jobs,
                         next.max_concurrent_jobs,
                         prev.clean_workspace_after_job,
                         next.clean_workspace_after_job,
+                        prev.shell_enabled,
                         next.shell_enabled,
+                        prev.ssh_enabled,
                         next.ssh_enabled,
+                        prev.docker_enabled,
                         next.docker_enabled,
+                        prev.wasm_enabled,
                         next.wasm_enabled,
+                        prev.ssh_host_key_policy,
                         next.ssh_host_key_policy,
+                        next.execution_mode.as_str(),
                     );
                 } else {
                     tracing::debug!(
@@ -83,7 +83,7 @@ pub async fn run_heartbeat_loop(
 }
 
 async fn probe_execution_capabilities(config: &Config) -> RunnerExecutionCapabilities {
-    match crate::client::sandbox::probe_capabilities(&config.sandbox).await {
+    match crate::client::sandbox_client::probe_capabilities(&config.sandbox).await {
         Ok(capabilities) => capabilities,
         Err(error) => RunnerExecutionCapabilities {
             container: shared::protocol::ExecutionBackendStatus::Unsupported,

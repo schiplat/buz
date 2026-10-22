@@ -213,7 +213,7 @@ impl RunnerExecutionMode {
 }
 
 /// Runner strategy settings controlled from Manager UI (not machine-local paths).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunnerPolicyConfig {
     #[serde(default = "default_max_concurrent_jobs")]
     pub max_concurrent_jobs: u32,
