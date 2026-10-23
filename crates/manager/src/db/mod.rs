@@ -602,6 +602,19 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
 
+    // ── Platform settings (admin-editable runtime overrides) ──
+    // DB value > manager.toml default; a missing row means "use the default".
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS platform_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_by TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     // ── Scheduler leader-lease table (single-row singleton) ──
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS scheduler_lease (

@@ -6,6 +6,7 @@ pub mod github_fetch_scheduler;
 pub mod log_broadcast;
 pub mod notify;
 pub mod pipeline_scanner;
+pub mod platform_settings;
 pub mod poll_events;
 pub mod runner_monitor;
 pub mod scheduler;

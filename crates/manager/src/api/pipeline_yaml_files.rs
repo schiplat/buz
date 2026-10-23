@@ -177,7 +177,7 @@ pub async fn create_file(
         &scan_dir,
         &filename,
         &yaml,
-        &crate::services::step_resolver::local_step_index_dir(
+        &crate::services::step_resolver::effective_local_dir(
             &state.config.pipeline.yaml_scan_dir,
             &state.config.step_index.local_dir,
         ),
@@ -261,7 +261,7 @@ pub async fn put_file(
         &scan_dir,
         &filename,
         &yaml,
-        &crate::services::step_resolver::local_step_index_dir(
+        &crate::services::step_resolver::effective_local_dir(
             &state.config.pipeline.yaml_scan_dir,
             &state.config.step_index.local_dir,
         ),

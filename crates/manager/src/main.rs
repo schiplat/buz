@@ -168,9 +168,25 @@ async fn main() -> anyhow::Result<()> {
     services::clock::init(&config.clock);
 
     // Step-index settings for `uses:` resolution (index dir + review gate).
+    // Admin-edited overrides in platform_settings take precedence over
+    // manager.toml and are re-applied at runtime by the settings API.
+    let settings_overrides = services::platform_settings::fetch_overrides(&db_pool).await;
+    let require_reviewed = settings_overrides
+        .get(services::platform_settings::KEY_STEP_REVIEW_REQUIRED)
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(config.step_index.require_reviewed);
+    let local_dir_override = settings_overrides
+        .get(services::platform_settings::KEY_STEP_INDEX_LOCAL_DIR)
+        .cloned();
+    if require_reviewed != config.step_index.require_reviewed || local_dir_override.is_some() {
+        services::step_resolver::apply_runtime_overrides(
+            Some(require_reviewed),
+            local_dir_override,
+        );
+    }
     services::step_resolver::init(services::step_resolver::StepIndexSettings {
         reviewed_manifest: config.step_index.reviewed_manifest.clone(),
-        require_reviewed: config.step_index.require_reviewed,
+        require_reviewed,
     });
     // Review-gate posture: the gate is silent by default, so say so loudly at
     // boot — an operator who never configured a manifest must know unreviewed
@@ -211,7 +227,7 @@ async fn main() -> anyhow::Result<()> {
     services::pipeline_scanner::spawn_scanner(
         db_pool.clone(),
         config.pipeline.yaml_scan_dir.clone(),
-        services::step_resolver::local_step_index_dir(
+        services::step_resolver::effective_local_dir(
             &config.pipeline.yaml_scan_dir,
             &config.step_index.local_dir,
         ),

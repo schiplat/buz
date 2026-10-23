@@ -28,6 +28,35 @@ pub struct StepIndexSettings {
 
 static SETTINGS: OnceLock<StepIndexSettings> = OnceLock::new();
 
+/// Admin-edited runtime overrides (web settings). `None` field = use the
+/// startup value. Applied without a restart by the settings API.
+static RUNTIME_OVERRIDES: LazyLock<Mutex<Option<RuntimeOverrides>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[derive(Clone, Default)]
+pub struct RuntimeOverrides {
+    pub require_reviewed: Option<bool>,
+    pub local_dir: Option<String>,
+}
+
+/// Replace admin-edited overrides; takes effect on the next resolution.
+/// `Some(v)` overrides the startup value, `None` falls back to it — callers
+/// pass the FULL desired override set (read from `platform_settings`).
+pub fn apply_runtime_overrides(require_reviewed: Option<bool>, local_dir: Option<String>) {
+    *RUNTIME_OVERRIDES.lock().expect("override slot poisoned") = Some(RuntimeOverrides {
+        require_reviewed,
+        local_dir,
+    });
+}
+
+fn runtime_overrides() -> RuntimeOverrides {
+    RUNTIME_OVERRIDES
+        .lock()
+        .expect("override slot poisoned")
+        .clone()
+        .unwrap_or_default()
+}
+
 /// Install startup settings (mirrors `services::clock::init`). No-op when
 /// already initialized.
 pub fn init(settings: StepIndexSettings) {
@@ -35,7 +64,12 @@ pub fn init(settings: StepIndexSettings) {
 }
 
 fn settings() -> StepIndexSettings {
-    SETTINGS.get().cloned().unwrap_or_default()
+    let base = SETTINGS.get().cloned().unwrap_or_default();
+    let overrides = runtime_overrides();
+    StepIndexSettings {
+        require_reviewed: overrides.require_reviewed.unwrap_or(base.require_reviewed),
+        ..base
+    }
 }
 
 /// Review gate applied to every resolution.
@@ -163,6 +197,18 @@ pub fn local_step_index_dir(yaml_scan_dir: &str, configured: &str) -> PathBuf {
     } else {
         PathBuf::from(configured)
     }
+}
+
+/// Effective step directory: the admin-set override when present, else the
+/// config-resolved default. All consumers must use this so a settings change
+/// takes effect everywhere at once.
+pub fn effective_local_dir(yaml_scan_dir: &str, config_local_dir: &str) -> PathBuf {
+    if let Some(dir) = runtime_overrides().local_dir {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    local_step_index_dir(yaml_scan_dir, config_local_dir)
 }
 
 /// One template file found in the index.

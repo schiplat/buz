@@ -178,7 +178,7 @@ pub async fn create(
     let create_result = async {
         let resolved = crate::services::step_resolver::resolve_uses_steps_async(
             req.steps,
-            crate::services::step_resolver::local_step_index_dir(
+            crate::services::step_resolver::effective_local_dir(
                 &state.config.pipeline.yaml_scan_dir,
                 &state.config.step_index.local_dir,
             ),
@@ -484,7 +484,7 @@ pub async fn update(
 
     let resolved_steps = crate::services::step_resolver::resolve_uses_steps_async(
         req.steps,
-        crate::services::step_resolver::local_step_index_dir(
+        crate::services::step_resolver::effective_local_dir(
             &state.config.pipeline.yaml_scan_dir,
             &state.config.step_index.local_dir,
         ),
@@ -1088,7 +1088,7 @@ pub(crate) async fn do_trigger(
     crate::services::pipeline_scanner::sync_yaml_before_trigger(
         &state.pool,
         &state.config.pipeline.yaml_scan_dir,
-        &crate::services::step_resolver::local_step_index_dir(
+        &crate::services::step_resolver::effective_local_dir(
             &state.config.pipeline.yaml_scan_dir,
             &state.config.step_index.local_dir,
         ),

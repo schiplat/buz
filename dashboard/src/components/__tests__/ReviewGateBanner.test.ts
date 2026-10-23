@@ -7,11 +7,16 @@ const getStepReviewGate = vi.fn()
 vi.mock('@/api/health', () => ({
   getStepReviewGate: (...args: unknown[]) => getStepReviewGate(...args),
 }))
+// The banner links to the settings page; the standalone mount has no router.
+vi.mock('vue-router', () => ({ RouterLink: { template: '<a><slot /></a>' } }))
 
 function mountBanner() {
   const el = document.createElement('div')
   document.body.appendChild(el)
   const app = createApp(ReviewGateBanner)
+  // The banner links to the settings page; the standalone mount has no
+  // router, so provide an inert stub.
+  app.component('RouterLink', { template: '<a><slot /></a>' })
   app.mount(el)
   return {
     el,

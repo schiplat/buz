@@ -144,17 +144,30 @@ pub async fn health(
         .unwrap_or(0);
 
     let status = if db_ok { "ok" } else { "degraded" };
-    let marketplace_url = if state.config.marketplace_url.is_empty() {
+    // DB override (admin UI) wins over the manager.toml default.
+    let marketplace_override = crate::services::platform_settings::effective(
+        &state.pool,
+        crate::services::platform_settings::KEY_MARKETPLACE_URL,
+        &state.config.marketplace_url,
+    )
+    .await;
+    let marketplace_url = if marketplace_override.is_empty() {
         DEFAULT_MARKETPLACE_URL
     } else {
-        state.config.marketplace_url.as_str()
+        marketplace_override.as_str()
     };
     // Review-gate posture for the dashboard banner. Booleans only — the
     // manifest path stays private (same policy as the clock section: this
     // endpoint is unauthenticated).
     let step_review = serde_json::json!({
         "manifest_configured": !state.config.step_index.reviewed_manifest.trim().is_empty(),
-        "require_reviewed": state.config.step_index.require_reviewed,
+        "require_reviewed": crate::services::platform_settings::effective(
+            &state.pool,
+            crate::services::platform_settings::KEY_STEP_REVIEW_REQUIRED,
+            &state.config.step_index.require_reviewed.to_string(),
+        )
+        .await
+        == "true",
     });
     let body = Json(serde_json::json!({
         "status": status,

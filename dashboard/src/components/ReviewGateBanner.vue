@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { getStepReviewGate } from '@/api/health'
 
 const show = ref(false)
@@ -24,9 +25,10 @@ onMounted(async () => {
     <div class="min-w-0 flex-1">
       <p class="font-medium text-warning">Step review gate is not enabled</p>
       <p class="mt-0.5 wrap-break-word text-muted-foreground">
-        Every <code>uses:</code> template resolves without review checks. For production, set
-        <code>[step_index] reviewed_manifest</code> (and
-        <code>require_reviewed = true</code>) in manager.toml — see the Configuration docs.
+        Every <code>uses:</code> template resolves without review checks. For production, enable
+        the review gate in
+        <RouterLink to="/admin-settings" class="font-medium underline underline-offset-2">Platform settings</RouterLink>
+        (requires <code>reviewed_manifest</code> in manager.toml) — see the Configuration docs.
       </p>
     </div>
     <button

@@ -25,6 +25,7 @@ mod jobs;
 mod logs;
 pub mod openapi;
 mod secrets;
+mod settings;
 mod steps;
 mod teams;
 mod trigger_events;
@@ -223,6 +224,12 @@ pub fn router(state: AppState) -> Router {
             get(api_tokens::list).post(api_tokens::create),
         )
         .route("/api-tokens/{id}", delete(api_tokens::revoke))
+        // Platform settings (admin-editable; DB overrides manager.toml)
+        .route("/admin/settings", get(settings::get_settings))
+        .route(
+            "/admin/settings/{key}",
+            put(settings::update_setting).delete(settings::reset_setting),
+        )
         // Runner management (platform admin)
         .route(
             "/runners",
@@ -332,3 +339,7 @@ mod step_marketplace_integration_tests;
 #[cfg(test)]
 #[path = "tests/steps_library_tests.rs"]
 mod steps_library_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/settings_tests.rs"]
+mod settings_tests;

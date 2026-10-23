@@ -20,7 +20,7 @@ pub async fn list_steps(
     _auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let dir = crate::services::step_resolver::local_step_index_dir(
+    let dir = crate::services::step_resolver::effective_local_dir(
         &state.config.pipeline.yaml_scan_dir,
         &state.config.step_index.local_dir,
     );

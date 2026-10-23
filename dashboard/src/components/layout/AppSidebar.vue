@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import {
-  Box,
+import {Box,
   EyeOff,
   Globe,
   KeyRound,
@@ -11,6 +10,7 @@ import {
   Users,
   UserRound,
   LayoutDashboard as OverviewIcon,
+  Settings,
 } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import { computed, onMounted, ref } from 'vue'
@@ -54,6 +54,7 @@ const allEntries: NavEntry[] = [
   { kind: 'link', name: 'teams', label: 'Teams', icon: Users, to: '/teams' },
   { kind: 'link', name: 'users', label: 'Users', icon: UserRound, to: '/users', adminOnly: true },
   { kind: 'link', name: 'api-tokens', label: 'API tokens', icon: KeyRound, to: '/api-tokens', adminOnly: true },
+  { kind: 'link', name: 'admin-settings', label: 'Platform settings', icon: Settings, to: '/admin-settings', adminOnly: true },
   { kind: 'link', name: 'audit-logs', label: 'Audit logs', icon: ScrollText, to: '/audit-logs', adminOnly: true },
 ]
 
