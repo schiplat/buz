@@ -10,6 +10,7 @@ pub mod platform_settings;
 pub mod poll_events;
 pub mod runner_monitor;
 pub mod scheduler;
+pub mod step_pool;
 pub mod step_resolver;
 pub mod yaml_cache;
 pub mod yaml_validate;

@@ -602,6 +602,45 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
 
+    // ── Step marketplace: sources + pool (ADR step-marketplace §6.8) ──
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS step_sources (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL,
+            auto_enable INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            last_synced_at TEXT,
+            last_sync_error TEXT,
+            created_by TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS step_pool (
+            namespace TEXT NOT NULL,
+            step_id TEXT NOT NULL,
+            version TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            source_id TEXT NOT NULL REFERENCES step_sources(id) ON DELETE CASCADE,
+            file_path TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            reviewed INTEGER NOT NULL DEFAULT 0,
+            added_by TEXT,
+            added_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(namespace, step_id, version)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_step_pool_lookup ON step_pool (namespace, step_id, enabled)",
+    )
+    .execute(pool)
+    .await?;
+
     // ── Platform settings (admin-editable runtime overrides) ──
     // DB value > manager.toml default; a missing row means "use the default".
     sqlx::query(

@@ -979,6 +979,9 @@ pub enum UsesPin {
     Version(String),
     /// `@sha256:<64 hex>` — strict content pin.
     Sha256(String),
+    /// `@<branch>` — git branch ref (remote sources only; mutable: resolved
+    /// to an actual commit + content hash at save time).
+    Branch(String),
 }
 
 /// Parse a `uses:` reference (`<namespace>/<name>@<pin>`).
@@ -1027,9 +1030,17 @@ pub fn parse_uses_reference(raw: &str) -> Result<(String, UsesPin), String> {
             .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
     if version_like {
         Ok((reference.to_string(), UsesPin::Version(pin.to_string())))
+    } else if pin == "latest" {
+        // The classic footgun: `@latest` must never silently resolve.
+        Err("unsupported pin 'latest' — pin a version, a sha256, or an explicit branch name".into())
+    } else if pin
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    {
+        Ok((reference.to_string(), UsesPin::Branch(pin.to_string())))
     } else {
         Err(format!(
-            "unsupported pin '{pin}' — use @1, @1.2, @1.2.0 or @sha256:<64 hex> \
+            "unsupported pin '{pin}' — use @1, @1.2, @1.2.0, @sha256:<64 hex> or @<branch> \
              (ranges and 'latest' are not supported)"
         ))
     }

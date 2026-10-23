@@ -10,6 +10,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, OnceLock};
+
+use sqlx::SqlitePool;
 use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
@@ -359,6 +361,11 @@ impl LocalStepIndex {
                         self.dir.display()
                     )
                 })?,
+            UsesPin::Branch(branch) => {
+                return Err(format!(
+                    "branch pin '@{branch}' resolves only from remote step sources — the local index is pinned by version or sha256"
+                ));
+            }
             UsesPin::Version(v) => {
                 let parts: Vec<&str> = v.split('.').collect();
                 let matched: Vec<IndexedSpec> = candidates
@@ -423,7 +430,7 @@ impl LocalStepIndex {
     }
 }
 
-fn version_triple(v: &str) -> Option<(u64, u64, u64)> {
+pub fn version_triple(v: &str) -> Option<(u64, u64, u64)> {
     let mut parts = v.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
@@ -702,11 +709,83 @@ pub fn resolve_uses_steps(
 pub async fn resolve_uses_steps_async(
     steps: Vec<StepDef>,
     index_dir: PathBuf,
+    pool: &SqlitePool,
 ) -> Result<ResolvedSteps, String> {
     let policy = policy_from_settings();
-    tokio::task::spawn_blocking(move || resolve_uses_steps(steps, &index_dir, &policy))
-        .await
-        .map_err(|e| format!("step resolution task panicked: {e}"))?
+    let index = LocalStepIndex::new(index_dir);
+    let current_buz = env!("CARGO_PKG_VERSION");
+    let http = reqwest::Client::new();
+
+    let mut out = Vec::with_capacity(steps.len());
+    let mut resolutions = Vec::new();
+    for (step_order, step) in steps.into_iter().enumerate() {
+        if let Some(uses_ref) = step.uses.clone() {
+            // Pool first: a namespace with enabled pool entries resolves
+            // remotely (community sources). Everything else — official
+            // `buz/` via git clone, air-gap vendor dirs — resolves from the
+            // local index. Branch pins error on the local path by design.
+            let (resolved, reviewed) = match super::step_pool::resolve_remote(
+                &http,
+                pool,
+                &uses_ref,
+                &policy,
+                current_buz,
+            )
+            .await?
+            {
+                Some((resolved, reviewed)) => (resolved, reviewed),
+                None => {
+                    let resolved = index.resolve(&uses_ref, current_buz)?;
+                    let reviewed = policy.reviewed_hashes.contains(&resolved.content_sha256);
+                    if !reviewed && policy.require_reviewed {
+                        return Err(format!(
+                                "step '{uses_ref}' (sha256 {}) is not officially reviewed and require_reviewed is enabled — pin an approved hash or disable the flag",
+                                resolved.content_sha256
+                            ));
+                    }
+                    if !reviewed {
+                        tracing::warn!(
+                            step = %uses_ref,
+                            sha256 = %resolved.content_sha256,
+                            "resolving a template that is not in the reviewed manifest"
+                        );
+                    }
+                    (resolved, reviewed)
+                }
+            };
+            if !reviewed {
+                tracing::warn!(
+                    step = %uses_ref,
+                    sha256 = %resolved.content_sha256,
+                    "resolving a template without an official review badge"
+                );
+            }
+            let expanded = expand_uses_step(&step, &resolved).map_err(|e| e.join("; "))?;
+            let expanded_json = serde_json::to_string(&expanded)
+                .map_err(|e| format!("cannot serialize expanded step: {e}"))?;
+            resolutions.push(PendingStepResolution {
+                step_order: step_order as i64,
+                uses_ref,
+                resolved_version: resolved.spec.version.clone(),
+                content_sha256: resolved.content_sha256,
+                source: resolved.source,
+                expanded_json,
+                input_defs_json: serde_json::to_string(&resolved.spec.input_defs())
+                    .map_err(|e| format!("cannot serialize step input definitions: {e}"))?,
+                reviewed,
+            });
+            out.push(expanded);
+        } else {
+            if !step.capabilities.is_empty() {
+                return Err("capabilities: raw pipeline steps cannot request execution capabilities; declare them on a locked uses: template".into());
+            }
+            out.push(step);
+        }
+    }
+    Ok(ResolvedSteps {
+        steps: out,
+        resolutions,
+    })
 }
 
 /// Replace a pipeline's provenance rows inside the caller's transaction.

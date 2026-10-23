@@ -26,6 +26,7 @@ mod logs;
 pub mod openapi;
 mod secrets;
 mod settings;
+mod step_sources;
 mod steps;
 mod teams;
 mod trigger_events;
@@ -230,6 +231,24 @@ pub fn router(state: AppState) -> Router {
             "/admin/settings/{key}",
             put(settings::update_setting).delete(settings::reset_setting),
         )
+        // Step marketplace: sources + pool (platform admin)
+        .route(
+            "/admin/step-sources",
+            get(step_sources::list_sources).post(step_sources::create_source),
+        )
+        .route(
+            "/admin/step-sources/{id}",
+            delete(step_sources::delete_source),
+        )
+        .route(
+            "/admin/step-sources/{id}/sync",
+            post(step_sources::sync_source),
+        )
+        .route("/admin/step-pool", get(step_sources::list_pool))
+        .route(
+            "/admin/step-pool/{namespace}/{step_id}/{version}",
+            put(step_sources::toggle_pool_entry),
+        )
         // Runner management (platform admin)
         .route(
             "/runners",
@@ -343,3 +362,7 @@ mod steps_library_integration_tests;
 #[cfg(test)]
 #[path = "tests/settings_tests.rs"]
 mod settings_tests;
+
+#[cfg(test)]
+#[path = "tests/step_pool_tests.rs"]
+mod step_pool_tests;
