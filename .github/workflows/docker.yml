@@ -215,7 +215,9 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --pattern "buz-${VERSION}-${TARGET}.tar.gz" \
             --output "release/archive.tar.gz"
-          tar -xzf release/archive.tar.gz -C ctx
+          # The archive wraps everything in a top-level buz-<version>-<target>/
+          # directory — strip it so bin/ and conf/ sit at the context root.
+          tar -xzf release/archive.tar.gz -C ctx --strip-components=1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
