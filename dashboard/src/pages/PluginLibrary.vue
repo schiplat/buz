@@ -27,8 +27,81 @@ const newUrl = ref('')
 const newAutoEnable = ref(false)
 const busy = ref('')
 
-const poolEnabled = computed(() => pool.value.filter((p) => p.enabled))
-const poolStaged = computed(() => pool.value.filter((p) => !p.enabled))
+interface PoolGroup {
+  namespace: string
+  stepId: string
+  sourceName: string
+  /** All known versions, newest first. */
+  versions: PoolEntry[]
+  /** True when a staged version is newer than every enabled one. */
+  updateAvailable: boolean
+}
+
+/** Per-plugin version lists: the pool grouped by namespace/step-id, versions
+ *  newest first, with the "update available" verdict per group. */
+const poolGroups = computed<PoolGroup[]>(() => {
+  const groups = new Map<string, PoolGroup>()
+  for (const entry of pool.value) {
+    const key = `${entry.namespace}/${entry.step_id}`
+    if (!groups.has(key)) {
+      groups.set(key, {
+        namespace: entry.namespace,
+        stepId: entry.step_id,
+        sourceName: entry.source_name ?? entry.source_id,
+        versions: [],
+        updateAvailable: false,
+      })
+    }
+    groups.get(key)!.versions.push(entry)
+  }
+  for (const group of groups.values()) {
+    group.versions.sort((a, b) => {
+      const ta = versionTriple(a.version) ?? [0, 0, 0]
+      const tb = versionTriple(b.version) ?? [0, 0, 0]
+      return compareTriple(tb, ta) // newest first
+    })
+    const maxEnabled = group.versions
+      .filter((v) => v.enabled)
+      .map((v) => versionTriple(v.version))
+      .filter((v): v is [number, number, number] => v !== null)
+      .sort(compareTriple)
+      .at(-1)
+    const maxStaged = group.versions
+      .filter((v) => !v.enabled)
+      .map((v) => versionTriple(v.version))
+      .filter((v): v is [number, number, number] => v !== null)
+      .sort(compareTriple)
+      .at(-1)
+    group.updateAvailable = !!maxStaged && (!maxEnabled || compareTriple(maxStaged, maxEnabled) > 0)
+  }
+  return [...groups.values()].sort((a, b) =>
+    `${a.namespace}/${a.stepId}`.localeCompare(`${b.namespace}/${b.stepId}`),
+  )
+})
+
+interface LocalGroup {
+  id: string
+  /** All known versions, newest first. */
+  versions: Array<Record<string, unknown>>
+}
+
+/** Local (local_dir) templates grouped per plugin id, versions newest first. */
+const localGroups = computed<LocalGroup[]>(() => {
+  const groups = new Map<string, LocalGroup>()
+  for (const tpl of localTemplates.value) {
+    const id = String(tpl.id ?? 'unknown')
+    if (!groups.has(id)) groups.set(id, { id, versions: [] })
+    groups.get(id)!.versions.push(tpl)
+  }
+  for (const group of groups.values()) {
+    group.versions.sort((a, b) => {
+      const ta = versionTriple(String(a.version ?? '')) ?? [0, 0, 0]
+      const tb = versionTriple(String(b.version ?? '')) ?? [0, 0, 0]
+      return compareTriple(tb, ta) // newest first
+    })
+  }
+  return [...groups.values()].sort((a, b) => a.id.localeCompare(b.id))
+})
 
 function versionTriple(v: string): [number, number, number] | null {
   const parts = v.split('.').map(Number)
@@ -43,33 +116,6 @@ function compareTriple(
 ): number {
   return a[0] - b[0] || a[1] - b[1] || a[2] - b[2]
 }
-
-/** Enabled rows whose namespace/step-id has a HIGHER staged version — the
- *  "update available" hint that makes sync-discovered upgrades visible. */
-const updateHints = computed(() => {
-  const hints = new Set<string>()
-  const byKey = new Map<string, PoolEntry[]>()
-  for (const entry of pool.value) {
-    const key = `${entry.namespace}/${entry.step_id}`
-    byKey.set(key, [...(byKey.get(key) ?? []), entry])
-  }
-  for (const entries of byKey.values()) {
-    const enabled = entries.filter((e) => e.enabled)
-    const stagedVersions = entries
-      .filter((e) => !e.enabled)
-      .map((e) => versionTriple(e.version))
-      .filter((v): v is [number, number, number] => v !== null)
-    if (stagedVersions.length === 0) continue
-    const newest = stagedVersions.sort(compareTriple).at(-1)!
-    for (const e of enabled) {
-      const current = versionTriple(e.version)
-      if (current && compareTriple(current, newest) < 0) {
-        hints.add(`${e.namespace}/${e.step_id}@${e.version}`)
-      }
-    }
-  }
-  return hints
-})
 
 async function load() {
   if (!auth.isPlatformAdmin) {
@@ -241,43 +287,55 @@ onMounted(load)
         </div>
       </section>
 
-      <!-- ── Pool: staged + enabled ── -->
+      <!-- ── Pool: per-plugin version lists ── -->
       <section class="rounded-xl border border-border/50 bg-card overflow-hidden">
         <div class="px-5 py-4 border-b border-border/50">
           <h2 class="text-sm font-semibold">Pool</h2>
           <p class="mt-0.5 text-xs text-muted-foreground">
-            Staged entries come from source syncs and must be enabled before
+            Every plugin with its full version list. Staged versions must be enabled before
             <code class="font-mono text-[10px]">uses:</code> can reference them.
           </p>
         </div>
         <div class="divide-y divide-border/50">
-          <div v-for="entry in [...poolEnabled, ...poolStaged]" :key="`${entry.namespace}/${entry.step_id}/${entry.version}`" class="flex items-start justify-between gap-3 px-5 py-3">
-            <div class="min-w-0">
-              <div class="flex items-center gap-2">
-                <code class="font-mono text-xs">{{ entry.namespace }}/{{ entry.step_id }}@{{ entry.version }}</code>
-                <span
-                  v-if="entry.enabled"
-                  class="rounded-full bg-green-500/10 px-2 py-0.5 text-[11px] text-green-600 dark:text-green-400"
-                >enabled</span>
-                <span v-else class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">staged</span>
-                <span
-                  v-if="entry.reviewed"
-                  class="rounded-full bg-blue-500/10 px-2 py-0.5 text-[11px] text-blue-600 dark:text-blue-400"
-                >reviewed</span>
-                <span
-                  v-if="updateHints.has(`${entry.namespace}/${entry.step_id}@${entry.version}`)"
-                  class="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-400"
-                >update available</span>
-              </div>
-              <p class="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
-                sha256 {{ entry.sha256.slice(0, 16) }}… · {{ entry.source_name ?? entry.source_id }}
-              </p>
+          <div v-for="group in poolGroups" :key="`${group.namespace}/${group.stepId}`" class="px-5 py-4">
+            <div class="flex items-center justify-between gap-3">
+              <code class="font-mono text-xs font-semibold">{{ group.namespace }}/{{ group.stepId }}</code>
+              <span
+                v-if="group.updateAvailable"
+                class="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-400"
+              >update available</span>
             </div>
-            <UiButton size="sm" variant="ghost" :disabled="busy === `${entry.namespace}/${entry.step_id}/${entry.version}`" @click="toggleEntry(entry)">
-              {{ entry.enabled ? 'Disable' : 'Enable' }}
-            </UiButton>
+            <p class="mt-0.5 text-[11px] text-muted-foreground">source: {{ group.sourceName }}</p>
+            <div class="mt-2 space-y-1.5">
+              <div
+                v-for="entry in group.versions"
+                :key="`${entry.namespace}/${entry.step_id}/${entry.version}`"
+                class="flex items-center justify-between gap-3 rounded-lg bg-muted/30 px-3 py-2"
+              >
+                <div class="flex min-w-0 items-center gap-2">
+                  <code class="font-mono text-xs">v{{ entry.version }}</code>
+                  <span
+                    v-if="entry.enabled"
+                    class="rounded-full bg-green-500/10 px-2 py-0.5 text-[11px] text-green-600 dark:text-green-400"
+                  >enabled</span>
+                  <span v-else class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">staged</span>
+                  <span
+                    v-if="entry.reviewed"
+                    class="rounded-full bg-blue-500/10 px-2 py-0.5 text-[11px] text-blue-600 dark:text-blue-400"
+                  >reviewed</span>
+                </div>
+                <div class="flex shrink-0 items-center gap-2">
+                  <span class="hidden font-mono text-[10px] text-muted-foreground/70 sm:inline" :title="entry.sha256">
+                    {{ entry.sha256.slice(0, 12) }}…
+                  </span>
+                  <UiButton size="sm" variant="ghost" :disabled="busy === `${entry.namespace}/${entry.step_id}/${entry.version}`" @click="toggleEntry(entry)">
+                    {{ entry.enabled ? 'Disable' : 'Enable' }}
+                  </UiButton>
+                </div>
+              </div>
+            </div>
           </div>
-          <p v-if="pool.length === 0" class="px-5 py-4 text-sm text-muted-foreground">
+          <p v-if="poolGroups.length === 0" class="px-5 py-4 text-sm text-muted-foreground">
             Pool is empty — sync a source to stage templates for curation.
           </p>
         </div>
@@ -292,11 +350,17 @@ onMounted(load)
           </p>
         </div>
         <div class="divide-y divide-border/50">
-          <div v-for="(tpl, index) in localTemplates" :key="index" class="px-5 py-3">
-            <code class="font-mono text-xs">{{ (tpl as Record<string, unknown>).id ?? 'unknown' }}</code>
-            <span class="ml-2 text-[11px] text-muted-foreground">v{{ (tpl as Record<string, unknown>).version ?? '?' }}</span>
+          <div v-for="group in localGroups" :key="group.id" class="px-5 py-3">
+            <code class="font-mono text-xs font-semibold">{{ group.id }}</code>
+            <div class="mt-1 flex flex-wrap items-center gap-1.5">
+              <span
+                v-for="tpl in group.versions"
+                :key="String(tpl.version)"
+                class="rounded-full bg-muted px-2 py-0.5 font-mono text-[11px]"
+              >v{{ tpl.version ?? '?' }}</span>
+            </div>
           </div>
-          <p v-if="localTemplates.length === 0" class="px-5 py-4 text-sm text-muted-foreground">
+          <p v-if="localGroups.length === 0" class="px-5 py-4 text-sm text-muted-foreground">
             No local templates.
           </p>
         </div>
