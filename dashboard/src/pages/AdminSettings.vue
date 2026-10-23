@@ -28,6 +28,10 @@ const meta: Record<string, { label: string; help: string }> = {
     label: 'Step review gate (require_reviewed)',
     help: 'When enabled, templates absent from the official reviewed manifest are rejected at pipeline save time. Synced to the status banner immediately.',
   },
+  step_reviewed_manifest: {
+    label: 'Reviewed manifest',
+    help: 'Path to reviews.json (the official review ledger). Empty = review gate disabled. The gate toggle above only rejects unreviewed templates when a manifest is configured.',
+  },
   step_index_local_dir: {
     label: 'Local step directory',
     help: 'Directory scanned for template YAMLs (offline / private deployments). Changing it takes effect on the next scan.',

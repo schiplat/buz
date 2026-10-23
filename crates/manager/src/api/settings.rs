@@ -15,7 +15,8 @@ use shared::protocol::response::ApiResponse;
 
 use crate::middleware::PlatformAdmin;
 use crate::services::platform_settings::{
-    self, KEY_MARKETPLACE_URL, KEY_STEP_INDEX_LOCAL_DIR, KEY_STEP_REVIEW_REQUIRED,
+    self, KEY_MARKETPLACE_URL, KEY_STEP_INDEX_LOCAL_DIR, KEY_STEP_REVIEWED_MANIFEST,
+    KEY_STEP_REVIEW_REQUIRED,
 };
 use crate::state::AppState;
 
@@ -54,6 +55,11 @@ pub async fn get_settings(
             KEY_STEP_INDEX_LOCAL_DIR,
             "path",
             state.config.step_index.local_dir.clone(),
+        ),
+        item(
+            KEY_STEP_REVIEWED_MANIFEST,
+            "path",
+            state.config.step_index.reviewed_manifest.clone(),
         ),
     ];
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
@@ -98,6 +104,11 @@ async fn reapply_step_index_overrides(state: &AppState) -> Result<(), AppError> 
         .get(KEY_STEP_REVIEW_REQUIRED)
         .and_then(|v| v.parse::<bool>().ok());
     let local_dir = overrides.get(KEY_STEP_INDEX_LOCAL_DIR).cloned();
-    crate::services::step_resolver::apply_runtime_overrides(require_reviewed, local_dir);
+    let reviewed_manifest = overrides.get(KEY_STEP_REVIEWED_MANIFEST).cloned();
+    crate::services::step_resolver::apply_runtime_overrides(
+        require_reviewed,
+        local_dir,
+        reviewed_manifest,
+    );
     Ok(())
 }

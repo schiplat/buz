@@ -159,8 +159,16 @@ pub async fn health(
     // Review-gate posture for the dashboard banner. Booleans only — the
     // manifest path stays private (same policy as the clock section: this
     // endpoint is unauthenticated).
+    let manifest_configured = !crate::services::platform_settings::effective(
+        &state.pool,
+        crate::services::platform_settings::KEY_STEP_REVIEWED_MANIFEST,
+        &state.config.step_index.reviewed_manifest,
+    )
+    .await
+    .trim()
+    .is_empty();
     let step_review = serde_json::json!({
-        "manifest_configured": !state.config.step_index.reviewed_manifest.trim().is_empty(),
+        "manifest_configured": manifest_configured,
         "require_reviewed": crate::services::platform_settings::effective(
             &state.pool,
             crate::services::platform_settings::KEY_STEP_REVIEW_REQUIRED,

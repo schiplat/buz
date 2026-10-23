@@ -178,16 +178,26 @@ async fn main() -> anyhow::Result<()> {
     let local_dir_override = settings_overrides
         .get(services::platform_settings::KEY_STEP_INDEX_LOCAL_DIR)
         .cloned();
-    if require_reviewed != config.step_index.require_reviewed || local_dir_override.is_some() {
+    let reviewed_manifest_override = settings_overrides
+        .get(services::platform_settings::KEY_STEP_REVIEWED_MANIFEST)
+        .cloned();
+    let reviewed_manifest = reviewed_manifest_override
+        .clone()
+        .unwrap_or_else(|| config.step_index.reviewed_manifest.clone());
+    services::step_resolver::init(services::step_resolver::StepIndexSettings {
+        reviewed_manifest: reviewed_manifest.clone(),
+        require_reviewed,
+    });
+    if require_reviewed != config.step_index.require_reviewed
+        || local_dir_override.is_some()
+        || reviewed_manifest_override.is_some()
+    {
         services::step_resolver::apply_runtime_overrides(
             Some(require_reviewed),
             local_dir_override,
+            Some(reviewed_manifest),
         );
     }
-    services::step_resolver::init(services::step_resolver::StepIndexSettings {
-        reviewed_manifest: config.step_index.reviewed_manifest.clone(),
-        require_reviewed,
-    });
     // Review-gate posture: the gate is silent by default, so say so loudly at
     // boot — an operator who never configured a manifest must know unreviewed
     // templates resolve freely (dashboard repeats this as a banner).

@@ -39,15 +39,21 @@ static RUNTIME_OVERRIDES: LazyLock<Mutex<Option<RuntimeOverrides>>> =
 pub struct RuntimeOverrides {
     pub require_reviewed: Option<bool>,
     pub local_dir: Option<String>,
+    pub reviewed_manifest: Option<String>,
 }
 
 /// Replace admin-edited overrides; takes effect on the next resolution.
 /// `Some(v)` overrides the startup value, `None` falls back to it — callers
 /// pass the FULL desired override set (read from `platform_settings`).
-pub fn apply_runtime_overrides(require_reviewed: Option<bool>, local_dir: Option<String>) {
+pub fn apply_runtime_overrides(
+    require_reviewed: Option<bool>,
+    local_dir: Option<String>,
+    reviewed_manifest: Option<String>,
+) {
     *RUNTIME_OVERRIDES.lock().expect("override slot poisoned") = Some(RuntimeOverrides {
         require_reviewed,
         local_dir,
+        reviewed_manifest,
     });
 }
 
@@ -70,6 +76,9 @@ fn settings() -> StepIndexSettings {
     let overrides = runtime_overrides();
     StepIndexSettings {
         require_reviewed: overrides.require_reviewed.unwrap_or(base.require_reviewed),
+        reviewed_manifest: overrides
+            .reviewed_manifest
+            .unwrap_or(base.reviewed_manifest),
         ..base
     }
 }

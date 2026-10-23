@@ -12,6 +12,7 @@ use std::collections::HashMap;
 pub const KEY_MARKETPLACE_URL: &str = "marketplace_url";
 pub const KEY_STEP_REVIEW_REQUIRED: &str = "step_review_required";
 pub const KEY_STEP_INDEX_LOCAL_DIR: &str = "step_index_local_dir";
+pub const KEY_STEP_REVIEWED_MANIFEST: &str = "step_reviewed_manifest";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingKind {
@@ -25,6 +26,7 @@ pub fn setting_kind(key: &str) -> Option<SettingKind> {
         KEY_MARKETPLACE_URL => Some(SettingKind::Url),
         KEY_STEP_REVIEW_REQUIRED => Some(SettingKind::Bool),
         KEY_STEP_INDEX_LOCAL_DIR => Some(SettingKind::Path),
+        KEY_STEP_REVIEWED_MANIFEST => Some(SettingKind::Path),
         _ => None,
     }
 }
@@ -50,10 +52,12 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
             .map(|_| ())
             .map_err(|_| "step_review_required must be 'true' or 'false'".into()),
         SettingKind::Path => {
-            if value.trim().is_empty() {
-                Err("path must not be empty".into())
-            } else {
+            // step_reviewed_manifest may be empty (= review gate disabled);
+            // other paths must exist as a meaningful setting.
+            if key == KEY_STEP_REVIEWED_MANIFEST || !value.trim().is_empty() {
                 Ok(())
+            } else {
+                Err("path must not be empty".into())
             }
         }
     }
@@ -67,6 +71,7 @@ pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
             .bind(KEY_MARKETPLACE_URL)
             .bind(KEY_STEP_REVIEW_REQUIRED)
             .bind(KEY_STEP_INDEX_LOCAL_DIR)
+            .bind(KEY_STEP_REVIEWED_MANIFEST)
             .fetch_all(pool)
             .await
             .unwrap_or_default();
