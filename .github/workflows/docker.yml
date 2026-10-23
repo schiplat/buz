@@ -204,7 +204,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
           TARGET: ${{ matrix.target }}
-          REF: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+          REF: ${{ needs.prepare.outputs.primary }}
         run: |
           set -euo pipefail
           mkdir -p release ctx
