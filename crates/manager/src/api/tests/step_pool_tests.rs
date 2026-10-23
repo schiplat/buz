@@ -46,11 +46,17 @@ run: |
     .into()
 }
 
-fn index_json(yaml_sha: &str) -> String {
+fn index_json(good_sha: &str) -> String {
+    let broken_hash = "0".repeat(64);
     format!(
-        r#"{{ "steps": [ {{
-            "id": "alice/oss-upload", "version": "1.0.0",
-            "file": "steps/oss-upload/1.0.0.yaml", "sha256": "{yaml_sha}" }} ] }}"#
+        r#"{{ "steps": [
+            {{ "id": "alice/oss-upload", "version": "1.0.0",
+               "file": "steps/oss-upload/1.0.0.yaml", "sha256": "{good_sha}" }},
+            {{ "id": "alice/broken-fetch", "version": "0.1.0",
+               "file": "steps/broken-fetch/0.1.0.yaml", "sha256": "{}" }},
+            {{ "id": "alice/broken-hash", "version": "0.1.1",
+               "file": "steps/broken-hash.yaml", "sha256": "{broken_hash}" }} ] }}"#,
+        "b".repeat(64)
     )
 }
 
@@ -72,6 +78,12 @@ async fn spawn_source_server(yaml: String, yaml_sha: String) -> String {
             axum::routing::get(move || {
                 let body = (*yaml).clone();
                 async move { body }
+            }),
+        )
+        .route(
+            "/steps/broken-hash.yaml",
+            axum::routing::get(|| async {
+                "actual content does not match the declared zeros hash"
             }),
         )
         .route(
@@ -227,7 +239,45 @@ async fn community_source_curates_resolves_and_gates() {
         "staged template must not resolve: {body}"
     );
 
-    // 3. Curator enables the entry.
+    // 3a. Enabling a broken entry is REJECTED (file 404) and stays staged.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/step-pool/alice/broken-fetch/0.1.0")
+                .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{ "enabled": true }"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let staged: (i64,) =
+        sqlx::query_as("SELECT enabled FROM step_pool WHERE step_id = 'broken-fetch'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(staged.0, 0, "failed enable must keep the entry staged");
+
+    // 3b. Enabling an entry whose content hash mismatches the index → rejected.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/step-pool/alice/broken-hash/0.1.1")
+                .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{ "enabled": true }"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 3c. Curator enables the good entry.
     let resp = app
         .clone()
         .oneshot(

@@ -150,6 +150,21 @@ pub async fn toggle_pool_entry(
     Path((namespace, step_id, version)): Path<(String, String, String)>,
     Json(body): Json<TogglePoolRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
+    // 收录即校验：enabling fetches the template content, verifies the pinned
+    // sha256, and runs the save-time spec validation — a failed entry stays
+    // staged and the curator sees why.
+    if body.enabled {
+        step_pool::verify_entry(
+            &http_client(),
+            &state.pool,
+            &namespace,
+            &step_id,
+            &version,
+            env!("CARGO_PKG_VERSION"),
+        )
+        .await
+        .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
+    }
     let result = sqlx::query(
         "UPDATE step_pool SET enabled = ? \
          WHERE namespace = ? AND step_id = ? AND version = ?",

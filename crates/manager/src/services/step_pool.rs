@@ -345,6 +345,65 @@ async fn sync_source_inner(
     Ok(index.steps.len())
 }
 
+/// Enable-time verification（收录即校验）---------------------------------------
+
+/// Fetch (cache → HTTP), verify the sha256, parse, and run the save-time spec
+/// validation. An entry only enters the enabled pool once this passes —
+/// curation is a checked act, not a flag flip.
+pub async fn verify_entry(
+    http: &reqwest::Client,
+    pool: &SqlitePool,
+    namespace: &str,
+    step_id: &str,
+    version: &str,
+    current_buz: &str,
+) -> Result<(), String> {
+    let (sha256, source_id, file_path): (String, String, String) = sqlx::query_as(
+        "SELECT sha256, source_id, file_path FROM step_pool \
+         WHERE namespace = ? AND step_id = ? AND version = ?",
+    )
+    .bind(namespace)
+    .bind(step_id)
+    .bind(version)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| format!("pool entry {namespace}/{step_id}@{version} not found"))?;
+
+    let source = get_source(pool, &source_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("source {source_id} disappeared"))?;
+
+    let content = fetch_content(http, &source.url, &file_path, &sha256).await?;
+    let spec: shared::step_spec::StepSpec = serde_yaml::from_str(&content)
+        .map_err(|e| format!("template {namespace}/{step_id}@{version} is invalid YAML: {e}"))?;
+    if spec.id != format!("{namespace}/{step_id}") {
+        return Err(format!(
+            "template id mismatch: pool says {namespace}/{step_id}, YAML says {}",
+            spec.id
+        ));
+    }
+    if spec.version != version {
+        return Err(format!(
+            "template version mismatch: pool says {version}, YAML says {}",
+            spec.version
+        ));
+    }
+    if let Err(errors) = shared::step_spec::validate_step_spec(&spec, current_buz) {
+        return Err(format!(
+            "step spec '{namespace}/{step_id}' is invalid: {}",
+            errors.join("; ")
+        ));
+    }
+    if let Some(requires) = spec.requires_buz.as_deref() {
+        shared::step_spec::buz_requirement_satisfied(requires, current_buz).map_err(|e| {
+            format!("step spec '{namespace}/{step_id}' requires buz {requires}: {e}")
+        })?;
+    }
+    Ok(())
+}
+
 /// Resolution ------------------------------------------------------------------
 
 /// Resolve a `uses:` reference from the enabled pool. `None` = the namespace
