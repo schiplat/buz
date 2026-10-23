@@ -30,6 +30,47 @@ const busy = ref('')
 const poolEnabled = computed(() => pool.value.filter((p) => p.enabled))
 const poolStaged = computed(() => pool.value.filter((p) => !p.enabled))
 
+function versionTriple(v: string): [number, number, number] | null {
+  const parts = v.split('.').map(Number)
+  if (parts.length === 0 || parts.some((n) => !Number.isFinite(n))) return null
+  const [major = 0, minor = 0, patch = 0] = parts
+  return [major, minor, patch]
+}
+
+function compareTriple(
+  a: [number, number, number],
+  b: [number, number, number],
+): number {
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2]
+}
+
+/** Enabled rows whose namespace/step-id has a HIGHER staged version — the
+ *  "update available" hint that makes sync-discovered upgrades visible. */
+const updateHints = computed(() => {
+  const hints = new Set<string>()
+  const byKey = new Map<string, PoolEntry[]>()
+  for (const entry of pool.value) {
+    const key = `${entry.namespace}/${entry.step_id}`
+    byKey.set(key, [...(byKey.get(key) ?? []), entry])
+  }
+  for (const entries of byKey.values()) {
+    const enabled = entries.filter((e) => e.enabled)
+    const stagedVersions = entries
+      .filter((e) => !e.enabled)
+      .map((e) => versionTriple(e.version))
+      .filter((v): v is [number, number, number] => v !== null)
+    if (stagedVersions.length === 0) continue
+    const newest = stagedVersions.sort(compareTriple).at(-1)!
+    for (const e of enabled) {
+      const current = versionTriple(e.version)
+      if (current && compareTriple(current, newest) < 0) {
+        hints.add(`${e.namespace}/${e.step_id}@${e.version}`)
+      }
+    }
+  }
+  return hints
+})
+
 async function load() {
   if (!auth.isPlatformAdmin) {
     router.replace('/dashboard')
@@ -223,6 +264,10 @@ onMounted(load)
                   v-if="entry.reviewed"
                   class="rounded-full bg-blue-500/10 px-2 py-0.5 text-[11px] text-blue-600 dark:text-blue-400"
                 >reviewed</span>
+                <span
+                  v-if="updateHints.has(`${entry.namespace}/${entry.step_id}@${entry.version}`)"
+                  class="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-400"
+                >update available</span>
               </div>
               <p class="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
                 sha256 {{ entry.sha256.slice(0, 16) }}… · {{ entry.source_name ?? entry.source_id }}
