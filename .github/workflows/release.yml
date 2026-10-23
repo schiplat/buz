@@ -116,40 +116,21 @@ jobs:
           chmod +x scripts/package-release.sh
           ./scripts/package-release.sh
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.meta.outputs.archive }}
-          path: |
-            dist/release/${{ steps.meta.outputs.archive }}.tar.gz
-            dist/release/${{ steps.meta.outputs.archive }}.tar.gz.sha256
-          if-no-files-found: error
-          retention-days: 7
-
-  publish:
-    name: Publish GitHub Release
-    needs: build
-    # Only attach assets when running on a version tag (v*).
-    # workflow_dispatch on a branch still builds artifacts for download.
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - name: List assets
-        run: find artifacts -type f | sort
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          draft: false
-          generate_release_notes: true
-          files: artifacts/**
-          fail_on_unmatched_files: true
+      - name: Attach archives to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          ARCHIVE: ${{ steps.meta.outputs.archive }}
+        run: |
+          # Release assets do not count against the Actions storage quota
+          # (artifacts do), so archives attach directly — no artifact round-trip.
+          for attempt in 1 2 3 4 5; do
+            gh release view "$TAG" >/dev/null 2>&1 && break
+            gh release create "$TAG" --title "$TAG" --generate-notes >/dev/null 2>&1 || sleep 5
+          done
+          gh release upload "$TAG" \
+            "dist/release/${ARCHIVE}.tar.gz" \
+            "dist/release/${ARCHIVE}.tar.gz.sha256" \
+            --clobber
