@@ -117,7 +117,9 @@ describe('PluginSources', () => {
     expect(keys).toContain('Step review gate (require_reviewed)')
     expect(keys).toContain('Local step directory')
     expect(keys).toContain('Reviewed manifest')
-    expect(root.textContent).toContain('/srv/steps')
+    // Input values are not part of textContent — assert the element itself.
+    const dirInput = [...root.querySelectorAll('input')].find((i) => i.value === '/srv/steps')!
+    expect(dirInput, 'local dir input carries the effective value').toBeTruthy()
   })
 
   it('applies the review-gate toggle immediately', async () => {
@@ -132,18 +134,17 @@ describe('PluginSources', () => {
 
   it('saves an edited path setting and resets to the manager.toml default', async () => {
     const root = await mountPage()
-    const dir = root.querySelector<HTMLInputElement>('input[type="text"]')!
+    const dir = [...root.querySelectorAll('input')].find((i) => i.value === '/srv/steps')!
+    const card = dir.closest('.px-5')!
     dir.value = '/srv/steps-v2'
     dir.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    const save = [...root.querySelectorAll<HTMLButtonElement>('button')]
-      .find((b) => b.textContent?.trim() === 'Save')!
+    const save = [...card.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Save')!
     save.click()
     await flush()
     expect(adminSettingsApi.update).toHaveBeenCalledWith('step_index_local_dir', '/srv/steps-v2')
 
-    const reset = [...root.querySelectorAll<HTMLButtonElement>('button')]
-      .find((b) => b.textContent?.includes('Reset'))!
+    const reset = [...card.querySelectorAll('button')].find((b) => b.textContent?.includes('Reset'))!
     reset.click()
     await flush()
     expect(adminSettingsApi.reset).toHaveBeenCalledWith('step_index_local_dir')
