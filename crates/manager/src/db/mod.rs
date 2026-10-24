@@ -641,6 +641,19 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .execute(pool)
     .await?;
 
+    // ── Official plugin source (factory-preseeded, auto-enabled) ──
+    // The CF Pages mirror is the distribution endpoint chosen for
+    // China-mainland reachability (§6.3); admins can delete/re-add the row
+    // with an internal mirror URL if their network requires it.
+    sqlx::query(
+        "INSERT INTO step_sources (id, name, url, auto_enable, enabled, created_by) \
+         SELECT 'official', 'Official buz-plugins', \
+                'https://plugins.buz.schiplat.com/index.json', 1, 1, 'system' \
+         WHERE NOT EXISTS (SELECT 1 FROM step_sources WHERE id = 'official')",
+    )
+    .execute(pool)
+    .await?;
+
     // ── Platform settings (admin-editable runtime overrides) ──
     // DB value > manager.toml default; a missing row means "use the default".
     sqlx::query(

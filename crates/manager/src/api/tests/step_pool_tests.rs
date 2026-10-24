@@ -349,3 +349,97 @@ async fn community_source_curates_resolves_and_gates() {
         "branch pin error should name the ref: {message}"
     );
 }
+
+#[tokio::test]
+async fn official_source_seeds_and_startup_sync_populates_pool() {
+    // The migration pre-seeds the official source (auto_enable) — a fresh
+    // database must already carry it.
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+
+    let seeded: (String, String, i64, i64) = sqlx::query_as(
+        "SELECT name, url, auto_enable, enabled FROM step_sources WHERE id = 'official'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("official source seeded");
+    assert_eq!(seeded.0, "Official buz-plugins");
+    assert!(
+        seeded.2 != 0,
+        "auto_enable must be on for the official source"
+    );
+    assert!(seeded.3 != 0, "official source must be enabled");
+
+    // Startup sync (sync_all_enabled) pulls the index and auto-enables every
+    // entry — the "official templates work out of the box" contract.
+    let yaml = r#"
+id: buz/demo
+version: 1.0.0
+publisher: official
+author: buz maintainers
+engine: shell
+inputs:
+  name:
+    type: string
+    required: true
+run: |
+  echo "hello ${INPUT_NAME}"
+"#
+    .replace(
+        "\n", "
+",
+    );
+    let yaml_sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(yaml.as_bytes()))
+    };
+    let app = Router::new()
+        .route(
+            "/index.json",
+            axum::routing::get(move || {
+                let body = format!(
+                    r#"{{ "steps": [ {{ "id": "buz/demo", "version": "1.0.0",
+                       "file": "steps/demo/1.0.0.yaml", "sha256": "{yaml_sha}" }} ] }}"#
+                );
+                async move { body }
+            }),
+        )
+        .route(
+            "/steps/demo/1.0.0.yaml",
+            axum::routing::get(move || {
+                let body = yaml.clone();
+                async move { body }
+            }),
+        )
+        .route(
+            "/reviews.json",
+            axum::routing::get(|| async { r#"{"reviews": [{"sha256": "PLACEHOLDER"}]}"# }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    // Point the official source at the mock and run the startup sync.
+    sqlx::query("UPDATE step_sources SET url = ? WHERE id = 'official'")
+        .bind(format!("http://{addr}/index.json"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let synced = crate::services::step_pool::sync_all_enabled(&pool, &reqwest::Client::new()).await;
+    assert_eq!(synced, 1);
+
+    let entry: (String, i64, i64) =
+        sqlx::query_as("SELECT version, enabled, reviewed FROM step_pool WHERE step_id = 'demo'")
+            .fetch_one(&pool)
+            .await
+            .expect("pool row for buz/demo");
+    assert_eq!(entry.0, "1.0.0");
+    assert_eq!(entry.1, 1, "official auto_enable must enable entries");
+    // reviews.json placeholder hash never matches → no badge (strict mode
+    // would reject; official entries carry CI-signed hashes in production).
+    assert_eq!(entry.2, 0);
+}

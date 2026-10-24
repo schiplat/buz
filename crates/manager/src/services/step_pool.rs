@@ -404,6 +404,32 @@ pub async fn verify_entry(
     Ok(())
 }
 
+/// Startup sync: refresh every enabled source (design §6.8 point 3 —
+/// startup + manual refresh; no background timer by default). Failures are
+/// logged per source and never block startup.
+pub async fn sync_all_enabled(pool: &SqlitePool, http: &reqwest::Client) -> usize {
+    let sources = match list_sources(pool).await {
+        Ok(sources) => sources,
+        Err(e) => {
+            tracing::warn!(error = %e, "step source listing failed at startup sync");
+            return 0;
+        }
+    };
+    let mut synced = 0usize;
+    for source in sources.iter().filter(|s| s.enabled) {
+        match sync_source(http, pool, source).await {
+            Ok(count) => {
+                synced += 1;
+                tracing::info!(source = %source.name, entries = count, "step source synced");
+            }
+            Err(e) => {
+                tracing::warn!(source = %source.name, error = %e, "step source sync failed");
+            }
+        }
+    }
+    synced
+}
+
 /// Resolution ------------------------------------------------------------------
 
 /// Resolve a `uses:` reference from the enabled pool. `None` = the namespace

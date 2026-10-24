@@ -198,6 +198,19 @@ async fn main() -> anyhow::Result<()> {
             Some(reviewed_manifest),
         );
     }
+
+    // Startup sync of plugin sources (design §6.8: startup + manual refresh;
+    // no background timer by default). Failures are logged, never fatal.
+    {
+        let pool = db_pool.clone();
+        tokio::spawn(async move {
+            let synced =
+                services::step_pool::sync_all_enabled(&pool, &reqwest::Client::new()).await;
+            if synced > 0 {
+                tracing::info!(sources = synced, "plugin sources synced at startup");
+            }
+        });
+    }
     // Review-gate posture: the gate is silent by default, so say so loudly at
     // boot — an operator who never configured a manifest must know unreviewed
     // templates resolve freely (dashboard repeats this as a banner).
