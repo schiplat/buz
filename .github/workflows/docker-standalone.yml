@@ -1,7 +1,12 @@
 name: Docker Standalone / ACR + Docker Hub
 
 # Build and push a single arm64 image that contains both Manager and Runner
-# (see Dockerfile.standalone). No multi-arch merge — arm64 only.
+# (see docker/prebuilt-standalone.Dockerfile) — from the RELEASE BINARIES,
+# no compilation. Triggers:
+#   1. workflow_run — automatically AFTER the Release workflow completes
+#      successfully (its arm64 archive carries the binaries).
+#   2. workflow_dispatch — manual rebuild for an existing tag.
+# Base ubuntu:24.04 matches the release build runners' glibc.
 #
 # Required repository configuration (same as docker.yml):
 #   Secrets:
@@ -19,8 +24,9 @@ name: Docker Standalone / ACR + Docker Hub
 #   ${DOCKERHUB_NAMESPACE}/buz-standalone:<tag>            (only when DOCKERHUB_USERNAME is set)
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -34,8 +40,40 @@ env:
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
+  prepare:
+    name: Resolve tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      primary: ${{ steps.resolve.outputs.primary }}
+    steps:
+      - name: Resolve image tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RELEASE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_TAG}" ]]; then
+            PRIMARY="${INPUT_TAG}"
+          elif [[ -n "${RELEASE_BRANCH}" ]]; then
+            if [[ "${RELEASE_CONCLUSION}" != "success" ]]; then
+              echo "Release workflow concluded '${RELEASE_CONCLUSION}' — nothing to package" >&2
+              exit 1
+            fi
+            PRIMARY="${RELEASE_BRANCH}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            PRIMARY="${GITHUB_REF_NAME}"
+          else
+            PRIMARY="latest"
+          fi
+          echo "primary=${PRIMARY}" >> "$GITHUB_OUTPUT"
+          echo "Image tag: ${PRIMARY}"
+
   push:
     name: Build & push buz-standalone (arm64)
+    needs: prepare
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -45,7 +83,7 @@ jobs:
       - name: Resolve image names & tags
         id: meta
         env:
-          INPUT_TAG: ${{ github.event.inputs.tag }}
+          PRIMARY: ${{ needs.prepare.outputs.primary }}
         run: |
           set -euo pipefail
           REGISTRY="${{ vars.ACR_REGISTRY }}"
@@ -55,8 +93,8 @@ jobs:
             exit 1
           fi
 
-          if [[ -n "${INPUT_TAG}" ]]; then
-            PRIMARY="${INPUT_TAG}"
+          if [[ -n "${PRIMARY}" ]]; then
+            : "${PRIMARY}"
           elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             PRIMARY="${GITHUB_REF_NAME}"
           else
@@ -122,11 +160,30 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Download release archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p ctx
+          # The arm64 release archive carries both binaries (bin/ +
+          # conf/); standalone tomls and the entrypoint come from the repo.
+          gh release download "${{ needs.prepare.outputs.primary }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "buz-${VERSION}-aarch64-unknown-linux-gnu.tar.gz" \
+            --output "release/archive.tar.gz"
+          tar -xzf release/archive.tar.gz -C ctx --strip-components=1
+          cp deploy/conf/manager.standalone.toml ctx/manager.toml
+          cp deploy/conf/runner.standalone.toml ctx/runner.toml
+          cp deploy/standalone/entrypoint.sh ctx/entrypoint.sh
+          chmod 755 ctx/entrypoint.sh
+
       - name: Build & push buz-standalone
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: Dockerfile.standalone
+          context: ctx
+          file: docker/prebuilt-standalone.Dockerfile
           platforms: linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
