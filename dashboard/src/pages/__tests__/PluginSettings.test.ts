@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
-import AdminSettings from '@/pages/AdminSettings.vue'
+import PluginSettings from '@/pages/PluginSettings.vue'
 import { adminSettingsApi, type PlatformSetting } from '@/api/adminSettings'
 
 const { dialog, auth } = vi.hoisted(() => ({
@@ -31,7 +31,7 @@ const flush = async () => {
 async function mountPage() {
   const root = document.createElement('div')
   document.body.appendChild(root)
-  app = createApp(AdminSettings)
+  app = createApp(PluginSettings)
   app.mount(root)
   await flush()
   return root
@@ -57,7 +57,7 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('AdminSettings', () => {
+describe('PluginSettings', () => {
   it('renders every setting with its effective value', async () => {
     const root = await mountPage()
     const inputs = [...root.querySelectorAll<HTMLInputElement>('input[type="url"], input[type="text"]')]

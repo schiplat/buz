@@ -1,43 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
-import PluginLibrary from '@/pages/PluginLibrary.vue'
-import {
-  stepSourcesApi,
-  stepsApi,
-  type PoolEntry,
-  type StepSource,
-} from '@/api/stepSources'
+import PluginPool from '@/pages/PluginPool.vue'
+import { stepSourcesApi, stepsApi, type PoolEntry } from '@/api/stepSources'
 
-const { dialog, auth } = vi.hoisted(() => ({
-  dialog: { alert: vi.fn(), confirm: vi.fn().mockResolvedValue(true) },
-  auth: { isPlatformAdmin: true },
+const { dialog } = vi.hoisted(() => ({
+  dialog: { alert: vi.fn(), confirm: vi.fn() },
 }))
 
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
-vi.mock('@/composables/useAppDialog', () => ({ useAppDialog: () => dialog }))
 vi.mock('@/api/stepSources', () => ({
-  stepSourcesApi: {
-    listSources: vi.fn(),
-    createSource: vi.fn(),
-    syncSource: vi.fn(),
-    deleteSource: vi.fn(),
-    listPool: vi.fn(),
-    togglePoolEntry: vi.fn(),
-  },
+  stepSourcesApi: { listPool: vi.fn(), togglePoolEntry: vi.fn() },
   stepsApi: { listLocal: vi.fn() },
 }))
-vi.mock('vue-router', () => ({ useRouter: () => ({ replace: vi.fn() }) }))
-
-const source = (overrides: Partial<StepSource> = {}): StepSource => ({
-  id: 'src-1',
-  name: 'alice',
-  url: 'https://example.com/alice/index.json',
-  auto_enable: false,
-  enabled: true,
-  last_synced_at: '2026-10-23T00:00:00Z',
-  last_sync_error: null,
-  ...overrides,
-})
+vi.mock('@/composables/useAppDialog', () => ({ useAppDialog: () => dialog }))
 
 const poolEntry = (overrides: Partial<PoolEntry>): PoolEntry => ({
   namespace: 'alice',
@@ -62,7 +36,7 @@ const flush = async () => {
 async function mountPage() {
   const root = document.createElement('div')
   document.body.appendChild(root)
-  app = createApp(PluginLibrary)
+  app = createApp(PluginPool)
   app.mount(root)
   await flush()
   return root
@@ -71,8 +45,6 @@ async function mountPage() {
 beforeEach(() => {
   vi.resetAllMocks()
   dialog.alert.mockResolvedValue(undefined)
-  dialog.confirm.mockResolvedValue(true)
-  vi.mocked(stepSourcesApi.listSources).mockResolvedValue({ items: [source()] })
   vi.mocked(stepSourcesApi.listPool).mockResolvedValue({
     items: [
       poolEntry({ version: '1.0.0', enabled: true, reviewed: true }),
@@ -94,15 +66,13 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('PluginLibrary', () => {
+describe('PluginPool', () => {
   it('lists every plugin with its full version list, newest first', async () => {
     const root = await mountPage()
-
-    const groupHeader = [...root.querySelectorAll('code')].find((el) =>
+    const header = [...root.querySelectorAll('code')].find((el) =>
       el.textContent?.includes('alice/oss-upload'),
     )
-    expect(groupHeader, 'pool group header').toBeTruthy()
-
+    expect(header, 'pool group header').toBeTruthy()
     const versions = [...root.querySelectorAll('code')]
       .filter((el) => el.textContent?.startsWith('v'))
       .map((el) => el.textContent)
@@ -130,8 +100,8 @@ describe('PluginLibrary', () => {
 
   it('toggles a pool version through the API', async () => {
     const root = await mountPage()
-    const buttons = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    const enable = buttons.find((b) => b.textContent?.trim() === 'Enable')!
+    const enable = [...root.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent?.trim() === 'Enable')!
     expect(enable, 'staged version exposes Enable').toBeTruthy()
     enable.click()
     await flush()

@@ -75,8 +75,19 @@ const routes: RouteRecordRaw[] = [
       { path: 'users', name: 'users', component: () => import('@/pages/Users.vue'), meta: { title: 'Users', adminOnly: true } },
       { path: 'api-tokens', name: 'api-tokens', component: () => import('@/pages/ApiTokens.vue'), meta: { title: 'API tokens', adminOnly: true } },
       { path: 'audit-logs', name: 'audit-logs', component: () => import('@/pages/AuditLogs.vue'), meta: { title: 'Audit logs', adminOnly: true } },
-      { path: 'plugin-library', name: 'plugin-library', component: () => import('@/pages/PluginLibrary.vue'), meta: { title: 'Plugin library', adminOnly: true } },
-      { path: 'admin-settings', name: 'admin-settings', component: () => import('@/pages/AdminSettings.vue'), meta: { title: 'Platform settings', adminOnly: true } },
+      {
+        path: 'plugin-library',
+        name: 'plugin-library',
+        component: () => import('@/pages/PluginLibrary.vue'),
+        meta: { title: 'Plugin library', adminOnly: true },
+        children: [
+          { path: '', redirect: { name: 'plugin-pool' } },
+          { path: 'pool', name: 'plugin-pool', component: () => import('@/pages/PluginPool.vue'), meta: { title: 'Pool' } },
+          { path: 'sources', name: 'plugin-sources', component: () => import('@/pages/PluginSources.vue'), meta: { title: 'Sources' } },
+          { path: 'settings', name: 'plugin-settings', component: () => import('@/pages/PluginSettings.vue'), meta: { title: 'Settings' } },
+        ],
+      },
+      { path: 'admin-settings', redirect: '/plugin-library/settings' },
       // Catch-all: unknown URLs get a friendly 404 inside the app shell
       // (sidebar/topnav keep working) instead of a blank page.
       {

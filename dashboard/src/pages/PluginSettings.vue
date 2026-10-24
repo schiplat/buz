@@ -92,7 +92,7 @@ onMounted(load)
 
 <template>
   <div>
-    <PageHeader title="Platform settings" description="Runtime overrides — DB values take precedence over manager.toml defaults." />
+    <PageHeader title="Settings" description="Runtime overrides — DB values take precedence over manager.toml defaults." />
 
     <div v-if="loading" class="text-sm text-muted-foreground">Loading…</div>
     <div v-else class="max-w-3xl space-y-4">

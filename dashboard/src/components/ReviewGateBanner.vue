@@ -27,7 +27,7 @@ onMounted(async () => {
       <p class="mt-0.5 wrap-break-word text-muted-foreground">
         Every <code>uses:</code> template resolves without review checks. For production, enable
         the review gate in
-        <RouterLink to="/admin-settings" class="font-medium underline underline-offset-2">Platform settings</RouterLink>
+        <RouterLink to="/plugin-library/settings" class="font-medium underline underline-offset-2">Plugin library → Settings</RouterLink>
         (requires <code>reviewed_manifest</code> in manager.toml) — see the Configuration docs.
       </p>
     </div>
