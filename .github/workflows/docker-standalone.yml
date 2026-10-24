@@ -47,6 +47,7 @@ jobs:
       contents: read
     outputs:
       primary: ${{ steps.resolve.outputs.primary }}
+      version: ${{ steps.resolve.outputs.version }}
     steps:
       - name: Resolve image tag
         id: resolve
