@@ -83,11 +83,10 @@ const routes: RouteRecordRaw[] = [
         children: [
           { path: '', redirect: { name: 'plugin-pool' } },
           { path: 'pool', name: 'plugin-pool', component: () => import('@/pages/PluginPool.vue'), meta: { title: 'Pool' } },
-          { path: 'sources', name: 'plugin-sources', component: () => import('@/pages/PluginSources.vue'), meta: { title: 'Sources' } },
-          { path: 'settings', name: 'plugin-settings', component: () => import('@/pages/PluginSettings.vue'), meta: { title: 'Settings' } },
+          { path: 'sources', name: 'plugin-sources', component: () => import('@/pages/PluginSources.vue'), meta: { title: 'Sources & Settings' } },
         ],
       },
-      { path: 'admin-settings', redirect: '/plugin-library/settings' },
+      { path: 'admin-settings', redirect: '/plugin-library/sources' },
       // Catch-all: unknown URLs get a friendly 404 inside the app shell
       // (sidebar/topnav keep working) instead of a blank page.
       {

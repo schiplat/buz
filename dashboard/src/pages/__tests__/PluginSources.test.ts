@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
 import PluginSources from '@/pages/PluginSources.vue'
 import { stepSourcesApi, type StepSource } from '@/api/stepSources'
+import { adminSettingsApi, type PlatformSetting } from '@/api/adminSettings'
 
 const { dialog } = vi.hoisted(() => ({
   dialog: { alert: vi.fn(), confirm: vi.fn() },
@@ -14,6 +15,9 @@ vi.mock('@/api/stepSources', () => ({
     syncSource: vi.fn(),
     deleteSource: vi.fn(),
   },
+}))
+vi.mock('@/api/adminSettings', () => ({
+  adminSettingsApi: { list: vi.fn(), update: vi.fn(), reset: vi.fn() },
 }))
 vi.mock('@/composables/useAppDialog', () => ({ useAppDialog: () => dialog }))
 
@@ -43,11 +47,35 @@ async function mountPage() {
   return root
 }
 
+const platformSetting = (overrides: Partial<PlatformSetting>): PlatformSetting => ({
+  key: 'step_review_required',
+  kind: 'bool',
+  value: 'false',
+  default: 'false',
+  overridden: false,
+  ...overrides,
+})
+
 beforeEach(() => {
   vi.resetAllMocks()
   dialog.alert.mockResolvedValue(undefined)
   dialog.confirm.mockResolvedValue(true)
   vi.mocked(stepSourcesApi.listSources).mockResolvedValue({ items: [source()] })
+  vi.mocked(adminSettingsApi.list).mockResolvedValue({
+    items: [
+      platformSetting({ key: 'marketplace_url', kind: 'url', value: '' }),
+      platformSetting({ key: 'step_review_required', value: 'false' }),
+      platformSetting({
+        key: 'step_index_local_dir',
+        kind: 'path',
+        value: '/srv/steps',
+        default: '/srv/steps',
+      }),
+      platformSetting({ key: 'step_reviewed_manifest', kind: 'path', value: '' }),
+    ],
+  })
+  vi.mocked(adminSettingsApi.update).mockImplementation(async (key, value) => ({ key, value }))
+  vi.mocked(adminSettingsApi.reset).mockImplementation(async (key) => ({ key }))
 })
 
 afterEach(() => {
@@ -80,6 +108,45 @@ describe('PluginSources', () => {
     add.click()
     await flush()
     expect(stepSourcesApi.createSource).toHaveBeenCalledWith('bob', 'https://example.com/bob/index.json', false)
+  })
+
+  it('renders the four platform settings with effective values', async () => {
+    const root = await mountPage()
+    const keys = [...root.querySelectorAll('h3')].map((h) => h.textContent)
+    expect(keys).toContain('Marketplace URL')
+    expect(keys).toContain('Step review gate (require_reviewed)')
+    expect(keys).toContain('Local step directory')
+    expect(keys).toContain('Reviewed manifest')
+    expect(root.textContent).toContain('/srv/steps')
+  })
+
+  it('applies the review-gate toggle immediately', async () => {
+    const root = await mountPage()
+    const toggle = root.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    expect(toggle.checked).toBe(false)
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change', { bubbles: true }))
+    await flush()
+    expect(adminSettingsApi.update).toHaveBeenCalledWith('step_review_required', 'true')
+  })
+
+  it('saves an edited path setting and resets to the manager.toml default', async () => {
+    const root = await mountPage()
+    const dir = root.querySelector<HTMLInputElement>('input[type="text"]')!
+    dir.value = '/srv/steps-v2'
+    dir.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const save = [...root.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent?.trim() === 'Save')!
+    save.click()
+    await flush()
+    expect(adminSettingsApi.update).toHaveBeenCalledWith('step_index_local_dir', '/srv/steps-v2')
+
+    const reset = [...root.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent?.includes('Reset'))!
+    reset.click()
+    await flush()
+    expect(adminSettingsApi.reset).toHaveBeenCalledWith('step_index_local_dir')
   })
 
   it('surfaces a failed initial sync without throwing', async () => {
