@@ -49,6 +49,7 @@ jobs:
       primary: ${{ steps.resolve.outputs.primary }}
     steps:
       - name: Resolve image tag
+        id: resolve
         env:
           INPUT_TAG: ${{ github.event.inputs.tag }}
           RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
