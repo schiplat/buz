@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { RefreshCw, RotateCcw, Trash2 } from '@lucide/vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import { stepSourcesApi, type StepSource } from '@/api/stepSources'
 import { adminSettingsApi, type PlatformSetting } from '@/api/adminSettings'
 import { useAppDialog } from '@/composables/useAppDialog'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 const dialog = useAppDialog()
 const router = useRouter()
+const route = useRoute()
 const loading = ref(true)
 const sources = ref<StepSource[]>([])
 const settings = ref<PlatformSetting[]>([])
@@ -137,7 +138,21 @@ async function persistSetting(setting: PlatformSetting, value: string) {
   } catch (e) {
     // e.g. enabling the review gate without a manifest: the backend refused
     // and the switch must visually stay at its real (unchanged) position.
-    await dialog.alert(e instanceof Error ? e.message : String(e))
+    // The action link deep-links to the offending setting row.
+    const message = e instanceof Error ? e.message : String(e)
+    const gateBlocked =
+      setting.key === 'step_review_required' && message.includes('Reviewed manifest')
+    await dialog.alert(message, {
+      title: 'Cannot turn on',
+      actionLabel: gateBlocked ? 'Go to Reviewed manifest →' : undefined,
+      onAction: gateBlocked
+        ? () =>
+            void router.push({
+              path: '/plugin-library/sources',
+              query: { focus: 'step_reviewed_manifest' },
+            })
+        : undefined,
+    })
     await load()
   } finally {
     savingSetting.value = ''
@@ -164,6 +179,22 @@ async function resetSetting(setting: PlatformSetting) {
 
 function settingByKey(key: string): PlatformSetting | undefined {
   return settings.value.find((s) => s.key === key)
+}
+
+/** Deep-link focus (?focus=<key>): scroll the row into view and pulse it. */
+const focusedKey = ref('')
+const FOCUS_PULSE_MS = 2400
+
+function applyFocusFromRoute() {
+  const key = String(route.query.focus || '')
+  if (!key || !(key in settingsMeta)) return
+  focusedKey.value = key
+  setTimeout(() => {
+    document
+      .querySelector(`[data-setting-row="${key}"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, 80)
+  setTimeout(() => (focusedKey.value = ''), FOCUS_PULSE_MS + 600)
 }
 
 /** Key of the setting that just saved — drives the ✓ / green border flash. */
@@ -239,7 +270,15 @@ function syncState(source: StepSource): string {
   return 'syncing…'
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  applyFocusFromRoute()
+})
+
+watch(
+  () => route.query.focus,
+  () => applyFocusFromRoute(),
+)
 
 onUnmounted(stopPolling)
 </script>
@@ -329,7 +368,12 @@ onUnmounted(stopPolling)
         </p>
 
         <template v-for="key in group.keys" :key="key">
-          <div v-if="settingByKey(key)" class="mt-3">
+          <div
+            v-if="settingByKey(key)"
+            class="mt-3 rounded-lg px-3 py-2 -mx-3 transition-shadow duration-500"
+            :class="focusedKey === key ? 'setting-pulse' : ''"
+            :data-setting-row="key"
+          >
             <div class="flex items-center gap-2">
               <h3 class="text-sm font-medium">
                 {{ settingsMeta[key]?.label ?? key }}
@@ -437,3 +481,15 @@ onUnmounted(stopPolling)
     </section>
   </div>
 </template>
+
+<style scoped>
+@keyframes setting-pulse-kf {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(59 130 246 / 0); }
+  20%, 60% { box-shadow: 0 0 0 3px rgb(59 130 246 / 0.45); }
+  40%, 80% { box-shadow: 0 0 0 3px rgb(59 130 246 / 0.2); }
+}
+.setting-pulse {
+  animation: setting-pulse-kf 1.2s ease-in-out 2;
+  background-color: rgb(59 130 246 / 0.06);
+}
+</style>

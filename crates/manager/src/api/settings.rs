@@ -148,12 +148,10 @@ pub async fn update_setting(
                 .map(String::as_str),
         );
         if !manifest_path.exists() {
-            return Err(AppError::ValidationFailed(format!(
-                "review gate cannot be turned on: the reviewed manifest file does not exist at {}. \
-                 Clone buz-plugins into your data directory (provides both plugins and reviews.json) \
-                 or configure an existing manifest path in 'Reviewed manifest' first.",
-                manifest_path.display()
-            )));
+            return Err(AppError::ValidationFailed(
+                "review gate needs the manifest file — set it up under 'Reviewed manifest' first"
+                    .into(),
+            ));
         }
     }
 

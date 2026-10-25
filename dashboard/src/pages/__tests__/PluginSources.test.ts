@@ -20,6 +20,10 @@ vi.mock('@/api/adminSettings', () => ({
   adminSettingsApi: { list: vi.fn(), update: vi.fn(), reset: vi.fn() },
 }))
 vi.mock('@/composables/useAppDialog', () => ({ useAppDialog: () => dialog }))
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useRoute: () => ({ query: {} as Record<string, string> }),
+}))
 
 const source = (overrides: Partial<StepSource> = {}): StepSource => ({
   id: 'src-1',

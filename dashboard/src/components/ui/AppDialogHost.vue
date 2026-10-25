@@ -48,6 +48,12 @@ function onBackdrop() {
   else finish(() => d.resolve(null))
 }
 
+function onAction() {
+  const d = dialog.value
+  if (!d || d.kind !== 'alert') return
+  finish(() => d.resolve(true))
+}
+
 function onPrimary() {
   const d = dialog.value
   if (!d) return
@@ -122,6 +128,15 @@ function onCancel() {
         </label>
 
         <div class="flex justify-end gap-3 mt-6 pt-5 border-t border-border/30">
+          <UiButton
+            v-if="dialog.kind === 'alert' && dialog.actionLabel"
+            variant="ghost"
+            size="sm"
+            class="mr-auto text-primary hover:text-primary/90"
+            @click="onAction"
+          >
+            {{ dialog.actionLabel }}
+          </UiButton>
           <UiButton
             v-if="dialog.kind !== 'alert'"
             variant="ghost"

@@ -3,6 +3,9 @@ import { ref } from 'vue'
 export type AlertOptions = {
   title?: string
   confirmLabel?: string
+  /** Optional primary action rendered beside OK (e.g. "go configure" links). */
+  actionLabel?: string
+  onAction?: () => void
 }
 
 export type ConfirmOptions = {
@@ -34,7 +37,8 @@ type AlertState = {
   title: string
   message: string
   confirmLabel: string
-  resolve: () => void
+  actionLabel: string | null
+  resolve: (action?: boolean) => void
 }
 
 type ConfirmState = {
@@ -92,8 +96,10 @@ export function useAppDialog() {
           title: opts.title ?? 'Notice',
           message,
           confirmLabel: opts.confirmLabel ?? 'OK',
-          resolve: () => {
+          actionLabel: opts.actionLabel ?? null,
+          resolve: (action?: boolean) => {
             settle()
+            if (action && opts.onAction) opts.onAction()
             resolve()
           },
         }
