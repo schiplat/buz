@@ -234,9 +234,26 @@ pub fn local_plugin_dir(data_dir: &str, configured: &str) -> anyhow::Result<Path
 }
 
 /// Default reviews.json location: beside the plugin directory — a clone of
-/// buz-plugins placed in the data root provides both in one mount.
+/// buz-plugins placed in the data root provides both in one mount. Relative
+/// data dirs are anchored to the manager working directory and normalized,
+/// so the operator always sees an absolute path.
 pub fn reviewed_manifest_default(data_dir: &std::path::Path) -> std::path::PathBuf {
-    data_dir.join("plugins").join("reviews.json")
+    let data_root = if data_dir.is_absolute() {
+        data_dir.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(data_dir)
+    };
+    let mut out = std::path::PathBuf::new();
+    for component in data_root.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out.join("plugins").join("reviews.json")
 }
 
 /// Join a relative path onto the manager working directory.
