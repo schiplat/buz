@@ -68,8 +68,8 @@ beforeEach(() => {
       platformSetting({
         key: 'step_index_local_dir',
         kind: 'path',
-        value: '/srv/steps',
-        default: '/srv/steps',
+        value: '/srv/plugins',
+        default: '/srv/plugins',
       }),
       platformSetting({ key: 'step_reviewed_manifest', kind: 'path', value: '' }),
       platformSetting({ key: 'step_sync_timeout', kind: 'number', value: '60', default: '60' }),
@@ -159,7 +159,7 @@ describe('PluginSources', () => {
     expect(keys).toContain('Local plugin directory')
     expect(keys).toContain('Reviewed manifest')
     // Input values are not part of textContent — assert the element itself.
-    const dirInput = [...root.querySelectorAll('input')].find((i) => i.value === '/srv/steps')!
+    const dirInput = [...root.querySelectorAll('input')].find((i) => i.value === '/srv/plugins')!
     expect(dirInput, 'local dir input carries the effective value').toBeTruthy()
   })
 
@@ -186,15 +186,15 @@ describe('PluginSources', () => {
 
   it('saves an edited path setting and resets to the manager.toml default', async () => {
     const root = await mountPage()
-    const dir = [...root.querySelectorAll('input')].find((i) => i.value === '/srv/steps')!
+    const dir = [...root.querySelectorAll('input')].find((i) => i.value === '/srv/plugins')!
     const card = dir.closest('.px-5')!
-    dir.value = '/srv/steps-v2'
+    dir.value = '/srv/plugins-v2'
     dir.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
     const save = [...card.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Save')!
     save.click()
     await flush()
-    expect(adminSettingsApi.update).toHaveBeenCalledWith('step_index_local_dir', '/srv/steps-v2')
+    expect(adminSettingsApi.update).toHaveBeenCalledWith('step_index_local_dir', '/srv/plugins-v2')
 
     const reset = [...card.querySelectorAll('button')].find((b) => b.textContent?.includes('Reset'))!
     reset.click()

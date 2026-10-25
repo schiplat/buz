@@ -202,7 +202,8 @@ pub struct ResolvedStep {
 /// Local plugin dir resolution.
 ///
 /// - empty → `<data_dir>/plugins` (the manager data root; a legacy
-///   `<yaml_scan_dir>/steps`|`plugins` directory is migrated at startup);
+///   legacy `<yaml_scan_dir>/steps` or `/plugins` directory is migrated
+///   into the data root at startup);
 /// - relative → anchored to `yaml_scan_dir` (never the manager's CWD, which
 ///   an operator cannot reason about), with `..` rejected so the result
 ///   cannot escape the scan root;

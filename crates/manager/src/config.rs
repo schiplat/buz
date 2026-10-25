@@ -37,7 +37,7 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 pub struct StepIndexConfig {
     /// Local step-template directory (`[step_index.local]` in the ADR).
-    /// Empty → `<pipeline.yaml_scan_dir>/steps`.
+    /// Empty → `<storage.data_dir>/plugins`.
     #[serde(default)]
     pub local_dir: String,
     /// Path to a `reviews.json` manifest (ADR §6.7.4): templates whose

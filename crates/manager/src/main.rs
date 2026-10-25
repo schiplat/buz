@@ -181,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&config.storage.data_dir).ok();
 
     // One-time layout migration: the local plugin directory default was
-    // renamed from `<yaml_scan_dir>/steps` to `<yaml_scan_dir>/plugins`
+    // relocated from `<yaml_scan_dir>/steps` (original) to the data root
     // (v1.10.3+). Rename an existing legacy directory so existing
     // deployments keep resolving their templates.
     {
