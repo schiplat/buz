@@ -82,7 +82,7 @@ const routes: RouteRecordRaw[] = [
         meta: { title: 'Plugin library', adminOnly: true },
         children: [
           { path: '', redirect: { name: 'plugin-pool' } },
-          { path: 'pool', name: 'plugin-pool', component: () => import('@/pages/PluginPool.vue'), meta: { title: 'Available plugins' } },
+          { path: 'pool', name: 'plugin-pool', component: () => import('@/pages/PluginPool.vue'), meta: { title: 'Plugins' } },
           { path: 'sources', name: 'plugin-sources', component: () => import('@/pages/PluginSources.vue'), meta: { title: 'Sources & Settings' } },
         ],
       },

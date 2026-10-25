@@ -46,7 +46,7 @@ function go(tab: Tab) {
         @click="go('plugin-pool')"
       >
         <Package class="h-3.5 w-3.5" />
-        Available plugins
+        Plugins
       </button>
       <button
         type="button"

@@ -125,11 +125,9 @@ onMounted(load)
   <div class="space-y-6">
     <!-- ── Pool: per-plugin version lists ── -->
     <section class="rounded-xl border border-border/50 bg-card overflow-hidden">
-      <div class="px-5 py-4 border-b border-border/50">
-        <h2 class="text-sm font-semibold">Available plugins</h2>
-        <p class="mt-0.5 text-xs text-muted-foreground">
-          Every plugin you can reference with <code class="font-mono text-[10px]">uses:</code>, with its full version list. Staged versions must be enabled before
-          <code class="font-mono text-[10px]">uses:</code> can reference them.
+      <div class="px-5 py-3 border-b border-border/50">
+        <p class="text-xs text-muted-foreground">
+          Reference with <code class="font-mono text-[10px]">uses:</code>. Staged versions must be enabled first.
         </p>
       </div>
       <div class="divide-y divide-border/50">
