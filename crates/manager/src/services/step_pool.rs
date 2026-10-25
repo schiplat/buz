@@ -677,15 +677,28 @@ pub fn http_client(timeout_secs: u64) -> reqwest::Client {
 }
 
 async fn http_get_text(http: &reqwest::Client, url: &str) -> Result<String, anyhow::Error> {
-    let resp = http
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| anyhow!("GET {url} failed: {e}"))?;
+    let resp = http.get(url).send().await.map_err(|e| {
+        // Actionable messages for the curator: the raw reqwest error
+        // ("error sending request for url …") is neither readable nor
+        // fixable in the UI. The original error stays in the log.
+        if e.is_timeout() {
+            anyhow!("source timed out — try again or raise the sync timeout in Settings")
+        } else if e.is_connect() {
+            anyhow!(
+                "source unreachable (connection failed) — check the URL, network, or proxy; \
+                 original error: {e}"
+            )
+        } else {
+            anyhow!("source request failed: {e}")
+        }
+    })?;
     if !resp.status().is_success() {
-        return Err(anyhow!("GET {url} returned {}", resp.status()));
+        return Err(anyhow!(
+            "source returned HTTP {} — check that {url} serves a valid index.json",
+            resp.status()
+        ));
     }
     resp.text()
         .await
-        .map_err(|e| anyhow!("GET {url}: body read failed: {e}"))
+        .map_err(|e| anyhow!("source response could not be read: {e}"))
 }
