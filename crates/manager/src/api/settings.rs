@@ -91,11 +91,16 @@ pub async fn get_settings(
         );
         // Relative paths depend on the manager's working directory — surface
         // the absolute form so operators see exactly where to look.
-        let resolved = if resolved.is_absolute() {
+        let with_cwd = if resolved.is_absolute() {
             resolved
         } else {
             std::env::current_dir().unwrap_or_default().join(resolved)
         };
+        // Normalize away `./` segments so the display is a clean absolute path.
+        let resolved: std::path::PathBuf = with_cwd
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .collect();
         item["resolved"] = serde_json::json!(resolved.to_string_lossy().into_owned());
     }
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
