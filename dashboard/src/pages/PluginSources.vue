@@ -28,7 +28,7 @@ interface SettingMeta {
 const settingsMeta: Record<string, SettingMeta> = {
   step_review_required: {
     label: 'Step review gate',
-    help: 'Reject templates missing an official review at pipeline save.',
+    help: 'When on, saving a pipeline that uses a plugin not listed in the reviewed manifest is rejected. The manifest comes from the official buz-plugins review ledger — a template needs a human review (hash-locked) before it can be used. Requires the manifest file to exist; otherwise every save is rejected (the banner warns). Recommended on for production.',
   },
   step_index_local_dir: {
     label: 'Local plugin directory',
@@ -336,7 +336,11 @@ onUnmounted(stopPolling)
                 class="rounded-full bg-primary/10 px-1.5 py-px text-[10px] text-primary"
               >overridden</span>
             </div>
-            <p class="mt-0.5 truncate text-xs text-muted-foreground" :title="settingsMeta[key]?.help">
+            <p
+              class="mt-0.5 max-w-2xl text-xs leading-relaxed text-muted-foreground"
+              :class="settingsMeta[key]?.help.length > 90 ? '' : 'truncate'"
+              :title="settingsMeta[key]?.help"
+            >
               {{ settingsMeta[key]?.help }}
             </p>
 
