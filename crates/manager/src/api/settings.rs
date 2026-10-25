@@ -79,16 +79,26 @@ pub async fn get_settings(
             state.config.step_index.sync_timeout_seconds.to_string(),
         ),
     ];
-    // Path settings carry whether the file/dir currently exists, so the UI
-    // can warn about a configured-but-missing manifest without a round trip.
+    // Path settings carry existence/readability of the effective value so
+    // the UI can warn (configured-but-missing, or unreadable due to perms).
     for item in items.iter_mut() {
         if item["kind"] == "path" {
             let raw = item["value"].as_str().unwrap_or_default().to_string();
             let default = item["default"].as_str().unwrap_or_default().to_string();
             let candidate = if raw.trim().is_empty() { default } else { raw };
-            item["file_exists"] = serde_json::json!(
-                !candidate.trim().is_empty() && std::path::Path::new(candidate.trim()).exists()
-            );
+            let trimmed = candidate.trim();
+            if trimmed.is_empty() {
+                item["file_state"] = serde_json::json!("unset");
+            } else {
+                let path = std::path::Path::new(trimmed);
+                if !path.exists() {
+                    item["file_state"] = serde_json::json!("missing");
+                } else if path.is_file() && std::fs::read(path).is_err() {
+                    item["file_state"] = serde_json::json!("unreadable");
+                } else {
+                    item["file_state"] = serde_json::json!("ok");
+                }
+            }
         }
     }
 
@@ -146,6 +156,17 @@ pub async fn update_setting(
     Json(body): Json<UpdateSettingRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let value = body.value.trim().to_string();
+
+    // Saving a manifest path that does not exist is always a mistake (the
+    // ledger must be present) — fail fast with the same friendly framing.
+    if key == platform_settings::KEY_STEP_REVIEWED_MANIFEST
+        && !value.is_empty()
+        && !std::path::Path::new(&value).exists()
+    {
+        return Err(AppError::ValidationFailed(format!(
+            "no file at {value} — clone buz-plugins or pick an existing reviews.json path"
+        )));
+    }
 
     // Guard the dangerous combo at the source: enabling the review gate
     // while the manifest file does not exist would reject EVERY pipeline

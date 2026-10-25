@@ -183,7 +183,7 @@ function settingByKey(key: string): PlatformSetting | undefined {
 
 /** Deep-link focus (?focus=<key>): scroll the row into view and pulse it. */
 const focusedKey = ref('')
-const FOCUS_PULSE_MS = 2400
+const FOCUS_PULSE_MS = 5000
 
 function applyFocusFromRoute() {
   const key = String(route.query.focus || '')
@@ -463,11 +463,15 @@ onUnmounted(stopPolling)
                 :title="settingByKey(key)!.overridden ? settingByKey(key)!.resolved : settingByKey(key)!.default"
               >{{ settingByKey(key)!.overridden ? settingByKey(key)!.resolved : settingByKey(key)!.default }}</p>
               <p
-                v-if="key === 'step_reviewed_manifest' && settingByKey(key)!.fileExists === false"
+                v-if="key === 'step_reviewed_manifest' && ['missing', 'unreadable'].includes(settingByKey(key)!.fileState ?? '')"
                 class="mt-1 text-[11px] text-amber-600 dark:text-amber-400"
                 data-testid="manifest-missing-hint"
               >
-                File not found — the review gate cannot be enabled until it exists. Clone buz-plugins or pick an existing path.
+                {{
+                  settingByKey(key)!.fileState === 'unreadable'
+                    ? 'File exists but cannot be read (permissions?) — the manager process needs read access.'
+                    : 'File not found — the review gate cannot be enabled until it exists. Clone buz-plugins or pick an existing path.'
+                }}
               </p>
               <p
                 v-if="settingsMeta[key]?.narrow"
@@ -490,13 +494,11 @@ onUnmounted(stopPolling)
 </template>
 
 <style scoped>
-@keyframes setting-pulse-kf {
-  0%, 100% { box-shadow: 0 0 0 0 rgb(59 130 246 / 0); }
-  20%, 60% { box-shadow: 0 0 0 3px rgb(59 130 246 / 0.45); }
-  40%, 80% { box-shadow: 0 0 0 3px rgb(59 130 246 / 0.2); }
-}
+/* Steady focus highlight (no animation): a persistent ring + tint while the
+   deep-link focus is active — reliable across reduced-motion and rendering
+   timing, unlike the previous keyframes pulse that could end unseen. */
 .setting-pulse {
-  animation: setting-pulse-kf 1.2s ease-in-out 2;
-  background-color: rgb(59 130 246 / 0.06);
+  box-shadow: 0 0 0 2px rgb(59 130 246 / 0.55);
+  background-color: rgb(59 130 246 / 0.08);
 }
 </style>

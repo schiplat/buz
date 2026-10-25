@@ -179,7 +179,7 @@ describe('PluginSources', () => {
   it('hints inline when the configured manifest file does not exist', async () => {
     vi.mocked(adminSettingsApi.list).mockResolvedValue({
       items: [
-        platformSetting({ key: 'step_reviewed_manifest', kind: 'path', value: '/no/such/reviews.json', fileExists: false }),
+        platformSetting({ key: 'step_reviewed_manifest', kind: 'path', value: '/no/such/reviews.json', fileState: 'missing' }),
       ],
     })
     const root = await mountPage()
