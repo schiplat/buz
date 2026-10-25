@@ -89,6 +89,13 @@ pub async fn get_settings(
             &state.config.pipeline.yaml_scan_dir,
             &effective_dir,
         );
+        // Relative paths depend on the manager's working directory — surface
+        // the absolute form so operators see exactly where to look.
+        let resolved = if resolved.is_absolute() {
+            resolved
+        } else {
+            std::env::current_dir().unwrap_or_default().join(resolved)
+        };
         item["resolved"] = serde_json::json!(resolved.to_string_lossy().into_owned());
     }
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
