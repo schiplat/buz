@@ -160,8 +160,16 @@ async fn settings_defaults_come_from_config() {
     assert_eq!(status, axum::http::StatusCode::OK);
     assert!(data_ok(&body));
     assert_eq!(setting_value(&body, "step_review_required"), "false");
-    assert_eq!(setting_value(&body, "step_index_local_dir"), "");
-    assert_eq!(setting_value(&body, "marketplace_url"), "");
+    // local_dir default resolves to <yaml_scan_dir>/steps
+    assert_eq!(
+        setting_value(&body, "step_index_local_dir"),
+        "./pipelines/steps"
+    );
+    // marketplace default is the built-in URL when manager.toml leaves it empty
+    assert_eq!(
+        setting_value(&body, "marketplace_url"),
+        crate::api::version::DEFAULT_MARKETPLACE_URL
+    );
 }
 
 #[tokio::test]

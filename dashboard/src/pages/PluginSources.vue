@@ -14,26 +14,29 @@ const loading = ref(true)
 const sources = ref<StepSource[]>([])
 const settings = ref<PlatformSetting[]>([])
 const settingDrafts = ref<Record<string, string>>({})
-const settingsMeta: Record<string, { label: string; help: string }> = {
+const settingsMeta: Record<string, { label: string; help: string; placeholder?: string }> = {
   marketplace_url: {
     label: 'Marketplace URL',
     help: 'Marketplace browsing entry. Leave empty to use the built-in default; point at an internal mirror for China-mainland or air-gapped deployments.',
+    placeholder: 'https://plugins.buz.schiplat.com',
   },
   step_review_required: {
     label: 'Step review gate (require_reviewed)',
-    help: 'When enabled, templates absent from the official reviewed manifest are rejected at pipeline save time. Applies to the status banner immediately.',
+    help: 'When enabled, templates absent from the official reviewed manifest are rejected at pipeline save time. Recommended ON for production, together with a reviewed manifest. Applies immediately.',
   },
   step_index_local_dir: {
     label: 'Local step directory',
-    help: 'Directory scanned for template YAMLs (offline / private deployments). Changing it takes effect on the next scan.',
+    help: 'Directory scanned for template YAMLs (offline / private deployments). Recommended: a git clone of buz-plugins. Takes effect on the next scan.',
   },
   step_reviewed_manifest: {
     label: 'Reviewed manifest',
-    help: 'Path to reviews.json (the official review ledger). Empty = review gate disabled.',
+    help: 'Path to reviews.json from the buz-plugins repo (the official review ledger). Empty = review gate disabled. Recommended for production.',
+    placeholder: '/etc/buz/reviews.json',
   },
   step_sync_timeout: {
     label: 'Source sync timeout (seconds)',
-    help: 'Per-request timeout when fetching a source index, templates, and reviews. Raise it for slow or distant mirrors. Single source of truth for backend and frontend.',
+    help: 'Per-request timeout when fetching a source index, templates, and reviews. Raise it for slow or distant mirrors (5–300). Single source of truth for backend and frontend.',
+    placeholder: '60',
   },
 }
 const savingSetting = ref('')
@@ -297,6 +300,7 @@ onUnmounted(stopPolling)
             <input
               v-model="settingDrafts[setting.key]"
               :type="setting.kind === 'url' ? 'url' : 'text'"
+              :placeholder="settingsMeta[setting.key]?.placeholder ?? setting.default"
               class="w-full rounded-xl border border-border bg-input px-3 py-2 font-mono text-xs outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
             />
             <UiButton
@@ -311,6 +315,9 @@ onUnmounted(stopPolling)
               title="Reset to the manager.toml default"
               @click="resetSetting(setting)"
             ><RotateCcw class="h-3.5 w-3.5" /> Reset</UiButton>
+            <p v-if="setting.default" class="mt-1 w-full text-[11px] text-muted-foreground/70">
+              Default when not overridden: <code class="font-mono">{{ setting.default }}</code>
+            </p>
           </div>
         </div>
       </div>

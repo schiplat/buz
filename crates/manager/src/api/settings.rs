@@ -40,22 +40,28 @@ pub async fn get_settings(
             "overridden": overrides.contains_key(key),
         })
     };
+    // Defaults are the EFFECTIVE fallbacks: what applies when no DB override
+    // exists (e.g. an empty marketplace_url falls back to the built-in
+    // default; an empty local_dir falls back to <yaml_scan_dir>/steps).
+    let marketplace_default = if state.config.marketplace_url.is_empty() {
+        crate::api::version::DEFAULT_MARKETPLACE_URL.to_string()
+    } else {
+        state.config.marketplace_url.clone()
+    };
+    let local_dir_default = crate::services::step_resolver::local_step_index_dir(
+        &state.config.pipeline.yaml_scan_dir,
+        &state.config.step_index.local_dir,
+    )
+    .to_string_lossy()
+    .into_owned();
     let items = vec![
-        item(
-            KEY_MARKETPLACE_URL,
-            "url",
-            state.config.marketplace_url.clone(),
-        ),
+        item(KEY_MARKETPLACE_URL, "url", marketplace_default),
         item(
             KEY_STEP_REVIEW_REQUIRED,
             "bool",
             state.config.step_index.require_reviewed.to_string(),
         ),
-        item(
-            KEY_STEP_INDEX_LOCAL_DIR,
-            "path",
-            state.config.step_index.local_dir.clone(),
-        ),
+        item(KEY_STEP_INDEX_LOCAL_DIR, "path", local_dir_default),
         item(
             KEY_STEP_REVIEWED_MANIFEST,
             "path",
