@@ -155,7 +155,7 @@ describe('PluginSources', () => {
     const root = await mountPage()
     const keys = [...root.querySelectorAll('h3')].map((h) => h.textContent)
     expect(keys).not.toContain('Marketplace URL')
-    expect(keys).toContain('Step review gate (require_reviewed)')
+    expect(keys).toContain('Step review gate')
     expect(keys).toContain('Local plugin directory')
     expect(keys).toContain('Reviewed manifest')
     // Input values are not part of textContent — assert the element itself.
@@ -165,10 +165,9 @@ describe('PluginSources', () => {
 
   it('applies the review-gate toggle immediately', async () => {
     const root = await mountPage()
-    const toggle = root.querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    expect(toggle.checked).toBe(false)
-    toggle.checked = true
-    toggle.dispatchEvent(new Event('change', { bubbles: true }))
+    const toggle = root.querySelector<HTMLElement>('[data-testid="switch-step_review_required"]')!
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    toggle.click()
     await flush()
     expect(adminSettingsApi.update).toHaveBeenCalledWith('step_review_required', 'true')
   })
@@ -181,22 +180,21 @@ describe('PluginSources', () => {
     })
     const root = await mountPage()
     expect(root.querySelector('[data-testid="timeout-disabled-warning"]')).not.toBeNull()
-    expect(root.textContent).toContain('Timeout is DISABLED')
+    expect(root.textContent).toContain('Timeout disabled')
   })
 
   it('saves an edited path setting and resets to the manager.toml default', async () => {
     const root = await mountPage()
-    const dir = [...root.querySelectorAll('input')].find((i) => i.value === '/srv/plugins')!
-    const card = dir.closest('.px-5')!
+    const dir = root.querySelector<HTMLInputElement>('[data-testid="input-step_index_local_dir"]')!
     dir.value = '/srv/plugins-v2'
     dir.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    const save = [...card.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Save')!
+    const save = [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Save')!
     save.click()
     await flush()
     expect(adminSettingsApi.update).toHaveBeenCalledWith('step_index_local_dir', '/srv/plugins-v2')
 
-    const reset = [...card.querySelectorAll('button')].find((b) => b.textContent?.includes('Reset'))!
+    const reset = root.querySelector<HTMLElement>('[data-testid="reset-step_index_local_dir"]')!
     reset.click()
     await flush()
     expect(adminSettingsApi.reset).toHaveBeenCalledWith('step_index_local_dir')

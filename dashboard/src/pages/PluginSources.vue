@@ -14,26 +14,45 @@ const loading = ref(true)
 const sources = ref<StepSource[]>([])
 const settings = ref<PlatformSetting[]>([])
 const settingDrafts = ref<Record<string, string>>({})
-const settingsMeta: Record<string, { label: string; help: string; placeholder?: string }> = {
+interface SettingMeta {
+  label: string
+  /** One concise sentence: what it is / what it does. */
+  help: string
+  placeholder?: string
+  /** Input width for non-bool rows. */
+  narrow?: boolean
+  /** Unit suffix rendered inside the input row. */
+  unit?: string
+}
+
+const settingsMeta: Record<string, SettingMeta> = {
   step_review_required: {
-    label: 'Step review gate (require_reviewed)',
-    help: 'When enabled, templates absent from the official reviewed manifest are rejected at pipeline save time. Recommended ON for production, together with a reviewed manifest. Applies immediately.',
+    label: 'Step review gate',
+    help: 'Reject templates missing an official review at pipeline save.',
   },
   step_index_local_dir: {
     label: 'Local plugin directory',
-    help: 'Directory scanned for template YAMLs (offline / private deployments). Recommended: a git clone of buz-plugins. Relative paths resolve against the manager working directory — prefer absolute in containers.',
+    help: 'Where local plugin YAMLs are read from. Git-clone buz-plugins here for offline use.',
   },
   step_reviewed_manifest: {
     label: 'Reviewed manifest',
-    help: 'Path to reviews.json from the buz-plugins repo (the official review ledger). Empty = review gate disabled. Recommended for production.',
-    placeholder: 'e.g. /srv/buz/data/plugins/reviews.json',
+    help: 'The official review ledger (reviews.json). Required by the review gate.',
   },
   step_sync_timeout: {
-    label: 'Source sync timeout (seconds)',
-    help: 'Per-request timeout when fetching a source index, templates, and reviews. Raise it for slow or distant mirrors (5–300). 0 disables the timeout entirely — a hung source will then block pipeline saves indefinitely; not recommended. Single source of truth for backend and frontend.',
+    label: 'Source sync timeout',
+    help: 'Per-request timeout for source fetches. 0 disables — a hung source then blocks saves.',
     placeholder: '60',
+    narrow: true,
+    unit: 's',
   },
 }
+
+/** Display grouping: line-free sections carried by the small-caps caption. */
+const settingGroups: Array<{ caption: string; keys: string[] }> = [
+  { caption: 'Review gate', keys: ['step_review_required'] },
+  { caption: 'Paths', keys: ['step_index_local_dir', 'step_reviewed_manifest'] },
+  { caption: 'Sync', keys: ['step_sync_timeout'] },
+]
 const savingSetting = ref('')
 const showAddSource = ref(false)
 const newName = ref('')
@@ -112,6 +131,9 @@ async function persistSetting(setting: PlatformSetting, value: string) {
     setting.value = value
     setting.overridden = true
     settingDrafts.value[setting.key] = value
+    justSaved.value = setting.key
+    if (justSavedTimer) clearTimeout(justSavedTimer)
+    justSavedTimer = setTimeout(() => (justSaved.value = ''), 1500)
   } catch (e) {
     await dialog.alert(`Failed to save ${setting.key}: ${e instanceof Error ? e.message : e}`)
   } finally {
@@ -136,6 +158,14 @@ async function resetSetting(setting: PlatformSetting) {
     savingSetting.value = ''
   }
 }
+
+function settingByKey(key: string): PlatformSetting | undefined {
+  return settings.value.find((s) => s.key === key)
+}
+
+/** Key of the setting that just saved — drives the ✓ / green border flash. */
+const justSaved = ref('')
+let justSavedTimer: ReturnType<typeof setTimeout> | null = null
 
 function syncTimeoutMs(): number {
   const setting = settings.value.find((s) => s.key === 'step_sync_timeout')
@@ -279,75 +309,123 @@ onUnmounted(stopPolling)
       </div>
     </section>
 
-    <!-- ── Platform settings ── -->
-    <section class="rounded-xl border border-border/50 bg-card overflow-hidden">
-      <div class="px-5 py-4 border-b border-border/50">
+    <!-- ── Platform settings (line-free: hierarchy via spacing, captions,
+         and the inputs' own borders) ── -->
+    <section class="rounded-xl border border-border/50 bg-card px-6 py-5">
+      <div class="flex items-baseline justify-between gap-4">
         <h2 class="text-sm font-semibold">Settings</h2>
-      </div>
-      <div class="flex items-start gap-2 border-b border-border/50 bg-muted/40 px-5 py-2.5">
-        <span aria-hidden="true" class="mt-0.5 text-xs leading-4 text-muted-foreground">ⓘ</span>
-        <p class="text-xs leading-4 text-muted-foreground">
-          DB values take precedence over <code class="font-mono text-[10px]">manager.toml</code> defaults —
-          <span class="font-medium text-foreground">Reset removes the override</span> and falls back to the file.
+        <p class="text-[11px] text-muted-foreground">
+          DB overrides <code class="font-mono text-[10px]">manager.toml</code> ·
+          <span class="font-medium text-foreground">Reset falls back to the file</span>
         </p>
       </div>
-      <div class="divide-y divide-border/50">
-        <div v-for="setting in settings" :key="setting.key" class="px-5 py-4">
-          <div class="flex items-center justify-between gap-4">
-            <div class="min-w-0">
-              <h3 class="text-sm font-medium">{{ settingsMeta[setting.key]?.label ?? setting.key }}</h3>
-              <p class="mt-1 text-xs leading-relaxed text-muted-foreground">{{ settingsMeta[setting.key]?.help }}</p>
+
+      <div v-for="group in settingGroups" :key="group.caption" class="mt-6 first:mt-5">
+        <p class="text-[11px] font-medium uppercase tracking-widest text-muted-foreground/70">
+          {{ group.caption }}
+        </p>
+
+        <template v-for="key in group.keys" :key="key">
+          <div v-if="settingByKey(key)" class="mt-3">
+            <div class="flex items-center gap-2">
+              <h3 class="text-sm font-medium">
+                {{ settingsMeta[key]?.label ?? key }}
+              </h3>
+              <span
+                v-if="settingByKey(key)!.overridden"
+                class="rounded-full bg-primary/10 px-1.5 py-px text-[10px] text-primary"
+              >overridden</span>
+            </div>
+            <p class="mt-0.5 truncate text-xs text-muted-foreground" :title="settingsMeta[key]?.help">
+              {{ settingsMeta[key]?.help }}
+            </p>
+
+            <div v-if="settingByKey(key)!.kind === 'bool'" class="mt-2.5 flex items-center gap-3">
+              <button
+                type="button"
+                role="switch"
+                :aria-checked="settingByKey(key)!.value === 'true'"
+                :disabled="savingSetting === key"
+                :class="[
+                  'relative inline-flex h-5.5 w-10 shrink-0 cursor-pointer items-center rounded-full transition-colors',
+                  settingByKey(key)!.value === 'true' ? 'bg-primary' : 'bg-muted-foreground/25',
+                  savingSetting === key ? 'opacity-60' : '',
+                ]"
+                :data-testid="`switch-${key}`"
+                @click="persistSetting(settingByKey(key)!, settingByKey(key)!.value === 'true' ? 'false' : 'true')"
+              >
+                <span
+                  :class="[
+                    'inline-block h-4 w-4 rounded-full bg-background shadow transition-transform',
+                    settingByKey(key)!.value === 'true' ? 'translate-x-5' : 'translate-x-0.5',
+                  ]"
+                />
+              </button>
+              <span class="text-xs" :class="settingByKey(key)!.value === 'true' ? 'font-medium text-foreground' : 'text-muted-foreground'">
+                {{ settingByKey(key)!.value === 'true' ? 'On' : 'Off' }}
+              </span>
+              <button
+                v-if="settingByKey(key)!.overridden"
+                type="button"
+                class="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                @click="resetSetting(settingByKey(key)!)"
+              >reset</button>
+            </div>
+
+            <div v-else class="mt-2.5">
+              <div class="flex items-center gap-2">
+                <input
+                  v-model="settingDrafts[key]"
+                  type="text"
+                  :placeholder="settingsMeta[key]?.placeholder ?? settingByKey(key)!.default"
+                  :class="[
+                    'rounded-lg border border-border bg-input px-2.5 py-1.5 font-mono text-xs outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15',
+                    settingsMeta[key]?.narrow ? 'w-20' : 'w-full',
+                    justSaved === key ? 'border-green-500/50' : '',
+                  ]"
+                  :data-testid="`input-${key}`"
+                />
+                <span v-if="settingsMeta[key]?.unit" class="text-xs text-muted-foreground">
+                  {{ settingsMeta[key]?.unit }}
+                </span>
+                <span v-if="justSaved === key" class="text-xs text-green-600 dark:text-green-400">✓</span>
+                <button
+                  v-if="settingDrafts[key] !== settingByKey(key)!.value"
+                  type="button"
+                  class="shrink-0 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                  :disabled="savingSetting === key"
+                  @click="persistSettingDraft(settingByKey(key)!)"
+                >Save</button>
+                <button
+                  v-if="settingByKey(key)!.overridden"
+                  type="button"
+                  class="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  title="Reset to the manager.toml default"
+                  :data-testid="`reset-${key}`"
+                  :disabled="savingSetting === key"
+                  @click="resetSetting(settingByKey(key)!)"
+                ><RotateCcw class="h-3.5 w-3.5" /></button>
+              </div>
+              <p
+                v-if="!settingsMeta[key]?.narrow && (settingByKey(key)!.resolved || settingByKey(key)!.default)"
+                class="mt-1.5 truncate font-mono text-[11px] text-muted-foreground/70"
+                :title="settingByKey(key)!.overridden ? settingByKey(key)!.resolved : settingByKey(key)!.default"
+              >{{ settingByKey(key)!.overridden ? settingByKey(key)!.resolved : settingByKey(key)!.default }}</p>
+              <p
+                v-if="settingsMeta[key]?.narrow"
+                class="mt-1.5 text-[11px] text-muted-foreground/70"
+              >5–300 seconds</p>
+            </div>
+
             <p
-              v-if="setting.key === 'step_sync_timeout' && setting.value === '0'"
-              class="mt-1.5 rounded-lg border border-red-500/30 bg-red-500/5 px-2.5 py-1.5 text-[11px] text-red-600 dark:text-red-400"
+              v-if="key === 'step_sync_timeout' && settingByKey(key)!.value === '0'"
+              class="mt-2 text-[11px] font-medium text-red-600 dark:text-red-400"
               data-testid="timeout-disabled-warning"
             >
-              ⚠️ Timeout is DISABLED (0) — a hung source will block pipeline saves indefinitely.
-              Set a value between 5 and 300.
-            </p>
-            <p
-              v-if="setting.resolved"
-              class="mt-1 text-[11px] text-muted-foreground/80"
-            >resolves to: <code class="font-mono">{{ setting.resolved }}</code></p>
-            </div>
-            <label
-              v-if="setting.kind === 'bool'"
-              class="flex shrink-0 cursor-pointer items-center gap-2 text-xs"
-            >
-              <span class="font-mono text-[11px] text-muted-foreground">{{ setting.value }}</span>
-              <input
-                type="checkbox"
-                class="h-4 w-4"
-                :checked="setting.value === 'true'"
-                :disabled="savingSetting === setting.key"
-                @change="persistSetting(setting, ($event.target as HTMLInputElement).checked ? 'true' : 'false')"
-              />
-            </label>
-          </div>
-          <div v-if="setting.kind !== 'bool'" class="mt-3 flex items-center gap-2">
-            <input
-              v-model="settingDrafts[setting.key]"
-              :type="setting.kind === 'url' ? 'url' : 'text'"
-              :placeholder="settingsMeta[setting.key]?.placeholder ?? setting.default"
-              class="w-full rounded-xl border border-border bg-input px-3 py-2 font-mono text-xs outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
-            />
-            <UiButton
-              size="sm"
-              :disabled="savingSetting === setting.key || settingDrafts[setting.key] === setting.value"
-              @click="persistSettingDraft(setting)"
-            >Save</UiButton>
-            <UiButton
-              size="sm"
-              variant="ghost"
-              :disabled="savingSetting === setting.key || !setting.overridden"
-              title="Reset to the manager.toml default"
-              @click="resetSetting(setting)"
-            ><RotateCcw class="h-3.5 w-3.5" /> Reset</UiButton>
-            <p v-if="setting.default" class="mt-1 w-full text-[11px] text-muted-foreground/70">
-              Default when not overridden: <code class="font-mono">{{ setting.default }}</code>
+              ⚠️ Timeout disabled — a hung source will block pipeline saves indefinitely.
             </p>
           </div>
-        </div>
+        </template>
       </div>
     </section>
   </div>
