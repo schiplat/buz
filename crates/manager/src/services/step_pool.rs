@@ -395,8 +395,8 @@ pub async fn refresh_plugin(
     namespace: &str,
     step_id: &str,
 ) -> anyhow::Result<Vec<PoolRow>> {
-    let source_id: String = sqlx::query_scalar(
-        "SELECT source_id FROM step_pool WHERE namespace = ? AND step_id = ? LIMIT 1",
+    let (source_id, file_path): (String, String) = sqlx::query_as(
+        "SELECT source_id, file_path FROM step_pool WHERE namespace = ? AND step_id = ? LIMIT 1",
     )
     .bind(namespace)
     .bind(step_id)
@@ -409,7 +409,28 @@ pub async fn refresh_plugin(
         .map_err(|e| anyhow!("{e}"))?
         .ok_or_else(|| anyhow!("source {source_id} disappeared"))?;
 
-    sync_source_inner(http, pool, &source, Some((namespace, step_id))).await?;
+    // Preferred path: the plugin's own small meta.json (a few KB, resilient
+    // on intermittent networks), sitting beside the template files. Falls
+    // back to the full index for sources that do not publish per-plugin
+    // meta files yet.
+    let meta_url = join_url(
+        &base_url(&source.url),
+        &format!("{}/meta.json", parent_dir(&file_path)),
+    );
+    match http_get_text(http, &meta_url).await {
+        Ok(raw) => {
+            upsert_plugin_meta(pool, &source, &raw, &meta_url, namespace, step_id).await?;
+        }
+        Err(meta_error) => {
+            tracing::info!(
+                source = %source.name,
+                meta_url = %meta_url,
+                error = %meta_error,
+                "per-plugin meta.json unavailable — falling back to the full index"
+            );
+            sync_source_inner(http, pool, &source, Some((namespace, step_id))).await?;
+        }
+    }
 
     let rows: Vec<PoolRow> = sqlx::query_as(
         "SELECT p.namespace, p.step_id, p.version, p.sha256, p.source_id, s.name, p.file_path, \
@@ -464,6 +485,99 @@ pub async fn refresh_plugin(
     )
     .collect();
     Ok(rows)
+}
+
+/// Directory part of a repo-relative file path ("plugins/buz/archive").
+fn parent_dir(file_path: &str) -> String {
+    match file_path.rsplit_once('/') {
+        Some((dir, _)) => dir.to_string(),
+        None => String::new(),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PluginMeta {
+    id: String,
+    versions: Vec<PluginMetaEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PluginMetaEntry {
+    version: String,
+    file: String,
+    sha256: String,
+}
+
+/// Upsert one plugin's rows from its meta.json. Same conflict semantics as
+/// the full sync (enable state preserved); review badges are preserved too —
+/// meta.json carries no review data, the full sync refreshes those.
+async fn upsert_plugin_meta(
+    pool: &SqlitePool,
+    source: &SourceRow,
+    raw: &str,
+    meta_url: &str,
+    namespace: &str,
+    step_id: &str,
+) -> anyhow::Result<()> {
+    let meta: PluginMeta =
+        serde_json::from_str(raw).map_err(|e| anyhow!("invalid meta.json at {meta_url}: {e}"))?;
+    let expected_id = format!("{namespace}/{step_id}");
+    if meta.id != expected_id {
+        return Err(anyhow!(
+            "meta.json id mismatch: expected {expected_id}, got {}",
+            meta.id
+        ));
+    }
+
+    let existing_reviewed: std::collections::HashMap<(String, String, String), bool> =
+        sqlx::query_as(
+            "SELECT namespace, step_id, version, reviewed FROM step_pool WHERE source_id = ?",
+        )
+        .bind(&source.id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| anyhow!("{e}"))?
+        .into_iter()
+        .map(|(ns, id, v, r): (String, String, String, i64)| ((ns, id, v), r != 0))
+        .collect();
+
+    for entry in &meta.versions {
+        let sha256 = entry.sha256.to_lowercase();
+        if entry.sha256.len() != 64 {
+            return Err(anyhow!(
+                "meta.json entry {}@{} has a malformed sha256",
+                expected_id,
+                entry.version
+            ));
+        }
+        let reviewed = *existing_reviewed
+            .get(&(
+                namespace.to_string(),
+                step_id.to_string(),
+                entry.version.clone(),
+            ))
+            .unwrap_or(&false);
+        sqlx::query(
+            "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path, enabled, reviewed, added_by)
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'refresh')
+             ON CONFLICT(namespace, step_id, version) DO UPDATE SET
+               sha256 = excluded.sha256,
+               source_id = excluded.source_id,
+               file_path = excluded.file_path,
+               reviewed = excluded.reviewed",
+        )
+        .bind(namespace)
+        .bind(step_id)
+        .bind(&entry.version)
+        .bind(&sha256)
+        .bind(&source.id)
+        .bind(&entry.file)
+        .bind(reviewed as i64)
+        .execute(pool)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+    }
+    Ok(())
 }
 
 /// Enable-time verification（收录即校验）---------------------------------------

@@ -65,6 +65,7 @@ fn index_json(good_sha: &str) -> String {
 async fn spawn_source_server(yaml: String, yaml_sha: String) -> String {
     let yaml = std::sync::Arc::new(yaml);
     let yaml_sha = std::sync::Arc::new(yaml_sha);
+    let yaml_sha_for_meta = yaml_sha.clone();
     let app = Router::new()
         .route(
             "/index.json",
@@ -84,6 +85,22 @@ async fn spawn_source_server(yaml: String, yaml_sha: String) -> String {
             "/steps/broken-hash.yaml",
             axum::routing::get(|| async {
                 "actual content does not match the declared zeros hash"
+            }),
+        )
+        .route(
+            "/steps/oss-upload/meta.json",
+            axum::routing::get(move || {
+                let sha = yaml_sha_for_meta.clone();
+                async move {
+                    // meta lists a NEW version the index does not have —
+                    // only the meta path can discover it.
+                    format!(
+                        r#"{{ "id": "alice/oss-upload", "versions": [
+                            {{ "version": "1.1.0", "file": "steps/oss-upload/1.1.0.yaml", "sha256": "{}" }},
+                            {{ "version": "1.0.0", "file": "steps/oss-upload/1.0.0.yaml", "sha256": "{sha}" }} ] }}"#,
+                        "c".repeat(64)
+                    )
+                }
             }),
         )
         .route(
@@ -309,6 +326,38 @@ async fn community_source_curates_resolves_and_gates() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+
+    // 1b. Per-plugin refresh via meta.json: discovers 1.1.0 (staged, since
+    // the meta path never auto-enables) and preserves the enabled 1.0.0.
+    let refreshed = crate::services::step_pool::refresh_plugin(
+        &reqwest::Client::new(),
+        &pool,
+        "alice",
+        "oss-upload",
+    )
+    .await
+    .expect("meta refresh");
+    assert_eq!(
+        refreshed.len(),
+        2,
+        "meta discovered the new version: {refreshed:?}"
+    );
+    let by_version = |v: &str| {
+        refreshed
+            .iter()
+            .find(|r| r.version == v)
+            .unwrap_or_else(|| panic!("version {v} missing"))
+            .clone()
+    };
+    eprintln!("DEBUG refreshed rows: {refreshed:?}");
+    assert!(
+        by_version("1.0.0").enabled,
+        "curator verdict survives; rows: {refreshed:?}"
+    );
+    assert!(
+        !by_version("1.1.0").enabled,
+        "new meta version lands staged"
+    );
 
     // 4. Save-time resolution now succeeds over HTTP and records provenance.
     let (status, body) = save_pipeline(&app, &jwt, "alice/oss-upload@1.0.0").await;
