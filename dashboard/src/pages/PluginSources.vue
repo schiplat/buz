@@ -6,8 +6,10 @@ import UiButton from '@/components/ui/UiButton.vue'
 import { stepSourcesApi, type StepSource } from '@/api/stepSources'
 import { adminSettingsApi, type PlatformSetting } from '@/api/adminSettings'
 import { useAppDialog } from '@/composables/useAppDialog'
+import { useRouter } from 'vue-router'
 
 const dialog = useAppDialog()
+const router = useRouter()
 const loading = ref(true)
 const sources = ref<StepSource[]>([])
 const settings = ref<PlatformSetting[]>([])
@@ -99,6 +101,12 @@ async function addSource() {
       await dialog.alert(
         'Source saved, but the initial sync failed — check the sync error shown in the list.',
       )
+    } else {
+      // The curator's next action is always in the Pool tab — go there
+      // directly instead of leaving them to find the tab themselves.
+      await dialog.alert('Source synced. Review and enable the staged templates in the Pool tab.')
+      void router.push({ name: 'plugin-pool' })
+      return
     }
     showAddSource.value = false
     newName.value = ''
@@ -152,7 +160,7 @@ onMounted(load)
   <div class="space-y-6">
     <PageHeader
       title="Sources"
-      description="Where plugin templates come from. Syncing stages pool entries; curation happens in the Pool tab."
+      description="Where plugin templates come from. Syncing stages pool entries; curation happens in the Pool tab. A source may also publish reviews.json beside its index — the review ledger (which content hashes were human-reviewed) — distinct from the index itself (what exists and where)."
     />
 
     <section class="rounded-xl border border-border/50 bg-card overflow-hidden">

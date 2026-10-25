@@ -669,7 +669,7 @@ async fn fetch_content(
 async fn http_get_text(http: &reqwest::Client, url: &str) -> Result<String, anyhow::Error> {
     let resp = http
         .get(url)
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
         .map_err(|e| anyhow!("GET {url} failed: {e}"))?;
