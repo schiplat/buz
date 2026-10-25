@@ -14,8 +14,8 @@ RUN apt-get update -qq \
 
 COPY bin/buz-manager /app/buz/buz-manager
 COPY bin/buz-runner /app/buz/buz-runner
-COPY manager.standalone.toml /app/buz/conf/manager.toml
-COPY runner.standalone.toml /app/buz/conf/runner.toml
+COPY manager.toml /app/buz/conf/manager.toml
+COPY runner.toml /app/buz/conf/runner.toml
 COPY entrypoint.sh /app/buz/entrypoint.sh
 RUN chmod 755 /app/buz/entrypoint.sh
 
