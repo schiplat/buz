@@ -156,7 +156,7 @@ async function resetSetting(setting: PlatformSetting) {
     setting.overridden = false
     settingDrafts.value[setting.key] = setting.default
   } catch (e) {
-    await dialog.alert(`Failed to reset ${setting.key}: ${e instanceof Error ? e.message : e}`)
+    await dialog.alert(e instanceof Error ? e.message : String(e))
   } finally {
     savingSetting.value = ''
   }

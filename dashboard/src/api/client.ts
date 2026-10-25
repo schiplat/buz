@@ -78,6 +78,15 @@ apiClient.interceptors.response.use(
         }
       }
     }
+    // 4xx with a backend message: replace the axios transport noise
+    // ("Request failed with status code 422") with the server's own
+    // guidance so every caller's `e.message` reads like a human wrote it.
+    const serverMessage = error.response?.data?.message
+    if (typeof serverMessage === 'string' && serverMessage) {
+      // Strip the "ValidationFailed: "-style prefix the backend adds.
+      error.message = serverMessage.replace(/^[A-Za-z]+:\s*/, '')
+    }
+
     // Server trouble (5xx) or unreachable Manager: surface one friendly,
     // dismissible notice instead of leaving pages silently blank.
     if (status >= 500 || !error.response) {
