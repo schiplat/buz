@@ -223,7 +223,7 @@ async fn create_put_get_delete_yaml_file() {
 #[tokio::test]
 async fn unresolved_uses_returns_validation_error_and_restores_yaml_file() {
     let dir = tempfile::tempdir().expect("tempdir");
-    std::fs::create_dir(dir.path().join("steps")).expect("step index");
+    std::fs::create_dir(dir.path().join("plugins")).expect("plugin index");
     let scan = dir.path().to_string_lossy().to_string();
     let app = test_app(&scan).await;
     let token = admin_jwt();

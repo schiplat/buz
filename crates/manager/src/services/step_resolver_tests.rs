@@ -1,6 +1,5 @@
 use super::{
-    expand_uses_step, load_reviewed_hashes, local_step_index_dir, resolve_uses_steps,
-    LocalStepIndex,
+    expand_uses_step, load_reviewed_hashes, local_plugin_dir, resolve_uses_steps, LocalStepIndex,
 };
 use shared::protocol::StepDef;
 use std::collections::BTreeMap;
@@ -168,15 +167,15 @@ fn uses_step(uses: &str) -> StepDef {
 
 #[test]
 fn local_index_dir_defaults_under_scan_dir() {
-    let dir = local_step_index_dir("/opt/buz/pipelines", "").unwrap();
-    assert_eq!(dir, Path::new("/opt/buz/pipelines/steps"));
+    let dir = local_plugin_dir("/opt/buz/pipelines", "").unwrap();
+    assert_eq!(dir, Path::new("/opt/buz/pipelines/plugins"));
     // Absolute dirs remain an explicit admin choice.
-    let configured = local_step_index_dir("/opt/buz/pipelines", "/etc/buz/steps").unwrap();
-    assert_eq!(configured, Path::new("/etc/buz/steps"));
+    let configured = local_plugin_dir("/opt/buz/pipelines", "/etc/buz/plugins").unwrap();
+    assert_eq!(configured, Path::new("/etc/buz/plugins"));
     // Relative dirs anchor to the scan root and cannot escape it.
-    let anchored = local_step_index_dir("/opt/buz/pipelines", "my-plugins").unwrap();
+    let anchored = local_plugin_dir("/opt/buz/pipelines", "my-plugins").unwrap();
     assert_eq!(anchored, Path::new("/opt/buz/pipelines").join("my-plugins"));
-    let escaped = local_step_index_dir("/opt/buz/pipelines", "../escape").unwrap_err();
+    let escaped = local_plugin_dir("/opt/buz/pipelines", "../escape").unwrap_err();
     assert!(escaped.to_string().contains("escape"), "{escaped}");
 }
 

@@ -164,7 +164,7 @@ async fn settings_defaults_come_from_config() {
     // (CWD-anchored during tests) — operators never see a bare relative path.
     let expected = std::env::current_dir()
         .unwrap()
-        .join("pipelines/steps")
+        .join("pipelines/plugins")
         .to_string_lossy()
         .into_owned();
     assert_eq!(setting_value(&body, "step_index_local_dir"), expected);

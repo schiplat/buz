@@ -48,7 +48,7 @@ pub async fn get_settings(
     } else {
         state.config.marketplace_url.clone()
     };
-    let local_dir_default = crate::services::step_resolver::local_step_index_dir(
+    let local_dir_default = crate::services::step_resolver::local_plugin_dir(
         &state.config.pipeline.yaml_scan_dir,
         &state.config.step_index.local_dir,
     )
@@ -85,7 +85,7 @@ pub async fn get_settings(
             &state.config.step_index.local_dir,
         )
         .await;
-        let resolved = crate::services::step_resolver::local_step_index_dir(
+        let resolved = crate::services::step_resolver::local_plugin_dir(
             &state.config.pipeline.yaml_scan_dir,
             &effective_dir,
         )

@@ -64,7 +64,7 @@ level = "info"
 
 [step_index]
 # Where `uses:` marketplace step references resolve (one spec file per
-# step template). Empty → <yaml_scan_dir>/steps (./pipelines/steps).
+# step template). Empty → <yaml_scan_dir>/plugins (./pipelines/plugins).
 # Docker deployments can set BUZ_STEP_INDEX__LOCAL_DIR and mount an external
 # mirror's plugins/ directory read-only at that container path.
 # Review badge: list officially reviewed content hashes in a reviews.json

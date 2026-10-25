@@ -178,6 +178,31 @@ async fn main() -> anyhow::Result<()> {
     let local_dir_override = settings_overrides
         .get(services::platform_settings::KEY_STEP_INDEX_LOCAL_DIR)
         .cloned();
+    // One-time layout migration: the local plugin directory default was
+    // renamed from `<yaml_scan_dir>/steps` to `<yaml_scan_dir>/plugins`
+    // (v1.10.3+). Rename an existing legacy directory so existing
+    // deployments keep resolving their templates.
+    {
+        let scan_root = std::path::Path::new(&config.pipeline.yaml_scan_dir);
+        let legacy = scan_root.join("steps");
+        let target = scan_root.join("plugins");
+        if legacy.is_dir() && !target.exists() {
+            match std::fs::rename(&legacy, &target) {
+                Ok(()) => tracing::info!(
+                    from = %legacy.display(),
+                    to = %target.display(),
+                    "renamed legacy local step directory to plugins"
+                ),
+                Err(e) => tracing::warn!(
+                    from = %legacy.display(),
+                    to = %target.display(),
+                    error = %e,
+                    "could not rename legacy local step directory — resolve manually"
+                ),
+            }
+        }
+    }
+
     let sync_timeout_secs = settings_overrides
         .get(services::platform_settings::KEY_STEP_SYNC_TIMEOUT)
         .and_then(|v| v.parse::<u64>().ok())

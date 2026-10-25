@@ -156,7 +156,7 @@ describe('PluginSources', () => {
     const keys = [...root.querySelectorAll('h3')].map((h) => h.textContent)
     expect(keys).toContain('Marketplace URL')
     expect(keys).toContain('Step review gate (require_reviewed)')
-    expect(keys).toContain('Local step directory')
+    expect(keys).toContain('Local plugin directory')
     expect(keys).toContain('Reviewed manifest')
     // Input values are not part of textContent — assert the element itself.
     const dirInput = [...root.querySelectorAll('input')].find((i) => i.value === '/srv/steps')!

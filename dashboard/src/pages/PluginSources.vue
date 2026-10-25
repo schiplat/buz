@@ -25,7 +25,7 @@ const settingsMeta: Record<string, { label: string; help: string; placeholder?: 
     help: 'When enabled, templates absent from the official reviewed manifest are rejected at pipeline save time. Recommended ON for production, together with a reviewed manifest. Applies immediately.',
   },
   step_index_local_dir: {
-    label: 'Local step directory',
+    label: 'Local plugin directory',
     help: 'Directory scanned for template YAMLs (offline / private deployments). Recommended: a git clone of buz-plugins. Relative paths resolve against the manager working directory — prefer absolute in containers.',
   },
   step_reviewed_manifest: {

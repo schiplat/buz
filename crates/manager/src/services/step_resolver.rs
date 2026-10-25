@@ -199,10 +199,10 @@ pub struct ResolvedStep {
     pub content_sha256: String,
 }
 
-/// Local index dir resolution.
+/// Local plugin dir resolution.
 ///
-/// - empty → `<yaml_scan_dir>/steps` (2026-10-03 decision — no extra config
-///   by default);
+/// - empty → `<yaml_scan_dir>/plugins` (v1.10.3+; older deployments'
+///   `steps` directory is auto-migrated at startup);
 /// - relative → anchored to `yaml_scan_dir` (never the manager's CWD, which
 ///   an operator cannot reason about), with `..` rejected so the result
 ///   cannot escape the scan root;
@@ -210,11 +210,11 @@ pub struct ResolvedStep {
 ///
 /// Returns the path plus whether it was anchored (callers surface the
 /// absolute form in the UI).
-pub fn local_step_index_dir(yaml_scan_dir: &str, configured: &str) -> anyhow::Result<PathBuf> {
+pub fn local_plugin_dir(yaml_scan_dir: &str, configured: &str) -> anyhow::Result<PathBuf> {
     let scan_root = absolutize(yaml_scan_dir);
     let configured = configured.trim();
     let candidate = if configured.is_empty() {
-        scan_root.join("steps")
+        scan_root.join("plugins")
     } else {
         let configured_path = PathBuf::from(configured);
         if configured_path.is_absolute() {
@@ -264,10 +264,10 @@ fn normalize(path: &std::path::Path) -> std::path::PathBuf {
 pub fn effective_local_dir(yaml_scan_dir: &str, config_local_dir: &str) -> anyhow::Result<PathBuf> {
     if let Some(dir) = runtime_overrides().local_dir {
         if !dir.trim().is_empty() {
-            return local_step_index_dir(yaml_scan_dir, &dir);
+            return local_plugin_dir(yaml_scan_dir, &dir);
         }
     }
-    local_step_index_dir(yaml_scan_dir, config_local_dir)
+    local_plugin_dir(yaml_scan_dir, config_local_dir)
 }
 
 /// One template file found in the index.
@@ -889,25 +889,25 @@ mod local_dir_tests {
 
     #[test]
     fn empty_anchors_to_scan_root_steps() {
-        let dir = local_step_index_dir("/srv/buz/pipelines", "").unwrap();
-        assert_eq!(dir, Path::new("/srv/buz/pipelines").join("steps"));
+        let dir = local_plugin_dir("/srv/buz/pipelines", "").unwrap();
+        assert_eq!(dir, Path::new("/srv/buz/pipelines").join("plugins"));
     }
 
     #[test]
     fn relative_anchors_to_scan_root() {
-        let dir = local_step_index_dir("/srv/buz/pipelines", "my-plugins").unwrap();
+        let dir = local_plugin_dir("/srv/buz/pipelines", "my-plugins").unwrap();
         assert_eq!(dir, Path::new("/srv/buz/pipelines").join("my-plugins"));
     }
 
     #[test]
     fn parent_components_are_rejected() {
-        let err = local_step_index_dir("/srv/buz/pipelines", "../escape").unwrap_err();
+        let err = local_plugin_dir("/srv/buz/pipelines", "../escape").unwrap_err();
         assert!(err.to_string().contains("escape"), "{err}");
     }
 
     #[test]
     fn absolute_paths_are_used_as_is() {
-        let dir = local_step_index_dir("/srv/buz/pipelines", "/opt/data/plugins").unwrap();
+        let dir = local_plugin_dir("/srv/buz/pipelines", "/opt/data/plugins").unwrap();
         assert_eq!(
             dir,
             PathBuf::from("/opt/data/plugins"),
