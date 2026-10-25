@@ -1,35 +1,64 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { getStepReviewGate } from '@/api/health'
 
-const show = ref(false)
+const gate = ref<{ manifest_configured: boolean; require_reviewed: boolean } | null>(null)
 const dismissed = ref(false)
 
 onMounted(async () => {
-  const gate = await getStepReviewGate()
   // Null = probe failed or manager predates the field: stay silent rather
   // than nag on every page when we cannot actually know the posture.
-  if (gate && !gate.manifest_configured) show.value = true
+  gate.value = (await getStepReviewGate()) ?? null
 })
+
+/** Posture drives both visibility and tone:
+ *  - strict + no manifest  → ERROR: every template is rejected right now;
+ *  - no gate at all        → WARNING: templates resolve unchecked;
+ *  - manifest configured   → the gate is working, banner stays silent. */
+const posture = computed<'strict-without-manifest' | 'no-gate' | null>(() => {
+  const g = gate.value
+  if (!g) return null
+  if (g.manifest_configured) return null
+  return g.require_reviewed ? 'strict-without-manifest' : 'no-gate'
+})
+
+const isError = computed(() => posture.value === 'strict-without-manifest')
+const show = computed(() => posture.value !== null && !dismissed.value)
 </script>
 
 <template>
   <div
-    v-if="show && !dismissed"
+    v-if="show"
     role="status"
     data-testid="review-gate-banner"
-    class="mb-4 flex items-start gap-3 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm"
+    :class="[
+      'mb-4 flex items-start gap-3 rounded-xl border px-4 py-3 text-sm',
+      isError ? 'border-red-500/40 bg-red-500/5' : 'border-warning/30 bg-warning/5',
+    ]"
   >
     <span aria-hidden="true" class="text-base leading-5">🛡️</span>
     <div class="min-w-0 flex-1">
-      <p class="font-medium text-warning">Step review gate is not enabled</p>
-      <p class="mt-0.5 wrap-break-word text-muted-foreground">
-        Every <code>uses:</code> template resolves without review checks. For production, enable
-        the review gate in
-        <RouterLink to="/plugin-library/sources" class="font-medium underline underline-offset-2">Plugin library → Sources &amp; Settings</RouterLink>
-        (requires <code>reviewed_manifest</code> in manager.toml) — see the Configuration docs.
-      </p>
+      <template v-if="isError">
+        <p class="font-medium text-red-600 dark:text-red-400">
+          Step review gate is misconfigured — every template will be rejected
+        </p>
+        <p class="mt-0.5 wrap-break-word text-muted-foreground">
+          Strict mode (require_reviewed) is on, but no reviewed manifest is configured, so there
+          is nothing to approve templates with. Either configure the manifest path in
+          <RouterLink to="/plugin-library/sources" class="font-medium underline underline-offset-2">Plugin library → Sources &amp; Settings</RouterLink>
+          (point it at a reviews.json), or turn the gate off there.
+        </p>
+      </template>
+      <template v-else>
+        <p class="font-medium text-warning">Step review gate is not enabled</p>
+        <p class="mt-0.5 wrap-break-word text-muted-foreground">
+          Every <code>uses:</code> template resolves without review checks. For production,
+          configure the reviewed manifest and enable the gate in
+          <RouterLink to="/plugin-library/sources" class="font-medium underline underline-offset-2">Plugin library → Sources &amp; Settings</RouterLink>
+          — see the Configuration docs.
+        </p>
+      </template>
     </div>
     <button
       type="button"

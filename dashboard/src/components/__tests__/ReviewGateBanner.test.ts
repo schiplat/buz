@@ -45,6 +45,20 @@ describe('ReviewGateBanner', () => {
     unmount()
   })
 
+  it('shows an ERROR banner for the dangerous combo: strict gate with no manifest', async () => {
+    // require_reviewed=true with no manifest rejects every template — the
+    // operator must see this immediately, not an advisory.
+    getStepReviewGate.mockResolvedValue({ manifest_configured: false, require_reviewed: true })
+    const { el, unmount } = mountBanner()
+    await settle()
+    const banner = el.querySelector('[data-testid="review-gate-banner"]')
+    expect(banner).not.toBeNull()
+    expect(banner!.textContent).toContain('every template will be rejected')
+    expect(banner!.textContent).toContain('Plugin library')
+    expect(banner!.textContent).not.toContain('manager.toml')
+    unmount()
+  })
+
   it('stays silent when the gate is configured', async () => {
     getStepReviewGate.mockResolvedValue({ manifest_configured: true, require_reviewed: false })
     const { el, unmount } = mountBanner()
