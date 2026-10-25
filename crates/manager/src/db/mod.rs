@@ -641,6 +641,19 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .execute(pool)
     .await?;
 
+    // ── Platform settings (admin-editable runtime overrides) ──
+    // DB value > manager.toml default; a missing row means "use the default".
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS platform_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_by TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     // ── Official plugin source (factory-preseeded, auto-enabled) ──
     // The CF Pages mirror is the distribution endpoint chosen for
     // China-mainland reachability (§6.3); admins can delete/re-add the row
@@ -653,19 +666,6 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
            AND NOT EXISTS ( \
                SELECT 1 FROM platform_settings \
                WHERE key = 'step_official_source_dismissed' AND value = 'true')",
-    )
-    .execute(pool)
-    .await?;
-
-    // ── Platform settings (admin-editable runtime overrides) ──
-    // DB value > manager.toml default; a missing row means "use the default".
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS platform_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_by TEXT,
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
     )
     .execute(pool)
     .await?;
