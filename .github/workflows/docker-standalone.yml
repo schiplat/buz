@@ -71,7 +71,8 @@ jobs:
             PRIMARY="latest"
           fi
           echo "primary=${PRIMARY}" >> "$GITHUB_OUTPUT"
-          echo "Image tag: ${PRIMARY}"
+          echo "version=${PRIMARY#v}" >> "$GITHUB_OUTPUT"
+          echo "Image tag: ${PRIMARY} (version ${PRIMARY#v})"
 
   push:
     name: Build & push buz-standalone (arm64)
@@ -173,7 +174,7 @@ jobs:
           # conf/); standalone tomls and the entrypoint come from the repo.
           gh release download "${{ needs.prepare.outputs.primary }}" \
             --repo "$GITHUB_REPOSITORY" \
-            --pattern "buz-${VERSION}-aarch64-unknown-linux-gnu.tar.gz" \
+            --pattern "buz-${VERSION}-linux-aarch64.tar.gz" \
             --output "release/archive.tar.gz"
           tar -xzf release/archive.tar.gz -C ctx --strip-components=1
           cp deploy/conf/manager.standalone.toml ctx/manager.toml
