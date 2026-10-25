@@ -126,9 +126,9 @@ onMounted(load)
     <!-- ── Pool: per-plugin version lists ── -->
     <section class="rounded-xl border border-border/50 bg-card overflow-hidden">
       <div class="px-5 py-4 border-b border-border/50">
-        <h2 class="text-sm font-semibold">Pool</h2>
+        <h2 class="text-sm font-semibold">Available plugins</h2>
         <p class="mt-0.5 text-xs text-muted-foreground">
-          Every plugin with its full version list. Staged versions must be enabled before
+          Every plugin you can reference with <code class="font-mono text-[10px]">uses:</code>, with its full version list. Staged versions must be enabled before
           <code class="font-mono text-[10px]">uses:</code> can reference them.
         </p>
       </div>

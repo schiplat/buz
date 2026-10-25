@@ -31,7 +31,7 @@ describe('PluginLibrary shell', () => {
   it('renders the tab bar with both tabs and the child outlet', async () => {
     const root = await mountShell()
     const tabs = [...root.querySelectorAll('button')].map((b) => b.textContent?.trim())
-    expect(tabs).toEqual(['Pool', 'Sources & Settings'])
+    expect(tabs).toEqual(['Available plugins', 'Sources & Settings'])
     // Regression: a scripted cleanup once emptied this div entirely, leaving
     // no way to switch tabs.
     expect(root.querySelector('[data-testid="router-view"]')).not.toBeNull()
