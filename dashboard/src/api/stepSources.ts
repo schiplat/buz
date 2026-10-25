@@ -68,11 +68,3 @@ export const stepSourcesApi = {
     await apiClient.put(`/admin/step-pool/${namespace}/${stepId}/${version}`, { enabled })
   },
 }
-
-/** Local (local_dir) templates from GET /api/v1/steps. */
-export const stepsApi = {
-  async listLocal(): Promise<{ items: Array<Record<string, unknown>>; unparseable: unknown[] }> {
-    const resp = await apiClient.get('/steps')
-    return resp.data as { items: Array<Record<string, unknown>>; unparseable: unknown[] }
-  },
-}

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
 import PluginPool from '@/pages/PluginPool.vue'
-import { stepSourcesApi, stepsApi, type PoolEntry } from '@/api/stepSources'
+import { stepSourcesApi, type PoolEntry } from '@/api/stepSources'
 
 const { dialog } = vi.hoisted(() => ({
   dialog: { alert: vi.fn(), confirm: vi.fn() },
@@ -9,7 +9,6 @@ const { dialog } = vi.hoisted(() => ({
 
 vi.mock('@/api/stepSources', () => ({
   stepSourcesApi: { listPool: vi.fn(), togglePoolEntry: vi.fn() },
-  stepsApi: { listLocal: vi.fn() },
 }))
 vi.mock('@/composables/useAppDialog', () => ({ useAppDialog: () => dialog }))
 
@@ -51,13 +50,6 @@ beforeEach(() => {
       poolEntry({ version: '1.1.0', enabled: false }),
     ],
   })
-  vi.mocked(stepsApi.listLocal).mockResolvedValue({
-    items: [
-      { id: 'buz/checkout', version: '1.0.0' },
-      { id: 'buz/checkout', version: '1.1.0' },
-    ],
-    unparseable: [],
-  })
 })
 
 afterEach(() => {
@@ -88,15 +80,6 @@ describe('PluginPool', () => {
     expect(badges).toContain('update available')
   })
 
-  it('groups local templates by id with all versions', async () => {
-    const root = await mountPage()
-    const header = [...root.querySelectorAll('code')].find((el) =>
-      el.textContent?.includes('buz/checkout'),
-    )
-    expect(header, 'local group header').toBeTruthy()
-    expect(root.textContent).toContain('v1.1.0')
-    expect(root.textContent).toContain('v1.0.0')
-  })
 
   it('toggles a pool version through the API', async () => {
     const root = await mountPage()

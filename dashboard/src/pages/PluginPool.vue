@@ -2,13 +2,12 @@
 import { computed, onMounted, ref } from 'vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
-import { stepSourcesApi, stepsApi, type PoolEntry } from '@/api/stepSources'
+import { stepSourcesApi, type PoolEntry } from '@/api/stepSources'
 import { useAppDialog } from '@/composables/useAppDialog'
 
 const dialog = useAppDialog()
 const loading = ref(true)
 const pool = ref<PoolEntry[]>([])
-const localTemplates = ref<Array<Record<string, unknown>>>([])
 const busy = ref('')
 const refreshing = ref('')
 
@@ -78,39 +77,12 @@ const poolGroups = computed<PoolGroup[]>(() => {
   )
 })
 
-interface LocalGroup {
-  id: string
-  /** All known versions, newest first. */
-  versions: Array<Record<string, unknown>>
-}
-
-/** Local (local_dir) templates grouped per plugin id, versions newest first. */
-const localGroups = computed<LocalGroup[]>(() => {
-  const groups = new Map<string, LocalGroup>()
-  for (const tpl of localTemplates.value) {
-    const id = String(tpl.id ?? 'unknown')
-    if (!groups.has(id)) groups.set(id, { id, versions: [] })
-    groups.get(id)!.versions.push(tpl)
-  }
-  for (const group of groups.values()) {
-    group.versions.sort((a, b) => {
-      const ta = versionTriple(String(a.version ?? '')) ?? [0, 0, 0]
-      const tb = versionTriple(String(b.version ?? '')) ?? [0, 0, 0]
-      return compareTriple(tb, ta) // newest first
-    })
-  }
-  return [...groups.values()].sort((a, b) => a.id.localeCompare(b.id))
-})
 
 async function load() {
   loading.value = true
   try {
-    const [plt, local] = await Promise.all([
-      stepSourcesApi.listPool(),
-      stepsApi.listLocal().catch(() => ({ items: [], unparseable: [] })),
-    ])
+    const plt = await stepSourcesApi.listPool()
     pool.value = plt.items ?? []
-    localTemplates.value = local.items ?? []
   } catch (e) {
     await dialog.alert(`Failed to load the pool: ${e instanceof Error ? e.message : e}`)
   } finally {
@@ -210,31 +182,6 @@ onMounted(load)
         </div>
         <p v-if="poolGroups.length === 0" class="px-5 py-4 text-sm text-muted-foreground">
           Pool is empty — sync a source to stage templates for curation.
-        </p>
-      </div>
-    </section>
-
-    <!-- ── Local templates (local_dir / official git-clone path) ── -->
-    <section class="rounded-xl border border-border/50 bg-card overflow-hidden">
-      <div class="px-5 py-4 border-b border-border/50">
-        <h2 class="text-sm font-semibold">Local templates</h2>
-        <p class="mt-0.5 text-xs text-muted-foreground">
-          Served from the configured local step directory (git-ops / offline deployments). Always enabled.
-        </p>
-      </div>
-      <div class="divide-y divide-border/50">
-        <div v-for="group in localGroups" :key="group.id" class="px-5 py-3">
-          <code class="font-mono text-xs font-semibold">{{ group.id }}</code>
-          <div class="mt-1 flex flex-wrap items-center gap-1.5">
-            <span
-              v-for="tpl in group.versions"
-              :key="String(tpl.version)"
-              class="rounded-full bg-muted px-2 py-0.5 font-mono text-[11px]"
-            >v{{ tpl.version ?? '?' }}</span>
-          </div>
-        </div>
-        <p v-if="localGroups.length === 0" class="px-5 py-4 text-sm text-muted-foreground">
-          No local templates.
         </p>
       </div>
     </section>
