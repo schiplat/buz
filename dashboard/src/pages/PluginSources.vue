@@ -31,7 +31,7 @@ const settingsMeta: Record<string, { label: string; help: string; placeholder?: 
   step_reviewed_manifest: {
     label: 'Reviewed manifest',
     help: 'Path to reviews.json from the buz-plugins repo (the official review ledger). Empty = review gate disabled. Recommended for production.',
-    placeholder: '/etc/buz/reviews.json',
+    placeholder: 'e.g. /srv/buz/data/plugins/reviews.json',
   },
   step_sync_timeout: {
     label: 'Source sync timeout (seconds)',
