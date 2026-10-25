@@ -283,8 +283,12 @@ onUnmounted(stopPolling)
     <section class="rounded-xl border border-border/50 bg-card overflow-hidden">
       <div class="px-5 py-4 border-b border-border/50">
         <h2 class="text-sm font-semibold">Settings</h2>
-        <p class="mt-0.5 text-xs text-muted-foreground">
-          DB values take precedence over <code class="font-mono text-[10px]">manager.toml</code> defaults; reset removes the override.
+      </div>
+      <div class="flex items-start gap-2 border-b border-border/50 bg-muted/40 px-5 py-2.5">
+        <span aria-hidden="true" class="mt-0.5 text-xs leading-4 text-muted-foreground">ⓘ</span>
+        <p class="text-xs leading-4 text-muted-foreground">
+          DB values take precedence over <code class="font-mono text-[10px]">manager.toml</code> defaults —
+          <span class="font-medium text-foreground">Reset removes the override</span> and falls back to the file.
         </p>
       </div>
       <div class="divide-y divide-border/50">
