@@ -161,11 +161,11 @@ async fn settings_defaults_come_from_config() {
     assert_eq!(status, axum::http::StatusCode::OK);
     assert!(data_ok(&body));
     assert_eq!(setting_value(&body, "step_review_required"), "false");
-    // local_dir default resolves to an ABSOLUTE path under the scan root
-    // (CWD-anchored during tests) — operators never see a bare relative path.
+    // local_dir default resolves to an ABSOLUTE path under the DATA root —
+    // operators never see a bare relative path or a pipeline-scoped one.
     let expected = std::env::current_dir()
         .unwrap()
-        .join("pipelines/plugins")
+        .join("data/plugins")
         .to_string_lossy()
         .into_owned();
     assert_eq!(setting_value(&body, "step_index_local_dir"), expected);

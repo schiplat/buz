@@ -49,7 +49,7 @@ pub async fn get_settings(
         state.config.marketplace_url.clone()
     };
     let local_dir_default = crate::services::step_resolver::local_plugin_dir(
-        &state.config.pipeline.yaml_scan_dir,
+        &state.config.storage.data_dir,
         &state.config.step_index.local_dir,
     )
     .map(|p| p.to_string_lossy().into_owned())

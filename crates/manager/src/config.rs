@@ -74,10 +74,18 @@ impl Default for StepIndexConfig {
 
 /// `[storage]` — where the manager keeps mutable data (SQLite db, plugin
 /// library). Single anchor for every data-path default in the config.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct StorageConfig {
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            data_dir: default_data_dir(),
+        }
+    }
 }
 
 fn default_data_dir() -> String {
@@ -400,6 +408,36 @@ mod sync_timeout_default_tests {
             .try_deserialize()
             .expect("deserialize config");
         assert_eq!(cfg.step_index.sync_timeout_seconds, 60);
+    }
+
+    /// Empirical: the actual demo manager.toml (no [storage] section, no
+    /// local_dir) must produce the data-root plugins path — the exact
+    /// regression the /private/tmp live check caught.
+    #[test]
+    fn demo_manager_toml_yields_data_root_plugins() {
+        let demo = std::path::Path::new("/tmp/buz-demo/example/conf/manager.toml");
+        if !demo.exists() {
+            return; // demo not present on this machine
+        }
+        let cfg: Config = config::Config::builder()
+            .add_source(config::File::with_name(demo.to_str().unwrap()))
+            .build()
+            .expect("build demo config")
+            .try_deserialize()
+            .expect("deserialize demo config");
+        assert_eq!(
+            cfg.storage.data_dir, "./data",
+            "derived Default must carry the semantic value, not empty"
+        );
+        let dir = crate::services::step_resolver::local_plugin_dir(
+            &cfg.storage.data_dir,
+            &cfg.step_index.local_dir,
+        )
+        .unwrap();
+        assert!(
+            dir.to_string_lossy().ends_with("data/plugins"),
+            "got {dir:?}"
+        );
     }
 
     #[test]
