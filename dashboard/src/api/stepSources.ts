@@ -41,15 +41,17 @@ export const stepSourcesApi = {
     return resp.data as { items: StepSource[] }
   },
   async createSource(name: string, url: string, autoEnable: boolean): Promise<{ synced: boolean }> {
-    const resp = await apiClient.post('/admin/step-sources', {
-      name,
-      url,
-      auto_enable: autoEnable,
-    })
+    // The backend syncs inline (index + every template + reviews), which can
+    // legitimately take a minute — override the 8s client default.
+    const resp = await apiClient.post(
+      '/admin/step-sources',
+      { name, url, auto_enable: autoEnable },
+      { timeout: 65_000 },
+    )
     return resp.data as { synced: boolean }
   },
   async syncSource(id: string): Promise<{ synced: boolean; entries?: number; error?: string }> {
-    const resp = await apiClient.post(`/admin/step-sources/${id}/sync`)
+    const resp = await apiClient.post(`/admin/step-sources/${id}/sync`, null, { timeout: 65_000 })
     return resp.data as { synced: boolean; entries?: number; error?: string }
   },
   async deleteSource(id: string): Promise<void> {
