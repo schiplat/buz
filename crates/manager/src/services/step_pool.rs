@@ -294,25 +294,50 @@ async fn sync_source_inner(
 
     // Official-style sources publish reviews.json next to the index; when it
     // is fetchable, pool rows carry the review badge by hash membership.
-    let reviewed_hashes: std::collections::HashSet<String> =
+    // When it is NOT fetchable, `reviewed` keeps each row's CURRENT value —
+    // a transient fetch failure must never wipe review badges.
+    let fetched_reviews: Option<std::collections::HashSet<String>> =
         match http_get_text(http, &join_url(&base, "reviews.json")).await {
-            Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
-                .ok()
-                .and_then(|v| v.get("reviews").cloned())
-                .and_then(|r| serde_json::from_value::<Vec<serde_json::Value>>(r).ok())
-                .map(|reviews| {
-                    reviews
-                        .iter()
-                        .filter_map(|r| {
-                            r.get("sha256")
-                                .and_then(|s| s.as_str())
-                                .map(str::to_lowercase)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            Err(_) => std::collections::HashSet::new(),
+            Ok(raw) => Some(
+                serde_json::from_str::<serde_json::Value>(&raw)
+                    .ok()
+                    .and_then(|v| v.get("reviews").cloned())
+                    .and_then(|r| serde_json::from_value::<Vec<serde_json::Value>>(r).ok())
+                    .map(|reviews| {
+                        reviews
+                            .iter()
+                            .filter_map(|r| {
+                                r.get("sha256")
+                                    .and_then(|s| s.as_str())
+                                    .map(str::to_lowercase)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            ),
+            Err(e) => {
+                tracing::warn!(
+                    source = %source.name,
+                    error = %e,
+                    "reviews.json fetch failed — keeping existing review badges"
+                );
+                None
+            }
         };
+
+    // Current badges for this source: the fallback when reviews.json could
+    // not be fetched this round.
+    let existing_reviewed: std::collections::HashMap<(String, String, String), bool> =
+        sqlx::query_as(
+            "SELECT namespace, step_id, version, reviewed FROM step_pool WHERE source_id = ?",
+        )
+        .bind(&source.id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| anyhow!("{e}"))?
+        .into_iter()
+        .map(|(ns, id, v, r): (String, String, String, i64)| ((ns, id, v), r != 0))
+        .collect();
 
     for entry in &index.steps {
         // Namespace comes from the template id (`<ns>/<step-id>`); it is the
@@ -321,12 +346,20 @@ async fn sync_source_inner(
             .id
             .split_once('/')
             .ok_or_else(|| anyhow!("index entry id '{}' is missing a namespace", entry.id))?;
+        let namespace = namespace.to_string();
+        let step_id = step_id.to_string();
         if let Some((want_ns, want_id)) = only_plugin {
             if namespace != want_ns || step_id != want_id {
                 continue;
             }
         }
-        let reviewed = reviewed_hashes.contains(&entry.sha256.to_lowercase());
+        let reviewed = match &fetched_reviews {
+            Some(hashes) => hashes.contains(&entry.sha256.to_lowercase()),
+            // No reviews.json this round: keep whatever the row had.
+            None => *existing_reviewed
+                .get(&(namespace.clone(), step_id.clone(), entry.version.clone()))
+                .unwrap_or(&false),
+        };
         sqlx::query(
             "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path, enabled, reviewed, added_by)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sync')
