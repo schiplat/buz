@@ -246,6 +246,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin/step-pool", get(step_sources::list_pool))
         .route(
+            "/admin/step-pool/{namespace}/{step_id}/refresh",
+            post(step_sources::refresh_plugin),
+        )
+        .route(
             "/admin/step-pool/{namespace}/{step_id}/{version}",
             put(step_sources::toggle_pool_entry),
         )

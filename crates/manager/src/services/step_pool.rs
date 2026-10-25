@@ -265,7 +265,7 @@ pub async fn sync_source(
     pool: &SqlitePool,
     source: &SourceRow,
 ) -> Result<usize, anyhow::Error> {
-    let result = sync_source_inner(http, pool, source).await;
+    let result = sync_source_inner(http, pool, source, None).await;
     let (ok, error) = match &result {
         Ok(_) => (true, None),
         Err(e) => (false, Some(e.to_string())),
@@ -286,6 +286,7 @@ async fn sync_source_inner(
     http: &reqwest::Client,
     pool: &SqlitePool,
     source: &SourceRow,
+    only_plugin: Option<(&str, &str)>,
 ) -> Result<usize, anyhow::Error> {
     let raw = http_get_text(http, &source.url).await?;
     let index = parse_index(&raw).map_err(|e| anyhow!("{e}"))?;
@@ -320,6 +321,11 @@ async fn sync_source_inner(
             .id
             .split_once('/')
             .ok_or_else(|| anyhow!("index entry id '{}' is missing a namespace", entry.id))?;
+        if let Some((want_ns, want_id)) = only_plugin {
+            if namespace != want_ns || step_id != want_id {
+                continue;
+            }
+        }
         let reviewed = reviewed_hashes.contains(&entry.sha256.to_lowercase());
         sqlx::query(
             "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path, enabled, reviewed, added_by)
@@ -328,8 +334,10 @@ async fn sync_source_inner(
                sha256 = excluded.sha256,
                source_id = excluded.source_id,
                file_path = excluded.file_path,
-               enabled = excluded.enabled,
                reviewed = excluded.reviewed",
+        // NOTE: `enabled` is deliberately NOT updated on conflict — a
+        // re-sync must never reset the curator's enable/disable verdict.
+        // New entries still start as auto_enable via the INSERT values.
         )
         .bind(&namespace)
         .bind(&step_id)
@@ -343,6 +351,86 @@ async fn sync_source_inner(
         .await?;
     }
     Ok(index.steps.len())
+}
+
+/// Refresh one plugin's metadata from its source: re-fetch the index,
+/// upsert only this (namespace, step_id), and return the refreshed rows.
+/// The curator's enable state survives (see the ON CONFLICT note above).
+pub async fn refresh_plugin(
+    http: &reqwest::Client,
+    pool: &SqlitePool,
+    namespace: &str,
+    step_id: &str,
+) -> anyhow::Result<Vec<PoolRow>> {
+    let source_id: String = sqlx::query_scalar(
+        "SELECT source_id FROM step_pool WHERE namespace = ? AND step_id = ? LIMIT 1",
+    )
+    .bind(namespace)
+    .bind(step_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| anyhow!("{e}"))?
+    .ok_or_else(|| anyhow!("plugin {namespace}/{step_id} is not in the pool"))?;
+    let source = get_source(pool, &source_id)
+        .await
+        .map_err(|e| anyhow!("{e}"))?
+        .ok_or_else(|| anyhow!("source {source_id} disappeared"))?;
+
+    sync_source_inner(http, pool, &source, Some((namespace, step_id))).await?;
+
+    let rows: Vec<PoolRow> = sqlx::query_as(
+        "SELECT p.namespace, p.step_id, p.version, p.sha256, p.source_id, s.name, p.file_path, \
+                p.enabled, p.reviewed, p.added_by \
+         FROM step_pool p LEFT JOIN step_sources s ON s.id = p.source_id \
+         WHERE p.namespace = ? AND p.step_id = ? \
+         ORDER BY p.version",
+    )
+    .bind(namespace)
+    .bind(step_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| anyhow!("{e}"))?
+    .into_iter()
+    .map(
+        |(
+            namespace,
+            step_id,
+            version,
+            sha256,
+            source_id,
+            source_name,
+            file_path,
+            enabled,
+            reviewed,
+            added_by,
+        ): (
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            i64,
+            i64,
+            Option<String>,
+        )| {
+            PoolRow {
+                namespace,
+                step_id,
+                version,
+                sha256,
+                source_id,
+                source_name,
+                file_path,
+                enabled: enabled != 0,
+                reviewed: reviewed != 0,
+                added_by,
+            }
+        },
+    )
+    .collect();
+    Ok(rows)
 }
 
 /// Enable-time verification（收录即校验）---------------------------------------

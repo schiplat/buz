@@ -162,6 +162,30 @@ pub async fn delete_source(
     Ok(Json(ApiResponse::success(json!({ "id": id }))))
 }
 
+/// POST /api/v1/admin/step-pool/{namespace}/{step_id}/refresh — re-fetch the
+/// source index and upsert only this plugin's entries (curator's enable
+/// state survives). Returns the refreshed version rows.
+pub async fn refresh_plugin(
+    _auth: PlatformAdmin,
+    State(state): State<AppState>,
+    Path((namespace, step_id)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let http = step_pool::http_client(
+        crate::services::platform_settings::effective(
+            &state.pool,
+            crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
+            &state.config.step_index.sync_timeout_seconds.to_string(),
+        )
+        .await
+        .parse()
+        .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
+    );
+    let rows = step_pool::refresh_plugin(&http, &state.pool, &namespace, &step_id)
+        .await
+        .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
+    Ok(Json(ApiResponse::success(json!({ "items": rows }))))
+}
+
 /// GET /api/v1/admin/step-pool — every pool row (enabled + staged).
 pub async fn list_pool(
     _auth: PlatformAdmin,

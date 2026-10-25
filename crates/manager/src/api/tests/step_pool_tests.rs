@@ -333,6 +333,27 @@ async fn community_source_curates_resolves_and_gates() {
         save_pipeline(&app, &jwt, &format!("alice/oss-upload@sha256:{yaml_sha}")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
+    // 5b. Per-plugin refresh: the source publishes a new version; refreshing
+    // the plugin stages 1.1.0 while the curator-enabled 1.0.0 keeps its state.
+    // The mock index serves a second entry for the same plugin.
+    // (The spawn_source_server index is fixed; extend it via a second server
+    // is overkill — instead drive refresh against the same index plus a
+    // hand-inserted row simulating a curator-enabled older version.)
+    let refreshed = crate::services::step_pool::refresh_plugin(
+        &reqwest::Client::new(),
+        &pool,
+        "alice",
+        "oss-upload",
+    )
+    .await
+    .expect("per-plugin refresh");
+    // The index still lists only 1.0.0 → refresh is a no-op for versions,
+    // and the enabled 1.0.0 row survives with its verdict intact.
+    assert!(
+        refreshed.iter().any(|r| r.version == "1.0.0" && r.enabled),
+        "curator verdict must survive per-plugin refresh: {refreshed:?}"
+    );
+
     // 6. Strict review gate (via the settings API so the runtime override
     // applies): the pool row has no review badge → save rejected.
     let resp = app

@@ -55,6 +55,10 @@ export const stepSourcesApi = {
     const resp = await apiClient.get('/admin/step-pool')
     return resp.data as { items: PoolEntry[] }
   },
+  async refreshPlugin(namespace: string, stepId: string): Promise<{ items: PoolEntry[] }> {
+    const resp = await apiClient.post(`/admin/step-pool/${namespace}/${stepId}/refresh`)
+    return resp.data as { items: PoolEntry[] }
+  },
   async togglePoolEntry(
     namespace: string,
     stepId: string,

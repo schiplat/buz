@@ -10,6 +10,7 @@ const loading = ref(true)
 const pool = ref<PoolEntry[]>([])
 const localTemplates = ref<Array<Record<string, unknown>>>([])
 const busy = ref('')
+const refreshing = ref('')
 
 function versionTriple(v: string): [number, number, number] | null {
   const parts = v.split('.').map(Number)
@@ -117,6 +118,19 @@ async function load() {
   }
 }
 
+/** Re-fetch one plugin's metadata from its source (per-group refresh). */
+async function refreshGroup(group: { namespace: string; stepId: string }) {
+  refreshing.value = `${group.namespace}/${group.stepId}`
+  try {
+    await stepSourcesApi.refreshPlugin(group.namespace, group.stepId)
+    await load()
+  } catch (e) {
+    await dialog.alert(`Refresh failed: ${e instanceof Error ? e.message : e}`)
+  } finally {
+    refreshing.value = ''
+  }
+}
+
 async function toggleEntry(entry: PoolEntry) {
   busy.value = `${entry.namespace}/${entry.step_id}/${entry.version}`
   try {
@@ -149,11 +163,20 @@ onMounted(load)
       <div class="divide-y divide-border/50">
         <div v-for="group in poolGroups" :key="`${group.namespace}/${group.stepId}`" class="px-5 py-4">
           <div class="flex items-center justify-between gap-3">
-            <code class="font-mono text-xs font-semibold">{{ group.namespace }}/{{ group.stepId }}</code>
-            <span
-              v-if="group.updateAvailable"
-              class="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-400"
-            >update available</span>
+            <div class="flex min-w-0 items-center gap-2">
+              <code class="font-mono text-xs font-semibold">{{ group.namespace }}/{{ group.stepId }}</code>
+              <span
+                v-if="group.updateAvailable"
+                class="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-400"
+              >update available</span>
+            </div>
+            <UiButton
+              size="sm"
+              variant="ghost"
+              :disabled="refreshing === `${group.namespace}/${group.stepId}`"
+              title="Re-fetch this plugin's versions from its source"
+              @click="refreshGroup(group)"
+            ><RefreshCw class="h-3.5 w-3.5" /> {{ refreshing === `${group.namespace}/${group.stepId}` ? 'Refreshing…' : 'Refresh' }}</UiButton>
           </div>
           <p class="mt-0.5 text-[11px] text-muted-foreground">source: {{ group.sourceName }}</p>
           <div class="mt-2 space-y-1.5">
