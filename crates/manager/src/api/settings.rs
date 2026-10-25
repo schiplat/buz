@@ -133,6 +133,30 @@ pub async fn update_setting(
     Json(body): Json<UpdateSettingRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let value = body.value.trim().to_string();
+
+    // Guard the dangerous combo at the source: enabling the review gate
+    // while the manifest file does not exist would reject EVERY pipeline
+    // save (empty ledger). Refuse the toggle with guidance instead of
+    // letting the operator brick saves and discover it via the banner.
+    if key == crate::services::platform_settings::KEY_STEP_REVIEW_REQUIRED && value == "true" {
+        let overrides = platform_settings::fetch_overrides(&state.pool).await;
+        let manifest_path = crate::services::step_resolver::effective_reviewed_manifest(
+            &state.config.storage.data_dir,
+            &state.config.step_index.reviewed_manifest,
+            overrides
+                .get(platform_settings::KEY_STEP_REVIEWED_MANIFEST)
+                .map(String::as_str),
+        );
+        if !manifest_path.exists() {
+            return Err(AppError::ValidationFailed(format!(
+                "review gate cannot be turned on: the reviewed manifest file does not exist at {}. \
+                 Clone buz-plugins into your data directory (provides both plugins and reviews.json) \
+                 or configure an existing manifest path in 'Reviewed manifest' first.",
+                manifest_path.display()
+            )));
+        }
+    }
+
     platform_settings::upsert(&state.pool, &key, &value, &auth.username)
         .await
         .map_err(|e| AppError::ValidationFailed(e.to_string()))?;

@@ -44,19 +44,20 @@ const show = computed(() => posture.value !== null && !dismissed.value)
           Step review gate is misconfigured — every template will be rejected
         </p>
         <p class="mt-0.5 wrap-break-word text-muted-foreground">
-          Strict mode (require_reviewed) is on, but no reviewed manifest is configured, so there
-          is nothing to approve templates with. Either configure the manifest path in
-          <RouterLink to="/plugin-library/sources" class="font-medium underline underline-offset-2">Plugin library → Sources &amp; Settings</RouterLink>
-          (point it at a reviews.json), or turn the gate off there.
+          The switch is on, but its review ledger (reviews.json) cannot be found — until the file
+          exists, no plugin can pass. Fix: clone
+          <span class="font-mono text-[13px]">buz-plugins</span> into your data directory, or set the
+          manifest path under
+          <RouterLink to="/plugin-library/sources" class="font-medium underline underline-offset-2">Plugins → Sources &amp; Settings</RouterLink>.
         </p>
       </template>
       <template v-else>
         <p class="font-medium text-warning">Step review gate is not enabled</p>
         <p class="mt-0.5 wrap-break-word text-muted-foreground">
-          Every <code>uses:</code> template resolves without review checks. For production,
-          configure the reviewed manifest and enable the gate in
-          <RouterLink to="/plugin-library/sources" class="font-medium underline underline-offset-2">Plugin library → Sources &amp; Settings</RouterLink>
-          — see the Configuration docs.
+          Templates are used without review checks. To turn checking on, first place the review
+          ledger (a buz-plugins clone provides <span class="font-mono text-[13px]">reviews.json</span>),
+          then flip the switch in
+          <RouterLink to="/plugin-library/sources" class="font-medium underline underline-offset-2">Plugins → Sources &amp; Settings</RouterLink>.
         </p>
       </template>
     </div>

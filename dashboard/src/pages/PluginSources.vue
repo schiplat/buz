@@ -28,7 +28,7 @@ interface SettingMeta {
 const settingsMeta: Record<string, SettingMeta> = {
   step_review_required: {
     label: 'Step review gate',
-    help: 'When on, saving a pipeline that uses a plugin not listed in the reviewed manifest is rejected. The manifest comes from the official buz-plugins review ledger — a template needs a human review (hash-locked) before it can be used. Requires the manifest file to exist; otherwise every save is rejected (the banner warns). Recommended on for production.',
+    help: 'When on, saving a pipeline that uses a plugin not listed in the reviewed manifest is rejected. The manifest comes from the official buz-plugins review ledger — a template needs a human review (hash-locked) before it can be used. Turning this on checks that the manifest file exists — the toggle fails with instructions if it does not. Recommended for production.',
   },
   step_index_local_dir: {
     label: 'Local plugin directory',
@@ -135,7 +135,10 @@ async function persistSetting(setting: PlatformSetting, value: string) {
     if (justSavedTimer) clearTimeout(justSavedTimer)
     justSavedTimer = setTimeout(() => (justSaved.value = ''), 1500)
   } catch (e) {
-    await dialog.alert(`Failed to save ${setting.key}: ${e instanceof Error ? e.message : e}`)
+    // e.g. enabling the review gate without a manifest: the backend refused
+    // and the switch must visually stay at its real (unchanged) position.
+    await dialog.alert(e instanceof Error ? e.message : String(e))
+    await load()
   } finally {
     savingSetting.value = ''
   }

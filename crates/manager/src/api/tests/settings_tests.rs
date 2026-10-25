@@ -185,7 +185,26 @@ async fn update_persists_applies_and_reset_falls_back() {
     let (router, pool) = test_app().await;
     let token = jwt(ADMIN_ID, Role::Admin);
 
-    // Valid update persists and flips the review gate in the resolver.
+    // The gate cannot be enabled while the manifest file is missing — the
+    // refusal is asserted first, then a manifest is provisioned into this
+    // test's OWN data dir (parallel tests must not see each other's files)
+    // and the enable succeeds.
+    let (status, body) = put_setting(&router, &token, "step_review_required", "true").await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "enable without a manifest must be refused: {body}"
+    );
+    // Provision a manifest into a per-test tempdir and point the manifest
+    // setting at it (the guard resolves that override).
+    let data_dir = tempfile::tempdir().unwrap();
+    let manifest_path = data_dir.path().join("reviews.json");
+    std::fs::write(&manifest_path, r#"{"reviews": []}"#).unwrap();
+    let manifest = manifest_path.to_string_lossy().into_owned();
+    let (status, body) = put_setting(&router, &token, "step_reviewed_manifest", &manifest).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    // NOW the enable passes the guard (manifest override resolves to the
+    // tempdir file) and flips the resolver.
     let (status, body) = put_setting(&router, &token, "step_review_required", "true").await;
     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
     assert!(data_ok(&body));

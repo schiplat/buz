@@ -405,7 +405,30 @@ async fn community_source_curates_resolves_and_gates() {
     );
 
     // 6. Strict review gate (via the settings API so the runtime override
-    // applies): the pool row has no review badge → save rejected.
+    // applies): enabling requires an existing manifest file — provision an
+    // empty per-test one via the manifest override (tempdir: parallel tests
+    // must not see each other's files), so the enabled-but-unreviewed save
+    // is rejected.
+    let manifest_dir = tempfile::tempdir().unwrap();
+    let manifest_path = manifest_dir.path().join("reviews.json");
+    std::fs::write(&manifest_path, r#"{"reviews": []}"#).unwrap();
+    let manifest = manifest_path.to_string_lossy().into_owned();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/step_reviewed_manifest")
+                .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "value": manifest }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
     let resp = app
         .clone()
         .oneshot(

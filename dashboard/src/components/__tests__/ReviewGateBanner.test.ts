@@ -54,7 +54,7 @@ describe('ReviewGateBanner', () => {
     const banner = el.querySelector('[data-testid="review-gate-banner"]')
     expect(banner).not.toBeNull()
     expect(banner!.textContent).toContain('every template will be rejected')
-    expect(banner!.textContent).toContain('Plugin library')
+    expect(banner!.textContent).toContain('Plugins →')
     expect(banner!.textContent).not.toContain('manager.toml')
     unmount()
   })
