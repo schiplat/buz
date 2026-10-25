@@ -191,7 +191,8 @@ pub async fn create(
             crate::services::step_resolver::effective_local_dir(
                 &state.config.pipeline.yaml_scan_dir,
                 &state.config.step_index.local_dir,
-            ),
+            )
+            .map_err(|e| AppError::Internal(e.to_string()))?,
             &state.pool,
             &http,
         )
@@ -509,7 +510,8 @@ pub async fn update(
         crate::services::step_resolver::effective_local_dir(
             &state.config.pipeline.yaml_scan_dir,
             &state.config.step_index.local_dir,
-        ),
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?,
         &state.pool,
         &http,
     )
@@ -1115,7 +1117,8 @@ pub(crate) async fn do_trigger(
         &crate::services::step_resolver::effective_local_dir(
             &state.config.pipeline.yaml_scan_dir,
             &state.config.step_index.local_dir,
-        ),
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?,
         pipeline_id,
         crate::services::platform_settings::effective(
             &state.pool,

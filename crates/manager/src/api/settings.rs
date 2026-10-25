@@ -52,8 +52,8 @@ pub async fn get_settings(
         &state.config.pipeline.yaml_scan_dir,
         &state.config.step_index.local_dir,
     )
-    .to_string_lossy()
-    .into_owned();
+    .map(|p| p.to_string_lossy().into_owned())
+    .unwrap_or_else(|e| format!("(invalid: {e})"));
     let mut items = vec![
         item(KEY_MARKETPLACE_URL, "url", marketplace_default),
         item(
@@ -88,20 +88,33 @@ pub async fn get_settings(
         let resolved = crate::services::step_resolver::local_step_index_dir(
             &state.config.pipeline.yaml_scan_dir,
             &effective_dir,
-        );
-        // Relative paths depend on the manager's working directory — surface
-        // the absolute form so operators see exactly where to look.
-        let with_cwd = if resolved.is_absolute() {
-            resolved
-        } else {
-            std::env::current_dir().unwrap_or_default().join(resolved)
-        };
-        // Normalize away `./` segments so the display is a clean absolute path.
-        let resolved: std::path::PathBuf = with_cwd
-            .components()
-            .filter(|c| !matches!(c, std::path::Component::CurDir))
-            .collect();
-        item["resolved"] = serde_json::json!(resolved.to_string_lossy().into_owned());
+        )
+        .map(|p| {
+            // Relative paths depend on the manager's working directory —
+            // surface the absolute form so operators see exactly where to look.
+            if p.is_absolute() {
+                p
+            } else {
+                std::env::current_dir().unwrap_or_default().join(p)
+            }
+        })
+        .map(|p| {
+            // Normalize away `./` segments for a clean display.
+            let mut out = std::path::PathBuf::new();
+            for component in p.components() {
+                match component {
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        out.pop();
+                    }
+                    other => out.push(other.as_os_str()),
+                }
+            }
+            out
+        })
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|e| format!("(invalid: {e})"));
+        item["resolved"] = serde_json::json!(resolved);
     }
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
 }

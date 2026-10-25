@@ -168,10 +168,16 @@ fn uses_step(uses: &str) -> StepDef {
 
 #[test]
 fn local_index_dir_defaults_under_scan_dir() {
-    let dir = local_step_index_dir("/opt/buz/pipelines", "");
+    let dir = local_step_index_dir("/opt/buz/pipelines", "").unwrap();
     assert_eq!(dir, Path::new("/opt/buz/pipelines/steps"));
-    let configured = local_step_index_dir("/opt/buz/pipelines", "/etc/buz/steps");
+    // Absolute dirs remain an explicit admin choice.
+    let configured = local_step_index_dir("/opt/buz/pipelines", "/etc/buz/steps").unwrap();
     assert_eq!(configured, Path::new("/etc/buz/steps"));
+    // Relative dirs anchor to the scan root and cannot escape it.
+    let anchored = local_step_index_dir("/opt/buz/pipelines", "my-plugins").unwrap();
+    assert_eq!(anchored, Path::new("/opt/buz/pipelines").join("my-plugins"));
+    let escaped = local_step_index_dir("/opt/buz/pipelines", "../escape").unwrap_err();
+    assert!(escaped.to_string().contains("escape"), "{escaped}");
 }
 
 #[test]

@@ -23,7 +23,8 @@ pub async fn list_steps(
     let dir = crate::services::step_resolver::effective_local_dir(
         &state.config.pipeline.yaml_scan_dir,
         &state.config.step_index.local_dir,
-    );
+    )
+    .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let files = match shared::yaml_files::discover_yaml_files(&dir) {
         Ok(files) => files,

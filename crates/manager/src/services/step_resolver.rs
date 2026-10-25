@@ -199,24 +199,72 @@ pub struct ResolvedStep {
     pub content_sha256: String,
 }
 
-/// Local index dir: configured value wins, else `<yaml_scan_dir>/steps`
-/// (2026-10-03 decision — no extra config by default).
-pub fn local_step_index_dir(yaml_scan_dir: &str, configured: &str) -> PathBuf {
+/// Local index dir resolution.
+///
+/// - empty → `<yaml_scan_dir>/steps` (2026-10-03 decision — no extra config
+///   by default);
+/// - relative → anchored to `yaml_scan_dir` (never the manager's CWD, which
+///   an operator cannot reason about), with `..` rejected so the result
+///   cannot escape the scan root;
+/// - absolute → used as-is (an explicit admin choice, e.g. air-gap mounts).
+///
+/// Returns the path plus whether it was anchored (callers surface the
+/// absolute form in the UI).
+pub fn local_step_index_dir(yaml_scan_dir: &str, configured: &str) -> anyhow::Result<PathBuf> {
+    let scan_root = absolutize(yaml_scan_dir);
     let configured = configured.trim();
-    if configured.is_empty() {
-        Path::new(yaml_scan_dir).join("steps")
+    let candidate = if configured.is_empty() {
+        scan_root.join("steps")
     } else {
-        PathBuf::from(configured)
+        let configured_path = PathBuf::from(configured);
+        if configured_path.is_absolute() {
+            configured_path
+        } else {
+            for component in configured_path.components() {
+                if matches!(component, std::path::Component::ParentDir) {
+                    anyhow::bail!(
+                        "step directory '{configured}' must not escape the scan root ({yaml_scan_dir})"
+                    );
+                }
+            }
+            scan_root.join(configured_path)
+        }
+    };
+    Ok(normalize(&candidate))
+}
+
+/// Join a relative path onto the manager working directory.
+fn absolutize(path: &str) -> std::path::PathBuf {
+    let p = PathBuf::from(path);
+    if p.is_absolute() {
+        p
+    } else {
+        std::env::current_dir().unwrap_or_default().join(p)
     }
+}
+
+/// Lexically resolve `.` / `..` components without touching the filesystem.
+fn normalize(path: &std::path::Path) -> std::path::PathBuf {
+    let mut out: std::path::PathBuf = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Effective step directory: the admin-set override when present, else the
 /// config-resolved default. All consumers must use this so a settings change
 /// takes effect everywhere at once.
-pub fn effective_local_dir(yaml_scan_dir: &str, config_local_dir: &str) -> PathBuf {
+pub fn effective_local_dir(yaml_scan_dir: &str, config_local_dir: &str) -> anyhow::Result<PathBuf> {
     if let Some(dir) = runtime_overrides().local_dir {
         if !dir.trim().is_empty() {
-            return PathBuf::from(dir);
+            return local_step_index_dir(yaml_scan_dir, &dir);
         }
     }
     local_step_index_dir(yaml_scan_dir, config_local_dir)
@@ -834,3 +882,36 @@ pub async fn replace_step_resolutions(
 #[cfg(test)]
 #[path = "step_resolver_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod local_dir_tests {
+    use super::*;
+
+    #[test]
+    fn empty_anchors_to_scan_root_steps() {
+        let dir = local_step_index_dir("/srv/buz/pipelines", "").unwrap();
+        assert_eq!(dir, Path::new("/srv/buz/pipelines").join("steps"));
+    }
+
+    #[test]
+    fn relative_anchors_to_scan_root() {
+        let dir = local_step_index_dir("/srv/buz/pipelines", "my-plugins").unwrap();
+        assert_eq!(dir, Path::new("/srv/buz/pipelines").join("my-plugins"));
+    }
+
+    #[test]
+    fn parent_components_are_rejected() {
+        let err = local_step_index_dir("/srv/buz/pipelines", "../escape").unwrap_err();
+        assert!(err.to_string().contains("escape"), "{err}");
+    }
+
+    #[test]
+    fn absolute_paths_are_used_as_is() {
+        let dir = local_step_index_dir("/srv/buz/pipelines", "/opt/data/plugins").unwrap();
+        assert_eq!(
+            dir,
+            PathBuf::from("/opt/data/plugins"),
+            "absolute dirs are an explicit admin choice"
+        );
+    }
+}

@@ -260,7 +260,7 @@ async fn main() -> anyhow::Result<()> {
         services::step_resolver::effective_local_dir(
             &config.pipeline.yaml_scan_dir,
             &config.step_index.local_dir,
-        ),
+        )?,
         config.pipeline.yaml_scan_interval_seconds,
         sync_timeout_secs,
     );

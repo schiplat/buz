@@ -160,11 +160,14 @@ async fn settings_defaults_come_from_config() {
     assert_eq!(status, axum::http::StatusCode::OK);
     assert!(data_ok(&body));
     assert_eq!(setting_value(&body, "step_review_required"), "false");
-    // local_dir default resolves to <yaml_scan_dir>/steps
-    assert_eq!(
-        setting_value(&body, "step_index_local_dir"),
-        "./pipelines/steps"
-    );
+    // local_dir default resolves to an ABSOLUTE path under the scan root
+    // (CWD-anchored during tests) — operators never see a bare relative path.
+    let expected = std::env::current_dir()
+        .unwrap()
+        .join("pipelines/steps")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(setting_value(&body, "step_index_local_dir"), expected);
     // marketplace default is the built-in URL when manager.toml leaves it empty
     assert_eq!(
         setting_value(&body, "marketplace_url"),
