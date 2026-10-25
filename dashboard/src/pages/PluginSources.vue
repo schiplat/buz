@@ -50,6 +50,8 @@ const busy = ref('')
  *  flight ("syncing…"); a changed value (success OR failure — the backend
  *  stamps last_synced_at either way) resolves it. */
 const syncingSince = ref<Record<string, string>>({})
+/** sourceId -> click epoch ms; hard cap for the in-flight display. */
+const syncingStartedAt = ref<Record<string, number>>({})
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 /** Refresh the list every 2.5s until every source reached a terminal sync
@@ -61,8 +63,11 @@ function startPolling() {
   pollTimer = setInterval(async () => {
     rounds += 1
     await load()
-    const pending = sources.value.some((s) => !s.last_synced_at && !s.last_sync_error)
-    if (!pending || rounds >= 40) stopPolling()
+    // Poll exactly as long as something is in flight — a source holding an
+    // old timestamp is NOT pending (the previous condition stopped polling
+    // while the syncing badge was still displayed).
+    const pending = Object.keys(syncingSince.value).length > 0
+    if (!pending || rounds >= 60) stopPolling()
   }, 2500)
 }
 
@@ -82,10 +87,18 @@ async function load() {
     ])
     sources.value = src.items ?? []
     // A sync is finished once last_synced_at differs from the value seen at
-    // click time (the backend stamps it on success AND failure).
+    // click time (the backend stamps it on success AND failure). A hard cap
+    // (backend timeout + margin) resolves the display even when the stamped
+    // value equals the baseline — the loaded row then shows the real state.
+    const startedCap = syncTimeoutMs() + 5_000
     for (const s of sources.value) {
-      if (syncingSince.value[s.id] !== undefined && s.last_synced_at !== syncingSince.value[s.id]) {
+      const started = syncingStartedAt.value[s.id]
+      const changed =
+        syncingSince.value[s.id] !== undefined &&
+        s.last_synced_at !== syncingSince.value[s.id]
+      if (started !== undefined && (changed || Date.now() - started > startedCap)) {
         delete syncingSince.value[s.id]
+        delete syncingStartedAt.value[s.id]
       }
     }
     settings.value = cfg.items ?? []
@@ -162,6 +175,7 @@ async function addSource() {
 async function syncSource(source: StepSource) {
   busy.value = `sync-${source.id}`
   syncingSince.value[source.id] = source.last_synced_at ?? ''
+  syncingStartedAt.value[source.id] = Date.now()
   try {
     await stepSourcesApi.syncSource(source.id)
     await load()
@@ -186,9 +200,12 @@ async function removeSource(source: StepSource) {
 }
 
 function syncState(source: StepSource): string {
-  if (source.id in syncingSince.value && source.last_synced_at === syncingSince.value[source.id]) {
-    return 'syncing…'
-  }
+  const started = syncingStartedAt.value[source.id]
+  const inFlight =
+    source.id in syncingSince.value &&
+    source.last_synced_at === syncingSince.value[source.id] &&
+    (started === undefined || Date.now() - started <= syncTimeoutMs() + 5_000)
+  if (inFlight) return 'syncing…'
   if (source.last_sync_error) return `sync error: ${source.last_sync_error}`
   if (source.last_synced_at) return `synced ${source.last_synced_at}`
   return 'syncing…'

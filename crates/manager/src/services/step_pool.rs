@@ -270,10 +270,16 @@ pub async fn sync_source(
         Ok(_) => (true, None),
         Err(e) => (false, Some(e.to_string())),
     };
+    // Sub-second timestamp: the UI detects "sync finished" by comparing
+    // last_synced_at with the value seen at click time, and second
+    // precision makes back-to-back syncs indistinguishable. Success also
+    // clears any stale error from a previous failed attempt.
+    let stamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let _ = sqlx::query(
-        "UPDATE step_sources SET last_synced_at = datetime('now'), \
+        "UPDATE step_sources SET last_synced_at = ?, \
          enabled = ?, last_sync_error = ? WHERE id = ?",
     )
+    .bind(&stamp)
     .bind(ok as i64)
     .bind(error)
     .bind(&source.id)
