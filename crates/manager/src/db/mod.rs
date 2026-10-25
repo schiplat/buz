@@ -649,7 +649,10 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         "INSERT INTO step_sources (id, name, url, auto_enable, enabled, created_by) \
          SELECT 'official', 'Official buz-plugins', \
                 'https://plugins.buz.schiplat.com/index.json', 1, 1, 'system' \
-         WHERE NOT EXISTS (SELECT 1 FROM step_sources WHERE id = 'official')",
+         WHERE NOT EXISTS (SELECT 1 FROM step_sources WHERE id = 'official') \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM platform_settings \
+               WHERE key = 'step_official_source_dismissed' AND value = 'true')",
     )
     .execute(pool)
     .await?;

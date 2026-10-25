@@ -135,7 +135,7 @@ pub async fn sync_source(
 /// DELETE /api/v1/admin/step-sources/{id} — removes the source and its pool
 /// rows. Already-saved pipelines are unaffected (resolution froze at save).
 pub async fn delete_source(
-    _auth: PlatformAdmin,
+    auth: PlatformAdmin,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
@@ -144,6 +144,21 @@ pub async fn delete_source(
         .execute(&state.pool)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Deleting the factory-seeded source is a deliberate operator choice
+    // (typically the official site is unreachable); remember it so the
+    // startup migration does not re-seed it on every boot.
+    if id == "official" {
+        sqlx::query(
+            "INSERT INTO platform_settings (key, value, updated_by, updated_at) \
+             VALUES ('step_official_source_dismissed', 'true', ?, datetime('now')) \
+             ON CONFLICT(key) DO UPDATE SET value = 'true', updated_by = excluded.updated_by, \
+               updated_at = excluded.updated_at",
+        )
+        .bind(&auth.username)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    }
     Ok(Json(ApiResponse::success(json!({ "id": id }))))
 }
 
