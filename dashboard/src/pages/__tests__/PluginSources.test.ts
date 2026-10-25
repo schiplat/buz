@@ -92,8 +92,18 @@ describe('PluginSources', () => {
     expect(root.textContent).toContain('synced 2026-10-23T00:00:00Z')
   })
 
-  it('adds a source and syncs immediately', async () => {
-    vi.mocked(stepSourcesApi.createSource).mockResolvedValue({ synced: true })
+  it('adds a source, returns to the list, and shows the syncing state', async () => {
+    vi.mocked(stepSourcesApi.createSource).mockResolvedValue(undefined)
+    // After the add, the refreshed list carries the new source in its
+    // in-flight state (no last_synced_at, no error yet).
+    vi.mocked(stepSourcesApi.listSources)
+      .mockResolvedValueOnce({ items: [source()] })
+      .mockResolvedValue({
+        items: [
+          source(),
+          source({ id: 'src-2', name: 'bob', url: 'https://example.com/bob/index.json', last_synced_at: null }),
+        ],
+      })
     const root = await mountPage()
     const opener = [...root.querySelectorAll('button')].find((b) => b.textContent?.includes('Add source'))!
     opener.click()
@@ -108,7 +118,11 @@ describe('PluginSources', () => {
       .find((b) => b.textContent?.includes('Add & sync'))!
     add.click()
     await flush()
-    expect(stepSourcesApi.createSource).toHaveBeenCalledWith('bob', 'https://example.com/bob/index.json', false, 60000)
+    expect(stepSourcesApi.createSource).toHaveBeenCalledWith('bob', 'https://example.com/bob/index.json', false)
+    // The form closed (back to the list) and the new row shows the
+    // in-flight state while the background sync runs.
+    expect(root.textContent).not.toContain('Index URL')
+    expect(root.textContent).toContain('syncing…')
   })
 
   it('renders the four platform settings with effective values', async () => {

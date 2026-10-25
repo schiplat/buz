@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { RefreshCw, RotateCcw, Trash2 } from '@lucide/vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
@@ -42,6 +42,28 @@ const newName = ref('')
 const newUrl = ref('')
 const newAutoEnable = ref(false)
 const busy = ref('')
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+/** Refresh the list every 2.5s until every source reached a terminal sync
+ *  state (last_synced_at or last_sync_error) — background syncs surface
+ *  here instead of blocking the add-source flow. */
+function startPolling() {
+  stopPolling()
+  let rounds = 0
+  pollTimer = setInterval(async () => {
+    rounds += 1
+    await load()
+    const pending = sources.value.some((s) => !s.last_synced_at && !s.last_sync_error)
+    if (!pending || rounds >= 40) stopPolling()
+  }, 2500)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
 
 async function load() {
   loading.value = true
@@ -102,28 +124,19 @@ async function addSource() {
   if (!newName.value.trim() || !newUrl.value.trim()) return
   busy.value = 'add'
   try {
-    const res = await stepSourcesApi.createSource(
+    await stepSourcesApi.createSource(
       newName.value.trim(),
       newUrl.value.trim(),
       newAutoEnable.value,
-      syncTimeoutMs(),
     )
-    if (!res.synced) {
-      await dialog.alert(
-        'Source saved, but the initial sync failed — check the sync error shown in the list.',
-      )
-    } else {
-      // The curator's next action is always in the Pool tab — go there
-      // directly instead of leaving them to find the tab themselves.
-      await dialog.alert('Source synced. Review and enable the staged templates in the Pool tab.')
-      void router.push({ name: 'plugin-pool' })
-      return
-    }
+    // Back to the list immediately: the sync runs server-side and the row
+    // shows "syncing…" until last_synced_at / last_sync_error lands.
     showAddSource.value = false
     newName.value = ''
     newUrl.value = ''
     newAutoEnable.value = false
     await load()
+    startPolling()
   } catch (e) {
     await dialog.alert(`Failed to add source: ${e instanceof Error ? e.message : e}`)
   } finally {
@@ -134,11 +147,9 @@ async function addSource() {
 async function syncSource(source: StepSource) {
   busy.value = `sync-${source.id}`
   try {
-    const res = await stepSourcesApi.syncSource(source.id, syncTimeoutMs())
-    if (!res.synced) {
-      await dialog.alert(`Sync failed: ${res.error ?? 'unknown error'}`)
-    }
+    await stepSourcesApi.syncSource(source.id)
     await load()
+    startPolling()
   } finally {
     busy.value = ''
   }
@@ -161,10 +172,12 @@ async function removeSource(source: StepSource) {
 function syncState(source: StepSource): string {
   if (source.last_sync_error) return `sync error: ${source.last_sync_error}`
   if (source.last_synced_at) return `synced ${source.last_synced_at}`
-  return 'never synced'
+  return 'syncing…'
 }
 
 onMounted(load)
+
+onUnmounted(stopPolling)
 </script>
 
 <template>

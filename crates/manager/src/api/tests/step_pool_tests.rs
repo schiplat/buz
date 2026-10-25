@@ -226,12 +226,29 @@ async fn community_source_curates_resolves_and_gates() {
         .create_token(ADMIN_ID, Role::Admin, 1)
         .unwrap();
 
-    // 1. Add the source: immediate sync stages the pool row (disabled).
+    // 1. Add the source: the API stages the row and syncs in the background.
+    // Poll until the background fetch lands (staging the pool rows).
     let body = add_source(&app, &jwt, &format!("{source_url}/index.json")).await;
-    assert_eq!(body["data"]["synced"], true, "{body}");
+    assert_eq!(body["data"]["syncing"], true, "{body}");
     assert_eq!(body["data"]["source"]["auto_enable"], false);
+    let source_id = body["data"]["source"]["id"]
+        .as_str()
+        .expect("source id")
+        .to_string();
+    // The spawned background sync races the mock server in this
+    // single-threaded test runtime, so the fetch is exercised
+    // deterministically here (same call the spawn performs).
+    let source = crate::services::step_pool::get_source(&pool, &source_id)
+        .await
+        .unwrap()
+        .expect("source row");
+    let http = crate::services::step_pool::http_client(60);
+    let count = crate::services::step_pool::sync_source(&http, &pool, &source)
+        .await
+        .expect("deterministic sync of the staged source");
+    assert_eq!(count, 3, "index entries staged");
 
-    // 2. Pool row exists but is staged (disabled) — resolution must fail.
+    // 2. Pool rows exist but are staged (disabled) — resolution must fail.
     let (status, body) = save_pipeline(&app, &jwt, "alice/oss-upload@1.0.0").await;
     assert_ne!(
         status,

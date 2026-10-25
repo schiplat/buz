@@ -28,10 +28,6 @@ pub struct TogglePoolRequest {
     pub enabled: bool,
 }
 
-fn http_client() -> reqwest::Client {
-    reqwest::Client::new()
-}
-
 /// GET /api/v1/admin/step-sources — all configured sources with sync state.
 pub async fn list_sources(
     _auth: PlatformAdmin,
@@ -76,21 +72,33 @@ pub async fn create_source(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
+    // Sync runs in the background: the API returns the staged source
+    // immediately and the UI polls the list for last_synced_at / error.
+    let pool = state.pool.clone();
+    let timeout_secs = crate::services::platform_settings::effective(
+        &state.pool,
+        crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
+        &state.config.step_index.sync_timeout_seconds.to_string(),
+    )
+    .await
+    .parse()
+    .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
     let source = step_pool::get_source(&state.pool, &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or(AppError::NotFound("source disappeared after insert".into()))?;
-    let http = http_client();
-    let synced = step_pool::sync_source(&http, &state.pool, &source)
-        .await
-        .is_ok();
 
-    let source = step_pool::get_source(&state.pool, &id)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let spawn_source = source.clone();
+    tokio::spawn(async move {
+        let http = step_pool::http_client(timeout_secs);
+        if let Err(e) = step_pool::sync_source(&http, &pool, &spawn_source).await {
+            tracing::warn!(source_id = %spawn_source.id, error = %e, "background source sync failed");
+        }
+    });
+
     Ok(Json(ApiResponse::success(json!({
         "source": source,
-        "synced": synced,
+        "syncing": true,
     }))))
 }
 
@@ -104,16 +112,24 @@ pub async fn sync_source(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or(AppError::NotFound("source not found".into()))?;
-    let http = http_client();
-    let result = step_pool::sync_source(&http, &state.pool, &source).await;
-    match result {
-        Ok(count) => Ok(Json(ApiResponse::success(json!({
-            "id": id, "synced": true, "entries": count,
-        })))),
-        Err(e) => Ok(Json(ApiResponse::success(json!({
-            "id": id, "synced": false, "error": e.to_string(),
-        })))),
-    }
+    let pool = state.pool.clone();
+    let timeout_secs = crate::services::platform_settings::effective(
+        &state.pool,
+        crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
+        &state.config.step_index.sync_timeout_seconds.to_string(),
+    )
+    .await
+    .parse()
+    .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
+    tokio::spawn(async move {
+        let http = step_pool::http_client(timeout_secs);
+        if let Err(e) = step_pool::sync_source(&http, &pool, &source).await {
+            tracing::warn!(source_id = %source.id, error = %e, "background source sync failed");
+        }
+    });
+    Ok(Json(ApiResponse::success(
+        json!({ "id": id, "syncing": true }),
+    )))
 }
 
 /// DELETE /api/v1/admin/step-sources/{id} — removes the source and its pool
@@ -155,7 +171,16 @@ pub async fn toggle_pool_entry(
     // staged and the curator sees why.
     if body.enabled {
         step_pool::verify_entry(
-            &http_client(),
+            &step_pool::http_client(
+                crate::services::platform_settings::effective(
+                    &state.pool,
+                    crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
+                    &state.config.step_index.sync_timeout_seconds.to_string(),
+                )
+                .await
+                .parse()
+                .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
+            ),
             &state.pool,
             &namespace,
             &step_id,
