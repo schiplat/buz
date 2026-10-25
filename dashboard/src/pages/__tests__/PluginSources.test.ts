@@ -154,7 +154,7 @@ describe('PluginSources', () => {
   it('renders the four platform settings with effective values', async () => {
     const root = await mountPage()
     const keys = [...root.querySelectorAll('h3')].map((h) => h.textContent)
-    expect(keys).toContain('Marketplace URL')
+    expect(keys).not.toContain('Marketplace URL')
     expect(keys).toContain('Step review gate (require_reviewed)')
     expect(keys).toContain('Local plugin directory')
     expect(keys).toContain('Reviewed manifest')

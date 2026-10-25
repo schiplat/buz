@@ -147,8 +147,8 @@ async fn settings_require_platform_admin() {
     let (status, _) = put_setting(
         &router,
         &jwt(MEMBER_ID, Role::User),
-        "marketplace_url",
-        "https://x",
+        "step_sync_timeout",
+        "60",
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
@@ -169,11 +169,15 @@ async fn settings_defaults_come_from_config() {
         .to_string_lossy()
         .into_owned();
     assert_eq!(setting_value(&body, "step_index_local_dir"), expected);
-    // marketplace default is the built-in URL when manager.toml leaves it empty
-    assert_eq!(
-        setting_value(&body, "marketplace_url"),
-        crate::api::version::DEFAULT_MARKETPLACE_URL
-    );
+    // marketplace_url is no longer an admin settings item (navigation link,
+    // consumed via /health): absent from the list entirely.
+    let keys: Vec<&str> = body["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["key"].as_str())
+        .collect();
+    assert!(!keys.contains(&"marketplace_url"), "{keys:?}");
 }
 
 #[tokio::test]
@@ -222,7 +226,10 @@ async fn unknown_setting_and_invalid_path_are_rejected() {
     let (router, _pool) = test_app().await;
     let token = jwt(ADMIN_ID, Role::Admin);
 
-    let (status, _) = put_setting(&router, &token, "nope", "x").await;
+    // marketplace_url remains a REGISTERED key (env/toml override consumed
+    // via /health) — writable but not listed in the settings UI. A genuinely
+    // unknown name is the 422 probe.
+    let (status, _) = put_setting(&router, &token, "no-such-key", "x").await;
     assert_eq!(status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 
     let (status, _) = put_setting(&router, &token, "step_index_local_dir", "   ").await;

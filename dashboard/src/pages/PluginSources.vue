@@ -15,11 +15,6 @@ const sources = ref<StepSource[]>([])
 const settings = ref<PlatformSetting[]>([])
 const settingDrafts = ref<Record<string, string>>({})
 const settingsMeta: Record<string, { label: string; help: string; placeholder?: string }> = {
-  marketplace_url: {
-    label: 'Marketplace URL',
-    help: 'Marketplace browsing entry. Leave empty to use the built-in default; point at an internal mirror for China-mainland or air-gapped deployments.',
-    placeholder: 'https://plugins.buz.schiplat.com',
-  },
   step_review_required: {
     label: 'Step review gate (require_reviewed)',
     help: 'When enabled, templates absent from the official reviewed manifest are rejected at pipeline save time. Recommended ON for production, together with a reviewed manifest. Applies immediately.',
