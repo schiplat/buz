@@ -86,7 +86,7 @@ pub async fn get_settings(
         )
         .await;
         let resolved = crate::services::step_resolver::local_plugin_dir(
-            &state.config.pipeline.yaml_scan_dir,
+            &state.config.storage.data_dir,
             &effective_dir,
         )
         .map(|p| {
@@ -158,11 +158,21 @@ async fn reapply_step_index_overrides(state: &AppState) -> Result<(), AppError> 
         .get(KEY_STEP_REVIEW_REQUIRED)
         .and_then(|v| v.parse::<bool>().ok());
     let local_dir = overrides.get(KEY_STEP_INDEX_LOCAL_DIR).cloned();
-    let reviewed_manifest = overrides.get(KEY_STEP_REVIEWED_MANIFEST).cloned();
+    // The runtime slot always carries the EFFECTIVE manifest (DB override
+    // or the data-root default), matching what startup init installed.
+    let reviewed_manifest = crate::services::step_resolver::effective_reviewed_manifest(
+        &state.config.storage.data_dir,
+        &state.config.step_index.reviewed_manifest,
+        overrides
+            .get(KEY_STEP_REVIEWED_MANIFEST)
+            .map(String::as_str),
+    )
+    .to_string_lossy()
+    .into_owned();
     crate::services::step_resolver::apply_runtime_overrides(
         require_reviewed,
         local_dir,
-        reviewed_manifest,
+        Some(reviewed_manifest),
     );
     Ok(())
 }

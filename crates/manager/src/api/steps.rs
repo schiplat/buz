@@ -21,7 +21,7 @@ pub async fn list_steps(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let dir = crate::services::step_resolver::effective_local_dir(
-        &state.config.pipeline.yaml_scan_dir,
+        &state.config.storage.data_dir,
         &state.config.step_index.local_dir,
     )
     .map_err(|e| AppError::Internal(e.to_string()))?;

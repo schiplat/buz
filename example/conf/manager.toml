@@ -42,7 +42,7 @@ yaml_scan_interval_seconds = 30
 
 [step_index]
 # Where `uses:` references resolve — local YAML specs, one file per template.
-# Empty local_dir → <yaml_scan_dir>/plugins (./pipelines/plugins). Manager reads
+# Empty local_dir → <data_dir>/plugins (./data/plugins — the manager data root). Manager reads
 # this directory; it does not clone/sync it. To use an external Git mirror,
 # point local_dir (or env BUZ_STEP_INDEX__LOCAL_DIR in Docker) at its
 # plugins/ subdirectory.

@@ -40,6 +40,7 @@ fn base_config(standalone: bool) -> Config {
             auto_approve: vec!["standalone-runner".into()],
         },
         step_index: Default::default(),
+        storage: Default::default(),
         clock: Default::default(),
         logging: Default::default(),
         marketplace_url: String::new(),

@@ -201,8 +201,8 @@ pub struct ResolvedStep {
 
 /// Local plugin dir resolution.
 ///
-/// - empty → `<yaml_scan_dir>/plugins` (v1.10.3+; older deployments'
-///   `steps` directory is auto-migrated at startup);
+/// - empty → `<data_dir>/plugins` (the manager data root; a legacy
+///   `<yaml_scan_dir>/steps`|`plugins` directory is migrated at startup);
 /// - relative → anchored to `yaml_scan_dir` (never the manager's CWD, which
 ///   an operator cannot reason about), with `..` rejected so the result
 ///   cannot escape the scan root;
@@ -210,11 +210,11 @@ pub struct ResolvedStep {
 ///
 /// Returns the path plus whether it was anchored (callers surface the
 /// absolute form in the UI).
-pub fn local_plugin_dir(yaml_scan_dir: &str, configured: &str) -> anyhow::Result<PathBuf> {
-    let scan_root = absolutize(yaml_scan_dir);
+pub fn local_plugin_dir(data_dir: &str, configured: &str) -> anyhow::Result<PathBuf> {
+    let data_root = absolutize(data_dir);
     let configured = configured.trim();
     let candidate = if configured.is_empty() {
-        scan_root.join("plugins")
+        data_root.join("plugins")
     } else {
         let configured_path = PathBuf::from(configured);
         if configured_path.is_absolute() {
@@ -223,14 +223,20 @@ pub fn local_plugin_dir(yaml_scan_dir: &str, configured: &str) -> anyhow::Result
             for component in configured_path.components() {
                 if matches!(component, std::path::Component::ParentDir) {
                     anyhow::bail!(
-                        "step directory '{configured}' must not escape the scan root ({yaml_scan_dir})"
+                        "plugin directory '{configured}' must not escape the data directory ({data_dir})"
                     );
                 }
             }
-            scan_root.join(configured_path)
+            data_root.join(configured_path)
         }
     };
     Ok(normalize(&candidate))
+}
+
+/// Default reviews.json location: beside the plugin directory — a clone of
+/// buz-plugins placed in the data root provides both in one mount.
+pub fn reviewed_manifest_default(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("plugins").join("reviews.json")
 }
 
 /// Join a relative path onto the manager working directory.
@@ -261,13 +267,30 @@ fn normalize(path: &std::path::Path) -> std::path::PathBuf {
 /// Effective step directory: the admin-set override when present, else the
 /// config-resolved default. All consumers must use this so a settings change
 /// takes effect everywhere at once.
-pub fn effective_local_dir(yaml_scan_dir: &str, config_local_dir: &str) -> anyhow::Result<PathBuf> {
+pub fn effective_local_dir(data_dir: &str, config_local_dir: &str) -> anyhow::Result<PathBuf> {
     if let Some(dir) = runtime_overrides().local_dir {
         if !dir.trim().is_empty() {
-            return local_plugin_dir(yaml_scan_dir, &dir);
+            return local_plugin_dir(data_dir, &dir);
         }
     }
-    local_plugin_dir(yaml_scan_dir, config_local_dir)
+    local_plugin_dir(data_dir, config_local_dir)
+}
+
+/// Effective reviewed manifest: DB override, else the config value, else
+/// `<data_dir>/plugins/reviews.json` when both are empty.
+pub fn effective_reviewed_manifest(
+    data_dir: &str,
+    config_value: &str,
+    override_value: Option<&str>,
+) -> PathBuf {
+    let value = override_value
+        .map(str::to_string)
+        .unwrap_or_else(|| config_value.to_string());
+    if value.trim().is_empty() {
+        reviewed_manifest_default(&std::path::PathBuf::from(data_dir))
+    } else {
+        std::path::PathBuf::from(value)
+    }
 }
 
 /// One template file found in the index.
@@ -888,30 +911,40 @@ mod local_dir_tests {
     use super::*;
 
     #[test]
-    fn empty_anchors_to_scan_root_steps() {
-        let dir = local_plugin_dir("/srv/buz/pipelines", "").unwrap();
-        assert_eq!(dir, Path::new("/srv/buz/pipelines").join("plugins"));
+    fn empty_anchors_to_data_root() {
+        let dir = local_plugin_dir("/srv/buz/data", "").unwrap();
+        assert_eq!(dir, Path::new("/srv/buz/data").join("plugins"));
     }
 
     #[test]
-    fn relative_anchors_to_scan_root() {
-        let dir = local_plugin_dir("/srv/buz/pipelines", "my-plugins").unwrap();
-        assert_eq!(dir, Path::new("/srv/buz/pipelines").join("my-plugins"));
+    fn relative_anchors_to_data_root() {
+        let dir = local_plugin_dir("/srv/buz/data", "my-plugins").unwrap();
+        assert_eq!(dir, Path::new("/srv/buz/data").join("my-plugins"));
     }
 
     #[test]
     fn parent_components_are_rejected() {
-        let err = local_plugin_dir("/srv/buz/pipelines", "../escape").unwrap_err();
-        assert!(err.to_string().contains("escape"), "{err}");
+        let err = local_plugin_dir("/srv/buz/data", "../escape").unwrap_err();
+        assert!(err.to_string().contains("data directory"), "{err}");
     }
 
     #[test]
     fn absolute_paths_are_used_as_is() {
-        let dir = local_plugin_dir("/srv/buz/pipelines", "/opt/data/plugins").unwrap();
+        let dir = local_plugin_dir("/srv/buz/data", "/opt/data/plugins").unwrap();
         assert_eq!(
             dir,
             PathBuf::from("/opt/data/plugins"),
             "absolute dirs are an explicit admin choice"
+        );
+    }
+
+    #[test]
+    fn reviewed_manifest_defaults_beside_plugins() {
+        assert_eq!(
+            reviewed_manifest_default(Path::new("/srv/buz/data")),
+            Path::new("/srv/buz/data")
+                .join("plugins")
+                .join("reviews.json")
         );
     }
 }

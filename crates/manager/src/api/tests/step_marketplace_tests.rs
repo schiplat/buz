@@ -74,6 +74,7 @@ async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, sqlx::Sqli
         pipeline: PipelineConfig::default(),
         standalone: Default::default(),
         step_index: Default::default(),
+        storage: Default::default(),
         clock: Default::default(),
         logging: Default::default(),
         marketplace_url: String::new(),

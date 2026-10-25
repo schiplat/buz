@@ -12,7 +12,9 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
 
 use crate::api;
-use crate::config::{AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig};
+use crate::config::{
+    AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig, StepIndexConfig,
+};
 use crate::db::run_migrations;
 use crate::services::log_broadcast::LogBroadcaster;
 use crate::state::AppState;
@@ -35,7 +37,11 @@ fn test_config(scan_dir: &str) -> Config {
             yaml_scan_interval_seconds: 3600,
         },
         standalone: Default::default(),
-        step_index: Default::default(),
+        step_index: StepIndexConfig {
+            local_dir: scan_dir.into(),
+            ..Default::default()
+        },
+        storage: Default::default(),
         clock: Default::default(),
         logging: Default::default(),
         marketplace_url: String::new(),

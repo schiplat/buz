@@ -35,6 +35,7 @@ fn test_config() -> Config {
         pipeline: PipelineConfig::default(),
         standalone: Default::default(),
         step_index: Default::default(),
+        storage: Default::default(),
         clock: Default::default(),
         logging: Default::default(),
         marketplace_url: String::new(),

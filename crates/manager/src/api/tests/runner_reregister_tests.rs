@@ -44,6 +44,7 @@ fn production_config() -> Config {
             auto_approve: vec![],
         },
         step_index: Default::default(),
+        storage: Default::default(),
         clock: Default::default(),
         logging: Default::default(),
         marketplace_url: String::new(),

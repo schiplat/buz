@@ -178,27 +178,47 @@ async fn main() -> anyhow::Result<()> {
     let local_dir_override = settings_overrides
         .get(services::platform_settings::KEY_STEP_INDEX_LOCAL_DIR)
         .cloned();
+    std::fs::create_dir_all(&config.storage.data_dir).ok();
+
     // One-time layout migration: the local plugin directory default was
     // renamed from `<yaml_scan_dir>/steps` to `<yaml_scan_dir>/plugins`
     // (v1.10.3+). Rename an existing legacy directory so existing
     // deployments keep resolving their templates.
     {
-        let scan_root = std::path::Path::new(&config.pipeline.yaml_scan_dir);
-        let legacy = scan_root.join("steps");
-        let target = scan_root.join("plugins");
-        if legacy.is_dir() && !target.exists() {
-            match std::fs::rename(&legacy, &target) {
-                Ok(()) => tracing::info!(
-                    from = %legacy.display(),
-                    to = %target.display(),
-                    "renamed legacy local step directory to plugins"
-                ),
-                Err(e) => tracing::warn!(
-                    from = %legacy.display(),
-                    to = %target.display(),
-                    error = %e,
-                    "could not rename legacy local step directory — resolve manually"
-                ),
+        let data_root = std::path::Path::new(&config.storage.data_dir);
+        let target = data_root.join("plugins");
+        let mut legacy: Option<std::path::PathBuf> = None;
+        for candidate in [
+            std::path::Path::new(&config.pipeline.yaml_scan_dir).join("steps"),
+            std::path::Path::new(&config.pipeline.yaml_scan_dir).join("plugins"),
+        ] {
+            // Relative scan roots resolve against the manager working dir.
+            let candidate = if candidate.is_absolute() {
+                candidate
+            } else {
+                std::env::current_dir().unwrap_or_default().join(candidate)
+            };
+            if candidate.is_dir() {
+                legacy = Some(candidate);
+                break;
+            }
+        }
+        if let Some(legacy) = legacy {
+            std::fs::create_dir_all(data_root).ok();
+            if !target.exists() {
+                match std::fs::rename(&legacy, &target) {
+                    Ok(()) => tracing::info!(
+                        from = %legacy.display(),
+                        to = %target.display(),
+                        "migrated legacy local plugin directory into the data root"
+                    ),
+                    Err(e) => tracing::warn!(
+                        from = %legacy.display(),
+                        to = %target.display(),
+                        error = %e,
+                        "could not migrate the legacy local plugin directory — resolve manually"
+                    ),
+                }
             }
         }
     }
@@ -210,9 +230,15 @@ async fn main() -> anyhow::Result<()> {
     let reviewed_manifest_override = settings_overrides
         .get(services::platform_settings::KEY_STEP_REVIEWED_MANIFEST)
         .cloned();
-    let reviewed_manifest = reviewed_manifest_override
-        .clone()
-        .unwrap_or_else(|| config.step_index.reviewed_manifest.clone());
+    // Empty config value → the reviews.json beside the plugin directory
+    // (data root): a buz-plugins clone in the data volume provides both.
+    let reviewed_manifest = services::step_resolver::effective_reviewed_manifest(
+        &config.storage.data_dir,
+        &config.step_index.reviewed_manifest,
+        reviewed_manifest_override.as_deref(),
+    )
+    .to_string_lossy()
+    .into_owned();
     services::step_resolver::init(services::step_resolver::StepIndexSettings {
         reviewed_manifest: reviewed_manifest.clone(),
         require_reviewed,
@@ -283,7 +309,7 @@ async fn main() -> anyhow::Result<()> {
         db_pool.clone(),
         config.pipeline.yaml_scan_dir.clone(),
         services::step_resolver::effective_local_dir(
-            &config.pipeline.yaml_scan_dir,
+            &config.storage.data_dir,
             &config.step_index.local_dir,
         )?,
         config.pipeline.yaml_scan_interval_seconds,

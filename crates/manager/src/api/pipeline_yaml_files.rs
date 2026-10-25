@@ -178,7 +178,7 @@ pub async fn create_file(
         &filename,
         &yaml,
         &crate::services::step_resolver::effective_local_dir(
-            &state.config.pipeline.yaml_scan_dir,
+            &state.config.storage.data_dir,
             &state.config.step_index.local_dir,
         )
         .map_err(|e| AppError::Internal(e.to_string()))?,
@@ -271,7 +271,7 @@ pub async fn put_file(
         &filename,
         &yaml,
         &crate::services::step_resolver::effective_local_dir(
-            &state.config.pipeline.yaml_scan_dir,
+            &state.config.storage.data_dir,
             &state.config.step_index.local_dir,
         )
         .map_err(|e| AppError::Internal(e.to_string()))?,

@@ -24,6 +24,8 @@ pub struct Config {
     pub standalone: StandaloneConfig,
     #[serde(default)]
     pub step_index: StepIndexConfig,
+    #[serde(default)]
+    pub storage: StorageConfig,
     /// Public plugin-marketplace URL linked from the Dashboard's YAML editor.
     /// Empty → the built-in default. Override for internal-mirror or
     /// air-gapped deployments (env: `BUZ_MARKETPLACE_URL`).
@@ -68,6 +70,18 @@ impl Default for StepIndexConfig {
                 crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS,
         }
     }
+}
+
+/// `[storage]` — where the manager keeps mutable data (SQLite db, plugin
+/// library). Single anchor for every data-path default in the config.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StorageConfig {
+    #[serde(default = "default_data_dir")]
+    pub data_dir: String,
+}
+
+fn default_data_dir() -> String {
+    "./data".into()
 }
 
 /// `[standalone]` — same-container / loopback Runner pairing (dev only).
