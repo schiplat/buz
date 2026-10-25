@@ -79,6 +79,19 @@ pub async fn get_settings(
             state.config.step_index.sync_timeout_seconds.to_string(),
         ),
     ];
+    // Path settings carry whether the file/dir currently exists, so the UI
+    // can warn about a configured-but-missing manifest without a round trip.
+    for item in items.iter_mut() {
+        if item["kind"] == "path" {
+            let raw = item["value"].as_str().unwrap_or_default().to_string();
+            let default = item["default"].as_str().unwrap_or_default().to_string();
+            let candidate = if raw.trim().is_empty() { default } else { raw };
+            item["file_exists"] = serde_json::json!(
+                !candidate.trim().is_empty() && std::path::Path::new(candidate.trim()).exists()
+            );
+        }
+    }
+
     // The local step directory may be relative — show the absolute path it
     // resolves to (manager working directory) so operators are never guessing.
     if let Some(item) = items

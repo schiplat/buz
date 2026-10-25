@@ -463,6 +463,13 @@ onUnmounted(stopPolling)
                 :title="settingByKey(key)!.overridden ? settingByKey(key)!.resolved : settingByKey(key)!.default"
               >{{ settingByKey(key)!.overridden ? settingByKey(key)!.resolved : settingByKey(key)!.default }}</p>
               <p
+                v-if="key === 'step_reviewed_manifest' && settingByKey(key)!.fileExists === false"
+                class="mt-1 text-[11px] text-amber-600 dark:text-amber-400"
+                data-testid="manifest-missing-hint"
+              >
+                File not found — the review gate cannot be enabled until it exists. Clone buz-plugins or pick an existing path.
+              </p>
+              <p
                 v-if="settingsMeta[key]?.narrow"
                 class="mt-1.5 text-[11px] text-muted-foreground/70"
               >5–300 seconds</p>

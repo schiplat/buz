@@ -12,6 +12,8 @@ export interface PlatformSetting {
   overridden: boolean
   /** Absolute path a relative directory setting resolves to (local_dir only). */
   resolved?: string
+  /** Path-kind settings: whether the configured file/dir currently exists. */
+  fileExists?: boolean
 }
 
 export const adminSettingsApi = {

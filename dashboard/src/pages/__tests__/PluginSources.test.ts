@@ -176,6 +176,17 @@ describe('PluginSources', () => {
     expect(adminSettingsApi.update).toHaveBeenCalledWith('step_review_required', 'true')
   })
 
+  it('hints inline when the configured manifest file does not exist', async () => {
+    vi.mocked(adminSettingsApi.list).mockResolvedValue({
+      items: [
+        platformSetting({ key: 'step_reviewed_manifest', kind: 'path', value: '/no/such/reviews.json', fileExists: false }),
+      ],
+    })
+    const root = await mountPage()
+    expect(root.querySelector('[data-testid="manifest-missing-hint"]')).not.toBeNull()
+    expect(root.textContent).toContain('File not found')
+  })
+
   it('warns loudly when the sync timeout is 0 (disabled)', async () => {
     vi.mocked(adminSettingsApi.list).mockResolvedValue({
       items: [
