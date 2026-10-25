@@ -682,7 +682,7 @@ async fn http_get_text(http: &reqwest::Client, url: &str) -> Result<String, anyh
         // ("error sending request for url …") is neither readable nor
         // fixable in the UI. The original error stays in the log.
         if e.is_timeout() {
-            anyhow!("source timed out — try again or raise the sync timeout in Settings")
+            anyhow!("source timed out — try again or raise the sync timeout in Settings (raw: {e})")
         } else if e.is_connect() {
             anyhow!(
                 "source unreachable (connection failed) — check the URL, network, or proxy; \

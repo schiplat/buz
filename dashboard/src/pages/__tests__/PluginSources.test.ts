@@ -92,6 +92,32 @@ describe('PluginSources', () => {
     expect(root.textContent).toContain('synced 2026-10-23T00:00:00Z')
   })
 
+  it('shows "syncing…" for a source whose last_synced_at is unchanged after a click', async () => {
+    const root = await mountPage()
+    const sync = [...root.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent?.includes('Sync'))!
+    sync.click()
+    await flush()
+    // The refreshed list carries the SAME last_synced_at → still in flight.
+    expect(root.textContent).toContain('syncing…')
+    expect(root.textContent).not.toContain('synced 2026-10-23T00:00:00Z')
+  })
+
+  it('clears "syncing…" once last_synced_at changes (success or failure)', async () => {
+    vi.mocked(stepSourcesApi.listSources)
+      .mockResolvedValueOnce({ items: [source()] })
+      .mockResolvedValue({
+        items: [source({ last_synced_at: '2026-10-25T01:00:00Z' })],
+      })
+    const root = await mountPage()
+    const sync = [...root.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent?.includes('Sync'))!
+    sync.click()
+    await flush()
+    expect(root.textContent).toContain('synced 2026-10-25T01:00:00Z')
+    expect(root.textContent).not.toContain('syncing…')
+  })
+
   it('adds a source, returns to the list, and shows the syncing state', async () => {
     vi.mocked(stepSourcesApi.createSource).mockResolvedValue(undefined)
     // After the add, the refreshed list carries the new source in its

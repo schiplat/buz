@@ -42,6 +42,11 @@ const newName = ref('')
 const newUrl = ref('')
 const newAutoEnable = ref(false)
 const busy = ref('')
+/** sourceId -> the last_synced_at value observed when Sync was clicked.
+ *  While the row still shows that same value, the background sync is in
+ *  flight ("syncing…"); a changed value (success OR failure — the backend
+ *  stamps last_synced_at either way) resolves it. */
+const syncingSince = ref<Record<string, string>>({})
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 /** Refresh the list every 2.5s until every source reached a terminal sync
@@ -73,6 +78,13 @@ async function load() {
       adminSettingsApi.list().catch(() => ({ items: [] as PlatformSetting[] })),
     ])
     sources.value = src.items ?? []
+    // A sync is finished once last_synced_at differs from the value seen at
+    // click time (the backend stamps it on success AND failure).
+    for (const s of sources.value) {
+      if (syncingSince.value[s.id] !== undefined && s.last_synced_at !== syncingSince.value[s.id]) {
+        delete syncingSince.value[s.id]
+      }
+    }
     settings.value = cfg.items ?? []
     settingDrafts.value = Object.fromEntries(settings.value.map((s) => [s.key, s.value]))
   } catch (e) {
@@ -146,6 +158,7 @@ async function addSource() {
 
 async function syncSource(source: StepSource) {
   busy.value = `sync-${source.id}`
+  syncingSince.value[source.id] = source.last_synced_at ?? ''
   try {
     await stepSourcesApi.syncSource(source.id)
     await load()
@@ -170,6 +183,9 @@ async function removeSource(source: StepSource) {
 }
 
 function syncState(source: StepSource): string {
+  if (source.id in syncingSince.value && source.last_synced_at === syncingSince.value[source.id]) {
+    return 'syncing…'
+  }
   if (source.last_sync_error) return `sync error: ${source.last_sync_error}`
   if (source.last_synced_at) return `synced ${source.last_synced_at}`
   return 'syncing…'
