@@ -173,6 +173,17 @@ describe('PluginSources', () => {
     expect(adminSettingsApi.update).toHaveBeenCalledWith('step_review_required', 'true')
   })
 
+  it('warns loudly when the sync timeout is 0 (disabled)', async () => {
+    vi.mocked(adminSettingsApi.list).mockResolvedValue({
+      items: [
+        platformSetting({ key: 'step_sync_timeout', kind: 'number', value: '0' }),
+      ],
+    })
+    const root = await mountPage()
+    expect(root.querySelector('[data-testid="timeout-disabled-warning"]')).not.toBeNull()
+    expect(root.textContent).toContain('Timeout is DISABLED')
+  })
+
   it('saves an edited path setting and resets to the manager.toml default', async () => {
     const root = await mountPage()
     const dir = [...root.querySelectorAll('input')].find((i) => i.value === '/srv/steps')!

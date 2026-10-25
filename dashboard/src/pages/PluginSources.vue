@@ -35,7 +35,7 @@ const settingsMeta: Record<string, { label: string; help: string; placeholder?: 
   },
   step_sync_timeout: {
     label: 'Source sync timeout (seconds)',
-    help: 'Per-request timeout when fetching a source index, templates, and reviews. Raise it for slow or distant mirrors (5–300). Single source of truth for backend and frontend.',
+    help: 'Per-request timeout when fetching a source index, templates, and reviews. Raise it for slow or distant mirrors (5–300). 0 disables the timeout entirely — a hung source will then block pipeline saves indefinitely; not recommended. Single source of truth for backend and frontend.',
     placeholder: '60',
   },
 }
@@ -281,6 +281,14 @@ onUnmounted(stopPolling)
             <div class="min-w-0">
               <h3 class="text-sm font-medium">{{ settingsMeta[setting.key]?.label ?? setting.key }}</h3>
               <p class="mt-1 text-xs leading-relaxed text-muted-foreground">{{ settingsMeta[setting.key]?.help }}</p>
+            <p
+              v-if="setting.key === 'step_sync_timeout' && setting.value === '0'"
+              class="mt-1.5 rounded-lg border border-red-500/30 bg-red-500/5 px-2.5 py-1.5 text-[11px] text-red-600 dark:text-red-400"
+              data-testid="timeout-disabled-warning"
+            >
+              ⚠️ Timeout is DISABLED (0) — a hung source will block pipeline saves indefinitely.
+              Set a value between 5 and 300.
+            </p>
             <p
               v-if="setting.resolved"
               class="mt-1 text-[11px] text-muted-foreground/80"

@@ -73,10 +73,13 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
                 .trim()
                 .parse()
                 .map_err(|_| String::from("step_sync_timeout must be a whole number of seconds"))?;
-            if (5..=300).contains(&secs) {
+            // 0 disables the timeout entirely (reqwest semantics) — legal in
+            // a config file for special cases, but flagged loudly in the UI
+            // because a hung source then blocks pipeline saves indefinitely.
+            if secs == 0 || (5..=300).contains(&secs) {
                 Ok(())
             } else {
-                Err("step_sync_timeout must be between 5 and 300 seconds".into())
+                Err("step_sync_timeout must be 0 (disable) or between 5 and 300 seconds".into())
             }
         }
     }
@@ -145,6 +148,17 @@ mod tests {
         assert!(validate_value(KEY_STEP_REVIEW_REQUIRED, "true").is_ok());
         assert!(validate_value(KEY_STEP_REVIEW_REQUIRED, "yes").is_err());
         assert!(validate_value(KEY_STEP_REVIEW_REQUIRED, "").is_err());
+    }
+
+    #[test]
+    fn validate_sync_timeout_zero_is_explicit_disable() {
+        // 0 = timeout disabled (reqwest semantics) — legal but dangerous,
+        // the UI flags it loudly.
+        assert!(validate_value(KEY_STEP_SYNC_TIMEOUT, "0").is_ok());
+        assert!(validate_value(KEY_STEP_SYNC_TIMEOUT, "60").is_ok());
+        assert!(validate_value(KEY_STEP_SYNC_TIMEOUT, "300").is_ok());
+        assert!(validate_value(KEY_STEP_SYNC_TIMEOUT, "301").is_err());
+        assert!(validate_value(KEY_STEP_SYNC_TIMEOUT, "4").is_err());
     }
 
     #[test]
