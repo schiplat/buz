@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RefreshCw, RotateCcw, Trash2 } from '@lucide/vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
@@ -146,11 +146,16 @@ async function persistSetting(setting: PlatformSetting, value: string) {
       title: 'Cannot turn on',
       actionLabel: gateBlocked ? 'Go to Reviewed manifest →' : undefined,
       onAction: gateBlocked
-        ? () =>
+        ? () => {
+            // Already on this page for the gate toggle: focus the row
+            // directly (the router watch is racy on same-route pushes),
+            // and sync the URL so a refresh keeps the focus.
+            void focusSettingRow('step_reviewed_manifest')
             void router.push({
               path: '/plugin-library/sources',
               query: { focus: 'step_reviewed_manifest' },
             })
+          }
         : undefined,
     })
     await load()
@@ -185,16 +190,25 @@ function settingByKey(key: string): PlatformSetting | undefined {
 const focusedKey = ref('')
 const FOCUS_PULSE_MS = 5000
 
+let focusClearTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Focus a setting row: set highlight, scroll after the DOM settles, and
+ *  clear after a steady window. Safe to call repeatedly (restarts). */
+async function focusSettingRow(key: string) {
+  if (!(key in settingsMeta)) return
+  focusedKey.value = key
+  if (focusClearTimer) clearTimeout(focusClearTimer)
+  await nextTick()
+  document
+    .querySelector(`[data-setting-row="${key}"]`)
+    ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  focusClearTimer = setTimeout(() => (focusedKey.value = ''), FOCUS_PULSE_MS)
+}
+
 function applyFocusFromRoute() {
   const key = String(route.query.focus || '')
-  if (!key || !(key in settingsMeta)) return
-  focusedKey.value = key
-  setTimeout(() => {
-    document
-      .querySelector(`[data-setting-row="${key}"]`)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }, 80)
-  setTimeout(() => (focusedKey.value = ''), FOCUS_PULSE_MS + 600)
+  if (!key) return
+  void focusSettingRow(key)
 }
 
 /** Key of the setting that just saved — drives the ✓ / green border flash. */
