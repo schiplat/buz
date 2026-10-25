@@ -10,6 +10,8 @@ export interface PlatformSetting {
   value: string
   default: string
   overridden: boolean
+  /** Absolute path a relative directory setting resolves to (local_dir only). */
+  resolved?: string
 }
 
 export const adminSettingsApi = {

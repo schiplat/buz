@@ -54,7 +54,7 @@ pub async fn get_settings(
     )
     .to_string_lossy()
     .into_owned();
-    let items = vec![
+    let mut items = vec![
         item(KEY_MARKETPLACE_URL, "url", marketplace_default),
         item(
             KEY_STEP_REVIEW_REQUIRED,
@@ -73,6 +73,24 @@ pub async fn get_settings(
             state.config.step_index.sync_timeout_seconds.to_string(),
         ),
     ];
+    // The local step directory may be relative — show the absolute path it
+    // resolves to (manager working directory) so operators are never guessing.
+    if let Some(item) = items
+        .iter_mut()
+        .find(|i| i["key"] == KEY_STEP_INDEX_LOCAL_DIR)
+    {
+        let effective_dir = platform_settings::effective(
+            &state.pool,
+            KEY_STEP_INDEX_LOCAL_DIR,
+            &state.config.step_index.local_dir,
+        )
+        .await;
+        let resolved = crate::services::step_resolver::local_step_index_dir(
+            &state.config.pipeline.yaml_scan_dir,
+            &effective_dir,
+        );
+        item["resolved"] = serde_json::json!(resolved.to_string_lossy().into_owned());
+    }
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
 }
 

@@ -32,7 +32,7 @@ pub struct Config {
 }
 
 /// `[step_index]` — where `uses:` marketplace references resolve (ADR §6).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct StepIndexConfig {
     /// Local step-template directory (`[step_index.local]` in the ADR).
     /// Empty → `<pipeline.yaml_scan_dir>/steps`.
@@ -56,6 +56,18 @@ pub struct StepIndexConfig {
 
 fn default_sync_timeout_seconds() -> u64 {
     crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS
+}
+
+impl Default for StepIndexConfig {
+    fn default() -> Self {
+        Self {
+            local_dir: String::new(),
+            reviewed_manifest: String::new(),
+            require_reviewed: false,
+            sync_timeout_seconds:
+                crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS,
+        }
+    }
 }
 
 /// `[standalone]` — same-container / loopback Runner pairing (dev only).
@@ -354,3 +366,43 @@ pub fn load_unchecked(config_path: Option<&str>) -> anyhow::Result<Config> {
 #[cfg(test)]
 #[path = "config_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod sync_timeout_default_tests {
+    use super::*;
+
+    /// A manager.toml whose [step_index] section exists but omits the field
+    /// must still get the semantic default (60), not the numeric zero from a
+    /// derived Default.
+    #[test]
+    fn missing_sync_timeout_in_toml_gets_semantic_default() {
+        let cfg: Config = config::Config::builder()
+            .add_source(config::File::from_str(
+                "[step_index]\n",
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("build config")
+            .try_deserialize()
+            .expect("deserialize config");
+        assert_eq!(cfg.step_index.sync_timeout_seconds, 60);
+    }
+
+    #[test]
+    fn no_step_index_section_at_all_gets_semantic_default() {
+        // Same code path as config::load (config-rs, not toml::from_str).
+        let cfg: Config = config::Config::builder()
+            .add_source(config::File::from_str(
+                r#"
+[server]
+host = "127.0.0.1"
+"#,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("build config")
+            .try_deserialize()
+            .expect("deserialize config");
+        assert_eq!(cfg.step_index.sync_timeout_seconds, 60);
+    }
+}

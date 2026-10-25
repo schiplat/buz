@@ -26,7 +26,7 @@ const settingsMeta: Record<string, { label: string; help: string; placeholder?: 
   },
   step_index_local_dir: {
     label: 'Local step directory',
-    help: 'Directory scanned for template YAMLs (offline / private deployments). Recommended: a git clone of buz-plugins. Takes effect on the next scan.',
+    help: 'Directory scanned for template YAMLs (offline / private deployments). Recommended: a git clone of buz-plugins. Relative paths resolve against the manager working directory — prefer absolute in containers.',
   },
   step_reviewed_manifest: {
     label: 'Reviewed manifest',
@@ -281,6 +281,10 @@ onUnmounted(stopPolling)
             <div class="min-w-0">
               <h3 class="text-sm font-medium">{{ settingsMeta[setting.key]?.label ?? setting.key }}</h3>
               <p class="mt-1 text-xs leading-relaxed text-muted-foreground">{{ settingsMeta[setting.key]?.help }}</p>
+            <p
+              v-if="setting.resolved"
+              class="mt-1 text-[11px] text-muted-foreground/80"
+            >resolves to: <code class="font-mono">{{ setting.resolved }}</code></p>
             </div>
             <label
               v-if="setting.kind === 'bool'"
