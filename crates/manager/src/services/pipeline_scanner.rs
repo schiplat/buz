@@ -68,23 +68,34 @@ async fn read_yaml_for_scan(
 
 /// Periodically scan `yaml_scan_dir` for `.yml`/`.yaml` files,
 /// parsing them into pipeline definitions and upserting into the DB.
-pub fn spawn_scanner(pool: SqlitePool, dir: String, step_index_dir: PathBuf, interval_secs: u64) {
+pub fn spawn_scanner(
+    pool: SqlitePool,
+    dir: String,
+    step_index_dir: PathBuf,
+    interval_secs: u64,
+    sync_timeout_secs: u64,
+) {
     tokio::spawn(async move {
         tracing::info!("Pipeline YAML scanner started (dir: {dir}, interval: {interval_secs}s)");
 
         let mut tick = time::interval(Duration::from_secs(interval_secs));
         // Do an immediate scan on startup
         tokio::task::yield_now().await;
-        scan_and_sync(&pool, &dir, &step_index_dir).await;
+        scan_and_sync(&pool, &dir, &step_index_dir, sync_timeout_secs).await;
 
         loop {
             tick.tick().await;
-            scan_and_sync(&pool, &dir, &step_index_dir).await;
+            scan_and_sync(&pool, &dir, &step_index_dir, sync_timeout_secs).await;
         }
     });
 }
 
-async fn scan_and_sync(pool: &SqlitePool, dir: &str, step_index_dir: &Path) {
+async fn scan_and_sync(
+    pool: &SqlitePool,
+    dir: &str,
+    step_index_dir: &Path,
+    sync_timeout_secs: u64,
+) {
     let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
         tracing::warn!("YAML scanner: cannot read directory {dir}");
         return;
@@ -148,8 +159,15 @@ async fn scan_and_sync(pool: &SqlitePool, dir: &str, step_index_dir: &Path) {
             Ok(validation) => {
                 // `valid` implies the cached typed parse succeeded.
                 if let Some(parsed) = validation.parsed {
-                    if let Err(e) =
-                        upsert_from_yaml(pool, &yaml_key, &parsed, step_index_dir, &raw).await
+                    if let Err(e) = upsert_from_yaml(
+                        pool,
+                        &yaml_key,
+                        &parsed,
+                        step_index_dir,
+                        &raw,
+                        sync_timeout_secs,
+                    )
+                    .await
                     {
                         tracing::error!("YAML scanner: failed to upsert {filename}: {e:#}");
                     }
@@ -182,6 +200,7 @@ pub async fn upsert_from_yaml(
     parsed: &PipelineYaml,
     step_index_dir: &Path,
     yaml_content: &str,
+    sync_timeout_secs: u64,
 ) -> anyhow::Result<String> {
     let pipeline_name = parsed.name.trim();
     let description = parsed.description.clone().unwrap_or_default();
@@ -286,10 +305,12 @@ pub async fn upsert_from_yaml(
 
     // Resolve all templates before mutating the current DB projection. This
     // preserves the previous task set when a new YAML version cannot resolve.
+    let http = crate::services::step_pool::http_client(sync_timeout_secs);
     let resolved_steps = crate::services::step_resolver::resolve_uses_steps_async(
         parsed_steps,
         step_index_dir.to_path_buf(),
         pool,
+        &http,
     )
     .await
     .map_err(|error| anyhow::Error::new(StepResolutionError(error)))?;
@@ -827,6 +848,7 @@ pub async fn write_and_upsert_yaml_locked(
     content: &str,
     step_index_dir: &Path,
     bind_pipeline_id: Option<&str>,
+    sync_timeout_secs: u64,
     _file_guard: OwnedMutexGuard<()>,
 ) -> Result<YamlFileWriteResult, AppError> {
     let filename = filename.trim();
@@ -907,8 +929,15 @@ pub async fn write_and_upsert_yaml_locked(
         }
     }
 
-    let pipeline_id = match upsert_from_yaml(pool, &yaml_path, &parsed, step_index_dir, content)
-        .await
+    let pipeline_id = match upsert_from_yaml(
+        pool,
+        &yaml_path,
+        &parsed,
+        step_index_dir,
+        content,
+        sync_timeout_secs,
+    )
+    .await
     {
         Ok(id) => id,
         Err(e) => {
@@ -1048,6 +1077,7 @@ pub async fn sync_yaml_before_trigger(
     scan_dir: &str,
     step_index_dir: &Path,
     pipeline_id: &str,
+    sync_timeout_secs: u64,
 ) -> Result<(), AppError> {
     let row = sqlx::query("SELECT source, yaml_path FROM pipelines WHERE id = ?")
         .bind(pipeline_id)
@@ -1096,9 +1126,16 @@ pub async fn sync_yaml_before_trigger(
             "YAML file '{filename}' validated but failed to deserialize — this is a bug"
         ))
     })?;
-    upsert_from_yaml(pool, &filename, &parsed, step_index_dir, &content)
-        .await
-        .map_err(|e| AppError::Internal(format!("failed to sync YAML projection: {e:#}")))?;
+    upsert_from_yaml(
+        pool,
+        &filename,
+        &parsed,
+        step_index_dir,
+        &content,
+        sync_timeout_secs,
+    )
+    .await
+    .map_err(|e| AppError::Internal(format!("failed to sync YAML projection: {e:#}")))?;
     Ok(())
 }
 

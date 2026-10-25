@@ -182,6 +182,14 @@ pub async fn create_file(
             &state.config.step_index.local_dir,
         ),
         None,
+        crate::services::platform_settings::effective(
+            &state.pool,
+            crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
+            &state.config.step_index.sync_timeout_seconds.to_string(),
+        )
+        .await
+        .parse()
+        .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
         file_guard,
     )
     .await?;
@@ -266,6 +274,14 @@ pub async fn put_file(
             &state.config.step_index.local_dir,
         ),
         req.pipeline_id.as_deref(),
+        crate::services::platform_settings::effective(
+            &state.pool,
+            crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
+            &state.config.step_index.sync_timeout_seconds.to_string(),
+        )
+        .await
+        .parse()
+        .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
         file_guard,
     )
     .await?;

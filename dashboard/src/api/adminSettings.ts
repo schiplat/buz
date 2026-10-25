@@ -1,7 +1,7 @@
 import apiClient from './client'
 
 /** Platform-level admin-editable settings (step-marketplace §6.8 Phase 0). */
-export type SettingKind = 'url' | 'bool' | 'path'
+export type SettingKind = 'url' | 'bool' | 'path' | 'number'
 
 export interface PlatformSetting {
   key: string

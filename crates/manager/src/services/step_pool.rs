@@ -666,10 +666,19 @@ async fn fetch_content(
     Ok(raw)
 }
 
+/// Build the source-sync HTTP client. The timeout is the single
+/// `step_sync_timeout` setting (manager.toml default + DB override) — every
+/// caller constructs through here so there is exactly one place it lives.
+pub fn http_client(timeout_secs: u64) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .expect("static client config")
+}
+
 async fn http_get_text(http: &reqwest::Client, url: &str) -> Result<String, anyhow::Error> {
     let resp = http
         .get(url)
-        .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
         .map_err(|e| anyhow!("GET {url} failed: {e}"))?;

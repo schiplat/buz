@@ -39,6 +39,7 @@ steps:
         &parsed,
         Path::new("."),
         cron_yaml,
+        60,
     )
     .await
     .expect("insert projection");
@@ -66,6 +67,7 @@ steps:
         &parsed,
         Path::new("."),
         cron_yaml,
+        60,
     )
     .await
     .expect("repair same-hash projection");
@@ -91,6 +93,7 @@ steps:
         &parsed,
         Path::new("."),
         &webhook_yaml,
+        60,
     )
     .await
     .expect("update projection");

@@ -16,7 +16,7 @@ use shared::protocol::response::ApiResponse;
 use crate::middleware::PlatformAdmin;
 use crate::services::platform_settings::{
     self, KEY_MARKETPLACE_URL, KEY_STEP_INDEX_LOCAL_DIR, KEY_STEP_REVIEWED_MANIFEST,
-    KEY_STEP_REVIEW_REQUIRED,
+    KEY_STEP_REVIEW_REQUIRED, KEY_STEP_SYNC_TIMEOUT,
 };
 use crate::state::AppState;
 
@@ -60,6 +60,11 @@ pub async fn get_settings(
             KEY_STEP_REVIEWED_MANIFEST,
             "path",
             state.config.step_index.reviewed_manifest.clone(),
+        ),
+        item(
+            KEY_STEP_SYNC_TIMEOUT,
+            "number",
+            state.config.step_index.sync_timeout_seconds.to_string(),
         ),
     ];
     Ok(Json(ApiResponse::success(json!({ "items": items }))))

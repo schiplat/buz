@@ -13,12 +13,19 @@ pub const KEY_MARKETPLACE_URL: &str = "marketplace_url";
 pub const KEY_STEP_REVIEW_REQUIRED: &str = "step_review_required";
 pub const KEY_STEP_INDEX_LOCAL_DIR: &str = "step_index_local_dir";
 pub const KEY_STEP_REVIEWED_MANIFEST: &str = "step_reviewed_manifest";
+pub const KEY_STEP_SYNC_TIMEOUT: &str = "step_sync_timeout";
+
+/// Default source-sync timeout (seconds) — the single source of truth: the
+/// manager.toml serde default, the settings API default, and the HTTP client
+/// construction all read this constant (DB override via the settings UI).
+pub const DEFAULT_STEP_SYNC_TIMEOUT_SECS: u64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingKind {
     Url,
     Bool,
     Path,
+    Number,
 }
 
 pub fn setting_kind(key: &str) -> Option<SettingKind> {
@@ -27,6 +34,7 @@ pub fn setting_kind(key: &str) -> Option<SettingKind> {
         KEY_STEP_REVIEW_REQUIRED => Some(SettingKind::Bool),
         KEY_STEP_INDEX_LOCAL_DIR => Some(SettingKind::Path),
         KEY_STEP_REVIEWED_MANIFEST => Some(SettingKind::Path),
+        KEY_STEP_SYNC_TIMEOUT => Some(SettingKind::Number),
         _ => None,
     }
 }
@@ -60,6 +68,17 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
                 Err("path must not be empty".into())
             }
         }
+        SettingKind::Number => {
+            let secs: u64 = value
+                .trim()
+                .parse()
+                .map_err(|_| String::from("step_sync_timeout must be a whole number of seconds"))?;
+            if (5..=300).contains(&secs) {
+                Ok(())
+            } else {
+                Err("step_sync_timeout must be between 5 and 300 seconds".into())
+            }
+        }
     }
 }
 
@@ -67,11 +86,12 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
 /// compatibility with older Managers).
 pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
     let rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?)")
+        sqlx::query_as("SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?)")
             .bind(KEY_MARKETPLACE_URL)
             .bind(KEY_STEP_REVIEW_REQUIRED)
             .bind(KEY_STEP_INDEX_LOCAL_DIR)
             .bind(KEY_STEP_REVIEWED_MANIFEST)
+            .bind(KEY_STEP_SYNC_TIMEOUT)
             .fetch_all(pool)
             .await
             .unwrap_or_default();

@@ -72,6 +72,7 @@ beforeEach(() => {
         default: '/srv/steps',
       }),
       platformSetting({ key: 'step_reviewed_manifest', kind: 'path', value: '' }),
+      platformSetting({ key: 'step_sync_timeout', kind: 'number', value: '60', default: '60' }),
     ],
   })
   vi.mocked(adminSettingsApi.update).mockImplementation(async (key, value) => ({ key, value }))
@@ -107,7 +108,7 @@ describe('PluginSources', () => {
       .find((b) => b.textContent?.includes('Add & sync'))!
     add.click()
     await flush()
-    expect(stepSourcesApi.createSource).toHaveBeenCalledWith('bob', 'https://example.com/bob/index.json', false)
+    expect(stepSourcesApi.createSource).toHaveBeenCalledWith('bob', 'https://example.com/bob/index.json', false, 60000)
   })
 
   it('renders the four platform settings with effective values', async () => {

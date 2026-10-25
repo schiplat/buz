@@ -47,6 +47,15 @@ pub struct StepIndexConfig {
     /// reviewed manifest. Only meaningful with `reviewed_manifest` set.
     #[serde(default)]
     pub require_reviewed: bool,
+    /// Per-request timeout for fetching remote source indexes/templates.
+    /// Single source of truth: platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS
+    /// is the serde default; the settings UI can override per deployment.
+    #[serde(default = "default_sync_timeout_seconds")]
+    pub sync_timeout_seconds: u64,
+}
+
+fn default_sync_timeout_seconds() -> u64 {
+    crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS
 }
 
 /// `[standalone]` — same-container / loopback Runner pairing (dev only).

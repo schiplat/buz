@@ -31,6 +31,10 @@ const settingsMeta: Record<string, { label: string; help: string }> = {
     label: 'Reviewed manifest',
     help: 'Path to reviews.json (the official review ledger). Empty = review gate disabled.',
   },
+  step_sync_timeout: {
+    label: 'Source sync timeout (seconds)',
+    help: 'Per-request timeout when fetching a source index, templates, and reviews. Raise it for slow or distant mirrors. Single source of truth for backend and frontend.',
+  },
 }
 const savingSetting = ref('')
 const showAddSource = ref(false)
@@ -88,6 +92,12 @@ async function resetSetting(setting: PlatformSetting) {
   }
 }
 
+function syncTimeoutMs(): number {
+  const setting = settings.value.find((s) => s.key === 'step_sync_timeout')
+  const secs = Number(setting?.value)
+  return (Number.isFinite(secs) && secs > 0 ? secs : 60) * 1000
+}
+
 async function addSource() {
   if (!newName.value.trim() || !newUrl.value.trim()) return
   busy.value = 'add'
@@ -96,6 +106,7 @@ async function addSource() {
       newName.value.trim(),
       newUrl.value.trim(),
       newAutoEnable.value,
+      syncTimeoutMs(),
     )
     if (!res.synced) {
       await dialog.alert(
@@ -123,7 +134,7 @@ async function addSource() {
 async function syncSource(source: StepSource) {
   busy.value = `sync-${source.id}`
   try {
-    const res = await stepSourcesApi.syncSource(source.id)
+    const res = await stepSourcesApi.syncSource(source.id, syncTimeoutMs())
     if (!res.synced) {
       await dialog.alert(`Sync failed: ${res.error ?? 'unknown error'}`)
     }

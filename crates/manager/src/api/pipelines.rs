@@ -176,6 +176,16 @@ pub async fn create(
     // them fails (e.g. a `uses:` step that cannot resolve), clean up so a
     // failed save never leaves a half-created pipeline behind.
     let create_result = async {
+        let http = crate::services::step_pool::http_client(
+            crate::services::platform_settings::effective(
+                &state.pool,
+                crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
+                &state.config.step_index.sync_timeout_seconds.to_string(),
+            )
+            .await
+            .parse()
+            .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
+        );
         let resolved = crate::services::step_resolver::resolve_uses_steps_async(
             req.steps,
             crate::services::step_resolver::effective_local_dir(
@@ -183,6 +193,7 @@ pub async fn create(
                 &state.config.step_index.local_dir,
             ),
             &state.pool,
+            &http,
         )
         .await
         .map_err(AppError::ValidationFailed)?;
@@ -483,6 +494,16 @@ pub async fn update(
     let environments_json =
         serde_json::to_string(&req.environments).unwrap_or_else(|_| "[]".into());
 
+    let http = crate::services::step_pool::http_client(
+        crate::services::platform_settings::effective(
+            &state.pool,
+            crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
+            &state.config.step_index.sync_timeout_seconds.to_string(),
+        )
+        .await
+        .parse()
+        .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
+    );
     let resolved_steps = crate::services::step_resolver::resolve_uses_steps_async(
         req.steps,
         crate::services::step_resolver::effective_local_dir(
@@ -490,6 +511,7 @@ pub async fn update(
             &state.config.step_index.local_dir,
         ),
         &state.pool,
+        &http,
     )
     .await
     .map_err(AppError::ValidationFailed)?;
@@ -1095,6 +1117,14 @@ pub(crate) async fn do_trigger(
             &state.config.step_index.local_dir,
         ),
         pipeline_id,
+        crate::services::platform_settings::effective(
+            &state.pool,
+            crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
+            &state.config.step_index.sync_timeout_seconds.to_string(),
+        )
+        .await
+        .parse()
+        .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
     )
     .await?;
 

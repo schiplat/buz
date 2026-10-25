@@ -719,11 +719,11 @@ pub async fn resolve_uses_steps_async(
     steps: Vec<StepDef>,
     index_dir: PathBuf,
     pool: &SqlitePool,
+    http: &reqwest::Client,
 ) -> Result<ResolvedSteps, String> {
     let policy = policy_from_settings();
     let index = LocalStepIndex::new(index_dir);
     let current_buz = env!("CARGO_PKG_VERSION");
-    let http = reqwest::Client::new();
 
     let mut out = Vec::with_capacity(steps.len());
     let mut resolutions = Vec::new();

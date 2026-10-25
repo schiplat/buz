@@ -40,18 +40,29 @@ export const stepSourcesApi = {
     const resp = await apiClient.get('/admin/step-sources')
     return resp.data as { items: StepSource[] }
   },
-  async createSource(name: string, url: string, autoEnable: boolean): Promise<{ synced: boolean }> {
-    // The backend syncs inline (index + every template + reviews), which can
-    // legitimately take a minute — override the 8s client default.
+  async createSource(
+    name: string,
+    url: string,
+    autoEnable: boolean,
+    syncTimeoutMs: number,
+  ): Promise<{ synced: boolean }> {
+    // The backend syncs inline (index + every template + reviews) with the
+    // step_sync_timeout setting; the frontend mirrors it so the axios
+    // abort never fires before the backend finishes.
     const resp = await apiClient.post(
       '/admin/step-sources',
       { name, url, auto_enable: autoEnable },
-      { timeout: 65_000 },
+      { timeout: syncTimeoutMs },
     )
     return resp.data as { synced: boolean }
   },
-  async syncSource(id: string): Promise<{ synced: boolean; entries?: number; error?: string }> {
-    const resp = await apiClient.post(`/admin/step-sources/${id}/sync`, null, { timeout: 65_000 })
+  async syncSource(
+    id: string,
+    syncTimeoutMs: number,
+  ): Promise<{ synced: boolean; entries?: number; error?: string }> {
+    const resp = await apiClient.post(`/admin/step-sources/${id}/sync`, null, {
+      timeout: syncTimeoutMs,
+    })
     return resp.data as { synced: boolean; entries?: number; error?: string }
   },
   async deleteSource(id: string): Promise<void> {

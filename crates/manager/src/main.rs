@@ -178,6 +178,10 @@ async fn main() -> anyhow::Result<()> {
     let local_dir_override = settings_overrides
         .get(services::platform_settings::KEY_STEP_INDEX_LOCAL_DIR)
         .cloned();
+    let sync_timeout_secs = settings_overrides
+        .get(services::platform_settings::KEY_STEP_SYNC_TIMEOUT)
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(config.step_index.sync_timeout_seconds);
     let reviewed_manifest_override = settings_overrides
         .get(services::platform_settings::KEY_STEP_REVIEWED_MANIFEST)
         .cloned();
@@ -204,8 +208,11 @@ async fn main() -> anyhow::Result<()> {
     {
         let pool = db_pool.clone();
         tokio::spawn(async move {
-            let synced =
-                services::step_pool::sync_all_enabled(&pool, &reqwest::Client::new()).await;
+            let synced = services::step_pool::sync_all_enabled(
+                &pool,
+                &services::step_pool::http_client(sync_timeout_secs),
+            )
+            .await;
             if synced > 0 {
                 tracing::info!(sources = synced, "plugin sources synced at startup");
             }
@@ -255,6 +262,7 @@ async fn main() -> anyhow::Result<()> {
             &config.step_index.local_dir,
         ),
         config.pipeline.yaml_scan_interval_seconds,
+        sync_timeout_secs,
     );
 
     let cors = CorsLayer::new()
