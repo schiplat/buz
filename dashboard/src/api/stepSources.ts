@@ -24,6 +24,13 @@ export interface PoolEntry {
   enabled: boolean
   reviewed: boolean
   added_by: string | null
+  /** The template's `requires_buz` declaration, if it made one. */
+  requires_buz: string | null
+  /** Three-state compatibility with this manager build: null = not checked
+   *  yet (transient fetch failure at sync), false = cannot be enabled here. */
+  buz_compatible: boolean | null
+  /** The gate-identical error behind `buz_compatible === false`. */
+  compat_error: string | null
 }
 
 export interface LocalTemplate {

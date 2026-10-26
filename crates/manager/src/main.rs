@@ -262,6 +262,7 @@ async fn main() -> anyhow::Result<()> {
             let synced = services::step_pool::sync_all_enabled(
                 &pool,
                 &services::step_pool::http_client(sync_timeout_secs),
+                shared::version::VERSION,
             )
             .await;
             if synced > 0 {

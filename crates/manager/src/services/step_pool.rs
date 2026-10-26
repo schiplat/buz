@@ -2,7 +2,9 @@
 //! template pool (ADR step-marketplace §6.8).
 //!
 //! A **source** is an `index.json` URL (schema §6.7.3: steps[] with id
-//! `<namespace>/<step-id>`, version, file, sha256). Syncing fetches the
+//! `<namespace>/<step-id>`, version, file, sha256, plus full scalar meta
+//! incl. `requires_buz` from newer generators — older sources without the
+//! meta fall back to per-template fetches). Syncing fetches the
 //! index, validates it, and stages every entry as a **pool row**
 //! (`enabled = auto_enable`). Pool rows — not the index — are what pipeline
 //! saves resolve against; template content is fetched on demand, verified
@@ -40,6 +42,19 @@ pub fn sha256_hex(raw: &str) -> String {
     format!("{:x}", Sha256::digest(raw.as_bytes()))
 }
 
+/// Semver-ish sort key mirroring the dashboard's version ordering; versions
+/// that do not parse sort oldest.
+fn version_sort_key(version: &str) -> (u64, u64, u64) {
+    let mut parts = version.split('.');
+    let mut next = || {
+        parts
+            .next()
+            .and_then(|part| part.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    (next(), next(), next())
+}
+
 /// Rows -----------------------------------------------------------------------
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -65,6 +80,69 @@ pub struct PoolRow {
     pub enabled: bool,
     pub reviewed: bool,
     pub added_by: Option<String>,
+    /// The spec's `requires_buz` declaration, if it made one.
+    pub requires_buz: Option<String>,
+    /// Three-state compatibility verdict against this manager build: `None`
+    /// = not checked yet (transient fetch failure at sync time), `Some(false)`
+    /// = spec invalid or requires_buz unmet, `Some(true)` = passes.
+    pub buz_compatible: Option<bool>,
+    /// The gate-identical error behind `buz_compatible = Some(false)`.
+    pub compat_error: Option<String>,
+}
+
+/// Column tuple every step_pool row projection reads; `pool_row_from` is the
+/// single mapping so the three SELECT sites can't drift apart.
+type PoolRowSql = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    i64,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+);
+
+const POOL_ROW_COLUMNS: &str = "p.namespace, p.step_id, p.version, p.sha256, p.source_id, s.name, \
+     p.file_path, p.enabled, p.reviewed, p.added_by, p.requires_buz, p.buz_compatible, p.compat_error";
+
+fn pool_row_from(
+    (
+        namespace,
+        step_id,
+        version,
+        sha256,
+        source_id,
+        source_name,
+        file_path,
+        enabled,
+        reviewed,
+        added_by,
+        requires_buz,
+        buz_compatible,
+        compat_error,
+    ): PoolRowSql,
+) -> PoolRow {
+    PoolRow {
+        namespace,
+        step_id,
+        version,
+        sha256,
+        source_id,
+        source_name,
+        file_path,
+        enabled: enabled != 0,
+        reviewed: reviewed != 0,
+        added_by,
+        requires_buz,
+        buz_compatible: buz_compatible.map(|v| v != 0),
+        compat_error,
+    }
 }
 
 /// A resolved remote reference: everything `uses:` needs to expand.
@@ -93,6 +171,10 @@ pub struct IndexEntry {
     pub version: String,
     pub file: String,
     pub sha256: String,
+    /// Full-meta sources (§6.7.3) publish the spec's contract gate so sync
+    /// can rule on compatibility without downloading the template. Older
+    /// sources omit it → fetch-and-evaluate fallback.
+    pub requires_buz: Option<String>,
 }
 
 fn parse_index(raw: &str) -> Result<StepIndex, String> {
@@ -146,55 +228,14 @@ pub async fn get_source(pool: &SqlitePool, id: &str) -> Result<Option<SourceRow>
 }
 
 pub async fn list_pool(pool: &SqlitePool) -> Result<Vec<PoolRow>, anyhow::Error> {
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        String,
-        i64,
-        i64,
-        Option<String>,
-    )> = sqlx::query_as(
-        "SELECT p.namespace, p.step_id, p.version, p.sha256, p.source_id, s.name, p.file_path, \
-                p.enabled, p.reviewed, p.added_by \
+    let rows: Vec<PoolRowSql> = sqlx::query_as(&format!(
+        "SELECT {POOL_ROW_COLUMNS} \
          FROM step_pool p LEFT JOIN step_sources s ON s.id = p.source_id \
-         ORDER BY p.namespace, p.step_id, p.version",
-    )
+         ORDER BY p.namespace, p.step_id, p.version"
+    ))
     .fetch_all(pool)
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(
-                namespace,
-                step_id,
-                version,
-                sha256,
-                source_id,
-                source_name,
-                file_path,
-                enabled,
-                reviewed,
-                added_by,
-            )| {
-                PoolRow {
-                    namespace,
-                    step_id,
-                    version,
-                    sha256,
-                    source_id,
-                    source_name,
-                    file_path,
-                    enabled: enabled != 0,
-                    reviewed: reviewed != 0,
-                    added_by,
-                }
-            },
-        )
-        .collect())
+    Ok(rows.into_iter().map(pool_row_from).collect())
 }
 
 /// Enabled pool rows for one namespace (resolution candidates).
@@ -203,60 +244,160 @@ async fn enabled_rows_for_namespace(
     namespace: &str,
     step_id: &str,
 ) -> Result<Vec<PoolRow>, anyhow::Error> {
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        String,
-        i64,
-        i64,
-        Option<String>,
-    )> = sqlx::query_as(
-        "SELECT p.namespace, p.step_id, p.version, p.sha256, p.source_id, s.name, p.file_path, \
-                p.enabled, p.reviewed, p.added_by \
+    let rows: Vec<PoolRowSql> = sqlx::query_as(&format!(
+        "SELECT {POOL_ROW_COLUMNS} \
          FROM step_pool p LEFT JOIN step_sources s ON s.id = p.source_id \
          WHERE p.namespace = ? AND p.step_id = ? AND p.enabled = 1",
-    )
+    ))
     .bind(namespace)
     .bind(step_id)
     .fetch_all(pool)
     .await?;
+    Ok(rows.into_iter().map(pool_row_from).collect())
+}
+
+/// Sync ------------------------------------------------------------------------
+
+/// Per-row state a sync round needs: the review badge, the pinned sha256,
+/// and the cached compatibility verdict plus the manager version it was
+/// computed against.
+#[derive(Clone)]
+struct ExistingRowState {
+    reviewed: bool,
+    sha256: String,
+    requires_buz: Option<String>,
+    buz_compatible: Option<bool>,
+    compat_error: Option<String>,
+    compat_checked_against: Option<String>,
+}
+
+async fn existing_rows_for_source(
+    pool: &SqlitePool,
+    source_id: &str,
+) -> Result<std::collections::HashMap<(String, String, String), ExistingRowState>, anyhow::Error> {
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        i64,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT namespace, step_id, version, reviewed, sha256, requires_buz, \
+                buz_compatible, compat_error, compat_checked_against \
+         FROM step_pool WHERE source_id = ?",
+    )
+    .bind(source_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| anyhow!("{e}"))?;
     Ok(rows
         .into_iter()
         .map(
-            |(
-                namespace,
-                step_id,
-                version,
-                sha256,
-                source_id,
-                source_name,
-                file_path,
-                enabled,
-                reviewed,
-                added_by,
-            )| {
-                PoolRow {
-                    namespace,
-                    step_id,
-                    version,
-                    sha256,
-                    source_id,
-                    source_name,
-                    file_path,
-                    enabled: enabled != 0,
-                    reviewed: reviewed != 0,
-                    added_by,
-                }
+            |(ns, id, v, reviewed, sha256, requires_buz, buz_compatible, compat_error, checked)| {
+                (
+                    (ns, id, v),
+                    ExistingRowState {
+                        reviewed: reviewed != 0,
+                        sha256,
+                        requires_buz,
+                        buz_compatible: buz_compatible.map(|b| b != 0),
+                        compat_error,
+                        compat_checked_against: checked,
+                    },
+                )
             },
         )
         .collect())
 }
 
-/// Sync ------------------------------------------------------------------------
+/// Compatibility verdict to persist for one entry: recomputed when the row is
+/// new, its pinned sha256 changed, or the manager version moved since the
+/// last check (startup sync then re-verifies every entry after an upgrade);
+/// otherwise the cached verdict is kept. A transient fetch failure leaves the
+/// verdict unknown (NULL) rather than poisoning it — the next sync retries.
+/// `declared_requires` (published in the source's full-meta index.json /
+/// meta.json) short-circuits the verdict WITHOUT downloading the template —
+/// the tradeoff is that spec-level problems (invalid YAML, missing
+/// attribution) surface at the enable gate instead of the pool list; sources
+/// without the field still take the fetch-and-evaluate path.
+/// Returns `(requires_buz, buz_compatible, compat_error, checked_against)`.
+async fn resolve_compat(
+    http: &reqwest::Client,
+    source_url: &str,
+    file_path: &str,
+    sha256: &str,
+    namespace: &str,
+    step_id: &str,
+    version: &str,
+    current_buz: &str,
+    existing: Option<&ExistingRowState>,
+    declared_requires: Option<&str>,
+) -> (Option<String>, Option<bool>, Option<String>, Option<String>) {
+    let needs_check = match existing {
+        None => true,
+        Some(state) => {
+            state.sha256 != sha256 || state.compat_checked_against.as_deref() != Some(current_buz)
+        }
+    };
+    if !needs_check {
+        let state = existing.expect("checked existing above");
+        return (
+            state.requires_buz.clone(),
+            state.buz_compatible,
+            state.compat_error.clone(),
+            state.compat_checked_against.clone(),
+        );
+    }
+    if let Some(requires) = declared_requires {
+        // Same message the enable gate reports (validate_step_spec wraps the
+        // requirement error with the `requires_buz:` prefix), so the list
+        // hint and a gate refusal can never disagree.
+        return match shared::step_spec::buz_requirement_satisfied(requires, current_buz) {
+            Ok(()) => (
+                Some(requires.to_string()),
+                Some(true),
+                None,
+                Some(current_buz.to_string()),
+            ),
+            Err(error) => (
+                Some(requires.to_string()),
+                Some(false),
+                Some(format!("requires_buz: {error}")),
+                Some(current_buz.to_string()),
+            ),
+        };
+    }
+    match fetch_content(http, source_url, file_path, sha256).await {
+        Ok(content) => {
+            match evaluate_entry_content(&content, namespace, step_id, version, current_buz) {
+                Ok(requires_buz) => (
+                    requires_buz,
+                    Some(true),
+                    None,
+                    Some(current_buz.to_string()),
+                ),
+                Err(error) => (
+                    None,
+                    Some(false),
+                    Some(error),
+                    Some(current_buz.to_string()),
+                ),
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                plugin = %format!("{namespace}/{step_id}@{version}"),
+                error = %error,
+                "template fetch failed during sync — compatibility stays unknown"
+            );
+            (None, None, None, None)
+        }
+    }
+}
 
 /// Fetch `index.json`, validate it, and upsert every entry as a pool row
 /// (`enabled = auto_enable`). Returns the number of entries.
@@ -264,8 +405,9 @@ pub async fn sync_source(
     http: &reqwest::Client,
     pool: &SqlitePool,
     source: &SourceRow,
+    current_buz: &str,
 ) -> Result<usize, anyhow::Error> {
-    let result = sync_source_inner(http, pool, source, None).await;
+    let result = sync_source_inner(http, pool, source, None, current_buz).await;
     let (ok, error) = match &result {
         Ok(_) => (true, None),
         Err(e) => (false, Some(e.to_string())),
@@ -293,6 +435,7 @@ async fn sync_source_inner(
     pool: &SqlitePool,
     source: &SourceRow,
     only_plugin: Option<(&str, &str)>,
+    current_buz: &str,
 ) -> Result<usize, anyhow::Error> {
     let raw = http_get_text(http, &source.url).await?;
     let index = parse_index(&raw).map_err(|e| anyhow!("{e}"))?;
@@ -331,20 +474,16 @@ async fn sync_source_inner(
             }
         };
 
-    // Current badges for this source: the fallback when reviews.json could
-    // not be fetched this round.
-    let existing_reviewed: std::collections::HashMap<(String, String, String), bool> =
-        sqlx::query_as(
-            "SELECT namespace, step_id, version, reviewed FROM step_pool WHERE source_id = ?",
-        )
-        .bind(&source.id)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| anyhow!("{e}"))?
-        .into_iter()
-        .map(|(ns, id, v, r): (String, String, String, i64)| ((ns, id, v), r != 0))
-        .collect();
+    // Current rows for this source: the fallback for review badges when
+    // reviews.json could not be fetched, the cache for compatibility
+    // verdicts (re-verified only when sha / manager version changed), and
+    // the "has the curator seen this plugin before" record.
+    let existing_rows = existing_rows_for_source(pool, &source.id).await?;
 
+    // Entries grouped per plugin, versions sorted newest first, so a
+    // plugin's first appearance can initialize with its latest compatible
+    // version enabled.
+    let mut groups: Vec<(String, String, Vec<&IndexEntry>)> = Vec::new();
     for entry in &index.steps {
         // Namespace comes from the template id (`<ns>/<step-id>`); it is the
         // unit of uniqueness across sources.
@@ -352,42 +491,100 @@ async fn sync_source_inner(
             .id
             .split_once('/')
             .ok_or_else(|| anyhow!("index entry id '{}' is missing a namespace", entry.id))?;
-        let namespace = namespace.to_string();
-        let step_id = step_id.to_string();
         if let Some((want_ns, want_id)) = only_plugin {
             if namespace != want_ns || step_id != want_id {
                 continue;
             }
         }
-        let reviewed = match &fetched_reviews {
-            Some(hashes) => hashes.contains(&entry.sha256.to_lowercase()),
-            // No reviews.json this round: keep whatever the row had.
-            None => *existing_reviewed
-                .get(&(namespace.clone(), step_id.clone(), entry.version.clone()))
-                .unwrap_or(&false),
-        };
-        sqlx::query(
-            "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path, enabled, reviewed, added_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sync')
-             ON CONFLICT(namespace, step_id, version) DO UPDATE SET
-               sha256 = excluded.sha256,
-               source_id = excluded.source_id,
-               file_path = excluded.file_path,
-               reviewed = excluded.reviewed",
-        // NOTE: `enabled` is deliberately NOT updated on conflict — a
-        // re-sync must never reset the curator's enable/disable verdict.
-        // New entries still start as auto_enable via the INSERT values.
-        )
-        .bind(&namespace)
-        .bind(&step_id)
-        .bind(&entry.version)
-        .bind(&entry.sha256.to_lowercase())
-        .bind(&source.id)
-        .bind(&entry.file)
-        .bind(source.auto_enable as i64)
-        .bind(reviewed as i64)
-        .execute(pool)
-        .await?;
+        match groups
+            .iter_mut()
+            .find(|(ns, id, _)| ns == namespace && id == step_id)
+        {
+            Some((_, _, versions)) => versions.push(entry),
+            None => groups.push((namespace.to_string(), step_id.to_string(), vec![entry])),
+        }
+    }
+
+    for (namespace, step_id, versions) in groups {
+        let mut versions = versions;
+        versions.sort_by(|a, b| version_sort_key(&b.version).cmp(&version_sort_key(&a.version)));
+        // Initialization: a plugin the pool has never seen starts with its
+        // LATEST COMPATIBLE version enabled — never the whole version list,
+        // and never an incompatible one. A plugin the curator has already
+        // seen is user territory: its rows keep their verdicts (the conflict
+        // clause below never touches `enabled`) and later versions stage for
+        // review instead.
+        let group_is_new = versions.iter().all(|entry| {
+            !existing_rows.contains_key(&(
+                namespace.clone(),
+                step_id.clone(),
+                entry.version.clone(),
+            ))
+        });
+        let mut init_slot_open = group_is_new && source.auto_enable;
+        for entry in versions {
+            let sha256 = entry.sha256.to_lowercase();
+            let existing =
+                existing_rows.get(&(namespace.clone(), step_id.clone(), entry.version.clone()));
+            let reviewed = match &fetched_reviews {
+                Some(hashes) => hashes.contains(&sha256),
+                // No reviews.json this round: keep whatever the row had.
+                None => existing.is_some_and(|state| state.reviewed),
+            };
+            let (requires_buz, buz_compatible, compat_error, checked_against) = resolve_compat(
+                http,
+                &source.url,
+                &entry.file,
+                &sha256,
+                &namespace,
+                &step_id,
+                &entry.version,
+                current_buz,
+                existing,
+                entry.requires_buz.as_deref(),
+            )
+            .await;
+            let enable = init_slot_open && buz_compatible == Some(true);
+            if enable {
+                init_slot_open = false;
+            }
+            sqlx::query(
+                "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path, \
+                                        enabled, reviewed, added_by, requires_buz, buz_compatible, \
+                                        compat_error, compat_checked_against)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sync', ?, ?, ?, ?)
+                 ON CONFLICT(namespace, step_id, version) DO UPDATE SET
+                   sha256 = excluded.sha256,
+                   source_id = excluded.source_id,
+                   file_path = excluded.file_path,
+                   reviewed = excluded.reviewed,
+                   requires_buz = excluded.requires_buz,
+                   buz_compatible = excluded.buz_compatible,
+                   compat_error = excluded.compat_error,
+                   compat_checked_against = excluded.compat_checked_against",
+                // NOTE: `enabled` is deliberately NOT updated on conflict — a
+                // re-sync must never reset the curator's enable/disable verdict.
+                // New plugins initialize via the INSERT values (latest
+                // compatible version for auto-enable sources, staged
+                // otherwise). Compatibility columns carry kept-or-recomputed
+                // verdicts (NULL = unknown), so untouched rows are never
+                // invalidated.
+            )
+            .bind(&namespace)
+            .bind(&step_id)
+            .bind(&entry.version)
+            .bind(&sha256)
+            .bind(&source.id)
+            .bind(&entry.file)
+            .bind(enable as i64)
+            .bind(reviewed as i64)
+            .bind(&requires_buz)
+            .bind(buz_compatible.map(|b| b as i64))
+            .bind(&compat_error)
+            .bind(&checked_against)
+            .execute(pool)
+            .await?;
+        }
     }
     Ok(index.steps.len())
 }
@@ -400,6 +597,7 @@ pub async fn refresh_plugin(
     pool: &SqlitePool,
     namespace: &str,
     step_id: &str,
+    current_buz: &str,
 ) -> anyhow::Result<Vec<PoolRow>> {
     let (source_id, file_path): (String, String) = sqlx::query_as(
         "SELECT source_id, file_path FROM step_pool WHERE namespace = ? AND step_id = ? LIMIT 1",
@@ -425,7 +623,17 @@ pub async fn refresh_plugin(
     );
     match http_get_text(http, &meta_url).await {
         Ok(raw) => {
-            upsert_plugin_meta(pool, &source, &raw, &meta_url, namespace, step_id).await?;
+            upsert_plugin_meta(
+                http,
+                pool,
+                &source,
+                &raw,
+                &meta_url,
+                namespace,
+                step_id,
+                current_buz,
+            )
+            .await?;
         }
         Err(meta_error) => {
             tracing::info!(
@@ -434,61 +642,23 @@ pub async fn refresh_plugin(
                 error = %meta_error,
                 "per-plugin meta.json unavailable — falling back to the full index"
             );
-            sync_source_inner(http, pool, &source, Some((namespace, step_id))).await?;
+            sync_source_inner(http, pool, &source, Some((namespace, step_id)), current_buz).await?;
         }
     }
 
-    let rows: Vec<PoolRow> = sqlx::query_as(
-        "SELECT p.namespace, p.step_id, p.version, p.sha256, p.source_id, s.name, p.file_path, \
-                p.enabled, p.reviewed, p.added_by \
+    let rows: Vec<PoolRow> = sqlx::query_as(&format!(
+        "SELECT {POOL_ROW_COLUMNS} \
          FROM step_pool p LEFT JOIN step_sources s ON s.id = p.source_id \
          WHERE p.namespace = ? AND p.step_id = ? \
          ORDER BY p.version",
-    )
+    ))
     .bind(namespace)
     .bind(step_id)
     .fetch_all(pool)
     .await
     .map_err(|e| anyhow!("{e}"))?
     .into_iter()
-    .map(
-        |(
-            namespace,
-            step_id,
-            version,
-            sha256,
-            source_id,
-            source_name,
-            file_path,
-            enabled,
-            reviewed,
-            added_by,
-        ): (
-            String,
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            i64,
-            i64,
-            Option<String>,
-        )| {
-            PoolRow {
-                namespace,
-                step_id,
-                version,
-                sha256,
-                source_id,
-                source_name,
-                file_path,
-                enabled: enabled != 0,
-                reviewed: reviewed != 0,
-                added_by,
-            }
-        },
-    )
+    .map(pool_row_from)
     .collect();
     Ok(rows)
 }
@@ -512,18 +682,22 @@ struct PluginMetaEntry {
     version: String,
     file: String,
     sha256: String,
+    #[serde(default)]
+    requires_buz: Option<String>,
 }
 
 /// Upsert one plugin's rows from its meta.json. Same conflict semantics as
 /// the full sync (enable state preserved); review badges are preserved too —
 /// meta.json carries no review data, the full sync refreshes those.
 async fn upsert_plugin_meta(
+    http: &reqwest::Client,
     pool: &SqlitePool,
     source: &SourceRow,
     raw: &str,
     meta_url: &str,
     namespace: &str,
     step_id: &str,
+    current_buz: &str,
 ) -> anyhow::Result<()> {
     let meta: PluginMeta =
         serde_json::from_str(raw).map_err(|e| anyhow!("invalid meta.json at {meta_url}: {e}"))?;
@@ -535,17 +709,7 @@ async fn upsert_plugin_meta(
         ));
     }
 
-    let existing_reviewed: std::collections::HashMap<(String, String, String), bool> =
-        sqlx::query_as(
-            "SELECT namespace, step_id, version, reviewed FROM step_pool WHERE source_id = ?",
-        )
-        .bind(&source.id)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| anyhow!("{e}"))?
-        .into_iter()
-        .map(|(ns, id, v, r): (String, String, String, i64)| ((ns, id, v), r != 0))
-        .collect();
+    let existing_rows = existing_rows_for_source(pool, &source.id).await?;
 
     for entry in &meta.versions {
         let sha256 = entry.sha256.to_lowercase();
@@ -556,21 +720,39 @@ async fn upsert_plugin_meta(
                 entry.version
             ));
         }
-        let reviewed = *existing_reviewed
-            .get(&(
-                namespace.to_string(),
-                step_id.to_string(),
-                entry.version.clone(),
-            ))
-            .unwrap_or(&false);
+        let existing = existing_rows.get(&(
+            namespace.to_string(),
+            step_id.to_string(),
+            entry.version.clone(),
+        ));
+        let reviewed = existing.is_some_and(|state| state.reviewed);
+        let (requires_buz, buz_compatible, compat_error, checked_against) = resolve_compat(
+            http,
+            &source.url,
+            &entry.file,
+            &sha256,
+            namespace,
+            step_id,
+            &entry.version,
+            current_buz,
+            existing,
+            entry.requires_buz.as_deref(),
+        )
+        .await;
         sqlx::query(
-            "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path, enabled, reviewed, added_by)
-             VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'refresh')
+            "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path, \
+                                    enabled, reviewed, added_by, requires_buz, buz_compatible, \
+                                    compat_error, compat_checked_against)
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'refresh', ?, ?, ?, ?)
              ON CONFLICT(namespace, step_id, version) DO UPDATE SET
                sha256 = excluded.sha256,
                source_id = excluded.source_id,
                file_path = excluded.file_path,
-               reviewed = excluded.reviewed",
+               reviewed = excluded.reviewed,
+               requires_buz = excluded.requires_buz,
+               buz_compatible = excluded.buz_compatible,
+               compat_error = excluded.compat_error,
+               compat_checked_against = excluded.compat_checked_against",
         )
         .bind(namespace)
         .bind(step_id)
@@ -579,6 +761,10 @@ async fn upsert_plugin_meta(
         .bind(&source.id)
         .bind(&entry.file)
         .bind(reviewed as i64)
+        .bind(&requires_buz)
+        .bind(buz_compatible.map(|b| b as i64))
+        .bind(&compat_error)
+        .bind(&checked_against)
         .execute(pool)
         .await
         .map_err(|e| anyhow!("{e}"))?;
@@ -617,7 +803,22 @@ pub async fn verify_entry(
         .ok_or_else(|| format!("source {source_id} disappeared"))?;
 
     let content = fetch_content(http, &source.url, &file_path, &sha256).await?;
-    let spec: shared::step_spec::StepSpec = serde_yaml::from_str(&content)
+    evaluate_entry_content(&content, namespace, step_id, version, current_buz).map(|_| ())
+}
+
+/// Validate fetched template content for one pool entry: parse, identity
+/// check, full save-time spec validation, and the buz requirement.
+/// `Ok` carries the spec's `requires_buz` (if declared); `Err` is the exact
+/// message the enable gate reports — sync-time compatibility hints reuse it
+/// so the list and the gate can never disagree.
+pub fn evaluate_entry_content(
+    content: &str,
+    namespace: &str,
+    step_id: &str,
+    version: &str,
+    current_buz: &str,
+) -> Result<Option<String>, String> {
+    let spec: shared::step_spec::StepSpec = serde_yaml::from_str(content)
         .map_err(|e| format!("template {namespace}/{step_id}@{version} is invalid YAML: {e}"))?;
     if spec.id != format!("{namespace}/{step_id}") {
         return Err(format!(
@@ -642,13 +843,17 @@ pub async fn verify_entry(
             format!("step spec '{namespace}/{step_id}' requires buz {requires}: {e}")
         })?;
     }
-    Ok(())
+    Ok(spec.requires_buz)
 }
 
 /// Startup sync: refresh every enabled source (design §6.8 point 3 —
 /// startup + manual refresh; no background timer by default). Failures are
 /// logged per source and never block startup.
-pub async fn sync_all_enabled(pool: &SqlitePool, http: &reqwest::Client) -> usize {
+pub async fn sync_all_enabled(
+    pool: &SqlitePool,
+    http: &reqwest::Client,
+    current_buz: &str,
+) -> usize {
     let sources = match list_sources(pool).await {
         Ok(sources) => sources,
         Err(e) => {
@@ -658,7 +863,7 @@ pub async fn sync_all_enabled(pool: &SqlitePool, http: &reqwest::Client) -> usiz
     };
     let mut synced = 0usize;
     for source in sources.iter().filter(|s| s.enabled) {
-        match sync_source(http, pool, source).await {
+        match sync_source(http, pool, source, current_buz).await {
             Ok(count) => {
                 synced += 1;
                 tracing::info!(source = %source.name, entries = count, "step source synced");

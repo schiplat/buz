@@ -261,9 +261,10 @@ async fn community_source_curates_resolves_and_gates() {
         .unwrap()
         .expect("source row");
     let http = crate::services::step_pool::http_client(60);
-    let count = crate::services::step_pool::sync_source(&http, &pool, &source)
-        .await
-        .expect("deterministic sync of the staged source");
+    let count =
+        crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+            .await
+            .expect("deterministic sync of the staged source");
     assert_eq!(count, 3, "index entries staged");
 
     // 2. Pool rows exist but are staged (disabled) — resolution must fail.
@@ -335,6 +336,7 @@ async fn community_source_curates_resolves_and_gates() {
         &pool,
         "alice",
         "oss-upload",
+        shared::version::VERSION,
     )
     .await
     .expect("meta refresh");
@@ -394,6 +396,7 @@ async fn community_source_curates_resolves_and_gates() {
         &pool,
         "alice",
         "oss-upload",
+        shared::version::VERSION,
     )
     .await
     .expect("per-plugin refresh");
@@ -540,7 +543,12 @@ run: |
         .execute(&pool)
         .await
         .unwrap();
-    let synced = crate::services::step_pool::sync_all_enabled(&pool, &reqwest::Client::new()).await;
+    let synced = crate::services::step_pool::sync_all_enabled(
+        &pool,
+        &reqwest::Client::new(),
+        shared::version::VERSION,
+    )
+    .await;
     assert_eq!(synced, 1);
 
     let entry: (String, i64, i64) =
@@ -553,4 +561,380 @@ run: |
     // reviews.json placeholder hash never matches → no badge (strict mode
     // would reject; official entries carry CI-signed hashes in production).
     assert_eq!(entry.2, 0);
+}
+
+/// Find one plugin's pool row in a test assertion (panics with the id).
+fn pool_row_for<'a>(
+    rows: &'a [crate::services::step_pool::PoolRow],
+    step_id: &str,
+) -> &'a crate::services::step_pool::PoolRow {
+    rows.iter()
+        .find(|row| row.step_id == step_id)
+        .unwrap_or_else(|| panic!("pool row for bob/{step_id}"))
+}
+
+/// Sync persists a per-entry compatibility verdict: the compatible template
+/// passes, a too-new `requires_buz` is flagged with the gate's exact message,
+/// a missing template stays unknown (NULL), and a manager version bump
+/// re-verifies every entry on the next sync.
+#[tokio::test]
+async fn sync_persists_compatibility_verdicts() {
+    let compat_spec = r#"
+id: bob/compatible
+version: 1.0.0
+publisher: community
+author: bob
+source_repo: https://github.com/bob/steps
+engine: shell
+requires_buz: ">=1.0.0"
+inputs:
+  name:
+    type: string
+    required: true
+run: |
+  echo "hello ${INPUT_NAME}"
+"#
+    .to_string();
+    let too_new_spec = r#"
+id: bob/too-new
+version: 1.0.0
+publisher: community
+author: bob
+source_repo: https://github.com/bob/steps
+engine: shell
+requires_buz: ">=99.0.0"
+inputs:
+  name:
+    type: string
+    required: true
+run: |
+  echo "hello ${INPUT_NAME}"
+"#
+    .to_string();
+    let missing_spec = r#"
+id: bob/missing
+version: 1.0.0
+publisher: community
+author: bob
+source_repo: https://github.com/bob/steps
+engine: shell
+inputs:
+  name:
+    type: string
+    required: true
+run: |
+  echo "hello ${INPUT_NAME}"
+"#
+    .to_string();
+    let sha = |raw: &str| {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(raw.as_bytes()))
+    };
+    let (compat_sha, too_new_sha, missing_sha) =
+        (sha(&compat_spec), sha(&too_new_spec), sha(&missing_spec));
+
+    let index = format!(
+        r#"{{ "steps": [
+            {{ "id": "bob/compatible", "version": "1.0.0",
+               "file": "steps/compatible/1.0.0.yaml", "sha256": "{compat_sha}" }},
+            {{ "id": "bob/too-new", "version": "1.0.0",
+               "file": "steps/too-new/1.0.0.yaml", "sha256": "{too_new_sha}" }},
+            {{ "id": "bob/missing", "version": "1.0.0",
+               "file": "steps/missing/1.0.0.yaml", "sha256": "{missing_sha}" }} ] }}"#
+    );
+    let app = Router::new()
+        .route(
+            "/index.json",
+            axum::routing::get(move || {
+                let index = index.clone();
+                async move { index }
+            }),
+        )
+        .route(
+            "/steps/compatible/1.0.0.yaml",
+            axum::routing::get(move || {
+                let body = compat_spec.clone();
+                async move { body }
+            }),
+        )
+        .route(
+            "/steps/too-new/1.0.0.yaml",
+            axum::routing::get(move || {
+                let body = too_new_spec.clone();
+                async move { body }
+            }),
+        );
+    // bob/missing is deliberately NOT routed — the fetch 404s.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    sqlx::query(
+        "INSERT INTO step_sources (id, name, url, auto_enable, enabled) \
+         VALUES ('src-compat', 'compat', ?, 0, 1)",
+    )
+    .bind(format!("http://{addr}/index.json"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let source = crate::services::step_pool::get_source(&pool, "src-compat")
+        .await
+        .unwrap()
+        .expect("source row");
+    let http = crate::services::step_pool::http_client(60);
+
+    // First sync: compatible → Some(true), too-new → Some(false) with the
+    // gate's message, missing template → unknown (NULL, sync still succeeds).
+    let count =
+        crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+            .await
+            .expect("sync with compatibility verdicts");
+    assert_eq!(count, 3);
+    let rows = crate::services::step_pool::list_pool(&pool).await.unwrap();
+    let compatible = pool_row_for(&rows, "compatible");
+    assert_eq!(compatible.buz_compatible, Some(true));
+    assert_eq!(compatible.requires_buz.as_deref(), Some(">=1.0.0"));
+    assert!(compatible.compat_error.is_none());
+    let too_new = pool_row_for(&rows, "too-new");
+    assert_eq!(too_new.buz_compatible, Some(false));
+    let error = too_new.compat_error.as_deref().expect("compat error");
+    assert!(error.contains("requires_buz"), "{error}");
+    assert!(error.contains(">= 99.0.0"), "{error}");
+    assert!(error.contains("too new"), "{error}");
+    let missing = pool_row_for(&rows, "missing");
+    assert_eq!(missing.buz_compatible, None, "fetch failure = unknown");
+    assert!(missing.compat_error.is_none());
+
+    // The rows the API ships must expose the verdict fields (serde names
+    // the dashboard's PoolEntry contract relies on).
+    let payload = serde_json::to_value(&rows).unwrap();
+    for field in ["requires_buz", "buz_compatible", "compat_error"] {
+        assert!(
+            payload[0].get(field).is_some(),
+            "pool row JSON missing {field}: {payload}"
+        );
+    }
+
+    // Re-sync without a version change: cached verdicts are kept.
+    crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        .await
+        .expect("re-sync");
+    let rows = crate::services::step_pool::list_pool(&pool).await.unwrap();
+    assert_eq!(pool_row_for(&rows, "too-new").buz_compatible, Some(false));
+
+    // Manager upgrade: syncing under a newer build re-verifies — the
+    // previously too-new entry becomes compatible.
+    crate::services::step_pool::sync_source(&http, &pool, &source, "99.0.0")
+        .await
+        .expect("re-sync under new manager version");
+    let rows = crate::services::step_pool::list_pool(&pool).await.unwrap();
+    let too_new = pool_row_for(&rows, "too-new");
+    assert_eq!(
+        too_new.buz_compatible,
+        Some(true),
+        "version bump must re-verify: {:?}",
+        too_new.compat_error
+    );
+    assert_eq!(too_new.requires_buz.as_deref(), Some(">=99.0.0"));
+}
+
+/// A plugin the pool has never seen initializes with exactly ONE enabled
+/// version — the latest COMPATIBLE one — on auto-enable sources. Older and
+/// incompatible versions stage, and once the curator flips any switch their
+/// verdict survives every later sync.
+#[tokio::test]
+async fn auto_enable_source_initializes_latest_compatible_version_only() {
+    fn tool_spec(version: &str, requires: &str) -> String {
+        format!(
+            r#"
+id: car/tool
+version: {version}
+publisher: community
+author: carol
+source_repo: https://github.com/carol/tools
+engine: shell
+requires_buz: "{requires}"
+inputs:
+  name:
+    type: string
+    required: true
+run: |
+  echo "hello ${{INPUT_NAME}}"
+"#
+        )
+    }
+    let versions: [(&str, &str); 4] = [
+        ("2.0.0", ">=99.0.0"), // latest overall — incompatible
+        ("1.1.0", ">=1.0.0"),  // latest compatible → the init enable
+        ("1.0.0", ">=1.0.0"),
+        ("0.9.0", ">=1.0.0"),
+    ];
+    let sha = |raw: &str| {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(raw.as_bytes()))
+    };
+    let index = format!(
+        r#"{{ "steps": [ {} ] }}"#,
+        versions
+            .iter()
+            .map(|(version, requires)| {
+                format!(
+                    r#"{{ "id": "car/tool", "version": "{version}",
+                       "file": "steps/tool/{version}.yaml", "sha256": "{}" }}"#,
+                    sha(&tool_spec(version, requires))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let mut app = Router::new().route(
+        "/index.json",
+        axum::routing::get(move || {
+            let index = index.clone();
+            async move { index }
+        }),
+    );
+    for (version, requires) in versions {
+        let body = tool_spec(version, requires);
+        app = app.route(
+            format!("/steps/tool/{version}.yaml").as_str(),
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move { body }
+            }),
+        );
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    sqlx::query(
+        "INSERT INTO step_sources (id, name, url, auto_enable, enabled) \
+         VALUES ('src-auto', 'auto', ?, 1, 1)",
+    )
+    .bind(format!("http://{addr}/index.json"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let source = crate::services::step_pool::get_source(&pool, "src-auto")
+        .await
+        .unwrap()
+        .expect("source row");
+    let http = crate::services::step_pool::http_client(60);
+
+    crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        .await
+        .expect("init sync");
+
+    let enabled: Vec<String> =
+        sqlx::query_as("SELECT version FROM step_pool WHERE enabled = 1 ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(v,): (String,)| v)
+            .collect();
+    assert_eq!(
+        enabled,
+        vec!["1.1.0".to_string()],
+        "exactly the latest compatible version initializes enabled"
+    );
+    let too_new: (i64, Option<i64>) =
+        sqlx::query_as("SELECT enabled, buz_compatible FROM step_pool WHERE version = '2.0.0'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(too_new, (0, Some(0)), "incompatible latest stays staged");
+
+    // The curator locks the plugin (disables 1.1.0): later syncs must keep
+    // every verdict — no version quietly re-enables, not even on re-check.
+    sqlx::query("UPDATE step_pool SET enabled = 0 WHERE version = '1.1.0'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        .await
+        .expect("re-sync after curator lock");
+    let (enabled,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM step_pool WHERE enabled = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(enabled, 0, "curator's disable survives the re-sync");
+}
+
+/// A full-meta source (index.json carries `requires_buz`) gets its
+/// compatibility verdict straight from the index — no template download at
+/// sync time. The YAML routes are deliberately absent: any fetch attempt
+/// would 404 and flip the verdicts to unknown, failing the assertions.
+#[tokio::test]
+async fn full_meta_index_decides_compatibility_without_fetch() {
+    let index = format!(
+        r#"{{ "steps": [
+            {{ "id": "dave/fast", "version": "1.0.0", "file": "steps/fast/1.0.0.yaml",
+               "sha256": "{fast_sha}", "requires_buz": ">=1.0.0", "engine": "shell" }},
+            {{ "id": "dave/portal", "version": "1.0.0", "file": "steps/portal/1.0.0.yaml",
+               "sha256": "{portal_sha}", "requires_buz": ">=99.0.0" }} ] }}"#,
+        fast_sha = "e".repeat(64),
+        portal_sha = "f".repeat(64),
+    );
+    let app = Router::new().route(
+        "/index.json",
+        axum::routing::get(move || {
+            let index = index.clone();
+            async move { index }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    sqlx::query(
+        "INSERT INTO step_sources (id, name, url, auto_enable, enabled) \
+         VALUES ('src-meta', 'meta', ?, 0, 1)",
+    )
+    .bind(format!("http://{addr}/index.json"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let source = crate::services::step_pool::get_source(&pool, "src-meta")
+        .await
+        .unwrap()
+        .expect("source row");
+    let http = crate::services::step_pool::http_client(60);
+
+    crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        .await
+        .expect("sync from full-meta index");
+
+    let rows = crate::services::step_pool::list_pool(&pool).await.unwrap();
+    let fast = rows.iter().find(|row| row.step_id == "fast").unwrap();
+    assert_eq!(fast.buz_compatible, Some(true));
+    assert_eq!(fast.requires_buz.as_deref(), Some(">=1.0.0"));
+    let portal = rows.iter().find(|row| row.step_id == "portal").unwrap();
+    assert_eq!(portal.buz_compatible, Some(false));
+    let error = portal
+        .compat_error
+        .as_deref()
+        .expect("gate-identical error");
+    assert!(error.contains("requires_buz"), "{error}");
+    assert!(error.contains(">= 99.0.0"), "{error}");
+    assert!(error.contains("too new"), "{error}");
 }

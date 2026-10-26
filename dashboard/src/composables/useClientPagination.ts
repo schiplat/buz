@@ -4,7 +4,13 @@ export const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const
 
 export function useClientPagination<T>(
   source: MaybeRefOrGetter<T[]>,
-  options?: { initialPageSize?: number },
+  options?: {
+    initialPageSize?: number
+    /** When given, a change resets the page only when THIS value changes —
+     *  a mere refresh of `source` (same items, new array) keeps the page.
+     *  Pass a signature of the item set, e.g. the joined ids. */
+    resetKey?: MaybeRefOrGetter<unknown>
+  },
 ) {
   const page = ref(1)
   const pageSize = ref(options?.initialPageSize ?? 20)
@@ -25,10 +31,17 @@ export function useClientPagination<T>(
     return `${start}–${end} of ${total.value}`
   })
 
-  watch(
-    () => toValue(source),
-    () => { page.value = 1 },
-  )
+  if (options?.resetKey !== undefined) {
+    watch(
+      () => toValue(options.resetKey!),
+      () => { page.value = 1 },
+    )
+  } else {
+    watch(
+      () => toValue(source),
+      () => { page.value = 1 },
+    )
+  }
 
   watch([total, pageSize], () => {
     if (page.value > pageCount.value) page.value = pageCount.value

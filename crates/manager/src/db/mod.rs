@@ -630,6 +630,10 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
             reviewed INTEGER NOT NULL DEFAULT 0,
             added_by TEXT,
             added_at TEXT NOT NULL DEFAULT (datetime('now')),
+            requires_buz TEXT,
+            buz_compatible INTEGER,
+            compat_error TEXT,
+            compat_checked_against TEXT,
             UNIQUE(namespace, step_id, version)
         )",
     )
@@ -640,6 +644,23 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     )
     .execute(pool)
     .await?;
+    // ── step_pool compatibility verdicts (computed at sync/refresh time) ──
+    // buz_compatible is three-state: NULL = not checked yet, 0 = the entry's
+    // requires_buz (or spec validity) fails against this manager build,
+    // 1 = passes. compat_checked_against pins the manager version the verdict
+    // was computed for; a version bump invalidates it.
+    let _ = sqlx::query("ALTER TABLE step_pool ADD COLUMN requires_buz TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE step_pool ADD COLUMN buz_compatible INTEGER")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE step_pool ADD COLUMN compat_error TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE step_pool ADD COLUMN compat_checked_against TEXT")
+        .execute(pool)
+        .await;
 
     // ── Platform settings (admin-editable runtime overrides) ──
     // DB value > manager.toml default; a missing row means "use the default".

@@ -91,7 +91,9 @@ pub async fn create_source(
     let spawn_source = source.clone();
     tokio::spawn(async move {
         let http = step_pool::http_client(timeout_secs);
-        if let Err(e) = step_pool::sync_source(&http, &pool, &spawn_source).await {
+        if let Err(e) =
+            step_pool::sync_source(&http, &pool, &spawn_source, shared::version::VERSION).await
+        {
             tracing::warn!(source_id = %spawn_source.id, error = %e, "background source sync failed");
         }
     });
@@ -123,7 +125,9 @@ pub async fn sync_source(
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
     tokio::spawn(async move {
         let http = step_pool::http_client(timeout_secs);
-        if let Err(e) = step_pool::sync_source(&http, &pool, &source).await {
+        if let Err(e) =
+            step_pool::sync_source(&http, &pool, &source, shared::version::VERSION).await
+        {
             tracing::warn!(source_id = %source.id, error = %e, "background source sync failed");
         }
     });
@@ -180,9 +184,15 @@ pub async fn refresh_plugin(
         .parse()
         .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
     );
-    let rows = step_pool::refresh_plugin(&http, &state.pool, &namespace, &step_id)
-        .await
-        .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
+    let rows = step_pool::refresh_plugin(
+        &http,
+        &state.pool,
+        &namespace,
+        &step_id,
+        shared::version::VERSION,
+    )
+    .await
+    .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
     Ok(Json(ApiResponse::success(json!({ "items": rows }))))
 }
 
