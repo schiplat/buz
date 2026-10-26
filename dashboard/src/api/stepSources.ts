@@ -42,18 +42,33 @@ export interface LocalTemplate {
   description?: string
 }
 
+export interface SyncProgressState {
+  phase: 'index' | 'processing' | 'done' | 'failed' | 'idle'
+  total_plugins?: number
+  done_plugins?: number
+  total_entries?: number
+  done_entries?: number
+  error?: string | null
+}
+
 export const stepSourcesApi = {
   async listSources(): Promise<{ items: StepSource[] }> {
     const resp = await apiClient.get('/admin/step-sources')
     return resp.data as { items: StepSource[] }
   },
-  async createSource(name: string, url: string, autoEnable: boolean): Promise<void> {
+  async createSource(name: string, url: string, autoEnable: boolean): Promise<{ source: StepSource }> {
     // Returns immediately — the sync runs in the background and the UI polls
     // the list for last_synced_at / last_sync_error.
-    await apiClient.post('/admin/step-sources', { name, url, auto_enable: autoEnable })
+    const resp = await apiClient.post('/admin/step-sources', { name, url, auto_enable: autoEnable })
+    return resp.data as { source: StepSource }
   },
   async syncSource(id: string): Promise<void> {
     await apiClient.post(`/admin/step-sources/${id}/sync`)
+  },
+  /** Live progress for a running background sync (progress bar). */
+  async getSyncProgress(id: string): Promise<SyncProgressState> {
+    const resp = await apiClient.get(`/admin/step-sources/${id}/sync-progress`)
+    return resp.data as SyncProgressState
   },
   async deleteSource(id: string): Promise<void> {
     await apiClient.delete(`/admin/step-sources/${id}`)

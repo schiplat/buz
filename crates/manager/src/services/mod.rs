@@ -12,5 +12,6 @@ pub mod runner_monitor;
 pub mod scheduler;
 pub mod step_pool;
 pub mod step_resolver;
+pub mod sync_progress;
 pub mod yaml_cache;
 pub mod yaml_validate;

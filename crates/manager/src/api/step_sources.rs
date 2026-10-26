@@ -136,6 +136,22 @@ pub async fn sync_source(
     )))
 }
 
+/// GET /api/v1/admin/step-sources/{id}/sync-progress — live sync progress for
+/// the dashboard's progress bar. `phase: "idle"` = no sync seen this run.
+pub async fn sync_progress(
+    _auth: PlatformAdmin,
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let progress = crate::services::sync_progress::snapshot(&id);
+    Ok(Json(ApiResponse::success(match progress {
+        Some(progress) => {
+            serde_json::to_value(progress).map_err(|e| AppError::Internal(e.to_string()))?
+        }
+        None => json!({ "phase": "idle" }),
+    })))
+}
+
 /// DELETE /api/v1/admin/step-sources/{id} — removes the source and its pool
 /// rows. Already-saved pipelines are unaffected (resolution froze at save).
 pub async fn delete_source(

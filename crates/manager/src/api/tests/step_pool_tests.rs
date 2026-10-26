@@ -696,6 +696,12 @@ run: |
             .await
             .expect("sync with compatibility verdicts");
     assert_eq!(count, 3);
+    let progress = crate::services::sync_progress::snapshot("src-compat").expect("progress");
+    assert_eq!(progress.phase, "done");
+    assert_eq!(progress.total_entries, 3);
+    assert_eq!(progress.done_entries, 3);
+    assert_eq!(progress.done_plugins, 3);
+    assert!(progress.error.is_none());
     let rows = crate::services::step_pool::list_pool(&pool).await.unwrap();
     let compatible = pool_row_for(&rows, "compatible");
     assert_eq!(compatible.buz_compatible, Some(true));
@@ -937,4 +943,44 @@ async fn full_meta_index_decides_compatibility_without_fetch() {
     assert!(error.contains("requires_buz"), "{error}");
     assert!(error.contains(">= 99.0.0"), "{error}");
     assert!(error.contains("too new"), "{error}");
+}
+
+/// A sync that cannot reach its source reports `failed` with the error —
+/// the progress bar's terminal failure state, not a stuck spinner.
+#[tokio::test]
+async fn sync_progress_reports_failure() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    sqlx::query(
+        "INSERT INTO step_sources (id, name, url, auto_enable, enabled)          VALUES ('src-dead', 'dead', 'http://127.0.0.1:9/index.json', 0, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let source = crate::services::step_pool::get_source(&pool, "src-dead")
+        .await
+        .unwrap()
+        .expect("source row");
+
+    let result = crate::services::step_pool::sync_source(
+        &reqwest::Client::new(),
+        &pool,
+        &source,
+        shared::version::VERSION,
+    )
+    .await;
+    assert!(result.is_err(), "unreachable source must fail the sync");
+
+    let progress = crate::services::sync_progress::snapshot("src-dead").expect("progress");
+    assert_eq!(progress.phase, "failed");
+    assert!(progress
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("failed"));
+    assert!(progress.finished_at.is_some());
 }

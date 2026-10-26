@@ -14,6 +14,7 @@ vi.mock('@/api/stepSources', () => ({
     createSource: vi.fn(),
     syncSource: vi.fn(),
     deleteSource: vi.fn(),
+    getSyncProgress: vi.fn(),
   },
 }))
 vi.mock('@/api/adminSettings', () => ({
@@ -120,6 +121,43 @@ describe('PluginSources', () => {
     await flush()
     expect(root.textContent).toContain('synced 2026-10-25T01:00:00Z')
     expect(root.textContent).not.toContain('syncing…')
+  })
+
+  it('shows a live progress bar with true counts while a sync runs', async () => {
+    vi.mocked(stepSourcesApi.getSyncProgress).mockResolvedValue({
+      phase: 'processing',
+      total_plugins: 29,
+      done_plugins: 3,
+      total_entries: 45,
+      done_entries: 12,
+      error: null,
+    })
+    const root = await mountPage()
+    const sync = [...root.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent?.includes('Sync'))!
+    sync.click()
+    await flush()
+    // The first progress tick runs immediately after the click.
+    expect(root.textContent).toContain('Syncing 12/45 entries · 3/29 plugins')
+    const bar = root.querySelector<HTMLElement>('.rounded-full.bg-primary')
+    expect(bar?.style.width).toBe('27%')
+  })
+
+  it('surfaces a failed sync in red through the progress bar', async () => {
+    vi.mocked(stepSourcesApi.getSyncProgress).mockResolvedValue({
+      phase: 'failed',
+      total_plugins: 29,
+      done_plugins: 0,
+      total_entries: 45,
+      done_entries: 0,
+      error: 'source unreachable (connection failed)',
+    })
+    const root = await mountPage()
+    const sync = [...root.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent?.includes('Sync'))!
+    sync.click()
+    await flush()
+    expect(root.textContent).toContain('Sync failed: source unreachable (connection failed)')
   })
 
   it('adds a source, returns to the list, and shows the syncing state', async () => {

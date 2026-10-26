@@ -3,7 +3,7 @@ import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RefreshCw, RotateCcw, Trash2 } from '@lucide/vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
-import { stepSourcesApi, type StepSource } from '@/api/stepSources'
+import { stepSourcesApi, type StepSource, type SyncProgressState } from '@/api/stepSources'
 import { adminSettingsApi, type PlatformSetting } from '@/api/adminSettings'
 import { useAppDialog } from '@/composables/useAppDialog'
 import { useRoute, useRouter } from 'vue-router'
@@ -67,7 +67,71 @@ const busy = ref('')
 const syncingSince = ref<Record<string, string>>({})
 /** sourceId -> click epoch ms; hard cap for the in-flight display. */
 const syncingStartedAt = ref<Record<string, number>>({})
+/** Sources added via "Add & sync": their first sync is in flight, but there
+ *  is no prior last_synced_at to diff against. */
+const awaitingFirstSync = ref<Record<string, true>>({})
+/** Live sync progress (backend sync_progress registry) per source id. */
+const syncProgress = ref<Record<string, SyncProgressState>>({})
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let progressTimer: ReturnType<typeof setInterval> | null = null
+
+/** Fast-cadence poll (this feeds the bar; the list poll stays at 2.5s). The
+ *  first tick runs immediately so the bar is populated right after the
+ *  click. Stops when nothing is in flight anymore. */
+function startProgressPolling() {
+  stopProgressPolling()
+  const tick = async () => {
+    const ids = [
+      ...new Set([...Object.keys(syncingSince.value), ...Object.keys(awaitingFirstSync.value)]),
+    ]
+    if (ids.length === 0) {
+      stopProgressPolling()
+      return
+    }
+    for (const id of ids) {
+      try {
+        syncProgress.value[id] = await stepSourcesApi.getSyncProgress(id)
+      } catch {
+        // Transient — keep the bar; the next tick retries.
+      }
+    }
+  }
+  void tick()
+  progressTimer = setInterval(() => void tick(), 700)
+}
+
+function stopProgressPolling() {
+  if (progressTimer) {
+    clearInterval(progressTimer)
+    progressTimer = null
+  }
+}
+
+function isSyncTracked(source: StepSource): boolean {
+  return source.id in syncingSince.value || source.id in awaitingFirstSync.value
+}
+
+/** True while the row should render the progress bar (in-flight or failed). */
+function isSyncing(source: StepSource): boolean {
+  if (!isSyncTracked(source)) return false
+  const phase = syncProgress.value[source.id]?.phase
+  return phase === undefined || phase === 'index' || phase === 'processing'
+}
+
+function progressPercent(source: StepSource): number {
+  const progress = syncProgress.value[source.id]
+  if (!progress?.total_entries) return 0
+  return Math.min(100, Math.round(((progress.done_entries ?? 0) / progress.total_entries) * 100))
+}
+
+function progressLabel(source: StepSource): string {
+  const progress = syncProgress.value[source.id]
+  if (!progress) return 'Starting sync…'
+  if (progress.phase === 'failed') return `Sync failed: ${progress.error ?? 'unknown error'}`
+  if (progress.phase === 'index') return 'Downloading index…'
+  if (progress.phase === 'done') return `Synced ${progress.total_entries} entries`
+  return `Syncing ${progress.done_entries ?? 0}/${progress.total_entries} entries · ${progress.done_plugins ?? 0}/${progress.total_plugins} plugins`
+}
 
 /** Refresh the list every 2.5s until every source reached a terminal sync
  *  state (last_synced_at or last_sync_error) — background syncs surface
@@ -114,6 +178,13 @@ async function load() {
       if (started !== undefined && (changed || Date.now() - started > startedCap)) {
         delete syncingSince.value[s.id]
         delete syncingStartedAt.value[s.id]
+        delete syncProgress.value[s.id]
+      }
+      // First sync of a newly added source resolves once the backend has
+      // stamped anything (timestamp or error) for it.
+      if (s.id in awaitingFirstSync.value && (s.last_synced_at || s.last_sync_error)) {
+        delete awaitingFirstSync.value[s.id]
+        delete syncProgress.value[s.id]
       }
     }
     settings.value = cfg.items ?? []
@@ -221,25 +292,15 @@ function syncTimeoutMs(): number {
   return (Number.isFinite(secs) && secs > 0 ? secs : 60) * 1000
 }
 
-async function addSource() {
-  if (!newName.value.trim() || !newUrl.value.trim()) return
-  busy.value = 'add'
+async function removeSource(source: StepSource) {
+  const ok = await dialog.confirm(`Remove source "${source.name}" and its pool entries?`, {
+    confirmLabel: 'Remove',
+  })
+  if (!ok) return
+  busy.value = `del-${source.id}`
   try {
-    await stepSourcesApi.createSource(
-      newName.value.trim(),
-      newUrl.value.trim(),
-      newAutoEnable.value,
-    )
-    // Back to the list immediately: the sync runs server-side and the row
-    // shows "syncing…" until last_synced_at / last_sync_error lands.
-    showAddSource.value = false
-    newName.value = ''
-    newUrl.value = ''
-    newAutoEnable.value = false
+    await stepSourcesApi.deleteSource(source.id)
     await load()
-    startPolling()
-  } catch (e) {
-    await dialog.alert(`Failed to add source: ${e instanceof Error ? e.message : e}`)
   } finally {
     busy.value = ''
   }
@@ -253,20 +314,33 @@ async function syncSource(source: StepSource) {
     await stepSourcesApi.syncSource(source.id)
     await load()
     startPolling()
+    startProgressPolling()
   } finally {
     busy.value = ''
   }
 }
 
-async function removeSource(source: StepSource) {
-  const ok = await dialog.confirm(`Remove source "${source.name}" and its pool entries?`, {
-    confirmLabel: 'Remove',
-  })
-  if (!ok) return
-  busy.value = `del-${source.id}`
+async function addSource() {
+  if (!newName.value.trim() || !newUrl.value.trim()) return
+  busy.value = 'add'
   try {
-    await stepSourcesApi.deleteSource(source.id)
+    const created = await stepSourcesApi.createSource(
+      newName.value.trim(),
+      newUrl.value.trim(),
+      newAutoEnable.value,
+    )
+    // Back to the list immediately: the sync runs server-side and the row
+    // shows "syncing…" until last_synced_at / last_sync_error lands.
+    if (created?.source?.id) awaitingFirstSync.value[created.source.id] = true
+    showAddSource.value = false
+    newName.value = ''
+    newUrl.value = ''
+    newAutoEnable.value = false
     await load()
+    startPolling()
+    startProgressPolling()
+  } catch (e) {
+    await dialog.alert(`Failed to add source: ${e instanceof Error ? e.message : e}`)
   } finally {
     busy.value = ''
   }
@@ -284,6 +358,12 @@ function syncState(source: StepSource): string {
   return 'syncing…'
 }
 
+/** Terminal failure keeps the bar visible (in red) until the list load
+ *  resolves the row — the stamped error then takes over. */
+function progressFailed(source: StepSource): boolean {
+  return isSyncTracked(source) && syncProgress.value[source.id]?.phase === 'failed'
+}
+
 onMounted(async () => {
   await load()
   applyFocusFromRoute()
@@ -294,7 +374,10 @@ watch(
   () => applyFocusFromRoute(),
 )
 
-onUnmounted(stopPolling)
+onUnmounted(() => {
+  stopPolling()
+  stopProgressPolling()
+})
 </script>
 
 <template>
@@ -348,6 +431,20 @@ onUnmounted(stopPolling)
                 class="mt-0.5 text-[11px]"
                 :class="source.last_sync_error ? 'text-red-500' : 'text-muted-foreground/70'"
               >{{ syncState(source) }}</p>
+              <div v-if="isSyncing(source) || progressFailed(source)" class="mt-2">
+                <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                  <div
+                    v-if="syncProgress[source.id]?.phase === 'processing'"
+                    class="h-full rounded-full bg-primary transition-all duration-300"
+                    :style="{ width: progressPercent(source) + '%' }"
+                  />
+                  <div v-else class="h-full w-full animate-pulse rounded-full bg-primary/40" />
+                </div>
+                <p
+                  class="mt-1 text-[11px]"
+                  :class="progressFailed(source) ? 'text-red-500' : 'text-muted-foreground/70'"
+                >{{ progressLabel(source) }}</p>
+              </div>
             </div>
             <div class="flex shrink-0 items-center gap-1.5">
               <UiButton size="sm" variant="ghost" :disabled="busy === `sync-${source.id}`" @click="syncSource(source)">

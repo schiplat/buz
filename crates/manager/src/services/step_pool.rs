@@ -400,14 +400,17 @@ async fn resolve_compat(
 }
 
 /// Fetch `index.json`, validate it, and upsert every entry as a pool row
-/// (`enabled = auto_enable`). Returns the number of entries.
+/// (`enabled = auto_enable`). Returns the number of entries. Live progress
+/// lands in `services::sync_progress` for the dashboard's progress bar.
 pub async fn sync_source(
     http: &reqwest::Client,
     pool: &SqlitePool,
     source: &SourceRow,
     current_buz: &str,
 ) -> Result<usize, anyhow::Error> {
+    super::sync_progress::begin(&source.id);
     let result = sync_source_inner(http, pool, source, None, current_buz).await;
+    super::sync_progress::finish(&source.id, result.as_ref().err().map(|e| e.to_string()));
     let (ok, error) = match &result {
         Ok(_) => (true, None),
         Err(e) => (false, Some(e.to_string())),
@@ -504,6 +507,10 @@ async fn sync_source_inner(
             None => groups.push((namespace.to_string(), step_id.to_string(), vec![entry])),
         }
     }
+    // Totals known — the dashboard's progress bar switches from "index"
+    // (indeterminate) to a true fraction from here on.
+    let total_entries: usize = groups.iter().map(|(_, _, versions)| versions.len()).sum();
+    super::sync_progress::set_totals(&source.id, groups.len(), total_entries);
 
     for (namespace, step_id, versions) in groups {
         let mut versions = versions;
@@ -584,7 +591,9 @@ async fn sync_source_inner(
             .bind(&checked_against)
             .execute(pool)
             .await?;
+            super::sync_progress::tick_entry(&source.id);
         }
+        super::sync_progress::tick_plugin(&source.id);
     }
     Ok(index.steps.len())
 }

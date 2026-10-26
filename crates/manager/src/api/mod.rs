@@ -244,6 +244,10 @@ pub fn router(state: AppState) -> Router {
             "/admin/step-sources/{id}/sync",
             post(step_sources::sync_source),
         )
+        .route(
+            "/admin/step-sources/{id}/sync-progress",
+            get(step_sources::sync_progress),
+        )
         .route("/admin/step-pool", get(step_sources::list_pool))
         .route(
             "/admin/step-pool/{namespace}/{step_id}/refresh",
