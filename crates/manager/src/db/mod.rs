@@ -634,6 +634,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
             buz_compatible INTEGER,
             compat_error TEXT,
             compat_checked_against TEXT,
+            meta_json TEXT,
             UNIQUE(namespace, step_id, version)
         )",
     )
@@ -659,6 +660,9 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await;
     let _ = sqlx::query("ALTER TABLE step_pool ADD COLUMN compat_checked_against TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE step_pool ADD COLUMN meta_json TEXT")
         .execute(pool)
         .await;
 

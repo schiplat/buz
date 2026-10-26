@@ -13,6 +13,18 @@ export interface StepSource {
   last_sync_error: string | null
 }
 
+export interface PoolEntryMeta {
+  name: string | null
+  description: string | null
+  description_zh: string | null
+  category: string | null
+  author: string | null
+  publisher: string | null
+  license: string | null
+  source_repo: string | null
+  engine: string | null
+}
+
 export interface PoolEntry {
   namespace: string
   step_id: string
@@ -31,6 +43,9 @@ export interface PoolEntry {
   buz_compatible: boolean | null
   /** The gate-identical error behind `buz_compatible === false`. */
   compat_error: string | null
+  /** Descriptive meta from the source's full-meta index. Null = legacy
+   *  source without meta — the UI falls back to the raw id. */
+  meta: PoolEntryMeta | null
 }
 
 export interface LocalTemplate {

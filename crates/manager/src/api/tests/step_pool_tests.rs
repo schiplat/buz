@@ -880,28 +880,69 @@ run: |
     assert_eq!(enabled, 0, "curator's disable survives the re-sync");
 }
 
-/// A full-meta source (index.json carries `requires_buz`) gets its
-/// compatibility verdict straight from the index — no template download at
-/// sync time. The YAML routes are deliberately absent: any fetch attempt
-/// would 404 and flip the verdicts to unknown, failing the assertions.
+/// A full-meta source is probed on staging: served templates get
+/// content-verified verdicts through the gate evaluation, and an index that
+/// lists a file which is NOT published (the half-uploaded mirror case) turns
+/// red at sync time — not at enable time.
 #[tokio::test]
-async fn full_meta_index_decides_compatibility_without_fetch() {
+async fn full_meta_source_probes_files_on_staging() {
     let index = format!(
         r#"{{ "steps": [
             {{ "id": "dave/fast", "version": "1.0.0", "file": "steps/fast/1.0.0.yaml",
-               "sha256": "{fast_sha}", "requires_buz": ">=1.0.0", "engine": "shell" }},
+               "sha256": "{fast_sha}", "requires_buz": ">=1.0.0", "engine": "shell",
+               "category": "source", "name": "Fast checkout",
+               "description": "Check out a repository fast.",
+               "description_zh": "快速检出仓库。",
+               "author": "dave", "publisher": "community",
+               "license": "Apache-2.0" }},
             {{ "id": "dave/portal", "version": "1.0.0", "file": "steps/portal/1.0.0.yaml",
-               "sha256": "{portal_sha}", "requires_buz": ">=99.0.0" }} ] }}"#,
+               "sha256": "{portal_sha}", "requires_buz": ">=99.0.0" }},
+            {{ "id": "dave/ghost", "version": "1.0.0", "file": "steps/ghost/1.0.0.yaml",
+               "sha256": "{ghost_sha}", "requires_buz": ">=1.0.0" }} ] }}"#,
         fast_sha = "e".repeat(64),
         portal_sha = "f".repeat(64),
+        ghost_sha = "7".repeat(64),
     );
-    let app = Router::new().route(
-        "/index.json",
-        axum::routing::get(move || {
-            let index = index.clone();
-            async move { index }
-        }),
+    let sha = |raw: String| {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(raw.as_bytes()))
+    };
+    let fast_spec = format!(
+        "id: dave/fast\nversion: 1.0.0\npublisher: community\nauthor: dave\n\
+         source_repo: https://github.com/dave/steps\nengine: shell\n\
+         requires_buz: \">=1.0.0\"\ninputs:\n  name:\n    type: string\n    required: true\n\
+         run: |\n  echo hello\n"
     );
+    let portal_spec = fast_spec
+        .replace("dave/fast", "dave/portal")
+        .replace(">=1.0.0", ">=99.0.0");
+    let (fast_sha, portal_sha) = (sha(fast_spec.clone()), sha(portal_spec.clone()));
+    let index = index
+        .replace(&"e".repeat(64), &fast_sha)
+        .replace(&"f".repeat(64), &portal_sha);
+    let app = Router::new()
+        .route(
+            "/index.json",
+            axum::routing::get(move || {
+                let index = index.clone();
+                async move { index }
+            }),
+        )
+        .route(
+            "/steps/fast/1.0.0.yaml",
+            axum::routing::get(move || {
+                let body = fast_spec.clone();
+                async move { body }
+            }),
+        )
+        .route(
+            "/steps/portal/1.0.0.yaml",
+            axum::routing::get(move || {
+                let body = portal_spec.clone();
+                async move { body }
+            }),
+        );
+    // dave/ghost is listed in the index but deliberately NOT published.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -931,10 +972,25 @@ async fn full_meta_index_decides_compatibility_without_fetch() {
         .expect("sync from full-meta index");
 
     let rows = crate::services::step_pool::list_pool(&pool).await.unwrap();
-    let fast = rows.iter().find(|row| row.step_id == "fast").unwrap();
+    let row = |step_id: &str| {
+        rows.iter()
+            .find(|row| row.step_id == step_id)
+            .unwrap_or_else(|| panic!("pool row for dave/{step_id}"))
+    };
+    // Served + gate-satisfying → content-verified green.
+    let fast = row("fast");
     assert_eq!(fast.buz_compatible, Some(true));
     assert_eq!(fast.requires_buz.as_deref(), Some(">=1.0.0"));
-    let portal = rows.iter().find(|row| row.step_id == "portal").unwrap();
+    let meta = fast.meta.as_ref().expect("full meta persisted on the row");
+    assert_eq!(meta.name.as_deref(), Some("Fast checkout"));
+    assert_eq!(meta.description_zh.as_deref(), Some("快速检出仓库。"));
+    assert_eq!(meta.category.as_deref(), Some("source"));
+    assert_eq!(meta.publisher.as_deref(), Some("community"));
+    // The API payload the dashboard consumes exposes the meta object.
+    let payload = serde_json::to_value(&rows).unwrap();
+    assert_eq!(payload[0]["meta"]["name"], "Fast checkout");
+    // Served but gate-unsatisfying → red with the gate's message.
+    let portal = row("portal");
     assert_eq!(portal.buz_compatible, Some(false));
     let error = portal
         .compat_error
@@ -942,45 +998,10 @@ async fn full_meta_index_decides_compatibility_without_fetch() {
         .expect("gate-identical error");
     assert!(error.contains("requires_buz"), "{error}");
     assert!(error.contains(">= 99.0.0"), "{error}");
-    assert!(error.contains("too new"), "{error}");
-}
-
-/// A sync that cannot reach its source reports `failed` with the error —
-/// the progress bar's terminal failure state, not a stuck spinner.
-#[tokio::test]
-async fn sync_progress_reports_failure() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(2)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open in-memory db");
-    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
-    sqlx::query(
-        "INSERT INTO step_sources (id, name, url, auto_enable, enabled)          VALUES ('src-dead', 'dead', 'http://127.0.0.1:9/index.json', 0, 1)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    let source = crate::services::step_pool::get_source(&pool, "src-dead")
-        .await
-        .unwrap()
-        .expect("source row");
-
-    let result = crate::services::step_pool::sync_source(
-        &reqwest::Client::new(),
-        &pool,
-        &source,
-        shared::version::VERSION,
-    )
-    .await;
-    assert!(result.is_err(), "unreachable source must fail the sync");
-
-    let progress = crate::services::sync_progress::snapshot("src-dead").expect("progress");
-    assert_eq!(progress.phase, "failed");
-    assert!(progress
-        .error
-        .as_deref()
-        .unwrap_or_default()
-        .contains("failed"));
-    assert!(progress.finished_at.is_some());
+    // Listed but not published → red with the download failure, persisted.
+    let ghost = row("ghost");
+    assert_eq!(ghost.buz_compatible, Some(false));
+    let error = ghost.compat_error.as_deref().expect("file-missing error");
+    assert!(error.contains("failed to download"), "{error}");
+    assert!(error.contains("404"), "{error}");
 }

@@ -3,12 +3,13 @@
 //!
 //! A **source** is an `index.json` URL (schema §6.7.3: steps[] with id
 //! `<namespace>/<step-id>`, version, file, sha256, plus full scalar meta
-//! incl. `requires_buz` from newer generators — older sources without the
-//! meta fall back to per-template fetches). Syncing fetches the
+//! incl. `requires_buz` from newer generators). Syncing fetches the
 //! index, validates it, and stages every entry as a **pool row**
 //! (`enabled = auto_enable`). Pool rows — not the index — are what pipeline
-//! saves resolve against; template content is fetched on demand, verified
-//! against the pinned sha256, and cached content-addressed under
+//! saves resolve against; each staged template is probed once (download +
+//! sha256 + gate evaluation, content-cached) so listed-but-missing files
+//! surface as red pool rows, and template content is fetched on demand,
+//! verified against the pinned sha256, and cached content-addressed under
 //! `<data_dir>/step-index-cache/templates/`.
 
 use anyhow::anyhow;
@@ -68,6 +69,48 @@ pub struct SourceRow {
     pub last_sync_error: Option<String>,
 }
 
+/// The plugin's descriptive scalar meta (from a full-meta index / meta.json),
+/// persisted per pool row as JSON so the dashboard can say what the plugin
+/// does without downloading the template. Every field optional — legacy
+/// sources carry none of it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct PoolEntryMeta {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub description_zh: Option<String>,
+    pub category: Option<String>,
+    pub author: Option<String>,
+    pub publisher: Option<String>,
+    pub license: Option<String>,
+    pub source_repo: Option<String>,
+    pub engine: Option<String>,
+}
+
+fn meta_json_string(
+    category: &Option<String>,
+    name: &Option<String>,
+    description: &Option<String>,
+    description_zh: &Option<String>,
+    author: &Option<String>,
+    publisher: &Option<String>,
+    license: &Option<String>,
+    source_repo: &Option<String>,
+    engine: &Option<String>,
+) -> Option<String> {
+    let meta = PoolEntryMeta {
+        name: name.clone(),
+        description: description.clone(),
+        description_zh: description_zh.clone(),
+        category: category.clone(),
+        author: author.clone(),
+        publisher: publisher.clone(),
+        license: license.clone(),
+        source_repo: source_repo.clone(),
+        engine: engine.clone(),
+    };
+    serde_json::to_string(&meta).ok()
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PoolRow {
     pub namespace: String,
@@ -88,6 +131,9 @@ pub struct PoolRow {
     pub buz_compatible: Option<bool>,
     /// The gate-identical error behind `buz_compatible = Some(false)`.
     pub compat_error: Option<String>,
+    /// Descriptive meta from the source's full-meta index (name, description,
+    /// category, …). `None` = legacy source without meta.
+    pub meta: Option<PoolEntryMeta>,
 }
 
 /// Column tuple every step_pool row projection reads; `pool_row_from` is the
@@ -106,10 +152,12 @@ type PoolRowSql = (
     Option<String>,
     Option<i64>,
     Option<String>,
+    Option<String>,
 );
 
 const POOL_ROW_COLUMNS: &str = "p.namespace, p.step_id, p.version, p.sha256, p.source_id, s.name, \
-     p.file_path, p.enabled, p.reviewed, p.added_by, p.requires_buz, p.buz_compatible, p.compat_error";
+     p.file_path, p.enabled, p.reviewed, p.added_by, p.requires_buz, p.buz_compatible, p.compat_error, \
+     p.meta_json";
 
 fn pool_row_from(
     (
@@ -126,6 +174,7 @@ fn pool_row_from(
         requires_buz,
         buz_compatible,
         compat_error,
+        meta_json,
     ): PoolRowSql,
 ) -> PoolRow {
     PoolRow {
@@ -142,6 +191,7 @@ fn pool_row_from(
         requires_buz,
         buz_compatible: buz_compatible.map(|v| v != 0),
         compat_error,
+        meta: meta_json.and_then(|raw| serde_json::from_str(&raw).ok()),
     }
 }
 
@@ -175,6 +225,27 @@ pub struct IndexEntry {
     /// can rule on compatibility without downloading the template. Older
     /// sources omit it → fetch-and-evaluate fallback.
     pub requires_buz: Option<String>,
+    /// Full-meta scalar fields — persisted onto the pool row so the dashboard
+    /// can describe the plugin. Older sources omit them; the UI falls back to
+    /// the raw id.
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub description_zh: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub license: Option<String>,
+    #[serde(default)]
+    pub source_repo: Option<String>,
+    #[serde(default)]
+    pub engine: Option<String>,
 }
 
 fn parse_index(raw: &str) -> Result<StepIndex, String> {
@@ -317,13 +388,20 @@ async fn existing_rows_for_source(
 /// Compatibility verdict to persist for one entry: recomputed when the row is
 /// new, its pinned sha256 changed, or the manager version moved since the
 /// last check (startup sync then re-verifies every entry after an upgrade);
-/// otherwise the cached verdict is kept. A transient fetch failure leaves the
-/// verdict unknown (NULL) rather than poisoning it — the next sync retries.
-/// `declared_requires` (published in the source's full-meta index.json /
-/// meta.json) short-circuits the verdict WITHOUT downloading the template —
-/// the tradeoff is that spec-level problems (invalid YAML, missing
-/// attribution) surface at the enable gate instead of the pool list; sources
-/// without the field still take the fetch-and-evaluate path.
+/// otherwise the cached verdict is kept.
+///
+/// A re-check is a **probe**: the template is downloaded once (sha256-verified
+/// and content-address cached) and runs through the full gate evaluation, so
+/// a listed-but-missing file, a drifted mirror, or an invalid spec all turn
+/// into a red verdict at sync time instead of a surprise at enable time.
+/// Steady-state syncs — nothing staged, nothing changed — keep the cached
+/// verdict and stay at zero template requests; the cache also absorbs
+/// manager-upgrade re-checks (unchanged content = cache hit).
+/// `declared_requires` (from the source's full-meta index.json / meta.json)
+/// only disambiguates a probe failure: an index whose gate is already unmet
+/// reports that; a gate-satisfying entry with a dead file reports the file
+/// problem. Sources without the field leave the verdict unknown (NULL) on
+/// probe failure — retried on the next sync.
 /// Returns `(requires_buz, buz_compatible, compat_error, checked_against)`.
 async fn resolve_compat(
     http: &reqwest::Client,
@@ -352,25 +430,6 @@ async fn resolve_compat(
             state.compat_checked_against.clone(),
         );
     }
-    if let Some(requires) = declared_requires {
-        // Same message the enable gate reports (validate_step_spec wraps the
-        // requirement error with the `requires_buz:` prefix), so the list
-        // hint and a gate refusal can never disagree.
-        return match shared::step_spec::buz_requirement_satisfied(requires, current_buz) {
-            Ok(()) => (
-                Some(requires.to_string()),
-                Some(true),
-                None,
-                Some(current_buz.to_string()),
-            ),
-            Err(error) => (
-                Some(requires.to_string()),
-                Some(false),
-                Some(format!("requires_buz: {error}")),
-                Some(current_buz.to_string()),
-            ),
-        };
-    }
     match fetch_content(http, source_url, file_path, sha256).await {
         Ok(content) => {
             match evaluate_entry_content(&content, namespace, step_id, version, current_buz) {
@@ -388,13 +447,56 @@ async fn resolve_compat(
                 ),
             }
         }
-        Err(error) => {
-            tracing::warn!(
-                plugin = %format!("{namespace}/{step_id}@{version}"),
-                error = %error,
-                "template fetch failed during sync — compatibility stays unknown"
-            );
-            (None, None, None, None)
+        Err(fetch_error) => {
+            let incompatible_per_index = declared_requires
+                .map(|requires| {
+                    matches!(
+                        shared::step_spec::buz_requirement_satisfied(requires, current_buz),
+                        Err(_)
+                    )
+                })
+                .unwrap_or(false);
+            match declared_requires {
+                // Same message the enable gate reports (validate_step_spec
+                // wraps the requirement error with the `requires_buz:`
+                // prefix), so the list hint and a gate refusal never disagree.
+                Some(requires) if incompatible_per_index => {
+                    let error = shared::step_spec::buz_requirement_satisfied(requires, current_buz)
+                        .unwrap_err();
+                    (
+                        Some(requires.to_string()),
+                        Some(false),
+                        Some(format!("requires_buz: {error}")),
+                        Some(current_buz.to_string()),
+                    )
+                }
+                // The gate is satisfiable per the index — the missing file is
+                // the red flag. Persisted (not NULL) so the curator sees the
+                // half-published mirror immediately instead of at enable time.
+                Some(requires) => {
+                    tracing::warn!(
+                        plugin = %format!("{namespace}/{step_id}@{version}"),
+                        error = %fetch_error,
+                        "template probe failed — source lists the file but it does not download"
+                    );
+                    (
+                        Some(requires.to_string()),
+                        Some(false),
+                        Some(format!(
+                            "template file is listed in the source index but failed to download: {fetch_error}"
+                        )),
+                        Some(current_buz.to_string()),
+                    )
+                }
+                None => {
+                    tracing::warn!(
+                        plugin = %format!("{namespace}/{step_id}@{version}"),
+                        error = %fetch_error,
+                        "template fetch failed during sync — compatibility stays unknown"
+                    );
+                    (None, None, None, None)
+                }
+            }
         }
     }
 }
@@ -555,11 +657,22 @@ async fn sync_source_inner(
             if enable {
                 init_slot_open = false;
             }
+            let meta_json = meta_json_string(
+                &entry.category,
+                &entry.name,
+                &entry.description,
+                &entry.description_zh,
+                &entry.author,
+                &entry.publisher,
+                &entry.license,
+                &entry.source_repo,
+                &entry.engine,
+            );
             sqlx::query(
                 "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path, \
                                         enabled, reviewed, added_by, requires_buz, buz_compatible, \
-                                        compat_error, compat_checked_against)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sync', ?, ?, ?, ?)
+                                        compat_error, compat_checked_against, meta_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sync', ?, ?, ?, ?, ?)
                  ON CONFLICT(namespace, step_id, version) DO UPDATE SET
                    sha256 = excluded.sha256,
                    source_id = excluded.source_id,
@@ -568,7 +681,8 @@ async fn sync_source_inner(
                    requires_buz = excluded.requires_buz,
                    buz_compatible = excluded.buz_compatible,
                    compat_error = excluded.compat_error,
-                   compat_checked_against = excluded.compat_checked_against",
+                   compat_checked_against = excluded.compat_checked_against,
+                   meta_json = excluded.meta_json",
                 // NOTE: `enabled` is deliberately NOT updated on conflict — a
                 // re-sync must never reset the curator's enable/disable verdict.
                 // New plugins initialize via the INSERT values (latest
@@ -589,6 +703,7 @@ async fn sync_source_inner(
             .bind(buz_compatible.map(|b| b as i64))
             .bind(&compat_error)
             .bind(&checked_against)
+            .bind(&meta_json)
             .execute(pool)
             .await?;
             super::sync_progress::tick_entry(&source.id);
@@ -693,6 +808,24 @@ struct PluginMetaEntry {
     sha256: String,
     #[serde(default)]
     requires_buz: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    description_zh: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    publisher: Option<String>,
+    #[serde(default)]
+    license: Option<String>,
+    #[serde(default)]
+    source_repo: Option<String>,
+    #[serde(default)]
+    engine: Option<String>,
 }
 
 /// Upsert one plugin's rows from its meta.json. Same conflict semantics as
@@ -748,11 +881,22 @@ async fn upsert_plugin_meta(
             entry.requires_buz.as_deref(),
         )
         .await;
+        let meta_json = meta_json_string(
+            &entry.category,
+            &entry.name,
+            &entry.description,
+            &entry.description_zh,
+            &entry.author,
+            &entry.publisher,
+            &entry.license,
+            &entry.source_repo,
+            &entry.engine,
+        );
         sqlx::query(
             "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path, \
                                     enabled, reviewed, added_by, requires_buz, buz_compatible, \
-                                    compat_error, compat_checked_against)
-             VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'refresh', ?, ?, ?, ?)
+                                    compat_error, compat_checked_against, meta_json)
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'refresh', ?, ?, ?, ?, ?)
              ON CONFLICT(namespace, step_id, version) DO UPDATE SET
                sha256 = excluded.sha256,
                source_id = excluded.source_id,
@@ -761,7 +905,8 @@ async fn upsert_plugin_meta(
                requires_buz = excluded.requires_buz,
                buz_compatible = excluded.buz_compatible,
                compat_error = excluded.compat_error,
-               compat_checked_against = excluded.compat_checked_against",
+               compat_checked_against = excluded.compat_checked_against,
+               meta_json = excluded.meta_json",
         )
         .bind(namespace)
         .bind(step_id)
@@ -774,6 +919,7 @@ async fn upsert_plugin_meta(
         .bind(buz_compatible.map(|b| b as i64))
         .bind(&compat_error)
         .bind(&checked_against)
+        .bind(&meta_json)
         .execute(pool)
         .await
         .map_err(|e| anyhow!("{e}"))?;
@@ -1148,8 +1294,10 @@ async fn http_get_text(http: &reqwest::Client, url: &str) -> Result<String, anyh
         }
     })?;
     if !resp.status().is_success() {
+        // This helper serves index.json, reviews.json, meta.json AND template
+        // files, so the hint stays generic — callers add their own context.
         return Err(anyhow!(
-            "source returned HTTP {} — check that {url} serves a valid index.json",
+            "source returned HTTP {} for {url} — the file does not exist or the path is wrong",
             resp.status()
         ));
     }
