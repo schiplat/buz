@@ -4,7 +4,7 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
-import { Plus, X, Copy, Check, Cpu, HardDrive, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw, KeyRound } from '@lucide/vue'
+import { Plus, X, Copy, Check, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw, KeyRound, ChevronRight } from '@lucide/vue'
 import { runnersApi, type Runner, type RunnerExecutionMode } from '@/api/runners'
 import { teamsApi, type Team } from '@/api/teams'
 import { formatLocalDateTime } from '@/utils/time'
@@ -95,7 +95,7 @@ const reissuedTokenTomlLine = computed(() =>
 // Drawer
 const activeRunner = ref<Runner | null>(null)
 const drawerOpen = ref(false)
-const detailTab = ref<'overview' | 'network' | 'logs'>('overview')
+const detailTab = ref<'overview' | 'policy' | 'network' | 'logs'>('overview')
 const editMaxConcurrent = ref(1)
 const editLabels = ref('')
 const editCleanWorkspace = ref(false)
@@ -164,6 +164,8 @@ function openDetail(r: Runner) {
   editSshHostKeyPolicy.value = r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure'
   editTeamId.value = r.team_id ?? 'shared'
   editExecutionMode.value = r.execution_mode ?? 'host'
+  showVirtualIfaces.value = false
+  copiedNetValue.value = null
   drawerOpen.value = true
   loadRunnerEvents(r.id)
 }
@@ -403,6 +405,89 @@ const clockChip = computed(() => {
   return info ? { ...info, cls: clockToneClass(info.tone) } : null
 })
 
+// ── Overview: platform dossier + resource health ──
+type ResourceTone = 'ok' | 'warn' | 'crit'
+/** Amber past 80%, red past 95% — color only signals stress. */
+const resourceTone = (pct: number): ResourceTone => (pct > 95 ? 'crit' : pct > 80 ? 'warn' : 'ok')
+const toneBarClass: Record<ResourceTone, string> = { ok: 'bg-emerald-400', warn: 'bg-amber-500', crit: 'bg-red-500' }
+const toneTextClass: Record<ResourceTone, string> = { ok: '', warn: 'text-amber-500', crit: 'text-red-500' }
+const toneStatusClass: Record<ResourceTone, string> = {
+  ok: 'text-emerald-600 dark:text-emerald-400',
+  warn: 'text-amber-600 dark:text-amber-400',
+  crit: 'text-red-600 dark:text-red-400',
+}
+const toneDotClass: Record<ResourceTone, string> = { ok: 'bg-emerald-500', warn: 'bg-amber-500', crit: 'bg-red-500' }
+
+const cpuUsage = computed(() => activeRunner.value?.system_info?.cpu_usage_percent ?? 0)
+const memUsage = computed(() => {
+  const si = activeRunner.value?.system_info
+  return si ? memPct(si.memory_total_mb, si.memory_used_mb) : 0
+})
+const diskUsage = computed(() => {
+  const si = activeRunner.value?.system_info
+  return si ? diskPct(si.disk_total_gb, si.disk_used_gb) : 0
+})
+const cpuTone = computed(() => resourceTone(cpuUsage.value))
+const memTone = computed(() => resourceTone(memUsage.value))
+const diskTone = computed(() => resourceTone(diskUsage.value))
+
+const memLine = computed(() => {
+  const si = activeRunner.value?.system_info
+  return si ? `${fmtMB(si.memory_used_mb)} / ${fmtMB(si.memory_total_mb)}` : ''
+})
+const diskLine = computed(() => {
+  const si = activeRunner.value?.system_info
+  return si ? `${fmtGB(si.disk_used_gb)} / ${fmtGB(si.disk_total_gb)}` : ''
+})
+const swapLine = computed(() => {
+  const si = activeRunner.value?.system_info
+  if (!si || si.swap_total_mb <= 0) return '—'
+  return `${fmtMB(si.swap_used_mb)} / ${fmtMB(si.swap_total_mb)}`
+})
+
+/** One-line verdict for the Resources strip, derived from the worst metric. */
+const resourceHealth = computed(() => {
+  if (!activeRunner.value?.system_info) return null
+  const items = [
+    { name: 'CPU', pct: cpuUsage.value },
+    { name: 'Memory', pct: memUsage.value },
+    { name: 'Disk', pct: diskUsage.value },
+  ]
+  const worst = items.reduce((a, b) => (b.pct > a.pct ? b : a))
+  const tone = resourceTone(worst.pct)
+  return {
+    tone,
+    text: tone === 'ok'
+      ? 'All resources normal'
+      : `${worst.name} ${tone === 'crit' ? 'critical' : 'usage elevated'} — ${fmtPct(worst.pct)}`,
+  }
+})
+
+// ── Network tab: interfaces with bound IPs + MAC ──
+/** Mirror of the Runner-side demoted/virtual interface rules (runner sysinfo). */
+function isVirtualIface(name: string): boolean {
+  const n = name.toLowerCase()
+  return n === 'lo' || n === 'docker0'
+    || n.startsWith('br-') || n.startsWith('veth') || n.startsWith('virbr')
+    || n.startsWith('cni') || n.startsWith('flannel') || n.startsWith('tun') || n.startsWith('tap')
+}
+const physicalIfaces = computed(() => (activeRunner.value?.system_info?.network_interfaces ?? []).filter((n) => !isVirtualIface(n.name)))
+const virtualIfaces = computed(() => (activeRunner.value?.system_info?.network_interfaces ?? []).filter((n) => isVirtualIface(n.name)))
+/** First advertised address — the Runner already sorts Manager-subnet IPs first. */
+const primaryIp = computed(() => activeRunner.value?.system_info?.ip_addresses?.[0] ?? null)
+const showVirtualIfaces = ref(false)
+const copiedNetValue = ref<string | null>(null)
+
+async function copyNetValue(value: string) {
+  const ok = await copyText(value)
+  if (ok) {
+    copiedNetValue.value = value
+    setTimeout(() => {
+      if (copiedNetValue.value === value) copiedNetValue.value = null
+    }, 1500)
+  }
+}
+
 const eventBadge = (t: string) => {
   const m: Record<string, string> = {
     created: 'bg-slate-500/10 text-slate-600',
@@ -584,20 +669,126 @@ const eventBadge = (t: string) => {
 
           <!-- Body -->
           <div class="px-6 py-5 space-y-5" v-if="activeRunner">
-            <!-- Quick stats -->
-            <div v-if="hasInfo(activeRunner)" class="flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-muted-foreground">
-              <span>Runner v{{ activeRunner.system_info!.runner_version }}</span>
-              <span>{{ activeRunner.system_info!.cpu_arch }} · {{ activeRunner.system_info!.cpu_cores }} cores</span>
-              <span>Uptime {{ fmtUptime(activeRunner.system_info!.uptime_seconds) }}</span>
-              <span
-                v-if="clockChip"
-                :class="clockChip.cls"
-                :title="clockChip.title"
-              >Clock {{ clockChip.text }} vs Manager</span>
+            <!-- Tabs: rendered even before the first heartbeat so Policy stays reachable -->
+            <div class="flex rounded-xl bg-muted p-1">
+              <button
+                class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
+                :class="detailTab === 'overview' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
+                @click="detailTab = 'overview'"
+              >Overview</button>
+              <button
+                class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
+                :class="detailTab === 'policy' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
+                @click="detailTab = 'policy'"
+              >Policy<span v-if="policyDirty()" class="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-500" title="Unsaved policy changes"></span></button>
+              <button
+                class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
+                :class="detailTab === 'network' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
+                @click="detailTab = 'network'"
+              >Network</button>
+              <button
+                class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
+                :class="detailTab === 'logs' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
+                @click="detailTab = 'logs'"
+              >Log</button>
             </div>
 
-            <!-- Runner policy (UI-managed) -->
-            <div class="rounded-xl border border-border/60 bg-muted/30 px-3.5 py-3 space-y-3">
+            <!-- Overview tab: platform dossier + resources -->
+            <div v-show="detailTab === 'overview'" class="space-y-3">
+              <template v-if="hasInfo(activeRunner)">
+                <div class="rounded-xl border border-border/60 bg-background px-3.5 py-3.5">
+                  <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Platform</div>
+                  <div class="text-[15px] font-semibold tracking-tight leading-snug mt-2">{{ activeRunner.system_info!.os }}</div>
+                  <div class="font-mono text-[11.5px] text-muted-foreground mt-1">{{ activeRunner.system_info!.hostname }}</div>
+                  <div class="border-t border-border/40 my-3"></div>
+                  <dl class="grid grid-cols-2 gap-x-5 gap-y-3">
+                    <div>
+                      <dt class="text-[11px] text-muted-foreground">Kernel</dt>
+                      <dd class="font-mono text-xs mt-0.5 truncate">{{ activeRunner.system_info!.kernel_version }}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-[11px] text-muted-foreground">Cores</dt>
+                      <dd class="font-mono text-xs mt-0.5">{{ activeRunner.system_info!.cpu_cores }} · {{ activeRunner.system_info!.cpu_arch }}</dd>
+                    </div>
+                    <div class="col-span-2">
+                      <dt class="text-[11px] text-muted-foreground">CPU</dt>
+                      <dd class="font-mono text-xs mt-0.5 truncate">{{ activeRunner.system_info!.cpu_model }}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-[11px] text-muted-foreground">Runner</dt>
+                      <dd class="font-mono text-xs mt-0.5">v{{ activeRunner.system_info!.runner_version }}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-[11px] text-muted-foreground">Uptime</dt>
+                      <dd class="font-mono text-xs mt-0.5">{{ fmtUptime(activeRunner.system_info!.uptime_seconds) }}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-[11px] text-muted-foreground">Swap</dt>
+                      <dd class="font-mono text-xs mt-0.5">{{ swapLine }}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-[11px] text-muted-foreground">Clock skew</dt>
+                      <dd class="font-mono text-xs mt-0.5" :class="clockChip ? clockChip.cls : ''" :title="clockChip?.title">
+                        {{ clockChip ? `${clockChip.text} vs Manager` : '—' }}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+
+                <div class="rounded-xl border border-border/60 bg-background px-3.5 py-3.5">
+                  <div class="flex items-center justify-between mb-3">
+                    <span class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Resources</span>
+                    <span
+                      v-if="resourceHealth"
+                      class="inline-flex items-center gap-1.5 text-[11px] font-medium"
+                      :class="toneStatusClass[resourceHealth.tone]"
+                    >
+                      <span class="h-1.5 w-1.5 rounded-full" :class="toneDotClass[resourceHealth.tone]"></span>{{ resourceHealth.text }}
+                    </span>
+                  </div>
+                  <div class="grid grid-cols-3 gap-4">
+                    <div>
+                      <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">CPU</div>
+                      <div class="text-lg font-semibold tabular-nums mt-1" :class="toneTextClass[cpuTone]">
+                        {{ cpuUsage.toFixed(1) }}<span class="text-[11.5px] font-normal text-muted-foreground">%</span>
+                      </div>
+                      <div class="h-1 rounded-full bg-muted mt-1.5 overflow-hidden">
+                        <div class="h-1 rounded-full transition-all" :class="toneBarClass[cpuTone]" :style="{ width: cpuUsage + '%' }"></div>
+                      </div>
+                      <div class="text-[10.5px] text-muted-foreground font-mono mt-1.5">{{ activeRunner.system_info!.cpu_cores }} cores</div>
+                    </div>
+                    <div>
+                      <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Memory</div>
+                      <div class="text-lg font-semibold tabular-nums mt-1" :class="toneTextClass[memTone]">
+                        {{ memUsage.toFixed(1) }}<span class="text-[11.5px] font-normal text-muted-foreground">%</span>
+                      </div>
+                      <div class="h-1 rounded-full bg-muted mt-1.5 overflow-hidden">
+                        <div class="h-1 rounded-full transition-all" :class="toneBarClass[memTone]" :style="{ width: memUsage + '%' }"></div>
+                      </div>
+                      <div class="text-[10.5px] text-muted-foreground font-mono mt-1.5">{{ memLine }}</div>
+                    </div>
+                    <div>
+                      <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Disk</div>
+                      <div class="text-lg font-semibold tabular-nums mt-1" :class="toneTextClass[diskTone]">
+                        {{ diskUsage.toFixed(1) }}<span class="text-[11.5px] font-normal text-muted-foreground">%</span>
+                      </div>
+                      <div class="h-1 rounded-full bg-muted mt-1.5 overflow-hidden">
+                        <div class="h-1 rounded-full transition-all" :class="toneBarClass[diskTone]" :style="{ width: diskUsage + '%' }"></div>
+                      </div>
+                      <div class="text-[10.5px] text-muted-foreground font-mono mt-1.5">{{ diskLine }}</div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <div v-else class="rounded-xl border border-border/60 bg-muted/30 px-4 py-6 text-center">
+                <Monitor class="h-8 w-8 mx-auto text-muted-foreground/40 mb-3" />
+                <p class="text-sm text-muted-foreground">Waiting for first heartbeat</p>
+                <p class="text-xs text-muted-foreground/60 mt-1">System info will appear once the Runner reports in.</p>
+              </div>
+            </div>
+
+            <!-- Policy tab: UI-managed runner policy -->
+            <div v-show="detailTab === 'policy'" class="rounded-xl border border-border/60 bg-muted/30 px-3.5 py-3 space-y-3">
               <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Runner Policy</div>
               <div>
                 <label class="text-xs text-muted-foreground block mb-1">Team scope</label>
@@ -715,192 +906,116 @@ const eventBadge = (t: string) => {
               <p class="text-[10px] text-muted-foreground">Label changes apply immediately for job matching. Engine / concurrency changes apply on the next runner heartbeat (~30s).</p>
             </div>
 
-            <!-- OS -->
-            <div v-if="hasInfo(activeRunner)" class="rounded-xl border border-border/60 bg-muted/30 px-3.5 py-3">
-              <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Operating System</div>
-              <div class="text-sm">{{ activeRunner.system_info!.os }}</div>
-              <div class="text-xs text-muted-foreground font-mono mt-1">Kernel {{ activeRunner.system_info!.kernel_version }}</div>
-            </div>
+            <!-- Network tab: interfaces with bound IPs + MAC -->
+            <div v-show="detailTab === 'network'" class="space-y-3">
+              <div v-if="hasInfo(activeRunner)" class="rounded-xl border border-border/60 bg-background px-3.5 py-3.5">
+                <div class="flex items-center justify-between">
+                  <span class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Interfaces</span>
+                  <span v-if="physicalIfaces.length || virtualIfaces.length" class="text-[10px] text-muted-foreground/70">
+                    {{ physicalIfaces.length }} physical · {{ virtualIfaces.length }} virtual
+                  </span>
+                </div>
+                <div v-if="!physicalIfaces.length && !virtualIfaces.length" class="text-xs text-muted-foreground mt-2">No interfaces reported</div>
 
-            <!-- Waiting -->
-            <div v-if="!hasInfo(activeRunner)" class="rounded-xl border border-border/60 bg-muted/30 px-4 py-6 text-center">
-              <Monitor class="h-8 w-8 mx-auto text-muted-foreground/40 mb-3" />
-              <p class="text-sm text-muted-foreground">Waiting for first heartbeat</p>
-              <p class="text-xs text-muted-foreground/60 mt-1">System info will appear once the Runner reports in.</p>
-            </div>
-
-            <!-- Tabs -->
-            <template v-if="hasInfo(activeRunner)">
-              <div class="flex rounded-xl bg-muted p-1">
-                <button
-                  class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-                  :class="detailTab === 'overview' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
-                  @click="detailTab = 'overview'"
-                >Overview</button>
-                <button
-                  class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-                  :class="detailTab === 'network' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
-                  @click="detailTab = 'network'"
-                >Network</button>
-                <button
-                  class="flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-                  :class="detailTab === 'logs' ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'"
-                  @click="detailTab = 'logs'"
-                >Log</button>
-              </div>
-
-              <!-- Overview tab: CPU / Memory / Disk -->
-              <div v-show="detailTab === 'overview'" class="grid grid-cols-1 gap-3">
-                <!-- CPU -->
-                <div class="rounded-xl border border-border/60 bg-background px-3.5 py-3">
-                  <div class="flex items-center gap-2 mb-1.5">
-                    <Cpu class="h-3.5 w-3.5 text-primary" />
-                    <span class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">CPU</span>
-                  </div>
-                  <div class="flex items-baseline gap-2">
+                <div
+                  v-for="nic in physicalIfaces"
+                  :key="nic.name"
+                  class="py-2.5 border-b border-border/30 last:border-b-0"
+                >
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] font-semibold">{{ nic.name }}</span>
                     <span
-                      class="text-base font-bold tabular-nums"
-                      :class="(activeRunner.system_info!.cpu_usage_percent ?? 0) > 80 ? 'text-amber-500' : ''"
-                    >{{ (activeRunner.system_info!.cpu_usage_percent ?? 0).toFixed(1) }}%</span>
-                    <span class="text-xs text-muted-foreground">{{ activeRunner.system_info!.cpu_cores }} cores</span>
+                      v-if="primaryIp && nic.ips.includes(primaryIp)"
+                      class="inline-flex items-center rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400"
+                      title="Primary address — same subnet as the Manager"
+                    >to Manager</span>
                   </div>
-                  <div class="flex items-center gap-2 mt-2">
-                    <div class="h-1 flex-1 rounded-full bg-muted">
-                      <div
-                        class="h-1 rounded-full transition-all"
-                        :class="(activeRunner.system_info!.cpu_usage_percent ?? 0) > 80 ? 'bg-amber-500' : 'bg-emerald-400'"
-                        :style="{ width: (activeRunner.system_info!.cpu_usage_percent ?? 0) + '%' }"
-                      ></div>
-                    </div>
+                  <div v-if="!nic.ips.length" class="text-xs text-muted-foreground mt-1">No addresses</div>
+                  <div v-for="ip in nic.ips" :key="ip" class="flex items-center justify-between gap-2 mt-1.5">
+                    <span class="font-mono text-[12.5px]">{{ ip }}</span>
+                    <button type="button" class="text-muted-foreground/60 hover:text-foreground transition-colors" :title="`Copy ${ip}`" @click="copyNetValue(ip)">
+                      <Check v-if="copiedNetValue === ip" class="h-3 w-3 text-emerald-500" />
+                      <Copy v-else class="h-3 w-3" />
+                    </button>
                   </div>
-                  <div class="text-[10px] text-muted-foreground mt-1">{{ activeRunner.system_info!.cpu_model }}</div>
+                  <div v-if="nic.mac" class="flex items-center justify-between gap-2 mt-2">
+                    <span class="text-[11px] text-muted-foreground">MAC <span class="font-mono text-[11.5px]">{{ nic.mac }}</span></span>
+                    <button type="button" class="text-muted-foreground/60 hover:text-foreground transition-colors" title="Copy MAC" @click="copyNetValue(nic.mac)">
+                      <Check v-if="copiedNetValue === nic.mac" class="h-3 w-3 text-emerald-500" />
+                      <Copy v-else class="h-3 w-3" />
+                    </button>
+                  </div>
                 </div>
 
-                <!-- Memory -->
-                <div class="rounded-xl border border-border/60 bg-background px-3.5 py-3">
-                  <div class="flex items-center gap-2 mb-1.5">
-                    <Monitor class="h-3.5 w-3.5 text-primary" />
-                    <span class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Memory</span>
-                  </div>
-                  <div class="flex items-baseline gap-2">
-                    <span class="text-base font-bold tabular-nums">{{ fmtPct(memPct(activeRunner.system_info!.memory_total_mb, activeRunner.system_info!.memory_used_mb)) }}</span>
-                    <span class="text-xs text-muted-foreground">{{ fmtMB(activeRunner.system_info!.memory_used_mb) }} / {{ fmtMB(activeRunner.system_info!.memory_total_mb) }}</span>
-                  </div>
-                  <div class="flex items-center gap-2 mt-2">
-                    <div class="h-1 flex-1 rounded-full bg-muted">
-                      <div class="h-1 rounded-full transition-all" :class="memPct(activeRunner.system_info!.memory_total_mb, activeRunner.system_info!.memory_used_mb) > 80 ? 'bg-amber-500' : 'bg-emerald-400'" :style="{ width: memPct(activeRunner.system_info!.memory_total_mb, activeRunner.system_info!.memory_used_mb) + '%' }"></div>
-                    </div>
-                  </div>
-                  <div v-if="activeRunner.system_info!.swap_total_mb > 0" class="text-[10px] text-muted-foreground mt-1.5">Swap {{ fmtMB(activeRunner.system_info!.swap_used_mb) }} / {{ fmtMB(activeRunner.system_info!.swap_total_mb) }}</div>
-                </div>
-
-                <!-- Disk -->
-                <div class="rounded-xl border border-border/60 bg-background px-3.5 py-3">
-                  <div class="flex items-center gap-2 mb-1.5">
-                    <HardDrive class="h-3.5 w-3.5 text-primary" />
-                    <span class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Disk</span>
-                  </div>
-                  <div class="flex items-baseline gap-2">
-                    <span class="text-base font-bold tabular-nums">{{ fmtPct(diskPct(activeRunner.system_info!.disk_total_gb, activeRunner.system_info!.disk_used_gb)) }}</span>
-                    <span class="text-xs text-muted-foreground">{{ fmtGB(activeRunner.system_info!.disk_used_gb) }} / {{ fmtGB(activeRunner.system_info!.disk_total_gb) }}</span>
-                  </div>
-                  <div class="flex items-center gap-2 mt-2">
-                    <div class="h-1 flex-1 rounded-full bg-muted">
-                      <div class="h-1 rounded-full transition-all" :class="diskPct(activeRunner.system_info!.disk_total_gb, activeRunner.system_info!.disk_used_gb) > 80 ? 'bg-amber-500' : 'bg-emerald-400'" :style="{ width: diskPct(activeRunner.system_info!.disk_total_gb, activeRunner.system_info!.disk_used_gb) + '%' }"></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Network tab: IPs + interfaces detail -->
-              <div v-show="detailTab === 'network'" class="space-y-3">
-                <!-- IP addresses -->
-                <div class="rounded-xl border border-border/60 bg-background px-3.5 py-3">
-                  <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">IP Addresses</div>
-                  <div v-if="activeRunner.system_info!.ip_addresses && activeRunner.system_info!.ip_addresses.length > 0" class="space-y-1">
-                    <div v-for="ip in activeRunner.system_info!.ip_addresses" :key="ip" class="flex items-center gap-2 text-xs font-mono">
-                      <div class="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0"></div>
-                      <span>{{ ip }}</span>
-                    </div>
-                  </div>
-                  <div v-else class="text-xs text-muted-foreground">No external IPs</div>
-                </div>
-
-                <!-- Interfaces -->
-                <div class="rounded-xl border border-border/60 bg-background px-3.5 py-3">
-                  <div class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                    Interfaces
-                    <span v-if="activeRunner.system_info!.network_interfaces && activeRunner.system_info!.network_interfaces.length > 0" class="text-muted-foreground/60 ml-1">
-                      ({{ activeRunner.system_info!.network_interfaces.length }})
-                    </span>
-                  </div>
-                  <div v-if="activeRunner.system_info!.network_interfaces && activeRunner.system_info!.network_interfaces.length > 0">
-                    <div class="flex flex-wrap gap-1.5">
-                      <span
-                        v-for="nic in activeRunner.system_info!.network_interfaces"
-                        :key="nic.name"
-                        class="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/40 px-2.5 py-1.5 text-xs font-mono"
-                      >
-                        <span class="font-medium text-foreground">{{ nic.name }}</span>
-                        <span v-if="nic.ips[0]" class="text-muted-foreground">{{ nic.ips[0] }}</span>
-                        <span v-else class="text-[10px] text-muted-foreground/50">{{ nic.mac }}</span>
-                      </span>
-                    </div>
-                  </div>
-                  <div v-else class="text-xs text-muted-foreground">No interfaces reported</div>
-                </div>
-              </div>
-            </template>
-
-            <!-- Logs tab -->
-            <template v-if="hasInfo(activeRunner)">
-              <div v-show="detailTab === 'logs'" class="space-y-2">
-                <div v-if="eventsLoading" class="text-center py-8 text-xs text-muted-foreground">Loading…</div>
-                <div v-else-if="runnerEvents.length === 0" class="rounded-xl border border-border/60 bg-background px-4 py-8 text-center">
-                  <ScrollText class="h-8 w-8 mx-auto text-muted-foreground/30 mb-3" />
-                  <p class="text-sm text-muted-foreground">No events recorded yet</p>
-                  <p class="text-xs text-muted-foreground/60 mt-1">Events appear when the runner registers, claims jobs, or changes state.</p>
-                </div>
-                <div v-else class="space-y-1.5">
-                  <div
-                    v-for="ev in runnerEvents"
-                    :key="ev.id"
-                    class="rounded-lg border border-border/40 bg-background px-3.5 py-2.5 flex items-start gap-3"
+                <div v-if="virtualIfaces.length" class="pt-1" :class="physicalIfaces.length ? 'border-t border-border/30 mt-1' : ''">
+                  <button
+                    type="button"
+                    class="flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground hover:text-foreground transition-colors py-2"
+                    @click="showVirtualIfaces = !showVirtualIfaces"
                   >
-                    <span
-                      class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide mt-0.5 shrink-0"
-                      :class="eventBadge(ev.event_type)"
-                    >{{ ev.event_type }}</span>
-                    <div class="min-w-0 flex-1">
-                      <p class="text-xs text-foreground leading-snug">{{ ev.message }}</p>
-                      <p class="text-[10px] text-muted-foreground mt-1 font-mono">{{ formatLocalDateTime(ev.created_at) }}</p>
+                    <ChevronRight class="h-3 w-3 transition-transform" :class="showVirtualIfaces ? 'rotate-90' : ''" />
+                    Virtual &amp; bridges ({{ virtualIfaces.length }})
+                  </button>
+                  <div v-show="showVirtualIfaces" class="space-y-1.5 pb-1">
+                    <div v-for="nic in virtualIfaces" :key="nic.name" class="min-w-0">
+                      <div class="text-xs font-medium text-muted-foreground">{{ nic.name }}</div>
+                      <div class="font-mono text-[11px] text-muted-foreground/70 truncate">
+                        {{ nic.ips.join(', ') || 'no address' }}<template v-if="nic.mac"> · {{ nic.mac }}</template>
+                      </div>
                     </div>
-                  </div>
-                  <!-- Pagination -->
-                  <div v-if="eventsTotalPages > 1" class="flex items-center justify-center gap-1 pt-2 pb-1">
-                    <button
-                      class="px-2 py-1 rounded-sm text-[10px] transition-colors"
-                      :class="eventsPage === 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
-                      :disabled="eventsPage === 1"
-                      @click="eventsGo(eventsPage - 1)"
-                    >Prev</button>
-                    <button
-                      v-for="p in Math.min(eventsTotalPages, 5)"
-                      :key="'ep-'+p"
-                      class="w-6 h-6 rounded-sm text-[10px] tabular-nums transition-colors"
-                      :class="p === eventsPage ? 'bg-primary text-primary-foreground font-semibold' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
-                      @click="eventsGo(p)"
-                    >{{ p }}</button>
-                    <button
-                      class="px-2 py-1 rounded-sm text-[10px] transition-colors"
-                      :class="eventsPage === eventsTotalPages ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
-                      :disabled="eventsPage === eventsTotalPages"
-                      @click="eventsGo(eventsPage + 1)"
-                    >Next</button>
                   </div>
                 </div>
               </div>
-            </template>
+              <p v-else class="text-xs text-muted-foreground px-1">Waiting for the first heartbeat — network info appears once the Runner reports in.</p>
+            </div>
+
+            <!-- Log tab -->
+            <div v-show="detailTab === 'logs'" class="space-y-2">
+              <div v-if="eventsLoading" class="text-center py-8 text-xs text-muted-foreground">Loading…</div>
+              <div v-else-if="runnerEvents.length === 0" class="rounded-xl border border-border/60 bg-background px-4 py-8 text-center">
+                <ScrollText class="h-8 w-8 mx-auto text-muted-foreground/30 mb-3" />
+                <p class="text-sm text-muted-foreground">No events recorded yet</p>
+                <p class="text-xs text-muted-foreground/60 mt-1">Events appear when the runner registers, claims jobs, or changes state.</p>
+              </div>
+              <div v-else class="space-y-1.5">
+                <div
+                  v-for="ev in runnerEvents"
+                  :key="ev.id"
+                  class="rounded-lg border border-border/40 bg-background px-3.5 py-2.5 flex items-start gap-3"
+                >
+                  <span
+                    class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide mt-0.5 shrink-0"
+                    :class="eventBadge(ev.event_type)"
+                  >{{ ev.event_type }}</span>
+                  <div class="min-w-0 flex-1">
+                    <p class="text-xs text-foreground leading-snug">{{ ev.message }}</p>
+                    <p class="text-[10px] text-muted-foreground mt-1 font-mono">{{ formatLocalDateTime(ev.created_at) }}</p>
+                  </div>
+                </div>
+                <!-- Pagination -->
+                <div v-if="eventsTotalPages > 1" class="flex items-center justify-center gap-1 pt-2 pb-1">
+                  <button
+                    class="px-2 py-1 rounded-sm text-[10px] transition-colors"
+                    :class="eventsPage === 1 ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+                    :disabled="eventsPage === 1"
+                    @click="eventsGo(eventsPage - 1)"
+                  >Prev</button>
+                  <button
+                    v-for="p in Math.min(eventsTotalPages, 5)"
+                    :key="'ep-'+p"
+                    class="w-6 h-6 rounded-sm text-[10px] tabular-nums transition-colors"
+                    :class="p === eventsPage ? 'bg-primary text-primary-foreground font-semibold' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+                    @click="eventsGo(p)"
+                  >{{ p }}</button>
+                  <button
+                    class="px-2 py-1 rounded-sm text-[10px] transition-colors"
+                    :class="eventsPage === eventsTotalPages ? 'text-muted-foreground/40 cursor-default' : 'text-muted-foreground hover:bg-muted hover:text-foreground'"
+                    :disabled="eventsPage === eventsTotalPages"
+                    @click="eventsGo(eventsPage + 1)"
+                  >Next</button>
+                </div>
+              </div>
+            </div>
 
           </div>
         </div>
