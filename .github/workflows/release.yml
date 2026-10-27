@@ -105,7 +105,8 @@ jobs:
         run: |
           cargo build --locked --release \
             --target ${{ matrix.target }} \
-            -p manager -p runner --bin buz-manager --bin buz-runner --bin buz-sandboxd
+            -p manager -p runner -p plugin-cli \
+            --bin buz-manager --bin buz-runner --bin buz-sandboxd --bin buz-plugin
 
       - name: Package archive
         env:
@@ -116,12 +117,34 @@ jobs:
           chmod +x scripts/package-release.sh
           ./scripts/package-release.sh
 
+      # The authoring toolchain ships as its own asset: authors need one small
+      # binary, not the Manager/Runner bundle.
+      - name: Package buz-plugin
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          NAME="buz-plugin-${VERSION}-${PLATFORM}"
+          cp "target/${TARGET}/release/buz-plugin" "dist/release/buz-plugin"
+          tar -czf "dist/release/${NAME}.tar.gz" -C dist/release buz-plugin
+          rm -f dist/release/buz-plugin
+          cd dist/release
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+          else
+            shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+          fi
+
       - name: Attach archives to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.meta.outputs.version }}
           ARCHIVE: ${{ steps.meta.outputs.archive }}
         run: |
           # Release assets do not count against the Actions storage quota
@@ -133,4 +156,6 @@ jobs:
           gh release upload "$TAG" \
             "dist/release/${ARCHIVE}.tar.gz" \
             "dist/release/${ARCHIVE}.tar.gz.sha256" \
+            "dist/release/buz-plugin-${VERSION}-${{ matrix.name }}.tar.gz" \
+            "dist/release/buz-plugin-${VERSION}-${{ matrix.name }}.tar.gz.sha256" \
             --clobber

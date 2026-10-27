@@ -30,6 +30,18 @@ CI workflow `.github/workflows/release.yml` builds **Linux + macOS** archives (U
 | `buz-<ver>-macos-aarch64.tar.gz` | macos-14 (Apple Silicon) |
 | ~~`buz-<ver>-macos-x86_64.tar.gz`~~ | temporarily disabled (macos-13 / Intel) |
 
+The authoring toolchain ships as a **separate asset** per platform, so plugin
+authors download one small binary instead of the Manager/Runner bundle:
+
+| Archive | Contents |
+|---------|----------|
+| `buz-plugin-<ver>-linux-x86_64.tar.gz` | single `buz-plugin` binary |
+| `buz-plugin-<ver>-linux-aarch64.tar.gz` | 〃 |
+| `buz-plugin-<ver>-macos-aarch64.tar.gz` | 〃 |
+
+Each archive has a `.sha256` sibling. See
+[Plugin Tooling](/docs/01-architecture/authoring/plugin-tooling/) for usage.
+
 ```text
 buz-<version>-linux-x86_64.tar.gz
   bin/buz-manager   # UI embedded

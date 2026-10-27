@@ -40,9 +40,10 @@ of responsibility; everything else in this page derives from that split.
 `buz-plugin` ships with Buz as a single static binary (same release as the
 Manager and Runner):
 
-1. **Download** — grab `buz-plugin-<os>-<arch>` from the
-   [latest Buz release](https://github.com/schiplat/buz/releases), unpack, and
-   put it on `PATH`.
+1. **Download** — grab `buz-plugin-<version>-<platform>.tar.gz` from the
+   [latest Buz release](https://github.com/schiplat/buz/releases) (platforms:
+   `linux-x86_64`, `linux-aarch64`, `macos-aarch64`; each with a `.sha256`),
+   unpack the single binary, and put it on `PATH`.
 2. **Build from source** — `cargo build --release -p plugin-cli` produces
    `target/release/buz-plugin`.
 
