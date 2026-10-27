@@ -166,6 +166,21 @@ buz-plugin index --revision "$GITHUB_SHA" --updated-at "$(git log -1 --format=%c
   --sign-key signing-key.json
 ```
 
+**Where the key lives.** The output of `keygen` has two halves with opposite
+handling:
+
+| Half | Secrecy | Where it belongs |
+|------|---------|------------------|
+| `secret_key` | **private** — whoever holds it can sign an index for your namespace | a CI secret (e.g. `BUZ_PLUGIN_SIGNING_KEY`) or a secret manager; file mode 600 if it must exist on disk; never in the repository, never in a log or chat |
+| `public_key` | public | everywhere the index is consumed: `plugin_index_public_key` in each Manager, plus your README/docs |
+
+`keygen` refuses to be quiet about this: writing to a file sets mode 600 and
+prints a warning, and printing to stdout warns that the output is the private
+key. The plugins repository ignores `signing-key*.json` so an accidental copy
+cannot be committed. If the secret is leaked, generate a new pair and update
+`plugin_index_public_key` — the `key_id` recorded in every signature tells you
+which key a source actually used.
+
 The signature lands in `index.json.sig`. The Manager verifies it only when
 **Settings → Index signature → Require signed index** is on, against the
 configured public key: an unsigned source, or one whose index was rewritten

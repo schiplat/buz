@@ -130,11 +130,28 @@ pub fn keygen(key_id: &str, out: Option<&Path>) -> anyhow::Result<()> {
         Some(path) => {
             std::fs::write(path, rendered)
                 .with_context(|| format!("cannot write {}", path.display()))?;
-            println!("wrote {} (key id: {key_id})", path.display());
-            println!("public key (configure in the Manager as plugin_index.public_key):");
+            // Owner-only: the file holds the signing secret.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            }
+            println!("wrote {} (key id: {key_id}, mode 600)", path.display());
+            eprintln!(
+                "warning: {} contains the PRIVATE signing key — keep it in a secret store \
+                 (CI secret / vault), never commit it",
+                path.display()
+            );
+            println!("public key (safe to publish; configure as plugin_index_public_key):");
             println!("{}", document["public_key"].as_str().unwrap_or(""));
         }
-        None => print!("{rendered}"),
+        None => {
+            eprintln!(
+                "warning: this output contains the PRIVATE signing key — do not paste it into \
+                 logs, issues or chat; store it in a secret manager"
+            );
+            print!("{rendered}");
+        }
     }
     Ok(())
 }
