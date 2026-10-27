@@ -117,6 +117,33 @@ your-plugins/
             └── 1.1.0.yaml
 ```
 
+### The three manifests
+
+The source root carries three generated files. Each answers a different
+question — keeping them separate is what makes mirrors cheap, reviews
+trustworthy, and the index byte-stable:
+
+| file | answers | written by | read by |
+|------|---------|------------|---------|
+| `index.json` | *what exists* — every plugin version, its content hash and location | CI, generated from the specs (`buz-plugin index` / `gen_index.py`) | Manager source sync (pool staging), the marketplace site, authoring-time input hints |
+| `reviews.json` | *what humans approved* — the trust ledger | maintainers after human review (`gen_reviews`), CI keeps official entries fresh | Manager review badges and the `require_reviewed` gate, marketplace badges |
+| `revision.json` | *what is freshest* — a drift sentinel | CI, written **last** (`buz-plugin index --revision`) | Manager *Check mirror*, mirror sync scripts, `buz-plugin mirror` |
+
+- **`index.json` is the catalog.** Every entry pins the template's content
+  sha256, so resolution locks at save time regardless of which host served
+  the file. It contains **no review information** and is
+  byte-deterministic — two equal files mean two equal catalogs, which is
+  what makes mirror drift checks safe.
+- **`reviews.json` is the trust ledger.** Entries are content hashes
+  recorded after human review; the review gate (`require_reviewed`)
+  rejects any template whose hash is absent from it. It lives per source
+  root so official review authority and community entries never share a
+  ledger.
+- **`revision.json` is the freshness sentinel.** It carries
+  `{"revision": "<commit sha>", "updated_at": "<iso8601>"}` and is written
+  **last** — it commits the sync. Comparing two sentinels (a few hundred
+  bytes) tells a mirror whether it is behind; only on mismatch does
+  anything larger get pulled. It says nothing about review status.
 - `file:` paths in `index.json` / `meta.json` are **relative to the source
   root**. The Manager joins them against the source base URL (the
   `index.json` URL minus its tail), so a source can be hosted anywhere — a
@@ -126,16 +153,6 @@ your-plugins/
   entries span several namespaces. Third-party plugins therefore publish
   from their own repositories with this same layout and register as their
   own Step Source, with their own curation policy.
-- `reviews.json` is fetched from the source root next to the index and
-  provides the review badges (and the `require_reviewed` gate input).
-  Keeping it per source root is what keeps official review authority
-  separate from community entries.
-- `revision.json` carries `{"revision": "<commit sha>", "updated_at":
-  "<iso8601>"}`, written last by CI. Mirrors (and the Manager's *Check
-  mirror* action) compare sentinels — two tiny GETs — to detect drift
-  before pulling anything larger. Publish content first and the sentinel
-  last — it commits the sync. The index itself stays byte-deterministic:
-  volatility lives in the sentinel, not in the index.
 - Generate the manifests from the specs — never hand-edit hashes. The
   official repository's `scripts/gen_index.py` / `scripts/gen_reviews.py`
   and the `buz-plugin` CLI are the reference implementations.
