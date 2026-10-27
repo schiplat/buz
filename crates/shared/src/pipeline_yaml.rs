@@ -389,7 +389,7 @@ pub struct StepYaml {
     pub timeout: Option<String>,
     #[serde(default)]
     pub retry: Option<i32>,
-    /// Marketplace step reference: `<namespace>/<name>@<pin>` (pin is
+    /// Marketplace plugin reference: `<namespace>/<plugin-id>@<pin>` (pin is
     /// `X`, `X.Y`, `X.Y.Z`, or `sha256:<hex>`; ranges/`latest` rejected).
     /// Mutually exclusive with `engine:` / `run:` / `image:`.
     #[serde(default)]
@@ -984,7 +984,7 @@ pub enum UsesPin {
     Branch(String),
 }
 
-/// Parse a `uses:` reference (`<namespace>/<name>@<pin>`).
+/// Parse a `uses:` reference (`<namespace>/<plugin-id>@<pin>`).
 ///
 /// IDs use the same canonical two-segment grammar as step specs. Pins follow
 /// §4 of the marketplace ADR: `@1` major, `@1.2` / `@1.2.0` exact,
@@ -993,7 +993,7 @@ pub enum UsesPin {
 pub fn parse_uses_reference(raw: &str) -> Result<(String, UsesPin), String> {
     let raw = raw.trim();
     let Some((reference, pin)) = raw.rsplit_once('@') else {
-        return Err("missing '@pin' — expected '<namespace>/<name>@<pin>' \
+        return Err("missing '@pin' — expected '<namespace>/<plugin-id>@<pin>' \
              (e.g. buz/feishu@1.2)"
             .into());
     };
@@ -1007,7 +1007,7 @@ pub fn parse_uses_reference(raw: &str) -> Result<(String, UsesPin), String> {
     };
     if segments.len() != 2 || !segments.iter().all(|segment| canonical_segment(segment)) {
         return Err(
-            "uses reference must be '<namespace>/<name>@<pin>' with lowercase [a-z0-9-] segments"
+            "uses reference must be '<namespace>/<plugin-id>@<pin>' with lowercase [a-z0-9-] segments"
                 .into(),
         );
     }

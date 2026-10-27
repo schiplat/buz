@@ -2,7 +2,7 @@
 //! template pool (ADR step-marketplace §6.8).
 //!
 //! A **source** is an `index.json` URL (schema §6.7.3: steps[] with id
-//! `<namespace>/<step-id>`, version, file, sha256, plus full scalar meta
+//! `<namespace>/<plugin-id>`, version, file, sha256, plus full scalar meta
 //! incl. `requires_buz` from newer generators). Syncing fetches the
 //! index, validates it, and stages every entry as a **pool row**
 //! (`enabled = auto_enable`). Pool rows — not the index — are what pipeline
@@ -714,7 +714,7 @@ async fn sync_source_inner(
     // version enabled.
     let mut groups: Vec<(String, String, Vec<&IndexEntry>)> = Vec::new();
     for entry in &index.steps {
-        // Namespace comes from the template id (`<ns>/<step-id>`); it is the
+        // Namespace comes from the template id (`<ns>/<plugin-id>`); it is the
         // unit of uniqueness across sources.
         let (namespace, step_id) = entry
             .id

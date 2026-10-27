@@ -572,22 +572,22 @@ Every step also receives read-only job metadata as `BUZ_*` environment variables
 
 ---
 
-## Marketplace Steps (`uses:`) — schema preview
+## Marketplace Plugins (`uses:`) — schema preview
 
-Steps may reference a step template from a step index instead of inlining `run:`:
+Steps may reference a plugin from a plugin index instead of inlining `run:`:
 
 ```yaml
 steps:
   - name: notify
-    uses: community/feishu@1.2     # <namespace>/<name>@<pin>
+    uses: community/feishu@1.2     # <namespace>/<plugin-id>@<pin>
     with:                                  # inputs of the referenced template
       webhook: ${secrets.FEISHU_WEBHOOK}
       title: deploy done
 ```
 
-Schema rules enforced today: `uses:` takes `<namespace>/<name>@<pin>` with pin `@1`, `@1.2`, `@1.2.0`, or `@sha256:<64 hex>` (ranges and `latest` are rejected); a `uses:` step cannot also declare `image:` (template-owned, no override); `engine:` is allowed as a deployment-context override — resolution enforces the template's declared `engines` at save time; `run:` is appended after the template run block (template = environment, call site = commands); `with:` requires `uses:`. Templates may declare an optional `category:` for browsing and filtering; it is metadata, not part of the stable ID. Templates that must run against a minimum Buz release declare `requires_buz` (see the [Plugin Contract](plugin-contract/)).
+Schema rules enforced today: `uses:` takes `<namespace>/<plugin-id>@<pin>` with pin `@1`, `@1.2`, `@1.2.0`, or `@sha256:<64 hex>` (ranges and `latest` are rejected); a `uses:` step cannot also declare `image:` (template-owned, no override); `engine:` is allowed as a deployment-context override — resolution enforces the template's declared `engines` at save time; `run:` is appended after the template run block (template = environment, call site = commands); `with:` requires `uses:`. Templates may declare an optional `category:` for browsing and filtering; it is metadata, not part of the stable ID. Templates that must run against a minimum Buz release declare `requires_buz` (see the [Plugin Contract](plugin-contract/)).
 
-**Resolution (local index)**: at pipeline save, each `uses:` reference is resolved against the local step index — `<yaml_scan_dir>/plugins` by default (override with `[plugin_index].local_dir` in Manager config), one YAML spec file per step template. Specs are discovered recursively; hidden paths and symlinks are ignored. Keep each `(id, version)` in exactly one file; `buz-plugin validate <directory>` recursively checks specs and rejects duplicate ID/version pairs. Pins lock at save time ("resolve & lock"): the resolved version, content hash, source, and expanded step JSON are stored as provenance, so upstream tag moves never change an already-saved pipeline. Save-time errors are explicit: template not found, no version matching the pin, the plugin requiring a newer Buz, or `with:` not matching the template's declared inputs. The full design (remote `https` index, static browse site, update badges) is Phase 2 of the marketplace ADR.
+**Resolution (local index)**: at pipeline save, each `uses:` reference is resolved against the local plugin index — `<yaml_scan_dir>/plugins` by default (override with `[plugin_index].local_dir` in Manager config), one YAML spec file per plugin. Specs are discovered recursively; hidden paths and symlinks are ignored. Keep each `(id, version)` in exactly one file; `buz-plugin validate <directory>` recursively checks specs and rejects duplicate ID/version pairs. Pins lock at save time ("resolve & lock"): the resolved version, content hash, source, and expanded step JSON are stored as provenance, so upstream tag moves never change an already-saved pipeline. Save-time errors are explicit: template not found, no version matching the pin, the plugin requiring a newer Buz, or `with:` not matching the template's declared inputs. The full design (remote `https` index, static browse site, update badges) is Phase 2 of the marketplace ADR.
 
 For Docker deployments using a custom index, mount the selected host directory into the Manager container and set `[plugin_index].local_dir` (or `BUZ_PLUGIN_INDEX__LOCAL_DIR`) to its container path. The Manager reads the local specs; it does not clone or synchronize a Git mirror. See the [configuration guide](/docs/03-operations/configuration/#external-plugin-git-mirror) for a Compose example.
 

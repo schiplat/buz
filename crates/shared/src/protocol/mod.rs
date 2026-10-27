@@ -896,7 +896,7 @@ pub struct StepDef {
     #[serde(default)]
     pub run: String,
     pub engine: Option<String>,
-    /// Marketplace reference (`<namespace>/<name>@<pin>`). Set only by
+    /// Marketplace reference (`<namespace>/<plugin-id>@<pin>`). Set only by
     /// the step resolver when expanding templates — plain pipeline saves
     /// must not carry it (rejected in insert_steps).
     #[serde(default)]
