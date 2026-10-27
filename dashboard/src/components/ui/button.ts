@@ -1,7 +1,14 @@
 import { type HTMLAttributes } from 'vue'
 import { cn } from '@/lib/utils'
 
-export type ButtonVariant = 'default' | 'secondary' | 'outline' | 'ghost' | 'destructive' | 'success'
+export type ButtonVariant =
+  | 'default'
+  | 'secondary'
+  | 'outline'
+  | 'ghost'
+  | 'destructive'
+  | 'destructive-soft'
+  | 'success'
 export type ButtonSize = 'default' | 'sm' | 'icon'
 
 const variants: Record<ButtonVariant, string> = {
@@ -10,7 +17,11 @@ const variants: Record<ButtonVariant, string> = {
   outline: 'bg-muted text-foreground hover:bg-accent hover:text-accent-foreground',
   ghost: 'hover:bg-muted hover:text-foreground',
   destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
-  success: 'bg-success text-success-foreground hover:bg-success/90 active:bg-success/85',
+  // Positive/negative toggle pair: light fills with dark matching text, so
+  // the two states read as one scale. --success / --destructive are the
+  // *text* tones for tinted chips, so solid buttons use lighter fills.
+  success: 'bg-emerald-500 text-emerald-950 hover:bg-emerald-400 active:bg-emerald-500/90',
+  'destructive-soft': 'bg-red-400 text-red-950 hover:bg-red-300 active:bg-red-400/90',
 }
 
 const sizes: Record<ButtonSize, string> = {

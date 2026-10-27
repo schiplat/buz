@@ -529,7 +529,7 @@ onMounted(load)
             </select>
             <UiButton
               size="sm"
-              :variant="selectedEntry(group)?.enabled ? 'outline' : 'success'"
+              :variant="selectedEntry(group)?.enabled ? 'destructive-soft' : 'success'"
               class="w-full"
               :disabled="
                 !selectedEntry(group) ||
