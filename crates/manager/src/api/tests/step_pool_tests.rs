@@ -66,6 +66,7 @@ async fn spawn_source_server(yaml: String, yaml_sha: String) -> String {
     let yaml = std::sync::Arc::new(yaml);
     let yaml_sha = std::sync::Arc::new(yaml_sha);
     let yaml_sha_for_meta = yaml_sha.clone();
+    let yaml_sha_for_revision = yaml_sha.clone();
     let app = Router::new()
         .route(
             "/index.json",
@@ -106,6 +107,18 @@ async fn spawn_source_server(yaml: String, yaml_sha: String) -> String {
         .route(
             "/reviews.json",
             axum::routing::get(|| async { r#"{"reviews": []}"# }),
+        )
+        .route(
+            "/revision.json",
+            axum::routing::get(move || {
+                let sha = yaml_sha_for_revision.clone();
+                async move {
+                    format!(
+                        r#"{{ "revision": "{}", "updated_at": "2026-01-01T00:00:00Z" }}"#,
+                        &sha[..12.min(sha.len())]
+                    )
+                }
+            }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1004,4 +1017,233 @@ async fn full_meta_source_probes_files_on_staging() {
     let error = ghost.compat_error.as_deref().expect("file-missing error");
     assert!(error.contains("failed to download"), "{error}");
     assert!(error.contains("404"), "{error}");
+}
+
+#[tokio::test]
+async fn mirror_endpoint_serves_sync_when_canonical_is_unreachable() {
+    let yaml = community_spec();
+    let yaml_sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(yaml.as_bytes()))
+    };
+    // The live server plays the mirror; the canonical origin is a closed
+    // port, so every fetch must fall back to the mirror to succeed.
+    let mirror_url = spawn_source_server(yaml.clone(), yaml_sha.clone()).await;
+    let (app, pool) = test_app().await;
+    let jwt = TokenManager::new(JWT_SECRET)
+        .create_token(ADMIN_ID, Role::Admin, 1)
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/step-sources")
+                .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "alice",
+                        "url": "http://127.0.0.1:1/index.json",
+                        "mirror_url": format!("{mirror_url}/index.json"),
+                        "auto_enable": false,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = read_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["source"]["mirror_url"],
+        format!("{mirror_url}/index.json"),
+        "{body}"
+    );
+    let source_id = body["data"]["source"]["id"]
+        .as_str()
+        .expect("source id")
+        .to_string();
+
+    // Deterministic sync (the same call the spawned background task makes):
+    // index, reviews, and the template file all come from the mirror.
+    let source = crate::services::step_pool::get_source(&pool, &source_id)
+        .await
+        .expect("get source")
+        .expect("source exists");
+    let http = crate::services::step_pool::http_client(30);
+    let count =
+        crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+            .await
+            .expect("sync must succeed through the mirror");
+    assert!(count > 0, "mirror sync must stage pool rows");
+
+    let refreshed = crate::services::step_pool::get_source(&pool, &source_id)
+        .await
+        .expect("get source")
+        .expect("source exists");
+    assert!(
+        refreshed.last_sync_error.is_none(),
+        "{:?}",
+        refreshed.last_sync_error
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/admin/step-pool")
+                .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = read_json(resp).await;
+    let steps = body["data"]["items"]
+        .as_array()
+        .expect("pool items")
+        .iter()
+        .filter(|row| row["namespace"] == "alice" && row["step_id"] == "oss-upload")
+        .count();
+    assert!(steps > 0, "pool rows staged from the mirror: {body}");
+}
+
+#[tokio::test]
+async fn mirror_check_reports_in_sync_across_identical_servers() {
+    let yaml = community_spec();
+    let yaml_sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(yaml.as_bytes()))
+    };
+    let canonical_url = spawn_source_server(yaml.clone(), yaml_sha.clone()).await;
+    let mirror_url = spawn_source_server(yaml, yaml_sha).await;
+    let (app, pool) = test_app().await;
+    let jwt = TokenManager::new(JWT_SECRET)
+        .create_token(ADMIN_ID, Role::Admin, 1)
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/step-sources")
+                .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "alice",
+                        "url": format!("{canonical_url}/index.json"),
+                        "mirror_url": format!("{mirror_url}/index.json"),
+                        "auto_enable": false,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = read_json(resp).await;
+    assert_eq!(
+        body["data"]["source"]["mirror_url"],
+        format!("{mirror_url}/index.json"),
+        "{body}"
+    );
+    let source_id = body["data"]["source"]["id"]
+        .as_str()
+        .expect("source id")
+        .to_string();
+
+    let report = crate::services::step_pool::check_mirror(
+        &crate::services::step_pool::http_client(30),
+        &pool,
+        &source_id,
+    )
+    .await
+    .expect("mirror check runs");
+    assert_eq!(report.status, "in-sync", "{report:?}");
+    assert_eq!(report.canonical_revision, report.mirror_revision);
+    assert!(report.canonical_revision.is_some());
+}
+
+#[tokio::test]
+async fn mirror_check_reports_out_of_sync_when_mirror_content_drifted() {
+    let yaml = community_spec();
+    let yaml_sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(yaml.as_bytes()))
+    };
+    // The mirror drifted: different spec bytes → different revision sentinel.
+    let drifted = format!("{yaml}\n");
+    let canonical_url = spawn_source_server(yaml, yaml_sha).await;
+    let mirror_url = spawn_source_server(drifted, "9".repeat(64)).await;
+    let (app, pool) = test_app().await;
+    let jwt = TokenManager::new(JWT_SECRET)
+        .create_token(ADMIN_ID, Role::Admin, 1)
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/step-sources")
+                .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "alice",
+                        "url": format!("{canonical_url}/index.json"),
+                        "mirror_url": format!("{mirror_url}/index.json"),
+                        "auto_enable": false,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = read_json(resp).await;
+    let source_id = body["data"]["source"]["id"]
+        .as_str()
+        .expect("source id")
+        .to_string();
+
+    let report = crate::services::step_pool::check_mirror(
+        &crate::services::step_pool::http_client(30),
+        &pool,
+        &source_id,
+    )
+    .await
+    .expect("mirror check runs");
+    assert_eq!(report.status, "out-of-sync", "{report:?}");
+    assert_ne!(report.canonical_revision, report.mirror_revision);
+}
+
+#[tokio::test]
+async fn mirror_check_requires_a_configured_mirror() {
+    let (app, pool) = test_app().await;
+    let jwt = TokenManager::new(JWT_SECRET)
+        .create_token(ADMIN_ID, Role::Admin, 1)
+        .unwrap();
+    let body = add_source(&app, &jwt, "http://127.0.0.1:1/index.json").await;
+    let source_id = body["data"]["source"]["id"]
+        .as_str()
+        .expect("source id")
+        .to_string();
+
+    let error = crate::services::step_pool::check_mirror(
+        &crate::services::step_pool::http_client(30),
+        &pool,
+        &source_id,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("no mirror configured"), "{error}");
 }

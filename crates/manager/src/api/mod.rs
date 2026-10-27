@@ -248,6 +248,10 @@ pub fn router(state: AppState) -> Router {
             "/admin/step-sources/{id}/sync-progress",
             get(step_sources::sync_progress),
         )
+        .route(
+            "/admin/step-sources/{id}/mirror-check",
+            post(step_sources::check_mirror),
+        )
         .route("/admin/step-pool", get(step_sources::list_pool))
         .route(
             "/admin/step-pool/{namespace}/{step_id}/refresh",

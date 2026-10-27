@@ -618,6 +618,14 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     )
     .execute(pool)
     .await?;
+
+    // Mirror endpoint for a source — consumption-side failover. The mirror is
+    // tried before the canonical URL on every fetch; content is sha256-pinned
+    // per file, so endpoint order affects availability only. Nullable:
+    // legacy sources have no mirror.
+    let _ = sqlx::query("ALTER TABLE step_sources ADD COLUMN mirror_url TEXT")
+        .execute(pool)
+        .await;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS step_pool (
             namespace TEXT NOT NULL,

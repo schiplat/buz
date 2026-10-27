@@ -3,7 +3,12 @@ import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RefreshCw, RotateCcw, Trash2 } from '@lucide/vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
-import { stepSourcesApi, type StepSource, type SyncProgressState } from '@/api/stepSources'
+import {
+  stepSourcesApi,
+  type StepSource,
+  type SyncProgressState,
+  type MirrorCheckReport,
+} from '@/api/stepSources'
 import { adminSettingsApi, type PlatformSetting } from '@/api/adminSettings'
 import { useAppDialog } from '@/composables/useAppDialog'
 import { useRoute, useRouter } from 'vue-router'
@@ -58,6 +63,7 @@ const savingSetting = ref('')
 const showAddSource = ref(false)
 const newName = ref('')
 const newUrl = ref('')
+const newMirrorUrl = ref('')
 const newAutoEnable = ref(false)
 const busy = ref('')
 /** sourceId -> the last_synced_at value observed when Sync was clicked.
@@ -72,6 +78,8 @@ const syncingStartedAt = ref<Record<string, number>>({})
 const awaitingFirstSync = ref<Record<string, true>>({})
 /** Live sync progress (backend sync_progress registry) per source id. */
 const syncProgress = ref<Record<string, SyncProgressState>>({})
+/** Result of the last mirror drift check per source id. */
+const mirrorChecks = ref<Record<string, MirrorCheckReport>>({})
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let progressTimer: ReturnType<typeof setInterval> | null = null
 
@@ -328,6 +336,7 @@ async function addSource() {
       newName.value.trim(),
       newUrl.value.trim(),
       newAutoEnable.value,
+      newMirrorUrl.value,
     )
     // Back to the list immediately: the sync runs server-side and the row
     // shows "syncing…" until last_synced_at / last_sync_error lands.
@@ -335,6 +344,7 @@ async function addSource() {
     showAddSource.value = false
     newName.value = ''
     newUrl.value = ''
+    newMirrorUrl.value = ''
     newAutoEnable.value = false
     await load()
     startPolling()
@@ -344,6 +354,27 @@ async function addSource() {
   } finally {
     busy.value = ''
   }
+}
+
+async function checkMirror(source: StepSource) {
+  busy.value = `chk-${source.id}`
+  try {
+    mirrorChecks.value[source.id] = await stepSourcesApi.checkMirror(source.id)
+  } catch (e) {
+    await dialog.alert(`Mirror check failed: ${e instanceof Error ? e.message : e}`)
+  } finally {
+    busy.value = ''
+  }
+}
+
+function mirrorCheckText(source: StepSource): string {
+  const report = mirrorChecks.value[source.id]
+  if (!report) return ''
+  if (report.status === 'in-sync') return 'mirror in sync with the canonical origin'
+  if (report.status === 'out-of-sync') return 'mirror OUT OF SYNC — re-sync the mirror before use'
+  if (report.status === 'canonical-unreachable') return 'canonical origin unreachable — check later'
+  if (report.status === 'mirror-unreachable') return 'mirror unreachable'
+  return report.status
 }
 
 function syncState(source: StepSource): string {
@@ -406,6 +437,14 @@ onUnmounted(() => {
             <input v-model="newUrl" type="url" placeholder="https://…/index.json" class="w-full rounded-xl border border-border bg-input px-3 py-2 font-mono text-xs" />
           </div>
         </div>
+        <div>
+          <label class="type-label block mb-1.5">Mirror URL <span class="font-normal text-muted-foreground">(optional)</span></label>
+          <input v-model="newMirrorUrl" type="url" placeholder="https://mirror…/index.json" class="w-full rounded-xl border border-border bg-input px-3 py-2 font-mono text-xs" />
+          <p class="mt-1 text-[11px] text-muted-foreground">
+            Tried first on every fetch, the index URL above stays the fallback. Template content is
+            sha256-verified either way — a mirror only affects availability, never integrity.
+          </p>
+        </div>
         <label class="flex items-center gap-2 text-xs cursor-pointer">
           <input v-model="newAutoEnable" type="checkbox" class="rounded-sm border-border" />
           <span>Auto-enable entries (trusted source — skips per-template curation)</span>
@@ -427,6 +466,22 @@ onUnmounted(() => {
                 >auto-enable</span>
               </div>
               <p class="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" :title="source.url">{{ source.url }}</p>
+              <p
+                v-if="source.mirror_url"
+                class="mt-0.5 truncate font-mono text-[11px] text-muted-foreground/70"
+                :title="`mirror tried first: ${source.mirror_url}`"
+              >mirror: {{ source.mirror_url }}</p>
+              <p
+                v-if="mirrorChecks[source.id]"
+                class="mt-0.5 text-[11px]"
+                :class="mirrorChecks[source.id].status === 'in-sync' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'"
+              >
+                {{ mirrorCheckText(source) }}
+                <span
+                  v-if="mirrorChecks[source.id].canonical_revision"
+                  class="font-mono text-[10px] text-muted-foreground/70"
+                >rev {{ mirrorChecks[source.id].canonical_revision }} / {{ mirrorChecks[source.id].mirror_revision }}</span>
+              </p>
               <p
                 class="mt-0.5 text-[11px]"
                 :class="source.last_sync_error ? 'text-red-500' : 'text-muted-foreground/70'"
@@ -450,6 +505,14 @@ onUnmounted(() => {
               <UiButton size="sm" variant="ghost" :disabled="busy === `sync-${source.id}`" @click="syncSource(source)">
                 <RefreshCw class="h-3.5 w-3.5" /> Sync
               </UiButton>
+              <UiButton
+                v-if="source.mirror_url"
+                size="sm"
+                variant="ghost"
+                :disabled="busy === `chk-${source.id}`"
+                title="Compare the revision sentinel between mirror and canonical origin"
+                @click="checkMirror(source)"
+              >Check mirror</UiButton>
               <UiButton size="sm" variant="ghost" :disabled="busy === `del-${source.id}`" @click="removeSource(source)">
                 <Trash2 class="h-3.5 w-3.5" />
               </UiButton>

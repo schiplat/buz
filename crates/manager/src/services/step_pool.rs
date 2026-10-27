@@ -39,6 +39,51 @@ fn join_url(base: &str, rest: &str) -> String {
     )
 }
 
+/// Ordered fetch bases for a source: the mirror first (when configured),
+/// then the canonical origin.
+fn source_bases(source: &SourceRow) -> Vec<String> {
+    let mut bases = Vec::new();
+    if let Some(mirror) = source
+        .mirror_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|mirror| !mirror.is_empty())
+    {
+        bases.push(base_url(mirror));
+    }
+    bases.push(base_url(&source.url));
+    bases
+}
+
+/// GET a source-relative path from the first endpoint that answers. Every
+/// caller hash-verifies content, so endpoint order affects availability
+/// only — never integrity.
+async fn http_get_text_from_bases(
+    http: &reqwest::Client,
+    bases: &[String],
+    path: &str,
+) -> anyhow::Result<String> {
+    let mut last = None;
+    for base in bases {
+        let url = join_url(base, path);
+        match http_get_text(http, &url).await {
+            Ok(text) => return Ok(text),
+            Err(e) => {
+                tracing::warn!(
+                    url = %url,
+                    error = %e,
+                    "source endpoint failed — falling back to the next configured endpoint"
+                );
+                last = Some(e);
+            }
+        }
+    }
+    match last {
+        Some(e) => Err(e),
+        None => Err(anyhow!("no source endpoints configured")),
+    }
+}
+
 pub fn sha256_hex(raw: &str) -> String {
     format!("{:x}", Sha256::digest(raw.as_bytes()))
 }
@@ -63,6 +108,9 @@ pub struct SourceRow {
     pub id: String,
     pub name: String,
     pub url: String,
+    /// Optional mirror origin — tried before `url` on every fetch. Content
+    /// is sha256-pinned per file, so endpoint order is availability only.
+    pub mirror_url: Option<String>,
     pub auto_enable: bool,
     pub enabled: bool,
     pub last_synced_at: Option<String>,
@@ -252,6 +300,7 @@ fn parse_index(raw: &str) -> Result<StepIndex, String> {
     let index: StepIndex =
         serde_json::from_str(raw).map_err(|e| format!("invalid index.json: {e}"))?;
     let mut seen = std::collections::HashSet::new();
+    let mut namespace: Option<String> = None;
     for entry in &index.steps {
         if entry.id.is_empty()
             || entry.version.is_empty()
@@ -259,6 +308,26 @@ fn parse_index(raw: &str) -> Result<StepIndex, String> {
             || entry.sha256.len() != 64
         {
             return Err(format!("invalid index entry {}", entry.id));
+        }
+        // One index per namespace directory (`plugins/<ns>/index.json`): the
+        // directory owning the namespace is the publishing trust boundary.
+        let ns = match entry.id.split_once('/') {
+            Some((ns, id)) if !ns.is_empty() && !id.is_empty() => ns.to_string(),
+            _ => {
+                return Err(format!(
+                    "invalid index entry {}: id must be '<namespace>/<step>'",
+                    entry.id
+                ))
+            }
+        };
+        match &namespace {
+            Some(existing) if existing != &ns => {
+                return Err(format!(
+                    "index mixes namespaces '{existing}' and '{ns}' — one index per namespace directory"
+                ));
+            }
+            None => namespace = Some(ns),
+            _ => {}
         }
         if !seen.insert((entry.id.clone(), entry.version.clone())) {
             return Err(format!(
@@ -270,25 +339,47 @@ fn parse_index(raw: &str) -> Result<StepIndex, String> {
     Ok(index)
 }
 
+/// The single namespace of a parsed index — `parse_index` has already
+/// validated that every entry shares it.
+fn index_namespace(index: &StepIndex) -> Option<String> {
+    index
+        .steps
+        .first()
+        .and_then(|entry| entry.id.split_once('/').map(|(ns, _)| ns.to_string()))
+}
+
 /// DB access -------------------------------------------------------------------
 
 pub async fn list_sources(pool: &SqlitePool) -> Result<Vec<SourceRow>, anyhow::Error> {
-    let rows: Vec<(String, String, String, i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT id, name, url, auto_enable, enabled, last_synced_at, last_sync_error FROM step_sources ORDER BY created_at",
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        Option<String>,
+        i64,
+        i64,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT id, name, url, mirror_url, auto_enable, enabled, last_synced_at, last_sync_error \
+             FROM step_sources ORDER BY created_at",
     )
     .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
         .map(
-            |(id, name, url, auto_enable, enabled, last_synced_at, last_sync_error)| SourceRow {
-                id,
-                name,
-                url,
-                auto_enable: auto_enable != 0,
-                enabled: enabled != 0,
-                last_synced_at,
-                last_sync_error,
+            |(id, name, url, mirror_url, auto_enable, enabled, last_synced_at, last_sync_error)| {
+                SourceRow {
+                    id,
+                    name,
+                    url,
+                    mirror_url,
+                    auto_enable: auto_enable != 0,
+                    enabled: enabled != 0,
+                    last_synced_at,
+                    last_sync_error,
+                }
             },
         )
         .collect())
@@ -405,7 +496,7 @@ async fn existing_rows_for_source(
 /// Returns `(requires_buz, buz_compatible, compat_error, checked_against)`.
 async fn resolve_compat(
     http: &reqwest::Client,
-    source_url: &str,
+    bases: &[String],
     file_path: &str,
     sha256: &str,
     namespace: &str,
@@ -430,7 +521,7 @@ async fn resolve_compat(
             state.compat_checked_against.clone(),
         );
     }
-    match fetch_content(http, source_url, file_path, sha256).await {
+    match fetch_content(http, bases, file_path, sha256).await {
         Ok(content) => {
             match evaluate_entry_content(&content, namespace, step_id, version, current_buz) {
                 Ok(requires_buz) => (
@@ -542,16 +633,34 @@ async fn sync_source_inner(
     only_plugin: Option<(&str, &str)>,
     current_buz: &str,
 ) -> Result<usize, anyhow::Error> {
-    let raw = http_get_text(http, &source.url).await?;
+    let bases = source_bases(source);
+    let raw = http_get_text_from_bases(http, &bases, "index.json").await?;
     let index = parse_index(&raw).map_err(|e| anyhow!("{e}"))?;
     let base = base_url(&source.url);
+
+    // Layout convention: `plugins/<ns>/index.json`. A mismatch is not fatal —
+    // hosted sources may serve the index from any path — but it defeats the
+    // directory-as-namespace ownership convention, so surface it.
+    if let Some(ns) = index_namespace(&index) {
+        let base_dir = base.rsplit('/').find(|segment| !segment.is_empty());
+        if let Some(base_dir) = base_dir {
+            if base_dir != ns {
+                tracing::warn!(
+                    source = %source.url,
+                    index_namespace = %ns,
+                    base_dir = %base_dir,
+                    "source index does not live in its namespace directory (expected .../{ns}/index.json)"
+                );
+            }
+        }
+    }
 
     // Official-style sources publish reviews.json next to the index; when it
     // is fetchable, pool rows carry the review badge by hash membership.
     // When it is NOT fetchable, `reviewed` keeps each row's CURRENT value —
     // a transient fetch failure must never wipe review badges.
     let fetched_reviews: Option<std::collections::HashSet<String>> =
-        match http_get_text(http, &join_url(&base, "reviews.json")).await {
+        match http_get_text_from_bases(http, &bases, "reviews.json").await {
             Ok(raw) => Some(
                 serde_json::from_str::<serde_json::Value>(&raw)
                     .ok()
@@ -642,7 +751,7 @@ async fn sync_source_inner(
             };
             let (requires_buz, buz_compatible, compat_error, checked_against) = resolve_compat(
                 http,
-                &source.url,
+                &bases,
                 &entry.file,
                 &sha256,
                 &namespace,
@@ -741,11 +850,13 @@ pub async fn refresh_plugin(
     // on intermittent networks), sitting beside the template files. Falls
     // back to the full index for sources that do not publish per-plugin
     // meta files yet.
+    let bases = source_bases(&source);
+    let meta_path = format!("{}/meta.json", parent_dir(&file_path));
     let meta_url = join_url(
-        &base_url(&source.url),
-        &format!("{}/meta.json", parent_dir(&file_path)),
+        bases.last().expect("canonical base always present"),
+        &meta_path,
     );
-    match http_get_text(http, &meta_url).await {
+    match http_get_text_from_bases(http, &bases, &meta_path).await {
         Ok(raw) => {
             upsert_plugin_meta(
                 http,
@@ -868,9 +979,10 @@ async fn upsert_plugin_meta(
             entry.version.clone(),
         ));
         let reviewed = existing.is_some_and(|state| state.reviewed);
+        let bases = source_bases(source);
         let (requires_buz, buz_compatible, compat_error, checked_against) = resolve_compat(
             http,
-            &source.url,
+            &bases,
             &entry.file,
             &sha256,
             namespace,
@@ -957,7 +1069,8 @@ pub async fn verify_entry(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("source {source_id} disappeared"))?;
 
-    let content = fetch_content(http, &source.url, &file_path, &sha256).await?;
+    let bases = source_bases(&source);
+    let content = fetch_content(http, &bases, &file_path, &sha256).await?;
     evaluate_entry_content(&content, namespace, step_id, version, current_buz).map(|_| ())
 }
 
@@ -1087,8 +1200,8 @@ pub async fn resolve_remote(
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("source {} disappeared", row.source_id))?;
-            let content =
-                fetch_content(http_client, &source.url, &row.file_path, &row.sha256).await?;
+            let bases = source_bases(&source);
+            let content = fetch_content(http_client, &bases, &row.file_path, &row.sha256).await?;
             RemoteResolved {
                 namespace: row.namespace.clone(),
                 step_id: row.step_id.clone(),
@@ -1131,8 +1244,8 @@ pub async fn resolve_remote(
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("source {} disappeared", row.source_id))?;
-            let content =
-                fetch_content(http_client, &source.url, &row.file_path, &row.sha256).await?;
+            let bases = source_bases(&source);
+            let content = fetch_content(http_client, &bases, &row.file_path, &row.sha256).await?;
             RemoteResolved {
                 namespace: row.namespace.clone(),
                 step_id: row.step_id.clone(),
@@ -1152,10 +1265,36 @@ pub async fn resolve_remote(
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("source {} disappeared", any.source_id))?;
-            let branch_base = join_url(&base_url(&source.url), branch);
-            let branch_raw = http_get_text(http, &join_url(&branch_base, "index.json"))
-                .await
-                .map_err(|e| format!("branch '{branch}' index fetch failed: {e}"))?;
+            let mut branch_base: Option<String> = None;
+            let mut branch_raw: Option<String> = None;
+            let mut last_branch_error: Option<anyhow::Error> = None;
+            for base in source_bases(&source) {
+                let candidate = join_url(&base, branch);
+                match http_get_text(http, &join_url(&candidate, "index.json")).await {
+                    Ok(raw) => {
+                        branch_base = Some(candidate);
+                        branch_raw = Some(raw);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            url = %join_url(&candidate, "index.json"),
+                            error = %e,
+                            "branch index endpoint failed — falling back to the next configured endpoint"
+                        );
+                        last_branch_error = Some(e);
+                    }
+                }
+            }
+            let branch_raw = branch_raw.ok_or_else(|| {
+                format!(
+                    "branch '{branch}' index fetch failed: {}",
+                    last_branch_error
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "no endpoints configured".into())
+                )
+            })?;
+            let branch_base = branch_base.expect("set whenever the branch index answered");
             let branch_index = parse_index(&branch_raw)?;
             let entry = branch_index
                 .steps
@@ -1240,7 +1379,7 @@ pub async fn resolve_remote(
 /// cache under `<data_dir>/step-index-cache/templates/`.
 async fn fetch_content(
     http: &reqwest::Client,
-    source_url: &str,
+    bases: &[String],
     file_path: &str,
     sha256: &str,
 ) -> Result<String, String> {
@@ -1251,13 +1390,12 @@ async fn fetch_content(
         }
         // A cache entry that fails verification is treated as absent.
     }
-    let url = join_url(&base_url(source_url), file_path);
-    let raw = http_get_text(http, &url)
+    let raw = http_get_text_from_bases(http, bases, file_path)
         .await
-        .map_err(|e| format!("template download from {url} failed: {e}"))?;
+        .map_err(|e| format!("template download for {file_path} failed: {e}"))?;
     if sha256_hex(&raw) != sha256 {
         return Err(format!(
-            "template content from {url} does not match its pinned sha256 — refusing to use it"
+            "template content for {file_path} does not match its pinned sha256 — refusing to use it"
         ));
     }
     if let Some(parent) = cache.parent() {
@@ -1304,4 +1442,191 @@ async fn http_get_text(http: &reqwest::Client, url: &str) -> Result<String, anyh
     resp.text()
         .await
         .map_err(|e| anyhow!("source response could not be read: {e}"))
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    fn index_json(steps: serde_json::Value) -> String {
+        serde_json::json!({ "steps": steps }).to_string()
+    }
+
+    fn entry(id: &str, sha256: &str) -> serde_json::Value {
+        serde_json::json!({ "id": id, "version": "1.0.0", "file": "x.yaml", "sha256": sha256 })
+    }
+
+    #[test]
+    fn parse_accepts_single_namespace_index() {
+        let raw = index_json(serde_json::json!([
+            entry("buz/archive", &"a".repeat(64)),
+            entry("buz/checkout", &"b".repeat(64)),
+        ]));
+        let index = parse_index(&raw).expect("single-namespace index parses");
+        assert_eq!(index_namespace(&index).as_deref(), Some("buz"));
+    }
+
+    #[test]
+    fn parse_rejects_mixed_namespace_index() {
+        let raw = index_json(serde_json::json!([
+            entry("buz/archive", &"a".repeat(64)),
+            entry("alice/upload", &"b".repeat(64)),
+        ]));
+        let error = parse_index(&raw).unwrap_err();
+        assert!(
+            error.contains("mixes namespaces 'buz' and 'alice'"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_ids_without_namespace() {
+        let raw = index_json(serde_json::json!([entry("archive", &"a".repeat(64))]));
+        let error = parse_index(&raw).unwrap_err();
+        assert!(error.contains("'<namespace>/<step>'"), "{error}");
+    }
+}
+
+/// Mirror drift check -------------------------------------------------------
+
+#[derive(Debug, serde::Serialize)]
+pub struct MirrorCheck {
+    /// `in-sync` | `out-of-sync` | `canonical-unreachable` | `mirror-unreachable`
+    pub status: String,
+    pub canonical_revision: Option<String>,
+    pub mirror_revision: Option<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RevisionSentinel {
+    revision: String,
+    #[serde(default)]
+    updated_at: Option<String>,
+}
+
+/// Like `http_get_text`, but a 404 means "absent" (None) instead of an error —
+/// sources and mirrors that predate revision sentinels are supported.
+async fn http_get_text_opt(http: &reqwest::Client, url: &str) -> anyhow::Result<Option<String>> {
+    let resp = http.get(url).send().await.map_err(|e| {
+        if e.is_timeout() {
+            anyhow!("source timed out — try again or raise the sync timeout in Settings (raw: {e})")
+        } else if e.is_connect() {
+            anyhow!(
+                "source unreachable (connection failed) — check the URL, network, or proxy; \
+                 original error: {e}"
+            )
+        } else {
+            anyhow!("source request failed: {e}")
+        }
+    })?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(anyhow!(
+            "source returned HTTP {} for {url} — the file does not exist or the path is wrong",
+            resp.status()
+        ));
+    }
+    resp.text()
+        .await
+        .map_err(|e| anyhow!("source response could not be read: {e}"))
+        .map(Some)
+}
+
+async fn fetch_revision(
+    http: &reqwest::Client,
+    base: &str,
+) -> anyhow::Result<Option<RevisionSentinel>> {
+    match http_get_text_opt(http, &join_url(base, "revision.json")).await? {
+        None => Ok(None),
+        Some(raw) => serde_json::from_str(&raw)
+            .map(Some)
+            .map_err(|e| anyhow!("invalid revision.json under {base}: {e}")),
+    }
+}
+
+/// Compare the namespace revision sentinel between the mirror and the
+/// canonical origin: two tiny GETs in the common case. Only when a sentinel
+/// is missing (legacy sources, older mirrors) does the check upgrade to a
+/// full index byte-compare — the index is generated byte-deterministically,
+/// so equal bytes mean equal content.
+pub async fn check_mirror(
+    http: &reqwest::Client,
+    pool: &SqlitePool,
+    source_id: &str,
+) -> anyhow::Result<MirrorCheck> {
+    let source = get_source(pool, source_id)
+        .await?
+        .ok_or_else(|| anyhow!("source {source_id} not found"))?;
+    let mirror = source
+        .mirror_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|mirror| !mirror.is_empty())
+        .ok_or_else(|| anyhow!("source '{}' has no mirror configured", source.name))?;
+    let bases = source_bases(&source);
+    let canonical_base = bases.last().expect("canonical base always present");
+    let mirror_base = base_url(mirror);
+
+    let canonical = match fetch_revision(http, canonical_base).await {
+        Ok(sentinel) => sentinel,
+        Err(e) => {
+            return Ok(MirrorCheck {
+                status: "canonical-unreachable".into(),
+                canonical_revision: None,
+                mirror_revision: None,
+                detail: Some(e.to_string()),
+            })
+        }
+    };
+    let mirror_side = match fetch_revision(http, &mirror_base).await {
+        Ok(sentinel) => sentinel,
+        Err(e) => {
+            return Ok(MirrorCheck {
+                status: "mirror-unreachable".into(),
+                canonical_revision: canonical.as_ref().map(|s| s.revision.clone()),
+                mirror_revision: None,
+                detail: Some(e.to_string()),
+            })
+        }
+    };
+
+    match (canonical, mirror_side) {
+        (Some(canon), Some(mirr)) => {
+            let status = if canon.revision == mirr.revision {
+                "in-sync"
+            } else {
+                "out-of-sync"
+            };
+            Ok(MirrorCheck {
+                status: status.into(),
+                canonical_revision: Some(canon.revision),
+                mirror_revision: Some(mirr.revision),
+                detail: canon.updated_at,
+            })
+        }
+        (canon, mirr) => {
+            let canonical_index = http_get_text(http, &join_url(canonical_base, "index.json"))
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
+            let mirror_index = http_get_text(http, &join_url(&mirror_base, "index.json"))
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
+            let status = if canonical_index == mirror_index {
+                "in-sync"
+            } else {
+                "out-of-sync"
+            };
+            Ok(MirrorCheck {
+                status: status.into(),
+                canonical_revision: canon.map(|s| s.revision),
+                mirror_revision: mirr.map(|s| s.revision),
+                detail: Some(
+                    "no revision.json sentinel on one side — compared the full index".into(),
+                ),
+            })
+        }
+    }
 }

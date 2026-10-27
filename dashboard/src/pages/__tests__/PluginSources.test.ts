@@ -186,7 +186,7 @@ describe('PluginSources', () => {
       .find((b) => b.textContent?.includes('Add & sync'))!
     add.click()
     await flush()
-    expect(stepSourcesApi.createSource).toHaveBeenCalledWith('bob', 'https://example.com/bob/index.json', false)
+    expect(stepSourcesApi.createSource).toHaveBeenCalledWith('bob', 'https://example.com/bob/index.json', false, '')
     // The form closed (back to the list) and the new row shows the
     // in-flight state while the background sync runs.
     expect(root.textContent).not.toContain('Index URL')

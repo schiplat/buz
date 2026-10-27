@@ -21,6 +21,11 @@ pub struct CreateSourceRequest {
     pub url: String,
     #[serde(default)]
     pub auto_enable: bool,
+    /// Optional mirror origin — tried before `url` on every fetch. Same
+    /// layout as the canonical index (its `index.json` URL). Content is
+    /// sha256-pinned, so a mirror cannot tamper with verified templates.
+    #[serde(default)]
+    pub mirror_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -58,14 +63,29 @@ pub async fn create_source(
         ));
     }
 
+    let mirror_url = body
+        .mirror_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|mirror| !mirror.is_empty())
+        .map(str::to_string);
+    if let Some(mirror) = &mirror_url {
+        if !mirror.starts_with("https://") && !mirror.starts_with("http://") {
+            return Err(AppError::ValidationFailed(
+                "mirror_url must be an absolute http(s) index.json URL".into(),
+            ));
+        }
+    }
+
     let id = Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO step_sources (id, name, url, auto_enable, enabled, created_by)
-         VALUES (?, ?, ?, ?, 1, ?)",
+        "INSERT INTO step_sources (id, name, url, mirror_url, auto_enable, enabled, created_by)
+         VALUES (?, ?, ?, ?, ?, 1, ?)",
     )
     .bind(&id)
     .bind(&name)
     .bind(&url)
+    .bind(&mirror_url)
     .bind(body.auto_enable as i64)
     .bind(&auth.username)
     .execute(&state.pool)
@@ -102,6 +122,31 @@ pub async fn create_source(
         "source": source,
         "syncing": true,
     }))))
+}
+
+/// POST /api/v1/admin/step-sources/{id}/mirror-check — compare the namespace
+/// revision sentinel between the mirror and the canonical origin (tiny GETs;
+/// falls back to a full index compare when a sentinel is missing).
+pub async fn check_mirror(
+    _auth: PlatformAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let timeout_secs = crate::services::platform_settings::effective(
+        &state.pool,
+        crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
+        &state.config.step_index.sync_timeout_seconds.to_string(),
+    )
+    .await
+    .parse()
+    .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
+    let http = step_pool::http_client(timeout_secs);
+    let report = step_pool::check_mirror(&http, &state.pool, &id)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(ApiResponse::success(
+        serde_json::to_value(&report).map_err(|e| AppError::Internal(e.to_string()))?,
+    )))
 }
 
 /// POST /api/v1/admin/step-sources/{id}/sync — re-fetch the index.

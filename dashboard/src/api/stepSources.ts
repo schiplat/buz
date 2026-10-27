@@ -7,6 +7,9 @@ export interface StepSource {
   id: string
   name: string
   url: string
+  /** Optional mirror origin — tried before `url`; sha256-pinning keeps
+   *  endpoint order availability-only. */
+  mirror_url: string | null
   auto_enable: boolean
   enabled: boolean
   last_synced_at: string | null
@@ -57,6 +60,14 @@ export interface LocalTemplate {
   description?: string
 }
 
+export interface MirrorCheckReport {
+  /** in-sync | out-of-sync | canonical-unreachable | mirror-unreachable */
+  status: string
+  canonical_revision: string | null
+  mirror_revision: string | null
+  detail: string | null
+}
+
 export interface SyncProgressState {
   phase: 'index' | 'processing' | 'done' | 'failed' | 'idle'
   total_plugins?: number
@@ -71,14 +82,30 @@ export const stepSourcesApi = {
     const resp = await apiClient.get('/admin/step-sources')
     return resp.data as { items: StepSource[] }
   },
-  async createSource(name: string, url: string, autoEnable: boolean): Promise<{ source: StepSource }> {
+  async createSource(
+    name: string,
+    url: string,
+    autoEnable: boolean,
+    mirrorUrl?: string,
+  ): Promise<{ source: StepSource }> {
     // Returns immediately — the sync runs in the background and the UI polls
     // the list for last_synced_at / last_sync_error.
-    const resp = await apiClient.post('/admin/step-sources', { name, url, auto_enable: autoEnable })
+    const resp = await apiClient.post('/admin/step-sources', {
+      name,
+      url,
+      auto_enable: autoEnable,
+      mirror_url: mirrorUrl?.trim() ? mirrorUrl.trim() : null,
+    })
     return resp.data as { source: StepSource }
   },
   async syncSource(id: string): Promise<void> {
     await apiClient.post(`/admin/step-sources/${id}/sync`)
+  },
+  /** Mirror drift check: compares the namespace revision sentinel between
+   *  the mirror and the canonical origin (tiny GETs; full-index fallback). */
+  async checkMirror(id: string): Promise<MirrorCheckReport> {
+    const resp = await apiClient.post(`/admin/step-sources/${id}/mirror-check`)
+    return resp.data as MirrorCheckReport
   },
   /** Live progress for a running background sync (progress bar). */
   async getSyncProgress(id: string): Promise<SyncProgressState> {
