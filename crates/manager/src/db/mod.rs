@@ -600,6 +600,13 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // legacy sources have no mirror.
     add_column_if_missing(pool, "plugin_sources", "mirror_url TEXT").await;
 
+    // Anti-rollback watermark: the highest SIGNED catalog sequence this
+    // source has accepted, the exact bytes it came with (same sequence but
+    // different bytes = a forked index), and its issue time (display only).
+    add_column_if_missing(pool, "plugin_sources", "last_index_sequence INTEGER").await;
+    add_column_if_missing(pool, "plugin_sources", "last_index_sha256 TEXT").await;
+    add_column_if_missing(pool, "plugin_sources", "last_index_issued_at TEXT").await;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS plugin_pool (
             namespace TEXT NOT NULL,

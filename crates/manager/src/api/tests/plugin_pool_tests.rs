@@ -49,7 +49,7 @@ run: |
 fn index_json(good_sha: &str) -> String {
     let broken_hash = "0".repeat(64);
     format!(
-        r#"{{ "steps": [
+        r#"{{ "sequence": 1, "issued_at": "2026-10-26T00:00:00Z", "steps": [
             {{ "id": "alice/oss-upload", "version": "1.0.0",
                "file": "steps/oss-upload/1.0.0.yaml", "sha256": "{good_sha}" }},
             {{ "id": "alice/broken-fetch", "version": "0.1.0",
@@ -1667,4 +1667,196 @@ async fn signed_index_is_verified_and_tampering_is_rejected() {
         error.contains("signature rejected") && error.contains("does not match its signature"),
         "{error}"
     );
+}
+
+/// Anti-rollback: a signature proves authenticity, not freshness. An attacker
+/// who kept an older signed index (and the signed hashes inside it) can replay
+/// the pair forever and every hash check still passes. The signed `sequence`
+/// closes that: a source only moves forward, and two different catalogs may
+/// not share a sequence.
+#[tokio::test]
+async fn signed_index_rollback_and_forked_sequence_are_refused() {
+    let (secret, public) = shared::plugin_signature::generate_keypair().expect("keypair");
+    let yaml = community_spec();
+    let yaml_sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(yaml.as_bytes()))
+    };
+    let entry = |id: &str, sha: &str| {
+        format!(
+            r#"{{ "id": "{id}", "version": "1.0.0", "file": "steps/oss-upload/1.0.0.yaml", "sha256": "{sha}" }}"#
+        )
+    };
+    let oss = entry("alice/oss-upload", &yaml_sha);
+
+    // A mutable source: the test rewrites index.json + index.json.sig between
+    // syncs, always signing what it serves.
+    let served = std::sync::Arc::new(std::sync::Mutex::new((String::new(), String::new())));
+    let publish = {
+        let served = served.clone();
+        let secret = secret.clone();
+        move |body: String| {
+            let sig = shared::plugin_signature::sign_index(body.as_bytes(), &secret, "test-key")
+                .expect("sign");
+            *served.lock().unwrap() = (body, sig);
+        }
+    };
+    let app = Router::new()
+        .route(
+            "/index.json",
+            axum::routing::get({
+                let served = served.clone();
+                move || {
+                    let body = { served.lock().unwrap().0.clone() };
+                    async move { body }
+                }
+            }),
+        )
+        .route(
+            "/index.json.sig",
+            axum::routing::get({
+                let served = served.clone();
+                move || {
+                    let body = { served.lock().unwrap().1.clone() };
+                    async move { body }
+                }
+            }),
+        )
+        .route(
+            "/steps/oss-upload/1.0.0.yaml",
+            axum::routing::get({
+                let yaml = yaml.clone();
+                move || {
+                    let body = yaml.clone();
+                    async move { body }
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let (app, pool) = test_app().await;
+    for (key, value) in [
+        ("plugin_require_signed_index", "true".to_string()),
+        ("plugin_index_public_key", public.clone()),
+    ] {
+        sqlx::query(
+            "INSERT INTO platform_settings (key, value) VALUES (?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    // Insert directly: add_source spawns a background sync, and this test
+    // needs every sync to see exactly the index it just published.
+    sqlx::query(
+        "INSERT INTO plugin_sources (id, name, url, auto_enable, enabled, created_by) \
+         VALUES ('rb', 'Rollback source', ?, 0, 1, 'test')",
+    )
+    .bind(format!("http://{addr}/index.json"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let source = crate::services::plugin_pool::get_source(&pool, "rb")
+        .await
+        .unwrap()
+        .unwrap();
+    let http = crate::services::plugin_pool::http_client(30);
+    let sync = || {
+        crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+    };
+
+    publish(format!(
+        r#"{{ "sequence": 2, "issued_at": "2026-10-26T00:00:00Z", "steps": [ {oss} ] }}"#
+    ));
+    sync().await.expect("sequence 2 is the baseline");
+    let stored: Option<i64> =
+        sqlx::query_scalar("SELECT last_index_sequence FROM plugin_sources WHERE id = 'rb'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, Some(2), "the accepted sequence is remembered");
+
+    // A validly signed but OLDER catalog: the replay this guard exists for.
+    publish(format!(
+        r#"{{ "sequence": 1, "issued_at": "2026-10-25T00:00:00Z", "steps": [ {oss} ] }}"#
+    ));
+    let error = sync().await.unwrap_err().to_string();
+    assert!(error.contains("index rollback refused"), "{error}");
+    assert!(
+        error.contains("sequence 2") && error.contains("sequence 1"),
+        "{error}"
+    );
+
+    // Same sequence, different bytes: a forked catalog, not a newer one.
+    let forked = format!("{},{}", oss, entry("alice/second", &yaml_sha));
+    publish(format!(
+        r#"{{ "sequence": 2, "issued_at": "2026-10-26T00:00:00Z", "steps": [ {forked} ] }}"#
+    ));
+    let error = sync().await.unwrap_err().to_string();
+    assert!(error.contains("must not sign two catalogs"), "{error}");
+
+    // Forward movement still works.
+    publish(format!(
+        r#"{{ "sequence": 3, "issued_at": "2026-10-27T00:00:00Z", "steps": [ {oss} ] }}"#
+    ));
+    sync().await.expect("sequence 3 advances");
+    let stored: Option<i64> =
+        sqlx::query_scalar("SELECT last_index_sequence FROM plugin_sources WHERE id = 'rb'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, Some(3));
+
+    // A publisher-side sequence restart is recovered by the audited reset: the
+    // old lower sequence is accepted again only after it.
+    let jwt = TokenManager::new(JWT_SECRET)
+        .create_token(ADMIN_ID, Role::Admin, 1)
+        .unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/plugin-sources/rb/reset-index-watermark")
+                .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let cleared: Option<i64> =
+        sqlx::query_scalar("SELECT last_index_sequence FROM plugin_sources WHERE id = 'rb'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(cleared, None, "the reset forgets the watermark");
+    let audited: Option<String> = sqlx::query_scalar(
+        "SELECT action FROM audit_logs WHERE action = 'plugin_source.reset_index_watermark'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        audited.as_deref(),
+        Some("plugin_source.reset_index_watermark")
+    );
+
+    publish(format!(
+        r#"{{ "sequence": 1, "issued_at": "2026-10-25T00:00:00Z", "steps": [ {oss} ] }}"#
+    ));
+    sync()
+        .await
+        .expect("after a reset the publisher's new numbering is the baseline");
+
+    // A signed index with no sequence cannot be ordered at all — accepting it
+    // would leave the replay window open, so it is refused.
+    publish(format!(r#"{{ "steps": [ {oss} ] }}"#));
+    let error = sync().await.unwrap_err().to_string();
+    assert!(error.contains("has no `sequence`"), "{error}");
 }

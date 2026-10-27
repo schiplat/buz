@@ -110,14 +110,16 @@ buz-plugin index
 
 Writes, in this order:
 
-1. `plugins/index.json` — every `(id, version)` with its content `sha256` and
-   scalar metadata, sorted deterministically
+1. `plugins/index.json` — the signed catalog header (`sequence`, `issued_at`)
+   plus every `(id, version)` with its content `sha256` and scalar metadata,
+   sorted deterministically
 2. `plugins/<ns>/<id>/meta.json` — per plugin, for the Manager's
    single-plugin refresh
 3. `plugins/revision.json` — **only with `--revision`**, always last
 
 `--revision` / `--updated-at` are CI inputs (commit sha + commit time); a
-local run without them never fabricates a version marker:
+local run without `--revision` never fabricates the revision sentinel, and
+without `--updated-at` the header takes the current time:
 
 ```bash
 buz-plugin index --revision "$(git rev-parse --short HEAD)" \
@@ -127,9 +129,11 @@ buz-plugin index --revision "$(git rev-parse --short HEAD)" \
 `--no-meta` skips step 2 (dry runs). Generation validates every spec first
 and refuses to write anything when one fails.
 
-Index output is **byte-deterministic** (sorted entries, ordered fields,
-two-space JSON + trailing newline). CI regenerations are byte-identical, and
-mirror drift checks can therefore compare bytes safely.
+Index output is **byte-stable for unchanged entries**: the header's
+`sequence` advances only when an entry changes, and `issued_at` is reused in
+that case, so a no-op regeneration reproduces the committed bytes — and the
+committed signature still matches. `--sequence N` pins the counter for
+publishers that maintain it themselves (0 is rejected).
 
 That contract is pinned by golden files (`crates/plugin-cli/tests/fixtures/`):
 the generator's output is compared byte-for-byte against committed fixtures
@@ -157,7 +161,11 @@ Buz 1.11.0 — generation, signing, and this `--check` re-verification — and t
 snapshots attach the signed index too. Two Python call sites remain on
 purpose: the per-PR generator smoke test (a required check must not depend on
 fetching a binary from a private release, because fork PRs receive no
-credentials) and the fallback used when that download is unavailable.
+credentials) and the fallback used when that download is unavailable. Both
+generators write the signed `sequence` header since 1.12.0; a Manager that
+requires signatures refuses an index without it, so publish with a 1.12.0+
+tool **before** upgrading the Manager (or before flipping *Require signed
+index* on).
 
 ### Sign the index — operation steps
 
@@ -262,6 +270,28 @@ is the mirror-attack case.
 
 Per-plugin `meta.json` carries no signature, so a signed source refreshes
 through the full index instead of the meta shortcut.
+
+#### Rollback protection
+
+A signature proves *authenticity*, not *freshness*: an attacker who kept an
+older signed `index.json` and its templates can serve that pair forever, and
+every signature and hash check still passes. The signed `sequence` is the
+ordering that closes this:
+
+| Incoming sequence | Manager verdict |
+|---|---|
+| higher than the accepted one | accept and remember it |
+| equal, byte-identical index | accept (idempotent re-sync) |
+| equal, different bytes | refuse — two catalogs cannot share one sequence |
+| lower than the accepted one | refuse — a validly signed older catalog is being replayed |
+| missing (signed index) | refuse — regenerate with a `buz-plugin` that writes `sequence` |
+
+Only an index that passed signature verification moves the watermark, so a
+deployment without *Require signed index* never records one. The first
+verified sync establishes the baseline; protection starts there. When a
+publisher legitimately restarts its numbering, **Reset watermark** on the
+source (audited) forgets it and the next sync re-establishes it. The
+watermark is also visible on the Sources page (`index sequence N · issued …`).
 
 #### Step 6 — mirrors copy the signature
 

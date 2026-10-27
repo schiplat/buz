@@ -73,6 +73,10 @@ enum Command {
         /// Timestamp recorded beside the revision (ISO-8601, display only)
         #[arg(long)]
         updated_at: Option<String>,
+        /// Pin the catalog sequence instead of deriving it from the committed
+        /// index (it otherwise advances only when the entries change)
+        #[arg(long)]
+        sequence: Option<u64>,
         /// Skip per-plugin meta.json output
         #[arg(long, default_value_t = false)]
         no_meta: bool,
@@ -124,6 +128,7 @@ fn main() {
             plugins_dir,
             revision,
             updated_at,
+            sequence,
             no_meta,
             check,
             sign_key,
@@ -131,6 +136,7 @@ fn main() {
             plugins_dir: plugins_dir.clone(),
             revision: revision.clone(),
             updated_at: updated_at.clone(),
+            sequence: *sequence,
             no_meta: *no_meta,
             check: *check,
             sign_key: sign_key.clone(),

@@ -117,6 +117,12 @@ pub struct SourceRow {
     pub enabled: bool,
     pub last_synced_at: Option<String>,
     pub last_sync_error: Option<String>,
+    /// Highest catalog sequence this source has had VERIFIED (signed) and
+    /// accepted. `None` = no signed index synced yet. The anti-rollback
+    /// watermark: sync refuses anything lower.
+    pub last_index_sequence: Option<i64>,
+    /// Issue time of that index (diagnostic, from the signed header).
+    pub last_index_issued_at: Option<String>,
 }
 
 /// The plugin's descriptive scalar meta (from a full-meta index / meta.json),
@@ -271,6 +277,14 @@ pub struct RemoteResolved {
 
 #[derive(Debug, Deserialize)]
 pub struct StepIndex {
+    /// Strictly increasing catalog version. Inside the signed bytes on
+    /// purpose: it is the anti-rollback anchor (a number stored beside the
+    /// signature could be raised without invalidating it).
+    #[serde(default)]
+    pub sequence: Option<u64>,
+    /// Issue time of this catalog version (diagnostic; signed with the rest).
+    #[serde(default)]
+    pub issued_at: Option<String>,
     #[serde(default = "Vec::new")]
     pub steps: Vec<IndexEntry>,
 }
@@ -393,8 +407,11 @@ pub async fn list_sources(pool: &SqlitePool) -> Result<Vec<SourceRow>, anyhow::E
         i64,
         Option<String>,
         Option<String>,
+        Option<i64>,
+        Option<String>,
     )> = sqlx::query_as(
-        "SELECT id, name, url, mirror_url, auto_enable, enabled, last_synced_at, last_sync_error \
+        "SELECT id, name, url, mirror_url, auto_enable, enabled, last_synced_at, last_sync_error, \
+                last_index_sequence, last_index_issued_at \
              FROM plugin_sources ORDER BY created_at",
     )
     .fetch_all(pool)
@@ -402,17 +419,28 @@ pub async fn list_sources(pool: &SqlitePool) -> Result<Vec<SourceRow>, anyhow::E
     Ok(rows
         .into_iter()
         .map(
-            |(id, name, url, mirror_url, auto_enable, enabled, last_synced_at, last_sync_error)| {
-                SourceRow {
-                    id,
-                    name,
-                    url,
-                    mirror_url,
-                    auto_enable: auto_enable != 0,
-                    enabled: enabled != 0,
-                    last_synced_at,
-                    last_sync_error,
-                }
+            |(
+                id,
+                name,
+                url,
+                mirror_url,
+                auto_enable,
+                enabled,
+                last_synced_at,
+                last_sync_error,
+                last_index_sequence,
+                last_index_issued_at,
+            )| SourceRow {
+                id,
+                name,
+                url,
+                mirror_url,
+                auto_enable: auto_enable != 0,
+                enabled: enabled != 0,
+                last_synced_at,
+                last_sync_error,
+                last_index_sequence,
+                last_index_issued_at,
             },
         )
         .collect())
@@ -717,16 +745,20 @@ async fn signature_policy(pool: &SqlitePool) -> (bool, String) {
 /// `index.json.sig` that verifies against the configured public key — that is
 /// what stops a mirror (or anyone on the network) from rewriting both the
 /// index and the hashes inside it.
+///
+/// Returns the verifying key id when the index WAS verified: only an
+/// authentic index may advance the anti-rollback watermark (see
+/// [`enforce_index_freshness`]).
 async fn verify_index_signature(
     http: &reqwest::Client,
     bases: &[String],
     index_text: &str,
     pool: &SqlitePool,
     source_name: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<String>> {
     let (require, public_key) = signature_policy(pool).await;
     if !require {
-        return Ok(());
+        return Ok(None);
     }
     if public_key.trim().is_empty() {
         anyhow::bail!(
@@ -745,6 +777,91 @@ async fn verify_index_signature(
         shared::plugin_signature::verify_index(index_text.as_bytes(), &signature, &public_key)
             .map_err(|e| anyhow!("source '{source_name}' index signature rejected: {e}"))?;
     tracing::info!(source = %source_name, key_id = %key_id, "index signature verified");
+    Ok(Some(key_id))
+}
+
+/// Anti-rollback watermark.
+///
+/// A signature proves authenticity, not freshness: an attacker who kept an
+/// older signed `index.json` (and the equally signed template hashes inside
+/// it) can serve that pair forever, and every hash check would still pass.
+/// The signed `sequence` is the missing ordering — a source only ever moves
+/// forward. Rules:
+///
+/// - no `sequence` in a signed index → refused (regenerate with a tool that
+///   writes one; accepting it would leave the replay window open);
+/// - lower than the accepted sequence → refused (rollback);
+/// - equal sequence but different bytes → refused (a publisher must not sign
+///   two catalogs under one sequence);
+/// - equal sequence, same bytes → idempotent re-sync, accepted.
+///
+/// The watermark is only advanced for an index that passed signature
+/// verification, so an unsigned source (or a deployment with the trust anchor
+/// off) never poisons it.
+async fn enforce_index_freshness(
+    pool: &SqlitePool,
+    source: &SourceRow,
+    index: &StepIndex,
+    raw: &str,
+) -> anyhow::Result<()> {
+    let Some(sequence) = index.sequence else {
+        anyhow::bail!(
+            "source '{}' index is signed but has no `sequence` — rollback protection needs it. \
+             Regenerate the index with a buz-plugin that writes one (`buz-plugin index --sign-key …`)",
+            source.name
+        );
+    };
+    let sequence = i64::try_from(sequence).map_err(|_| {
+        anyhow!(
+            "source '{}' index declares an out-of-range sequence {sequence}",
+            source.name
+        )
+    })?;
+    let incoming_sha = sha256_hex(raw);
+    let stored: Option<(Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT last_index_sequence, last_index_sha256 FROM plugin_sources WHERE id = ?",
+    )
+    .bind(&source.id)
+    .fetch_optional(pool)
+    .await?;
+    let (accepted_sequence, accepted_sha) = stored.unwrap_or((None, None));
+    if let Some(accepted) = accepted_sequence {
+        if sequence < accepted {
+            anyhow::bail!(
+                "index rollback refused for source '{}': it already accepted sequence {accepted}, \
+                 but this index reports sequence {sequence}. A validly signed but older catalog is \
+                 being replayed. If the publisher intentionally restarted its sequence, reset this \
+                 source's index watermark first",
+                source.name
+            );
+        }
+        if sequence == accepted && accepted_sha.as_deref() != Some(incoming_sha.as_str()) {
+            anyhow::bail!(
+                "source '{}' index reports sequence {sequence} with different content than the \
+                 index already accepted at that sequence — a publisher must not sign two catalogs \
+                 under one sequence. Re-issue the index with a higher sequence",
+                source.name
+            );
+        }
+    }
+    sqlx::query(
+        "UPDATE plugin_sources SET last_index_sequence = ?, last_index_sha256 = ?, \
+         last_index_issued_at = ? WHERE id = ?",
+    )
+    .bind(sequence)
+    .bind(&incoming_sha)
+    .bind(&index.issued_at)
+    .bind(&source.id)
+    .execute(pool)
+    .await?;
+    if accepted_sequence != Some(sequence) {
+        tracing::info!(
+            source = %source.name,
+            sequence,
+            issued_at = index.issued_at.as_deref().unwrap_or("unknown"),
+            "index catalog advanced"
+        );
+    }
     Ok(())
 }
 
@@ -757,9 +874,14 @@ async fn sync_source_inner(
 ) -> Result<usize, anyhow::Error> {
     let bases = source_bases(source);
     let raw = http_get_text_from_bases(http, &bases, "index.json").await?;
-    verify_index_signature(http, &bases, &raw, pool, &source.name).await?;
+    let verified = verify_index_signature(http, &bases, &raw, pool, &source.name).await?;
     let index = parse_index(&raw)
         .map_err(|e| anyhow!("invalid index.json: {e}{}", unexpected_body_hint(&raw)))?;
+    if verified.is_some() {
+        // Authentic index → its sequence may move the watermark. Rejected
+        // before any pool row is written, so a replay changes nothing.
+        enforce_index_freshness(pool, source, &index, &raw).await?;
+    }
 
     // Official-style sources publish reviews.json next to the index; when it
     // is fetchable, pool rows carry the review badge by hash membership.

@@ -89,6 +89,10 @@ const AUDITED: &[(&str, &str)] = &[
     ),
     ("POST /api/v1/admin/plugin-sources", "plugin_source.create"),
     (
+        "POST /api/v1/admin/plugin-sources/{id}/reset-index-watermark",
+        "plugin_source.reset_index_watermark",
+    ),
+    (
         "POST /api/v1/admin/plugin-sources/{id}/sync",
         "plugin_source.sync",
     ),

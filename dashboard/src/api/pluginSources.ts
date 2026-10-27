@@ -14,6 +14,11 @@ export interface PluginSource {
   enabled: boolean
   last_synced_at: string | null
   last_sync_error: string | null
+  /** Highest signed catalog sequence accepted for this source (the
+   *  anti-rollback watermark). Null = no verified index synced yet. */
+  last_index_sequence: number | null
+  /** Issue time of that catalog (signed; display only). */
+  last_index_issued_at: string | null
 }
 
 export interface PoolEntryMeta {
@@ -110,6 +115,12 @@ export const pluginSourcesApi = {
   },
   async syncSource(id: string): Promise<void> {
     await apiClient.post(`/admin/plugin-sources/${id}/sync`)
+  },
+  /** Forget the accepted index sequence so the next sync re-establishes it.
+   *  Only for a publisher that legitimately restarted its numbering — it
+   *  re-opens the replay window until that sync. */
+  async resetIndexWatermark(id: string): Promise<void> {
+    await apiClient.post(`/admin/plugin-sources/${id}/reset-index-watermark`)
   },
   /** Mirror drift check: compares the namespace revision sentinel between
    *  the mirror and the canonical origin (tiny GETs; full-index fallback). */

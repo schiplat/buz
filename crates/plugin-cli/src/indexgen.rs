@@ -32,6 +32,9 @@ pub struct Options {
     pub plugins_dir: PathBuf,
     pub revision: Option<String>,
     pub updated_at: Option<String>,
+    /// Pin the catalog sequence instead of deriving it from the committed
+    /// index. Publishing pipelines that keep their own counter use this.
+    pub sequence: Option<u64>,
     pub no_meta: bool,
     /// Verify instead of write: compare what generation would produce with
     /// the manifests on disk and fail on any difference.
@@ -99,9 +102,66 @@ struct MetaVersion {
     requires_buz: Option<String>,
 }
 
+/// The signed catalog header. `sequence` is the anti-rollback anchor: a
+/// Manager that already accepted sequence N refuses any index claiming less
+/// than N, so replaying an older (validly signed) catalog is detected. It
+/// lives inside `index.json` — the bytes `index.json.sig` covers — because a
+/// number stored next to the signature could be raised without breaking it.
 #[derive(Serialize)]
 struct IndexFile {
+    sequence: u64,
+    issued_at: String,
     steps: Vec<IndexEntry>,
+}
+
+/// The anti-rollback part of an index already on disk.
+#[derive(serde::Deserialize, Default)]
+struct PreviousIndex {
+    #[serde(default)]
+    sequence: Option<u64>,
+    #[serde(default)]
+    issued_at: Option<String>,
+    #[serde(default)]
+    steps: serde_json::Value,
+}
+
+/// The header generation decided on: keep it byte-stable when the entries did
+/// not change, otherwise advance the sequence.
+fn catalog_header(
+    source_root: &Path,
+    entries: &[IndexEntry],
+    options: &Options,
+) -> anyhow::Result<(u64, String)> {
+    let index_path = source_root.join(layout::INDEX_FILE);
+    let previous: Option<PreviousIndex> = std::fs::read_to_string(&index_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok());
+    let planned_steps = serde_json::to_value(entries).context("cannot serialize index entries")?;
+
+    // No entry changed and the committed index already carries a sequence:
+    // keep sequence AND issue time so a no-op regeneration produces the same
+    // bytes — and therefore the same signature. `--sequence` is a re-issue
+    // and never takes this path.
+    if options.sequence.is_none() {
+        if let Some(prev) = previous.as_ref().filter(|prev| prev.steps == planned_steps) {
+            if let Some(sequence) = prev.sequence {
+                let issued_at = prev.issued_at.clone().unwrap_or_else(|| now_rfc3339());
+                return Ok((sequence, issued_at));
+            }
+        }
+    }
+
+    let previous_sequence = previous
+        .as_ref()
+        .and_then(|prev| prev.sequence)
+        .unwrap_or(0);
+    let sequence = options.sequence.unwrap_or(previous_sequence + 1);
+    let issued_at = options.updated_at.clone().unwrap_or_else(|| now_rfc3339());
+    Ok((sequence, issued_at))
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 #[derive(Serialize)]
@@ -246,6 +306,9 @@ fn write_json(path: &Path, content: &str) -> anyhow::Result<()> {
 }
 
 pub fn run(options: &Options) -> anyhow::Result<()> {
+    if options.sequence == Some(0) {
+        anyhow::bail!("--sequence must be at least 1 (0 never names a catalog version)");
+    }
     let source_root = std::env::current_dir()
         .context("cannot determine the working directory")?
         .join(&options.plugins_dir);
@@ -370,9 +433,14 @@ fn plan_manifests(source_root: &Path, options: &Options) -> anyhow::Result<Vec<(
         .flat_map(|specs| specs.iter().map(|parsed| parsed.entry.clone()))
         .collect();
     entries.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
+    let (sequence, issued_at) = catalog_header(source_root, &entries, options)?;
     planned.push((
         source_root.join(layout::INDEX_FILE),
-        render_json(&IndexFile { steps: entries })?,
+        render_json(&IndexFile {
+            sequence,
+            issued_at,
+            steps: entries,
+        })?,
     ));
 
     if !options.no_meta {
@@ -592,6 +660,7 @@ run: echo ok
             plugins_dir: root.join("plugins"),
             revision: None,
             updated_at: None,
+            sequence: None,
             no_meta: false,
             check: false,
             sign_key: None,
@@ -707,6 +776,73 @@ run: echo ok
         fs::remove_file(repo.join("plugins/alice/world/1.0.0.yaml")).unwrap();
         let error = run(&opts).unwrap_err().to_string();
         assert!(error.contains("alice/world/meta.json is stale"), "{error}");
+    }
+
+    /// The catalog sequence is the anti-rollback anchor: it must advance when
+    /// the entries change and stay put when they do not (a no-op regeneration
+    /// must not force a new signature, or the mirror drift check would report
+    /// drift after every CI run).
+    #[test]
+    fn sequence_advances_only_when_entries_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        copy_tree(&fixtures().join("repo"), &repo);
+        let mut opts = Options {
+            updated_at: Some("2026-10-27T00:00:00Z".into()),
+            ..options(&repo)
+        };
+        run(&opts).unwrap();
+        let index_path = repo.join("plugins/index.json");
+        let first = fs::read_to_string(&index_path).unwrap();
+        assert!(first.contains("\"sequence\": 1"), "{first}");
+
+        // Same entries, a later issue time: the header — and the bytes — stay
+        // exactly where they were.
+        opts.updated_at = Some("2026-11-01T00:00:00Z".into());
+        run(&opts).unwrap();
+        assert_eq!(fs::read_to_string(&index_path).unwrap(), first);
+
+        // A spec edit advances both the sequence and the issue time.
+        let spec = repo.join("plugins/alice/world/1.0.0.yaml");
+        let body = fs::read_to_string(&spec).unwrap();
+        fs::write(&spec, format!("{body}# changed\n")).unwrap();
+        run(&opts).unwrap();
+        let second = fs::read_to_string(&index_path).unwrap();
+        assert!(second.contains("\"sequence\": 2"), "{second}");
+        assert!(second.contains("2026-11-01T00:00:00Z"), "{second}");
+        assert_ne!(second, first);
+    }
+
+    #[test]
+    fn explicit_sequence_pins_the_catalog_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        copy_tree(&fixtures().join("repo"), &repo);
+        let mut opts = Options {
+            updated_at: Some("2026-10-27T00:00:00Z".into()),
+            ..options(&repo)
+        };
+        opts.sequence = Some(42);
+        run(&opts).unwrap();
+        let index_path = repo.join("plugins/index.json");
+        assert!(fs::read_to_string(&index_path)
+            .unwrap()
+            .contains("\"sequence\": 42"));
+
+        // Without an override the next content change continues from the pin.
+        opts.sequence = None;
+        let spec = repo.join("plugins/alice/world/1.0.0.yaml");
+        let body = fs::read_to_string(&spec).unwrap();
+        fs::write(&spec, format!("{body}# changed\n")).unwrap();
+        run(&opts).unwrap();
+        assert!(fs::read_to_string(&index_path)
+            .unwrap()
+            .contains("\"sequence\": 43"));
+
+        // 0 never names a catalog version.
+        opts.sequence = Some(0);
+        let error = run(&opts).unwrap_err().to_string();
+        assert!(error.contains("--sequence must be at least 1"), "{error}");
     }
 
     #[test]

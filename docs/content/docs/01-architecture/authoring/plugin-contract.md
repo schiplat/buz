@@ -106,7 +106,7 @@ root of that boundary:
 ```
 your-plugins/
 └── plugins/                  ← source root (what a Manager source URL points into)
-    ├── index.json            ← id / version / file / sha256 (+ scalar meta)
+    ├── index.json            ← sequence + issued_at + entries (id / version / file / sha256)
     ├── reviews.json          ← optional; reviewed-content manifest
     ├── revision.json         ← freshness sentinel (CI-written, last)
     ├── index.json.sig     ← optional detached signature over index.json
@@ -132,9 +132,22 @@ trustworthy, and the index byte-stable:
 
 - **`index.json` is the catalog.** Every entry pins the template's content
   sha256, so resolution locks at save time regardless of which host served
-  the file. It contains **no review information** and is
-  byte-deterministic — two equal files mean two equal catalogs, which is
-  what makes mirror drift checks safe.
+  the file. It contains **no review information**. Its header carries two
+  fields above `steps`:
+
+  ```json
+  { "sequence": 7, "issued_at": "2026-10-27T10:14:00+08:00", "steps": [ … ] }
+  ```
+
+  `sequence` is a strictly increasing catalog version and `issued_at` is when
+  that version was issued. Both sit **inside** the signed bytes, and the
+  generator only advances them when the entries change — regenerating an
+  unchanged catalog reproduces the same bytes (and therefore the same
+  signature). A Manager that has already accepted sequence 7 refuses any
+  index claiming a lower one, and refuses two different catalogs sharing one
+  sequence: a validly signed *older* index (with its equally valid template
+  hashes) can no longer be replayed. Set `--sequence` explicitly only when
+  you maintain the counter yourself.
 - **`reviews.json` is the trust ledger.** Entries are content hashes
   recorded after human review; the review gate (`require_reviewed`)
   rejects any template whose hash is absent from it. It lives per source
@@ -146,6 +159,8 @@ trustworthy, and the index byte-stable:
   the files they pin, so the chain stays self-consistent; the signature is what
   lets a Manager detect a rewritten index, a mirror included. Generate it with
   `buz-plugin index --sign-key` and copy it alongside the index when mirroring.
+  Authenticity is not freshness — the signed `sequence` supplies the ordering
+  that makes a replay of an older signed index detectable.
 - **`revision.json` is the freshness sentinel.** It carries
   `{"revision": "<commit sha>", "updated_at": "<iso8601>"}` and is written
   **last** — it commits the sync. Comparing two sentinels (a few hundred

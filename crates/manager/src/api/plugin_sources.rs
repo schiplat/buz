@@ -162,7 +162,7 @@ pub async fn check_mirror(
     )))
 }
 
-/// POST /api/v1/admin/step-sources/{id}/sync — re-fetch the index.
+/// POST /api/v1/admin/plugin-sources/{id}/sync — re-fetch the index.
 pub async fn sync_source(
     auth: PlatformAdmin,
     State(state): State<AppState>,
@@ -199,6 +199,47 @@ pub async fn sync_source(
     Ok(Json(ApiResponse::success(
         json!({ "id": id, "syncing": true }),
     )))
+}
+
+/// POST /api/v1/admin/plugin-sources/{id}/reset-index-watermark — forget the
+/// highest signed catalog sequence accepted for this source, so the next sync
+/// re-establishes it. Only needed when a publisher legitimately restarted its
+/// numbering (the anti-rollback check would otherwise hold the source back);
+/// it re-opens the replay window until that next verified sync.
+pub async fn reset_index_watermark(
+    auth: PlatformAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let source = plugin_pool::get_source(&state.pool, &id)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .ok_or_else(|| AppError::NotFound("source not found".into()))?;
+    sqlx::query(
+        "UPDATE plugin_sources SET last_index_sequence = NULL, last_index_sha256 = NULL, \
+         last_index_issued_at = NULL WHERE id = ?",
+    )
+    .bind(&id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::PluginSourceResetIndexWatermark, &auth)
+            .on(Resource::plugin_source(&source.id, &source.name))
+            .changes(
+                Some(json!({
+                    "last_index_sequence": source.last_index_sequence,
+                    "last_index_issued_at": source.last_index_issued_at,
+                })),
+                Some(json!({
+                    "last_index_sequence": null,
+                    "last_index_issued_at": null,
+                })),
+            ),
+    )
+    .await;
+    Ok(Json(ApiResponse::success(json!({ "id": id }))))
 }
 
 /// GET /api/v1/admin/step-sources/{id}/sync-progress — live sync progress for

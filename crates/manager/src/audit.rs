@@ -122,6 +122,7 @@ pub enum Action {
     // plugin_source
     PluginSourceCreate,
     PluginSourceDelete,
+    PluginSourceResetIndexWatermark,
     PluginSourceSync,
 
     // team
@@ -210,6 +211,7 @@ impl Action {
             Action::PluginPoolRefresh => "plugin_pool.refresh",
             Action::PluginSourceCreate => "plugin_source.create",
             Action::PluginSourceDelete => "plugin_source.delete",
+            Action::PluginSourceResetIndexWatermark => "plugin_source.reset_index_watermark",
             Action::PluginSourceSync => "plugin_source.sync",
             Action::TeamCreate => "team.create",
             Action::TeamDelete => "team.delete",

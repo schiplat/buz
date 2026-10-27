@@ -252,6 +252,10 @@ pub fn router(state: AppState) -> Router {
             "/admin/plugin-sources/{id}/mirror-check",
             post(plugin_sources::check_mirror),
         )
+        .route(
+            "/admin/plugin-sources/{id}/reset-index-watermark",
+            post(plugin_sources::reset_index_watermark),
+        )
         .route("/admin/plugin-pool", get(plugin_sources::list_pool))
         .route(
             "/admin/plugin-pool/{namespace}/{step_id}/refresh",

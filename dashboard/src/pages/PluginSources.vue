@@ -352,6 +352,28 @@ async function syncSource(source: PluginSource) {
   }
 }
 
+/** Recovery path for a publisher that legitimately restarted its catalog
+ *  numbering: the anti-rollback check holds the source at the old sequence
+ *  until this watermark is forgotten. */
+async function resetWatermark(source: PluginSource) {
+  const ok = await dialog.confirm(
+    `Forget the accepted index sequence for "${source.name}" (currently ${source.last_index_sequence})? ` +
+      'Only do this when the publisher intentionally restarted its sequence — until the next verified sync, ' +
+      'a replayed older index would be accepted again.',
+    { confirmLabel: 'Reset watermark' },
+  )
+  if (!ok) return
+  busy.value = `wm-${source.id}`
+  try {
+    await pluginSourcesApi.resetIndexWatermark(source.id)
+    await load()
+  } catch (e) {
+    await dialog.alert(`Reset failed: ${e instanceof Error ? e.message : e}`)
+  } finally {
+    busy.value = ''
+  }
+}
+
 async function addSource() {
   if (!newName.value.trim() || !newUrl.value.trim()) return
   busy.value = 'add'
@@ -533,6 +555,12 @@ onUnmounted(() => {
                 class="mt-0.5 text-[11px]"
                 :class="source.last_sync_error ? 'text-red-500' : 'text-muted-foreground/70'"
               >{{ syncState(source) }}</p>
+              <p
+                v-if="source.last_index_sequence !== null"
+                class="mt-0.5 text-[11px] text-muted-foreground/70"
+              >
+                index sequence {{ source.last_index_sequence }}<span v-if="source.last_index_issued_at"> · issued {{ source.last_index_issued_at }}</span>
+              </p>
               <div v-if="isSyncing(source) || progressFailed(source)" class="mt-2">
                 <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                   <div
@@ -560,6 +588,14 @@ onUnmounted(() => {
                 title="Compare the revision sentinel between mirror and canonical origin"
                 @click="checkMirror(source)"
               >Check mirror</UiButton>
+              <UiButton
+                v-if="source.last_index_sequence !== null && source.last_sync_error"
+                size="sm"
+                variant="ghost"
+                :disabled="busy === `wm-${source.id}`"
+                title="Forget the accepted index sequence — only after a publisher-side sequence reset"
+                @click="resetWatermark(source)"
+              >Reset watermark</UiButton>
               <UiButton size="sm" variant="ghost" :disabled="busy === `del-${source.id}`" @click="removeSource(source)">
                 <Trash2 class="h-3.5 w-3.5" />
               </UiButton>
