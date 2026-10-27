@@ -157,7 +157,7 @@ async fn health_step_review_section_reports_gate_without_leaking_paths() {
     let state = test_state().await;
     let (_, Json(body)) = health(State(state), Query(HealthQuery::default())).await;
 
-    let step_review = &body["step_review"];
+    let step_review = &body["plugin_review"];
     assert!(
         step_review.is_object(),
         "step_review section present: {body}"
@@ -184,7 +184,7 @@ async fn health_step_review_section_reflects_configured_gate() {
     state.config.plugin_index.require_reviewed = true;
 
     let (_, Json(body)) = health(State(state), Query(HealthQuery::default())).await;
-    let step_review = &body["step_review"];
+    let step_review = &body["plugin_review"];
     assert_eq!(step_review["manifest_configured"], true);
     assert_eq!(step_review["require_reviewed"], true);
 }

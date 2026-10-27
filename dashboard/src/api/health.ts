@@ -33,7 +33,7 @@ export interface HealthInfo {
   uptime_seconds: number
   started_at?: string
   /** Review-gate posture; absent on managers older than the banner feature. */
-  step_review?: StepReviewHealth
+  plugin_review?: StepReviewHealth
   database: DatabaseHealth
   jobs: JobsBacklogHealth
   ws: WsHealth
@@ -76,7 +76,7 @@ export async function getMarketplaceUrl(): Promise<string> {
  */
 export async function getStepReviewGate(): Promise<StepReviewHealth | null> {
   const info = await fetchHealthOnce()
-  return info?.step_review ?? null
+  return info?.plugin_review ?? null
 }
 
 export const healthApi = {

@@ -66,6 +66,34 @@ pub async fn init(config: &Config) -> anyhow::Result<SqlitePool> {
 /// ignoring the duplicate-column error — but ONLY that error: a wrong table
 /// name or a statement ordered before its `CREATE TABLE` used to fail
 /// silently, which is how a column can be "migrated" yet absent.
+/// Rename a table when the old name still exists and the new one does not.
+/// Table renames are not expressible as `CREATE TABLE IF NOT EXISTS`, so an
+/// existing deployment would otherwise keep querying the old name and fail.
+async fn rename_table_if_present(pool: &SqlitePool, from: &str, to: &str) {
+    let exists = |name: &str| {
+        let name = name.to_string();
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+            )
+            .bind(name)
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        }
+    };
+    if !exists(from).await || exists(to).await {
+        return;
+    }
+    let sql = format!("ALTER TABLE {from} RENAME TO {to}");
+    if let Err(error) = sqlx::query(&sql).execute(pool).await {
+        tracing::warn!(%sql, %error, "table rename failed");
+    }
+}
+
 async fn add_column_if_missing(pool: &SqlitePool, table: &str, definition: &str) {
     let sql = format!("ALTER TABLE {table} ADD COLUMN {definition}");
     if let Err(error) = sqlx::query(&sql).execute(pool).await {
@@ -541,6 +569,15 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     add_column_if_missing(pool, "jobs", "queue_position INTEGER").await;
 
     // ── Step marketplace: sources + pool (ADR step-marketplace §6.8) ──
+    // Plugin vocabulary: databases created before the rename carry the old
+    // table names. Rename first — the CREATE statements below are no-ops for
+    // renamed tables, and queries would otherwise hit "no such table".
+    rename_table_if_present(pool, "step_sources", "plugin_sources").await;
+    rename_table_if_present(pool, "step_pool", "plugin_pool").await;
+    sqlx::query("DROP INDEX IF EXISTS idx_step_pool_lookup")
+        .execute(pool)
+        .await
+        .ok();
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS plugin_sources (
             id TEXT PRIMARY KEY,
@@ -586,7 +623,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .execute(pool)
     .await?;
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_step_pool_lookup ON plugin_pool (namespace, step_id, enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_plugin_pool_lookup ON plugin_pool (namespace, step_id, enabled)",
     )
     .execute(pool)
     .await?;
@@ -601,6 +638,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // writes them — they describe the curator's decision, not ingestion.
     add_column_if_missing(pool, "plugin_pool", "updated_by TEXT").await;
     add_column_if_missing(pool, "plugin_pool", "updated_at TEXT").await;
+
     add_column_if_missing(pool, "plugin_pool", "requires_buz TEXT").await;
     add_column_if_missing(pool, "plugin_pool", "buz_compatible INTEGER").await;
     add_column_if_missing(pool, "plugin_pool", "compat_error TEXT").await;
@@ -619,6 +657,23 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     )
     .execute(pool)
     .await?;
+    // Settings keys follow the plugin vocabulary. Old overrides are renamed,
+    // otherwise an upgraded deployment silently loses its review gate and
+    // sync timeout (the new-key lookup would find no row).
+    for (old_key, new_key) in [
+        ("step_review_required", "plugin_review_required"),
+        ("step_reviewed_manifest", "plugin_reviewed_manifest"),
+        ("step_index_local_dir", "plugin_index_local_dir"),
+        ("step_sync_timeout", "plugin_sync_timeout"),
+    ] {
+        // A new-format key wins over an old one (the upsert path always
+        // writes new-format keys).
+        sqlx::query("UPDATE platform_settings SET key = ? WHERE key = ?")
+            .bind(new_key)
+            .bind(old_key)
+            .execute(pool)
+            .await?;
+    }
 
     // ── Official plugin source (factory-preseeded, auto-enabled) ──
     // The CF Pages mirror is the distribution endpoint chosen for
@@ -1893,4 +1948,91 @@ pub async fn allocate_run_number(
     .fetch_one(&mut *conn)
     .await?;
     Ok(next)
+}
+
+#[cfg(test)]
+mod vocab_migration_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// A database created before the plugin rename must come out of
+    /// `run_migrations` with the new table and settings-key names — the data,
+    /// not just the schema, has to survive the rename.
+    #[tokio::test]
+    async fn legacy_step_tables_and_settings_keys_are_renamed() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE step_sources (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, \
+             auto_enable INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, \
+             last_synced_at TEXT, last_sync_error TEXT, created_by TEXT, \
+             created_at TEXT NOT NULL DEFAULT (datetime('now')))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO step_sources (id, name, url) VALUES ('src-legacy', 'legacy', 'https://x/index.json')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE step_pool (namespace TEXT NOT NULL, step_id TEXT NOT NULL, \
+             version TEXT NOT NULL, sha256 TEXT NOT NULL, source_id TEXT NOT NULL, \
+             file_path TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, \
+             reviewed INTEGER NOT NULL DEFAULT 0, added_by TEXT, \
+             added_at TEXT NOT NULL DEFAULT (datetime('now')), \
+             UNIQUE(namespace, step_id, version))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE platform_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, \
+             updated_by TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO platform_settings (key, value) VALUES ('step_review_required', 'true')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool, "test-secret-0123456789-abcdefghijklmnop")
+            .await
+            .expect("migrations run on a legacy database");
+
+        // Migrations also seed the factory source, so assert the legacy row
+        // itself survived rather than a total count.
+        let legacy: Option<String> =
+            sqlx::query_scalar("SELECT name FROM plugin_sources WHERE id = 'src-legacy'")
+                .fetch_optional(&pool)
+                .await
+                .expect("plugin_sources exists");
+        assert_eq!(
+            legacy.as_deref(),
+            Some("legacy"),
+            "source row survived the rename"
+        );
+
+        let review_key: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM platform_settings WHERE key = 'plugin_review_required'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(review_key.as_deref(), Some("true"), "settings key renamed");
+
+        let stale: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM platform_settings WHERE key LIKE 'step_%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stale, 0, "no legacy keys left behind");
+    }
 }

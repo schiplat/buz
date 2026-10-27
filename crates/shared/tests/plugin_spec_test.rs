@@ -88,8 +88,8 @@ fn requires_buz_three_part_semantics() {
 #[test]
 fn wasm_runtime_and_unknown_fields_rejected() {
     let wasm = base_yaml().replacen("engine: shell", "runtime: wasm\nengine: shell", 1);
-    let errors =
-        validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&wasm).unwrap(), CURRENT).unwrap_err();
+    let errors = validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&wasm).unwrap(), CURRENT)
+        .unwrap_err();
     assert!(errors.iter().any(|e| e.contains("Phase 3")), "{errors:?}");
 
     assert!(serde_yaml::from_str::<PluginSpec>("id: a/b\nversion: 1.0.0\noops: 1").is_err());
@@ -98,8 +98,11 @@ fn wasm_runtime_and_unknown_fields_rejected() {
 #[test]
 fn docker_requires_image_and_run_bans_secret_refs() {
     let docker = base_yaml().replacen("engine: shell", "engine: docker", 1);
-    let errors = validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&docker).unwrap(), CURRENT)
-        .unwrap_err();
+    let errors = validate_plugin_spec(
+        &serde_yaml::from_str::<PluginSpec>(&docker).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
     assert!(
         errors.iter().any(|e| e.contains("image: is required")),
         "{errors:?}"
@@ -110,8 +113,8 @@ fn docker_requires_image_and_run_bans_secret_refs() {
         "echo ${secrets.FEISHU_WEBHOOK}",
         1,
     );
-    let errors =
-        validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&leak).unwrap(), CURRENT).unwrap_err();
+    let errors = validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&leak).unwrap(), CURRENT)
+        .unwrap_err();
     assert!(
         errors.iter().any(|e| e.contains("${secrets.")),
         "{errors:?}"
@@ -170,8 +173,8 @@ fn community_publisher_requires_attribution() {
     assert!(validate_plugin_spec(&spec, CURRENT).is_ok());
 
     let bad = base_yaml().replacen("publisher: official", "publisher: verified", 1);
-    let errors =
-        validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&bad).unwrap(), CURRENT).unwrap_err();
+    let errors = validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&bad).unwrap(), CURRENT)
+        .unwrap_err();
     assert!(
         errors.iter().any(|e| e.starts_with("publisher:")),
         "{errors:?}"
@@ -235,8 +238,11 @@ fn id_grammar_is_two_segments_for_all_templates() {
 
     // The old three-segment form is invalid.
     let three = base_yaml().replacen("id: buz/feishu", "id: buz/notify/feishu", 1);
-    let errors = validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&three).unwrap(), CURRENT)
-        .unwrap_err();
+    let errors = validate_plugin_spec(
+        &serde_yaml::from_str::<PluginSpec>(&three).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
     assert!(
         errors
             .iter()
@@ -251,8 +257,8 @@ fn host_inputs_are_restricted_for_marketplace_templates() {
     // chosen through a template input. (engine: ssh itself is allowed; see
     // ssh_engine_template_is_valid_without_image.)
     let host = base_yaml().replacen("type: boolean", "type: host", 1);
-    let errors =
-        validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&host).unwrap(), CURRENT).unwrap_err();
+    let errors = validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&host).unwrap(), CURRENT)
+        .unwrap_err();
     assert!(
         errors
             .iter()
@@ -305,8 +311,11 @@ fn input_defaults_obey_masking_types_options_and_patterns() {
         "  retries:\n    type: number\n    default: \"many\"\n  at_all:\n    type: boolean\n    default: \"false\"",
         1,
     );
-    let errors = validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&number).unwrap(), CURRENT)
-        .unwrap_err();
+    let errors = validate_plugin_spec(
+        &serde_yaml::from_str::<PluginSpec>(&number).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
     assert!(
         errors
             .iter()
@@ -319,8 +328,11 @@ fn input_defaults_obey_masking_types_options_and_patterns() {
         "  mode:\n    type: choice\n    options: [safe, fast]\n    default: \"unknown\"\n  at_all:\n    type: boolean\n    default: \"false\"",
         1,
     );
-    let errors = validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&choice).unwrap(), CURRENT)
-        .unwrap_err();
+    let errors = validate_plugin_spec(
+        &serde_yaml::from_str::<PluginSpec>(&choice).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
     assert!(
         errors
             .iter()
@@ -370,8 +382,11 @@ fn credential_like_inputs_must_be_masked() {
         "  bot_token:\n    type: string\n    default: \"x\"\n  at_all:",
         1,
     );
-    let errors = validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&leaky).unwrap(), CURRENT)
-        .unwrap_err();
+    let errors = validate_plugin_spec(
+        &serde_yaml::from_str::<PluginSpec>(&leaky).unwrap(),
+        CURRENT,
+    )
+    .unwrap_err();
     assert!(
         errors
             .iter()
@@ -421,7 +436,7 @@ fn invalid_declared_engine_is_rejected() {
     let err = parse_and_validate_plugin_spec(&yaml, CURRENT).unwrap_err();
     assert!(
         err.iter()
-            .any(|e| e.contains("is not valid for a step template")),
+            .any(|e| e.contains("is not valid for a plugin template")),
         "{err:?}"
     );
 }
@@ -444,7 +459,9 @@ fn default_dir_validated_like_step_work_dir() {
         "default_dir: \"source/subdir\"\nengine: shell",
         1,
     );
-    assert!(validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&ok).unwrap(), CURRENT).is_ok());
+    assert!(
+        validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&ok).unwrap(), CURRENT).is_ok()
+    );
 
     for bad in ["/abs", "../escape", "a/../b", "./dot", ""] {
         let yaml = base_yaml().replacen(
@@ -452,8 +469,9 @@ fn default_dir_validated_like_step_work_dir() {
             &format!("default_dir: \"{bad}\"\nengine: shell"),
             1,
         );
-        let errors = validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&yaml).unwrap(), CURRENT)
-            .unwrap_err();
+        let errors =
+            validate_plugin_spec(&serde_yaml::from_str::<PluginSpec>(&yaml).unwrap(), CURRENT)
+                .unwrap_err();
         assert!(
             errors.iter().any(|e| e.starts_with("default_dir:")),
             "{bad}: {errors:?}"

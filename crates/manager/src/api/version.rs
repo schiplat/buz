@@ -188,7 +188,7 @@ pub async fn health(
         "marketplace_url": marketplace_url,
         "uptime_seconds": uptime_seconds,
         "started_at": started.map(|s| s.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-        "step_review": step_review,
+        "plugin_review": step_review,
         "database": {
             "status": if db_ok { "ok" } else { "error" },
             "latency_ms": latency_ms,

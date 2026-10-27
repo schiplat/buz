@@ -51,7 +51,7 @@ token_cache_path = "./state/runner-token"
 
 ## 1. Manager process — `manager.toml`
 
-Override rule: **env vars beat TOML** (`BUZ_JWT_SECRET`, `BUZ_MARKETPLACE_URL`, `BUZ_STEP_INDEX__LOCAL_DIR`). Nothing else overrides this file.
+Override rule: **env vars beat TOML** (`BUZ_JWT_SECRET`, `BUZ_MARKETPLACE_URL`, `BUZ_PLUGIN_INDEX__LOCAL_DIR`). Nothing else overrides this file.
 
 | Key | Declared in | Takes effect on | Overridable by |
 |---|---|---|---|
@@ -64,8 +64,8 @@ Override rule: **env vars beat TOML** (`BUZ_JWT_SECRET`, `BUZ_MARKETPLACE_URL`, 
 | `auth.jwt_ttl_hours` | `manager.toml → [auth]` | UI/API session tokens | — |
 | `auth.runner_register_token_ttl_hours` | `manager.toml → [auth]` | Runner registration tokens | — |
 | `pipeline.yaml_scan_dir` / `yaml_scan_interval_seconds` | `manager.toml → [pipeline]` | Pipeline YAML scan | — |
-| `step_index.local_dir` (`BUZ_STEP_INDEX__LOCAL_DIR`) | `manager.toml → [step_index]` | `uses:` resolution | env |
-| `step_index.reviewed_manifest` / `require_reviewed` | `manager.toml → [step_index]` | Template review gate | — |
+| `plugin_index.local_dir` (`BUZ_PLUGIN_INDEX__LOCAL_DIR`) | `manager.toml → [plugin_index]` | `uses:` resolution | env |
+| `plugin_index.reviewed_manifest` / `require_reviewed` | `manager.toml → [plugin_index]` | Template review gate | — |
 | `clock.enabled` / `warn_threshold_seconds` / `cache_ttl_seconds` | `manager.toml → [clock]` | Clock probe before signing config URLs | — |
 | `clock.allowed_hosts` | `manager.toml → [clock]` | SSRF allowlist for the probe — **retires with OSS delivery (Phase 3)** | — |
 | `runner.heartbeat_timeout_seconds` | `manager.toml → [runner]` | Unresponsive-Runner timeout | — |

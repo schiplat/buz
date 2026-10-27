@@ -22,7 +22,11 @@ pub struct Config {
     /// Production must leave `enabled = false` (default).
     #[serde(default)]
     pub standalone: StandaloneConfig,
-    #[serde(default)]
+    /// `[plugin_index]` — where `uses:` marketplace references resolve.
+    /// Accepts the legacy `[step_index]` section name: configs written before
+    /// the plugin rename keep working (only the section name changed — same
+    /// keys, same semantics).
+    #[serde(default, alias = "step_index")]
     pub plugin_index: PluginIndexConfig,
     #[serde(default)]
     pub storage: StorageConfig,
@@ -438,6 +442,37 @@ mod sync_timeout_default_tests {
             dir.to_string_lossy().ends_with("data/plugins"),
             "got {dir:?}"
         );
+    }
+
+    /// Configs written before the plugin rename carry `[step_index]`. The
+    /// alias must keep them working — otherwise an upgraded deployment would
+    /// silently lose its review gate (the section would parse as unknown).
+    #[test]
+    fn legacy_step_index_section_still_parses() {
+        let cfg: Config = config::Config::builder()
+            .add_source(config::File::from_str(
+                r#"
+[server]
+host = "127.0.0.1"
+
+[step_index]
+local_dir = "/srv/legacy-plugins"
+reviewed_manifest = "/srv/legacy/reviews.json"
+require_reviewed = true
+"#,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("build config")
+            .try_deserialize()
+            .expect("legacy section accepted");
+
+        assert_eq!(cfg.plugin_index.local_dir, "/srv/legacy-plugins");
+        assert_eq!(
+            cfg.plugin_index.reviewed_manifest,
+            "/srv/legacy/reviews.json"
+        );
+        assert!(cfg.plugin_index.require_reviewed);
     }
 
     #[test]

@@ -40,14 +40,14 @@ heartbeat_timeout_seconds = 90
 yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30
 
-[step_index]
+[plugin_index]
 # Where `uses:` references resolve — local YAML specs, one file per template.
 # Empty local_dir → <data_dir>/plugins (./data/plugins — the manager data root). Manager reads
 # this directory; it does not clone/sync it. To use an external Git mirror,
-# point local_dir (or env BUZ_STEP_INDEX__LOCAL_DIR in Docker) at its
+# point local_dir (or env BUZ_PLUGIN_INDEX__LOCAL_DIR in Docker) at its
 # plugins/ subdirectory.
 # local_dir = "/opt/buz-plugin-mirror/plugins"
-# Validate with: buz-manager step-validate /opt/buz-plugin-mirror/plugins
+# Validate with: buz-plugin validate /opt/buz-plugin-mirror/plugins
 # Review badge: reviewed_manifest = "/etc/buz/reviews.json"
 # require_reviewed = false
 

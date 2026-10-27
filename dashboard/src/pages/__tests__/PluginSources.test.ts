@@ -53,7 +53,7 @@ async function mountPage() {
 }
 
 const platformSetting = (overrides: Partial<PlatformSetting>): PlatformSetting => ({
-  key: 'step_review_required',
+  key: 'plugin_review_required',
   kind: 'bool',
   value: 'false',
   default: 'false',
@@ -69,15 +69,15 @@ beforeEach(() => {
   vi.mocked(adminSettingsApi.list).mockResolvedValue({
     items: [
       platformSetting({ key: 'marketplace_url', kind: 'url', value: '' }),
-      platformSetting({ key: 'step_review_required', value: 'false' }),
+      platformSetting({ key: 'plugin_review_required', value: 'false' }),
       platformSetting({
-        key: 'step_index_local_dir',
+        key: 'plugin_index_local_dir',
         kind: 'path',
         value: '/srv/plugins',
         default: '/srv/plugins',
       }),
-      platformSetting({ key: 'step_reviewed_manifest', kind: 'path', value: '' }),
-      platformSetting({ key: 'step_sync_timeout', kind: 'number', value: '60', default: '60' }),
+      platformSetting({ key: 'plugin_reviewed_manifest', kind: 'path', value: '' }),
+      platformSetting({ key: 'plugin_sync_timeout', kind: 'number', value: '60', default: '60' }),
     ],
   })
   vi.mocked(adminSettingsApi.update).mockImplementation(async (key, value) => ({ key, value }))
@@ -207,17 +207,17 @@ describe('PluginSources', () => {
 
   it('applies the review-gate toggle immediately', async () => {
     const root = await mountPage()
-    const toggle = root.querySelector<HTMLElement>('[data-testid="switch-step_review_required"]')!
+    const toggle = root.querySelector<HTMLElement>('[data-testid="switch-plugin_review_required"]')!
     expect(toggle.getAttribute('aria-checked')).toBe('false')
     toggle.click()
     await flush()
-    expect(adminSettingsApi.update).toHaveBeenCalledWith('step_review_required', 'true')
+    expect(adminSettingsApi.update).toHaveBeenCalledWith('plugin_review_required', 'true')
   })
 
   it('hints inline when the configured manifest file does not exist', async () => {
     vi.mocked(adminSettingsApi.list).mockResolvedValue({
       items: [
-        platformSetting({ key: 'step_reviewed_manifest', kind: 'path', value: '/no/such/reviews.json', fileState: 'missing' }),
+        platformSetting({ key: 'plugin_reviewed_manifest', kind: 'path', value: '/no/such/reviews.json', fileState: 'missing' }),
       ],
     })
     const root = await mountPage()
@@ -228,7 +228,7 @@ describe('PluginSources', () => {
   it('warns loudly when the sync timeout is 0 (disabled)', async () => {
     vi.mocked(adminSettingsApi.list).mockResolvedValue({
       items: [
-        platformSetting({ key: 'step_sync_timeout', kind: 'number', value: '0' }),
+        platformSetting({ key: 'plugin_sync_timeout', kind: 'number', value: '0' }),
       ],
     })
     const root = await mountPage()
@@ -238,19 +238,19 @@ describe('PluginSources', () => {
 
   it('saves an edited path setting and resets to the manager.toml default', async () => {
     const root = await mountPage()
-    const dir = root.querySelector<HTMLInputElement>('[data-testid="input-step_index_local_dir"]')!
+    const dir = root.querySelector<HTMLInputElement>('[data-testid="input-plugin_index_local_dir"]')!
     dir.value = '/srv/plugins-v2'
     dir.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
     const save = [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Save')!
     save.click()
     await flush()
-    expect(adminSettingsApi.update).toHaveBeenCalledWith('step_index_local_dir', '/srv/plugins-v2')
+    expect(adminSettingsApi.update).toHaveBeenCalledWith('plugin_index_local_dir', '/srv/plugins-v2')
 
-    const reset = root.querySelector<HTMLElement>('[data-testid="reset-step_index_local_dir"]')!
+    const reset = root.querySelector<HTMLElement>('[data-testid="reset-plugin_index_local_dir"]')!
     reset.click()
     await flush()
-    expect(adminSettingsApi.reset).toHaveBeenCalledWith('step_index_local_dir')
+    expect(adminSettingsApi.reset).toHaveBeenCalledWith('plugin_index_local_dir')
   })
 
   it('surfaces a failed initial sync without throwing', async () => {

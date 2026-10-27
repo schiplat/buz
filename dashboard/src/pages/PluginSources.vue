@@ -32,19 +32,19 @@ interface SettingMeta {
 }
 
 const settingsMeta: Record<string, SettingMeta> = {
-  step_review_required: {
+  plugin_review_required: {
     label: 'Step review gate',
     help: 'When on, saving a pipeline that uses a plugin not listed in the reviewed manifest is rejected. The manifest comes from the official buz-plugins review ledger — a template needs a human review (hash-locked) before it can be used. Turning this on checks that the manifest file exists — the toggle fails with instructions if it does not. Recommended for production.',
   },
-  step_index_local_dir: {
+  plugin_index_local_dir: {
     label: 'Local plugin directory',
     help: 'Where local plugin YAMLs are read from. Git-clone buz-plugins here for offline use.',
   },
-  step_reviewed_manifest: {
+  plugin_reviewed_manifest: {
     label: 'Reviewed manifest',
     help: 'The official review ledger (reviews.json). Required by the review gate.',
   },
-  step_sync_timeout: {
+  plugin_sync_timeout: {
     label: 'Source sync timeout',
     help: 'Per-request timeout for source fetches. 0 disables — a hung source then blocks saves.',
     placeholder: '60',
@@ -55,9 +55,9 @@ const settingsMeta: Record<string, SettingMeta> = {
 
 /** Display grouping: line-free sections carried by the small-caps caption. */
 const settingGroups: Array<{ caption: string; keys: string[] }> = [
-  { caption: 'Review gate', keys: ['step_review_required'] },
-  { caption: 'Paths', keys: ['step_index_local_dir', 'step_reviewed_manifest'] },
-  { caption: 'Sync', keys: ['step_sync_timeout'] },
+  { caption: 'Review gate', keys: ['plugin_review_required'] },
+  { caption: 'Paths', keys: ['plugin_index_local_dir', 'plugin_reviewed_manifest'] },
+  { caption: 'Sync', keys: ['plugin_sync_timeout'] },
 ]
 const savingSetting = ref('')
 const showAddSource = ref(false)
@@ -220,7 +220,7 @@ async function persistSetting(setting: PlatformSetting, value: string) {
     // The action link deep-links to the offending setting row.
     const message = e instanceof Error ? e.message : String(e)
     const gateBlocked =
-      setting.key === 'step_review_required' && message.includes('Reviewed manifest')
+      setting.key === 'plugin_review_required' && message.includes('Reviewed manifest')
     await dialog.alert(message, {
       title: 'Cannot turn on',
       actionLabel: gateBlocked ? 'Go to Reviewed manifest →' : undefined,
@@ -229,10 +229,10 @@ async function persistSetting(setting: PlatformSetting, value: string) {
             // Already on this page for the gate toggle: focus the row
             // directly (the router watch is racy on same-route pushes),
             // and sync the URL so a refresh keeps the focus.
-            void focusSettingRow('step_reviewed_manifest')
+            void focusSettingRow('plugin_reviewed_manifest')
             void router.push({
               path: '/plugin-library/sources',
-              query: { focus: 'step_reviewed_manifest' },
+              query: { focus: 'plugin_reviewed_manifest' },
             })
           }
         : undefined,
@@ -295,7 +295,7 @@ const justSaved = ref('')
 let justSavedTimer: ReturnType<typeof setTimeout> | null = null
 
 function syncTimeoutMs(): number {
-  const setting = settings.value.find((s) => s.key === 'step_sync_timeout')
+  const setting = settings.value.find((s) => s.key === 'plugin_sync_timeout')
   const secs = Number(setting?.value)
   return (Number.isFinite(secs) && secs > 0 ? secs : 60) * 1000
 }
@@ -637,7 +637,7 @@ onUnmounted(() => {
                 :title="settingByKey(key)!.overridden ? settingByKey(key)!.resolved : settingByKey(key)!.default"
               >{{ settingByKey(key)!.overridden ? settingByKey(key)!.resolved : settingByKey(key)!.default }}</p>
               <p
-                v-if="key === 'step_reviewed_manifest' && ['missing', 'unreadable'].includes(settingByKey(key)!.fileState ?? '')"
+                v-if="key === 'plugin_reviewed_manifest' && ['missing', 'unreadable'].includes(settingByKey(key)!.fileState ?? '')"
                 class="mt-1 text-[11px] text-amber-600 dark:text-amber-400"
                 data-testid="manifest-missing-hint"
               >
@@ -654,7 +654,7 @@ onUnmounted(() => {
             </div>
 
             <p
-              v-if="key === 'step_sync_timeout' && settingByKey(key)!.value === '0'"
+              v-if="key === 'plugin_sync_timeout' && settingByKey(key)!.value === '0'"
               class="mt-2 text-[11px] font-medium text-red-600 dark:text-red-400"
               data-testid="timeout-disabled-warning"
             >

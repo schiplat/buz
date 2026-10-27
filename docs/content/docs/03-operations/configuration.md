@@ -35,7 +35,7 @@ yaml_scan_dir = "./pipelines"
 # Pipeline YAML files are scanned flat; the default step index is ./pipelines/plugins
 yaml_scan_interval_seconds = 30
 
-[step_index]
+[plugin_index]
 # Local YAML specs used to resolve `uses:` references. Empty (default) →
 # <yaml_scan_dir>/plugins. Manager reads this directory; it does not clone/sync it.
 # For a Docker Git mirror, use deploy/docker-compose.plugins.yml and set
@@ -95,7 +95,7 @@ subdirectory read-only with the optional Compose overlay:
 git clone https://git.example.internal/platform/buz-plugins.git /srv/buz-plugin-mirror
 export BUZ_PLUGIN_MIRROR=/srv/buz-plugin-mirror/plugins
 docker compose -f docker-compose.yml -f deploy/docker-compose.plugins.yml up -d manager
-docker compose exec manager /app/buz/buz-manager step-validate /app/buz/plugins
+docker compose exec manager /app/buz/buz-plugin validate /app/buz/plugins
 ```
 
 After the mirror is updated, validate the specs again; the bind mount exposes the
@@ -103,10 +103,10 @@ updated files to Manager without adding an in-Manager sync service:
 
 ```bash
 git -C /srv/buz-plugin-mirror pull --ff-only
-docker compose exec manager /app/buz/buz-manager step-validate /app/buz/plugins
+docker compose exec manager /app/buz/buz-plugin validate /app/buz/plugins
 ```
 
-The overlay sets `BUZ_STEP_INDEX__LOCAL_DIR=/app/buz/plugins`. Set
+The overlay sets `BUZ_PLUGIN_INDEX__LOCAL_DIR=/app/buz/plugins`. Set
 `BUZ_PLUGIN_MIRROR` to the host-side `plugins/` directory, not the repository
 root. Pipeline pins are resolved and locked when saved, so mirror changes apply
 to newly saved pipelines and do not rewrite existing ones. Without the overlay,

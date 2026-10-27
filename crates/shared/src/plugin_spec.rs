@@ -649,7 +649,10 @@ pub fn validate_plugin_spec(spec: &PluginSpec, current_buz: &str) -> Result<(), 
 }
 
 /// Parse and validate one step-spec YAML file in one call.
-pub fn parse_and_validate_plugin_spec(raw: &str, current_buz: &str) -> Result<PluginSpec, Vec<String>> {
+pub fn parse_and_validate_plugin_spec(
+    raw: &str,
+    current_buz: &str,
+) -> Result<PluginSpec, Vec<String>> {
     let spec: PluginSpec = serde_yaml::from_str(raw).map_err(|e| vec![format!("YAML: {e}")])?;
     validate_plugin_spec(&spec, current_buz).map(|()| spec)
 }
