@@ -1327,7 +1327,9 @@ async fn pool_toggle_writes_an_audit_record_with_the_diff() {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        let status = resp.status();
+        let body = read_json(resp).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     let rows: Vec<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
@@ -1344,6 +1346,20 @@ async fn pool_toggle_writes_an_audit_record_with_the_diff() {
         assert_eq!(resource_id, "alice/oss-upload@1.0.0");
         assert!(before.is_some() && after.is_some(), "{before:?} {after:?}");
     }
+    // Curation provenance lands on the row itself (state), while the audit
+    // log above carries the event stream.
+    let provenance: (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT updated_by, updated_at FROM step_pool WHERE step_id = 'oss-upload'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        provenance.0.as_deref(),
+        Some("boss"),
+        "last curator recorded"
+    );
+    assert!(provenance.1.is_some(), "timestamp recorded");
+
     // The diff states what changed: enable went false→true, disable true→false.
     let parsed: Vec<(serde_json::Value, serde_json::Value)> = rows
         .iter()

@@ -61,6 +61,21 @@ pub async fn init(config: &Config) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
+/// Add a column unless it already exists. `ALTER TABLE ... ADD COLUMN` has no
+/// `IF NOT EXISTS` in SQLite, so migrations are written idempotently by
+/// ignoring the duplicate-column error — but ONLY that error: a wrong table
+/// name or a statement ordered before its `CREATE TABLE` used to fail
+/// silently, which is how a column can be "migrated" yet absent.
+async fn add_column_if_missing(pool: &SqlitePool, table: &str, definition: &str) {
+    let sql = format!("ALTER TABLE {table} ADD COLUMN {definition}");
+    if let Err(error) = sqlx::query(&sql).execute(pool).await {
+        let message = error.to_string();
+        if !message.contains("duplicate column name") {
+            tracing::warn!(%sql, %message, "migration statement failed");
+        }
+    }
+}
+
 pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Result<()> {
     for path in [
         include_str!("migrations/001_init.sql"),
@@ -76,46 +91,30 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     }
 
     // Add YAML content hash for file-backed pipeline projection locking.
-    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN yaml_sha256 TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "pipelines", "yaml_sha256 TEXT NOT NULL DEFAULT ''").await;
 
     // Add snapshot column to existing databases (safe to fail if already present)
-    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN snapshot TEXT NOT NULL DEFAULT '{}'")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "jobs", "snapshot TEXT NOT NULL DEFAULT '{}'").await;
 
     // Add system_info column to runners table (safe to fail if already present)
-    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN system_info TEXT NOT NULL DEFAULT '{}'")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "runners", "system_info TEXT NOT NULL DEFAULT '{}'").await;
 
     // Add privileged column to tasks table (safe to fail if already present)
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN privileged INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "tasks", "privileged INTEGER NOT NULL DEFAULT 0").await;
 
     // Add input_defs column to pipelines table (safe to fail if already present)
-    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN input_defs TEXT NOT NULL DEFAULT '[]'")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "pipelines", "input_defs TEXT NOT NULL DEFAULT '[]'").await;
 
     // Add level column to job_logs (chunk severity; NULL = legacy chunk)
-    let _ = sqlx::query("ALTER TABLE job_logs ADD COLUMN level TEXT")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "job_logs", "level TEXT").await;
 
     migrate_step_resolutions(pool).await?;
 
     // Add webhook_secret column (bare team secret name; empty = no verification)
-    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN webhook_secret TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "pipelines", "webhook_secret TEXT NOT NULL DEFAULT ''").await;
 
     // Add is_frozen column to runners table (safe to fail if already present)
-    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN is_frozen INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "runners", "is_frozen INTEGER NOT NULL DEFAULT 0").await;
 
     // One-shot restart flag: set by POST /runners/{id}/restart, served via the
     // next heartbeat, then cleared. Also blocks dispatch (like freeze) during
@@ -142,18 +141,10 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     let _ = sqlx::query("ALTER TABLE runners DROP COLUMN ephemeral")
         .execute(pool)
         .await;
-    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN shell_enabled INTEGER NOT NULL DEFAULT 1")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN ssh_enabled INTEGER NOT NULL DEFAULT 1")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN docker_enabled INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN wasm_enabled INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "runners", "shell_enabled INTEGER NOT NULL DEFAULT 1").await;
+    add_column_if_missing(pool, "runners", "ssh_enabled INTEGER NOT NULL DEFAULT 1").await;
+    add_column_if_missing(pool, "runners", "docker_enabled INTEGER NOT NULL DEFAULT 0").await;
+    add_column_if_missing(pool, "runners", "wasm_enabled INTEGER NOT NULL DEFAULT 0").await;
     let _ = sqlx::query(
         "ALTER TABLE runners ADD COLUMN ssh_host_key_policy TEXT NOT NULL DEFAULT 'known_hosts'",
     )
@@ -161,19 +152,13 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .await;
 
     // Add host_labels column to tasks table (safe to fail if already present)
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN host_labels TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "tasks", "host_labels TEXT NOT NULL DEFAULT ''").await;
 
     // Docker engine: container image for uses=docker steps
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN image TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "tasks", "image TEXT NOT NULL DEFAULT ''").await;
 
     // Docker engine: extra host→container volume mounts (JSON array or comma-separated)
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN volumes TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "tasks", "volumes TEXT NOT NULL DEFAULT ''").await;
 
     let task_columns: Vec<String> = sqlx::query("PRAGMA table_info(tasks)")
         .fetch_all(pool)
@@ -188,37 +173,25 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     }
 
     // Add step_statuses column to jobs table (safe to fail if already present)
-    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN step_statuses TEXT NOT NULL DEFAULT '[]'")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "jobs", "step_statuses TEXT NOT NULL DEFAULT '[]'").await;
 
     // Admin-only debug flag: when set, the Runner skips log redaction for this job.
     // Dispatched to the Runner and used to gate debug-job log reads to admins.
-    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN debug_unredact INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "jobs", "debug_unredact INTEGER NOT NULL DEFAULT 0").await;
 
     // Verbose execution mode: any user can trigger with extra detail in the
     // Runner's logs (per-step duration, exit code, stage markers). Redaction
     // stays fully intact — distinct from the admin-only debug_unredact flag.
-    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN verbose_logs INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "jobs", "verbose_logs INTEGER NOT NULL DEFAULT 0").await;
 
     // Add owner_group column to secrets table (safe to fail if already present)
-    let _ = sqlx::query("ALTER TABLE secrets ADD COLUMN owner_group TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "secrets", "owner_group TEXT NOT NULL DEFAULT ''").await;
 
     // Add owner_group column to pipelines table (safe to fail if already present)
-    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN owner_group TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "pipelines", "owner_group TEXT NOT NULL DEFAULT ''").await;
 
     // ── Multi-env governance: mandatory pipeline environments ──
-    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN environments TEXT NOT NULL DEFAULT '[]'")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "pipelines", "environments TEXT NOT NULL DEFAULT '[]'").await;
     let _ = sqlx::query(
         "ALTER TABLE pipelines ADD COLUMN webhook_environment TEXT NOT NULL DEFAULT ''",
     )
@@ -239,15 +212,9 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // `jobs.run_number` is the immutable number a job consumed; `run_attempt`
     // is 1 until a job re-run feature exists. Legacy jobs are backfilled by
     // created_at order below so counters continue from history.
-    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN run_counter INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN run_number INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN run_attempt INTEGER NOT NULL DEFAULT 1")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "pipelines", "run_counter INTEGER NOT NULL DEFAULT 0").await;
+    add_column_if_missing(pool, "jobs", "run_number INTEGER NOT NULL DEFAULT 0").await;
+    add_column_if_missing(pool, "jobs", "run_attempt INTEGER NOT NULL DEFAULT 1").await;
     backfill_job_run_numbers(pool).await?;
     sqlx::query(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_pipeline_run_number \
@@ -355,44 +322,26 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .await;
 
     // Add value column to variables table for inline env vars (safe to fail if already present)
-    let _ = sqlx::query("ALTER TABLE variables ADD COLUMN value TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "variables", "value TEXT NOT NULL DEFAULT ''").await;
 
     // Add host_names column to tasks — stores original host names before ID resolution
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN host_names TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "tasks", "host_names TEXT NOT NULL DEFAULT ''").await;
 
     // Add step_secrets column to tasks — per-step secret allowlist
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN step_secrets TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "tasks", "step_secrets TEXT NOT NULL DEFAULT ''").await;
 
     // Step-level env map JSON (`{"KEY":"${secrets.NAME}"}`) — GHA-style mapping
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN step_env TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "tasks", "step_env TEXT NOT NULL DEFAULT ''").await;
 
     // Private registry credentials secret name (docker / shell / SSH)
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN registry_secret TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "tasks", "registry_secret TEXT NOT NULL DEFAULT ''").await;
 
     // OSS config delivery + render (Config Block DSL v2 column names).
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_source TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "tasks", "config_source TEXT NOT NULL DEFAULT ''").await;
     // Legacy columns (pre-2b) — may still exist on upgraded DBs until cut-over below.
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_path TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN env_render TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_dir TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "tasks", "config_path TEXT NOT NULL DEFAULT ''").await;
+    add_column_if_missing(pool, "tasks", "env_render TEXT NOT NULL DEFAULT ''").await;
+    add_column_if_missing(pool, "tasks", "config_dir TEXT NOT NULL DEFAULT ''").await;
 
     // Phase 2b D2: rename to config_key_path / config_dest / config_render (one-shot).
     migrate_tasks_config_block_columns(pool).await?;
@@ -474,9 +423,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     }
 
     // Add credential_data column to hosts — stores key content or password in DB
-    let _ = sqlx::query("ALTER TABLE hosts ADD COLUMN credential_data TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "hosts", "credential_data TEXT NOT NULL DEFAULT ''").await;
 
     // Drop legacy credential_ref column (safe to fail if already dropped or not supported)
     let _ = sqlx::query("ALTER TABLE hosts DROP COLUMN credential_ref")
@@ -536,27 +483,17 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
             .await;
 
     // Resource team_id columns (empty string until bootstrap backfill)
-    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN team_id TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "pipelines", "team_id TEXT NOT NULL DEFAULT ''").await;
 
-    let _ = sqlx::query("ALTER TABLE secrets ADD COLUMN team_id TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "secrets", "team_id TEXT NOT NULL DEFAULT ''").await;
 
     // Opt-in team auto-inject (default false = explicit bind/reference only)
-    let _ = sqlx::query("ALTER TABLE secrets ADD COLUMN team_shared INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "secrets", "team_shared INTEGER NOT NULL DEFAULT 0").await;
 
     // Secret purpose: generic (env) | registry (docker login JSON)
-    let _ = sqlx::query("ALTER TABLE secrets ADD COLUMN kind TEXT NOT NULL DEFAULT 'generic'")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "secrets", "kind TEXT NOT NULL DEFAULT 'generic'").await;
 
-    let _ = sqlx::query("ALTER TABLE hosts ADD COLUMN team_id TEXT")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "hosts", "team_id TEXT").await;
 
     // Runner team binding: NULL remains the explicit shared/legacy mode.
     let _ = sqlx::query(
@@ -594,13 +531,14 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .execute(pool)
     .await;
 
-    let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN concurrency_queue_timeout_seconds INTEGER NOT NULL DEFAULT 1800")
-        .execute(pool)
-        .await;
+    add_column_if_missing(
+        pool,
+        "pipelines",
+        "concurrency_queue_timeout_seconds INTEGER NOT NULL DEFAULT 1800",
+    )
+    .await;
 
-    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN queue_position INTEGER")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "jobs", "queue_position INTEGER").await;
 
     // ── Step marketplace: sources + pool (ADR step-marketplace §6.8) ──
     sqlx::query(
@@ -623,9 +561,8 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // tried before the canonical URL on every fetch; content is sha256-pinned
     // per file, so endpoint order affects availability only. Nullable:
     // legacy sources have no mirror.
-    let _ = sqlx::query("ALTER TABLE step_sources ADD COLUMN mirror_url TEXT")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "step_sources", "mirror_url TEXT").await;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS step_pool (
             namespace TEXT NOT NULL,
@@ -658,21 +595,17 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // requires_buz (or spec validity) fails against this manager build,
     // 1 = passes. compat_checked_against pins the manager version the verdict
     // was computed for; a version bump invalidates it.
-    let _ = sqlx::query("ALTER TABLE step_pool ADD COLUMN requires_buz TEXT")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE step_pool ADD COLUMN buz_compatible INTEGER")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE step_pool ADD COLUMN compat_error TEXT")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE step_pool ADD COLUMN compat_checked_against TEXT")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE step_pool ADD COLUMN meta_json TEXT")
-        .execute(pool)
-        .await;
+    // Curation provenance: who last flipped a pool entry's enable state and
+    // when. The audit log answers "what happened" (an event stream); these
+    // columns answer "what is the state now" without a join. Sync never
+    // writes them — they describe the curator's decision, not ingestion.
+    add_column_if_missing(pool, "step_pool", "updated_by TEXT").await;
+    add_column_if_missing(pool, "step_pool", "updated_at TEXT").await;
+    add_column_if_missing(pool, "step_pool", "requires_buz TEXT").await;
+    add_column_if_missing(pool, "step_pool", "buz_compatible INTEGER").await;
+    add_column_if_missing(pool, "step_pool", "compat_error TEXT").await;
+    add_column_if_missing(pool, "step_pool", "compat_checked_against TEXT").await;
+    add_column_if_missing(pool, "step_pool", "meta_json TEXT").await;
 
     // ── Platform settings (admin-editable runtime overrides) ──
     // DB value > manager.toml default; a missing row means "use the default".
@@ -739,9 +672,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .execute(pool)
     .await?;
 
-    let _ = sqlx::query("ALTER TABLE pipeline_git_hooks ADD COLUMN label TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "pipeline_git_hooks", "label TEXT NOT NULL DEFAULT ''").await;
     let _ = sqlx::query(
         "ALTER TABLE pipeline_git_hooks ADD COLUMN environment TEXT NOT NULL DEFAULT ''",
     )
@@ -843,9 +774,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // ── Phase 3: platform-admin tiers + API tokens ──
     // Super admin sees all audit logs and all API tokens; regular platform
     // admins see only their own. Safe to fail when the column already exists.
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN is_super_admin INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "users", "is_super_admin INTEGER NOT NULL DEFAULT 0").await;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS api_tokens (
@@ -889,12 +818,8 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     )
     .execute(pool)
     .await;
-    let _ = sqlx::query("ALTER TABLE github_connections ADD COLUMN fetch_interval_minutes INTEGER")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE github_connections ADD COLUMN last_fetch_at TEXT")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "github_connections", "fetch_interval_minutes INTEGER").await;
+    add_column_if_missing(pool, "github_connections", "last_fetch_at TEXT").await;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS github_repos (
@@ -958,12 +883,8 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .await;
     // Per-repo push value: variables store plaintext; secrets store AES ciphertext.
     // NULL = inherit platform_vars.value / secrets.value.
-    let _ = sqlx::query("ALTER TABLE variable_github_binds ADD COLUMN override_value TEXT")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE secret_github_binds ADD COLUMN override_value TEXT")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "variable_github_binds", "override_value TEXT").await;
+    add_column_if_missing(pool, "secret_github_binds", "override_value TEXT").await;
 
     // ── Platform Environments (Variable + Secret per-env overrides) ──
     sqlx::query(
@@ -1019,18 +940,19 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .await;
 
     // Job may optionally run under a platform Environment (NULL = defaults only).
-    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN environment_id TEXT REFERENCES environments(id) ON DELETE SET NULL")
-        .execute(pool)
-        .await;
+    add_column_if_missing(
+        pool,
+        "jobs",
+        "environment_id TEXT REFERENCES environments(id) ON DELETE SET NULL",
+    )
+    .await;
 
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_environment ON jobs(environment_id)")
         .execute(pool)
         .await;
 
     // Trigger user id for self-approve checks (NULL for webhook/cron/git).
-    let _ = sqlx::query("ALTER TABLE jobs ADD COLUMN trigger_user_id TEXT")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "jobs", "trigger_user_id TEXT").await;
 
     // Environment protection / approval gates (方案 B).
     let _ = sqlx::query(
@@ -1118,9 +1040,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .await?;
 
     // Durable display name even if the user row is later removed.
-    let _ = sqlx::query("ALTER TABLE job_approvals ADD COLUMN username TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "job_approvals", "username TEXT NOT NULL DEFAULT ''").await;
 
     let _ =
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_approvals_job ON job_approvals(job_id)")
@@ -1707,15 +1627,9 @@ async fn tasks_has_column(pool: &SqlitePool, name: &str) -> bool {
 async fn migrate_tasks_config_block_columns(pool: &SqlitePool) -> anyhow::Result<()> {
     use sqlx::Row;
 
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_key_path TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_dest TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN config_render TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    add_column_if_missing(pool, "tasks", "config_key_path TEXT NOT NULL DEFAULT ''").await;
+    add_column_if_missing(pool, "tasks", "config_dest TEXT NOT NULL DEFAULT ''").await;
+    add_column_if_missing(pool, "tasks", "config_render TEXT NOT NULL DEFAULT ''").await;
 
     let _ =
         sqlx::query("ALTER TABLE tasks ADD COLUMN hosts_strategy TEXT NOT NULL DEFAULT 'chain'")

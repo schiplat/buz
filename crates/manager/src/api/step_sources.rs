@@ -346,6 +346,13 @@ pub async fn toggle_pool_entry(
         .await
         .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
     }
+    // One transaction: the state change, its provenance (who/when) and the
+    // audit record land together or not at all.
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     let previous_enabled: Option<i64> = sqlx::query_scalar(
         "SELECT enabled FROM step_pool \
          WHERE namespace = ? AND step_id = ? AND version = ?",
@@ -353,25 +360,27 @@ pub async fn toggle_pool_entry(
     .bind(&namespace)
     .bind(&step_id)
     .bind(&version)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
     let result = sqlx::query(
-        "UPDATE step_pool SET enabled = ? \
+        "UPDATE step_pool SET enabled = ?, updated_by = ?, updated_at = datetime('now') \
          WHERE namespace = ? AND step_id = ? AND version = ?",
     )
     .bind(body.enabled as i64)
+    .bind(&auth.username)
     .bind(&namespace)
     .bind(&step_id)
     .bind(&version)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
     if result.rows_affected() == 0 {
+        tx.rollback().await.ok();
         return Err(AppError::NotFound("pool entry not found".into()));
     }
-    audit::record(
-        &state.pool,
+    audit::record_in(
+        &mut *tx,
         AuditEvent::new(Action::StepPoolToggle, &auth)
             .on(Resource::step_pool(&namespace, &step_id, &version))
             .changes(
@@ -379,7 +388,11 @@ pub async fn toggle_pool_entry(
                 Some(json!({ "enabled": body.enabled })),
             ),
     )
-    .await;
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(ApiResponse::success(json!({
         "namespace": namespace, "step_id": step_id,
         "version": version, "enabled": body.enabled,

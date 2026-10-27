@@ -18,6 +18,7 @@ import TablePagination from '@/components/ui/TablePagination.vue'
 import { stepSourcesApi, type PoolEntry } from '@/api/stepSources'
 import { useAppDialog } from '@/composables/useAppDialog'
 import { useClientPagination } from '@/composables/useClientPagination'
+import { formatLocalDateTime } from '@/utils/time'
 
 const dialog = useAppDialog()
 const loading = ref(true)
@@ -175,6 +176,15 @@ function groupDescription(group: PoolGroup): string | null {
 
 const groupRequires = (group: PoolGroup) =>
   group.versions.find((v) => v.requires_buz)?.requires_buz ?? null
+
+/** "enabled by alice · 10/27 12:31" for the version currently in use —
+ *  the pool's answer to "who turned this on", without opening the audit log. */
+function groupCuratorLine(group: PoolGroup): string | null {
+  const enabled = group.versions.find((v) => v.enabled)
+  if (!enabled?.updated_by) return null
+  const when = enabled.updated_at ? formatLocalDateTime(enabled.updated_at, '') : ''
+  return when ? `${enabled.updated_by} · ${when}` : enabled.updated_by
+}
 
 /** Compatibility tone for the requires-buz chip: green when some version of
  *  the plugin runs on this Manager build, red when none does, neutral while
@@ -462,6 +472,11 @@ onMounted(load)
                 v-if="group.updateAvailable"
                 class="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-400"
               >update available</span>
+              <span
+                v-if="groupCuratorLine(group)"
+                class="text-[11px] text-muted-foreground/70"
+                :title="`Enable state last changed by ${groupCuratorLine(group)}`"
+              >changed by {{ groupCuratorLine(group) }}</span>
             </div>
             <div class="mt-1.5 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
               <code class="font-mono bg-muted px-1.5 py-0.5 rounded-md text-foreground/70">uses: {{ usesRef(group) }}</code>

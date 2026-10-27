@@ -171,6 +171,10 @@ pub struct PoolRow {
     pub enabled: bool,
     pub reviewed: bool,
     pub added_by: Option<String>,
+    /// Last curator to change `enabled`, and when. `None` = never toggled
+    /// since it entered the pool (or toggled before this was recorded).
+    pub updated_by: Option<String>,
+    pub updated_at: Option<String>,
     /// The spec's `requires_buz` declaration, if it made one.
     pub requires_buz: Option<String>,
     /// Three-state compatibility verdict against this manager build: `None`
@@ -201,11 +205,13 @@ type PoolRowSql = (
     Option<i64>,
     Option<String>,
     Option<String>,
+    Option<String>,
+    Option<String>,
 );
 
 const POOL_ROW_COLUMNS: &str = "p.namespace, p.step_id, p.version, p.sha256, p.source_id, s.name, \
      p.file_path, p.enabled, p.reviewed, p.added_by, p.requires_buz, p.buz_compatible, p.compat_error, \
-     p.meta_json";
+     p.meta_json, p.updated_by, p.updated_at";
 
 fn pool_row_from(
     (
@@ -223,6 +229,8 @@ fn pool_row_from(
         buz_compatible,
         compat_error,
         meta_json,
+        updated_by,
+        updated_at,
     ): PoolRowSql,
 ) -> PoolRow {
     PoolRow {
@@ -236,6 +244,8 @@ fn pool_row_from(
         enabled: enabled != 0,
         reviewed: reviewed != 0,
         added_by,
+        updated_by,
+        updated_at,
         requires_buz,
         buz_compatible: buz_compatible.map(|v| v != 0),
         compat_error,

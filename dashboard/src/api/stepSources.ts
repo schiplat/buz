@@ -39,6 +39,10 @@ export interface PoolEntry {
   enabled: boolean
   reviewed: boolean
   added_by: string | null
+  /** Last curator to change the enable state, and when. Null = never
+   *  toggled since it entered the pool. */
+  updated_by: string | null
+  updated_at: string | null
   /** The template's `requires_buz` declaration, if it made one. */
   requires_buz: string | null
   /** Three-state compatibility with this manager build: null = not checked
