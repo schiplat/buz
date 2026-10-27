@@ -24,6 +24,12 @@ export interface PoolNotice {
 /** True when a version cannot be enabled on this Manager build. */
 export const isStuck = (entry: PoolEntry) => entry.buz_compatible === false
 
+/** True when the failure is the source not serving the file (as opposed to a
+ *  version-requirement mismatch). Nothing can be done with the entry until
+ *  the source is fixed, so the action rail locks. */
+export const isDownloadFailure = (entry: PoolEntry) =>
+  entry.buz_compatible === false && (entry.compat_error?.includes('failed to download') ?? false)
+
 const plural = (n: number) => (n > 1 ? '' : 's')
 const names = (entries: PoolEntry[]) => entries.map((v) => `v${v.version}`).join(', ')
 
@@ -46,8 +52,8 @@ export function buildPoolNotices(versions: PoolEntry[]): PoolNotice[] {
   const stuck = versions.filter(isStuck)
   if (stuck.length === 0) return []
 
-  const missing = stuck.filter((v) => v.compat_error?.includes('failed to download'))
-  const mismatch = stuck.filter((v) => !v.compat_error?.includes('failed to download'))
+  const missing = stuck.filter(isDownloadFailure)
+  const mismatch = stuck.filter((v) => !isDownloadFailure(v))
   const notices: PoolNotice[] = []
 
   if (mismatch.length > 0) {

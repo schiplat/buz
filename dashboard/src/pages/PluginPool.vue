@@ -19,7 +19,7 @@ import { pluginSourcesApi, type PoolEntry } from '@/api/pluginSources'
 import { useAppDialog } from '@/composables/useAppDialog'
 import { useClientPagination } from '@/composables/useClientPagination'
 import { formatLocalDateTime } from '@/utils/time'
-import { buildPoolNotices, isStuck } from '@/utils/poolNotices'
+import { buildPoolNotices, isDownloadFailure, isStuck } from '@/utils/poolNotices'
 
 const dialog = useAppDialog()
 const loading = ref(true)
@@ -508,14 +508,17 @@ onMounted(load)
               :disabled="
                 !selectedEntry(group) ||
                 busy === entryKey(selectedEntry(group)!) ||
-                (isStuck(selectedEntry(group)!) && !selectedEntry(group)!.enabled)
+                (isStuck(selectedEntry(group)!) && !selectedEntry(group)!.enabled) ||
+                (selectedEntry(group) ? isDownloadFailure(selectedEntry(group)!) : false)
               "
               :title="
-                selectedEntry(group) && isStuck(selectedEntry(group)!) && !selectedEntry(group)!.enabled
-                  ? 'This version needs a newer Buz — see the note on the left'
-                  : selectedEntry(group)?.reviewed === false
-                    ? 'Not in the reviewed manifest'
-                    : undefined
+                selectedEntry(group) && isDownloadFailure(selectedEntry(group)!)
+                  ? 'The source does not serve this file — fix the source, then refresh'
+                  : selectedEntry(group) && isStuck(selectedEntry(group)!) && !selectedEntry(group)!.enabled
+                    ? 'This version needs a newer Buz — see the note on the left'
+                    : selectedEntry(group)?.reviewed === false
+                      ? 'Not in the reviewed manifest'
+                      : undefined
               "
               @click="toggleSelected(group)"
             >{{ selectedEntry(group)?.enabled ? 'Disable' : 'Enable' }}</UiButton>

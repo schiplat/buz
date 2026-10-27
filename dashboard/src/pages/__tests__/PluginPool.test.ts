@@ -274,6 +274,33 @@ describe('PluginPool', () => {
     expect(root.textContent).toContain(
       'The file is missing on the source — contact the source administrator to publish it, then re-sync.',
     )
+    // A file the source does not serve cannot be enabled — the action locks.
+    expect(buttonByText(root, 'Enable').disabled, 'Enable locked for a download failure').toBe(true)
+  })
+
+  it('locks the action rail for a download failure even when the version is enabled', async () => {
+    vi.mocked(pluginSourcesApi.listPool).mockResolvedValue({
+      items: [
+        poolEntry({
+          version: '1.0.0',
+          enabled: true,
+          buz_compatible: false,
+          compat_error:
+            'template file is listed in the source index but failed to download: HTTP 404',
+        }),
+      ],
+    })
+    const root = await mountPage()
+    // Enabled, so the button reads Disable — and it is locked too: there is
+    // nothing to disable to safety (the entry cannot resolve at claim time).
+    const action = buttonByText(root, 'Disable')!
+    expect(action.disabled, 'Disable locked for a download failure').toBe(true)
+    expect(action.title).toContain('The source does not serve this file')
+    // Refresh stays available: re-fetching is the remedy once the source is fixed.
+    const refresh = root.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh alice/oss-upload"]',
+    )!
+    expect(refresh.disabled).toBe(false)
   })
 
   it('offers one-click upgrade: enable the target and retire the old version', async () => {
