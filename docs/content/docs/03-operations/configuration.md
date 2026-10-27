@@ -35,17 +35,21 @@ yaml_scan_dir = "./pipelines"
 # Pipeline YAML files are scanned flat; the default step index is ./pipelines/plugins
 yaml_scan_interval_seconds = 30
 
-[plugin_index]
-# Local YAML specs used to resolve `uses:` references. Empty (default) →
-# <yaml_scan_dir>/plugins. Manager reads this directory; it does not clone/sync it.
+# [plugin_index] — OPTIONAL: every key has a default, and all three are also
+# editable in the dashboard (Settings), where the DB value wins over this file.
+# Most deployments register remote Step Sources in the UI instead of setting
+# anything here; the section matters for air-gapped / local-mirror setups.
+# [plugin_index]
+# Local plugin specs used to resolve `uses:` references. Empty (default) →
+# <data_dir>/plugins (e.g. ./data/plugins). Manager reads this directory; it
+# does not clone/sync it.
 # For a Docker Git mirror, use deploy/docker-compose.plugins.yml and set
 # BUZ_PLUGIN_MIRROR to the host-side buz-plugins/plugins directory.
-# Optional local override outside Docker:
 # local_dir = "/srv/buz-plugin-mirror/plugins"
-# Review gate — REQUIRED for production. Without it every `uses:` template
-# resolves unreviewed (Manager warns at startup + dashboard shows a banner):
+# Review gate — RECOMMENDED for production. Without it every `uses:` plugin
+# resolves unreviewed (the dashboard shows a banner and the editor warns):
 # reviewed_manifest = "/etc/buz/reviews.json"   # from the buz-plugins repo
-# require_reviewed = true    # strict: reject templates absent from the manifest
+# require_reviewed = true    # strict: reject plugins absent from the manifest
 
 [clock]
 enabled = true                 # probe remote clock before signing config URLs
@@ -74,7 +78,7 @@ level = "info"                 # error | warn | info | debug | trace
 | `auth` | `runner_register_token_ttl_hours` | Runner JWT lifetime after register |
 | `runner` | `heartbeat_timeout_seconds` | Offline threshold for runners |
 | `pipeline` | `yaml_scan_*` | File/Git authority for pipeline YAML; scanner + UI online edit write here. **Flat directory only** (basename files; no private subdirs). See [YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/) |
-| `step_index` | `local_dir` | Local YAML specs used to resolve `uses:` references. Empty uses `<yaml_scan_dir>/plugins`; Manager reads the selected directory and does not clone or sync it. |
+| `plugin_index` | `local_dir` | Local plugin specs used to resolve `uses:` references. Empty (the default) uses `<data_dir>/plugins`; Manager reads the selected directory and does not clone or sync it. |
 | `clock` | `enabled` | Default `true`. Probe the OSS endpoint's `Date` header before signing `config.source` URLs — see [Clock skew](#clock-skew) |
 | `clock` | `warn_threshold_seconds` | Default `60`. Log a `warn` when the Manager clock is at least this far behind remote time. `0` disables the warning |
 | `clock` | `cache_ttl_seconds` | Default `300`. Reuse a probe result for this long; `0` probes on every dispatch |
@@ -110,7 +114,8 @@ The overlay sets `BUZ_PLUGIN_INDEX__LOCAL_DIR=/app/buz/plugins`. Set
 `BUZ_PLUGIN_MIRROR` to the host-side `plugins/` directory, not the repository
 root. Pipeline pins are resolved and locked when saved, so mirror changes apply
 to newly saved pipelines and do not rewrite existing ones. Without the overlay,
-the default remains `<yaml_scan_dir>/plugins` (typically `./pipelines/plugins`).
+the default is `<data_dir>/plugins` (typically `./data/plugins`); a legacy
+`<yaml_scan_dir>/plugins` directory is migrated on startup.
 
 **First admin:** not in config. On a fresh database, open the UI — you are redirected to `/setup` to create the platform admin (password ≥ 8 chars, complexity rules apply). After that, use `/login`.
 

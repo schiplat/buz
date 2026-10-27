@@ -62,12 +62,9 @@ allowed_hosts = ["*.aliyuncs.com"]
 level = "info"
 # file = "./logs/manager.log"
 
-[plugin_index]
-# Where `uses:` marketplace step references resolve (one spec file per
-# step template). Empty → <data_dir>/plugins (the manager data root).
-# Docker deployments can set BUZ_PLUGIN_INDEX__LOCAL_DIR and mount an external
-# mirror's plugins/ directory read-only at that container path.
-# Review badge: list officially reviewed content hashes in a reviews.json
-# and require_reviewed = true to reject unreviewed templates at save time.
-# reviewed_manifest = "/etc/buz/reviews.json"
-# require_reviewed = false
+# [plugin_index] — optional. All keys default sensibly (local_dir →
+# <data_dir>/plugins, reviewed_manifest → <data_dir>/plugins/reviews.json,
+# require_reviewed → false) and are editable in the dashboard (Settings).
+# Air-gapped or local-mirror deployments can pin local_dir here or via
+# BUZ_PLUGIN_INDEX__LOCAL_DIR. See docs → Configuration.
+
