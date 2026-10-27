@@ -5,6 +5,8 @@ import type { PoolNotice } from '@/utils/poolNotices'
  *  Rendering lives here so every caller shows the same message body — the
  *  pages only supply `{ tone, summary, hint }`. */
 withDefaults(defineProps<{ notices: PoolNotice[]; compact?: boolean }>(), { compact: false })
+
+const emit = defineEmits<{ refresh: [] }>()
 </script>
 
 <template>
@@ -29,6 +31,18 @@ withDefaults(defineProps<{ notices: PoolNotice[]; compact?: boolean }>(), { comp
           "
         >{{ notice.summary }}</span>
         <span class="text-muted-foreground"> — {{ notice.hint }}</span>
+        <button
+          v-if="notice.action === 'refresh'"
+          type="button"
+          class="ml-1.5 inline-flex items-center gap-0.5 font-semibold"
+          :class="
+            notice.tone === 'danger'
+              ? 'text-red-600 dark:text-red-400'
+              : 'text-amber-600 dark:text-amber-400'
+          "
+          title="Re-fetch this plugin's versions from its source"
+          @click="emit('refresh')"
+        >⟳ Refresh</button>
       </p>
     </li>
   </ul>

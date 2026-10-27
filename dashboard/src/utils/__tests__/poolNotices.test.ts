@@ -43,6 +43,8 @@ describe('buildPoolNotices', () => {
       'v1.1.0 requires Buz >= 99.0.0, this instance runs 1.10.5',
     )
     expect(notices[0].hint).toBe('Cannot be enabled on this Manager.')
+    // A newer Buz is not something refreshing can fix.
+    expect(notices[0].action).toBeUndefined()
   })
 
   it('separates "cannot run" from "but it is still enabled"', () => {
@@ -63,7 +65,9 @@ describe('buildPoolNotices', () => {
     expect(notices[0].summary).toBe(
       'v1.0.0, v1.1.0 are listed in the source index but failed to download',
     )
-    expect(notices[0].hint).toContain('contact the source administrator')
+    expect(notices[0].hint).toContain('publish it, then')
+    // Only this kind is fixable by re-fetching, so it is the only one with an action.
+    expect(notices[0].action).toBe('refresh')
   })
 
   it('pluralises correctly for a single version', () => {

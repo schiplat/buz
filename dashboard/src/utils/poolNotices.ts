@@ -19,6 +19,10 @@ export interface PoolNotice {
   summary: string
   /** What the curator can do about it. */
   hint: string
+  /** Offered only when re-fetching can actually fix it: a source that starts
+   *  serving the file. Version-requirement problems stay actionless — no
+   *  amount of refreshing makes this Manager newer. */
+  action?: 'refresh'
 }
 
 /** True when a version cannot be enabled on this Manager build. */
@@ -86,9 +90,8 @@ export function buildPoolNotices(versions: PoolEntry[]): PoolNotice[] {
       summary:
         `${names(missing)} ${missing.length > 1 ? 'are' : 'is'} listed in the source index but ` +
         'failed to download',
-      hint:
-        'The file is missing on the source — contact the source administrator to publish it, ' +
-        'then re-sync.',
+      hint: 'The file is missing on the source — publish it, then',
+      action: 'refresh',
     })
   }
 

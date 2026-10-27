@@ -480,7 +480,7 @@ onMounted(load)
             >{{ groupDescription(group) }}</p>
 
             <!-- Structured problems only: nothing renders when everything is usable. -->
-            <PluginNotice :notices="groupNotices(group)" />
+            <PluginNotice :notices="groupNotices(group)" @refresh="refreshGroup(group)" />
           </div>
 
           <!-- ── Action rail: version, then one primary action ──

@@ -271,9 +271,15 @@ describe('PluginPool', () => {
     expect(root.textContent).toContain(
       'v1.0.0 is listed in the source index but failed to download',
     )
-    expect(root.textContent).toContain(
-      'The file is missing on the source — contact the source administrator to publish it, then re-sync.',
+    expect(root.textContent).toContain('The file is missing on the source — publish it, then')
+    // The remedy sits in the message itself: refreshing is what applies it.
+    const refreshInNotice = [...root.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent?.trim() === '⟳ Refresh',
     )
+    expect(refreshInNotice, 'notice offers Refresh').toBeTruthy()
+    refreshInNotice!.click()
+    await flush()
+    expect(pluginSourcesApi.refreshPlugin).toHaveBeenCalledWith('alice', 'oss-upload')
     // A file the source does not serve cannot be enabled — the action locks.
     expect(buttonByText(root, 'Enable').disabled, 'Enable locked for a download failure').toBe(true)
   })
