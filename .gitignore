@@ -39,3 +39,10 @@ docs/logs/
 # Local runner logs (may contain hostnames / runtime noise)
 example/logs/
 logs/
+
+# Plugin signing keys NEVER live in the repo (the signature proves the index
+# was not rewritten; a committed key would prove nothing). Keep the keypair in
+# a CI secret / secret manager — see docs → Plugin Tooling → Sign the index.
+signing-key*.json
+*-signing-key.json
+*.ed25519

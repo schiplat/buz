@@ -203,15 +203,21 @@ Writes `index.json.sig` next to `index.json` and prints `signed … (key id:
 acme-2026)`. Commit both files. In GitHub Actions:
 
 ```yaml
-- name: Restore signing key
-  run: |
-    printf '%s' "${{ secrets.BUZ_PLUGIN_SIGNING_KEY }}" > /tmp/signing-key.json
-    chmod 600 /tmp/signing-key.json
-
 - name: Generate and sign the index
+  env:
+    # Passed through env (not interpolated into the script) so the secret is
+    # never part of the rendered command, and masked in logs.
+    BUZ_PLUGIN_SIGNING_KEY: ${{ secrets.BUZ_PLUGIN_SIGNING_KEY }}
   run: |
+    set -euo pipefail
+    umask 077                       # the key file never exists as world-readable
+    KEY="$RUNNER_TEMP/signing-key.json"
+    printf '%s' "$BUZ_PLUGIN_SIGNING_KEY" > "$KEY"
+    trap 'rm -f "$KEY"' EXIT        # no copy survives the job
     buz-plugin index --revision "$GITHUB_SHA" \
-      --updated-at "$(git log -1 --format=%cI)" --sign-key /tmp/signing-key.json
+      --updated-at "$(git log -1 --format=%cI)" --sign-key "$KEY"
+    buz-plugin index --check --sign-key "$KEY" \
+      --revision "$GITHUB_SHA" --updated-at "$(git log -1 --format=%cI)"
 ```
 
 #### Step 4 — verify in CI (catches a stale signature)
