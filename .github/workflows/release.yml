@@ -4,6 +4,13 @@ name: Release
 # Platforms: Linux (x86_64, aarch64) + macOS aarch64.
 # macOS Intel (x86_64 / macos-13) temporarily disabled.
 # Triggers: version tags (e.g. v1.7.3) or manual workflow_dispatch.
+#
+# Two independent jobs:
+#   build         — buz-manager / buz-runner / buz-sandboxd, packaged with the
+#                   config tree (needs the dashboard build, so it is heavier).
+#   build-plugin  — buz-plugin alone, packaged as its own asset. Authors need
+#                   one small binary; keeping it out of the platform job means
+#                   it does not wait on (or repeat) the dashboard build.
 
 on:
   push:
@@ -105,8 +112,7 @@ jobs:
         run: |
           cargo build --locked --release \
             --target ${{ matrix.target }} \
-            -p manager -p runner -p plugin-cli \
-            --bin buz-manager --bin buz-runner --bin buz-sandboxd --bin buz-plugin
+            -p manager -p runner --bin buz-manager --bin buz-runner --bin buz-sandboxd
 
       - name: Package archive
         env:
@@ -117,34 +123,12 @@ jobs:
           chmod +x scripts/package-release.sh
           ./scripts/package-release.sh
 
-      # The authoring toolchain ships as its own asset: authors need one small
-      # binary, not the Manager/Runner bundle.
-      - name: Package buz-plugin
-        env:
-          VERSION: ${{ steps.meta.outputs.version }}
-          TARGET: ${{ matrix.target }}
-          PLATFORM: ${{ matrix.name }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist/release
-          NAME="buz-plugin-${VERSION}-${PLATFORM}"
-          cp "target/${TARGET}/release/buz-plugin" "dist/release/buz-plugin"
-          tar -czf "dist/release/${NAME}.tar.gz" -C dist/release buz-plugin
-          rm -f dist/release/buz-plugin
-          cd dist/release
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
-          else
-            shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
-          fi
-
       - name: Attach archives to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
-          VERSION: ${{ steps.meta.outputs.version }}
           ARCHIVE: ${{ steps.meta.outputs.archive }}
         run: |
           # Release assets do not count against the Actions storage quota
@@ -156,6 +140,100 @@ jobs:
           gh release upload "$TAG" \
             "dist/release/${ARCHIVE}.tar.gz" \
             "dist/release/${ARCHIVE}.tar.gz.sha256" \
-            "dist/release/buz-plugin-${VERSION}-${{ matrix.name }}.tar.gz" \
-            "dist/release/buz-plugin-${VERSION}-${{ matrix.name }}.tar.gz.sha256" \
+            --clobber
+
+  # Authoring toolchain (buz-plugin): same source tree, none of the platform
+  # bundle. Skipped uploads still build, so a tag-less run verifies compiles.
+  build-plugin:
+    name: buz-plugin ${{ matrix.name }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            runs-on: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            os_family: linux
+          - name: linux-aarch64
+            runs-on: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            os_family: linux
+          # Temporarily disabled: macOS Intel, mirroring the platform matrix.
+          # - name: macos-x86_64
+          #   runs-on: macos-13
+          #   target: x86_64-apple-darwin
+          #   os_family: macos
+          - name: macos-aarch64
+            runs-on: macos-14
+            target: aarch64-apple-darwin
+            os_family: macos
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Resolve version
+        id: meta
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="$(awk '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{gsub(/"/,"",$3); print $3; exit}' Cargo.toml)"
+            VER="${VER:-0.0.0}-dev.${GITHUB_SHA::7}"
+          fi
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "asset=buz-plugin-${VER}-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # reqwest pulls native-tls, so Linux needs the OpenSSL headers.
+      - name: Install Linux build deps
+        if: matrix.os_family == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+
+      - name: Build buz-plugin
+        run: |
+          cargo build --locked --release \
+            --target ${{ matrix.target }} \
+            -p plugin-cli --bin buz-plugin
+
+      - name: Package buz-plugin
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ steps.meta.outputs.asset }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          cp "target/${TARGET}/release/buz-plugin" dist/release/buz-plugin
+          tar -czf "dist/release/${ASSET}.tar.gz" -C dist/release buz-plugin
+          rm -f dist/release/buz-plugin
+          cd dist/release
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${ASSET}.tar.gz" > "${ASSET}.tar.gz.sha256"
+          else
+            shasum -a 256 "${ASSET}.tar.gz" > "${ASSET}.tar.gz.sha256"
+          fi
+          ls -lh "${ASSET}.tar.gz" "${ASSET}.tar.gz.sha256"
+
+      - name: Attach buz-plugin to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          ASSET: ${{ steps.meta.outputs.asset }}
+        run: |
+          # Both jobs create-or-find the release concurrently; re-checking on
+          # every attempt makes the race harmless.
+          for attempt in 1 2 3 4 5; do
+            gh release view "$TAG" >/dev/null 2>&1 && break
+            gh release create "$TAG" --title "$TAG" --generate-notes >/dev/null 2>&1 || sleep 5
+          done
+          gh release upload "$TAG" \
+            "dist/release/${ASSET}.tar.gz" \
+            "dist/release/${ASSET}.tar.gz.sha256" \
             --clobber
