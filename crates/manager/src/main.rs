@@ -70,8 +70,6 @@ enum Command {
     /// Intended for buz-plugins repo CI: exits non-zero when any file fails
     /// so golden tests can gate merges. Works without a Manager config or
     /// database — pass spec files or directories containing *.yaml/*.yml.
-    /// (`step-validate` remains as a deprecated alias for existing CI.)
-    #[command(alias = "step-validate")]
     PluginValidate {
         /// Plugin spec files or directories (directories are scanned
         /// recursively for *.yaml / *.yml; hidden paths and symlinks are
@@ -406,9 +404,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `plugin-validate` (alias: `step-validate`) — validate plugin spec YAML
-/// files against the marketplace ADR §5.1 spec. Requires no Manager config
-/// or database, so buz-plugins repo CI can run it standalone.
+/// `plugin-validate` — validate plugin spec YAML files against the
+/// marketplace ADR §5.1 spec. Requires no Manager config or database, so
+/// buz-plugins repo CI can run it standalone.
 fn plugin_validate(paths: &[String]) -> anyhow::Result<()> {
     if paths.is_empty() {
         anyhow::bail!("usage: buz-manager plugin-validate <spec.yaml | dir> [...]");

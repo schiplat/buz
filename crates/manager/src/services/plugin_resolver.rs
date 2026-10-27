@@ -111,7 +111,7 @@ pub struct ResolutionPolicy {
 /// Malformed file → warn and continue empty.
 ///
 /// Successful parses are cached keyed on the file's `(mtime, len)`: the
-/// manifest is read on every resolution and every `/steps` listing, and a
+/// manifest is read on every resolution and every `/plugins` listing, and a
 /// stat is all an unchanged file needs. Failures are not cached — a file
 /// that appears later must be picked up.
 pub fn load_reviewed_hashes(path: &str) -> HashSet<String> {
@@ -417,7 +417,7 @@ impl LocalPluginIndex {
             let Ok(spec) = serde_yaml::from_str::<PluginSpec>(&raw) else {
                 tracing::warn!(
                     "plugin index: {} is not valid YAML — skipped (run `buz-manager \\
-                     step-validate` for details)",
+                     plugin-validate` for details)",
                     file.display()
                 );
                 continue;

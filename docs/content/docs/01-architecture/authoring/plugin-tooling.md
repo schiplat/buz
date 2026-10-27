@@ -13,7 +13,7 @@ of responsibility; everything else in this page derives from that split.
 |-------|----------------|------|----------------|
 | `shared` crate | The contract: what is a legal plugin | `plugin_spec` types + `validate_plugin_spec` (single authority) | Any CLI or I/O |
 | `buz-plugin` CLI | What authors, publishers, and mirror operators do | `init`, `validate`, `index`, `mirror check` | Runtime enforcement — it is feedback, not a gate |
-| `buz-manager` | Enforcing validation at the moment it consumes a template | Save-time resolution & locking, enable-time verification (`verify_entry`), the review gate, mirror failover | Authoring tools — `plugin-validate` (alias `step-validate`) retires once `buz-plugin validate` fully takes over |
+| `buz-manager` | Enforcing validation at the moment it consumes a template | Save-time resolution & locking, enable-time verification (`verify_entry`), the review gate, mirror failover | Authoring tools — the `plugin-validate` subcommand retires once `buz-plugin validate` fully takes over |
 | plugins repository | Content and governance, not tooling | Specs (content), `reviews.json` (trust ledger), egress security analysis, governance docs, marketplace site | General tooling (Python shrinks to security analysis + site build) |
 
 ## Boundary rules
@@ -24,7 +24,7 @@ of responsibility; everything else in this page derives from that split.
    enable — consumption-time *enforcement*. The split is by moment, never by
    implementation.
 2. **Runtime binaries carry no authoring tools.** `buz-manager` is a pure
-   operations control plane. The `step-validate` subcommand (now aliased by `plugin-validate`) is retired once
+   operations control plane. The authoring `plugin-validate` subcommand (the misnamed `step-validate` is gone, no alias) is retired once
    the plugins CI switches to `buz-plugin validate`.
 3. **The content repository publishes governance, not tooling.** In the
    plugins repository Python shrinks to `egress.py` (security static analysis
@@ -392,6 +392,6 @@ but not-newest version could never be auto-enabled.
 3. **Phase 3 (optional)** — port the review ledger tooling (`review`
    subcommand); study egress-analysis parity (stays Python until proven).
 
-Retirement schedule: `buz-manager step-validate` and `gen_index.py` are
+Retirement schedule: `buz-manager plugin-validate` and `gen_index.py` are
 removed after Phase 1 has run for one release cycle; the enforcement logic in
 the Manager is never removed.

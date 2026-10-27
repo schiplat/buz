@@ -63,7 +63,7 @@ plugin content ships inside the binaries.
 | Belongs in buz | Belongs in buz-plugins |
 |----------------|------------------------|
 | Execution semantics, engines, and the runtime interface ([Plugin Contract](/docs/01-architecture/authoring/plugin-contract/)) | Template content and per-plugin documentation |
-| Spec schema + `plugin-validate` (alias `step-validate`) + the local plugin-index API | Tool images, static marketplace site, publishing pipelines |
+| Spec schema + `plugin-validate` + the local plugin-index API | Tool images, static marketplace site, publishing pipelines |
 | Review-gate mechanics (`require_reviewed`, `reviewed_manifest`) | Review records and the egress baseline as governance data |
 
 Rule of thumb: *if the plugins repository disappeared tomorrow, would this
