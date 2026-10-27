@@ -207,10 +207,10 @@ describe('PluginPool', () => {
     // the version is selected (see below).
     const blocked = [...versionSelect(root).options].find((o) => o.value === '1.1.0')!
     expect(blocked.text).toBe('v1.1.0 — staged')
-    // …the strip states need / have / consequence without hover or click…
-    expect(root.textContent).toContain(
-      'v1.1.0 requires Buz >= 99.0.0, but this instance runs 1.10.5 — it cannot be enabled here.',
-    )
+    // …the notice states need / have / consequence without hover or click,
+    // as a summary with a separate remedy.
+    expect(root.textContent).toContain('v1.1.0 requires Buz >= 99.0.0, this instance runs 1.10.5')
+    expect(root.textContent).toContain('Cannot be enabled on this Manager.')
     // …and selecting it leaves Enable greyed out.
     const select = versionSelect(root)
     select.value = '1.1.0'
@@ -218,7 +218,7 @@ describe('PluginPool', () => {
     await flush()
     // The amber note (one line) names why the selected version is unusable.
     expect(root.textContent).toContain('requires Buz >= 99.0.0')
-    expect(root.textContent).toContain('cannot be enabled here')
+    expect(root.textContent).toContain('Cannot be enabled on this Manager.')
     const enable = buttonByText(root, 'Enable')!
     expect(enable.disabled, 'Enable greyed for an incompatible version').toBe(true)
     enable.click()
@@ -240,7 +240,8 @@ describe('PluginPool', () => {
       ],
     })
     const root = await mountPage()
-    expect(root.textContent).toContain('v1.0.0 remains enabled and may fail on new runs')
+    expect(root.textContent).toContain('v1.0.0 is enabled but cannot run on this Manager')
+    expect(root.textContent).toContain('Disable it or upgrade Buz — new runs may fail.')
     // Disable stays available so the stuck version can be retired.
     const disable = buttonByText(root, 'Disable')!
     expect(disable.disabled).toBe(false)
@@ -270,7 +271,9 @@ describe('PluginPool', () => {
     expect(root.textContent).toContain(
       'v1.0.0 is listed in the source index but failed to download',
     )
-    expect(root.textContent).toContain('the file is missing on the source')
+    expect(root.textContent).toContain(
+      'The file is missing on the source — contact the source administrator to publish it, then re-sync.',
+    )
   })
 
   it('offers one-click upgrade: enable the target and retire the old version', async () => {

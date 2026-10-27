@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import {
-  AlertTriangle,
   ArrowUpCircle,
   Bell,
   Check,
@@ -13,12 +12,14 @@ import {
   RefreshCw,
   Search,
 } from '@lucide/vue'
+import PluginNotice from '@/components/PluginNotice.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import { pluginSourcesApi, type PoolEntry } from '@/api/pluginSources'
 import { useAppDialog } from '@/composables/useAppDialog'
 import { useClientPagination } from '@/composables/useClientPagination'
 import { formatLocalDateTime } from '@/utils/time'
+import { buildPoolNotices, isStuck } from '@/utils/poolNotices'
 
 const dialog = useAppDialog()
 const loading = ref(true)
@@ -241,7 +242,6 @@ const categoryIconClass = (group: PoolGroup) => {
   }
 }
 
-const isStuck = (entry: PoolEntry) => entry.buz_compatible === false
 const entryKey = (entry: PoolEntry) => `${entry.namespace}/${entry.step_id}/${entry.version}`
 
 // ── Version dropdown + per-action buttons ─────────────────────────────────
@@ -298,41 +298,9 @@ function upgradeTarget(group: PoolGroup): PoolEntry | null {
   return compareTriple(candidateTriple, enabledMax) > 0 ? candidate : null
 }
 
-/** One plain-language strip per plugin summarizing every unusable version:
- *  what it needs, what this instance runs, and what to do about it — no
- *  hover or click required. */
-function groupAlert(group: PoolGroup): string | null {
-  const stuck = group.versions.filter((v) => isStuck(v))
-  if (stuck.length === 0) return null
-  const missing = stuck.filter((v) => v.compat_error?.includes('failed to download'))
-  const mismatch = stuck.filter((v) => !v.compat_error?.includes('failed to download'))
-  const parts: string[] = []
-  if (mismatch.length > 0) {
-    const sample = mismatch[0].compat_error ?? ''
-    const req = sample.match(/requires Buz (>=\s?\d+\.\d+\.\d+)/)?.[1]
-    const cur = sample.match(/current (\d+\.\d+\.\d+)/)?.[1]
-    const names = mismatch.map((v) => `v${v.version}`).join(', ')
-    let text = `${names} require${mismatch.length > 1 ? '' : 's'} Buz ${req ?? 'a newer build'}`
-    if (cur) text += `, but this instance runs ${cur}`
-    text += ` — ${mismatch.length > 1 ? 'they' : 'it'} cannot be enabled here.`
-    const stillOn = mismatch.filter((v) => v.enabled)
-    if (stillOn.length > 0) {
-      const stillNames = stillOn.map((v) => `v${v.version}`).join(', ')
-      text +=
-        ` ${stillNames} ${stillOn.length > 1 ? 'remain' : 'remains'} enabled and may fail on ` +
-        `new runs — disable ${stillOn.length > 1 ? 'them' : 'it'} or upgrade Buz.`
-    }
-    parts.push(text)
-  }
-  if (missing.length > 0) {
-    const names = missing.map((v) => `v${v.version}`).join(', ')
-    parts.push(
-      `${names} ${missing.length > 1 ? 'are' : 'is'} listed in the source index but failed to ` +
-        `download — the file is missing on the source. Contact the source administrator to ` +
-        `publish it, then re-sync.`,
-    )
-  }
-  return parts.length > 0 ? parts.join(' ') : null
+/** Problems for one plugin, as structured messages the card renders. */
+function groupNotices(group: PoolGroup) {
+  return buildPoolNotices(group.versions)
 }
 
 async function load() {
@@ -511,14 +479,8 @@ onMounted(load)
               :title="groupDescription(group) ?? undefined"
             >{{ groupDescription(group) }}</p>
 
-            <!-- Only when something is actually unusable: one amber line, no box. -->
-            <div
-              v-if="groupAlert(group)"
-              class="mt-1.5 flex items-start gap-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400"
-            >
-              <span class="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-amber-500" aria-hidden="true"></span>
-              <p class="m-0">{{ groupAlert(group) }}</p>
-            </div>
+            <!-- Structured problems only: nothing renders when everything is usable. -->
+            <PluginNotice :notices="groupNotices(group)" />
           </div>
 
           <!-- ── Action rail: version, then one primary action ──
