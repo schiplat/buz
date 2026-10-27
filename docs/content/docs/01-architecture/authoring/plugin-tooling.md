@@ -152,6 +152,13 @@ on failure it names each offending file and what to run. This is the
 intended plugin-repository gate: the committed manifests must equal what the
 tool produces.
 
+**Status:** the plugins repository's publish path has run on `buz-plugin` since
+Buz 1.11.0 — generation, signing, and this `--check` re-verification — and tag
+snapshots attach the signed index too. Two Python call sites remain on
+purpose: the per-PR generator smoke test (a required check must not depend on
+fetching a binary from a private release, because fork PRs receive no
+credentials) and the fallback used when that download is unavailable.
+
 ### Sign the index — operation steps
 
 Signing binds the publisher (you) to the exact index bytes, so a mirror or
