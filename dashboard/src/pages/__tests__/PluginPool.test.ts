@@ -290,6 +290,19 @@ describe('PluginPool', () => {
     )
   })
 
+  it('shows only Enable for a single staged version — no upgrade, no update badge', async () => {
+    vi.mocked(stepSourcesApi.listPool).mockResolvedValue({
+      items: [poolEntry({ version: '1.0.0', enabled: false, buz_compatible: true })],
+    })
+    const root = await mountPage()
+    expect(buttonByText(root, 'Enable'), 'Enable is the action for a staged version').toBeTruthy()
+    expect(
+      buttonByText(root, 'Upgrade to v1.0.0'),
+      'nothing is enabled, so there is nothing to upgrade from',
+    ).toBeUndefined()
+    expect(root.textContent).not.toContain('update available')
+  })
+
   it('hides the upgrade button when the staged newer version is incompatible', async () => {
     vi.mocked(stepSourcesApi.listPool).mockResolvedValue({
       items: [

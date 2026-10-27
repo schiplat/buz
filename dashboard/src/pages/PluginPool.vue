@@ -112,7 +112,11 @@ const poolGroups = computed<PoolGroup[]>(() => {
       .filter((v): v is [number, number, number] => v !== null)
       .sort(compareTriple)
       .at(-1)
-    group.updateAvailable = !!maxStaged && (!maxEnabled || compareTriple(maxStaged, maxEnabled) > 0)
+    // "Update available" means a newer version than the one in use — with
+    // nothing enabled there is no version to update *from*; that state is
+    // plain "staged" and Enable is the action.
+    group.updateAvailable =
+      !!maxStaged && !!maxEnabled && compareTriple(maxStaged, maxEnabled) > 0
   }
   return [...groups.values()].sort((a, b) =>
     `${a.namespace}/${a.stepId}`.localeCompare(`${b.namespace}/${b.stepId}`),
@@ -267,7 +271,9 @@ function versionOptionLabel(entry: PoolEntry): string {
 }
 
 /** Newest staged, compatible version that is strictly newer than everything
- *  enabled — the one-click upgrade target. */
+ *  enabled — the one-click upgrade target. Null when nothing is enabled:
+ *  without a version in use there is nothing to upgrade from, and Enable
+ *  already covers that case. */
 function upgradeTarget(group: PoolGroup): PoolEntry | null {
   if (!group.updateAvailable) return null
   const candidate = group.versions.find((v) => !v.enabled && v.buz_compatible === true)
@@ -279,8 +285,8 @@ function upgradeTarget(group: PoolGroup): PoolEntry | null {
     .filter((v): v is [number, number, number] => v !== null)
     .sort(compareTriple)
     .at(-1)
-  if (!candidateTriple) return null
-  return !enabledMax || compareTriple(candidateTriple, enabledMax) > 0 ? candidate : null
+  if (!candidateTriple || !enabledMax) return null
+  return compareTriple(candidateTriple, enabledMax) > 0 ? candidate : null
 }
 
 /** One plain-language strip per plugin summarizing every unusable version:
