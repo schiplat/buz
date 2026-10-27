@@ -253,6 +253,46 @@ describe('PluginSources', () => {
     expect(adminSettingsApi.reset).toHaveBeenCalledWith('plugin_index_local_dir')
   })
 
+  it('copies the index and mirror URLs from the source row', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    // copyText prefers the async clipboard only in a secure context (jsdom
+    // reports false by default and would fall back to execCommand).
+    vi.stubGlobal('isSecureContext', true)
+    vi.mocked(pluginSourcesApi.listSources).mockResolvedValue({
+      items: [
+        {
+          id: 'src-1',
+          name: 'alice',
+          url: 'https://src.example/plugins/index.json',
+          mirror_url: 'https://mirror.example/plugins/index.json',
+          auto_enable: false,
+          enabled: true,
+          last_synced_at: null,
+          last_sync_error: null,
+        },
+      ],
+    })
+    const root = await mountPage()
+
+    const indexCopy = [...root.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.getAttribute('aria-label') === 'Copy index URL of alice',
+    )!
+    expect(indexCopy, 'index URL copy button').toBeTruthy()
+    indexCopy.click()
+    await flush()
+    expect(writeText).toHaveBeenCalledWith('https://src.example/plugins/index.json')
+    expect(indexCopy.querySelector('svg.text-emerald-500')).toBeTruthy()
+
+    const mirrorCopy = [...root.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.getAttribute('aria-label') === 'Copy mirror URL of alice',
+    )!
+    expect(mirrorCopy, 'mirror URL copy button').toBeTruthy()
+    mirrorCopy.click()
+    await flush()
+    expect(writeText).toHaveBeenCalledWith('https://mirror.example/plugins/index.json')
+  })
+
   it('surfaces a failed initial sync without throwing', async () => {
     const root = await mountPage()
     const opener = [...root.querySelectorAll('button')].find((b) => b.textContent?.includes('Add source'))!

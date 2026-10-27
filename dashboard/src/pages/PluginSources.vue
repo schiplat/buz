@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RefreshCw, RotateCcw, Trash2 } from '@lucide/vue'
+import { Check, Copy, RefreshCw, RotateCcw, Trash2 } from '@lucide/vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import {
@@ -11,6 +11,7 @@ import {
 } from '@/api/pluginSources'
 import { adminSettingsApi, type PlatformSetting } from '@/api/adminSettings'
 import { useAppDialog } from '@/composables/useAppDialog'
+import { copyText } from '@/utils/copyText'
 import { useRoute, useRouter } from 'vue-router'
 
 const dialog = useAppDialog()
@@ -75,6 +76,20 @@ const newUrl = ref('')
 const newMirrorUrl = ref('')
 const newAutoEnable = ref(false)
 const busy = ref('')
+/** URL string of the row that was just copied (drives the ✓ feedback). */
+const copiedUrl = ref<string | null>(null)
+
+async function copyUrl(url: string) {
+  const ok = await copyText(url)
+  if (!ok) {
+    await dialog.alert('Copy failed — your browser blocks clipboard access on plain HTTP. Use HTTPS or copy manually.')
+    return
+  }
+  copiedUrl.value = url
+  setTimeout(() => {
+    if (copiedUrl.value === url) copiedUrl.value = null
+  }, 1500)
+}
 /** sourceId -> the last_synced_at value observed when Sync was clicked.
  *  While the row still shows that same value, the background sync is in
  *  flight ("syncing…"); a changed value (success OR failure — the backend
@@ -474,12 +489,35 @@ onUnmounted(() => {
                   class="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary"
                 >auto-enable</span>
               </div>
-              <p class="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" :title="source.url">{{ source.url }}</p>
-              <p
-                v-if="source.mirror_url"
-                class="mt-0.5 truncate font-mono text-[11px] text-muted-foreground/70"
-                :title="`mirror tried first: ${source.mirror_url}`"
-              >mirror: {{ source.mirror_url }}</p>
+              <div class="mt-0.5 flex items-center gap-1">
+                <p class="min-w-0 truncate font-mono text-[11px] text-muted-foreground" :title="source.url">{{ source.url }}</p>
+                <button
+                  type="button"
+                  class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+                  :aria-label="`Copy index URL of ${source.name}`"
+                  title="Copy index URL"
+                  @click="copyUrl(source.url)"
+                >
+                  <Check v-if="copiedUrl === source.url" class="h-3 w-3 text-emerald-500" aria-hidden="true" />
+                  <Copy v-else class="h-3 w-3" aria-hidden="true" />
+                </button>
+              </div>
+              <div v-if="source.mirror_url" class="mt-0.5 flex items-center gap-1">
+                <p
+                  class="min-w-0 truncate font-mono text-[11px] text-muted-foreground/70"
+                  :title="`mirror tried first: ${source.mirror_url}`"
+                >mirror: {{ source.mirror_url }}</p>
+                <button
+                  type="button"
+                  class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+                  :aria-label="`Copy mirror URL of ${source.name}`"
+                  title="Copy mirror URL"
+                  @click="copyUrl(source.mirror_url!)"
+                >
+                  <Check v-if="copiedUrl === source.mirror_url" class="h-3 w-3 text-emerald-500" aria-hidden="true" />
+                  <Copy v-else class="h-3 w-3" aria-hidden="true" />
+                </button>
+              </div>
               <p
                 v-if="mirrorChecks[source.id]"
                 class="mt-0.5 text-[11px]"
