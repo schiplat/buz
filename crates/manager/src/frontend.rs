@@ -50,9 +50,35 @@ fn asset_response(path: &str, data: &[u8]) -> Response<Body> {
 }
 
 /// Disk-based SPA (dev override) for `Router::fallback_service`.
-pub fn disk_fallback(frontend_dir: &str) -> ServeDir<ServeFile> {
+///
+/// Serves the same cache policy as [`embedded_handler`]: fingerprinted
+/// `/assets/*` are immutable, everything else (notably `index.html`) must
+/// revalidate. Without this the browser keeps a cached `index.html`, which
+/// points at an old asset hash — the UI then looks stale after a rebuild even
+/// though the server is serving the new bundle.
+pub fn disk_fallback(frontend_dir: &str) -> axum::Router {
     let index_html = format!("{frontend_dir}/index.html");
-    ServeDir::new(frontend_dir).fallback(ServeFile::new(index_html))
+    let serve = ServeDir::new(frontend_dir).fallback(ServeFile::new(index_html));
+    axum::Router::new()
+        .fallback_service(serve)
+        .layer(axum::middleware::from_fn(cache_policy))
+}
+
+async fn cache_policy(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let immutable_asset = request.uri().path().starts_with("/assets/");
+    let mut response = next.run(request).await;
+    let value = if immutable_asset {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static(value));
+    response
 }
 
 pub fn embedded_file_count() -> usize {
