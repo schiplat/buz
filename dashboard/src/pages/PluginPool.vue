@@ -270,14 +270,26 @@ const selectedEntry = (group: PoolGroup): PoolEntry | null =>
 const blockedRequirement = (entry: PoolEntry): string | null =>
   entry.compat_error?.match(/requires Buz (>=\s?\d+\.\d+\.\d+)/)?.[1] ?? null
 
-/** Dropdown label spelling out each version's state, e.g.
- *  "v1.2.0 — enabled · reviewed" / "v1.0.0 — staged · blocked (needs Buz >=99.0.0)". */
+/** Dropdown label: version plus the one bit that matters when scanning the
+ *  list (in use or not). Review/compat detail lives on the state line under
+ *  the select, where it cannot be truncated by a narrow rail. */
 function versionOptionLabel(entry: PoolEntry): string {
-  let state = entry.enabled ? 'enabled' : 'staged'
-  if (isStuck(entry)) state += ` · blocked (needs Buz ${blockedRequirement(entry) ?? '—'})`
-  else if (!entry.enabled && entry.buz_compatible === null) state += ' · compat unknown'
-  if (entry.reviewed) state += ' · reviewed'
-  return `v${entry.version} — ${state}`
+  return `v${entry.version} — ${entry.enabled ? 'enabled' : 'staged'}`
+}
+
+/** State line shown under the version select: dot tone + one sentence about
+ *  the *selected* version. */
+function selectedState(entry: PoolEntry): { tone: 'ok' | 'warn' | 'muted'; text: string } {
+  const review = entry.reviewed ? 'reviewed' : 'unreviewed'
+  if (isStuck(entry)) {
+    return {
+      tone: 'warn',
+      text: `blocked — needs Buz ${blockedRequirement(entry) ?? '>= ?'}`,
+    }
+  }
+  if (entry.enabled) return { tone: 'ok', text: `enabled · ${review}` }
+  if (entry.buz_compatible === null) return { tone: 'muted', text: `staged · compat unknown` }
+  return { tone: 'muted', text: `staged · ${review}` }
 }
 
 /** Newest staged, compatible version that is strictly newer than everything
@@ -523,8 +535,10 @@ onMounted(load)
             </div>
           </div>
 
-          <!-- ── Action rail: version dropdown + explicit actions ── -->
-          <div class="shrink-0 w-full sm:w-44 flex flex-col gap-2">
+          <!-- ── Action rail: version + state, then primary action ──
+               Hierarchy: the rail answers "which version is in use" first,
+               then "change it". Upgrade is secondary to Enable/Disable. -->
+          <div class="shrink-0 w-full sm:w-52 flex flex-col gap-1.5">
             <div class="flex items-center justify-between gap-1.5">
               <span class="text-[10.5px] uppercase tracking-wider text-muted-foreground/60">version</span>
               <UiButton
@@ -548,6 +562,21 @@ onMounted(load)
                 {{ versionOptionLabel(entry) }}
               </option>
             </select>
+            <div
+              v-if="selectedEntry(group)"
+              class="flex items-start gap-1.5 px-0.5 text-[10.5px] leading-snug text-muted-foreground"
+            >
+              <span
+                class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full"
+                :class="{
+                  'bg-emerald-500': selectedState(selectedEntry(group)!).tone === 'ok',
+                  'bg-amber-500': selectedState(selectedEntry(group)!).tone === 'warn',
+                  'bg-muted-foreground/40': selectedState(selectedEntry(group)!).tone === 'muted',
+                }"
+                aria-hidden="true"
+              ></span>
+              <span>{{ selectedState(selectedEntry(group)!).text }}</span>
+            </div>
             <UiButton
               size="sm"
               :variant="selectedEntry(group)?.enabled ? 'destructive-soft' : 'success'"
@@ -564,9 +593,12 @@ onMounted(load)
               "
               @click="toggleSelected(group)"
             >{{ selectedEntry(group)?.enabled ? 'Disable' : 'Enable' }}</UiButton>
+            <!-- Secondary: switching versions is rarer than toggling, so it
+                 stays visually lighter than the primary action. -->
             <UiButton
               v-if="upgradeTarget(group)"
               size="sm"
+              variant="outline"
               class="w-full"
               :disabled="busy === usesRef(group)"
               :title="`Enable v${upgradeTarget(group)!.version} and disable the currently enabled version`"

@@ -127,10 +127,13 @@ describe('PluginPool', () => {
     expect(groupHeaders(root).map((el) => el.textContent)).toEqual(['uses: alice/oss-upload'])
     expect(root.textContent).toContain('OSS upload')
     const options = [...versionSelect(root).options].map((o) => o.text)
+    // Options stay short (state detail lives on the line under the select,
+    // where a narrow rail cannot truncate it).
     expect(options).toEqual([
       'v1.1.0 — staged',
-      'v1.0.0 — enabled · reviewed',
+      'v1.0.0 — enabled',
     ])
+    expect(root.textContent).toContain('enabled · reviewed')
   })
 
   it('describes the plugin: category, publisher, engine and the description', async () => {
@@ -197,9 +200,10 @@ describe('PluginPool', () => {
       ],
     })
     const root = await mountPage()
-    // Dropdown labels the blocked version…
+    // Dropdown stays short; the blocked reason appears on the state line once
+    // the version is selected (see below).
     const blocked = [...versionSelect(root).options].find((o) => o.value === '1.1.0')!
-    expect(blocked.text).toContain('blocked (needs Buz >= 99.0.0)')
+    expect(blocked.text).toBe('v1.1.0 — staged')
     // …the strip states need / have / consequence without hover or click…
     expect(root.textContent).toContain(
       'v1.1.0 requires Buz >= 99.0.0, but this instance runs 1.10.5 — it cannot be enabled here.',
@@ -209,6 +213,8 @@ describe('PluginPool', () => {
     select.value = '1.1.0'
     select.dispatchEvent(new Event('change'))
     await flush()
+    // The state line names why the selected version is unusable.
+    expect(root.textContent).toContain('blocked — needs Buz >= 99.0.0')
     const enable = buttonByText(root, 'Enable')!
     expect(enable.disabled, 'Enable greyed for an incompatible version').toBe(true)
     enable.click()
