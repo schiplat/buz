@@ -170,7 +170,7 @@ pub async fn health(
     .await;
     let manifest_configured =
         !manifest_path.trim().is_empty() && std::path::Path::new(manifest_path.trim()).exists();
-    let step_review = serde_json::json!({
+    let plugin_review = serde_json::json!({
         "manifest_configured": manifest_configured,
         "require_reviewed": crate::services::platform_settings::effective(
             &state.pool,
@@ -188,7 +188,7 @@ pub async fn health(
         "marketplace_url": marketplace_url,
         "uptime_seconds": uptime_seconds,
         "started_at": started.map(|s| s.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-        "plugin_review": step_review,
+        "plugin_review": plugin_review,
         "database": {
             "status": if db_ok { "ok" } else { "error" },
             "latency_ms": latency_ms,

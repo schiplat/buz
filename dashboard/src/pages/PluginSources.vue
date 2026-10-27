@@ -603,7 +603,7 @@ onUnmounted(() => {
           </div>
         </div>
         <p v-if="sources.length === 0" class="px-5 py-4 text-sm text-muted-foreground">
-          No sources configured. Official templates resolve from the local step directory.
+          No sources configured. Official templates resolve from the local plugin directory.
         </p>
       </div>
     </section>

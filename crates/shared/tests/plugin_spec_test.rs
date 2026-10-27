@@ -33,7 +33,7 @@ run: |
 fn valid_template_spec_parses_and_validates() {
     let spec = parse_and_validate_plugin_spec(&base_yaml(), CURRENT).expect("valid spec");
     assert_eq!(spec.namespace(), "buz");
-    assert_eq!(spec.step_id(), "feishu");
+    assert_eq!(spec.plugin_id(), "feishu");
     assert_eq!(spec.effective_engine(), "shell");
     assert_eq!(spec.input_defs().len(), 2);
     // BTreeMap keys are sorted: at_all < webhook.

@@ -1,4 +1,4 @@
-//! Local step index resolution for `uses:` marketplace references
+//! Local plugin index resolution for `uses:` marketplace references
 //! (marketplace ADR §6.2/§6.4 — Phase 1: `local` index type only).
 //!
 //! Semantics per the 2026-10-03 decisions: the local index directory is the
@@ -19,9 +19,9 @@ use shared::pipeline_yaml::{parse_uses_reference, UsesPin};
 use shared::plugin_spec::{buz_requirement_satisfied, validate_plugin_spec, PluginSpec};
 use shared::protocol::{validate_input_values, StepDef};
 
-/// Step-index settings resolved from Manager config at startup.
+/// Plugin-index settings resolved from Manager config at startup.
 #[derive(Debug, Clone, Default)]
-pub struct StepIndexSettings {
+pub struct PluginIndexSettings {
     /// Path to `reviews.json` (empty → no review checking).
     pub reviewed_manifest: String,
     /// Strict mode: reject resolutions whose hash is not reviewed.
@@ -29,7 +29,7 @@ pub struct StepIndexSettings {
 }
 
 /// Index-signature trust anchor as configured in `manager.toml`. Kept out of
-/// [`StepIndexSettings`] because the dashboard override must be read per call
+/// [`PluginIndexSettings`] because the dashboard override must be read per call
 /// (per database), not baked into a process-wide slot.
 static SIGNATURE_DEFAULTS: OnceLock<(bool, String)> = OnceLock::new();
 
@@ -41,7 +41,7 @@ pub fn signature_defaults() -> (bool, String) {
     SIGNATURE_DEFAULTS.get().cloned().unwrap_or_default()
 }
 
-static SETTINGS: OnceLock<StepIndexSettings> = OnceLock::new();
+static SETTINGS: OnceLock<PluginIndexSettings> = OnceLock::new();
 
 /// Admin-edited runtime overrides (web settings). `None` field = use the
 /// startup value. Applied without a restart by the settings API.
@@ -80,14 +80,14 @@ fn runtime_overrides() -> RuntimeOverrides {
 
 /// Install startup settings (mirrors `services::clock::init`). No-op when
 /// already initialized.
-pub fn init(settings: StepIndexSettings) {
+pub fn init(settings: PluginIndexSettings) {
     let _ = SETTINGS.set(settings);
 }
 
-fn settings() -> StepIndexSettings {
+fn settings() -> PluginIndexSettings {
     let base = SETTINGS.get().cloned().unwrap_or_default();
     let overrides = runtime_overrides();
-    StepIndexSettings {
+    PluginIndexSettings {
         require_reviewed: overrides.require_reviewed.unwrap_or(base.require_reviewed),
         reviewed_manifest: overrides
             .reviewed_manifest
@@ -202,9 +202,9 @@ struct ReviewEntry {
     version: String,
 }
 
-/// A step template resolved from an index, with everything provenance needs.
+/// A plugin template resolved from an index, with everything provenance needs.
 #[derive(Debug, Clone)]
-pub struct ResolvedStep {
+pub struct ResolvedPlugin {
     pub spec: PluginSpec,
     /// Where the template came from, e.g. `local:/opt/buz/pipelines/steps`.
     pub source: String,
@@ -295,7 +295,7 @@ fn normalize(path: &std::path::Path) -> std::path::PathBuf {
     out
 }
 
-/// Effective step directory: the admin-set override when present, else the
+/// Effective plugin directory: the admin-set override when present, else the
 /// config-resolved default. All consumers must use this so a settings change
 /// takes effect everywhere at once.
 pub fn effective_local_dir(data_dir: &str, config_local_dir: &str) -> anyhow::Result<PathBuf> {
@@ -343,19 +343,19 @@ struct IndexCacheEntry {
 static INDEX_CACHE: LazyLock<Mutex<HashMap<PathBuf, HashMap<PathBuf, IndexCacheEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// The `local` step index: a directory of one-file-one-plugin YAML specs.
-pub struct LocalStepIndex {
+/// The `local` plugin index: a directory of one-file-one-plugin YAML specs.
+pub struct LocalPluginIndex {
     dir: PathBuf,
 }
 
-impl LocalStepIndex {
+impl LocalPluginIndex {
     pub fn new(dir: PathBuf) -> Self {
         Self { dir }
     }
 
     /// Load every parseable spec. Files that fail to parse are skipped with
     /// a warning — one broken file must not take the whole index down
-    /// (the `buz step validate` CLI is the tool that reports them loudly).
+    /// (the `buz-plugin validate` CLI is the tool that reports them loudly).
     ///
     /// Parsed specs are cached per file keyed on `(mtime, len)`: resolution
     /// runs on every save and trigger, and an unchanged directory costs one
@@ -365,7 +365,7 @@ impl LocalStepIndex {
         let files = shared::yaml_files::discover_yaml_files(&self.dir).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 format!(
-                    "local step index directory {} does not exist",
+                    "local plugin index directory {} does not exist",
                     self.dir.display()
                 )
             } else {
@@ -402,7 +402,7 @@ impl LocalStepIndex {
                         }
                     }
                     None => {
-                        tracing::warn!("step index: cannot read {} — skipped", file.display());
+                        tracing::warn!("plugin index: cannot read {} — skipped", file.display());
                     }
                 }
             }
@@ -411,12 +411,12 @@ impl LocalStepIndex {
         let mut loaded: Vec<(PathBuf, (SystemTime, u64), IndexedSpec)> = Vec::new();
         for (file, stamp) in missing {
             let Ok(raw) = std::fs::read_to_string(&file) else {
-                tracing::warn!("step index: cannot read {} — skipped", file.display());
+                tracing::warn!("plugin index: cannot read {} — skipped", file.display());
                 continue;
             };
             let Ok(spec) = serde_yaml::from_str::<PluginSpec>(&raw) else {
                 tracing::warn!(
-                    "step index: {} is not valid YAML — skipped (run `buz-manager \\
+                    "plugin index: {} is not valid YAML — skipped (run `buz-manager \\
                      step-validate` for details)",
                     file.display()
                 );
@@ -458,7 +458,7 @@ impl LocalStepIndex {
             .collect()
     }
 
-    pub fn resolve(&self, uses_ref: &str, current_buz: &str) -> Result<ResolvedStep, String> {
+    pub fn resolve(&self, uses_ref: &str, current_buz: &str) -> Result<ResolvedPlugin, String> {
         let (reference, pin) = parse_uses_reference(uses_ref)?;
 
         let candidates: Vec<IndexedSpec> = self
@@ -469,7 +469,7 @@ impl LocalStepIndex {
 
         if candidates.is_empty() {
             return Err(format!(
-                "step '{reference}' not found in local step index {}",
+                "plugin '{reference}' not found in the local plugin index {}",
                 self.dir.display()
             ));
         }
@@ -480,13 +480,13 @@ impl LocalStepIndex {
                 .find(|entry| entry.content_sha256 == *hex)
                 .ok_or_else(|| {
                     format!(
-                        "no step '{reference}' with content sha256:{hex} in local step index {}",
+                        "no plugin '{reference}' with content sha256:{hex} in the local plugin index {}",
                         self.dir.display()
                     )
                 })?,
             UsesPin::Branch(branch) => {
                 return Err(format!(
-                    "branch pin '@{branch}' resolves only from remote step sources — the local index is pinned by version or sha256"
+                    "branch pin '@{branch}' resolves only from remote plugin sources — the local index is pinned by version or sha256"
                 ));
             }
             UsesPin::Version(v) => {
@@ -501,7 +501,7 @@ impl LocalStepIndex {
                     .collect();
                 if matched.is_empty() {
                     return Err(format!(
-                        "step '{reference}' has no version matching @{v} in local step index {}",
+                        "plugin '{reference}' has no version matching @{v} in the local plugin index {}",
                         self.dir.display()
                     ));
                 }
@@ -525,7 +525,7 @@ impl LocalStepIndex {
                 if at_best.len() > 1 {
                     let pretty = format!("{}.{}.{}", best.0, best.1, best.2);
                     return Err(format!(
-                        "step '{reference}@{pretty}' is ambiguous — {} files declare the same \
+                        "plugin '{reference}@{pretty}' is ambiguous — {} files declare the same \
                          id and version in the local index; keep one file per id+version",
                         at_best.len()
                     ));
@@ -545,7 +545,7 @@ impl LocalStepIndex {
             buz_requirement_satisfied(requires, current_buz)?;
         }
 
-        Ok(ResolvedStep {
+        Ok(ResolvedPlugin {
             spec: picked.spec,
             source: picked.source,
             content_sha256: picked.content_sha256,
@@ -574,7 +574,7 @@ pub fn version_triple(v: &str) -> Option<(u64, u64, u64)> {
 /// template's declared inputs (unknown keys and missing required inputs are
 /// errors; literal values are type-checked, `${secrets.X}` placeholders are
 /// resolved at claim time like any step env value).
-pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepDef, Vec<String>> {
+pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedPlugin) -> Result<StepDef, Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
     let spec = &resolved.spec;
 
@@ -708,7 +708,7 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepD
 
     Ok(StepDef {
         name: if step.name.trim().is_empty() {
-            format!("{}@{}", spec.step_id(), spec.version)
+            format!("{}@{}", spec.plugin_id(), spec.version)
         } else {
             step.name.clone()
         },
@@ -775,7 +775,7 @@ pub fn resolve_uses_steps(
     index_dir: &Path,
     policy: &ResolutionPolicy,
 ) -> Result<ResolvedSteps, String> {
-    let index = LocalStepIndex::new(index_dir.to_path_buf());
+    let index = LocalPluginIndex::new(index_dir.to_path_buf());
     let current_buz = env!("CARGO_PKG_VERSION");
 
     let mut out = Vec::with_capacity(steps.len());
@@ -786,7 +786,7 @@ pub fn resolve_uses_steps(
             let reviewed = policy.reviewed_hashes.contains(&resolved.content_sha256);
             if !reviewed && policy.require_reviewed {
                 return Err(format!(
-                    "step '{uses_ref}' (sha256 {}) is not officially reviewed and require_reviewed is enabled — pin an approved hash or disable the flag",
+                    "plugin '{uses_ref}' (sha256 {}) is not officially reviewed and require_reviewed is enabled — pin an approved hash or disable the flag",
                     resolved.content_sha256
                 ));
             }
@@ -825,7 +825,7 @@ pub fn resolve_uses_steps(
     })
 }
 
-/// Async entry point for handlers: resolution reads the step index and the
+/// Async entry point for handlers: resolution reads the plugin index and the
 /// review manifest synchronously, so run it on the blocking pool instead of
 /// stalling a tokio worker (the in-process caches make warm calls cheap, but
 /// cold sweeps of a large index must not block the runtime).
@@ -836,7 +836,7 @@ pub async fn resolve_uses_steps_async(
     http: &reqwest::Client,
 ) -> Result<ResolvedSteps, String> {
     let policy = policy_from_settings();
-    let index = LocalStepIndex::new(index_dir);
+    let index = LocalPluginIndex::new(index_dir);
     let current_buz = env!("CARGO_PKG_VERSION");
 
     let mut out = Vec::with_capacity(steps.len());
@@ -862,7 +862,7 @@ pub async fn resolve_uses_steps_async(
                     let reviewed = policy.reviewed_hashes.contains(&resolved.content_sha256);
                     if !reviewed && policy.require_reviewed {
                         return Err(format!(
-                                "step '{uses_ref}' (sha256 {}) is not officially reviewed and require_reviewed is enabled — pin an approved hash or disable the flag",
+                                "plugin '{uses_ref}' (sha256 {}) is not officially reviewed and require_reviewed is enabled — pin an approved hash or disable the flag",
                                 resolved.content_sha256
                             ));
                     }

@@ -1,5 +1,5 @@
-//! Admin management for step sources and the template pool
-//! (step-marketplace §6.8 Phase 1).
+//! Admin management for plugin sources and the template pool
+//! (plugin-marketplace §6.8 Phase 1).
 
 use axum::{
     extract::{Path, State},
@@ -34,7 +34,7 @@ pub struct TogglePoolRequest {
     pub enabled: bool,
 }
 
-/// GET /api/v1/admin/step-sources — all configured sources with sync state.
+/// GET /api/v1/admin/plugin-sources — all configured sources with sync state.
 pub async fn list_sources(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
@@ -45,7 +45,7 @@ pub async fn list_sources(
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
 }
 
-/// POST /api/v1/admin/step-sources — add a source and sync it immediately.
+/// POST /api/v1/admin/plugin-sources — add a source and sync it immediately.
 /// A failed sync keeps the source registered (last_sync_error explains);
 /// rows only land in the pool once an index is valid.
 pub async fn create_source(
@@ -137,7 +137,7 @@ pub async fn create_source(
     }))))
 }
 
-/// POST /api/v1/admin/step-sources/{id}/mirror-check — compare the namespace
+/// POST /api/v1/admin/plugin-sources/{id}/mirror-check — compare the namespace
 /// revision sentinel between the mirror and the canonical origin (tiny GETs;
 /// falls back to a full index compare when a sentinel is missing).
 pub async fn check_mirror(
@@ -242,7 +242,7 @@ pub async fn reset_index_watermark(
     Ok(Json(ApiResponse::success(json!({ "id": id }))))
 }
 
-/// GET /api/v1/admin/step-sources/{id}/sync-progress — live sync progress for
+/// GET /api/v1/admin/plugin-sources/{id}/sync-progress — live sync progress for
 /// the dashboard's progress bar. `phase: "idle"` = no sync seen this run.
 pub async fn sync_progress(
     _auth: PlatformAdmin,
@@ -258,7 +258,7 @@ pub async fn sync_progress(
     })))
 }
 
-/// DELETE /api/v1/admin/step-sources/{id} — removes the source and its pool
+/// DELETE /api/v1/admin/plugin-sources/{id} — removes the source and its pool
 /// rows. Already-saved pipelines are unaffected (resolution froze at save).
 pub async fn delete_source(
     auth: PlatformAdmin,
@@ -295,7 +295,7 @@ pub async fn delete_source(
     if id == "official" {
         sqlx::query(
             "INSERT INTO platform_settings (key, value, updated_by, updated_at) \
-             VALUES ('step_official_source_dismissed', 'true', ?, datetime('now')) \
+             VALUES ('plugin_official_source_dismissed', 'true', ?, datetime('now')) \
              ON CONFLICT(key) DO UPDATE SET value = 'true', updated_by = excluded.updated_by, \
                updated_at = excluded.updated_at",
         )
@@ -307,13 +307,13 @@ pub async fn delete_source(
     Ok(Json(ApiResponse::success(json!({ "id": id }))))
 }
 
-/// POST /api/v1/admin/step-pool/{namespace}/{step_id}/refresh — re-fetch the
+/// POST /api/v1/admin/plugin-pool/{namespace}/{plugin_id}/refresh — re-fetch the
 /// source index and upsert only this plugin's entries (curator's enable
 /// state survives). Returns the refreshed version rows.
 pub async fn refresh_plugin(
     auth: PlatformAdmin,
     State(state): State<AppState>,
-    Path((namespace, step_id)): Path<(String, String)>,
+    Path((namespace, plugin_id)): Path<(String, String)>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let http = plugin_pool::http_client(
         crate::services::platform_settings::effective(
@@ -329,7 +329,7 @@ pub async fn refresh_plugin(
         &http,
         &state.pool,
         &namespace,
-        &step_id,
+        &plugin_id,
         shared::version::VERSION,
     )
     .await
@@ -337,14 +337,14 @@ pub async fn refresh_plugin(
     audit::record(
         &state.pool,
         AuditEvent::new(Action::PluginPoolRefresh, &auth)
-            .on(Resource::step_pool_plugin(&namespace, &step_id))
+            .on(Resource::plugin_pool_entry(&namespace, &plugin_id))
             .meta(Some(json!({ "versions": rows.len() }))),
     )
     .await;
     Ok(Json(ApiResponse::success(json!({ "items": rows }))))
 }
 
-/// GET /api/v1/admin/step-pool — every pool row (enabled + staged).
+/// GET /api/v1/admin/plugin-pool — every pool row (enabled + staged).
 pub async fn list_pool(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
@@ -355,12 +355,12 @@ pub async fn list_pool(
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
 }
 
-/// PUT /api/v1/admin/step-pool/{namespace}/{step_id}/{version} — enable or
+/// PUT /api/v1/admin/plugin-pool/{namespace}/{plugin_id}/{version} — enable or
 /// disable one pool entry (the curator's curation action).
 pub async fn toggle_pool_entry(
     auth: PlatformAdmin,
     State(state): State<AppState>,
-    Path((namespace, step_id, version)): Path<(String, String, String)>,
+    Path((namespace, plugin_id, version)): Path<(String, String, String)>,
     Json(body): Json<TogglePoolRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     // 收录即校验：enabling fetches the template content, verifies the pinned
@@ -380,7 +380,7 @@ pub async fn toggle_pool_entry(
             ),
             &state.pool,
             &namespace,
-            &step_id,
+            &plugin_id,
             &version,
             env!("CARGO_PKG_VERSION"),
         )
@@ -396,22 +396,22 @@ pub async fn toggle_pool_entry(
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let previous_enabled: Option<i64> = sqlx::query_scalar(
         "SELECT enabled FROM plugin_pool \
-         WHERE namespace = ? AND step_id = ? AND version = ?",
+         WHERE namespace = ? AND plugin_id = ? AND version = ?",
     )
     .bind(&namespace)
-    .bind(&step_id)
+    .bind(&plugin_id)
     .bind(&version)
     .fetch_optional(&mut *tx)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
     let result = sqlx::query(
         "UPDATE plugin_pool SET enabled = ?, updated_by = ?, updated_at = datetime('now') \
-         WHERE namespace = ? AND step_id = ? AND version = ?",
+         WHERE namespace = ? AND plugin_id = ? AND version = ?",
     )
     .bind(body.enabled as i64)
     .bind(&auth.username)
     .bind(&namespace)
-    .bind(&step_id)
+    .bind(&plugin_id)
     .bind(&version)
     .execute(&mut *tx)
     .await
@@ -423,7 +423,7 @@ pub async fn toggle_pool_entry(
     audit::record_in(
         &mut *tx,
         AuditEvent::new(Action::PluginPoolToggle, &auth)
-            .on(Resource::plugin_pool(&namespace, &step_id, &version))
+            .on(Resource::plugin_pool(&namespace, &plugin_id, &version))
             .changes(
                 Some(json!({ "enabled": previous_enabled.map(|v| v != 0) })),
                 Some(json!({ "enabled": body.enabled })),
@@ -435,7 +435,7 @@ pub async fn toggle_pool_entry(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(ApiResponse::success(json!({
-        "namespace": namespace, "step_id": step_id,
+        "namespace": namespace, "plugin_id": plugin_id,
         "version": version, "enabled": body.enabled,
     }))))
 }

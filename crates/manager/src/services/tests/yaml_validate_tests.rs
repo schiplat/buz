@@ -56,13 +56,13 @@ async fn pool_with_default_team() -> SqlitePool {
     .expect("environments");
     sqlx::query(
         "CREATE TABLE plugin_pool (
-            namespace TEXT NOT NULL, step_id TEXT NOT NULL, version TEXT NOT NULL,
+            namespace TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL,
             sha256 TEXT NOT NULL, source_id TEXT NOT NULL, file_path TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 0, reviewed INTEGER NOT NULL DEFAULT 0,
             added_by TEXT, added_at TEXT, requires_buz TEXT, buz_compatible INTEGER,
             compat_error TEXT, compat_checked_against TEXT, meta_json TEXT,
             updated_by TEXT, updated_at TEXT,
-            UNIQUE(namespace, step_id, version)
+            UNIQUE(namespace, plugin_id, version)
         )",
     )
     .execute(&pool)

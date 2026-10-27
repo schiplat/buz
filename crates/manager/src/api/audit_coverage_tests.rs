@@ -84,7 +84,7 @@ const AUDITED: &[(&str, &str)] = &[
         "variable.github_bind.patch",
     ),
     (
-        "POST /api/v1/admin/plugin-pool/{namespace}/{step_id}/refresh",
+        "POST /api/v1/admin/plugin-pool/{namespace}/{plugin_id}/refresh",
         "plugin_pool.refresh",
     ),
     ("POST /api/v1/admin/plugin-sources", "plugin_source.create"),
@@ -150,7 +150,7 @@ const AUDITED: &[(&str, &str)] = &[
     ),
     ("PUT /api/v1/admin/settings/{key}", "setting.update"),
     (
-        "PUT /api/v1/admin/plugin-pool/{namespace}/{step_id}/{version}",
+        "PUT /api/v1/admin/plugin-pool/{namespace}/{plugin_id}/{version}",
         "plugin_pool.toggle",
     ),
     ("PUT /api/v1/environments/{id}", "environment.update"),
@@ -227,37 +227,11 @@ const INTENTIONALLY_UNAUDITED: &[(&str, &str)] = &[
     ),
 ];
 
-/// Deprecated path aliases for the write routes: they register the SAME
-/// handlers as the canonical entries above, so the audit event is recorded
-/// once, in the handler — not per path. Kept apart from AUDITED so the table
-/// never claims a second record happens here. (`GET /steps` also aliases
-/// `GET /plugins`; it is a read, so it is outside this table.)
-const ALIAS_ROUTES: &[(&str, &str)] = &[
-    (
-        "DELETE /api/v1/admin/step-sources/{id}",
-        "alias of DELETE /api/v1/admin/plugin-sources/{id}",
-    ),
-    (
-        "POST /api/v1/admin/step-pool/{namespace}/{step_id}/refresh",
-        "alias of POST /api/v1/admin/plugin-pool/{namespace}/{step_id}/refresh",
-    ),
-    (
-        "POST /api/v1/admin/step-sources",
-        "alias of POST /api/v1/admin/plugin-sources",
-    ),
-    (
-        "POST /api/v1/admin/step-sources/{id}/mirror-check",
-        "alias of POST /api/v1/admin/plugin-sources/{id}/mirror-check",
-    ),
-    (
-        "POST /api/v1/admin/step-sources/{id}/sync",
-        "alias of POST /api/v1/admin/plugin-sources/{id}/sync",
-    ),
-    (
-        "PUT /api/v1/admin/step-pool/{namespace}/{step_id}/{version}",
-        "alias of PUT /api/v1/admin/plugin-pool/{namespace}/{step_id}/{version}",
-    ),
-];
+/// No deprecated path aliases remain: the step-* aliases shipped in 1.11.0
+/// were removed once 1.12.0 had released (the documented one-release window).
+/// (`GET /steps` also aliased `GET /plugins`; it was a read, so it was never
+/// in this table — removed in the same pass.)
+const ALIAS_ROUTES: &[(&str, &str)] = &[];
 
 fn repo_file(relative: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);

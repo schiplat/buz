@@ -1,8 +1,8 @@
-//! Live progress for step-source syncs (the dashboard's progress bar).
+//! Live progress for plugin-source syncs (the dashboard's progress bar).
 //!
 //! The tracker is process-global: syncs are spawned from API handlers and
 //! from the startup hook, and no single AppState covers all of them. The
-//! dashboard polls `GET /admin/step-sources/{id}/sync-progress` while a sync
+//! dashboard polls `GET /admin/plugin-sources/{id}/sync-progress` while a sync
 //! is in flight.
 
 use chrono::Utc;

@@ -65,14 +65,17 @@ enum Command {
         token: String,
     },
 
-    /// Validate buz-plugin step template YAML files (marketplace ADR §5.1).
+    /// Validate plugin spec YAML files (marketplace ADR §5.1).
     ///
     /// Intended for buz-plugins repo CI: exits non-zero when any file fails
     /// so golden tests can gate merges. Works without a Manager config or
     /// database — pass spec files or directories containing *.yaml/*.yml.
-    StepValidate {
-        /// Step spec files or directories (directories are scanned recursively
-        /// for *.yaml / *.yml; hidden paths and symlinks are skipped)
+    /// (`step-validate` remains as a deprecated alias for existing CI.)
+    #[command(alias = "step-validate")]
+    PluginValidate {
+        /// Plugin spec files or directories (directories are scanned
+        /// recursively for *.yaml / *.yml; hidden paths and symlinks are
+        /// skipped)
         #[arg(value_name = "PATH")]
         paths: Vec<String>,
     },
@@ -122,8 +125,8 @@ async fn main() -> anyhow::Result<()> {
         }) => {
             return gen_runner_token(&cli.config, &name, labels.as_deref(), &token).await;
         }
-        Some(Command::StepValidate { paths }) => {
-            return step_validate(&paths);
+        Some(Command::PluginValidate { paths }) => {
+            return plugin_validate(&paths);
         }
         Some(Command::Pipeline {
             command:
@@ -248,7 +251,7 @@ async fn main() -> anyhow::Result<()> {
         config.plugin_index.require_signed_index,
         config.plugin_index.index_public_key.clone(),
     );
-    services::plugin_resolver::init(services::plugin_resolver::StepIndexSettings {
+    services::plugin_resolver::init(services::plugin_resolver::PluginIndexSettings {
         reviewed_manifest: reviewed_manifest.clone(),
         require_reviewed,
     });
@@ -403,12 +406,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `step-validate` — validate buz-plugin step template YAML files against
-/// the marketplace ADR §5.1 spec. Requires no Manager config or database,
-/// so buz-plugins repo CI can run it standalone.
-fn step_validate(paths: &[String]) -> anyhow::Result<()> {
+/// `plugin-validate` (alias: `step-validate`) — validate plugin spec YAML
+/// files against the marketplace ADR §5.1 spec. Requires no Manager config
+/// or database, so buz-plugins repo CI can run it standalone.
+fn plugin_validate(paths: &[String]) -> anyhow::Result<()> {
     if paths.is_empty() {
-        anyhow::bail!("usage: buz-manager step-validate <spec.yaml | dir> [...]");
+        anyhow::bail!("usage: buz-manager plugin-validate <spec.yaml | dir> [...]");
     }
     let current = env!("CARGO_PKG_VERSION");
 
@@ -418,7 +421,7 @@ fn step_validate(paths: &[String]) -> anyhow::Result<()> {
         let meta = std::fs::symlink_metadata(path)
             .map_err(|e| anyhow::anyhow!("cannot access '{path}': {e}"))?;
         if meta.file_type().is_symlink() {
-            anyhow::bail!("'{path}' is a symlink; step specs must be regular files");
+            anyhow::bail!("'{path}' is a symlink; plugin specs must be regular files");
         } else if meta.is_dir() {
             roots.push(std::path::PathBuf::from(path));
         } else {
@@ -430,7 +433,7 @@ fn step_validate(paths: &[String]) -> anyhow::Result<()> {
         let entries = shared::yaml_files::discover_yaml_files(&root)?;
         if entries.is_empty() {
             anyhow::bail!(
-                "directory '{}' contains no *.yaml/*.yml step specs",
+                "directory '{}' contains no *.yaml/*.yml plugin specs",
                 root.display()
             );
         }
@@ -478,9 +481,12 @@ fn step_validate(paths: &[String]) -> anyhow::Result<()> {
     }
 
     if failed > 0 {
-        anyhow::bail!("{failed} of {} step spec(s) failed validation", files.len());
+        anyhow::bail!(
+            "{failed} of {} plugin spec(s) failed validation",
+            files.len()
+        );
     }
-    println!("{} step spec(s) valid", files.len());
+    println!("{} plugin spec(s) valid", files.len());
     Ok(())
 }
 

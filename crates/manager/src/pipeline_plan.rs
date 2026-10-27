@@ -279,7 +279,7 @@ steps:
             false
         )
         .unwrap_err()
-        .contains("not found in local step index"));
+        .contains("not found in the local plugin index"));
         let missing_input =
             "name: Missing input\nenvironments: [default]\nsteps:\n  - name: Upload\n    uses: buz/oss-upload@1.0.0\n";
         assert!(plan(missing_input, index.path(), None, false)

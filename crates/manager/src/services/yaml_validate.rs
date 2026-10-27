@@ -15,7 +15,7 @@ use shared::rbac::Perm;
 use sqlx::{Row, SqlitePool};
 
 use crate::rbac::AuthUser;
-use crate::services::plugin_resolver::LocalStepIndex;
+use crate::services::plugin_resolver::LocalPluginIndex;
 
 /// Validation outcome plus the typed document, so callers that need both
 /// (trigger path, scanner) don't pay a second parse. `parsed` is `None`
@@ -128,7 +128,7 @@ async fn check_uses_availability(
 
     // Enabled pool rows: the curator's allowlist for remote sources.
     let pool_rows: Vec<(String, String, String, String)> = sqlx::query_as(
-        "SELECT namespace, step_id, version, sha256 FROM plugin_pool WHERE enabled = 1",
+        "SELECT namespace, plugin_id, version, sha256 FROM plugin_pool WHERE enabled = 1",
     )
     .fetch_all(pool)
     .await
@@ -136,7 +136,7 @@ async fn check_uses_availability(
 
     // Local plugin directory; a missing directory is an empty library, not an
     // error (same semantics as GET /plugins).
-    let local_index = LocalStepIndex::new(policy.local_dir.clone());
+    let local_index = LocalPluginIndex::new(policy.local_dir.clone());
     let reviewed_hashes = crate::services::plugin_resolver::load_reviewed_hashes(
         &policy.reviewed_manifest.to_string_lossy(),
     );

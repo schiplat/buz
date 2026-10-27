@@ -12,7 +12,7 @@
 //! audit::record(
 //!     &state.pool,
 //!     AuditEvent::new(Action::StepPoolToggle, &auth)
-//!         .on(Resource::plugin_pool(&ns, &step_id, &version))
+//!         .on(Resource::plugin_pool(&ns, &plugin_id, &version))
 //!         .changes(Some(json!({ "enabled": before })), Some(json!({ "enabled": after }))),
 //! )
 //! .await;
@@ -242,7 +242,7 @@ pub enum Resource<'a> {
     },
     PluginPool {
         namespace: &'a str,
-        step_id: &'a str,
+        plugin_id: &'a str,
         version: &'a str,
     },
     Setting {
@@ -261,9 +261,9 @@ pub enum Resource<'a> {
         name: &'a str,
     },
     /// One plugin across all versions — index refresh.
-    StepPoolPlugin {
+    PluginPoolEntry {
         namespace: &'a str,
-        step_id: &'a str,
+        plugin_id: &'a str,
     },
 }
 
@@ -272,10 +272,10 @@ impl<'a> Resource<'a> {
         Resource::PluginSource { id, name }
     }
 
-    pub fn plugin_pool(namespace: &'a str, step_id: &'a str, version: &'a str) -> Self {
+    pub fn plugin_pool(namespace: &'a str, plugin_id: &'a str, version: &'a str) -> Self {
         Resource::PluginPool {
             namespace,
-            step_id,
+            plugin_id,
             version,
         }
     }
@@ -296,8 +296,11 @@ impl<'a> Resource<'a> {
         Resource::User { id, name }
     }
 
-    pub fn step_pool_plugin(namespace: &'a str, step_id: &'a str) -> Self {
-        Resource::StepPoolPlugin { namespace, step_id }
+    pub fn plugin_pool_entry(namespace: &'a str, plugin_id: &'a str) -> Self {
+        Resource::PluginPoolEntry {
+            namespace,
+            plugin_id,
+        }
     }
 
     pub fn kind(&self) -> &'static str {
@@ -308,12 +311,12 @@ impl<'a> Resource<'a> {
             Resource::Runner { .. } => "runner",
             Resource::Job { .. } => "job",
             Resource::User { .. } => "user",
-            Resource::StepPoolPlugin { .. } => "plugin_pool",
+            Resource::PluginPoolEntry { .. } => "plugin_pool",
         }
     }
 
     /// Stable identifier: row id where one exists, the composed reference
-    /// for entries keyed by (namespace, step, version).
+    /// for entries keyed by (namespace, plugin, version).
     pub fn id(&self) -> String {
         match self {
             Resource::PluginSource { id, .. }
@@ -322,11 +325,14 @@ impl<'a> Resource<'a> {
             | Resource::User { id, .. } => (*id).to_string(),
             Resource::PluginPool {
                 namespace,
-                step_id,
+                plugin_id,
                 version,
-            } => format!("{namespace}/{step_id}@{version}"),
+            } => format!("{namespace}/{plugin_id}@{version}"),
             Resource::Setting { key } => (*key).to_string(),
-            Resource::StepPoolPlugin { namespace, step_id } => format!("{namespace}/{step_id}"),
+            Resource::PluginPoolEntry {
+                namespace,
+                plugin_id,
+            } => format!("{namespace}/{plugin_id}"),
         }
     }
 
@@ -337,7 +343,7 @@ impl<'a> Resource<'a> {
             | Resource::Runner { name, .. }
             | Resource::Job { name, .. }
             | Resource::User { name, .. } => (*name).to_string(),
-            Resource::PluginPool { .. } | Resource::StepPoolPlugin { .. } => self.id(),
+            Resource::PluginPool { .. } | Resource::PluginPoolEntry { .. } => self.id(),
             Resource::Setting { key } => (*key).to_string(),
         }
     }

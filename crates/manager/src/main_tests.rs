@@ -1,4 +1,4 @@
-use super::{step_validate, Cli, Command, PipelineCommand};
+use super::{plugin_validate, Cli, Command, PipelineCommand};
 use clap::Parser;
 
 fn write_spec(dir: &std::path::Path, file: &str, id: &str, version: &str) {
@@ -65,16 +65,16 @@ fn recursively_validates_specs_and_rejects_duplicate_id_version() {
         "1.0.0",
     );
 
-    let error = step_validate(&[dir.path().to_string_lossy().into_owned()]).unwrap_err();
-    assert_eq!(error.to_string(), "1 of 3 step spec(s) failed validation");
+    let error = plugin_validate(&[dir.path().to_string_lossy().into_owned()]).unwrap_err();
+    assert_eq!(error.to_string(), "1 of 3 plugin spec(s) failed validation");
 }
 
 #[test]
-fn step_validate_accepts_distinct_versions_and_skips_symlinked_files() {
+fn plugin_validate_accepts_distinct_versions_and_skips_symlinked_files() {
     let dir = tempfile::tempdir().unwrap();
     write_spec(dir.path(), "one.yaml", "buz/notify", "1.0.0");
     write_spec(dir.path(), "two.yaml", "buz/notify", "1.1.0");
-    std::fs::write(dir.path().join(".hidden.yaml"), "not: a step").unwrap();
+    std::fs::write(dir.path().join(".hidden.yaml"), "not: a plugin spec").unwrap();
 
     #[cfg(unix)]
     {
@@ -88,11 +88,11 @@ fn step_validate_accepts_distinct_versions_and_skips_symlinked_files() {
         symlink(external.path(), dir.path().join("linked.yaml")).unwrap();
     }
 
-    step_validate(&[dir.path().to_string_lossy().into_owned()]).unwrap();
+    plugin_validate(&[dir.path().to_string_lossy().into_owned()]).unwrap();
 }
 
 #[test]
-fn step_validate_rejects_direct_symlink_arguments() {
+fn plugin_validate_rejects_direct_symlink_arguments() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
@@ -102,7 +102,7 @@ fn step_validate_rejects_direct_symlink_arguments() {
         let link = dir.path().join("link.yaml");
         symlink(target, &link).unwrap();
 
-        let error = step_validate(&[link.to_string_lossy().into_owned()]).unwrap_err();
+        let error = plugin_validate(&[link.to_string_lossy().into_owned()]).unwrap_err();
         assert!(error.to_string().contains("symlink"), "{error}");
     }
 }

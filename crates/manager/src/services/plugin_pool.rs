@@ -1,5 +1,5 @@
 //! Step marketplace pool: remote sources, their index.json, and the curated
-//! template pool (ADR step-marketplace §6.8).
+//! template pool (ADR plugin-marketplace §6.8).
 //!
 //! A **source** is an `index.json` URL (schema §6.7.3: steps[] with id
 //! `<namespace>/<plugin-id>`, version, file, sha256, plus full scalar meta
@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 
-use crate::services::plugin_resolver::{self, ResolutionPolicy, ResolvedStep};
+use crate::services::plugin_resolver::{self, ResolutionPolicy, ResolvedPlugin};
 
 /// URL helpers ----------------------------------------------------------------
 
@@ -170,7 +170,7 @@ fn meta_json_string(
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PoolRow {
     pub namespace: String,
-    pub step_id: String,
+    pub plugin_id: String,
     pub version: String,
     pub sha256: String,
     pub source_id: String,
@@ -217,14 +217,14 @@ type PoolRowSql = (
     Option<String>,
 );
 
-const POOL_ROW_COLUMNS: &str = "p.namespace, p.step_id, p.version, p.sha256, p.source_id, s.name, \
+const POOL_ROW_COLUMNS: &str = "p.namespace, p.plugin_id, p.version, p.sha256, p.source_id, s.name, \
      p.file_path, p.enabled, p.reviewed, p.added_by, p.requires_buz, p.buz_compatible, p.compat_error, \
      p.meta_json, p.updated_by, p.updated_at";
 
 fn pool_row_from(
     (
         namespace,
-        step_id,
+        plugin_id,
         version,
         sha256,
         source_id,
@@ -243,7 +243,7 @@ fn pool_row_from(
 ) -> PoolRow {
     PoolRow {
         namespace,
-        step_id,
+        plugin_id,
         version,
         sha256,
         source_id,
@@ -264,7 +264,7 @@ fn pool_row_from(
 /// A resolved remote reference: everything `uses:` needs to expand.
 pub struct RemoteResolved {
     pub namespace: String,
-    pub step_id: String,
+    pub plugin_id: String,
     pub version: String,
     pub sha256: String,
     pub source_url: String,
@@ -276,7 +276,7 @@ pub struct RemoteResolved {
 /// index.json -----------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
-pub struct StepIndex {
+pub struct PluginIndex {
     /// Strictly increasing catalog version. Inside the signed bytes on
     /// purpose: it is the anti-rollback anchor (a number stored beside the
     /// signature could be raised without invalidating it).
@@ -352,8 +352,8 @@ fn unexpected_body_hint(raw: &str) -> String {
     format!(" — response body: {truncated}{suffix}{hint}")
 }
 
-fn parse_index(raw: &str) -> Result<StepIndex, String> {
-    let index: StepIndex =
+fn parse_index(raw: &str) -> Result<PluginIndex, String> {
+    let index: PluginIndex =
         serde_json::from_str(raw).map_err(|e| format!("invalid index.json: {e}"))?;
     let mut seen = std::collections::HashSet::new();
     let mut namespace: Option<String> = None;
@@ -371,7 +371,7 @@ fn parse_index(raw: &str) -> Result<StepIndex, String> {
             Some((ns, id)) if !ns.is_empty() && !id.is_empty() => ns.to_string(),
             _ => {
                 return Err(format!(
-                    "invalid index entry {}: id must be '<namespace>/<step>'",
+                    "invalid index entry {}: id must be '<namespace>/<plugin>'",
                     entry.id
                 ))
             }
@@ -454,7 +454,7 @@ pub async fn list_pool(pool: &SqlitePool) -> Result<Vec<PoolRow>, anyhow::Error>
     let rows: Vec<PoolRowSql> = sqlx::query_as(&format!(
         "SELECT {POOL_ROW_COLUMNS} \
          FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id \
-         ORDER BY p.namespace, p.step_id, p.version"
+         ORDER BY p.namespace, p.plugin_id, p.version"
     ))
     .fetch_all(pool)
     .await?;
@@ -465,15 +465,15 @@ pub async fn list_pool(pool: &SqlitePool) -> Result<Vec<PoolRow>, anyhow::Error>
 async fn enabled_rows_for_namespace(
     pool: &SqlitePool,
     namespace: &str,
-    step_id: &str,
+    plugin_id: &str,
 ) -> Result<Vec<PoolRow>, anyhow::Error> {
     let rows: Vec<PoolRowSql> = sqlx::query_as(&format!(
         "SELECT {POOL_ROW_COLUMNS} \
          FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id \
-         WHERE p.namespace = ? AND p.step_id = ? AND p.enabled = 1",
+         WHERE p.namespace = ? AND p.plugin_id = ? AND p.enabled = 1",
     ))
     .bind(namespace)
-    .bind(step_id)
+    .bind(plugin_id)
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(pool_row_from).collect())
@@ -509,7 +509,7 @@ async fn existing_rows_for_source(
         Option<String>,
         Option<String>,
     )> = sqlx::query_as(
-        "SELECT namespace, step_id, version, reviewed, sha256, requires_buz, \
+        "SELECT namespace, plugin_id, version, reviewed, sha256, requires_buz, \
                 buz_compatible, compat_error, compat_checked_against \
          FROM plugin_pool WHERE source_id = ?",
     )
@@ -570,7 +570,7 @@ async fn resolve_compat(
     file_path: &str,
     sha256: &str,
     namespace: &str,
-    step_id: &str,
+    plugin_id: &str,
     version: &str,
     current_buz: &str,
     existing: Option<&ExistingRowState>,
@@ -614,7 +614,7 @@ async fn resolve_compat(
     }
     match fetch_content(http, bases, file_path, sha256).await {
         Ok(content) => {
-            match evaluate_entry_content(&content, namespace, step_id, version, current_buz) {
+            match evaluate_entry_content(&content, namespace, plugin_id, version, current_buz) {
                 Ok(requires_buz) => (
                     requires_buz,
                     Some(true),
@@ -658,7 +658,7 @@ async fn resolve_compat(
                 // half-published mirror immediately instead of at enable time.
                 Some(requires) => {
                     tracing::debug!(
-                        plugin = %format!("{namespace}/{step_id}@{version}"),
+                        plugin = %format!("{namespace}/{plugin_id}@{version}"),
                         error = %fetch_error,
                         "template probe failed — source lists the file but it does not download"
                     );
@@ -673,7 +673,7 @@ async fn resolve_compat(
                 }
                 None => {
                     tracing::debug!(
-                        plugin = %format!("{namespace}/{step_id}@{version}"),
+                        plugin = %format!("{namespace}/{plugin_id}@{version}"),
                         error = %fetch_error,
                         "template fetch failed during sync — compatibility stays unknown"
                     );
@@ -843,7 +843,7 @@ async fn verified_reviews(
 async fn enforce_index_freshness(
     pool: &SqlitePool,
     source: &SourceRow,
-    index: &StepIndex,
+    index: &PluginIndex,
     raw: &str,
 ) -> anyhow::Result<()> {
     let Some(sequence) = index.sequence else {
@@ -987,21 +987,21 @@ async fn sync_source_inner(
     for entry in &index.steps {
         // Namespace comes from the template id (`<ns>/<plugin-id>`); it is the
         // unit of uniqueness across sources.
-        let (namespace, step_id) = entry
+        let (namespace, plugin_id) = entry
             .id
             .split_once('/')
             .ok_or_else(|| anyhow!("index entry id '{}' is missing a namespace", entry.id))?;
         if let Some((want_ns, want_id)) = only_plugin {
-            if namespace != want_ns || step_id != want_id {
+            if namespace != want_ns || plugin_id != want_id {
                 continue;
             }
         }
         match groups
             .iter_mut()
-            .find(|(ns, id, _)| ns == namespace && id == step_id)
+            .find(|(ns, id, _)| ns == namespace && id == plugin_id)
         {
             Some((_, _, versions)) => versions.push(entry),
-            None => groups.push((namespace.to_string(), step_id.to_string(), vec![entry])),
+            None => groups.push((namespace.to_string(), plugin_id.to_string(), vec![entry])),
         }
     }
     // Totals known — the dashboard's progress bar switches from "index"
@@ -1011,7 +1011,7 @@ async fn sync_source_inner(
 
     let mut incompatible = 0usize;
     let mut undownloadable = 0usize;
-    for (namespace, step_id, versions) in groups {
+    for (namespace, plugin_id, versions) in groups {
         let mut versions = versions;
         versions.sort_by(|a, b| version_sort_key(&b.version).cmp(&version_sort_key(&a.version)));
         // Initialization: a plugin the pool has never seen starts with its
@@ -1033,7 +1033,7 @@ async fn sync_source_inner(
         let group_is_new = versions.iter().all(|entry| {
             !existing_rows.contains_key(&(
                 namespace.clone(),
-                step_id.clone(),
+                plugin_id.clone(),
                 entry.version.clone(),
             ))
         });
@@ -1041,7 +1041,7 @@ async fn sync_source_inner(
         for entry in versions {
             let sha256 = entry.sha256.to_lowercase();
             let existing =
-                existing_rows.get(&(namespace.clone(), step_id.clone(), entry.version.clone()));
+                existing_rows.get(&(namespace.clone(), plugin_id.clone(), entry.version.clone()));
             let reviewed = match &fetched_reviews {
                 Some(hashes) => hashes.contains(&sha256),
                 // No reviews.json this round: keep whatever the row had.
@@ -1053,7 +1053,7 @@ async fn sync_source_inner(
                 &entry.file,
                 &sha256,
                 &namespace,
-                &step_id,
+                &plugin_id,
                 &entry.version,
                 current_buz,
                 existing,
@@ -1086,11 +1086,11 @@ async fn sync_source_inner(
                 &entry.engine,
             );
             sqlx::query(
-                "INSERT INTO plugin_pool (namespace, step_id, version, sha256, source_id, file_path, \
+                "INSERT INTO plugin_pool (namespace, plugin_id, version, sha256, source_id, file_path, \
                                         enabled, reviewed, added_by, requires_buz, buz_compatible, \
                                         compat_error, compat_checked_against, meta_json)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sync', ?, ?, ?, ?, ?)
-                 ON CONFLICT(namespace, step_id, version) DO UPDATE SET
+                 ON CONFLICT(namespace, plugin_id, version) DO UPDATE SET
                    sha256 = excluded.sha256,
                    source_id = excluded.source_id,
                    file_path = excluded.file_path,
@@ -1109,7 +1109,7 @@ async fn sync_source_inner(
                 // invalidated.
             )
             .bind(&namespace)
-            .bind(&step_id)
+            .bind(&plugin_id)
             .bind(&entry.version)
             .bind(&sha256)
             .bind(&source.id)
@@ -1142,24 +1142,24 @@ async fn sync_source_inner(
 }
 
 /// Refresh one plugin's metadata from its source: re-fetch the index,
-/// upsert only this (namespace, step_id), and return the refreshed rows.
+/// upsert only this (namespace, plugin_id), and return the refreshed rows.
 /// The curator's enable state survives (see the ON CONFLICT note above).
 pub async fn refresh_plugin(
     http: &reqwest::Client,
     pool: &SqlitePool,
     namespace: &str,
-    step_id: &str,
+    plugin_id: &str,
     current_buz: &str,
 ) -> anyhow::Result<Vec<PoolRow>> {
     let (source_id, file_path): (String, String) = sqlx::query_as(
-        "SELECT source_id, file_path FROM plugin_pool WHERE namespace = ? AND step_id = ? LIMIT 1",
+        "SELECT source_id, file_path FROM plugin_pool WHERE namespace = ? AND plugin_id = ? LIMIT 1",
     )
     .bind(namespace)
-    .bind(step_id)
+    .bind(plugin_id)
     .fetch_optional(pool)
     .await
     .map_err(|e| anyhow!("{e}"))?
-    .ok_or_else(|| anyhow!("plugin {namespace}/{step_id} is not in the pool"))?;
+    .ok_or_else(|| anyhow!("plugin {namespace}/{plugin_id} is not in the pool"))?;
     let source = get_source(pool, &source_id)
         .await
         .map_err(|e| anyhow!("{e}"))?
@@ -1194,7 +1194,7 @@ pub async fn refresh_plugin(
                 &raw,
                 &meta_url,
                 namespace,
-                step_id,
+                plugin_id,
                 current_buz,
             )
             .await?;
@@ -1206,18 +1206,25 @@ pub async fn refresh_plugin(
                 error = %meta_error,
                 "per-plugin meta.json unavailable — falling back to the full index"
             );
-            sync_source_inner(http, pool, &source, Some((namespace, step_id)), current_buz).await?;
+            sync_source_inner(
+                http,
+                pool,
+                &source,
+                Some((namespace, plugin_id)),
+                current_buz,
+            )
+            .await?;
         }
     }
 
     let rows: Vec<PoolRow> = sqlx::query_as(&format!(
         "SELECT {POOL_ROW_COLUMNS} \
          FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id \
-         WHERE p.namespace = ? AND p.step_id = ? \
+         WHERE p.namespace = ? AND p.plugin_id = ? \
          ORDER BY p.version",
     ))
     .bind(namespace)
-    .bind(step_id)
+    .bind(plugin_id)
     .fetch_all(pool)
     .await
     .map_err(|e| anyhow!("{e}"))?
@@ -1278,12 +1285,12 @@ async fn upsert_plugin_meta(
     raw: &str,
     meta_url: &str,
     namespace: &str,
-    step_id: &str,
+    plugin_id: &str,
     current_buz: &str,
 ) -> anyhow::Result<()> {
     let meta: PluginMeta =
         serde_json::from_str(raw).map_err(|e| anyhow!("invalid meta.json at {meta_url}: {e}"))?;
-    let expected_id = format!("{namespace}/{step_id}");
+    let expected_id = format!("{namespace}/{plugin_id}");
     if meta.id != expected_id {
         return Err(anyhow!(
             "meta.json id mismatch: expected {expected_id}, got {}",
@@ -1311,7 +1318,7 @@ async fn upsert_plugin_meta(
         }
         let existing = existing_rows.get(&(
             namespace.to_string(),
-            step_id.to_string(),
+            plugin_id.to_string(),
             entry.version.clone(),
         ));
         let reviewed = existing.is_some_and(|state| state.reviewed);
@@ -1322,7 +1329,7 @@ async fn upsert_plugin_meta(
             &entry.file,
             &sha256,
             namespace,
-            step_id,
+            plugin_id,
             &entry.version,
             current_buz,
             existing,
@@ -1342,11 +1349,11 @@ async fn upsert_plugin_meta(
             &entry.engine,
         );
         sqlx::query(
-            "INSERT INTO plugin_pool (namespace, step_id, version, sha256, source_id, file_path, \
+            "INSERT INTO plugin_pool (namespace, plugin_id, version, sha256, source_id, file_path, \
                                     enabled, reviewed, added_by, requires_buz, buz_compatible, \
                                     compat_error, compat_checked_against, meta_json)
              VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'refresh', ?, ?, ?, ?, ?)
-             ON CONFLICT(namespace, step_id, version) DO UPDATE SET
+             ON CONFLICT(namespace, plugin_id, version) DO UPDATE SET
                sha256 = excluded.sha256,
                source_id = excluded.source_id,
                file_path = excluded.file_path,
@@ -1358,7 +1365,7 @@ async fn upsert_plugin_meta(
                meta_json = excluded.meta_json",
         )
         .bind(namespace)
-        .bind(step_id)
+        .bind(plugin_id)
         .bind(&entry.version)
         .bind(&sha256)
         .bind(&source.id)
@@ -1385,21 +1392,21 @@ pub async fn verify_entry(
     http: &reqwest::Client,
     pool: &SqlitePool,
     namespace: &str,
-    step_id: &str,
+    plugin_id: &str,
     version: &str,
     current_buz: &str,
 ) -> Result<(), String> {
     let (sha256, source_id, file_path): (String, String, String) = sqlx::query_as(
         "SELECT sha256, source_id, file_path FROM plugin_pool \
-         WHERE namespace = ? AND step_id = ? AND version = ?",
+         WHERE namespace = ? AND plugin_id = ? AND version = ?",
     )
     .bind(namespace)
-    .bind(step_id)
+    .bind(plugin_id)
     .bind(version)
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?
-    .ok_or_else(|| format!("pool entry {namespace}/{step_id}@{version} not found"))?;
+    .ok_or_else(|| format!("pool entry {namespace}/{plugin_id}@{version} not found"))?;
 
     let source = get_source(pool, &source_id)
         .await
@@ -1408,7 +1415,7 @@ pub async fn verify_entry(
 
     let bases = source_bases(&source);
     let content = fetch_content(http, &bases, &file_path, &sha256).await?;
-    evaluate_entry_content(&content, namespace, step_id, version, current_buz).map(|_| ())
+    evaluate_entry_content(&content, namespace, plugin_id, version, current_buz).map(|_| ())
 }
 
 /// Validate fetched template content for one pool entry: parse, identity
@@ -1419,15 +1426,15 @@ pub async fn verify_entry(
 pub fn evaluate_entry_content(
     content: &str,
     namespace: &str,
-    step_id: &str,
+    plugin_id: &str,
     version: &str,
     current_buz: &str,
 ) -> Result<Option<String>, String> {
     let spec: shared::plugin_spec::PluginSpec = serde_yaml::from_str(content)
-        .map_err(|e| format!("template {namespace}/{step_id}@{version} is invalid YAML: {e}"))?;
-    if spec.id != format!("{namespace}/{step_id}") {
+        .map_err(|e| format!("template {namespace}/{plugin_id}@{version} is invalid YAML: {e}"))?;
+    if spec.id != format!("{namespace}/{plugin_id}") {
         return Err(format!(
-            "template id mismatch: pool says {namespace}/{step_id}, YAML says {}",
+            "template id mismatch: pool says {namespace}/{plugin_id}, YAML says {}",
             spec.id
         ));
     }
@@ -1439,13 +1446,13 @@ pub fn evaluate_entry_content(
     }
     if let Err(errors) = shared::plugin_spec::validate_plugin_spec(&spec, current_buz) {
         return Err(format!(
-            "plugin spec '{namespace}/{step_id}' is invalid: {}",
+            "plugin spec '{namespace}/{plugin_id}' is invalid: {}",
             errors.join("; ")
         ));
     }
     if let Some(requires) = spec.requires_buz.as_deref() {
         shared::plugin_spec::buz_requirement_satisfied(requires, current_buz).map_err(|e| {
-            format!("plugin spec '{namespace}/{step_id}' requires buz {requires}: {e}")
+            format!("plugin spec '{namespace}/{plugin_id}' requires buz {requires}: {e}")
         })?;
     }
     Ok(spec.requires_buz)
@@ -1462,7 +1469,7 @@ pub async fn sync_all_enabled(
     let sources = match list_sources(pool).await {
         Ok(sources) => sources,
         Err(e) => {
-            tracing::warn!(error = %e, "step source listing failed at startup sync");
+            tracing::warn!(error = %e, "plugin source listing failed at startup sync");
             return 0;
         }
     };
@@ -1471,10 +1478,10 @@ pub async fn sync_all_enabled(
         match sync_source(http, pool, source, current_buz).await {
             Ok(count) => {
                 synced += 1;
-                tracing::info!(source = %source.name, entries = count, "step source synced");
+                tracing::info!(source = %source.name, entries = count, "plugin source synced");
             }
             Err(e) => {
-                tracing::warn!(source = %source.name, error = %e, "step source sync failed");
+                tracing::warn!(source = %source.name, error = %e, "plugin source sync failed");
             }
         }
     }
@@ -1492,9 +1499,9 @@ pub async fn resolve_remote(
     uses_ref: &str,
     policy: &ResolutionPolicy,
     current_buz: &str,
-) -> Result<Option<(ResolvedStep, bool)>, String> {
+) -> Result<Option<(ResolvedPlugin, bool)>, String> {
     let (reference, pin) = shared::pipeline_yaml::parse_uses_reference(uses_ref)?;
-    let (namespace, step_id) = match reference.split_once('/') {
+    let (namespace, plugin_id) = match reference.split_once('/') {
         Some((ns, id)) => (ns.to_string(), id.to_string()),
         None => {
             return Err(format!(
@@ -1503,24 +1510,24 @@ pub async fn resolve_remote(
         }
     };
 
-    let rows = enabled_rows_for_namespace(pool, &namespace, &step_id)
+    let rows = enabled_rows_for_namespace(pool, &namespace, &plugin_id)
         .await
         .map_err(|e| format!("pool lookup failed: {e}"))?;
     if rows.is_empty() {
         return Ok(None);
     }
 
-    let step_id = reference
+    let plugin_id = reference
         .split_once('/')
         .map(|(_, id)| id.to_string())
         .unwrap_or_default();
     let candidates: Vec<PoolRow> = rows
         .into_iter()
-        .filter(|row| row.step_id == step_id)
+        .filter(|row| row.plugin_id == plugin_id)
         .collect();
     if candidates.is_empty() {
         return Err(format!(
-            "step '{reference}' is not in the template pool — ask an administrator to add it from its source"
+            "plugin '{reference}' is not in the template pool — ask an administrator to add it from its source"
         ));
     }
 
@@ -1531,7 +1538,9 @@ pub async fn resolve_remote(
                 .iter()
                 .find(|row| row.sha256 == hex.to_lowercase())
                 .ok_or_else(|| {
-                    format!("no step '{reference}' with content sha256:{hex} in the template pool")
+                    format!(
+                        "no plugin '{reference}' with content sha256:{hex} in the template pool"
+                    )
                 })?;
             let source = get_source(pool, &row.source_id)
                 .await
@@ -1541,7 +1550,7 @@ pub async fn resolve_remote(
             let content = fetch_content(http_client, &bases, &row.file_path, &row.sha256).await?;
             RemoteResolved {
                 namespace: row.namespace.clone(),
-                step_id: row.step_id.clone(),
+                plugin_id: row.plugin_id.clone(),
                 version: row.version.clone(),
                 sha256: row.sha256.clone(),
                 source_url: source.url.clone(),
@@ -1561,7 +1570,7 @@ pub async fn resolve_remote(
                 .collect();
             if matched.is_empty() {
                 return Err(format!(
-                    "step '{reference}' has no version matching @{v} in the template pool"
+                    "plugin '{reference}' has no version matching @{v} in the template pool"
                 ));
             }
             let best = if parts.len() < 3 {
@@ -1585,7 +1594,7 @@ pub async fn resolve_remote(
             let content = fetch_content(http_client, &bases, &row.file_path, &row.sha256).await?;
             RemoteResolved {
                 namespace: row.namespace.clone(),
-                step_id: row.step_id.clone(),
+                plugin_id: row.plugin_id.clone(),
                 version: row.version.clone(),
                 sha256: row.sha256.clone(),
                 source_url: source.url.clone(),
@@ -1638,7 +1647,7 @@ pub async fn resolve_remote(
                 .iter()
                 .find(|entry| entry.id == reference)
                 .ok_or_else(|| {
-                    format!("branch '{branch}' has no step '{reference}' in its index")
+                    format!("branch '{branch}' has no plugin '{reference}' in its index")
                 })?;
             let content = http_get_text(
                 http,
@@ -1649,7 +1658,7 @@ pub async fn resolve_remote(
             let content_sha256 = sha256_hex(&content);
             RemoteResolved {
                 namespace: namespace.clone(),
-                step_id,
+                plugin_id,
                 version: format!(
                     "{branch} ({})",
                     &content_sha256[..12.min(content_sha256.len())]
@@ -1665,7 +1674,7 @@ pub async fn resolve_remote(
 
     if policy.require_reviewed && !picked.reviewed {
         return Err(format!(
-            "step '{uses_ref}' (sha256 {}) is not officially reviewed and require_reviewed is enabled — pin an approved hash or disable the flag",
+            "plugin '{uses_ref}' (sha256 {}) is not officially reviewed and require_reviewed is enabled — pin an approved hash or disable the flag",
             picked.sha256
         ));
     }
@@ -1674,13 +1683,13 @@ pub async fn resolve_remote(
         serde_yaml::from_str(&picked.content).map_err(|e| {
             format!(
                 "template {}/{}/{} is invalid YAML: {e}",
-                picked.namespace, picked.step_id, picked.version
+                picked.namespace, picked.plugin_id, picked.version
             )
         })?;
-    if spec.id != format!("{}/{}", picked.namespace, picked.step_id) {
+    if spec.id != format!("{}/{}", picked.namespace, picked.plugin_id) {
         return Err(format!(
             "template id mismatch: index says {}/{}, YAML says {}",
-            picked.namespace, picked.step_id, spec.id
+            picked.namespace, picked.plugin_id, spec.id
         ));
     }
     // Full save-time validation applies to remote templates identically —
@@ -1689,7 +1698,7 @@ pub async fn resolve_remote(
         return Err(format!(
             "plugin spec '{}/{}' is invalid: {}",
             picked.namespace,
-            picked.step_id,
+            picked.plugin_id,
             errors.join("; ")
         ));
     }
@@ -1697,14 +1706,14 @@ pub async fn resolve_remote(
         shared::plugin_spec::buz_requirement_satisfied(requires, current_buz).map_err(|e| {
             format!(
                 "plugin spec '{}/{}' requires buz {requires}: {e}",
-                picked.namespace, picked.step_id
+                picked.namespace, picked.plugin_id
             )
         })?;
     }
 
     let reviewed = picked.reviewed;
     Ok(Some((
-        ResolvedStep {
+        ResolvedPlugin {
             spec,
             source: format!("{} ({})", picked.source_url, picked.file_path),
             content_sha256: picked.sha256,
@@ -1821,7 +1830,7 @@ mod index_tests {
     fn parse_rejects_ids_without_namespace() {
         let raw = index_json(serde_json::json!([entry("archive", &"a".repeat(64))]));
         let error = parse_index(&raw).unwrap_err();
-        assert!(error.contains("'<namespace>/<step>'"), "{error}");
+        assert!(error.contains("'<namespace>/<plugin>'"), "{error}");
     }
 }
 

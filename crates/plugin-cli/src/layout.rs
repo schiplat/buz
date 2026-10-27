@@ -68,7 +68,7 @@ fn walk(current: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
 }
 
 /// Base URL of a source: the index URL minus its `index.json` tail.
-/// Keep in sync with the Manager's `base_url` (step_pool.rs).
+/// Keep in sync with the Manager's `base_url` (plugin_pool.rs).
 pub fn base_url(index_url: &str) -> String {
     let trimmed = index_url.trim_end_matches('/');
     match trimmed.strip_suffix(INDEX_FILE) {

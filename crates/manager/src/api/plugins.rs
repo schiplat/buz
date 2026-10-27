@@ -12,10 +12,10 @@ use shared::protocol::response::ApiResponse;
 use crate::middleware::AuthUser;
 use crate::state::AppState;
 
-/// GET /api/v1/steps — list every parseable template in the local step
+/// GET /api/v1/plugins — list every parseable template in the local plugin
 /// directory, with attribution, inputs, and search metadata. Unparseable
 /// files are reported separately so operators can fix or remove them
-/// (`buz-manager step-validate` prints the details).
+/// (`buz-manager plugin-validate` prints the details).
 pub async fn list_plugins(
     _auth: AuthUser,
     State(state): State<AppState>,

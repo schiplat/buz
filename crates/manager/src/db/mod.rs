@@ -104,6 +104,26 @@ async fn add_column_if_missing(pool: &SqlitePool, table: &str, definition: &str)
     }
 }
 
+/// Rename a column when the old name is present (idempotent: a no-op once
+/// renamed or on fresh databases created with the new name).
+async fn rename_column_if_present(pool: &SqlitePool, table: &str, from: &str, to: &str) {
+    let has_old: bool =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?")
+            .bind(table)
+            .bind(from)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0)
+            != 0;
+    if !has_old {
+        return;
+    }
+    let sql = format!("ALTER TABLE {table} RENAME COLUMN {from} TO {to}");
+    if let Err(error) = sqlx::query(&sql).execute(pool).await {
+        tracing::warn!(%sql, %error, "migration statement failed");
+    }
+}
+
 pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Result<()> {
     for path in [
         include_str!("migrations/001_init.sql"),
@@ -610,7 +630,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS plugin_pool (
             namespace TEXT NOT NULL,
-            step_id TEXT NOT NULL,
+            plugin_id TEXT NOT NULL,
             version TEXT NOT NULL,
             sha256 TEXT NOT NULL,
             source_id TEXT NOT NULL REFERENCES plugin_sources(id) ON DELETE CASCADE,
@@ -624,13 +644,18 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
             compat_error TEXT,
             compat_checked_against TEXT,
             meta_json TEXT,
-            UNIQUE(namespace, step_id, version)
+            UNIQUE(namespace, plugin_id, version)
         )",
     )
     .execute(pool)
     .await?;
+    // Pre-rename databases carry the column as `step_id` (from the table's
+    // own step_* days); SQLite's RENAME COLUMN also rewrites the UNIQUE
+    // constraint and the lookup index that reference it. Run BEFORE the
+    // index creation below so a fresh index sees the new name either way.
+    rename_column_if_present(pool, "plugin_pool", "step_id", "plugin_id").await;
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_plugin_pool_lookup ON plugin_pool (namespace, step_id, enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_plugin_pool_lookup ON plugin_pool (namespace, plugin_id, enabled)",
     )
     .execute(pool)
     .await?;
@@ -672,6 +697,10 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         ("step_reviewed_manifest", "plugin_reviewed_manifest"),
         ("step_index_local_dir", "plugin_index_local_dir"),
         ("step_sync_timeout", "plugin_sync_timeout"),
+        (
+            "step_official_source_dismissed",
+            "plugin_official_source_dismissed",
+        ),
     ] {
         // A new-format key wins over an old one (the upsert path always
         // writes new-format keys).
@@ -693,7 +722,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
          WHERE NOT EXISTS (SELECT 1 FROM plugin_sources WHERE id = 'official') \
            AND NOT EXISTS ( \
                SELECT 1 FROM platform_settings \
-               WHERE key = 'step_official_source_dismissed' AND value = 'true')",
+               WHERE key = 'plugin_official_source_dismissed' AND value = 'true')",
     )
     .execute(pool)
     .await?;
@@ -2009,6 +2038,20 @@ mod vocab_migration_tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "INSERT INTO platform_settings (key, value) \
+             VALUES ('step_official_source_dismissed', 'true')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path) \
+             VALUES ('buz', 'archive', '1.0.0', '{}', 'src-legacy', 'buz/archive/1.0.0.yaml')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         run_migrations(&pool, "test-secret-0123456789-abcdefghijklmnop")
             .await
@@ -2041,5 +2084,24 @@ mod vocab_migration_tests {
                 .await
                 .unwrap();
         assert_eq!(stale, 0, "no legacy keys left behind");
+
+        // The pool's own column followed the vocabulary: the legacy row is
+        // readable under plugin_id (RENAME COLUMN also rewrote the UNIQUE
+        // constraint and the lookup index that referenced step_id).
+        let pooled: Option<String> = sqlx::query_scalar(
+            "SELECT version FROM plugin_pool \
+             WHERE namespace = 'buz' AND plugin_id = 'archive'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pooled.as_deref(), Some("1.0.0"), "pool column renamed");
+        let old_column: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('plugin_pool') WHERE name = 'step_id'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(old_column, 0, "no legacy column left behind");
     }
 }

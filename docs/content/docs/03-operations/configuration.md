@@ -32,7 +32,7 @@ heartbeat_timeout_seconds = 90
 
 [pipeline]
 yaml_scan_dir = "./pipelines"
-# Pipeline YAML files are scanned flat; the default step index is ./pipelines/plugins
+# Pipeline YAML files are scanned flat; the default plugin index is ./pipelines/plugins
 yaml_scan_interval_seconds = 30
 
 # [plugin_index] — OPTIONAL: every key has a default, and all three are also

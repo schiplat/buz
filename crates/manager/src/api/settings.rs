@@ -1,4 +1,4 @@
-//! Admin-editable platform settings (step-marketplace §6.8 Phase 0).
+//! Admin-editable platform settings (plugin-marketplace §6.8 Phase 0).
 //!
 //! Values live in the `platform_settings` table and override manager.toml
 //! defaults; resolver-affecting keys are re-applied immediately so toggles
@@ -109,7 +109,7 @@ pub async fn get_settings(
         }
     }
 
-    // The local step directory may be relative — show the absolute path it
+    // The local plugin directory may be relative — show the absolute path it
     // resolves to (manager working directory) so operators are never guessing.
     if let Some(item) = items
         .iter_mut()
@@ -203,7 +203,7 @@ pub async fn update_setting(
     platform_settings::upsert(&state.pool, &key, &value, &auth.username)
         .await
         .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
-    reapply_step_index_overrides(&state).await?;
+    reapply_plugin_index_overrides(&state).await?;
     // `from` / `to` instead of named-setting keys: redact_value masks any key
     // literally named `value`, which would erase the very change we record.
     audit::record(
@@ -235,7 +235,7 @@ pub async fn reset_setting(
     platform_settings::delete(&state.pool, &key)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    reapply_step_index_overrides(&state).await?;
+    reapply_plugin_index_overrides(&state).await?;
     audit::record(
         &state.pool,
         AuditEvent::new(Action::SettingReset, &auth)
@@ -265,9 +265,9 @@ fn setting_display(key: &str, value: Option<&str>) -> Value {
     }
 }
 
-/// Resolver-affecting keys must reach the step resolver immediately —
+/// Resolver-affecting keys must reach the plugin resolver immediately —
 /// full-replace from the DB so keys without a row clear their override.
-async fn reapply_step_index_overrides(state: &AppState) -> Result<(), AppError> {
+async fn reapply_plugin_index_overrides(state: &AppState) -> Result<(), AppError> {
     let overrides = platform_settings::fetch_overrides(&state.pool).await;
     let require_reviewed = overrides
         .get(KEY_PLUGIN_REVIEW_REQUIRED)

@@ -261,7 +261,7 @@ async fn unresolved_uses_returns_validation_error_and_restores_yaml_file() {
     assert!(body["message"]
         .as_str()
         .unwrap()
-        .contains("not found in local step index"));
+        .contains("not found in the local plugin index"));
     assert!(!dir.path().join("missing-plugin.yml").exists());
     let pipelines = app
         .clone()
@@ -322,7 +322,7 @@ async fn unresolved_uses_returns_validation_error_and_restores_yaml_file() {
     assert!(body["message"]
         .as_str()
         .unwrap()
-        .contains("not found in local step index"));
+        .contains("not found in the local plugin index"));
     assert_eq!(
         std::fs::read_to_string(dir.path().join("file-backed-demo.yml")).unwrap(),
         SAMPLE_YAML

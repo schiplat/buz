@@ -216,10 +216,10 @@ fn parse_spec(path: &Path, source_root: &Path) -> anyhow::Result<ParsedSpec> {
     let raw =
         std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     let spec: PluginSpec = serde_yaml::from_str(&raw)
-        .with_context(|| format!("{}: invalid step spec YAML", path.display()))?;
+        .with_context(|| format!("{}: invalid plugin spec YAML", path.display()))?;
     validate_plugin_spec(&spec, current_buz()).map_err(|errors| {
         anyhow::anyhow!(
-            "{}: invalid step spec:\n{}",
+            "{}: invalid plugin spec:\n{}",
             path.display(),
             errors
                 .iter()
@@ -431,7 +431,7 @@ fn plan_manifests(source_root: &Path, options: &Options) -> anyhow::Result<Vec<(
     let files = layout::discover_spec_files(source_root)?;
     if files.is_empty() {
         anyhow::bail!(
-            "{}: no *.yaml/*.yml step specs found",
+            "{}: no *.yaml/*.yml plugin specs found",
             source_root.display()
         );
     }
@@ -562,10 +562,13 @@ fn plan_manifests(source_root: &Path, options: &Options) -> anyhow::Result<Vec<(
 
 fn report_written(planned: &[(PathBuf, String)]) {
     for (path, content) in planned {
-        // Count entries from the rendered text: one "version" key per step or
+        // Count entries from the rendered text: one "version" key per entry or
         // per plugin version, one sentinel.
         let detail = if content.contains("\"steps\": [") {
-            format!("{} step(s)", content.matches("\"version\":").count())
+            format!(
+                "{} plugin version(s)",
+                content.matches("\"version\":").count()
+            )
         } else if content.contains("\"versions\": [") {
             format!("{} version(s)", content.matches("\"version\":").count())
         } else {

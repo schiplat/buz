@@ -57,13 +57,13 @@ buz/
 Buz is one of two components. The step-template plugins — template content,
 tool images, the static marketplace site, and their review governance — live
 in the separate `buz-plugins` repository. Buz stays complete and testable
-with zero plugins installed: resolution reads a local step index, and no
+with zero plugins installed: resolution reads the local plugin index, and no
 plugin content ships inside the binaries.
 
 | Belongs in buz | Belongs in buz-plugins |
 |----------------|------------------------|
 | Execution semantics, engines, and the runtime interface ([Plugin Contract](/docs/01-architecture/authoring/plugin-contract/)) | Template content and per-plugin documentation |
-| Spec schema + `step-validate` + the local step-index API | Tool images, static marketplace site, publishing pipelines |
+| Spec schema + `plugin-validate` (alias `step-validate`) + the local plugin-index API | Tool images, static marketplace site, publishing pipelines |
 | Review-gate mechanics (`require_reviewed`, `reviewed_manifest`) | Review records and the egress baseline as governance data |
 
 Rule of thumb: *if the plugins repository disappeared tomorrow, would this

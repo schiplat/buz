@@ -7,7 +7,7 @@ description: "The versioned interface between the Buz runtime and step-template 
 # Plugin Contract v1
 
 A step-template plugin is a directory of YAML specs (plus optional tool
-images) that a Manager resolves against a local step index. The plugin and
+images) that a Manager resolves against the local plugin index. The plugin and
 the Buz runtime interact only through the interface documented here — there
 is no plugin runtime, SDK, or library dependency. This page is the normative
 source for that interface; the plugins repository documents packaging,

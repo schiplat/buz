@@ -31,7 +31,7 @@ const entryMeta = (overrides: Partial<PoolEntryMeta> = {}): PoolEntryMeta => ({
 
 const poolEntry = (overrides: Partial<PoolEntry>): PoolEntry => ({
   namespace: 'alice',
-  step_id: 'oss-upload',
+  plugin_id: 'oss-upload',
   version: '1.0.0',
   sha256: 'a'.repeat(64),
   source_id: 'src-1',
@@ -388,7 +388,7 @@ describe('PluginPool', () => {
   it('paginates plugins and keeps the page across a reload that only flips states', async () => {
     vi.mocked(pluginSourcesApi.listPool).mockResolvedValue({
       items: Array.from({ length: 25 }, (_, i) =>
-        poolEntry({ step_id: `step-${i + 1}` }),
+        poolEntry({ plugin_id: `step-${i + 1}` }),
       ),
     })
     const root = await mountPage()

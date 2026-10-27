@@ -1,6 +1,6 @@
 import apiClient from './client'
 
-/** Step sources + curated pool (step-marketplace §6.8). Admin-managed;
+/** Plugin sources + curated pool (plugin-marketplace §6.8). Admin-managed;
  *  the library view lists what pipeline authors may `uses:` today. */
 
 export interface PluginSource {
@@ -35,7 +35,7 @@ export interface PoolEntryMeta {
 
 export interface PoolEntry {
   namespace: string
-  step_id: string
+  plugin_id: string
   version: string
   sha256: string
   source_id: string
@@ -140,16 +140,16 @@ export const pluginSourcesApi = {
     const resp = await apiClient.get('/admin/plugin-pool')
     return resp.data as { items: PoolEntry[] }
   },
-  async refreshPlugin(namespace: string, stepId: string): Promise<{ items: PoolEntry[] }> {
-    const resp = await apiClient.post(`/admin/plugin-pool/${namespace}/${stepId}/refresh`)
+  async refreshPlugin(namespace: string, pluginId: string): Promise<{ items: PoolEntry[] }> {
+    const resp = await apiClient.post(`/admin/plugin-pool/${namespace}/${pluginId}/refresh`)
     return resp.data as { items: PoolEntry[] }
   },
   async togglePoolEntry(
     namespace: string,
-    stepId: string,
+    pluginId: string,
     version: string,
     enabled: boolean,
   ): Promise<void> {
-    await apiClient.put(`/admin/plugin-pool/${namespace}/${stepId}/${version}`, { enabled })
+    await apiClient.put(`/admin/plugin-pool/${namespace}/${pluginId}/${version}`, { enabled })
   },
 }

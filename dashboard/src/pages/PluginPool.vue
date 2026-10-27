@@ -67,7 +67,7 @@ function compareTriple(
 
 interface PoolGroup {
   namespace: string
-  stepId: string
+  pluginId: string
   sourceName: string
   /** All known versions, newest first. */
   versions: PoolEntry[]
@@ -77,16 +77,16 @@ interface PoolGroup {
   meta: PoolEntry['meta']
 }
 
-/** Per-plugin version lists: the pool grouped by namespace/step-id, versions
+/** Per-plugin version lists: the pool grouped by namespace/plugin-id, versions
  *  newest first, with the "update available" verdict per group. */
 const poolGroups = computed<PoolGroup[]>(() => {
   const groups = new Map<string, PoolGroup>()
   for (const entry of pool.value) {
-    const key = `${entry.namespace}/${entry.step_id}`
+    const key = `${entry.namespace}/${entry.plugin_id}`
     if (!groups.has(key)) {
       groups.set(key, {
         namespace: entry.namespace,
-        stepId: entry.step_id,
+        pluginId: entry.plugin_id,
         sourceName: entry.source_name ?? entry.source_id,
         versions: [],
         updateAvailable: false,
@@ -121,14 +121,14 @@ const poolGroups = computed<PoolGroup[]>(() => {
       !!maxStaged && !!maxEnabled && compareTriple(maxStaged, maxEnabled) > 0
   }
   return [...groups.values()].sort((a, b) =>
-    `${a.namespace}/${a.stepId}`.localeCompare(`${b.namespace}/${b.stepId}`),
+    `${a.namespace}/${a.pluginId}`.localeCompare(`${b.namespace}/${b.pluginId}`),
   )
 })
 
 /** Group-level pagination: a refresh that only flips enable states must not
  *  throw the curator off their page — the reset key tracks the plugin set. */
 const groupSetKey = computed(() =>
-  poolGroups.value.map((g) => `${g.namespace}/${g.stepId}`).join('|'),
+  poolGroups.value.map((g) => `${g.namespace}/${g.pluginId}`).join('|'),
 )
 
 const categories = computed(() =>
@@ -143,7 +143,7 @@ const filteredGroups = computed(() =>
     const q = searchLower.value
     if (!q) return true
     return (
-      `${group.namespace}/${group.stepId}`.toLowerCase().includes(q) ||
+      `${group.namespace}/${group.pluginId}`.toLowerCase().includes(q) ||
       (group.meta?.name ?? '').toLowerCase().includes(q) ||
       (groupDescription(group) ?? '').toLowerCase().includes(q)
     )
@@ -164,7 +164,7 @@ const { page, pageSize, pageCount, total, pageItems, rangeLabel } = useClientPag
 const preferZh = () => navigator.language?.toLowerCase().startsWith('zh') ?? false
 
 const isOfficial = (group: PoolGroup) => group.meta?.publisher === 'official'
-const usesRef = (group: PoolGroup) => `${group.namespace}/${group.stepId}`
+const usesRef = (group: PoolGroup) => `${group.namespace}/${group.pluginId}`
 const groupTitle = (group: PoolGroup) => group.meta?.name?.trim() || usesRef(group)
 
 function groupDescription(group: PoolGroup): string | null {
@@ -242,7 +242,7 @@ const categoryIconClass = (group: PoolGroup) => {
   }
 }
 
-const entryKey = (entry: PoolEntry) => `${entry.namespace}/${entry.step_id}/${entry.version}`
+const entryKey = (entry: PoolEntry) => `${entry.namespace}/${entry.plugin_id}/${entry.version}`
 
 // ── Version dropdown + per-action buttons ─────────────────────────────────
 
@@ -316,10 +316,10 @@ async function load() {
 }
 
 /** Re-fetch one plugin's metadata from its source (per-group refresh). */
-async function refreshGroup(group: { namespace: string; stepId: string }) {
-  refreshing.value = `${group.namespace}/${group.stepId}`
+async function refreshGroup(group: { namespace: string; pluginId: string }) {
+  refreshing.value = `${group.namespace}/${group.pluginId}`
   try {
-    await pluginSourcesApi.refreshPlugin(group.namespace, group.stepId)
+    await pluginSourcesApi.refreshPlugin(group.namespace, group.pluginId)
     await load()
   } catch (e) {
     await dialog.alert(`Refresh failed: ${e instanceof Error ? e.message : e}`)
@@ -339,7 +339,7 @@ async function toggleSelected(group: PoolGroup) {
   try {
     await pluginSourcesApi.togglePoolEntry(
       entry.namespace,
-      entry.step_id,
+      entry.plugin_id,
       entry.version,
       !entry.enabled,
     )
@@ -363,12 +363,12 @@ async function upgrade(group: PoolGroup) {
   try {
     await pluginSourcesApi.togglePoolEntry(
       target.namespace,
-      target.step_id,
+      target.plugin_id,
       target.version,
       true,
     )
     for (const old of group.versions.filter((v) => v.enabled)) {
-      await pluginSourcesApi.togglePoolEntry(old.namespace, old.step_id, old.version, false)
+      await pluginSourcesApi.togglePoolEntry(old.namespace, old.plugin_id, old.version, false)
     }
     await load()
   } catch (e) {
@@ -412,7 +412,7 @@ onMounted(load)
       <div class="divide-y divide-border/50">
         <div
           v-for="group in pageItems"
-          :key="`${group.namespace}/${group.stepId}`"
+          :key="`${group.namespace}/${group.pluginId}`"
           class="px-5 py-4 flex flex-col sm:flex-row gap-3.5 items-start"
         >
           <!-- Category icon tile -->
@@ -438,13 +438,13 @@ onMounted(load)
               <UiButton
                 size="icon"
                 variant="ghost"
-                :disabled="refreshing === `${group.namespace}/${group.stepId}`"
-                :aria-label="`Refresh ${group.namespace}/${group.stepId}`"
+                :disabled="refreshing === `${group.namespace}/${group.pluginId}`"
+                :aria-label="`Refresh ${group.namespace}/${group.pluginId}`"
                 title="Re-fetch this plugin's versions from its source"
                 @click="refreshGroup(group)"
               ><RefreshCw
                 class="h-3.5 w-3.5"
-                :class="refreshing === `${group.namespace}/${group.stepId}` ? 'animate-spin' : ''"
+                :class="refreshing === `${group.namespace}/${group.pluginId}` ? 'animate-spin' : ''"
               /></UiButton>
             </div>
             <div class="mt-1 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">

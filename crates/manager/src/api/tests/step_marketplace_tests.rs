@@ -480,7 +480,7 @@ async fn unknown_or_unsatisfiable_uses_are_rejected_at_save() {
         body["message"]
             .as_str()
             .unwrap()
-            .contains("not found in local step index"),
+            .contains("not found in the local plugin index"),
         "{body}"
     );
 

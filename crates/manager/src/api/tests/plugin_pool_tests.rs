@@ -304,7 +304,7 @@ async fn community_source_curates_resolves_and_gates() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let staged: (i64,) =
-        sqlx::query_as("SELECT enabled FROM plugin_pool WHERE step_id = 'broken-fetch'")
+        sqlx::query_as("SELECT enabled FROM plugin_pool WHERE plugin_id = 'broken-fetch'")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -564,11 +564,12 @@ run: |
     .await;
     assert_eq!(synced, 1);
 
-    let entry: (String, i64, i64) =
-        sqlx::query_as("SELECT version, enabled, reviewed FROM plugin_pool WHERE step_id = 'demo'")
-            .fetch_one(&pool)
-            .await
-            .expect("pool row for buz/demo");
+    let entry: (String, i64, i64) = sqlx::query_as(
+        "SELECT version, enabled, reviewed FROM plugin_pool WHERE plugin_id = 'demo'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("pool row for buz/demo");
     assert_eq!(entry.0, "1.0.0");
     assert_eq!(entry.1, 1, "official auto_enable must enable entries");
     // reviews.json placeholder hash never matches → no badge (strict mode
@@ -579,11 +580,11 @@ run: |
 /// Find one plugin's pool row in a test assertion (panics with the id).
 fn pool_row_for<'a>(
     rows: &'a [crate::services::plugin_pool::PoolRow],
-    step_id: &str,
+    plugin_id: &str,
 ) -> &'a crate::services::plugin_pool::PoolRow {
     rows.iter()
-        .find(|row| row.step_id == step_id)
-        .unwrap_or_else(|| panic!("pool row for bob/{step_id}"))
+        .find(|row| row.plugin_id == plugin_id)
+        .unwrap_or_else(|| panic!("pool row for bob/{plugin_id}"))
 }
 
 /// Sync persists a per-entry compatibility verdict: the compatible template
@@ -993,10 +994,10 @@ async fn full_meta_source_probes_files_on_staging() {
     let rows = crate::services::plugin_pool::list_pool(&pool)
         .await
         .unwrap();
-    let row = |step_id: &str| {
+    let row = |plugin_id: &str| {
         rows.iter()
-            .find(|row| row.step_id == step_id)
-            .unwrap_or_else(|| panic!("pool row for dave/{step_id}"))
+            .find(|row| row.plugin_id == plugin_id)
+            .unwrap_or_else(|| panic!("pool row for dave/{plugin_id}"))
     };
     // Served + gate-satisfying → content-verified green.
     let fast = row("fast");
@@ -1116,7 +1117,7 @@ async fn mirror_endpoint_serves_sync_when_canonical_is_unreachable() {
         .as_array()
         .expect("pool items")
         .iter()
-        .filter(|row| row["namespace"] == "alice" && row["step_id"] == "oss-upload")
+        .filter(|row| row["namespace"] == "alice" && row["plugin_id"] == "oss-upload")
         .count();
     assert!(steps > 0, "pool rows staged from the mirror: {body}");
 }
@@ -1357,7 +1358,7 @@ async fn pool_toggle_writes_an_audit_record_with_the_diff() {
     // Curation provenance lands on the row itself (state), while the audit
     // log above carries the event stream.
     let provenance: (Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT updated_by, updated_at FROM plugin_pool WHERE step_id = 'oss-upload'",
+        "SELECT updated_by, updated_at FROM plugin_pool WHERE plugin_id = 'oss-upload'",
     )
     .fetch_one(&pool)
     .await
@@ -1826,7 +1827,7 @@ async fn reviews_ledger_must_be_signed_when_the_trust_anchor_is_on() {
     let reviewed = || async {
         sqlx::query_scalar::<_, i64>(
             "SELECT reviewed FROM plugin_pool \
-             WHERE namespace = 'alice' AND step_id = 'oss-upload'",
+             WHERE namespace = 'alice' AND plugin_id = 'oss-upload'",
         )
         .fetch_one(&pool)
         .await

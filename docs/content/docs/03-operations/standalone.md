@@ -110,7 +110,7 @@ services:
 ```
 
 A checked-in copy lives at `deploy/standalone/docker-compose.yml`. The existing
-`./pipelines:/app/buz/pipelines` mount also supplies the default step index at
+`./pipelines:/app/buz/pipelines` mount also supplies the default plugin index at
 `./pipelines/plugins`; put plugin YAML specs there to resolve Pipeline `uses:`
 references. Standalone does not need a separate mirror mount or sync service.
 

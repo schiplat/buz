@@ -1,7 +1,7 @@
-//! buz-plugin step template spec (marketplace ADR §5.1) — one file, one
-//! plugin, parsed from a step index (`local` dir now, `https` later).
+//! buz-plugin template spec (marketplace ADR §5.1) — one file, one
+//! plugin, parsed from a plugin index (`local` dir now, `https` later).
 //!
-//! Validation is shared by the `buz step validate` CLI (plugin-repo CI) and
+//! Validation is shared by the `buz-plugin validate` CLI (plugin-repo CI) and
 //! the Manager's resolution path, so both reject the same files with the
 //! same messages. v1 accepts only `runtime: template`; wasm is gated behind
 //! Phase 3.
@@ -11,7 +11,7 @@ use serde::Deserialize;
 use crate::pipeline_yaml::parse_duration_seconds;
 use crate::protocol::{InputTypeKind, PipelineInputDef};
 
-/// One `inputs:` entry of a step spec — same constraints as trigger inputs,
+/// One `inputs:` entry of a plugin spec — same constraints as trigger inputs,
 /// but the map key is the input name (converted into [`PipelineInputDef`]).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,7 +32,7 @@ pub struct RawStepInput {
     pub description: Option<String>,
 }
 
-/// buz-plugin step template spec (`plugins/<id>.yaml`).
+/// buz-plugin template spec (`plugins/<id>.yaml`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginSpec {
@@ -89,11 +89,11 @@ pub struct PluginSpec {
     /// Execution capabilities requested by the template, not authorization.
     #[serde(default)]
     pub capabilities: Vec<String>,
-    /// Call-site fallback when the invoking step omits `timeout`.
+    /// Call-site fallback when the invoking pipeline step omits `timeout`.
     #[serde(default)]
     pub default_timeout: Option<String>,
-    /// Call-site fallback working directory when the invoking step omits
-    /// `work_dir`. Workspace-relative (e.g. `source`); validated like a step
+    /// Call-site fallback working directory when the invoking pipeline step
+    /// omits `work_dir`. Workspace-relative (e.g. `source`); validated like a step
     /// `dir` — relative, no `..` components. Resolved into the expanded
     /// step's `dir` by the Manager, so engines see an ordinary `work_dir`.
     #[serde(default)]
@@ -113,8 +113,8 @@ impl PluginSpec {
         self.id.split('/').next().unwrap_or("")
     }
 
-    /// Step-id portion of `id` (`buz/feishu` → `feishu`).
-    pub fn step_id(&self) -> &str {
+    /// Plugin-id portion of `id` (`buz/feishu` → `feishu`).
+    pub fn plugin_id(&self) -> &str {
         self.id.split('/').last().unwrap_or("")
     }
 
@@ -400,7 +400,7 @@ fn validate_input_default(name: &str, input: &RawStepInput, errors: &mut Vec<Str
 
 pub const DOCKER_SOCKET_CAPABILITY: &str = "docker-socket";
 
-/// Validate a template/step working directory: relative, non-empty, and made
+/// Validate a template/step working directory (pipeline domain): relative, non-empty, and made
 /// only of normal path components (no `..`, no absolute prefix). Mirrors the
 /// Runner's `is_safe_workspace_subdir` so a spec accepted here cannot escape
 /// the job workspace at execution time.
@@ -442,7 +442,7 @@ pub fn validate_plugin_capabilities(capabilities: &[String], engine: &str) -> Re
     Ok(())
 }
 
-/// Validate a parsed step spec. Returns one message per problem so plugin
+/// Validate a parsed plugin spec. Returns one message per problem so plugin
 /// CI can print them all at once.
 pub fn validate_plugin_spec(spec: &PluginSpec, current_buz: &str) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
@@ -648,7 +648,7 @@ pub fn validate_plugin_spec(spec: &PluginSpec, current_buz: &str) -> Result<(), 
     }
 }
 
-/// Parse and validate one step-spec YAML file in one call.
+/// Parse and validate one plugin-spec YAML file in one call.
 pub fn parse_and_validate_plugin_spec(
     raw: &str,
     current_buz: &str,

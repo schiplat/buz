@@ -4,7 +4,7 @@ import type { PoolEntry } from '@/api/pluginSources'
 
 const entry = (overrides: Partial<PoolEntry>): PoolEntry => ({
   namespace: 'alice',
-  step_id: 'oss-upload',
+  plugin_id: 'oss-upload',
   version: '1.0.0',
   sha256: 'a'.repeat(64),
   source_id: 'src-1',

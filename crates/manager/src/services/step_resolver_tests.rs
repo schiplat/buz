@@ -1,5 +1,5 @@
 use super::{
-    expand_uses_step, load_reviewed_hashes, local_plugin_dir, resolve_uses_steps, LocalStepIndex,
+    expand_uses_step, load_reviewed_hashes, local_plugin_dir, resolve_uses_steps, LocalPluginIndex,
 };
 use shared::protocol::StepDef;
 use std::collections::BTreeMap;
@@ -76,7 +76,7 @@ fn local_index_recursively_finds_specs_and_skips_hidden_or_symlink_paths() {
         symlink(external.path(), dir.path().join("linked-dir")).unwrap();
     }
 
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
     let resolved = index.resolve("buz/feishu@1.2.0", CURRENT).unwrap();
     assert_eq!(resolved.spec.id, "buz/feishu");
     assert!(index.resolve("buz/hidden@1.2.0", CURRENT).is_err());
@@ -92,7 +92,7 @@ fn duplicate_id_version_across_files_is_ambiguous_even_for_major_pins() {
         "feishu-1.2.0-dup.yaml",
         &feishu_spec("buz/feishu", "1.2.0").replacen("engine: shell", "engine: ssh", 1),
     );
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
 
     // Exact pin → ambiguous.
     let err = index.resolve("buz/feishu@1.2.0", CURRENT).unwrap_err();
@@ -182,7 +182,7 @@ fn local_index_dir_defaults_under_scan_dir() {
 #[test]
 fn resolve_major_pin_picks_highest_version() {
     let dir = seed_index();
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
     let resolved = index.resolve("buz/feishu@1", "1.5.6").unwrap();
     assert_eq!(resolved.spec.version, "1.4.0");
 
@@ -195,7 +195,7 @@ fn resolve_major_pin_picks_highest_version() {
 #[test]
 fn resolve_by_content_sha256() {
     let dir = seed_index();
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
     let any = index.resolve("buz/feishu@1.2.0", "1.5.6").unwrap();
     let by_hash = index
         .resolve(
@@ -212,9 +212,9 @@ fn resolve_by_content_sha256() {
 #[test]
 fn resolve_reports_missing_and_stale_requires_buz() {
     let dir = seed_index();
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
     let err = index.resolve("buz/absent@1", "1.5.6").unwrap_err();
-    assert!(err.contains("not found in local step index"), "{err}");
+    assert!(err.contains("not found in the local plugin index"), "{err}");
 
     let dir = tempfile::tempdir().unwrap();
     write_spec(
@@ -226,7 +226,7 @@ fn resolve_reports_missing_and_stale_requires_buz() {
             1,
         ),
     );
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
     let err = index.resolve("buz/feishu@9", "1.5.6").unwrap_err();
     assert!(err.contains("too new"), "{err}");
 }
@@ -234,7 +234,7 @@ fn resolve_reports_missing_and_stale_requires_buz() {
 #[test]
 fn expand_maps_with_to_input_env_and_clears_uses() {
     let dir = seed_index();
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
     let resolved = index.resolve("buz/feishu@1.2.0", "1.5.6").unwrap();
 
     let mut step = uses_step("buz/feishu@1.2.0");
@@ -280,7 +280,7 @@ run: echo "$INPUT_RETRIES"
 fn vars_input_is_deferred_to_claim_time_validation() {
     let dir = tempfile::tempdir().unwrap();
     write_spec(dir.path(), "retries.yaml", &numeric_spec());
-    let resolved = LocalStepIndex::new(dir.path().to_path_buf())
+    let resolved = LocalPluginIndex::new(dir.path().to_path_buf())
         .resolve("buz/retries@1.2.0", "1.5.6")
         .unwrap();
 
@@ -303,7 +303,7 @@ fn vars_input_is_deferred_to_claim_time_validation() {
 #[test]
 fn expand_rejects_unknown_and_missing_required_inputs() {
     let dir = seed_index();
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
     let resolved = index.resolve("buz/feishu@1.2.0", "1.5.6").unwrap();
 
     let mut step = uses_step("buz/feishu@1.2.0");
@@ -329,7 +329,7 @@ fn expand_rejects_unknown_and_missing_required_inputs() {
 #[test]
 fn reviewed_manifest_flags_hash_and_strict_mode_rejects_unreviewed() {
     let dir = seed_index();
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
     let resolved = index.resolve("buz/feishu@1", "1.5.6").unwrap();
     let manifest_path = dir.path().join("reviews.json");
     std::fs::write(
@@ -479,7 +479,7 @@ fn caller_run_is_appended_after_template_run() {
         "harness.yaml",
         &spec_with_run_and_dir("  set -eu", None),
     );
-    let resolved = LocalStepIndex::new(dir.path().to_path_buf())
+    let resolved = LocalPluginIndex::new(dir.path().to_path_buf())
         .resolve("buz/harness@1.0.0", "1.8.0")
         .unwrap();
 
@@ -503,7 +503,7 @@ fn default_dir_fills_step_work_dir_when_omitted() {
         "harness.yaml",
         &spec_with_run_and_dir("  set -eu", Some("source")),
     );
-    let resolved = LocalStepIndex::new(dir.path().to_path_buf())
+    let resolved = LocalPluginIndex::new(dir.path().to_path_buf())
         .resolve("buz/harness@1.0.0", "1.8.0")
         .unwrap();
 
@@ -530,7 +530,7 @@ fn with_values_may_reference_dynamic_env() {
             1,
         ),
     );
-    let resolved = LocalStepIndex::new(dir.path().to_path_buf())
+    let resolved = LocalPluginIndex::new(dir.path().to_path_buf())
         .resolve("buz/harness@1.0.0", "1.8.0")
         .unwrap();
 
@@ -562,7 +562,7 @@ fn expand_honors_call_site_engine_override_within_declared_engines() {
         "fetch-1.0.0.yaml",
         &dual_engine_spec("buz/fetch", "1.0.0"),
     );
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
     let resolved = index.resolve("buz/fetch@1.0.0", "1.5.6").unwrap();
 
     let mut step = uses_step("buz/fetch@1.0.0");
@@ -590,7 +590,7 @@ fn expand_rejects_engine_override_outside_declared_engines() {
         "fetch-1.0.0.yaml",
         &dual_engine_spec("buz/fetch", "1.0.0"),
     );
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
     let resolved = index.resolve("buz/fetch@1.0.0", "1.5.6").unwrap();
 
     let mut step = uses_step("buz/fetch@1.0.0");
@@ -610,7 +610,7 @@ fn expand_without_call_site_engine_uses_template_default() {
         "fetch-1.0.0.yaml",
         &dual_engine_spec("buz/fetch", "1.0.0"),
     );
-    let index = LocalStepIndex::new(dir.path().to_path_buf());
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
     let resolved = index.resolve("buz/fetch@1.0.0", "1.5.6").unwrap();
 
     let mut step = uses_step("buz/fetch@1.0.0");

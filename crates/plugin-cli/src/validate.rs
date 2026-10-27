@@ -30,7 +30,7 @@ pub fn check(paths: &[PathBuf]) -> anyhow::Result<usize> {
         }
     }
     if files.is_empty() {
-        anyhow::bail!("no *.yaml/*.yml step specs found");
+        anyhow::bail!("no *.yaml/*.yml plugin specs found");
     }
 
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
