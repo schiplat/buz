@@ -35,6 +35,20 @@ of responsibility; everything else in this page derives from that split.
    `buz` workspace precisely so it compiles against `shared` — a separate
    repository would break rule 1.
 
+## Getting the tool
+
+`buz-plugin` ships with Buz as a single static binary (same release as the
+Manager and Runner):
+
+1. **Download** — grab `buz-plugin-<os>-<arch>` from the
+   [latest Buz release](https://github.com/schiplat/buz/releases), unpack, and
+   put it on `PATH`.
+2. **Build from source** — `cargo build --release -p plugin-cli` produces
+   `target/release/buz-plugin`.
+
+Verify with `buz-plugin --version`; `buz-plugin --help` lists the four
+commands below.
+
 ## The `buz-plugin` CLI
 
 | Command | Purpose |
