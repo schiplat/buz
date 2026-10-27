@@ -573,17 +573,17 @@ async fn resolve_compat(
             let incompatible_per_index = declared_requires
                 .map(|requires| {
                     matches!(
-                        shared::step_spec::buz_requirement_satisfied(requires, current_buz),
+                        shared::plugin_spec::buz_requirement_satisfied(requires, current_buz),
                         Err(_)
                     )
                 })
                 .unwrap_or(false);
             match declared_requires {
-                // Same message the enable gate reports (validate_step_spec
+                // Same message the enable gate reports (validate_plugin_spec
                 // wraps the requirement error with the `requires_buz:`
                 // prefix), so the list hint and a gate refusal never disagree.
                 Some(requires) if incompatible_per_index => {
-                    let error = shared::step_spec::buz_requirement_satisfied(requires, current_buz)
+                    let error = shared::plugin_spec::buz_requirement_satisfied(requires, current_buz)
                         .unwrap_err();
                     (
                         Some(requires.to_string()),
@@ -1100,7 +1100,7 @@ pub fn evaluate_entry_content(
     version: &str,
     current_buz: &str,
 ) -> Result<Option<String>, String> {
-    let spec: shared::step_spec::StepSpec = serde_yaml::from_str(content)
+    let spec: shared::plugin_spec::PluginSpec = serde_yaml::from_str(content)
         .map_err(|e| format!("template {namespace}/{step_id}@{version} is invalid YAML: {e}"))?;
     if spec.id != format!("{namespace}/{step_id}") {
         return Err(format!(
@@ -1114,15 +1114,15 @@ pub fn evaluate_entry_content(
             spec.version
         ));
     }
-    if let Err(errors) = shared::step_spec::validate_step_spec(&spec, current_buz) {
+    if let Err(errors) = shared::plugin_spec::validate_plugin_spec(&spec, current_buz) {
         return Err(format!(
-            "step spec '{namespace}/{step_id}' is invalid: {}",
+            "plugin spec '{namespace}/{step_id}' is invalid: {}",
             errors.join("; ")
         ));
     }
     if let Some(requires) = spec.requires_buz.as_deref() {
-        shared::step_spec::buz_requirement_satisfied(requires, current_buz).map_err(|e| {
-            format!("step spec '{namespace}/{step_id}' requires buz {requires}: {e}")
+        shared::plugin_spec::buz_requirement_satisfied(requires, current_buz).map_err(|e| {
+            format!("plugin spec '{namespace}/{step_id}' requires buz {requires}: {e}")
         })?;
     }
     Ok(spec.requires_buz)
@@ -1347,7 +1347,7 @@ pub async fn resolve_remote(
         ));
     }
 
-    let spec: shared::step_spec::StepSpec = serde_yaml::from_str(&picked.content).map_err(|e| {
+    let spec: shared::plugin_spec::PluginSpec = serde_yaml::from_str(&picked.content).map_err(|e| {
         format!(
             "template {}/{}/{} is invalid YAML: {e}",
             picked.namespace, picked.step_id, picked.version
@@ -1361,18 +1361,18 @@ pub async fn resolve_remote(
     }
     // Full save-time validation applies to remote templates identically —
     // the pool changes WHERE a template comes from, never WHETHER it is checked.
-    if let Err(errors) = shared::step_spec::validate_step_spec(&spec, current_buz) {
+    if let Err(errors) = shared::plugin_spec::validate_plugin_spec(&spec, current_buz) {
         return Err(format!(
-            "step spec '{}/{}' is invalid: {}",
+            "plugin spec '{}/{}' is invalid: {}",
             picked.namespace,
             picked.step_id,
             errors.join("; ")
         ));
     }
     if let Some(requires) = spec.requires_buz.as_deref() {
-        shared::step_spec::buz_requirement_satisfied(requires, current_buz).map_err(|e| {
+        shared::plugin_spec::buz_requirement_satisfied(requires, current_buz).map_err(|e| {
             format!(
-                "step spec '{}/{}' requires buz {requires}: {e}",
+                "plugin spec '{}/{}' requires buz {requires}: {e}",
                 picked.namespace, picked.step_id
             )
         })?;

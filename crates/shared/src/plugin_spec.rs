@@ -35,7 +35,7 @@ pub struct RawStepInput {
 /// buz-plugin step template spec (`plugins/<id>.yaml`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StepSpec {
+pub struct PluginSpec {
     /// `<namespace>/<name>`, e.g. `buz/feishu` (official) or
     /// `alice/telegram` (community).
     pub id: String,
@@ -107,7 +107,7 @@ pub struct StepSpec {
     pub run: Option<String>,
 }
 
-impl StepSpec {
+impl PluginSpec {
     /// Namespace portion of `id` (`buz/feishu` → `buz`).
     pub fn namespace(&self) -> &str {
         self.id.split('/').next().unwrap_or("")
@@ -265,7 +265,7 @@ pub fn buz_requirement_satisfied(raw: &str, current_buz: &str) -> Result<(), Str
                 Ok(())
             } else {
                 Err(format!(
-                    "step requires Buz >= {} — this plugin is too new for this Manager \
+                    "plugin requires Buz >= {} — this plugin is too new for this Manager \
                      (current {current_buz})",
                     fmt_version(required)
                 ))
@@ -276,7 +276,7 @@ pub fn buz_requirement_satisfied(raw: &str, current_buz: &str) -> Result<(), Str
                 Ok(())
             } else {
                 Err(format!(
-                    "step requires exactly Buz {} — this plugin is too new (or too old) for \
+                    "plugin requires exactly Buz {} — this plugin is too new (or too old) for \
                      this Manager (current {current_buz})",
                     fmt_version(required)
                 ))
@@ -296,7 +296,7 @@ fn validate_input_default(name: &str, input: &RawStepInput, errors: &mut Vec<Str
     let kind = InputTypeKind::parse(input.input_type.as_deref());
     if input.input_type.as_deref().map(str::trim) == Some("host") {
         errors.push(format!(
-            "inputs.{name}: type: host is not supported for marketplace step templates — use string, number, boolean, choice, or list"
+            "inputs.{name}: type: host is not supported for marketplace plugin templates — use string, number, boolean, choice, or list"
         ));
     } else if kind.is_none() {
         errors.push(format!(
@@ -426,7 +426,7 @@ pub fn validate_relative_dir(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn validate_step_capabilities(capabilities: &[String], engine: &str) -> Result<(), String> {
+pub fn validate_plugin_capabilities(capabilities: &[String], engine: &str) -> Result<(), String> {
     let mut seen = std::collections::HashSet::new();
     for capability in capabilities {
         if capability != DOCKER_SOCKET_CAPABILITY {
@@ -444,7 +444,7 @@ pub fn validate_step_capabilities(capabilities: &[String], engine: &str) -> Resu
 
 /// Validate a parsed step spec. Returns one message per problem so plugin
 /// CI can print them all at once.
-pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<String>> {
+pub fn validate_plugin_spec(spec: &PluginSpec, current_buz: &str) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
 
     let parts: Vec<&str> = spec.id.split('/').collect();
@@ -525,12 +525,12 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
                 }
             }
             other => errors.push(format!(
-                "engine: {other:?} is not valid for a step template — use shell, ssh, or docker"
+                "engine: {other:?} is not valid for a plugin template — use shell, ssh, or docker"
             )),
         }
     }
 
-    if let Err(error) = validate_step_capabilities(&spec.capabilities, spec.effective_engine()) {
+    if let Err(error) = validate_plugin_capabilities(&spec.capabilities, spec.effective_engine()) {
         errors.push(error);
     }
     if !spec.capabilities.is_empty() {
@@ -559,7 +559,7 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
 
     let run = spec.run.as_deref().unwrap_or("").trim();
     if run.is_empty() {
-        errors.push("run: is required (script/command the step executes)".into());
+        errors.push("run: is required (the plugin's script/command)".into());
     } else {
         for banned in ["${secrets.", "${vars."] {
             if run.contains(banned) {
@@ -649,7 +649,7 @@ pub fn validate_step_spec(spec: &StepSpec, current_buz: &str) -> Result<(), Vec<
 }
 
 /// Parse and validate one step-spec YAML file in one call.
-pub fn parse_and_validate_step_spec(raw: &str, current_buz: &str) -> Result<StepSpec, Vec<String>> {
-    let spec: StepSpec = serde_yaml::from_str(raw).map_err(|e| vec![format!("YAML: {e}")])?;
-    validate_step_spec(&spec, current_buz).map(|()| spec)
+pub fn parse_and_validate_plugin_spec(raw: &str, current_buz: &str) -> Result<PluginSpec, Vec<String>> {
+    let spec: PluginSpec = serde_yaml::from_str(raw).map_err(|e| vec![format!("YAML: {e}")])?;
+    validate_plugin_spec(&spec, current_buz).map(|()| spec)
 }

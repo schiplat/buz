@@ -1,10 +1,10 @@
 //! `buz-plugin validate` — the authoring moment of the Manager's save-time
-//! gate. Same function (`shared::step_spec::validate_step_spec`), advisory
+//! gate. Same function (`shared::plugin_spec::validate_plugin_spec`), advisory
 //! here, enforced there.
 
 use crate::layout;
 use anyhow::Context;
-use shared::step_spec::{validate_step_spec, StepSpec};
+use shared::plugin_spec::{validate_plugin_spec, PluginSpec};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -67,8 +67,8 @@ pub fn check(paths: &[PathBuf]) -> anyhow::Result<usize> {
 }
 
 fn validate_one(raw: &str) -> Result<(String, String), Vec<String>> {
-    let spec: StepSpec =
+    let spec: PluginSpec =
         serde_yaml::from_str(raw).map_err(|error| vec![format!("invalid YAML: {error}")])?;
-    validate_step_spec(&spec, env!("CARGO_PKG_VERSION"))?;
+    validate_plugin_spec(&spec, env!("CARGO_PKG_VERSION"))?;
     Ok((spec.id.clone(), spec.version.clone()))
 }

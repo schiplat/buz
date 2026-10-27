@@ -846,7 +846,7 @@ async fn execute_job_inner(
 /// from the step JSON; collections are owned. Cloned into `StepRun` so the
 /// loop keeps `spec` for `finalize_step`.
 #[derive(Clone)]
-struct StepSpec<'a> {
+struct PluginSpec<'a> {
     idx: usize,
     step: &'a serde_json::Value,
     name: &'a str,
@@ -861,9 +861,9 @@ struct StepSpec<'a> {
     capabilities: Vec<String>,
 }
 
-fn parse_step_spec(idx: usize, step: &serde_json::Value) -> StepSpec<'_> {
+fn parse_step_spec(idx: usize, step: &serde_json::Value) -> PluginSpec<'_> {
     let timeout_secs = step["timeout_seconds"].as_u64().unwrap_or(0);
-    StepSpec {
+    PluginSpec {
         idx,
         step,
         name: step["name"].as_str().unwrap_or("unnamed"),
@@ -901,7 +901,7 @@ async fn validate_step_constraints(
     log: &StepLogger,
     config: &Config,
     step: &serde_json::Value,
-    spec: &StepSpec<'_>,
+    spec: &PluginSpec<'_>,
 ) -> anyhow::Result<Option<std::path::PathBuf>> {
     let docker_socket_path = if spec.exec_type == "docker" {
         let has_host_prepare = super::config_source::needs_prepare(step);
@@ -1073,7 +1073,7 @@ async fn announce_step(
     log: &StepLogger,
     config: &Config,
     step: &serde_json::Value,
-    spec: &StepSpec<'_>,
+    spec: &PluginSpec<'_>,
     env: &std::collections::HashMap<String, String>,
     registry_secret_ref: &str,
     verbose: bool,
@@ -1187,7 +1187,7 @@ async fn open_ssh_sessions(
     log: &StepLogger,
     config: &Config,
     step: &serde_json::Value,
-    spec: &StepSpec<'_>,
+    spec: &PluginSpec<'_>,
     cancel_rx: &mut watch::Receiver<bool>,
 ) -> anyhow::Result<Vec<SshSession>> {
     let mut ssh_sessions: Vec<SshSession> = Vec::new();
@@ -1253,7 +1253,7 @@ async fn prepare_step_config(
     log: &StepLogger,
     config: &Config,
     step: &serde_json::Value,
-    spec: &StepSpec<'_>,
+    spec: &PluginSpec<'_>,
     ssh_sessions: &mut Vec<SshSession>,
     render_values: &ValueMap,
     verbose: bool,
@@ -1351,7 +1351,7 @@ async fn prepare_step_config(
 struct StepRun<'a> {
     log: &'a StepLogger,
     config: &'a Config,
-    spec: StepSpec<'a>,
+    spec: PluginSpec<'a>,
     env: std::collections::HashMap<String, String>,
     catalog: &'a SecretCatalog,
     secret_values: &'a [String],
@@ -1776,7 +1776,7 @@ async fn run_docker_step(
 /// error.
 async fn finalize_step(
     log: &StepLogger,
-    spec: &StepSpec<'_>,
+    spec: &PluginSpec<'_>,
     execution: StepExecution,
     forced_values: &[String],
     sandbox_handle: Option<&crate::client::sandbox_client::SandboxHandle>,

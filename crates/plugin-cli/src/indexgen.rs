@@ -7,7 +7,7 @@
 use crate::layout;
 use anyhow::Context;
 use serde::Serialize;
-use shared::step_spec::{validate_step_spec, StepSpec};
+use shared::plugin_spec::{validate_plugin_spec, PluginSpec};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -153,9 +153,9 @@ fn parse_spec(path: &Path, source_root: &Path) -> anyhow::Result<ParsedSpec> {
     let display = path.display().to_string();
     let raw =
         std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let spec: StepSpec = serde_yaml::from_str(&raw)
+    let spec: PluginSpec = serde_yaml::from_str(&raw)
         .with_context(|| format!("{}: invalid step spec YAML", path.display()))?;
-    validate_step_spec(&spec, current_buz()).map_err(|errors| {
+    validate_plugin_spec(&spec, current_buz()).map_err(|errors| {
         anyhow::anyhow!(
             "{}: invalid step spec:\n{}",
             path.display(),

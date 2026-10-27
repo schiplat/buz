@@ -17,7 +17,7 @@ use std::time::SystemTime;
 use sha2::{Digest, Sha256};
 use shared::pipeline_yaml::{parse_uses_reference, UsesPin};
 use shared::protocol::{validate_input_values, StepDef};
-use shared::step_spec::{buz_requirement_satisfied, validate_step_spec, StepSpec};
+use shared::plugin_spec::{buz_requirement_satisfied, validate_plugin_spec, PluginSpec};
 
 /// Step-index settings resolved from Manager config at startup.
 #[derive(Debug, Clone, Default)]
@@ -192,7 +192,7 @@ struct ReviewEntry {
 /// A step template resolved from an index, with everything provenance needs.
 #[derive(Debug, Clone)]
 pub struct ResolvedStep {
-    pub spec: StepSpec,
+    pub spec: PluginSpec,
     /// Where the template came from, e.g. `local:/opt/buz/pipelines/steps`.
     pub source: String,
     /// SHA-256 over the raw spec file bytes.
@@ -314,7 +314,7 @@ pub fn effective_reviewed_manifest(
 /// One template file found in the index.
 #[derive(Clone)]
 struct IndexedSpec {
-    spec: StepSpec,
+    spec: PluginSpec,
     source: String,
     content_sha256: String,
 }
@@ -401,7 +401,7 @@ impl LocalStepIndex {
                 tracing::warn!("step index: cannot read {} — skipped", file.display());
                 continue;
             };
-            let Ok(spec) = serde_yaml::from_str::<StepSpec>(&raw) else {
+            let Ok(spec) = serde_yaml::from_str::<PluginSpec>(&raw) else {
                 tracing::warn!(
                     "step index: {} is not valid YAML — skipped (run `buz-manager \\
                      step-validate` for details)",
@@ -509,9 +509,9 @@ impl LocalStepIndex {
             }
         };
 
-        if let Err(errors) = validate_step_spec(&picked.spec, current_buz) {
+        if let Err(errors) = validate_plugin_spec(&picked.spec, current_buz) {
             return Err(format!(
-                "step spec '{}' is invalid: {}",
+                "plugin spec '{}' is invalid: {}",
                 picked.spec.id,
                 errors.join("; ")
             ));
@@ -673,7 +673,7 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedStep) -> Result<StepD
     } else {
         step.capabilities.clone()
     };
-    if let Err(error) = shared::step_spec::validate_step_capabilities(&capabilities, &engine) {
+    if let Err(error) = shared::plugin_spec::validate_plugin_capabilities(&capabilities, &engine) {
         errors.push(error);
     }
 

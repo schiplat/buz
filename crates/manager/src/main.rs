@@ -435,7 +435,7 @@ fn step_validate(paths: &[String]) -> anyhow::Result<()> {
     for file in &files {
         let raw = std::fs::read_to_string(file)
             .map_err(|e| anyhow::anyhow!("cannot read '{}': {e}", file.display()))?;
-        let spec = match serde_yaml::from_str::<shared::step_spec::StepSpec>(&raw) {
+        let spec = match serde_yaml::from_str::<shared::plugin_spec::PluginSpec>(&raw) {
             Ok(spec) => spec,
             Err(error) => {
                 failed += 1;
@@ -444,7 +444,7 @@ fn step_validate(paths: &[String]) -> anyhow::Result<()> {
             }
         };
 
-        let mut errors = shared::step_spec::validate_step_spec(&spec, current)
+        let mut errors = shared::plugin_spec::validate_plugin_spec(&spec, current)
             .err()
             .unwrap_or_default();
         if let Some(previous) = seen_specs.insert(

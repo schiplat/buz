@@ -1,7 +1,7 @@
 //! `buz-plugin` — plugin authoring & publishing toolchain.
 //!
 //! Responsibility boundary (docs/architecture → Plugin Tooling): this CLI is
-//! the authoring moment of the contract (`shared::step_spec` is the single
+//! the authoring moment of the contract (`shared::plugin_spec` is the single
 //! authority); the Manager re-runs the same validation when it consumes a
 //! template. Feedback here, enforcement there — never two implementations.
 

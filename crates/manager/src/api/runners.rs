@@ -1470,7 +1470,7 @@ async fn poll_once(
                 t.get::<String, _>(0)
             ))
         })?;
-        shared::step_spec::validate_step_capabilities(&capabilities, &exec_type)
+        shared::plugin_spec::validate_plugin_capabilities(&capabilities, &exec_type)
             .map_err(AppError::ValidationFailed)?;
 
         // Purpose slots accept `${secrets.NAME}` or bare NAME.

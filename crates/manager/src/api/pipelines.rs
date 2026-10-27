@@ -1657,7 +1657,7 @@ pub(crate) async fn insert_steps(
         }
         let task_id = Uuid::new_v4().to_string();
         let exec_type = step.engine.clone().unwrap_or_else(|| "shell".into());
-        shared::step_spec::validate_step_capabilities(&step.capabilities, &exec_type)
+        shared::plugin_spec::validate_plugin_capabilities(&step.capabilities, &exec_type)
             .map_err(AppError::ValidationFailed)?;
         let capabilities_stored = serde_json::to_string(&step.capabilities)
             .map_err(|error| AppError::Internal(error.to_string()))?;
