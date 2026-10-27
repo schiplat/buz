@@ -26,7 +26,7 @@ fn test_config() -> Config {
         runner: RunnerConfig::default(),
         pipeline: PipelineConfig::default(),
         standalone: Default::default(),
-        step_index: Default::default(),
+        plugin_index: Default::default(),
         storage: Default::default(),
         clock: Default::default(),
         logging: Default::default(),
@@ -180,8 +180,8 @@ async fn health_step_review_section_reflects_configured_gate() {
     let manifest = tempfile::tempdir().unwrap();
     let manifest_path = manifest.path().join("reviews.json");
     std::fs::write(&manifest_path, r#"{"reviews": []}"#).unwrap();
-    state.config.step_index.reviewed_manifest = manifest_path.to_string_lossy().into_owned();
-    state.config.step_index.require_reviewed = true;
+    state.config.plugin_index.reviewed_manifest = manifest_path.to_string_lossy().into_owned();
+    state.config.plugin_index.require_reviewed = true;
 
     let (_, Json(body)) = health(State(state), Query(HealthQuery::default())).await;
     let step_review = &body["step_review"];

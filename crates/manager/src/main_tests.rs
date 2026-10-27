@@ -31,14 +31,14 @@ fn pipeline_plan_cli_parses_without_manager_configuration() {
             command:
                 PipelineCommand::Plan {
                     pipeline,
-                    step_index,
+                    plugin_index,
                     reviews,
                     require_reviewed,
                     offline,
                 },
         } => {
             assert_eq!(pipeline, std::path::PathBuf::from("examples/pipeline.yml"));
-            assert_eq!(step_index, std::path::PathBuf::from("./plugins"));
+            assert_eq!(plugin_index, std::path::PathBuf::from("./plugins"));
             assert_eq!(reviews, Some(std::path::PathBuf::from("./reviews.json")));
             assert!(require_reviewed);
             assert!(offline);

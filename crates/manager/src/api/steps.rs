@@ -20,9 +20,9 @@ pub async fn list_steps(
     _auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let dir = crate::services::step_resolver::effective_local_dir(
+    let dir = crate::services::plugin_resolver::effective_local_dir(
         &state.config.storage.data_dir,
-        &state.config.step_index.local_dir,
+        &state.config.plugin_index.local_dir,
     )
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -37,8 +37,8 @@ pub async fn list_steps(
         }
     };
 
-    let reviewed_hashes = crate::services::step_resolver::load_reviewed_hashes(
-        &state.config.step_index.reviewed_manifest,
+    let reviewed_hashes = crate::services::plugin_resolver::load_reviewed_hashes(
+        &state.config.plugin_index.reviewed_manifest,
     );
     let mut items: Vec<Value> = Vec::new();
     let mut unparseable: Vec<Value> = Vec::new();

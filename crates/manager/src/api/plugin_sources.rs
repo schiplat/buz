@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::PlatformAdmin;
-use crate::services::step_pool;
+use crate::services::plugin_pool;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -39,7 +39,7 @@ pub async fn list_sources(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let items = step_pool::list_sources(&state.pool)
+    let items = plugin_pool::list_sources(&state.pool)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
@@ -80,7 +80,7 @@ pub async fn create_source(
 
     let id = Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO step_sources (id, name, url, mirror_url, auto_enable, enabled, created_by)
+        "INSERT INTO plugin_sources (id, name, url, mirror_url, auto_enable, enabled, created_by)
          VALUES (?, ?, ?, ?, ?, 1, ?)",
     )
     .bind(&id)
@@ -95,7 +95,7 @@ pub async fn create_source(
     audit::record(
         &state.pool,
         AuditEvent::new(Action::StepSourceCreate, &auth)
-            .on(Resource::step_source(&id, &name))
+            .on(Resource::plugin_source(&id, &name))
             .after(Some(json!({
                 "name": name,
                 "url": url,
@@ -110,22 +110,22 @@ pub async fn create_source(
     let pool = state.pool.clone();
     let timeout_secs = crate::services::platform_settings::effective(
         &state.pool,
-        crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
-        &state.config.step_index.sync_timeout_seconds.to_string(),
+        crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+        &state.config.plugin_index.sync_timeout_seconds.to_string(),
     )
     .await
     .parse()
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
-    let source = step_pool::get_source(&state.pool, &id)
+    let source = plugin_pool::get_source(&state.pool, &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or(AppError::NotFound("source disappeared after insert".into()))?;
 
     let spawn_source = source.clone();
     tokio::spawn(async move {
-        let http = step_pool::http_client(timeout_secs);
+        let http = plugin_pool::http_client(timeout_secs);
         if let Err(e) =
-            step_pool::sync_source(&http, &pool, &spawn_source, shared::version::VERSION).await
+            plugin_pool::sync_source(&http, &pool, &spawn_source, shared::version::VERSION).await
         {
             tracing::warn!(source_id = %spawn_source.id, error = %e, "background source sync failed");
         }
@@ -147,14 +147,14 @@ pub async fn check_mirror(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let timeout_secs = crate::services::platform_settings::effective(
         &state.pool,
-        crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
-        &state.config.step_index.sync_timeout_seconds.to_string(),
+        crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+        &state.config.plugin_index.sync_timeout_seconds.to_string(),
     )
     .await
     .parse()
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
-    let http = step_pool::http_client(timeout_secs);
-    let report = step_pool::check_mirror(&http, &state.pool, &id)
+    let http = plugin_pool::http_client(timeout_secs);
+    let report = plugin_pool::check_mirror(&http, &state.pool, &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(ApiResponse::success(
@@ -168,15 +168,15 @@ pub async fn sync_source(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let source = step_pool::get_source(&state.pool, &id)
+    let source = plugin_pool::get_source(&state.pool, &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or(AppError::NotFound("source not found".into()))?;
     let pool = state.pool.clone();
     let timeout_secs = crate::services::platform_settings::effective(
         &state.pool,
-        crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
-        &state.config.step_index.sync_timeout_seconds.to_string(),
+        crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+        &state.config.plugin_index.sync_timeout_seconds.to_string(),
     )
     .await
     .parse()
@@ -184,14 +184,14 @@ pub async fn sync_source(
     audit::record(
         &state.pool,
         AuditEvent::new(Action::StepSourceSync, &auth)
-            .on(Resource::step_source(&source.id, &source.name))
+            .on(Resource::plugin_source(&source.id, &source.name))
             .meta(Some(json!({ "trigger": "manual" }))),
     )
     .await;
     tokio::spawn(async move {
-        let http = step_pool::http_client(timeout_secs);
+        let http = plugin_pool::http_client(timeout_secs);
         if let Err(e) =
-            step_pool::sync_source(&http, &pool, &source, shared::version::VERSION).await
+            plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION).await
         {
             tracing::warn!(source_id = %source.id, error = %e, "background source sync failed");
         }
@@ -226,10 +226,10 @@ pub async fn delete_source(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     // Snapshot before deleting: once the row is gone (CASCADE also drops its
     // pool rows) the audit record is the only remaining description of it.
-    let removed = step_pool::get_source(&state.pool, &id)
+    let removed = plugin_pool::get_source(&state.pool, &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    sqlx::query("DELETE FROM step_sources WHERE id = ?")
+    sqlx::query("DELETE FROM plugin_sources WHERE id = ?")
         .bind(&id)
         .execute(&state.pool)
         .await
@@ -238,7 +238,7 @@ pub async fn delete_source(
         audit::record(
             &state.pool,
             AuditEvent::new(Action::StepSourceDelete, &auth)
-                .on(Resource::step_source(&removed.id, &removed.name))
+                .on(Resource::plugin_source(&removed.id, &removed.name))
                 .before(Some(json!({
                     "name": removed.name,
                     "url": removed.url,
@@ -274,17 +274,17 @@ pub async fn refresh_plugin(
     State(state): State<AppState>,
     Path((namespace, step_id)): Path<(String, String)>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let http = step_pool::http_client(
+    let http = plugin_pool::http_client(
         crate::services::platform_settings::effective(
             &state.pool,
-            crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
-            &state.config.step_index.sync_timeout_seconds.to_string(),
+            crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+            &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
         .await
         .parse()
         .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
     );
-    let rows = step_pool::refresh_plugin(
+    let rows = plugin_pool::refresh_plugin(
         &http,
         &state.pool,
         &namespace,
@@ -308,7 +308,7 @@ pub async fn list_pool(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let items = step_pool::list_pool(&state.pool)
+    let items = plugin_pool::list_pool(&state.pool)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
@@ -326,12 +326,12 @@ pub async fn toggle_pool_entry(
     // sha256, and runs the save-time spec validation — a failed entry stays
     // staged and the curator sees why.
     if body.enabled {
-        step_pool::verify_entry(
-            &step_pool::http_client(
+        plugin_pool::verify_entry(
+            &plugin_pool::http_client(
                 crate::services::platform_settings::effective(
                     &state.pool,
-                    crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
-                    &state.config.step_index.sync_timeout_seconds.to_string(),
+                    crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+                    &state.config.plugin_index.sync_timeout_seconds.to_string(),
                 )
                 .await
                 .parse()
@@ -354,7 +354,7 @@ pub async fn toggle_pool_entry(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let previous_enabled: Option<i64> = sqlx::query_scalar(
-        "SELECT enabled FROM step_pool \
+        "SELECT enabled FROM plugin_pool \
          WHERE namespace = ? AND step_id = ? AND version = ?",
     )
     .bind(&namespace)
@@ -364,7 +364,7 @@ pub async fn toggle_pool_entry(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
     let result = sqlx::query(
-        "UPDATE step_pool SET enabled = ?, updated_by = ?, updated_at = datetime('now') \
+        "UPDATE plugin_pool SET enabled = ?, updated_by = ?, updated_at = datetime('now') \
          WHERE namespace = ? AND step_id = ? AND version = ?",
     )
     .bind(body.enabled as i64)
@@ -382,7 +382,7 @@ pub async fn toggle_pool_entry(
     audit::record_in(
         &mut *tx,
         AuditEvent::new(Action::StepPoolToggle, &auth)
-            .on(Resource::step_pool(&namespace, &step_id, &version))
+            .on(Resource::plugin_pool(&namespace, &step_id, &version))
             .changes(
                 Some(json!({ "enabled": previous_enabled.map(|v| v != 0) })),
                 Some(json!({ "enabled": body.enabled })),

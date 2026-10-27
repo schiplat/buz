@@ -79,13 +79,13 @@ fn step_pool_resource_composes_the_reference() {
         is_super_admin: false,
         memberships: vec![],
     };
-    let event = AuditEvent::new(Action::StepPoolToggle, &auth).on(Resource::step_pool(
+    let event = AuditEvent::new(Action::StepPoolToggle, &auth).on(Resource::plugin_pool(
         "buz",
         "helm-upgrade",
         "1.0.0",
     ));
-    assert_eq!(event.action, "step_pool.toggle");
-    assert_eq!(event.resource_type, "step_pool");
+    assert_eq!(event.action, "plugin_pool.toggle");
+    assert_eq!(event.resource_type, "plugin_pool");
     assert_eq!(event.resource_id, "buz/helm-upgrade@1.0.0");
     assert_eq!(event.resource_name, "buz/helm-upgrade@1.0.0");
 }

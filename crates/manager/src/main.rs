@@ -93,7 +93,7 @@ enum PipelineCommand {
         pipeline: std::path::PathBuf,
         /// Directory containing local step-template YAML files
         #[arg(long, value_name = "DIR")]
-        step_index: std::path::PathBuf,
+        plugin_index: std::path::PathBuf,
         /// Optional reviewed-template manifest (reviews.json)
         #[arg(long, value_name = "FILE")]
         reviews: Option<std::path::PathBuf>,
@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
             command:
                 PipelineCommand::Plan {
                     pipeline,
-                    step_index,
+                    plugin_index,
                     reviews,
                     require_reviewed,
                     offline,
@@ -137,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
         }) => {
             return pipeline_plan::run(
                 &pipeline,
-                &step_index,
+                &plugin_index,
                 reviews.as_deref(),
                 require_reviewed,
                 offline,
@@ -172,11 +172,11 @@ async fn main() -> anyhow::Result<()> {
     // manager.toml and are re-applied at runtime by the settings API.
     let settings_overrides = services::platform_settings::fetch_overrides(&db_pool).await;
     let require_reviewed = settings_overrides
-        .get(services::platform_settings::KEY_STEP_REVIEW_REQUIRED)
+        .get(services::platform_settings::KEY_PLUGIN_REVIEW_REQUIRED)
         .and_then(|v| v.parse::<bool>().ok())
-        .unwrap_or(config.step_index.require_reviewed);
+        .unwrap_or(config.plugin_index.require_reviewed);
     let local_dir_override = settings_overrides
-        .get(services::platform_settings::KEY_STEP_INDEX_LOCAL_DIR)
+        .get(services::platform_settings::KEY_PLUGIN_INDEX_LOCAL_DIR)
         .cloned();
     std::fs::create_dir_all(&config.storage.data_dir).ok();
 
@@ -224,30 +224,30 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let sync_timeout_secs = settings_overrides
-        .get(services::platform_settings::KEY_STEP_SYNC_TIMEOUT)
+        .get(services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT)
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(config.step_index.sync_timeout_seconds);
+        .unwrap_or(config.plugin_index.sync_timeout_seconds);
     let reviewed_manifest_override = settings_overrides
-        .get(services::platform_settings::KEY_STEP_REVIEWED_MANIFEST)
+        .get(services::platform_settings::KEY_PLUGIN_REVIEWED_MANIFEST)
         .cloned();
     // Empty config value → the reviews.json beside the plugin directory
     // (data root): a buz-plugins clone in the data volume provides both.
-    let reviewed_manifest = services::step_resolver::effective_reviewed_manifest(
+    let reviewed_manifest = services::plugin_resolver::effective_reviewed_manifest(
         &config.storage.data_dir,
-        &config.step_index.reviewed_manifest,
+        &config.plugin_index.reviewed_manifest,
         reviewed_manifest_override.as_deref(),
     )
     .to_string_lossy()
     .into_owned();
-    services::step_resolver::init(services::step_resolver::StepIndexSettings {
+    services::plugin_resolver::init(services::plugin_resolver::StepIndexSettings {
         reviewed_manifest: reviewed_manifest.clone(),
         require_reviewed,
     });
-    if require_reviewed != config.step_index.require_reviewed
+    if require_reviewed != config.plugin_index.require_reviewed
         || local_dir_override.is_some()
         || reviewed_manifest_override.is_some()
     {
-        services::step_resolver::apply_runtime_overrides(
+        services::plugin_resolver::apply_runtime_overrides(
             Some(require_reviewed),
             local_dir_override,
             Some(reviewed_manifest),
@@ -259,9 +259,9 @@ async fn main() -> anyhow::Result<()> {
     {
         let pool = db_pool.clone();
         tokio::spawn(async move {
-            let synced = services::step_pool::sync_all_enabled(
+            let synced = services::plugin_pool::sync_all_enabled(
                 &pool,
-                &services::step_pool::http_client(sync_timeout_secs),
+                &services::plugin_pool::http_client(sync_timeout_secs),
                 shared::version::VERSION,
             )
             .await;
@@ -273,21 +273,21 @@ async fn main() -> anyhow::Result<()> {
     // Review-gate posture: the gate is silent by default, so say so loudly at
     // boot — an operator who never configured a manifest must know unreviewed
     // templates resolve freely (dashboard repeats this as a banner).
-    if config.step_index.reviewed_manifest.trim().is_empty() {
+    if config.plugin_index.reviewed_manifest.trim().is_empty() {
         tracing::warn!(
-            "step review gate is NOT enabled: [step_index] reviewed_manifest is empty — \
+            "step review gate is NOT enabled: [plugin_index] reviewed_manifest is empty — \
              every `uses:` template resolves without review checks; production deployments \
              should set reviewed_manifest to a reviews.json and require_reviewed = true"
         );
-    } else if !config.step_index.require_reviewed {
+    } else if !config.plugin_index.require_reviewed {
         tracing::info!(
-            manifest = %config.step_index.reviewed_manifest,
+            manifest = %config.plugin_index.reviewed_manifest,
             "step review gate is advisory-only (require_reviewed = false): unreviewed \
              templates resolve with a log warning instead of being rejected"
         );
     } else {
         tracing::info!(
-            manifest = %config.step_index.reviewed_manifest,
+            manifest = %config.plugin_index.reviewed_manifest,
             "step review gate is strict (require_reviewed = true): templates absent from \
              the reviewed manifest are rejected at resolution time"
         );
@@ -309,9 +309,9 @@ async fn main() -> anyhow::Result<()> {
     services::pipeline_scanner::spawn_scanner(
         db_pool.clone(),
         config.pipeline.yaml_scan_dir.clone(),
-        services::step_resolver::effective_local_dir(
+        services::plugin_resolver::effective_local_dir(
             &config.storage.data_dir,
-            &config.step_index.local_dir,
+            &config.plugin_index.local_dir,
         )?,
         config.pipeline.yaml_scan_interval_seconds,
         sync_timeout_secs,

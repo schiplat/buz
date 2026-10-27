@@ -26,7 +26,7 @@ mod logs;
 pub mod openapi;
 mod secrets;
 mod settings;
-mod step_sources;
+mod plugin_sources;
 mod steps;
 mod teams;
 mod trigger_events;
@@ -233,33 +233,33 @@ pub fn router(state: AppState) -> Router {
         )
         // Step marketplace: sources + pool (platform admin)
         .route(
-            "/admin/step-sources",
-            get(step_sources::list_sources).post(step_sources::create_source),
+            "/admin/plugin-sources",
+            get(plugin_sources::list_sources).post(plugin_sources::create_source),
         )
         .route(
-            "/admin/step-sources/{id}",
-            delete(step_sources::delete_source),
+            "/admin/plugin-sources/{id}",
+            delete(plugin_sources::delete_source),
         )
         .route(
-            "/admin/step-sources/{id}/sync",
-            post(step_sources::sync_source),
+            "/admin/plugin-sources/{id}/sync",
+            post(plugin_sources::sync_source),
         )
         .route(
-            "/admin/step-sources/{id}/sync-progress",
-            get(step_sources::sync_progress),
+            "/admin/plugin-sources/{id}/sync-progress",
+            get(plugin_sources::sync_progress),
         )
         .route(
-            "/admin/step-sources/{id}/mirror-check",
-            post(step_sources::check_mirror),
+            "/admin/plugin-sources/{id}/mirror-check",
+            post(plugin_sources::check_mirror),
         )
-        .route("/admin/step-pool", get(step_sources::list_pool))
+        .route("/admin/plugin-pool", get(plugin_sources::list_pool))
         .route(
-            "/admin/step-pool/{namespace}/{step_id}/refresh",
-            post(step_sources::refresh_plugin),
+            "/admin/plugin-pool/{namespace}/{step_id}/refresh",
+            post(plugin_sources::refresh_plugin),
         )
         .route(
-            "/admin/step-pool/{namespace}/{step_id}/{version}",
-            put(step_sources::toggle_pool_entry),
+            "/admin/plugin-pool/{namespace}/{step_id}/{version}",
+            put(plugin_sources::toggle_pool_entry),
         )
         // Runner management (platform admin)
         .route(
@@ -376,8 +376,8 @@ mod steps_library_integration_tests;
 mod settings_tests;
 
 #[cfg(test)]
-#[path = "tests/step_pool_tests.rs"]
-mod step_pool_tests;
+#[path = "tests/plugin_pool_tests.rs"]
+mod plugin_pool_tests;
 
 #[cfg(test)]
 #[path = "audit_coverage_tests.rs"]

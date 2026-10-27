@@ -6,7 +6,7 @@ use shared::protocol::StepDef;
 
 pub async fn run(
     pipeline_path: &Path,
-    step_index: &Path,
+    plugin_index: &Path,
     reviews_path: Option<&Path>,
     require_reviewed: bool,
     offline: bool,
@@ -18,7 +18,7 @@ pub async fn run(
         )
     })?;
     let (mut output, images) =
-        plan(&raw, step_index, reviews_path, require_reviewed).map_err(anyhow::Error::msg)?;
+        plan(&raw, plugin_index, reviews_path, require_reviewed).map_err(anyhow::Error::msg)?;
 
     if offline {
         for image in &images {
@@ -66,7 +66,7 @@ pub async fn run(
 
 fn plan(
     raw: &str,
-    step_index: &Path,
+    plugin_index: &Path,
     reviews_path: Option<&Path>,
     require_reviewed: bool,
 ) -> Result<(String, Vec<String>), String> {
@@ -86,11 +86,11 @@ fn plan(
     let reviewed_hashes = reviews_path
         .map(|path| shared_reviewed_hashes(path))
         .unwrap_or_default();
-    let policy = crate::services::step_resolver::ResolutionPolicy {
+    let policy = crate::services::plugin_resolver::ResolutionPolicy {
         reviewed_hashes,
         require_reviewed,
     };
-    let resolved = crate::services::step_resolver::resolve_uses_steps(steps, step_index, &policy)?;
+    let resolved = crate::services::plugin_resolver::resolve_uses_steps(steps, plugin_index, &policy)?;
 
     let mut output = String::new();
     let mut images = Vec::new();
@@ -182,7 +182,7 @@ fn plan(
 }
 
 fn shared_reviewed_hashes(path: &Path) -> std::collections::HashSet<String> {
-    crate::services::step_resolver::load_reviewed_hashes(&path.to_string_lossy())
+    crate::services::plugin_resolver::load_reviewed_hashes(&path.to_string_lossy())
 }
 
 #[cfg(test)]

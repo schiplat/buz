@@ -164,8 +164,8 @@ pub async fn health(
     // (nothing cloned yet) stays honest about having no review ledger.
     let manifest_path = crate::services::platform_settings::effective(
         &state.pool,
-        crate::services::platform_settings::KEY_STEP_REVIEWED_MANIFEST,
-        &state.config.step_index.reviewed_manifest,
+        crate::services::platform_settings::KEY_PLUGIN_REVIEWED_MANIFEST,
+        &state.config.plugin_index.reviewed_manifest,
     )
     .await;
     let manifest_configured =
@@ -174,8 +174,8 @@ pub async fn health(
         "manifest_configured": manifest_configured,
         "require_reviewed": crate::services::platform_settings::effective(
             &state.pool,
-            crate::services::platform_settings::KEY_STEP_REVIEW_REQUIRED,
-            &state.config.step_index.require_reviewed.to_string(),
+            crate::services::platform_settings::KEY_PLUGIN_REVIEW_REQUIRED,
+            &state.config.plugin_index.require_reviewed.to_string(),
         )
         .await
         == "true",

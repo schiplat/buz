@@ -305,8 +305,8 @@ pub async fn upsert_from_yaml(
 
     // Resolve all templates before mutating the current DB projection. This
     // preserves the previous task set when a new YAML version cannot resolve.
-    let http = crate::services::step_pool::http_client(sync_timeout_secs);
-    let resolved_steps = crate::services::step_resolver::resolve_uses_steps_async(
+    let http = crate::services::plugin_pool::http_client(sync_timeout_secs);
+    let resolved_steps = crate::services::plugin_resolver::resolve_uses_steps_async(
         parsed_steps,
         step_index_dir.to_path_buf(),
         pool,
@@ -395,7 +395,7 @@ pub async fn upsert_from_yaml(
             .await?;
 
         insert_steps(&mut *tx, &id, &steps).await?;
-        crate::services::step_resolver::replace_step_resolutions(&mut *tx, &id, &resolutions)
+        crate::services::plugin_resolver::replace_step_resolutions(&mut *tx, &id, &resolutions)
             .await
             .map_err(anyhow::Error::msg)?;
 
@@ -501,7 +501,7 @@ pub async fn upsert_from_yaml(
         .await?;
 
         insert_steps(&mut *tx, &id, &steps).await?;
-        crate::services::step_resolver::replace_step_resolutions(&mut *tx, &id, &resolutions)
+        crate::services::plugin_resolver::replace_step_resolutions(&mut *tx, &id, &resolutions)
             .await
             .map_err(anyhow::Error::msg)?;
 

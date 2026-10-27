@@ -169,7 +169,7 @@ async fn test_app() -> (Router, sqlx::SqlitePool) {
             runner: Default::default(),
             pipeline: Default::default(),
             standalone: Default::default(),
-            step_index: Default::default(),
+            plugin_index: Default::default(),
             storage: Default::default(),
             clock: Default::default(),
             logging: Default::default(),
@@ -197,7 +197,7 @@ async fn add_source(app: &Router, jwt: &str, url: &str) -> serde_json::Value {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/admin/step-sources")
+                .uri("/api/v1/admin/plugin-sources")
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
@@ -269,13 +269,13 @@ async fn community_source_curates_resolves_and_gates() {
     // The spawned background sync races the mock server in this
     // single-threaded test runtime, so the fetch is exercised
     // deterministically here (same call the spawn performs).
-    let source = crate::services::step_pool::get_source(&pool, &source_id)
+    let source = crate::services::plugin_pool::get_source(&pool, &source_id)
         .await
         .unwrap()
         .expect("source row");
-    let http = crate::services::step_pool::http_client(60);
+    let http = crate::services::plugin_pool::http_client(60);
     let count =
-        crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
             .await
             .expect("deterministic sync of the staged source");
     assert_eq!(count, 3, "index entries staged");
@@ -294,7 +294,7 @@ async fn community_source_curates_resolves_and_gates() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/api/v1/admin/step-pool/alice/broken-fetch/0.1.0")
+                .uri("/api/v1/admin/plugin-pool/alice/broken-fetch/0.1.0")
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(r#"{ "enabled": true }"#))
@@ -304,7 +304,7 @@ async fn community_source_curates_resolves_and_gates() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let staged: (i64,) =
-        sqlx::query_as("SELECT enabled FROM step_pool WHERE step_id = 'broken-fetch'")
+        sqlx::query_as("SELECT enabled FROM plugin_pool WHERE step_id = 'broken-fetch'")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -316,7 +316,7 @@ async fn community_source_curates_resolves_and_gates() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/api/v1/admin/step-pool/alice/broken-hash/0.1.1")
+                .uri("/api/v1/admin/plugin-pool/alice/broken-hash/0.1.1")
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(r#"{ "enabled": true }"#))
@@ -332,7 +332,7 @@ async fn community_source_curates_resolves_and_gates() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/api/v1/admin/step-pool/alice/oss-upload/1.0.0")
+                .uri("/api/v1/admin/plugin-pool/alice/oss-upload/1.0.0")
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(r#"{ "enabled": true }"#))
@@ -344,7 +344,7 @@ async fn community_source_curates_resolves_and_gates() {
 
     // 1b. Per-plugin refresh via meta.json: discovers 1.1.0 (staged, since
     // the meta path never auto-enables) and preserves the enabled 1.0.0.
-    let refreshed = crate::services::step_pool::refresh_plugin(
+    let refreshed = crate::services::plugin_pool::refresh_plugin(
         &reqwest::Client::new(),
         &pool,
         "alice",
@@ -404,7 +404,7 @@ async fn community_source_curates_resolves_and_gates() {
     // (The spawn_source_server index is fixed; extend it via a second server
     // is overkill — instead drive refresh against the same index plus a
     // hand-inserted row simulating a curator-enabled older version.)
-    let refreshed = crate::services::step_pool::refresh_plugin(
+    let refreshed = crate::services::plugin_pool::refresh_plugin(
         &reqwest::Client::new(),
         &pool,
         "alice",
@@ -434,7 +434,7 @@ async fn community_source_curates_resolves_and_gates() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/api/v1/admin/settings/step_reviewed_manifest")
+                .uri("/api/v1/admin/settings/plugin_reviewed_manifest")
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
@@ -450,7 +450,7 @@ async fn community_source_curates_resolves_and_gates() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/api/v1/admin/settings/step_review_required")
+                .uri("/api/v1/admin/settings/plugin_review_required")
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(r#"{ "value": "true" }"#))
@@ -489,7 +489,7 @@ async fn official_source_seeds_and_startup_sync_populates_pool() {
     run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
 
     let seeded: (String, String, i64, i64) = sqlx::query_as(
-        "SELECT name, url, auto_enable, enabled FROM step_sources WHERE id = 'official'",
+        "SELECT name, url, auto_enable, enabled FROM plugin_sources WHERE id = 'official'",
     )
     .fetch_one(&pool)
     .await
@@ -551,12 +551,12 @@ run: |
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     // Point the official source at the mock and run the startup sync.
-    sqlx::query("UPDATE step_sources SET url = ? WHERE id = 'official'")
+    sqlx::query("UPDATE plugin_sources SET url = ? WHERE id = 'official'")
         .bind(format!("http://{addr}/index.json"))
         .execute(&pool)
         .await
         .unwrap();
-    let synced = crate::services::step_pool::sync_all_enabled(
+    let synced = crate::services::plugin_pool::sync_all_enabled(
         &pool,
         &reqwest::Client::new(),
         shared::version::VERSION,
@@ -565,7 +565,7 @@ run: |
     assert_eq!(synced, 1);
 
     let entry: (String, i64, i64) =
-        sqlx::query_as("SELECT version, enabled, reviewed FROM step_pool WHERE step_id = 'demo'")
+        sqlx::query_as("SELECT version, enabled, reviewed FROM plugin_pool WHERE step_id = 'demo'")
             .fetch_one(&pool)
             .await
             .expect("pool row for buz/demo");
@@ -578,9 +578,9 @@ run: |
 
 /// Find one plugin's pool row in a test assertion (panics with the id).
 fn pool_row_for<'a>(
-    rows: &'a [crate::services::step_pool::PoolRow],
+    rows: &'a [crate::services::plugin_pool::PoolRow],
     step_id: &str,
-) -> &'a crate::services::step_pool::PoolRow {
+) -> &'a crate::services::plugin_pool::PoolRow {
     rows.iter()
         .find(|row| row.step_id == step_id)
         .unwrap_or_else(|| panic!("pool row for bob/{step_id}"))
@@ -689,23 +689,23 @@ run: |
         .expect("open in-memory db");
     run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
     sqlx::query(
-        "INSERT INTO step_sources (id, name, url, auto_enable, enabled) \
+        "INSERT INTO plugin_sources (id, name, url, auto_enable, enabled) \
          VALUES ('src-compat', 'compat', ?, 0, 1)",
     )
     .bind(format!("http://{addr}/index.json"))
     .execute(&pool)
     .await
     .unwrap();
-    let source = crate::services::step_pool::get_source(&pool, "src-compat")
+    let source = crate::services::plugin_pool::get_source(&pool, "src-compat")
         .await
         .unwrap()
         .expect("source row");
-    let http = crate::services::step_pool::http_client(60);
+    let http = crate::services::plugin_pool::http_client(60);
 
     // First sync: compatible → Some(true), too-new → Some(false) with the
     // gate's message, missing template → unknown (NULL, sync still succeeds).
     let count =
-        crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
             .await
             .expect("sync with compatibility verdicts");
     assert_eq!(count, 3);
@@ -715,7 +715,7 @@ run: |
     assert_eq!(progress.done_entries, 3);
     assert_eq!(progress.done_plugins, 3);
     assert!(progress.error.is_none());
-    let rows = crate::services::step_pool::list_pool(&pool).await.unwrap();
+    let rows = crate::services::plugin_pool::list_pool(&pool).await.unwrap();
     let compatible = pool_row_for(&rows, "compatible");
     assert_eq!(compatible.buz_compatible, Some(true));
     assert_eq!(compatible.requires_buz.as_deref(), Some(">=1.0.0"));
@@ -741,18 +741,18 @@ run: |
     }
 
     // Re-sync without a version change: cached verdicts are kept.
-    crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+    crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
         .await
         .expect("re-sync");
-    let rows = crate::services::step_pool::list_pool(&pool).await.unwrap();
+    let rows = crate::services::plugin_pool::list_pool(&pool).await.unwrap();
     assert_eq!(pool_row_for(&rows, "too-new").buz_compatible, Some(false));
 
     // Manager upgrade: syncing under a newer build re-verifies — the
     // previously too-new entry becomes compatible.
-    crate::services::step_pool::sync_source(&http, &pool, &source, "99.0.0")
+    crate::services::plugin_pool::sync_source(&http, &pool, &source, "99.0.0")
         .await
         .expect("re-sync under new manager version");
-    let rows = crate::services::step_pool::list_pool(&pool).await.unwrap();
+    let rows = crate::services::plugin_pool::list_pool(&pool).await.unwrap();
     let too_new = pool_row_for(&rows, "too-new");
     assert_eq!(
         too_new.buz_compatible,
@@ -840,25 +840,25 @@ run: |
         .expect("open in-memory db");
     run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
     sqlx::query(
-        "INSERT INTO step_sources (id, name, url, auto_enable, enabled) \
+        "INSERT INTO plugin_sources (id, name, url, auto_enable, enabled) \
          VALUES ('src-auto', 'auto', ?, 1, 1)",
     )
     .bind(format!("http://{addr}/index.json"))
     .execute(&pool)
     .await
     .unwrap();
-    let source = crate::services::step_pool::get_source(&pool, "src-auto")
+    let source = crate::services::plugin_pool::get_source(&pool, "src-auto")
         .await
         .unwrap()
         .expect("source row");
-    let http = crate::services::step_pool::http_client(60);
+    let http = crate::services::plugin_pool::http_client(60);
 
-    crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+    crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
         .await
         .expect("init sync");
 
     let enabled: Vec<String> =
-        sqlx::query_as("SELECT version FROM step_pool WHERE enabled = 1 ORDER BY version")
+        sqlx::query_as("SELECT version FROM plugin_pool WHERE enabled = 1 ORDER BY version")
             .fetch_all(&pool)
             .await
             .unwrap()
@@ -871,7 +871,7 @@ run: |
         "exactly the latest compatible version initializes enabled"
     );
     let too_new: (i64, Option<i64>) =
-        sqlx::query_as("SELECT enabled, buz_compatible FROM step_pool WHERE version = '2.0.0'")
+        sqlx::query_as("SELECT enabled, buz_compatible FROM plugin_pool WHERE version = '2.0.0'")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -879,14 +879,14 @@ run: |
 
     // The curator locks the plugin (disables 1.1.0): later syncs must keep
     // every verdict — no version quietly re-enables, not even on re-check.
-    sqlx::query("UPDATE step_pool SET enabled = 0 WHERE version = '1.1.0'")
+    sqlx::query("UPDATE plugin_pool SET enabled = 0 WHERE version = '1.1.0'")
         .execute(&pool)
         .await
         .unwrap();
-    crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+    crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
         .await
         .expect("re-sync after curator lock");
-    let (enabled,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM step_pool WHERE enabled = 1")
+    let (enabled,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM plugin_pool WHERE enabled = 1")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -967,24 +967,24 @@ async fn full_meta_source_probes_files_on_staging() {
         .expect("open in-memory db");
     run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
     sqlx::query(
-        "INSERT INTO step_sources (id, name, url, auto_enable, enabled) \
+        "INSERT INTO plugin_sources (id, name, url, auto_enable, enabled) \
          VALUES ('src-meta', 'meta', ?, 0, 1)",
     )
     .bind(format!("http://{addr}/index.json"))
     .execute(&pool)
     .await
     .unwrap();
-    let source = crate::services::step_pool::get_source(&pool, "src-meta")
+    let source = crate::services::plugin_pool::get_source(&pool, "src-meta")
         .await
         .unwrap()
         .expect("source row");
-    let http = crate::services::step_pool::http_client(60);
+    let http = crate::services::plugin_pool::http_client(60);
 
-    crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+    crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
         .await
         .expect("sync from full-meta index");
 
-    let rows = crate::services::step_pool::list_pool(&pool).await.unwrap();
+    let rows = crate::services::plugin_pool::list_pool(&pool).await.unwrap();
     let row = |step_id: &str| {
         rows.iter()
             .find(|row| row.step_id == step_id)
@@ -1039,7 +1039,7 @@ async fn mirror_endpoint_serves_sync_when_canonical_is_unreachable() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/admin/step-sources")
+                .uri("/api/v1/admin/plugin-sources")
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
@@ -1070,18 +1070,18 @@ async fn mirror_endpoint_serves_sync_when_canonical_is_unreachable() {
 
     // Deterministic sync (the same call the spawned background task makes):
     // index, reviews, and the template file all come from the mirror.
-    let source = crate::services::step_pool::get_source(&pool, &source_id)
+    let source = crate::services::plugin_pool::get_source(&pool, &source_id)
         .await
         .expect("get source")
         .expect("source exists");
-    let http = crate::services::step_pool::http_client(30);
+    let http = crate::services::plugin_pool::http_client(30);
     let count =
-        crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
             .await
             .expect("sync must succeed through the mirror");
     assert!(count > 0, "mirror sync must stage pool rows");
 
-    let refreshed = crate::services::step_pool::get_source(&pool, &source_id)
+    let refreshed = crate::services::plugin_pool::get_source(&pool, &source_id)
         .await
         .expect("get source")
         .expect("source exists");
@@ -1096,7 +1096,7 @@ async fn mirror_endpoint_serves_sync_when_canonical_is_unreachable() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/admin/step-pool")
+                .uri("/api/v1/admin/plugin-pool")
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -1132,7 +1132,7 @@ async fn mirror_check_reports_in_sync_across_identical_servers() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/admin/step-sources")
+                .uri("/api/v1/admin/plugin-sources")
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
@@ -1159,8 +1159,8 @@ async fn mirror_check_reports_in_sync_across_identical_servers() {
         .expect("source id")
         .to_string();
 
-    let report = crate::services::step_pool::check_mirror(
-        &crate::services::step_pool::http_client(30),
+    let report = crate::services::plugin_pool::check_mirror(
+        &crate::services::plugin_pool::http_client(30),
         &pool,
         &source_id,
     )
@@ -1192,7 +1192,7 @@ async fn mirror_check_reports_out_of_sync_when_mirror_content_drifted() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/admin/step-sources")
+                .uri("/api/v1/admin/plugin-sources")
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(
@@ -1214,8 +1214,8 @@ async fn mirror_check_reports_out_of_sync_when_mirror_content_drifted() {
         .expect("source id")
         .to_string();
 
-    let report = crate::services::step_pool::check_mirror(
-        &crate::services::step_pool::http_client(30),
+    let report = crate::services::plugin_pool::check_mirror(
+        &crate::services::plugin_pool::http_client(30),
         &pool,
         &source_id,
     )
@@ -1247,13 +1247,13 @@ async fn sync_error_includes_the_raw_response_when_index_is_not_json() {
         .expect("source id")
         .to_string();
 
-    let source = crate::services::step_pool::get_source(&pool, &source_id)
+    let source = crate::services::plugin_pool::get_source(&pool, &source_id)
         .await
         .expect("get source")
         .expect("source exists");
-    let http = crate::services::step_pool::http_client(30);
+    let http = crate::services::plugin_pool::http_client(30);
     let error =
-        crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
             .await
             .unwrap_err()
             .to_string();
@@ -1274,8 +1274,8 @@ async fn mirror_check_requires_a_configured_mirror() {
         .expect("source id")
         .to_string();
 
-    let error = crate::services::step_pool::check_mirror(
-        &crate::services::step_pool::http_client(30),
+    let error = crate::services::plugin_pool::check_mirror(
+        &crate::services::plugin_pool::http_client(30),
         &pool,
         &source_id,
     )
@@ -1303,12 +1303,12 @@ async fn pool_toggle_writes_an_audit_record_with_the_diff() {
         .expect("source id")
         .to_string();
     // Deterministic sync so the pool row exists.
-    let source = crate::services::step_pool::get_source(&pool, &source_id)
+    let source = crate::services::plugin_pool::get_source(&pool, &source_id)
         .await
         .expect("get source")
         .expect("source exists");
-    let http = crate::services::step_pool::http_client(30);
-    crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+    let http = crate::services::plugin_pool::http_client(30);
+    crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
         .await
         .expect("sync");
 
@@ -1319,7 +1319,7 @@ async fn pool_toggle_writes_an_audit_record_with_the_diff() {
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri("/api/v1/admin/step-pool/alice/oss-upload/1.0.0")
+                    .uri("/api/v1/admin/plugin-pool/alice/oss-upload/1.0.0")
                     .header(AUTHORIZATION, format!("Bearer {jwt}"))
                     .header("Content-Type", "application/json")
                     .body(Body::from(format!(r#"{{ "enabled": {enabled} }}"#)))
@@ -1334,22 +1334,22 @@ async fn pool_toggle_writes_an_audit_record_with_the_diff() {
 
     let rows: Vec<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT action, resource_type, resource_id, before_json, after_json \
-         FROM audit_logs WHERE action = 'step_pool.toggle' ORDER BY created_at",
+         FROM audit_logs WHERE action = 'plugin_pool.toggle' ORDER BY created_at",
     )
     .fetch_all(&pool)
     .await
     .unwrap();
     assert_eq!(rows.len(), 2, "one record per toggle: {rows:?}");
     for (action, resource_type, resource_id, before, after) in &rows {
-        assert_eq!(action, "step_pool.toggle");
-        assert_eq!(resource_type, "step_pool");
+        assert_eq!(action, "plugin_pool.toggle");
+        assert_eq!(resource_type, "plugin_pool");
         assert_eq!(resource_id, "alice/oss-upload@1.0.0");
         assert!(before.is_some() && after.is_some(), "{before:?} {after:?}");
     }
     // Curation provenance lands on the row itself (state), while the audit
     // log above carries the event stream.
     let provenance: (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT updated_by, updated_at FROM step_pool WHERE step_id = 'oss-upload'")
+        sqlx::query_as("SELECT updated_by, updated_at FROM plugin_pool WHERE step_id = 'oss-upload'")
             .fetch_one(&pool)
             .await
             .unwrap();

@@ -177,16 +177,16 @@ pub async fn create_file(
         &scan_dir,
         &filename,
         &yaml,
-        &crate::services::step_resolver::effective_local_dir(
+        &crate::services::plugin_resolver::effective_local_dir(
             &state.config.storage.data_dir,
-            &state.config.step_index.local_dir,
+            &state.config.plugin_index.local_dir,
         )
         .map_err(|e| AppError::Internal(e.to_string()))?,
         None,
         crate::services::platform_settings::effective(
             &state.pool,
-            crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
-            &state.config.step_index.sync_timeout_seconds.to_string(),
+            crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+            &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
         .await
         .parse()
@@ -270,16 +270,16 @@ pub async fn put_file(
         &scan_dir,
         &filename,
         &yaml,
-        &crate::services::step_resolver::effective_local_dir(
+        &crate::services::plugin_resolver::effective_local_dir(
             &state.config.storage.data_dir,
-            &state.config.step_index.local_dir,
+            &state.config.plugin_index.local_dir,
         )
         .map_err(|e| AppError::Internal(e.to_string()))?,
         req.pipeline_id.as_deref(),
         crate::services::platform_settings::effective(
             &state.pool,
-            crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
-            &state.config.step_index.sync_timeout_seconds.to_string(),
+            crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+            &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
         .await
         .parse()

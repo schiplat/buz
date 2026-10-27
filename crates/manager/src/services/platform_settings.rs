@@ -4,16 +4,16 @@
 //! "use the default". Values are plain strings; interpretation and validation
 //! live in [`setting_meta`]. Editing happens through the admin settings API;
 //! resolver-affecting keys additionally push a runtime override into
-//! `step_resolver` so changes take effect without a restart.
+//! `plugin_resolver` so changes take effect without a restart.
 
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 
 pub const KEY_MARKETPLACE_URL: &str = "marketplace_url";
-pub const KEY_STEP_REVIEW_REQUIRED: &str = "step_review_required";
-pub const KEY_STEP_INDEX_LOCAL_DIR: &str = "step_index_local_dir";
-pub const KEY_STEP_REVIEWED_MANIFEST: &str = "step_reviewed_manifest";
-pub const KEY_STEP_SYNC_TIMEOUT: &str = "step_sync_timeout";
+pub const KEY_PLUGIN_REVIEW_REQUIRED: &str = "plugin_review_required";
+pub const KEY_PLUGIN_INDEX_LOCAL_DIR: &str = "plugin_index_local_dir";
+pub const KEY_PLUGIN_REVIEWED_MANIFEST: &str = "plugin_reviewed_manifest";
+pub const KEY_PLUGIN_SYNC_TIMEOUT: &str = "plugin_sync_timeout";
 
 /// Default source-sync timeout (seconds) — the single source of truth: the
 /// manager.toml serde default, the settings API default, and the HTTP client
@@ -31,10 +31,10 @@ pub enum SettingKind {
 pub fn setting_kind(key: &str) -> Option<SettingKind> {
     match key {
         KEY_MARKETPLACE_URL => Some(SettingKind::Url),
-        KEY_STEP_REVIEW_REQUIRED => Some(SettingKind::Bool),
-        KEY_STEP_INDEX_LOCAL_DIR => Some(SettingKind::Path),
-        KEY_STEP_REVIEWED_MANIFEST => Some(SettingKind::Path),
-        KEY_STEP_SYNC_TIMEOUT => Some(SettingKind::Number),
+        KEY_PLUGIN_REVIEW_REQUIRED => Some(SettingKind::Bool),
+        KEY_PLUGIN_INDEX_LOCAL_DIR => Some(SettingKind::Path),
+        KEY_PLUGIN_REVIEWED_MANIFEST => Some(SettingKind::Path),
+        KEY_PLUGIN_SYNC_TIMEOUT => Some(SettingKind::Number),
         _ => None,
     }
 }
@@ -58,11 +58,11 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
         SettingKind::Bool => value
             .parse::<bool>()
             .map(|_| ())
-            .map_err(|_| "step_review_required must be 'true' or 'false'".into()),
+            .map_err(|_| "plugin_review_required must be 'true' or 'false'".into()),
         SettingKind::Path => {
-            // step_reviewed_manifest may be empty (= review gate disabled);
+            // plugin_reviewed_manifest may be empty (= review gate disabled);
             // other paths must exist as a meaningful setting.
-            if key == KEY_STEP_REVIEWED_MANIFEST || !value.trim().is_empty() {
+            if key == KEY_PLUGIN_REVIEWED_MANIFEST || !value.trim().is_empty() {
                 Ok(())
             } else {
                 Err("path must not be empty".into())
@@ -72,14 +72,14 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
             let secs: u64 = value
                 .trim()
                 .parse()
-                .map_err(|_| String::from("step_sync_timeout must be a whole number of seconds"))?;
+                .map_err(|_| String::from("plugin_sync_timeout must be a whole number of seconds"))?;
             // 0 disables the timeout entirely (reqwest semantics) — legal in
             // a config file for special cases, but flagged loudly in the UI
             // because a hung source then blocks pipeline saves indefinitely.
             if secs == 0 || (5..=300).contains(&secs) {
                 Ok(())
             } else {
-                Err("step_sync_timeout must be 0 (disable) or between 5 and 300 seconds".into())
+                Err("plugin_sync_timeout must be 0 (disable) or between 5 and 300 seconds".into())
             }
         }
     }
@@ -91,10 +91,10 @@ pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
     let rows: Vec<(String, String)> =
         sqlx::query_as("SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?)")
             .bind(KEY_MARKETPLACE_URL)
-            .bind(KEY_STEP_REVIEW_REQUIRED)
-            .bind(KEY_STEP_INDEX_LOCAL_DIR)
-            .bind(KEY_STEP_REVIEWED_MANIFEST)
-            .bind(KEY_STEP_SYNC_TIMEOUT)
+            .bind(KEY_PLUGIN_REVIEW_REQUIRED)
+            .bind(KEY_PLUGIN_INDEX_LOCAL_DIR)
+            .bind(KEY_PLUGIN_REVIEWED_MANIFEST)
+            .bind(KEY_PLUGIN_SYNC_TIMEOUT)
             .fetch_all(pool)
             .await
             .unwrap_or_default();
@@ -145,20 +145,20 @@ mod tests {
 
     #[test]
     fn validate_bool_rejects_junk() {
-        assert!(validate_value(KEY_STEP_REVIEW_REQUIRED, "true").is_ok());
-        assert!(validate_value(KEY_STEP_REVIEW_REQUIRED, "yes").is_err());
-        assert!(validate_value(KEY_STEP_REVIEW_REQUIRED, "").is_err());
+        assert!(validate_value(KEY_PLUGIN_REVIEW_REQUIRED, "true").is_ok());
+        assert!(validate_value(KEY_PLUGIN_REVIEW_REQUIRED, "yes").is_err());
+        assert!(validate_value(KEY_PLUGIN_REVIEW_REQUIRED, "").is_err());
     }
 
     #[test]
     fn validate_sync_timeout_zero_is_explicit_disable() {
         // 0 = timeout disabled (reqwest semantics) — legal but dangerous,
         // the UI flags it loudly.
-        assert!(validate_value(KEY_STEP_SYNC_TIMEOUT, "0").is_ok());
-        assert!(validate_value(KEY_STEP_SYNC_TIMEOUT, "60").is_ok());
-        assert!(validate_value(KEY_STEP_SYNC_TIMEOUT, "300").is_ok());
-        assert!(validate_value(KEY_STEP_SYNC_TIMEOUT, "301").is_err());
-        assert!(validate_value(KEY_STEP_SYNC_TIMEOUT, "4").is_err());
+        assert!(validate_value(KEY_PLUGIN_SYNC_TIMEOUT, "0").is_ok());
+        assert!(validate_value(KEY_PLUGIN_SYNC_TIMEOUT, "60").is_ok());
+        assert!(validate_value(KEY_PLUGIN_SYNC_TIMEOUT, "300").is_ok());
+        assert!(validate_value(KEY_PLUGIN_SYNC_TIMEOUT, "301").is_err());
+        assert!(validate_value(KEY_PLUGIN_SYNC_TIMEOUT, "4").is_err());
     }
 
     #[test]
@@ -171,8 +171,8 @@ mod tests {
 
     #[test]
     fn validate_path_rejects_empty() {
-        assert!(validate_value(KEY_STEP_INDEX_LOCAL_DIR, "/srv/steps").is_ok());
-        assert!(validate_value(KEY_STEP_INDEX_LOCAL_DIR, "  ").is_err());
+        assert!(validate_value(KEY_PLUGIN_INDEX_LOCAL_DIR, "/srv/steps").is_ok());
+        assert!(validate_value(KEY_PLUGIN_INDEX_LOCAL_DIR, "  ").is_err());
     }
 
     #[test]

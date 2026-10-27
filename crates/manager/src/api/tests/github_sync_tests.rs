@@ -46,7 +46,7 @@ fn test_config() -> Config {
             yaml_scan_interval_seconds: 3600,
         },
         standalone: Default::default(),
-        step_index: Default::default(),
+        plugin_index: Default::default(),
         storage: Default::default(),
         clock: Default::default(),
         logging: Default::default(),

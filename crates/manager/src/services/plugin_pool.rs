@@ -10,7 +10,7 @@
 //! sha256 + gate evaluation, content-cached) so listed-but-missing files
 //! surface as red pool rows, and template content is fetched on demand,
 //! verified against the pinned sha256, and cached content-addressed under
-//! `<data_dir>/step-index-cache/templates/`.
+//! `<data_dir>/plugin-index-cache/templates/`.
 
 use anyhow::anyhow;
 use serde::Deserialize;
@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 
-use crate::services::step_resolver::{self, ResolutionPolicy, ResolvedStep};
+use crate::services::plugin_resolver::{self, ResolutionPolicy, ResolvedStep};
 
 /// URL helpers ----------------------------------------------------------------
 
@@ -188,7 +188,7 @@ pub struct PoolRow {
     pub meta: Option<PoolEntryMeta>,
 }
 
-/// Column tuple every step_pool row projection reads; `pool_row_from` is the
+/// Column tuple every plugin_pool row projection reads; `pool_row_from` is the
 /// single mapping so the three SELECT sites can't drift apart.
 type PoolRowSql = (
     String,
@@ -393,7 +393,7 @@ pub async fn list_sources(pool: &SqlitePool) -> Result<Vec<SourceRow>, anyhow::E
         Option<String>,
     )> = sqlx::query_as(
         "SELECT id, name, url, mirror_url, auto_enable, enabled, last_synced_at, last_sync_error \
-             FROM step_sources ORDER BY created_at",
+             FROM plugin_sources ORDER BY created_at",
     )
     .fetch_all(pool)
     .await?;
@@ -423,7 +423,7 @@ pub async fn get_source(pool: &SqlitePool, id: &str) -> Result<Option<SourceRow>
 pub async fn list_pool(pool: &SqlitePool) -> Result<Vec<PoolRow>, anyhow::Error> {
     let rows: Vec<PoolRowSql> = sqlx::query_as(&format!(
         "SELECT {POOL_ROW_COLUMNS} \
-         FROM step_pool p LEFT JOIN step_sources s ON s.id = p.source_id \
+         FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id \
          ORDER BY p.namespace, p.step_id, p.version"
     ))
     .fetch_all(pool)
@@ -439,7 +439,7 @@ async fn enabled_rows_for_namespace(
 ) -> Result<Vec<PoolRow>, anyhow::Error> {
     let rows: Vec<PoolRowSql> = sqlx::query_as(&format!(
         "SELECT {POOL_ROW_COLUMNS} \
-         FROM step_pool p LEFT JOIN step_sources s ON s.id = p.source_id \
+         FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id \
          WHERE p.namespace = ? AND p.step_id = ? AND p.enabled = 1",
     ))
     .bind(namespace)
@@ -481,7 +481,7 @@ async fn existing_rows_for_source(
     )> = sqlx::query_as(
         "SELECT namespace, step_id, version, reviewed, sha256, requires_buz, \
                 buz_compatible, compat_error, compat_checked_against \
-         FROM step_pool WHERE source_id = ?",
+         FROM plugin_pool WHERE source_id = ?",
     )
     .bind(source_id)
     .fetch_all(pool)
@@ -645,7 +645,7 @@ pub async fn sync_source(
     // clears any stale error from a previous failed attempt.
     let stamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let _ = sqlx::query(
-        "UPDATE step_sources SET last_synced_at = ?, \
+        "UPDATE plugin_sources SET last_synced_at = ?, \
          enabled = ?, last_sync_error = ? WHERE id = ?",
     )
     .bind(&stamp)
@@ -792,7 +792,7 @@ async fn sync_source_inner(
                 &entry.engine,
             );
             sqlx::query(
-                "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path, \
+                "INSERT INTO plugin_pool (namespace, step_id, version, sha256, source_id, file_path, \
                                         enabled, reviewed, added_by, requires_buz, buz_compatible, \
                                         compat_error, compat_checked_against, meta_json)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sync', ?, ?, ?, ?, ?)
@@ -847,7 +847,7 @@ pub async fn refresh_plugin(
     current_buz: &str,
 ) -> anyhow::Result<Vec<PoolRow>> {
     let (source_id, file_path): (String, String) = sqlx::query_as(
-        "SELECT source_id, file_path FROM step_pool WHERE namespace = ? AND step_id = ? LIMIT 1",
+        "SELECT source_id, file_path FROM plugin_pool WHERE namespace = ? AND step_id = ? LIMIT 1",
     )
     .bind(namespace)
     .bind(step_id)
@@ -897,7 +897,7 @@ pub async fn refresh_plugin(
 
     let rows: Vec<PoolRow> = sqlx::query_as(&format!(
         "SELECT {POOL_ROW_COLUMNS} \
-         FROM step_pool p LEFT JOIN step_sources s ON s.id = p.source_id \
+         FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id \
          WHERE p.namespace = ? AND p.step_id = ? \
          ORDER BY p.version",
     ))
@@ -1019,7 +1019,7 @@ async fn upsert_plugin_meta(
             &entry.engine,
         );
         sqlx::query(
-            "INSERT INTO step_pool (namespace, step_id, version, sha256, source_id, file_path, \
+            "INSERT INTO plugin_pool (namespace, step_id, version, sha256, source_id, file_path, \
                                     enabled, reviewed, added_by, requires_buz, buz_compatible, \
                                     compat_error, compat_checked_against, meta_json)
              VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'refresh', ?, ?, ?, ?, ?)
@@ -1067,7 +1067,7 @@ pub async fn verify_entry(
     current_buz: &str,
 ) -> Result<(), String> {
     let (sha256, source_id, file_path): (String, String, String) = sqlx::query_as(
-        "SELECT sha256, source_id, file_path FROM step_pool \
+        "SELECT sha256, source_id, file_path FROM plugin_pool \
          WHERE namespace = ? AND step_id = ? AND version = ?",
     )
     .bind(namespace)
@@ -1244,15 +1244,15 @@ pub async fn resolve_remote(
             let best = if parts.len() < 3 {
                 matched
                     .iter()
-                    .map(|row| step_resolver::version_triple(&row.version).unwrap_or((0, 0, 0)))
+                    .map(|row| plugin_resolver::version_triple(&row.version).unwrap_or((0, 0, 0)))
                     .max()
                     .expect("matched is non-empty")
             } else {
-                step_resolver::version_triple(v).expect("validated X.Y.Z above")
+                plugin_resolver::version_triple(v).expect("validated X.Y.Z above")
             };
             let row = matched
                 .iter()
-                .find(|row| step_resolver::version_triple(&row.version) == Some(best))
+                .find(|row| plugin_resolver::version_triple(&row.version) == Some(best))
                 .expect("non-empty");
             let source = get_source(pool, &row.source_id)
                 .await
@@ -1390,14 +1390,14 @@ pub async fn resolve_remote(
 }
 
 /// Fetch template content with sha256 verification and a content-addressed
-/// cache under `<data_dir>/step-index-cache/templates/`.
+/// cache under `<data_dir>/plugin-index-cache/templates/`.
 async fn fetch_content(
     http: &reqwest::Client,
     bases: &[String],
     file_path: &str,
     sha256: &str,
 ) -> Result<String, String> {
-    let cache = PathBuf::from("data/step-index-cache/templates").join(format!("{sha256}.yaml"));
+    let cache = PathBuf::from("data/plugin-index-cache/templates").join(format!("{sha256}.yaml"));
     if let Ok(raw) = tokio::fs::read_to_string(&cache).await {
         if sha256_hex(&raw) == sha256 {
             return Ok(raw);
@@ -1420,7 +1420,7 @@ async fn fetch_content(
 }
 
 /// Build the source-sync HTTP client. The timeout is the single
-/// `step_sync_timeout` setting (manager.toml default + DB override) — every
+/// `plugin_sync_timeout` setting (manager.toml default + DB override) — every
 /// caller constructs through here so there is exactly one place it lives.
 pub fn http_client(timeout_secs: u64) -> reqwest::Client {
     reqwest::Client::builder()

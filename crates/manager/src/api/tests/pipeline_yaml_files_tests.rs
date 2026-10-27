@@ -13,7 +13,7 @@ use tower::ServiceExt;
 
 use crate::api;
 use crate::config::{
-    AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig, StepIndexConfig,
+    AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig, PluginIndexConfig,
 };
 use crate::db::run_migrations;
 use crate::services::log_broadcast::LogBroadcaster;
@@ -37,7 +37,7 @@ fn test_config(scan_dir: &str) -> Config {
             yaml_scan_interval_seconds: 3600,
         },
         standalone: Default::default(),
-        step_index: StepIndexConfig {
+        plugin_index: PluginIndexConfig {
             local_dir: scan_dir.into(),
             ..Default::default()
         },

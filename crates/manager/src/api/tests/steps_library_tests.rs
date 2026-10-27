@@ -50,13 +50,13 @@ async fn test_app_with_dir(dir: &std::path::Path) -> (Router, String) {
         runner: RunnerConfig::default(),
         pipeline: PipelineConfig::default(),
         standalone: Default::default(),
-        step_index: Default::default(),
+        plugin_index: Default::default(),
         storage: Default::default(),
         clock: Default::default(),
         logging: Default::default(),
         marketplace_url: String::new(),
     };
-    config.step_index.local_dir = dir.to_string_lossy().into_owned();
+    config.plugin_index.local_dir = dir.to_string_lossy().into_owned();
 
     let state = AppState {
         pool,

@@ -12,7 +12,7 @@
 //! audit::record(
 //!     &state.pool,
 //!     AuditEvent::new(Action::StepPoolToggle, &auth)
-//!         .on(Resource::step_pool(&ns, &step_id, &version))
+//!         .on(Resource::plugin_pool(&ns, &step_id, &version))
 //!         .changes(Some(json!({ "enabled": before })), Some(json!({ "enabled": after }))),
 //! )
 //! .await;
@@ -119,11 +119,11 @@ pub enum Action {
     SettingReset,
     SettingUpdate,
 
-    // step_pool
+    // plugin_pool
     StepPoolToggle,
     StepPoolRefresh,
 
-    // step_source
+    // plugin_source
     StepSourceCreate,
     StepSourceDelete,
     StepSourceSync,
@@ -210,11 +210,11 @@ impl Action {
             Action::SecretUpdate => "secret.update",
             Action::SettingReset => "setting.reset",
             Action::SettingUpdate => "setting.update",
-            Action::StepPoolToggle => "step_pool.toggle",
-            Action::StepPoolRefresh => "step_pool.refresh",
-            Action::StepSourceCreate => "step_source.create",
-            Action::StepSourceDelete => "step_source.delete",
-            Action::StepSourceSync => "step_source.sync",
+            Action::StepPoolToggle => "plugin_pool.toggle",
+            Action::StepPoolRefresh => "plugin_pool.refresh",
+            Action::StepSourceCreate => "plugin_source.create",
+            Action::StepSourceDelete => "plugin_source.delete",
+            Action::StepSourceSync => "plugin_source.sync",
             Action::TeamCreate => "team.create",
             Action::TeamDelete => "team.delete",
             Action::TeamMemberRemove => "team.member_remove",
@@ -238,11 +238,11 @@ impl Action {
 /// keeps their formatting consistent across handlers.
 #[derive(Debug, Clone, Copy)]
 pub enum Resource<'a> {
-    StepSource {
+    PluginSource {
         id: &'a str,
         name: &'a str,
     },
-    StepPool {
+    PluginPool {
         namespace: &'a str,
         step_id: &'a str,
         version: &'a str,
@@ -270,12 +270,12 @@ pub enum Resource<'a> {
 }
 
 impl<'a> Resource<'a> {
-    pub fn step_source(id: &'a str, name: &'a str) -> Self {
-        Resource::StepSource { id, name }
+    pub fn plugin_source(id: &'a str, name: &'a str) -> Self {
+        Resource::PluginSource { id, name }
     }
 
-    pub fn step_pool(namespace: &'a str, step_id: &'a str, version: &'a str) -> Self {
-        Resource::StepPool {
+    pub fn plugin_pool(namespace: &'a str, step_id: &'a str, version: &'a str) -> Self {
+        Resource::PluginPool {
             namespace,
             step_id,
             version,
@@ -304,13 +304,13 @@ impl<'a> Resource<'a> {
 
     pub fn kind(&self) -> &'static str {
         match self {
-            Resource::StepSource { .. } => "step_source",
-            Resource::StepPool { .. } => "step_pool",
+            Resource::PluginSource { .. } => "plugin_source",
+            Resource::PluginPool { .. } => "plugin_pool",
             Resource::Setting { .. } => "setting",
             Resource::Runner { .. } => "runner",
             Resource::Job { .. } => "job",
             Resource::User { .. } => "user",
-            Resource::StepPoolPlugin { .. } => "step_pool",
+            Resource::StepPoolPlugin { .. } => "plugin_pool",
         }
     }
 
@@ -318,11 +318,11 @@ impl<'a> Resource<'a> {
     /// for entries keyed by (namespace, step, version).
     pub fn id(&self) -> String {
         match self {
-            Resource::StepSource { id, .. }
+            Resource::PluginSource { id, .. }
             | Resource::Runner { id, .. }
             | Resource::Job { id, .. }
             | Resource::User { id, .. } => (*id).to_string(),
-            Resource::StepPool {
+            Resource::PluginPool {
                 namespace,
                 step_id,
                 version,
@@ -335,11 +335,11 @@ impl<'a> Resource<'a> {
     /// Human-facing name shown in the audit list.
     pub fn name(&self) -> String {
         match self {
-            Resource::StepSource { name, .. }
+            Resource::PluginSource { name, .. }
             | Resource::Runner { name, .. }
             | Resource::Job { name, .. }
             | Resource::User { name, .. } => (*name).to_string(),
-            Resource::StepPool { .. } | Resource::StepPoolPlugin { .. } => self.id(),
+            Resource::PluginPool { .. } | Resource::StepPoolPlugin { .. } => self.id(),
             Resource::Setting { key } => (*key).to_string(),
         }
     }

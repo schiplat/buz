@@ -176,21 +176,21 @@ pub async fn create(
     // them fails (e.g. a `uses:` step that cannot resolve), clean up so a
     // failed save never leaves a half-created pipeline behind.
     let create_result = async {
-        let http = crate::services::step_pool::http_client(
+        let http = crate::services::plugin_pool::http_client(
             crate::services::platform_settings::effective(
                 &state.pool,
-                crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
-                &state.config.step_index.sync_timeout_seconds.to_string(),
+                crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+                &state.config.plugin_index.sync_timeout_seconds.to_string(),
             )
             .await
             .parse()
             .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
         );
-        let resolved = crate::services::step_resolver::resolve_uses_steps_async(
+        let resolved = crate::services::plugin_resolver::resolve_uses_steps_async(
             req.steps,
-            crate::services::step_resolver::effective_local_dir(
+            crate::services::plugin_resolver::effective_local_dir(
                 &state.config.storage.data_dir,
-                &state.config.step_index.local_dir,
+                &state.config.plugin_index.local_dir,
             )
             .map_err(|e| AppError::Internal(e.to_string()))?,
             &state.pool,
@@ -199,7 +199,7 @@ pub async fn create(
         .await
         .map_err(AppError::ValidationFailed)?;
         let steps = insert_steps(&mut *tx, &pipeline_id, &resolved.steps).await?;
-        crate::services::step_resolver::replace_step_resolutions(
+        crate::services::plugin_resolver::replace_step_resolutions(
             &mut *tx,
             &pipeline_id,
             &resolved.resolutions,
@@ -495,21 +495,21 @@ pub async fn update(
     let environments_json =
         serde_json::to_string(&req.environments).unwrap_or_else(|_| "[]".into());
 
-    let http = crate::services::step_pool::http_client(
+    let http = crate::services::plugin_pool::http_client(
         crate::services::platform_settings::effective(
             &state.pool,
-            crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
-            &state.config.step_index.sync_timeout_seconds.to_string(),
+            crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+            &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
         .await
         .parse()
         .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
     );
-    let resolved_steps = crate::services::step_resolver::resolve_uses_steps_async(
+    let resolved_steps = crate::services::plugin_resolver::resolve_uses_steps_async(
         req.steps,
-        crate::services::step_resolver::effective_local_dir(
+        crate::services::plugin_resolver::effective_local_dir(
             &state.config.storage.data_dir,
-            &state.config.step_index.local_dir,
+            &state.config.plugin_index.local_dir,
         )
         .map_err(|e| AppError::Internal(e.to_string()))?,
         &state.pool,
@@ -592,7 +592,7 @@ pub async fn update(
         .await?;
 
     let steps = insert_steps(&mut *tx, &id, &resolved_steps.steps).await?;
-    crate::services::step_resolver::replace_step_resolutions(
+    crate::services::plugin_resolver::replace_step_resolutions(
         &mut *tx,
         &id,
         &resolved_steps.resolutions,
@@ -1114,16 +1114,16 @@ pub(crate) async fn do_trigger(
     crate::services::pipeline_scanner::sync_yaml_before_trigger(
         &state.pool,
         &state.config.pipeline.yaml_scan_dir,
-        &crate::services::step_resolver::effective_local_dir(
+        &crate::services::plugin_resolver::effective_local_dir(
             &state.config.storage.data_dir,
-            &state.config.step_index.local_dir,
+            &state.config.plugin_index.local_dir,
         )
         .map_err(|e| AppError::Internal(e.to_string()))?,
         pipeline_id,
         crate::services::platform_settings::effective(
             &state.pool,
-            crate::services::platform_settings::KEY_STEP_SYNC_TIMEOUT,
-            &state.config.step_index.sync_timeout_seconds.to_string(),
+            crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+            &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
         .await
         .parse()

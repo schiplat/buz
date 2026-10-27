@@ -16,8 +16,8 @@ use shared::protocol::response::ApiResponse;
 use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::PlatformAdmin;
 use crate::services::platform_settings::{
-    self, KEY_STEP_INDEX_LOCAL_DIR, KEY_STEP_REVIEWED_MANIFEST, KEY_STEP_REVIEW_REQUIRED,
-    KEY_STEP_SYNC_TIMEOUT,
+    self, KEY_PLUGIN_INDEX_LOCAL_DIR, KEY_PLUGIN_REVIEWED_MANIFEST, KEY_PLUGIN_REVIEW_REQUIRED,
+    KEY_PLUGIN_SYNC_TIMEOUT,
 };
 use crate::state::AppState;
 
@@ -46,38 +46,38 @@ pub async fn get_settings(
     // marketplace_url is deliberately NOT listed: it is a navigation link
     // (future plugin-detail deep links to the static site), consumed from
     // env/manager.toml via /health — not an operator knob here.
-    let local_dir_default = crate::services::step_resolver::local_plugin_dir(
+    let local_dir_default = crate::services::plugin_resolver::local_plugin_dir(
         &state.config.storage.data_dir,
-        &state.config.step_index.local_dir,
+        &state.config.plugin_index.local_dir,
     )
     .map(|p| p.to_string_lossy().into_owned())
     .unwrap_or_else(|e| format!("(invalid: {e})"));
     let mut items = vec![
         item(
-            KEY_STEP_REVIEW_REQUIRED,
+            KEY_PLUGIN_REVIEW_REQUIRED,
             "bool",
-            state.config.step_index.require_reviewed.to_string(),
+            state.config.plugin_index.require_reviewed.to_string(),
         ),
-        item(KEY_STEP_INDEX_LOCAL_DIR, "path", local_dir_default),
+        item(KEY_PLUGIN_INDEX_LOCAL_DIR, "path", local_dir_default),
         item(
-            KEY_STEP_REVIEWED_MANIFEST,
+            KEY_PLUGIN_REVIEWED_MANIFEST,
             "path",
             // Empty config → the reviews.json beside the plugin directory
             // (one buz-plugins clone in the data volume provides both).
-            if state.config.step_index.reviewed_manifest.trim().is_empty() {
-                crate::services::step_resolver::reviewed_manifest_default(std::path::Path::new(
+            if state.config.plugin_index.reviewed_manifest.trim().is_empty() {
+                crate::services::plugin_resolver::reviewed_manifest_default(std::path::Path::new(
                     &state.config.storage.data_dir,
                 ))
                 .to_string_lossy()
                 .into_owned()
             } else {
-                state.config.step_index.reviewed_manifest.clone()
+                state.config.plugin_index.reviewed_manifest.clone()
             },
         ),
         item(
-            KEY_STEP_SYNC_TIMEOUT,
+            KEY_PLUGIN_SYNC_TIMEOUT,
             "number",
-            state.config.step_index.sync_timeout_seconds.to_string(),
+            state.config.plugin_index.sync_timeout_seconds.to_string(),
         ),
     ];
     // Path settings carry existence/readability of the effective value so
@@ -107,15 +107,15 @@ pub async fn get_settings(
     // resolves to (manager working directory) so operators are never guessing.
     if let Some(item) = items
         .iter_mut()
-        .find(|i| i["key"] == KEY_STEP_INDEX_LOCAL_DIR)
+        .find(|i| i["key"] == KEY_PLUGIN_INDEX_LOCAL_DIR)
     {
         let effective_dir = platform_settings::effective(
             &state.pool,
-            KEY_STEP_INDEX_LOCAL_DIR,
-            &state.config.step_index.local_dir,
+            KEY_PLUGIN_INDEX_LOCAL_DIR,
+            &state.config.plugin_index.local_dir,
         )
         .await;
-        let resolved = crate::services::step_resolver::local_plugin_dir(
+        let resolved = crate::services::plugin_resolver::local_plugin_dir(
             &state.config.storage.data_dir,
             &effective_dir,
         )
@@ -160,7 +160,7 @@ pub async fn update_setting(
 
     // Saving a manifest path that does not exist is always a mistake (the
     // ledger must be present) — fail fast with the same friendly framing.
-    if key == platform_settings::KEY_STEP_REVIEWED_MANIFEST
+    if key == platform_settings::KEY_PLUGIN_REVIEWED_MANIFEST
         && !value.is_empty()
         && !std::path::Path::new(&value).exists()
     {
@@ -173,13 +173,13 @@ pub async fn update_setting(
     // while the manifest file does not exist would reject EVERY pipeline
     // save (empty ledger). Refuse the toggle with guidance instead of
     // letting the operator brick saves and discover it via the banner.
-    if key == crate::services::platform_settings::KEY_STEP_REVIEW_REQUIRED && value == "true" {
+    if key == crate::services::platform_settings::KEY_PLUGIN_REVIEW_REQUIRED && value == "true" {
         let overrides = platform_settings::fetch_overrides(&state.pool).await;
-        let manifest_path = crate::services::step_resolver::effective_reviewed_manifest(
+        let manifest_path = crate::services::plugin_resolver::effective_reviewed_manifest(
             &state.config.storage.data_dir,
-            &state.config.step_index.reviewed_manifest,
+            &state.config.plugin_index.reviewed_manifest,
             overrides
-                .get(platform_settings::KEY_STEP_REVIEWED_MANIFEST)
+                .get(platform_settings::KEY_PLUGIN_REVIEWED_MANIFEST)
                 .map(String::as_str),
         );
         if !manifest_path.exists() {
@@ -264,21 +264,21 @@ fn setting_display(key: &str, value: Option<&str>) -> Value {
 async fn reapply_step_index_overrides(state: &AppState) -> Result<(), AppError> {
     let overrides = platform_settings::fetch_overrides(&state.pool).await;
     let require_reviewed = overrides
-        .get(KEY_STEP_REVIEW_REQUIRED)
+        .get(KEY_PLUGIN_REVIEW_REQUIRED)
         .and_then(|v| v.parse::<bool>().ok());
-    let local_dir = overrides.get(KEY_STEP_INDEX_LOCAL_DIR).cloned();
+    let local_dir = overrides.get(KEY_PLUGIN_INDEX_LOCAL_DIR).cloned();
     // The runtime slot always carries the EFFECTIVE manifest (DB override
     // or the data-root default), matching what startup init installed.
-    let reviewed_manifest = crate::services::step_resolver::effective_reviewed_manifest(
+    let reviewed_manifest = crate::services::plugin_resolver::effective_reviewed_manifest(
         &state.config.storage.data_dir,
-        &state.config.step_index.reviewed_manifest,
+        &state.config.plugin_index.reviewed_manifest,
         overrides
-            .get(KEY_STEP_REVIEWED_MANIFEST)
+            .get(KEY_PLUGIN_REVIEWED_MANIFEST)
             .map(String::as_str),
     )
     .to_string_lossy()
     .into_owned();
-    crate::services::step_resolver::apply_runtime_overrides(
+    crate::services::plugin_resolver::apply_runtime_overrides(
         require_reviewed,
         local_dir,
         Some(reviewed_manifest),

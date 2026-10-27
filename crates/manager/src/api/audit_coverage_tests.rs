@@ -17,8 +17,8 @@ use std::path::Path;
 const AUDITED: &[(&str, &str)] = &[
     ("DELETE /api/v1/admin/settings/{key}", "setting.reset"),
     (
-        "DELETE /api/v1/admin/step-sources/{id}",
-        "step_source.delete",
+        "DELETE /api/v1/admin/plugin-sources/{id}",
+        "plugin_source.delete",
     ),
     ("DELETE /api/v1/api-tokens/{id}", "api_token.revoke"),
     ("DELETE /api/v1/environments/{id}", "environment.delete"),
@@ -84,13 +84,13 @@ const AUDITED: &[(&str, &str)] = &[
         "variable.github_bind.patch",
     ),
     (
-        "POST /api/v1/admin/step-pool/{namespace}/{step_id}/refresh",
-        "step_pool.refresh",
+        "POST /api/v1/admin/plugin-pool/{namespace}/{step_id}/refresh",
+        "plugin_pool.refresh",
     ),
-    ("POST /api/v1/admin/step-sources", "step_source.create"),
+    ("POST /api/v1/admin/plugin-sources", "plugin_source.create"),
     (
-        "POST /api/v1/admin/step-sources/{id}/sync",
-        "step_source.sync",
+        "POST /api/v1/admin/plugin-sources/{id}/sync",
+        "plugin_source.sync",
     ),
     ("POST /api/v1/api-tokens", "api_token.create"),
     ("POST /api/v1/auth/change-password", "auth.change_password"),
@@ -146,8 +146,8 @@ const AUDITED: &[(&str, &str)] = &[
     ),
     ("PUT /api/v1/admin/settings/{key}", "setting.update"),
     (
-        "PUT /api/v1/admin/step-pool/{namespace}/{step_id}/{version}",
-        "step_pool.toggle",
+        "PUT /api/v1/admin/plugin-pool/{namespace}/{step_id}/{version}",
+        "plugin_pool.toggle",
     ),
     ("PUT /api/v1/environments/{id}", "environment.update"),
     (
@@ -186,7 +186,7 @@ const INTENTIONALLY_UNAUDITED: &[(&str, &str)] = &[
         "runner-reported job progress: one event per step, machine telemetry",
     ),
     (
-        "POST /api/v1/admin/step-sources/{id}/mirror-check",
+        "POST /api/v1/admin/plugin-sources/{id}/mirror-check",
         "read-only probe: compares sentinels, writes nothing",
     ),
     (

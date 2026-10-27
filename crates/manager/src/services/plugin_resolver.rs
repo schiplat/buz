@@ -822,7 +822,7 @@ pub async fn resolve_uses_steps_async(
             // remotely (community sources). Everything else — official
             // `buz/` via git clone, air-gap vendor dirs — resolves from the
             // local index. Branch pins error on the local path by design.
-            let (resolved, reviewed) = match super::step_pool::resolve_remote(
+            let (resolved, reviewed) = match super::plugin_pool::resolve_remote(
                 &http,
                 pool,
                 &uses_ref,

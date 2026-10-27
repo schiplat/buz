@@ -542,7 +542,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
 
     // ── Step marketplace: sources + pool (ADR step-marketplace §6.8) ──
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS step_sources (
+        "CREATE TABLE IF NOT EXISTS plugin_sources (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             url TEXT NOT NULL,
@@ -561,15 +561,15 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // tried before the canonical URL on every fetch; content is sha256-pinned
     // per file, so endpoint order affects availability only. Nullable:
     // legacy sources have no mirror.
-    add_column_if_missing(pool, "step_sources", "mirror_url TEXT").await;
+    add_column_if_missing(pool, "plugin_sources", "mirror_url TEXT").await;
 
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS step_pool (
+        "CREATE TABLE IF NOT EXISTS plugin_pool (
             namespace TEXT NOT NULL,
             step_id TEXT NOT NULL,
             version TEXT NOT NULL,
             sha256 TEXT NOT NULL,
-            source_id TEXT NOT NULL REFERENCES step_sources(id) ON DELETE CASCADE,
+            source_id TEXT NOT NULL REFERENCES plugin_sources(id) ON DELETE CASCADE,
             file_path TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 0,
             reviewed INTEGER NOT NULL DEFAULT 0,
@@ -586,11 +586,11 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .execute(pool)
     .await?;
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_step_pool_lookup ON step_pool (namespace, step_id, enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_step_pool_lookup ON plugin_pool (namespace, step_id, enabled)",
     )
     .execute(pool)
     .await?;
-    // ── step_pool compatibility verdicts (computed at sync/refresh time) ──
+    // ── plugin_pool compatibility verdicts (computed at sync/refresh time) ──
     // buz_compatible is three-state: NULL = not checked yet, 0 = the entry's
     // requires_buz (or spec validity) fails against this manager build,
     // 1 = passes. compat_checked_against pins the manager version the verdict
@@ -599,13 +599,13 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // when. The audit log answers "what happened" (an event stream); these
     // columns answer "what is the state now" without a join. Sync never
     // writes them — they describe the curator's decision, not ingestion.
-    add_column_if_missing(pool, "step_pool", "updated_by TEXT").await;
-    add_column_if_missing(pool, "step_pool", "updated_at TEXT").await;
-    add_column_if_missing(pool, "step_pool", "requires_buz TEXT").await;
-    add_column_if_missing(pool, "step_pool", "buz_compatible INTEGER").await;
-    add_column_if_missing(pool, "step_pool", "compat_error TEXT").await;
-    add_column_if_missing(pool, "step_pool", "compat_checked_against TEXT").await;
-    add_column_if_missing(pool, "step_pool", "meta_json TEXT").await;
+    add_column_if_missing(pool, "plugin_pool", "updated_by TEXT").await;
+    add_column_if_missing(pool, "plugin_pool", "updated_at TEXT").await;
+    add_column_if_missing(pool, "plugin_pool", "requires_buz TEXT").await;
+    add_column_if_missing(pool, "plugin_pool", "buz_compatible INTEGER").await;
+    add_column_if_missing(pool, "plugin_pool", "compat_error TEXT").await;
+    add_column_if_missing(pool, "plugin_pool", "compat_checked_against TEXT").await;
+    add_column_if_missing(pool, "plugin_pool", "meta_json TEXT").await;
 
     // ── Platform settings (admin-editable runtime overrides) ──
     // DB value > manager.toml default; a missing row means "use the default".
@@ -625,10 +625,10 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // China-mainland reachability (§6.3); admins can delete/re-add the row
     // with an internal mirror URL if their network requires it.
     sqlx::query(
-        "INSERT INTO step_sources (id, name, url, auto_enable, enabled, created_by) \
+        "INSERT INTO plugin_sources (id, name, url, auto_enable, enabled, created_by) \
          SELECT 'official', 'Official buz-plugins', \
                 'https://plugins.buz.schiplat.com/index.json', 1, 1, 'system' \
-         WHERE NOT EXISTS (SELECT 1 FROM step_sources WHERE id = 'official') \
+         WHERE NOT EXISTS (SELECT 1 FROM plugin_sources WHERE id = 'official') \
            AND NOT EXISTS ( \
                SELECT 1 FROM platform_settings \
                WHERE key = 'step_official_source_dismissed' AND value = 'true')",
