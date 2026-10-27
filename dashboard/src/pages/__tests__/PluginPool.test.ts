@@ -133,14 +133,17 @@ describe('PluginPool', () => {
       'v1.1.0 — staged',
       'v1.0.0 — enabled',
     ])
-    expect(root.textContent).toContain('enabled · reviewed')
+    // Review status is not surfaced for reviewed entries at all — only an
+    // unreviewed selection adds a tooltip (covered by the gate tests).
+    expect(buttonByText(root, 'Disable').title).toBe('')
   })
 
   it('describes the plugin: category, publisher, engine and the description', async () => {
     const root = await mountPage()
     expect(root.textContent).toContain('artifact')
     expect(root.textContent).toContain('Official')
-    expect(root.textContent).toContain('shell engine')
+    // Meta line is plain text now (pills removed): engine name only.
+    expect(root.textContent).toContain('shell')
     expect(root.textContent).toContain('Upload a file to Aliyun OSS.')
   })
 
@@ -213,8 +216,9 @@ describe('PluginPool', () => {
     select.value = '1.1.0'
     select.dispatchEvent(new Event('change'))
     await flush()
-    // The state line names why the selected version is unusable.
-    expect(root.textContent).toContain('blocked — needs Buz >= 99.0.0')
+    // The amber note (one line) names why the selected version is unusable.
+    expect(root.textContent).toContain('requires Buz >= 99.0.0')
+    expect(root.textContent).toContain('cannot be enabled here')
     const enable = buttonByText(root, 'Enable')!
     expect(enable.disabled, 'Enable greyed for an incompatible version').toBe(true)
     enable.click()
@@ -324,7 +328,10 @@ describe('PluginPool', () => {
     })
     const root = await mountPage()
     expect(buttonByText(root, 'Upgrade to v2.0.0')).toBeUndefined()
-    expect(root.textContent).toContain('update available')
+    // No separate "update available" badge: the amber note explains why the
+    // newer version cannot be used, which is the actionable part.
+    expect(root.textContent).not.toContain('update available')
+    expect(root.textContent).toContain('requires Buz >= 99.0.0')
   })
 
   it('searches plugins by name, description and uses reference', async () => {

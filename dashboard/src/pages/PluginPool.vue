@@ -189,15 +189,15 @@ function groupCuratorLine(group: PoolGroup): string | null {
 /** Compatibility tone for the requires-buz chip: green when some version of
  *  the plugin runs on this Manager build, red when none does, neutral while
  *  compatibility hasn't been checked. */
+/** Text-only tone for the requires-buz note: green when some version runs on
+ *  this build, red when none does, muted while unchecked. */
 function groupCompatTone(group: PoolGroup): string {
   const states = group.versions.map((v) => v.buz_compatible)
-  if (states.some((s) => s === true)) {
-    return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-  }
+  if (states.some((s) => s === true)) return 'text-emerald-600 dark:text-emerald-400'
   if (states.length > 0 && states.every((s) => s === false)) {
-    return 'bg-red-500/10 text-red-600 dark:text-red-400'
+    return 'text-red-600 dark:text-red-400'
   }
-  return 'bg-muted text-muted-foreground'
+  return 'text-muted-foreground'
 }
 
 function groupCompatTip(group: PoolGroup): string {
@@ -277,20 +277,7 @@ function versionOptionLabel(entry: PoolEntry): string {
   return `v${entry.version} — ${entry.enabled ? 'enabled' : 'staged'}`
 }
 
-/** State line shown under the version select: dot tone + one sentence about
- *  the *selected* version. */
-function selectedState(entry: PoolEntry): { tone: 'ok' | 'warn' | 'muted'; text: string } {
-  const review = entry.reviewed ? 'reviewed' : 'unreviewed'
-  if (isStuck(entry)) {
-    return {
-      tone: 'warn',
-      text: `blocked — needs Buz ${blockedRequirement(entry) ?? '>= ?'}`,
-    }
-  }
-  if (entry.enabled) return { tone: 'ok', text: `enabled · ${review}` }
-  if (entry.buz_compatible === null) return { tone: 'muted', text: `staged · compat unknown` }
-  return { tone: 'muted', text: `staged · ${review}` }
-}
+
 
 /** Newest staged, compatible version that is strictly newer than everything
  *  enabled — the one-click upgrade target. Null when nothing is enabled:
@@ -476,71 +463,10 @@ onMounted(load)
                 class="text-sm font-medium m-0"
                 :class="group.meta?.name ? '' : 'font-mono text-[13px]'"
               >{{ groupTitle(group) }}</h3>
-              <span
-                v-if="group.meta?.category"
-                class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
-              >{{ group.meta.category }}</span>
-              <span
-                v-if="group.updateAvailable"
-                class="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-400"
-              >update available</span>
-              <span
-                v-if="groupCuratorLine(group)"
-                class="text-[11px] text-muted-foreground/70"
-                :title="`Enable state last changed by ${groupCuratorLine(group)}`"
-              >changed by {{ groupCuratorLine(group) }}</span>
-            </div>
-            <div class="mt-1.5 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
-              <code class="font-mono bg-muted px-1.5 py-0.5 rounded-md text-foreground/70">uses: {{ usesRef(group) }}</code>
-              <button
-                type="button"
-                class="inline-flex items-center justify-center h-5 w-5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors"
-                :aria-label="`Copy ${usesRef(group)}`"
-                title="Copy uses reference"
-                @click="copyUses(group)"
-              >
-                <Check v-if="copiedUses === usesRef(group)" class="h-3 w-3 text-green-600" aria-hidden="true" />
-                <Copy v-else class="h-3 w-3" aria-hidden="true" />
-              </button>
-              <span
-                v-if="isOfficial(group)"
-                class="rounded-full bg-primary/10 px-2 py-0.5 text-primary"
-              >Official</span>
-              <template v-else-if="group.meta?.author">
-                <span>by {{ group.meta.author }}</span>
-              </template>
-              <span v-if="group.meta?.engine">{{ group.meta.engine }} engine</span>
-              <span
-                v-if="groupRequires(group)"
-                class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
-                :class="groupCompatTone(group)"
-                :title="groupCompatTip(group)"
-              >requires buz {{ groupRequires(group) }}</span>
-              <span>via {{ group.sourceName }}</span>
-            </div>
-
-            <p
-              v-if="groupDescription(group)"
-              class="mt-2 mb-0 text-[13px] leading-relaxed text-muted-foreground line-clamp-2"
-              :title="groupDescription(group) ?? undefined"
-            >{{ groupDescription(group) }}</p>
-
-            <!-- ── One-glance alert strip for unusable versions ── -->
-            <div
-              v-if="groupAlert(group)"
-              class="mt-2.5 flex items-start gap-2.5 rounded-lg border border-red-500/25 bg-red-500/5 px-3 py-2"
-            >
-              <AlertTriangle class="h-3.5 w-3.5 shrink-0 mt-0.5 text-red-500" aria-hidden="true" />
-              <p class="m-0 text-xs leading-relaxed text-red-600 dark:text-red-400">{{ groupAlert(group) }}</p>
-            </div>
-          </div>
-
-          <!-- ── Action rail: version + state, then primary action ──
-               Hierarchy: the rail answers "which version is in use" first,
-               then "change it". Upgrade is secondary to Enable/Disable. -->
-          <div class="shrink-0 w-full sm:w-52 flex flex-col gap-1.5">
-            <div class="flex items-center justify-between gap-1.5">
-              <span class="text-[10.5px] uppercase tracking-wider text-muted-foreground/60">version</span>
+              <span v-if="group.meta?.category" class="text-[11px] text-muted-foreground/70">
+                {{ group.meta.category }}
+              </span>
+              <span class="flex-1"></span>
               <UiButton
                 size="icon"
                 variant="ghost"
@@ -553,30 +479,66 @@ onMounted(load)
                 :class="refreshing === `${group.namespace}/${group.stepId}` ? 'animate-spin' : ''"
               /></UiButton>
             </div>
+            <div class="mt-1 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+              <code class="font-mono bg-muted px-1.5 py-0.5 rounded-md text-foreground/70">uses: {{ usesRef(group) }}</code>
+              <button
+                type="button"
+                class="inline-flex items-center justify-center h-5 w-5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors"
+                :aria-label="`Copy ${usesRef(group)}`"
+                title="Copy uses reference"
+                @click="copyUses(group)"
+              >
+                <Check v-if="copiedUses === usesRef(group)" class="h-3 w-3 text-green-600" aria-hidden="true" />
+                <Copy v-else class="h-3 w-3" aria-hidden="true" />
+              </button>
+              <span v-if="isOfficial(group)" class="font-medium text-primary">Official</span>
+              <template v-else-if="group.meta?.author">
+                <span>by {{ group.meta.author }}</span>
+              </template>
+              <span v-if="group.meta?.engine">{{ group.meta.engine }}</span>
+              <span
+                v-if="groupRequires(group)"
+                class="font-medium"
+                :class="groupCompatTone(group)"
+                :title="groupCompatTip(group)"
+              >requires Buz {{ groupRequires(group) }}</span>
+              <span>via {{ group.sourceName }}</span>
+            </div>
+
+            <p
+              v-if="groupDescription(group)"
+              class="mt-1.5 mb-0 text-[13px] leading-relaxed text-muted-foreground line-clamp-2"
+              :title="groupDescription(group) ?? undefined"
+            >{{ groupDescription(group) }}</p>
+
+            <!-- Only when something is actually unusable: one amber line, no box. -->
+            <div
+              v-if="groupAlert(group)"
+              class="mt-1.5 flex items-start gap-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400"
+            >
+              <span class="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-amber-500" aria-hidden="true"></span>
+              <p class="m-0">{{ groupAlert(group) }}</p>
+            </div>
+          </div>
+
+          <!-- ── Action rail: version, then one primary action ──
+               Review/compat detail rides on the tooltips; the card shows a
+               single amber line only when something is unusable. -->
+          <div class="shrink-0 w-full sm:w-44 flex flex-col gap-1.5">
             <select
               v-model="selectedVersions[usesRef(group)]"
               class="w-full h-8 rounded-lg border border-border/60 bg-background px-2 text-xs font-mono outline-hidden focus:border-primary/50"
               :aria-label="`Version of ${usesRef(group)}`"
+              :title="
+                groupCuratorLine(group)
+                  ? `Enable state last changed by ${groupCuratorLine(group)}`
+                  : undefined
+              "
             >
               <option v-for="entry in group.versions" :key="entry.version" :value="entry.version">
                 {{ versionOptionLabel(entry) }}
               </option>
             </select>
-            <div
-              v-if="selectedEntry(group)"
-              class="flex items-start gap-1.5 px-0.5 text-[10.5px] leading-snug text-muted-foreground"
-            >
-              <span
-                class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full"
-                :class="{
-                  'bg-emerald-500': selectedState(selectedEntry(group)!).tone === 'ok',
-                  'bg-amber-500': selectedState(selectedEntry(group)!).tone === 'warn',
-                  'bg-muted-foreground/40': selectedState(selectedEntry(group)!).tone === 'muted',
-                }"
-                aria-hidden="true"
-              ></span>
-              <span>{{ selectedState(selectedEntry(group)!).text }}</span>
-            </div>
             <UiButton
               size="sm"
               :variant="selectedEntry(group)?.enabled ? 'destructive-soft' : 'success'"
@@ -589,21 +551,20 @@ onMounted(load)
               :title="
                 selectedEntry(group) && isStuck(selectedEntry(group)!) && !selectedEntry(group)!.enabled
                   ? 'This version needs a newer Buz — see the note on the left'
-                  : undefined
+                  : selectedEntry(group)?.reviewed === false
+                    ? 'Not in the reviewed manifest'
+                    : undefined
               "
               @click="toggleSelected(group)"
             >{{ selectedEntry(group)?.enabled ? 'Disable' : 'Enable' }}</UiButton>
-            <!-- Secondary: switching versions is rarer than toggling, so it
-                 stays visually lighter than the primary action. -->
-            <UiButton
+            <button
               v-if="upgradeTarget(group)"
-              size="sm"
-              variant="outline"
-              class="w-full"
+              type="button"
+              class="inline-flex h-6 items-center justify-center gap-1 rounded-lg text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
               :disabled="busy === usesRef(group)"
               :title="`Enable v${upgradeTarget(group)!.version} and disable the currently enabled version`"
               @click="upgrade(group)"
-            ><ArrowUpCircle class="h-3.5 w-3.5" /> Upgrade to v{{ upgradeTarget(group)!.version }}</UiButton>
+            ><ArrowUpCircle class="h-3 w-3" /> Upgrade to v{{ upgradeTarget(group)!.version }}</button>
           </div>
         </div>
         <p v-if="filteredGroups.length === 0 && poolGroups.length > 0" class="px-5 py-4 text-sm text-muted-foreground">
