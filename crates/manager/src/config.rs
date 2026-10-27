@@ -23,10 +23,9 @@ pub struct Config {
     #[serde(default)]
     pub standalone: StandaloneConfig,
     /// `[plugin_index]` — where `uses:` marketplace references resolve.
-    /// Accepts the legacy `[step_index]` section name: configs written before
-    /// the plugin rename keep working (only the section name changed — same
-    /// keys, same semantics).
-    #[serde(default, alias = "step_index")]
+    /// The pre-rename `[step_index]` section is NOT accepted: it would parse as
+    /// an unknown field and be silently ignored, so deployments must rename it.
+    #[serde(default)]
     pub plugin_index: PluginIndexConfig,
     #[serde(default)]
     pub storage: StorageConfig,
@@ -379,6 +378,19 @@ pub fn load_unchecked(config_path: Option<&str>) -> anyhow::Result<Config> {
         .add_source(config::Environment::with_prefix("BUZ").separator("__"))
         .build()?;
 
+    // The pre-rename section is not supported. Deserialization ignores it, so
+    // say so loudly: a silently dropped review gate is worse than a startup
+    // warning, and this keeps the "no compatibility" decision from becoming a
+    // silent data-loss trap.
+    // Printed rather than logged: this runs before the log subscriber exists.
+    if config.get_table("step_index").is_ok() {
+        eprintln!(
+            "warning: {config_path} has a [step_index] section — it is IGNORED since the plugin \
+rename; rename it to [plugin_index] (same keys) to keep local_dir / reviewed_manifest / \
+require_reviewed"
+        );
+    }
+
     let mut cfg: Config = config.try_deserialize()?;
 
     // Override auth defaults from env if set
@@ -444,11 +456,12 @@ mod sync_timeout_default_tests {
         );
     }
 
-    /// Configs written before the plugin rename carry `[step_index]`. The
-    /// alias must keep them working — otherwise an upgraded deployment would
-    /// silently lose its review gate (the section would parse as unknown).
+    /// No alias: a config still using `[step_index]` parses (unknown sections
+    /// are ignored) but its settings are NOT applied — the section must be
+    /// renamed to `[plugin_index]`. Locked here so the omission is a decision,
+    /// not an accident someone "fixes" by re-adding a silent fallback.
     #[test]
-    fn legacy_step_index_section_still_parses() {
+    fn legacy_step_index_section_is_ignored_not_merged() {
         let cfg: Config = config::Config::builder()
             .add_source(config::File::from_str(
                 r#"
@@ -465,14 +478,30 @@ require_reviewed = true
             .build()
             .expect("build config")
             .try_deserialize()
-            .expect("legacy section accepted");
+            .expect("unknown sections are ignored");
 
-        assert_eq!(cfg.plugin_index.local_dir, "/srv/legacy-plugins");
-        assert_eq!(
-            cfg.plugin_index.reviewed_manifest,
-            "/srv/legacy/reviews.json"
+        assert!(
+            cfg.plugin_index.local_dir.is_empty()
+                && cfg.plugin_index.reviewed_manifest.is_empty()
+                && !cfg.plugin_index.require_reviewed,
+            "legacy section must not be merged: {:?}",
+            cfg.plugin_index
         );
-        assert!(cfg.plugin_index.require_reviewed);
+    }
+
+    /// The warning above is only useful if the detection works: a legacy
+    /// section must be observable on the merged config.
+    #[test]
+    fn legacy_section_is_detectable_on_the_merged_config() {
+        let merged = config::Config::builder()
+            .add_source(config::File::from_str(
+                "[step_index]\nlocal_dir = \"/srv/legacy\"\n",
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("build config");
+        assert!(merged.get_table("step_index").is_ok());
+        assert!(merged.get_table("plugin_index").is_err());
     }
 
     #[test]
