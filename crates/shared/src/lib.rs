@@ -8,6 +8,7 @@ pub mod log_masking;
 pub mod logging;
 pub mod models;
 pub mod pipeline_yaml;
+pub mod plugin_signature;
 pub mod plugin_spec;
 pub mod protocol;
 pub mod rbac;

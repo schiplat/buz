@@ -46,6 +46,10 @@ yaml_scan_interval_seconds = 30
 # For a Docker Git mirror, use deploy/docker-compose.plugins.yml and set
 # BUZ_PLUGIN_MIRROR to the host-side buz-plugins/plugins directory.
 # local_dir = "/srv/buz-plugin-mirror/plugins"
+# Index signature (optional): with require_signed_index = true every sync
+# verifies index.json.sig against this public key (from `buz-plugin keygen`).
+# index_public_key = "<base64 ed25519 public key>"
+# require_signed_index = false
 # Review gate — RECOMMENDED for production. Without it every `uses:` plugin
 # resolves unreviewed (the dashboard shows a banner and the editor warns):
 # reviewed_manifest = "/etc/buz/reviews.json"   # from the buz-plugins repo

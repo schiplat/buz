@@ -14,6 +14,11 @@ pub const KEY_PLUGIN_REVIEW_REQUIRED: &str = "plugin_review_required";
 pub const KEY_PLUGIN_INDEX_LOCAL_DIR: &str = "plugin_index_local_dir";
 pub const KEY_PLUGIN_REVIEWED_MANIFEST: &str = "plugin_reviewed_manifest";
 pub const KEY_PLUGIN_SYNC_TIMEOUT: &str = "plugin_sync_timeout";
+/// Trust anchor for source indexes: when on, every sync verifies
+/// `index.json.sig` against `plugin_index_public_key` and refuses sources
+/// that are unsigned or tampered with.
+pub const KEY_PLUGIN_REQUIRE_SIGNED_INDEX: &str = "plugin_require_signed_index";
+pub const KEY_PLUGIN_INDEX_PUBLIC_KEY: &str = "plugin_index_public_key";
 
 /// Default source-sync timeout (seconds) — the single source of truth: the
 /// manager.toml serde default, the settings API default, and the HTTP client
@@ -26,6 +31,8 @@ pub enum SettingKind {
     Bool,
     Path,
     Number,
+    /// Base64 Ed25519 public key (empty = no trust anchor configured).
+    PublicKey,
 }
 
 pub fn setting_kind(key: &str) -> Option<SettingKind> {
@@ -35,6 +42,8 @@ pub fn setting_kind(key: &str) -> Option<SettingKind> {
         KEY_PLUGIN_INDEX_LOCAL_DIR => Some(SettingKind::Path),
         KEY_PLUGIN_REVIEWED_MANIFEST => Some(SettingKind::Path),
         KEY_PLUGIN_SYNC_TIMEOUT => Some(SettingKind::Number),
+        KEY_PLUGIN_REQUIRE_SIGNED_INDEX => Some(SettingKind::Bool),
+        KEY_PLUGIN_INDEX_PUBLIC_KEY => Some(SettingKind::PublicKey),
         _ => None,
     }
 }
@@ -68,6 +77,25 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
                 Err("path must not be empty".into())
             }
         }
+        SettingKind::PublicKey => {
+            if value.trim().is_empty() {
+                return Ok(()); // no trust anchor configured
+            }
+            use base64::Engine as _;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(value.trim())
+                .map_err(|_| {
+                    "plugin_index_public_key must be base64 (the `public_key` field from                      `buz-plugin keygen`)"
+                        .to_string()
+                })?;
+            if decoded.len() != 32 {
+                return Err(format!(
+                    "plugin_index_public_key must decode to 32 bytes (got {})",
+                    decoded.len()
+                ));
+            }
+            Ok(())
+        }
         SettingKind::Number => {
             let secs: u64 = value.trim().parse().map_err(|_| {
                 String::from("plugin_sync_timeout must be a whole number of seconds")
@@ -87,16 +115,19 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
 /// All DB overrides for the known keys. Unknown rows are ignored (forward
 /// compatibility with older Managers).
 pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
-    let rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?)")
-            .bind(KEY_MARKETPLACE_URL)
-            .bind(KEY_PLUGIN_REVIEW_REQUIRED)
-            .bind(KEY_PLUGIN_INDEX_LOCAL_DIR)
-            .bind(KEY_PLUGIN_REVIEWED_MANIFEST)
-            .bind(KEY_PLUGIN_SYNC_TIMEOUT)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(KEY_MARKETPLACE_URL)
+    .bind(KEY_PLUGIN_REVIEW_REQUIRED)
+    .bind(KEY_PLUGIN_INDEX_LOCAL_DIR)
+    .bind(KEY_PLUGIN_REVIEWED_MANIFEST)
+    .bind(KEY_PLUGIN_SYNC_TIMEOUT)
+    .bind(KEY_PLUGIN_REQUIRE_SIGNED_INDEX)
+    .bind(KEY_PLUGIN_INDEX_PUBLIC_KEY)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
     rows.into_iter().collect()
 }
 

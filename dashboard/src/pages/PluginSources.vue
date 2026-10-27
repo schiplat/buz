@@ -51,6 +51,14 @@ const settingsMeta: Record<string, SettingMeta> = {
     narrow: true,
     unit: 's',
   },
+  plugin_require_signed_index: {
+    label: 'Require signed index',
+    help: 'When on, every sync verifies index.json.sig against the public key below and rejects sources that are unsigned or were rewritten (for example by a mirror). Publish the signature with `buz-plugin index --sign-key`.',
+  },
+  plugin_index_public_key: {
+    label: 'Index signature public key',
+    help: 'Base64 Ed25519 public key trusted for source indexes (`public_key` from `buz-plugin keygen`). One key covers every source you mirror yourself.',
+  },
 }
 
 /** Display grouping: line-free sections carried by the small-caps caption. */
@@ -58,6 +66,7 @@ const settingGroups: Array<{ caption: string; keys: string[] }> = [
   { caption: 'Review gate', keys: ['plugin_review_required'] },
   { caption: 'Paths', keys: ['plugin_index_local_dir', 'plugin_reviewed_manifest'] },
   { caption: 'Sync', keys: ['plugin_sync_timeout'] },
+  { caption: 'Index signature', keys: ['plugin_require_signed_index', 'plugin_index_public_key'] },
 ]
 const savingSetting = ref('')
 const showAddSource = ref(false)

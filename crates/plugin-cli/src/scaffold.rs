@@ -112,6 +112,33 @@ Run `buz-plugin validate {plugin_dir_display}` before committing.
     Ok(())
 }
 
+/// `buz-plugin keygen` — Ed25519 keypair for signing the index.
+///
+/// Writes `{ key_id, secret_key, public_key }` (base64). The secret stays
+/// local (CI secret); the public key goes into every Manager that should
+/// trust this source (`plugin_index.public_key`).
+pub fn keygen(key_id: &str, out: Option<&Path>) -> anyhow::Result<()> {
+    let (secret, public) =
+        shared::plugin_signature::generate_keypair().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let document = serde_json::json!({
+        "key_id": key_id,
+        "secret_key": secret,
+        "public_key": public,
+    });
+    let rendered = format!("{}\n", serde_json::to_string_pretty(&document)?);
+    match out {
+        Some(path) => {
+            std::fs::write(path, rendered)
+                .with_context(|| format!("cannot write {}", path.display()))?;
+            println!("wrote {} (key id: {key_id})", path.display());
+            println!("public key (configure in the Manager as plugin_index.public_key):");
+            println!("{}", document["public_key"].as_str().unwrap_or(""));
+        }
+        None => print!("{rendered}"),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

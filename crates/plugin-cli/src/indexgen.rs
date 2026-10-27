@@ -36,6 +36,8 @@ pub struct Options {
     /// Verify instead of write: compare what generation would produce with
     /// the manifests on disk and fail on any difference.
     pub check: bool,
+    /// Sign `index.json` with this keypair file (from `buz-plugin keygen`).
+    pub sign_key: Option<PathBuf>,
 }
 
 #[derive(Serialize, Clone)]
@@ -265,6 +267,54 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
             write_json(path, content)?;
         }
         report_written(&planned);
+    }
+
+    if let Some(key_path) = &options.sign_key {
+        let key_path = if key_path.is_absolute() {
+            key_path.clone()
+        } else {
+            std::env::current_dir()?.join(key_path)
+        };
+        let key: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&key_path)
+                .with_context(|| format!("cannot read {}", key_path.display()))?,
+        )
+        .with_context(|| format!("{} is not a keypair document", key_path.display()))?;
+        let secret = key["secret_key"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("{} has no `secret_key`", key_path.display()))?;
+        let key_id = key["key_id"].as_str().unwrap_or("default");
+        let index_content = planned
+            .iter()
+            .find(|(path, _)| path == &source_root.join(layout::INDEX_FILE))
+            .map(|(_, content)| content.as_str())
+            .ok_or_else(|| anyhow::anyhow!("index.json was not planned"))?;
+        let signature =
+            shared::plugin_signature::sign_index(index_content.as_bytes(), secret, key_id)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let sig_path = source_root.join(shared::plugin_signature::SIGNATURE_FILE);
+        if options.check {
+            let existing = std::fs::read_to_string(&sig_path).unwrap_or_default();
+            if existing != signature {
+                anyhow::bail!(
+                    "{} is out of date — re-run without --check to sign",
+                    sig_path.display()
+                );
+            }
+            println!("signature up to date ({})", sig_path.display());
+        } else {
+            write_json(&sig_path, &signature)?;
+            println!("signed {} (key id: {key_id})", sig_path.display());
+        }
+    } else if options.check {
+        // An existing signature must not survive a manifest change.
+        let sig_path = source_root.join(shared::plugin_signature::SIGNATURE_FILE);
+        if sig_path.exists() {
+            println!(
+                "note: {} exists but --sign-key was not given — signature not re-checked",
+                sig_path.display()
+            );
+        }
     }
     Ok(())
 }
@@ -544,6 +594,7 @@ run: echo ok
             updated_at: None,
             no_meta: false,
             check: false,
+            sign_key: None,
         }
     }
 

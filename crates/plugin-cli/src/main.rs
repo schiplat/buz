@@ -53,6 +53,15 @@ enum Command {
         /// Spec files or directories containing *.yaml / *.yml
         paths: Vec<PathBuf>,
     },
+    /// Create an Ed25519 keypair for signing the index
+    Keygen {
+        /// Key id recorded in the signature (e.g. "buz-official-2026")
+        #[arg(long, default_value = "default")]
+        key_id: String,
+        /// Write the keypair as JSON here instead of stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Generate the source-root manifest (+ meta.json + revision sentinel)
     Index {
         /// Source root containing the namespace directories
@@ -70,6 +79,9 @@ enum Command {
         /// Verify the manifests on disk instead of writing (CI gate)
         #[arg(long, default_value_t = false)]
         check: bool,
+        /// Sign index.json with this Ed25519 secret key (JSON from `keygen`)
+        #[arg(long)]
+        sign_key: Option<PathBuf>,
     },
     /// Compare the revision sentinel between canonical origin and mirror
     #[command(name = "mirror")]
@@ -107,18 +119,21 @@ fn main() {
             description.as_deref(),
         ),
         Command::Validate { paths } => validate::run(paths),
+        Command::Keygen { key_id, out } => scaffold::keygen(key_id, out.as_deref()),
         Command::Index {
             plugins_dir,
             revision,
             updated_at,
             no_meta,
             check,
+            sign_key,
         } => indexgen::run(&indexgen::Options {
             plugins_dir: plugins_dir.clone(),
             revision: revision.clone(),
             updated_at: updated_at.clone(),
             no_meta: *no_meta,
             check: *check,
+            sign_key: sign_key.clone(),
         }),
         Command::MirrorCheck {
             source,

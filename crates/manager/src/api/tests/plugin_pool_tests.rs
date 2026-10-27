@@ -1532,3 +1532,139 @@ run: |
         "the requested version was downloaded when enabled"
     );
 }
+
+/// Trust anchor: with `plugin_require_signed_index` on, a source's index must
+/// carry a detached Ed25519 signature over the exact bytes. A mirror (or
+/// anyone on the network) cannot rewrite the index and its hashes together,
+/// because the signature would no longer match.
+#[tokio::test]
+async fn signed_index_is_verified_and_tampering_is_rejected() {
+    let (secret, public) = shared::plugin_signature::generate_keypair().expect("keypair");
+    let yaml = community_spec();
+    let yaml_sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(yaml.as_bytes()))
+    };
+    let index = index_json(&yaml_sha);
+
+    // Server A serves the authentic index + signature; server B serves a
+    // rewritten index with the same (stale) signature — the mirror attack.
+    let good_sig =
+        shared::plugin_signature::sign_index(index.as_bytes(), &secret, "test-key").expect("sign");
+    let tampered_index = index.replace("alice/oss-upload", "alice/evil-upload");
+    let app_a = Router::new()
+        .route(
+            "/index.json",
+            axum::routing::get({
+                let index = index.clone();
+                move || {
+                    let index = index.clone();
+                    async move { index }
+                }
+            }),
+        )
+        .route(
+            "/index.json.sig",
+            axum::routing::get({
+                let sig = good_sig.clone();
+                move || {
+                    let sig = sig.clone();
+                    async move { sig }
+                }
+            }),
+        )
+        .route(
+            "/steps/oss-upload/1.0.0.yaml",
+            axum::routing::get(move || {
+                let body = yaml.clone();
+                async move { body }
+            }),
+        );
+    let app_b = Router::new()
+        .route(
+            "/index.json",
+            axum::routing::get({
+                let index = tampered_index.clone();
+                move || {
+                    let index = index.clone();
+                    async move { index }
+                }
+            }),
+        )
+        .route(
+            "/index.json.sig",
+            axum::routing::get({
+                let sig = good_sig.clone();
+                move || {
+                    let sig = sig.clone();
+                    async move { sig }
+                }
+            }),
+        );
+
+    let spawn = |app: Router| async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    };
+    let good_base = spawn(app_a).await;
+    let evil_base = spawn(app_b).await;
+
+    let (app, pool) = test_app().await;
+    let jwt = TokenManager::new(JWT_SECRET)
+        .create_token(ADMIN_ID, Role::Admin, 1)
+        .unwrap();
+
+    // Turn on the trust anchor and pin the public key.
+    for (key, value) in [
+        ("plugin_require_signed_index", "true"),
+        ("plugin_index_public_key", public.as_str()),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/v1/admin/settings/{key}"))
+                    .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "value": value }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // Authentic source syncs.
+    let body = add_source(&app, &jwt, &format!("{good_base}/index.json")).await;
+    let good_id = body["data"]["source"]["id"].as_str().unwrap().to_string();
+    let source = crate::services::plugin_pool::get_source(&pool, &good_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let http = crate::services::plugin_pool::http_client(30);
+    crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        .await
+        .expect("signed source syncs");
+
+    // Rewritten index with a stale signature is refused.
+    let body = add_source(&app, &jwt, &format!("{evil_base}/index.json")).await;
+    let evil_id = body["data"]["source"]["id"].as_str().unwrap().to_string();
+    let source = crate::services::plugin_pool::get_source(&pool, &evil_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let error =
+        crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+            .await
+            .unwrap_err()
+            .to_string();
+    assert!(
+        error.contains("signature rejected") && error.contains("does not match its signature"),
+        "{error}"
+    );
+}

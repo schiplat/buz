@@ -109,6 +109,7 @@ your-plugins/
     ├── index.json            ← id / version / file / sha256 (+ scalar meta)
     ├── reviews.json          ← optional; reviewed-content manifest
     ├── revision.json         ← freshness sentinel (CI-written, last)
+    ├── index.json.sig     ← optional detached signature over index.json
     └── buz/                  ← namespace directory (specs)
         ├── http-check/
         │   ├── 1.0.0.yaml
@@ -139,6 +140,12 @@ trustworthy, and the index byte-stable:
   rejects any template whose hash is absent from it. It lives per source
   root so official review authority and community entries never share a
   ledger.
+- **`index.json.sig` is a detached Ed25519 signature over the exact index
+  bytes** (`{"alg":"ed25519","key_id":"…","signature":"<base64>","sha256":"<hex>"}`).
+  The content hashes inside an unsigned index can be rewritten together with
+  the files they pin, so the chain stays self-consistent; the signature is what
+  lets a Manager detect a rewritten index, a mirror included. Generate it with
+  `buz-plugin index --sign-key` and copy it alongside the index when mirroring.
 - **`revision.json` is the freshness sentinel.** It carries
   `{"revision": "<commit sha>", "updated_at": "<iso8601>"}` and is written
   **last** — it commits the sync. Comparing two sentinels (a few hundred

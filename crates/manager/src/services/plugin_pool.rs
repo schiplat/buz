@@ -688,6 +688,61 @@ pub async fn sync_source(
     result
 }
 
+/// Effective signature policy: `(require, public_key)`.
+async fn signature_policy(pool: &SqlitePool) -> (bool, String) {
+    let require = crate::services::platform_settings::effective(
+        pool,
+        crate::services::platform_settings::KEY_PLUGIN_REQUIRE_SIGNED_INDEX,
+        "false",
+    )
+    .await
+    .trim()
+        == "true";
+    let public_key = crate::services::platform_settings::effective(
+        pool,
+        crate::services::platform_settings::KEY_PLUGIN_INDEX_PUBLIC_KEY,
+        "",
+    )
+    .await;
+    (require, public_key)
+}
+
+/// Enforce the trust anchor on a fetched index. No-op unless
+/// `plugin_require_signed_index` is on, in which case a source must publish
+/// `index.json.sig` that verifies against the configured public key — that is
+/// what stops a mirror (or anyone on the network) from rewriting both the
+/// index and the hashes inside it.
+async fn verify_index_signature(
+    http: &reqwest::Client,
+    bases: &[String],
+    index_text: &str,
+    pool: &SqlitePool,
+    source_name: &str,
+) -> anyhow::Result<()> {
+    let (require, public_key) = signature_policy(pool).await;
+    if !require {
+        return Ok(());
+    }
+    if public_key.trim().is_empty() {
+        anyhow::bail!(
+            "source '{source_name}' must be signed, but no plugin_index_public_key is configured              (Settings → Review gate → Index signature)"
+        );
+    }
+    let signature = http_get_text_from_bases(http, bases, shared::plugin_signature::SIGNATURE_FILE)
+        .await
+        .map_err(|e| {
+            anyhow!(
+                "source '{source_name}' index is not signed — publish index.json.sig \
+             (`buz-plugin index --sign-key`) or turn off the required-signature setting: {e}"
+            )
+        })?;
+    let key_id =
+        shared::plugin_signature::verify_index(index_text.as_bytes(), &signature, &public_key)
+            .map_err(|e| anyhow!("source '{source_name}' index signature rejected: {e}"))?;
+    tracing::info!(source = %source_name, key_id = %key_id, "index signature verified");
+    Ok(())
+}
+
 async fn sync_source_inner(
     http: &reqwest::Client,
     pool: &SqlitePool,
@@ -697,6 +752,7 @@ async fn sync_source_inner(
 ) -> Result<usize, anyhow::Error> {
     let bases = source_bases(source);
     let raw = http_get_text_from_bases(http, &bases, "index.json").await?;
+    verify_index_signature(http, &bases, &raw, pool, &source.name).await?;
     let index = parse_index(&raw)
         .map_err(|e| anyhow!("invalid index.json: {e}{}", unexpected_body_hint(&raw)))?;
 
@@ -912,7 +968,17 @@ pub async fn refresh_plugin(
         bases.last().expect("canonical base always present"),
         &meta_path,
     );
-    match http_get_text_from_bases(http, &bases, &meta_path).await {
+    // meta.json carries no signature, so it cannot be trusted when the index
+    // must be signed: fall through to the signed full-index path instead.
+    let (require_signed, _) = signature_policy(pool).await;
+    let meta_result = if require_signed {
+        Err(anyhow!(
+            "index signature required — per-plugin meta.json is unsigned"
+        ))
+    } else {
+        http_get_text_from_bases(http, &bases, &meta_path).await
+    };
+    match meta_result {
         Ok(raw) => {
             upsert_plugin_meta(
                 http,

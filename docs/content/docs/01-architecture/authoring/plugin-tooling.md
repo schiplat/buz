@@ -152,6 +152,28 @@ on failure it names each offending file and what to run. This is the
 intended plugin-repository gate: the committed manifests must equal what the
 tool produces.
 
+### Sign the index — `keygen` + `index --sign-key`
+
+A source that must stay trustworthy even when served through a mirror signs
+its index:
+
+```bash
+# once: create a keypair (secret stays in CI; hand the public half to operators)
+buz-plugin keygen --key-id acme-2026 --out signing-key.json
+
+# every publish: sign the index that was just generated
+buz-plugin index --revision "$GITHUB_SHA" --updated-at "$(git log -1 --format=%cI)" \
+  --sign-key signing-key.json
+```
+
+The signature lands in `index.json.sig`. The Manager verifies it only when
+**Settings → Index signature → Require signed index** is on, against the
+configured public key: an unsigned source, or one whose index was rewritten
+(the mirror attack — change the index *and* the hashes inside it), then fails
+with `index signature rejected`. `index --check --sign-key` re-verifies the
+signature in CI too. Per-plugin `meta.json` is unsigned, so signed sources
+refresh through the full index instead.
+
 ### Check a mirror
 
 ```bash
