@@ -13,6 +13,7 @@ use shared::protocol::{
 use std::convert::Infallible;
 use std::net::SocketAddr;
 
+use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::config::Config;
 use crate::crypto;
 use crate::middleware::{PlatformAdmin, RunnerClaims};
@@ -218,7 +219,7 @@ fn policy_json(p: &RunnerPolicyConfig) -> serde_json::Value {
 }
 
 pub async fn create_runner(
-    _auth: PlatformAdmin,
+    auth: PlatformAdmin,
     State(state): State<AppState>,
     Json(req): Json<CreateRunnerRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -229,6 +230,21 @@ pub async fn create_runner(
         .await?;
 
     let policy = load_runner_policy(&state.pool, &created.id).await?;
+    // The register token is deliberately absent from the snapshot.
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::RunnerCreate, &auth)
+            .on(Resource::runner(&created.id, &created.name))
+            .team(team_id.clone())
+            .after(Some(serde_json::json!({
+                "name": created.name,
+                "team_id": team_id,
+                "labels": req.labels,
+                "max_concurrent_jobs": created.max_concurrent_jobs,
+                "execution_mode": policy.execution_mode.as_str(),
+            }))),
+    )
+    .await;
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": created.id,
         "name": created.name,
@@ -2667,7 +2683,7 @@ async fn validate_execution_mode_transition(
 }
 
 pub async fn update_runner(
-    _auth: PlatformAdmin,
+    auth: PlatformAdmin,
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
     Json(req): Json<UpdateRunnerRequest>,
@@ -2679,6 +2695,30 @@ pub async fn update_runner(
     if exists.is_none() {
         return Err(AppError::NotFound("runner not found".into()));
     }
+    // Snapshot before the field-by-field updates so the audit record states
+    // the diff, not the whole row.
+    let before_policy = load_runner_policy(&state.pool, &id).await?;
+    let before_team: Option<String> =
+        sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&state.pool)
+            .await?;
+    let before_labels: String = sqlx::query_scalar("SELECT labels FROM runners WHERE id = ?")
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await?;
+    let before = serde_json::json!({
+        "team_id": before_team,
+        "labels": serde_json::from_str::<Vec<String>>(&before_labels).unwrap_or_default(),
+        "max_concurrent_jobs": before_policy.max_concurrent_jobs,
+        "clean_workspace_after_job": before_policy.clean_workspace_after_job,
+        "execution_mode": before_policy.execution_mode.as_str(),
+        "shell_enabled": before_policy.shell_enabled,
+        "ssh_enabled": before_policy.ssh_enabled,
+        "docker_enabled": before_policy.docker_enabled,
+        "wasm_enabled": before_policy.wasm_enabled,
+        "ssh_host_key_policy": before_policy.ssh_host_key_policy,
+    });
 
     if let Some(requested_team) = &req.team_id {
         let validated = validate_runner_team(&state.pool, requested_team.as_deref()).await?;
@@ -2831,6 +2871,28 @@ pub async fn update_runner(
             .unwrap_or(0);
     let policy = load_runner_policy(&state.pool, &id).await?;
 
+    // Diff against the snapshot taken before the updates.
+    let after = serde_json::json!({
+        "team_id": r.get::<Option<String>, _>(9),
+        "labels": serde_json::from_str::<Vec<String>>(&labels).unwrap_or_default(),
+        "max_concurrent_jobs": policy.max_concurrent_jobs,
+        "clean_workspace_after_job": policy.clean_workspace_after_job,
+        "execution_mode": policy.execution_mode.as_str(),
+        "shell_enabled": policy.shell_enabled,
+        "ssh_enabled": policy.ssh_enabled,
+        "docker_enabled": policy.docker_enabled,
+        "wasm_enabled": policy.wasm_enabled,
+        "ssh_host_key_policy": policy.ssh_host_key_policy,
+    });
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::RunnerUpdate, &auth)
+            .on(Resource::runner(&id, &r.get::<String, _>(1)))
+            .team(r.get::<Option<String>, _>(9))
+            .changes(Some(before), Some(after)),
+    )
+    .await;
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": r.get::<String, _>(0),
         "name": r.get::<String, _>(1),
@@ -2855,10 +2917,16 @@ pub async fn update_runner(
 }
 
 pub async fn delete_runner(
-    _auth: PlatformAdmin,
+    auth: PlatformAdmin,
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
+    // Snapshot first: the audit record outlives the row and is the only
+    // remaining description of what was deleted.
+    let removed = sqlx::query("SELECT name, team_id, status FROM runners WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?;
     // Nullify runner references in past jobs so FK constraint is not violated.
     // Jobs table FK: runner_id TEXT REFERENCES runners(id) — no ON DELETE CASCADE/SET NULL.
     let _ = sqlx::query("UPDATE jobs SET runner_id = NULL WHERE runner_id = ?")
@@ -2875,12 +2943,26 @@ pub async fn delete_runner(
         return Err(AppError::NotFound("runner not found".into()));
     }
 
+    if let Some(row) = &removed {
+        let name: String = row.get(0);
+        audit::record(
+            &state.pool,
+            AuditEvent::new(Action::RunnerDelete, &auth)
+                .on(Resource::runner(&id, &name))
+                .before(Some(serde_json::json!({
+                    "name": name,
+                    "team_id": row.get::<Option<String>, _>(1),
+                    "status": row.get::<String, _>(2),
+                }))),
+        )
+        .await;
+    }
     tracing::info!("Runner deleted: {id}");
     Ok(Json(ApiResponse::success(())))
 }
 
 pub async fn toggle_freeze(
-    _auth: PlatformAdmin,
+    auth: PlatformAdmin,
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -2909,6 +2991,16 @@ pub async fn toggle_freeze(
     tracing::info!("Runner {name} ({id}) {action}");
 
     log_runner_event(&state.pool, &id, action, &format!("Runner {action}")).await;
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::RunnerFreeze, &auth)
+            .on(Resource::runner(&id, &name))
+            .changes(
+                Some(serde_json::json!({ "is_frozen": current_frozen != 0 })),
+                Some(serde_json::json!({ "is_frozen": new_frozen != 0 })),
+            ),
+    )
+    .await;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "is_frozen": new_frozen != 0
@@ -2919,7 +3011,7 @@ pub async fn toggle_freeze(
 /// heartbeat (≤30s); the runner then exits with code 0 and its supervisor
 /// brings it back up. Refused with 409 while the runner has running jobs.
 pub async fn restart(
-    _auth: PlatformAdmin,
+    auth: PlatformAdmin,
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -2959,6 +3051,11 @@ pub async fn restart(
         &id,
         "restart_requested",
         "Restart requested — runner will exit on next heartbeat",
+    )
+    .await;
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::RunnerRestart, &auth).on(Resource::runner(&id, &name)),
     )
     .await;
 

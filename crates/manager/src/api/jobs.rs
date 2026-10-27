@@ -11,7 +11,7 @@ use sqlx::Row;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::{AuthUser, RunnerClaims};
 use crate::rbac::{pipeline_team_id, team_in_clause};
 use crate::state::AppState;
@@ -1048,6 +1048,21 @@ pub async fn delete(
                 .bind(&id)
                 .execute(&state.pool)
                 .await?;
+            audit::record(
+                &state.pool,
+                AuditEvent::new(Action::JobDelete, &auth)
+                    .on(Resource::job(
+                        &id,
+                        pipeline.as_deref().unwrap_or(&pipeline_id),
+                    ))
+                    .team(Some(team_id.clone()))
+                    .before(Some(serde_json::json!({
+                        "status": status,
+                        "pipeline_id": pipeline_id,
+                        "pipeline": pipeline,
+                    }))),
+            )
+            .await;
             tracing::info!(
                 operator = %auth.username,
                 job_id = %id,

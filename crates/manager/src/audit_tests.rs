@@ -29,3 +29,63 @@ fn redact_credential_data() {
     let r = redact_value(&v);
     assert_ne!(r["credential_data"], "BEGIN PRIVATE KEY");
 }
+
+#[test]
+fn changes_records_only_differing_keys() {
+    use super::{Action, AuditEvent, Resource};
+    use crate::rbac::AuthUser;
+
+    let auth = AuthUser {
+        id: "u1".into(),
+        username: "alice".into(),
+        is_platform_admin: true,
+        is_super_admin: false,
+        memberships: vec![],
+    };
+    let event = AuditEvent::new(Action::RunnerUpdate, &auth)
+        .on(Resource::runner("r1", "runner-one"))
+        .changes(
+            Some(json!({ "labels": ["a"], "max_concurrent_jobs": 1, "removed": "x" })),
+            Some(json!({ "labels": ["a"], "max_concurrent_jobs": 4, "added": "y" })),
+        );
+
+    let before = event.before.unwrap();
+    let after = event.after.unwrap();
+    // Unchanged key dropped entirely.
+    assert!(before.get("labels").is_none() && after.get("labels").is_none());
+    // Changed key keeps both sides.
+    assert_eq!(before["max_concurrent_jobs"], 1);
+    assert_eq!(after["max_concurrent_jobs"], 4);
+    // Removed key reads as null on the after side, added key as null before.
+    assert_eq!(before["removed"], "x");
+    assert!(after["removed"].is_null());
+    assert!(before["added"].is_null());
+    assert_eq!(after["added"], "y");
+    // Resource columns derive consistently.
+    assert_eq!(event.resource_type, "runner");
+    assert_eq!(event.resource_id, "r1");
+    assert_eq!(event.resource_name, "runner-one");
+}
+
+#[test]
+fn step_pool_resource_composes_the_reference() {
+    use super::{Action, AuditEvent, Resource};
+    use crate::rbac::AuthUser;
+
+    let auth = AuthUser {
+        id: "u1".into(),
+        username: "alice".into(),
+        is_platform_admin: true,
+        is_super_admin: false,
+        memberships: vec![],
+    };
+    let event = AuditEvent::new(Action::StepPoolToggle, &auth).on(Resource::step_pool(
+        "buz",
+        "helm-upgrade",
+        "1.0.0",
+    ));
+    assert_eq!(event.action, "step_pool.toggle");
+    assert_eq!(event.resource_type, "step_pool");
+    assert_eq!(event.resource_id, "buz/helm-upgrade@1.0.0");
+    assert_eq!(event.resource_name, "buz/helm-upgrade@1.0.0");
+}

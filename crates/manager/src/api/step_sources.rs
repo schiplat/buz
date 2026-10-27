@@ -11,6 +11,7 @@ use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use uuid::Uuid;
 
+use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::PlatformAdmin;
 use crate::services::step_pool;
 use crate::state::AppState;
@@ -91,6 +92,18 @@ pub async fn create_source(
     .execute(&state.pool)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::StepSourceCreate, &auth)
+            .on(Resource::step_source(&id, &name))
+            .after(Some(json!({
+                "name": name,
+                "url": url,
+                "mirror_url": mirror_url,
+                "auto_enable": body.auto_enable,
+            }))),
+    )
+    .await;
 
     // Sync runs in the background: the API returns the staged source
     // immediately and the UI polls the list for last_synced_at / error.
@@ -151,7 +164,7 @@ pub async fn check_mirror(
 
 /// POST /api/v1/admin/step-sources/{id}/sync — re-fetch the index.
 pub async fn sync_source(
-    _auth: PlatformAdmin,
+    auth: PlatformAdmin,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
@@ -168,6 +181,13 @@ pub async fn sync_source(
     .await
     .parse()
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::StepSourceSync, &auth)
+            .on(Resource::step_source(&source.id, &source.name))
+            .meta(Some(json!({ "trigger": "manual" }))),
+    )
+    .await;
     tokio::spawn(async move {
         let http = step_pool::http_client(timeout_secs);
         if let Err(e) =
@@ -204,11 +224,30 @@ pub async fn delete_source(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
+    // Snapshot before deleting: once the row is gone (CASCADE also drops its
+    // pool rows) the audit record is the only remaining description of it.
+    let removed = step_pool::get_source(&state.pool, &id)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     sqlx::query("DELETE FROM step_sources WHERE id = ?")
         .bind(&id)
         .execute(&state.pool)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    if let Some(removed) = &removed {
+        audit::record(
+            &state.pool,
+            AuditEvent::new(Action::StepSourceDelete, &auth)
+                .on(Resource::step_source(&removed.id, &removed.name))
+                .before(Some(json!({
+                    "name": removed.name,
+                    "url": removed.url,
+                    "mirror_url": removed.mirror_url,
+                    "auto_enable": removed.auto_enable,
+                }))),
+        )
+        .await;
+    }
     // Deleting the factory-seeded source is a deliberate operator choice
     // (typically the official site is unreachable); remember it so the
     // startup migration does not re-seed it on every boot.
@@ -271,7 +310,7 @@ pub async fn list_pool(
 /// PUT /api/v1/admin/step-pool/{namespace}/{step_id}/{version} — enable or
 /// disable one pool entry (the curator's curation action).
 pub async fn toggle_pool_entry(
-    _auth: PlatformAdmin,
+    auth: PlatformAdmin,
     State(state): State<AppState>,
     Path((namespace, step_id, version)): Path<(String, String, String)>,
     Json(body): Json<TogglePoolRequest>,
@@ -300,6 +339,16 @@ pub async fn toggle_pool_entry(
         .await
         .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
     }
+    let previous_enabled: Option<i64> = sqlx::query_scalar(
+        "SELECT enabled FROM step_pool \
+         WHERE namespace = ? AND step_id = ? AND version = ?",
+    )
+    .bind(&namespace)
+    .bind(&step_id)
+    .bind(&version)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
     let result = sqlx::query(
         "UPDATE step_pool SET enabled = ? \
          WHERE namespace = ? AND step_id = ? AND version = ?",
@@ -314,6 +363,16 @@ pub async fn toggle_pool_entry(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("pool entry not found".into()));
     }
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::StepPoolToggle, &auth)
+            .on(Resource::step_pool(&namespace, &step_id, &version))
+            .changes(
+                Some(json!({ "enabled": previous_enabled.map(|v| v != 0) })),
+                Some(json!({ "enabled": body.enabled })),
+            ),
+    )
+    .await;
     Ok(Json(ApiResponse::success(json!({
         "namespace": namespace, "step_id": step_id,
         "version": version, "enabled": body.enabled,

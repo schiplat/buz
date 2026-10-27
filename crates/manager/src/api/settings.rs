@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 
+use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::PlatformAdmin;
 use crate::services::platform_settings::{
     self, KEY_STEP_INDEX_LOCAL_DIR, KEY_STEP_REVIEWED_MANIFEST, KEY_STEP_REVIEW_REQUIRED,
@@ -189,10 +190,26 @@ pub async fn update_setting(
         }
     }
 
+    let previous = platform_settings::fetch_overrides(&state.pool)
+        .await
+        .get(&key)
+        .cloned();
     platform_settings::upsert(&state.pool, &key, &value, &auth.username)
         .await
         .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
     reapply_step_index_overrides(&state).await?;
+    // `from` / `to` instead of named-setting keys: redact_value masks any key
+    // literally named `value`, which would erase the very change we record.
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::SettingUpdate, &auth)
+            .on(Resource::setting(&key))
+            .changes(
+                Some(json!({ "from": setting_display(&key, previous.as_deref()) })),
+                Some(json!({ "to": setting_display(&key, Some(&value)) })),
+            ),
+    )
+    .await;
     Ok(Json(ApiResponse::success(
         json!({ "key": key, "value": value }),
     )))
@@ -201,15 +218,45 @@ pub async fn update_setting(
 /// DELETE /api/v1/admin/settings/{key} — clear the override, fall back to the
 /// manager.toml default.
 pub async fn reset_setting(
-    _auth: PlatformAdmin,
+    auth: PlatformAdmin,
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let previous = platform_settings::fetch_overrides(&state.pool)
+        .await
+        .get(&key)
+        .cloned();
     platform_settings::delete(&state.pool, &key)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     reapply_step_index_overrides(&state).await?;
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::SettingReset, &auth)
+            .on(Resource::setting(&key))
+            .changes(
+                Some(json!({ "from": setting_display(&key, previous.as_deref()) })),
+                Some(json!({ "to": Value::Null })),
+            ),
+    )
+    .await;
     Ok(Json(ApiResponse::success(json!({ "key": key }))))
+}
+
+/// Settings are audited by value, except where the key itself says the value
+/// is a credential (none today — this is the guard for future settings).
+fn setting_display(key: &str, value: Option<&str>) -> Value {
+    let lower = key.to_ascii_lowercase();
+    if ["secret", "token", "password", "key"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return json!("***");
+    }
+    match value {
+        Some(value) => json!(value),
+        None => Value::Null,
+    }
 }
 
 /// Resolver-affecting keys must reach the step resolver immediately —

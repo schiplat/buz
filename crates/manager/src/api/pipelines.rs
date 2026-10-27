@@ -919,17 +919,17 @@ pub async fn enable(
         .execute(&mut *tx)
         .await?;
     }
-    tx.commit().await?;
-
-    audit::record(
-        &state.pool,
+    // Audit inside the transaction: an unauditable enable is a failed enable.
+    audit::record_in(
+        &mut *tx,
         AuditEvent::from_auth(&auth, "pipeline.enable")
             .resource("pipeline", &id, &name)
             .team(Some(team_id))
             .before(Some(serde_json::json!({ "is_active": was_active })))
             .after(Some(serde_json::json!({ "is_active": true }))),
     )
-    .await;
+    .await?;
+    tx.commit().await?;
 
     tracing::info!("Pipeline {name} ({id}) enabled");
 

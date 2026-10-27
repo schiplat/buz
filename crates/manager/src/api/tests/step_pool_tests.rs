@@ -1284,3 +1284,78 @@ async fn mirror_check_requires_a_configured_mirror() {
     .to_string();
     assert!(error.contains("no mirror configured"), "{error}");
 }
+
+#[tokio::test]
+async fn pool_toggle_writes_an_audit_record_with_the_diff() {
+    let yaml = community_spec();
+    let yaml_sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(yaml.as_bytes()))
+    };
+    let source_url = spawn_source_server(yaml, yaml_sha).await;
+    let (app, pool) = test_app().await;
+    let jwt = TokenManager::new(JWT_SECRET)
+        .create_token(ADMIN_ID, Role::Admin, 1)
+        .unwrap();
+    let body = add_source(&app, &jwt, &format!("{source_url}/index.json")).await;
+    let source_id = body["data"]["source"]["id"]
+        .as_str()
+        .expect("source id")
+        .to_string();
+    // Deterministic sync so the pool row exists.
+    let source = crate::services::step_pool::get_source(&pool, &source_id)
+        .await
+        .expect("get source")
+        .expect("source exists");
+    let http = crate::services::step_pool::http_client(30);
+    crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        .await
+        .expect("sync");
+
+    // Enable via the API, then disable again.
+    for enabled in [true, false] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/admin/step-pool/alice/oss-upload/1.0.0")
+                    .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(format!(r#"{{ "enabled": {enabled} }}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    let rows: Vec<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT action, resource_type, resource_id, before_json, after_json \
+         FROM audit_logs WHERE action = 'step_pool.toggle' ORDER BY created_at",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2, "one record per toggle: {rows:?}");
+    for (action, resource_type, resource_id, before, after) in &rows {
+        assert_eq!(action, "step_pool.toggle");
+        assert_eq!(resource_type, "step_pool");
+        assert_eq!(resource_id, "alice/oss-upload@1.0.0");
+        assert!(before.is_some() && after.is_some(), "{before:?} {after:?}");
+    }
+    // The diff states what changed: enable went false→true, disable true→false.
+    let parsed: Vec<(serde_json::Value, serde_json::Value)> = rows
+        .iter()
+        .map(|(_, _, _, before, after)| {
+            (
+                serde_json::from_str(before.as_deref().unwrap()).unwrap(),
+                serde_json::from_str(after.as_deref().unwrap()).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(parsed[0].0["enabled"], false);
+    assert_eq!(parsed[0].1["enabled"], true);
+    assert_eq!(parsed[1].0["enabled"], true);
+    assert_eq!(parsed[1].1["enabled"], false);
+}
