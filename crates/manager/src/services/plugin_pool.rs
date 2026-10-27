@@ -69,10 +69,12 @@ async fn http_get_text_from_bases(
         match http_get_text(http, &url).await {
             Ok(text) => return Ok(text),
             Err(e) => {
-                tracing::warn!(
+                // Expected while failing over between mirror and origin; the
+                // error surfaces to the caller when every endpoint fails.
+                tracing::debug!(
                     url = %url,
                     error = %e,
-                    "source endpoint failed — falling back to the next configured endpoint"
+                    "source endpoint failed — trying the next configured endpoint"
                 );
                 last = Some(e);
             }
@@ -627,7 +629,7 @@ async fn resolve_compat(
                 // the red flag. Persisted (not NULL) so the curator sees the
                 // half-published mirror immediately instead of at enable time.
                 Some(requires) => {
-                    tracing::warn!(
+                    tracing::debug!(
                         plugin = %format!("{namespace}/{step_id}@{version}"),
                         error = %fetch_error,
                         "template probe failed — source lists the file but it does not download"
@@ -642,7 +644,7 @@ async fn resolve_compat(
                     )
                 }
                 None => {
-                    tracing::warn!(
+                    tracing::debug!(
                         plugin = %format!("{namespace}/{step_id}@{version}"),
                         error = %fetch_error,
                         "template fetch failed during sync — compatibility stays unknown"
@@ -783,10 +785,10 @@ async fn sync_source_inner(
                     .unwrap_or_default(),
             ),
             Err(e) => {
-                tracing::warn!(
+                tracing::debug!(
                     source = %source.name,
                     error = %e,
-                    "reviews.json fetch failed — keeping existing review badges"
+                    "no reviews.json for this source — keeping existing review badges"
                 );
                 None
             }
@@ -827,6 +829,8 @@ async fn sync_source_inner(
     let total_entries: usize = groups.iter().map(|(_, _, versions)| versions.len()).sum();
     super::sync_progress::set_totals(&source.id, groups.len(), total_entries);
 
+    let mut incompatible = 0usize;
+    let mut undownloadable = 0usize;
     for (namespace, step_id, versions) in groups {
         let mut versions = versions;
         versions.sort_by(|a, b| version_sort_key(&b.version).cmp(&version_sort_key(&a.version)));
@@ -877,6 +881,15 @@ async fn sync_source_inner(
                 entry.version == newest_version || entry.requires_buz.is_none(),
             )
             .await;
+            if buz_compatible == Some(false) {
+                incompatible += 1;
+                if compat_error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("failed to download"))
+                {
+                    undownloadable += 1;
+                }
+            }
             let enable = init_slot_open && buz_compatible == Some(true);
             if enable {
                 init_slot_open = false;
@@ -933,6 +946,17 @@ async fn sync_source_inner(
             super::sync_progress::tick_entry(&source.id);
         }
         super::sync_progress::tick_plugin(&source.id);
+    }
+
+    // Aggregate verdict for the whole source: the per-entry detail lives on the
+    // pool rows (and in the dashboard), so the log carries one line per sync.
+    if incompatible > 0 {
+        tracing::warn!(
+            source = %source.name,
+            incompatible,
+            failed_to_download = undownloadable,
+            "source has versions that cannot be used here — see the plugin pool"
+        );
     }
     Ok(index.steps.len())
 }
