@@ -27,11 +27,15 @@ const META_FIELDS: [&str; 10] = [
     "requires_buz",
 ];
 
+#[derive(Clone)]
 pub struct Options {
     pub plugins_dir: PathBuf,
     pub revision: Option<String>,
     pub updated_at: Option<String>,
     pub no_meta: bool,
+    /// Verify instead of write: compare what generation would produce with
+    /// the manifests on disk and fail on any difference.
+    pub check: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -224,13 +228,18 @@ fn parse_spec(path: &Path, source_root: &Path) -> anyhow::Result<ParsedSpec> {
     })
 }
 
-fn emit_json<T: serde::Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+/// Serialized manifest text: pretty JSON, declaration-order keys, trailing
+/// newline. Byte-deterministic — the whole point of a mirror drift check.
+fn render_json<T: serde::Serialize>(value: &T) -> anyhow::Result<String> {
+    Ok(format!("{}\n", serde_json::to_string_pretty(value)?))
+}
+
+fn write_json(path: &Path, content: &str) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create {}", parent.display()))?;
     }
-    std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(value)?))
-        .with_context(|| format!("cannot write {}", path.display()))?;
+    std::fs::write(path, content).with_context(|| format!("cannot write {}", path.display()))?;
     Ok(())
 }
 
@@ -245,7 +254,25 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
         )
     })?;
 
-    let files = layout::discover_spec_files(&source_root)?;
+    // Plan first, then either write or verify — both paths see the exact same
+    // bytes, so `--check` cannot disagree with what generation would write.
+    let planned = plan_manifests(&source_root, options)?;
+
+    if options.check {
+        verify_manifests(&source_root, &planned, options)?;
+    } else {
+        for (path, content) in &planned {
+            write_json(path, content)?;
+        }
+        report_written(&planned);
+    }
+    Ok(())
+}
+
+/// Path each manifest the run produces to its exact bytes, in write order
+/// (index → per-plugin meta → revision sentinel last).
+fn plan_manifests(source_root: &Path, options: &Options) -> anyhow::Result<Vec<(PathBuf, String)>> {
+    let files = layout::discover_spec_files(source_root)?;
     if files.is_empty() {
         anyhow::bail!(
             "{}: no *.yaml/*.yml step specs found",
@@ -260,7 +287,7 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
     let mut seen: BTreeMap<(String, String), PathBuf> = BTreeMap::new();
     let mut by_ns: BTreeMap<String, Vec<ParsedSpec>> = BTreeMap::new();
     for path in &files {
-        let parsed = parse_spec(path, &source_root)?;
+        let parsed = parse_spec(path, source_root)?;
         let key = (parsed.entry.id.clone(), parsed.entry.version.clone());
         if let Some(previous) = seen.get(&key) {
             anyhow::bail!(
@@ -286,18 +313,17 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
         );
     }
 
+    let mut planned: Vec<(PathBuf, String)> = Vec::new();
+
     let mut entries: Vec<IndexEntry> = by_ns
         .values()
         .flat_map(|specs| specs.iter().map(|parsed| parsed.entry.clone()))
         .collect();
     entries.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
-    let index_path = source_root.join(layout::INDEX_FILE);
-    let count = entries.len();
-    emit_json(&index_path, &IndexFile { steps: entries })?;
-    println!(
-        "index.json: {count} step(s) written to {}",
-        index_path.display()
-    );
+    planned.push((
+        source_root.join(layout::INDEX_FILE),
+        render_json(&IndexFile { steps: entries })?,
+    ));
 
     if !options.no_meta {
         let mut metas: BTreeMap<PathBuf, (String, Vec<MetaVersion>)> = BTreeMap::new();
@@ -305,7 +331,7 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
             for parsed in specs {
                 let rel = parsed
                     .path
-                    .strip_prefix(&source_root)
+                    .strip_prefix(source_root)
                     .map_err(|_| {
                         anyhow::anyhow!(
                             "{}: specs must live under the source root {}",
@@ -347,37 +373,138 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
         for (plugin_meta_dir, (id, versions)) in &metas {
             let mut versions = versions.clone();
             versions.sort_by(|a, b| a.version.cmp(&b.version));
-            let meta_path = plugin_meta_dir.join(layout::META_FILE);
-            emit_json(
-                &meta_path,
-                &MetaFile {
+            planned.push((
+                plugin_meta_dir.join(layout::META_FILE),
+                render_json(&MetaFile {
                     id: id.clone(),
                     versions,
-                },
-            )?;
+                })?,
+            ));
         }
-        println!("meta.json: {} plugin(s) written", metas.len());
     }
 
-    // Revision sentinel — written LAST: mirrors publish content first and
-    // the sentinel commits the sync. Skipped without --revision so local
-    // runs never fabricate a version marker.
+    // Revision sentinel — always last: mirrors publish content first and the
+    // sentinel commits the sync. Skipped without --revision so local runs
+    // never fabricate a version marker.
     if let Some(revision) = &options.revision {
-        let sentinel_path = source_root.join(layout::REVISION_FILE);
-        emit_json(
-            &sentinel_path,
-            &RevisionSentinelFile {
+        planned.push((
+            source_root.join(layout::REVISION_FILE),
+            render_json(&RevisionSentinelFile {
                 revision: revision.clone(),
                 updated_at: options.updated_at.clone(),
-            },
-        )?;
-        println!(
-            "revision.json: written to {} (revision {revision})",
-            sentinel_path.display()
-        );
+            })?,
+        ));
     }
 
-    Ok(())
+    Ok(planned)
+}
+
+fn report_written(planned: &[(PathBuf, String)]) {
+    for (path, content) in planned {
+        // Count entries from the rendered text: one "version" key per step or
+        // per plugin version, one sentinel.
+        let detail = if content.contains("\"steps\": [") {
+            format!("{} step(s)", content.matches("\"version\":").count())
+        } else if content.contains("\"versions\": [") {
+            format!("{} version(s)", content.matches("\"version\":").count())
+        } else {
+            "sentinel".to_string()
+        };
+        println!("wrote {} ({detail})", path.display());
+    }
+}
+
+/// Compare the planned bytes with what is on disk. Any missing, differing, or
+/// stale manifest fails the run: in CI this turns "the committed manifests
+/// must equal what the tool produces" into a hard gate.
+fn verify_manifests(
+    source_root: &Path,
+    planned: &[(PathBuf, String)],
+    options: &Options,
+) -> anyhow::Result<()> {
+    let mut problems: Vec<String> = Vec::new();
+    for (path, expected) in planned {
+        match std::fs::read_to_string(path) {
+            Ok(actual) if &actual == expected => {}
+            Ok(_) => problems.push(format!(
+                "{} is out of date — run `buz-plugin index{}` and commit the result",
+                path.display(),
+                if options.revision.is_some() {
+                    ""
+                } else {
+                    " --revision <sha>"
+                }
+            )),
+            Err(_) => problems.push(format!(
+                "{} is missing — run `buz-plugin index`",
+                path.display()
+            )),
+        }
+    }
+
+    // Stale manifests: a plugin directory whose spec was deleted still carries
+    // its meta.json, and nothing else would ever remove it.
+    let planned_paths: std::collections::BTreeSet<&Path> =
+        planned.iter().map(|(p, _)| p.as_path()).collect();
+    for entry in walk_manifests(source_root)? {
+        let is_sentinel = entry.file_name().and_then(|n| n.to_str()) == Some(layout::REVISION_FILE);
+        if is_sentinel && options.revision.is_none() {
+            continue; // sentinel not managed without --revision
+        }
+        if !planned_paths.contains(entry.as_path()) {
+            problems.push(format!(
+                "{} is stale — its plugin no longer exists; delete it",
+                entry.display()
+            ));
+        }
+    }
+
+    if problems.is_empty() {
+        println!("manifests up to date ({} file(s) checked)", planned.len());
+        return Ok(());
+    }
+    anyhow::bail!(
+        "manifest check failed:\n{}",
+        problems
+            .iter()
+            .map(|p| format!("  - {p}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// Every manifest file currently under the source root.
+fn walk_manifests(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+        for entry in
+            std::fs::read_dir(dir).with_context(|| format!("cannot read {}", dir.display()))?
+        {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                walk(&path, out)?;
+            } else if matches!(
+                name.as_ref(),
+                layout::INDEX_FILE | layout::META_FILE | layout::REVISION_FILE
+            ) {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    walk(dir, &mut out)?;
+    out.sort();
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -410,68 +537,125 @@ run: echo ok
         root
     }
 
-    fn sha_of(content: &str) -> String {
-        sha256_hex(content.as_bytes())
-    }
-
     fn options(root: &Path) -> Options {
         Options {
             plugins_dir: root.join("plugins"),
             revision: None,
             updated_at: None,
             no_meta: false,
+            check: false,
         }
     }
 
+    fn fixtures() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+    }
+
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// Byte-for-byte comparison against committed golden files. This is the
+    /// compatibility contract in one artifact: indentation, key order,
+    /// trailing newline, entry sorting, and every field value. A diff here
+    /// shows exactly which of those changed, and reviewing the golden file
+    /// diff is reviewing the contract.
     #[test]
-    fn generates_source_root_manifest_meta_and_sentinel() {
+    fn generated_manifests_match_the_golden_files() {
         let dir = tempfile::tempdir().unwrap();
-        let root = write_repo(dir.path());
+        let repo = dir.path().join("repo");
+        copy_tree(&fixtures().join("repo"), &repo);
         run(&Options {
             revision: Some("8d367d8".into()),
             updated_at: Some("2026-10-27T00:00:00Z".into()),
-            ..options(&root)
+            ..options(&repo)
         })
         .unwrap();
 
-        let sha = sha_of(SPEC);
-        let written = fs::read_to_string(root.join("plugins/index.json")).unwrap();
-        // Pretty format, declaration-order keys, trailing newline.
+        let golden_root = fixtures().join("golden");
+        let expected_files = [
+            "plugins/index.json",
+            "plugins/revision.json",
+            "plugins/alice/hello/meta.json",
+            "plugins/alice/world/meta.json",
+        ];
+        for relative in expected_files {
+            let expected = fs::read_to_string(golden_root.join(relative))
+                .unwrap_or_else(|e| panic!("golden {relative}: {e}"));
+            let actual = fs::read_to_string(repo.join(relative))
+                .unwrap_or_else(|e| panic!("generated {relative}: {e}"));
+            assert_eq!(
+                actual, expected,
+                "{relative} differs from its golden file — if the change is intended, \
+                 update tests/fixtures/golden/{relative}"
+            );
+        }
+
+        // Nothing else may be produced.
+        let mut produced: Vec<String> = walk_manifests(&repo.join("plugins"))
+            .unwrap()
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&repo)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        produced.sort();
+        let mut expected = expected_files.map(str::to_string).to_vec();
+        expected.sort();
+        assert_eq!(produced, expected, "unexpected manifest files");
+    }
+
+    #[test]
+    fn check_passes_on_fresh_output_and_names_what_drifted() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        copy_tree(&fixtures().join("repo"), &repo);
+        let mut opts = Options {
+            revision: Some("8d367d8".into()),
+            updated_at: Some("2026-10-27T00:00:00Z".into()),
+            ..options(&repo)
+        };
+        run(&opts).unwrap();
+
+        // Fresh output → check passes.
+        opts.check = true;
+        run(&opts).unwrap();
+
+        // A hand-edited manifest → check fails naming that file.
+        let index = repo.join("plugins/index.json");
+        let tampered = fs::read_to_string(&index).unwrap().replacen(
+            "\"version\": \"1.0.0\"",
+            "\"version\": \"9.9.9\"",
+            1,
+        );
+        fs::write(&index, tampered).unwrap();
+        let error = run(&opts).unwrap_err().to_string();
         assert!(
-            written.starts_with("{\n  \"steps\": [\n    {\n      \"id\": \"alice/oss-upload\",")
+            error.contains("plugins/index.json is out of date"),
+            "{error}"
         );
-        let actual: serde_json::Value = serde_json::from_str(&written).unwrap();
-        let entry = &actual["steps"][0];
-        assert_eq!(entry["id"], "alice/oss-upload");
-        assert_eq!(entry["version"], "1.0.0");
-        // `file:` is relative to the source root (the manager's base URL).
-        assert_eq!(entry["file"], "alice/oss-upload/1.0.0.yaml");
-        assert_eq!(entry["sha256"], sha);
-        assert_eq!(entry["author"], "alice");
-        assert_eq!(entry["publisher"], "community");
-        assert_eq!(
-            entry["source_repo"],
-            "https://github.com/alice/my-buz-steps"
-        );
-        assert_eq!(entry["engine"], "shell");
-        assert_eq!(entry["requires_buz"], ">=1.0.0");
 
-        let meta_written =
-            fs::read_to_string(root.join("plugins/alice/oss-upload/meta.json")).unwrap();
-        let meta: serde_json::Value = serde_json::from_str(&meta_written).unwrap();
-        assert_eq!(meta["id"], "alice/oss-upload");
-        assert_eq!(meta["versions"][0]["file"], "alice/oss-upload/1.0.0.yaml");
-        assert_eq!(meta["versions"][0]["sha256"], sha);
-
-        let sentinel = fs::read_to_string(root.join("plugins/revision.json")).unwrap();
-        assert_eq!(
-            sentinel,
-            r#"{
-  "revision": "8d367d8",
-  "updated_at": "2026-10-27T00:00:00Z"
-}
-"#
-        );
+        // A deleted spec leaves a stale meta.json → check fails naming it too.
+        run(&Options {
+            check: false,
+            ..opts.clone()
+        })
+        .ok();
+        fs::remove_file(repo.join("plugins/alice/world/1.0.0.yaml")).unwrap();
+        let error = run(&opts).unwrap_err().to_string();
+        assert!(error.contains("alice/world/meta.json is stale"), "{error}");
     }
 
     #[test]

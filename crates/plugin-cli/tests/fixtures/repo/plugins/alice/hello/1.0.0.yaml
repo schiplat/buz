@@ -1,0 +1,26 @@
+id: alice/hello
+version: 1.0.0
+name: Hello (shout)
+category: notify
+description: "Say hello, optionally in caps."
+description_zh: "打招呼，可选全大写。"
+publisher: community
+author: alice
+license: Apache-2.0
+source_repo: https://github.com/alice/buz-steps
+engine: shell
+default_timeout: 1m
+requires_buz: ">=1.9.0"
+inputs:
+  who:
+    type: string
+    required: true
+    description: Who to greet
+  shout:
+    type: boolean
+    default: "false"
+    description: Uppercase the greeting
+run: |
+  MSG="hello $INPUT_WHO"
+  [ "${INPUT_SHOUT:-false}" = "true" ] && MSG=$(printf '%s' "$MSG" | tr '[:lower:]' '[:upper:]')
+  echo "$MSG"

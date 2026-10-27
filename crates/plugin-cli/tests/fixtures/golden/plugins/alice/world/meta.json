@@ -1,0 +1,18 @@
+{
+  "id": "alice/world",
+  "versions": [
+    {
+      "version": "1.0.0",
+      "file": "alice/world/1.0.0.yaml",
+      "sha256": "0d8bbae550709fc8ac7cca23902fc6605b6f967089ecdb3ab75f10759377eddb",
+      "category": "notify",
+      "name": "World",
+      "description": "Print the world greeting.",
+      "author": "alice",
+      "publisher": "community",
+      "license": "MIT",
+      "source_repo": "https://github.com/alice/buz-steps",
+      "engine": "shell"
+    }
+  ]
+}

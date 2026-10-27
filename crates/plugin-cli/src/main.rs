@@ -67,6 +67,9 @@ enum Command {
         /// Skip per-plugin meta.json output
         #[arg(long, default_value_t = false)]
         no_meta: bool,
+        /// Verify the manifests on disk instead of writing (CI gate)
+        #[arg(long, default_value_t = false)]
+        check: bool,
     },
     /// Compare the revision sentinel between canonical origin and mirror
     #[command(name = "mirror")]
@@ -109,11 +112,13 @@ fn main() {
             revision,
             updated_at,
             no_meta,
+            check,
         } => indexgen::run(&indexgen::Options {
             plugins_dir: plugins_dir.clone(),
             revision: revision.clone(),
             updated_at: updated_at.clone(),
             no_meta: *no_meta,
+            check: *check,
         }),
         Command::MirrorCheck {
             source,

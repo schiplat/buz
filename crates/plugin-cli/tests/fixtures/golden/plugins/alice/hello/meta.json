@@ -1,0 +1,35 @@
+{
+  "id": "alice/hello",
+  "versions": [
+    {
+      "version": "0.1.0",
+      "file": "alice/hello/0.1.0.yaml",
+      "sha256": "c307a09d5ffef50e225cf7fa5dcb2ddc68cd8cc31fa349bca07b6b1b11aedec9",
+      "category": "notify",
+      "name": "Hello",
+      "description": "Say hello to someone. The starter template for a first plugin.",
+      "author": "alice",
+      "publisher": "community",
+      "license": "Apache-2.0",
+      "source_repo": "https://github.com/alice/buz-steps",
+      "engine": "shell",
+      "requires_buz": ">=1.8.1"
+    },
+    {
+      "version": "1.0.0",
+      "file": "alice/hello/1.0.0.yaml",
+      "sha256": "6e1165631816ab0a859089e28200dbcf079873ece97e1f5d333e9f8156babccb",
+      "category": "notify",
+      "name": "Hello (shout)",
+      "description": "Say hello, optionally in caps.",
+      "description_zh": "打招呼，可选全大写。",
+      "author": "alice",
+      "publisher": "community",
+      "license": "Apache-2.0",
+      "source_repo": "https://github.com/alice/buz-steps",
+      "engine": "shell",
+      "default_timeout": "1m",
+      "requires_buz": ">=1.9.0"
+    }
+  ]
+}

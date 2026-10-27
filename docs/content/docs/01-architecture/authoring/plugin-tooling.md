@@ -41,12 +41,33 @@ of responsibility; everything else in this page derives from that split.
 |---------|---------|
 | `buz-plugin init <namespace>/<id>` | Scaffold `plugins/<ns>/<id>/` per the [publishing layout](./plugin-contract/#publishing-layout): a `0.1.0.yaml` spec, README, and next-step hints |
 | `buz-plugin validate <path…>` | Validate spec files/directories with the exact gate the Manager applies at save (`shared::step_spec`), including duplicate `(id, version)` detection |
-| `buz-plugin index` | Generate per-namespace `plugins/<ns>/index.json` (+ per-plugin `meta.json` + `revision.json` sentinel, optional merged view) — supersedes `gen_index.py` |
+| `buz-plugin index` | Generate the source-root `plugins/index.json` (+ per-plugin `meta.json` + `revision.json` sentinel) — supersedes `gen_index.py`. `--check` verifies instead of writing |
 | `buz-plugin mirror check <source> <mirror>` | Compare the namespace revision sentinel between canonical origin and mirror (tiny GETs); falls back to a full index byte-compare when a sentinel is missing — the same protocol the Manager's *Check mirror* action speaks |
 
 Index output is **byte-deterministic** (sorted entries, ordered fields,
 two-space JSON + trailing newline). CI regenerations are byte-identical, and
 mirror drift checks can therefore compare bytes safely.
+
+That contract is pinned by golden files (`crates/plugin-cli/tests/fixtures/`):
+the generator's output is compared byte-for-byte against committed fixtures
+covering multiple plugins and versions, so a change to indentation, key order,
+entry sorting, or any field value fails the test with a diff. Changing the
+contract deliberately means updating the golden files in the same commit.
+
+### CI gate: `--check`
+
+`buz-plugin index --check` plans the manifests exactly as generation would,
+compares them with what is committed, and exits non-zero on any difference —
+including a `meta.json` left behind by a deleted spec. The plugins
+repository's CI is intended to run:
+
+```bash
+buz-plugin index --check --revision "$GITHUB_SHA" --updated-at "$(git log -1 --format=%cI)"
+```
+
+which turns "the committed manifests must equal what the tool produces" into a
+hard gate instead of a hand-run diff. Until the released binary is wired into
+that workflow, the Python generator keeps that role.
 
 ## Validation at two moments
 

@@ -1,0 +1,17 @@
+id: alice/hello
+version: 0.1.0
+name: Hello
+category: notify
+description: "Say hello to someone. The starter template for a first plugin."
+publisher: community
+author: alice
+license: Apache-2.0
+source_repo: https://github.com/alice/buz-steps
+engine: shell
+requires_buz: ">=1.8.1"
+inputs:
+  who:
+    type: string
+    required: true
+    description: Who to greet
+run: echo "hello $INPUT_WHO"

@@ -1,0 +1,12 @@
+id: alice/world
+version: 1.0.0
+name: World
+category: notify
+description: "Print the world greeting."
+publisher: community
+author: alice
+license: MIT
+source_repo: https://github.com/alice/buz-steps
+engine: shell
+inputs: {}
+run: echo "world"
