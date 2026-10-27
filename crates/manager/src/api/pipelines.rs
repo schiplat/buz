@@ -1973,16 +1973,36 @@ pub async fn validate_yaml(
     Json(req): Json<ValidateYamlRequest>,
 ) -> Result<Json<ApiResponse<shared::pipeline_yaml::YamlValidationResult>>, AppError> {
     // Viewer-scoped: no TeamView on YAML `team:` → generic error (no secret oracle).
-    let local_dir = crate::services::plugin_resolver::effective_local_dir(
-        &state.config.storage.data_dir,
-        &state.config.plugin_index.local_dir,
-    )
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Plugin policy mirrors what save will apply: runtime overrides win over
+    // manager.toml, and the reviewed manifest falls back to the data root.
+    let overrides = crate::services::platform_settings::fetch_overrides(&state.pool).await;
+    let local_dir_setting = overrides
+        .get(crate::services::platform_settings::KEY_PLUGIN_INDEX_LOCAL_DIR)
+        .map(String::as_str)
+        .unwrap_or(&state.config.plugin_index.local_dir);
+    let policy = crate::services::yaml_validate::PluginPolicy {
+        local_dir: crate::services::plugin_resolver::effective_local_dir(
+            &state.config.storage.data_dir,
+            local_dir_setting,
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?,
+        reviewed_manifest: crate::services::plugin_resolver::effective_reviewed_manifest(
+            &state.config.storage.data_dir,
+            &state.config.plugin_index.reviewed_manifest,
+            overrides
+                .get(crate::services::platform_settings::KEY_PLUGIN_REVIEWED_MANIFEST)
+                .map(String::as_str),
+        ),
+        require_reviewed: overrides
+            .get(crate::services::platform_settings::KEY_PLUGIN_REVIEW_REQUIRED)
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(state.config.plugin_index.require_reviewed),
+    };
     let result = crate::services::yaml_validate::validate_pipeline_yaml_for_viewer(
         &state.pool,
         &req.yaml,
         &auth,
-        &local_dir,
+        &policy,
     )
     .await?;
     Ok(Json(ApiResponse::success(result)))

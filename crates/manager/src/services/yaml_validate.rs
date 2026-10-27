@@ -62,11 +62,23 @@ pub async fn validate_pipeline_yaml_with_parse(
 
 /// Validate for an interactive viewer. Without TeamView on the target team,
 /// referential checks use a generic team error (no secret-name oracle).
+/// What makes a `uses:` reference acceptable for this deployment. Availability
+/// is always enforced (a reference that cannot resolve fails at save); the
+/// review verdict follows `require_reviewed`, the deployment's strict switch.
+pub struct PluginPolicy {
+    /// Local plugin directory (part of the availability allowlist).
+    pub local_dir: std::path::PathBuf,
+    /// `reviews.json` ledger; empty/unreadable means "nothing is reviewed".
+    pub reviewed_manifest: std::path::PathBuf,
+    /// Strict switch: unreviewed plugins become errors instead of warnings.
+    pub require_reviewed: bool,
+}
+
 pub async fn validate_pipeline_yaml_for_viewer(
     pool: &SqlitePool,
     yaml: &str,
     auth: &AuthUser,
-    local_plugin_dir: &std::path::Path,
+    plugin_policy: &PluginPolicy,
 ) -> Result<YamlValidationResult, AppError> {
     let cached = crate::services::yaml_cache::parse_cached(yaml);
     let mut result = cached.structural;
@@ -80,7 +92,7 @@ pub async fn validate_pipeline_yaml_for_viewer(
         ReferentialMode::Viewer { auth }
     };
     enrich_referential_errors(pool, &parsed, &mut result, mode).await?;
-    check_uses_availability(pool, &parsed, local_plugin_dir, &mut result).await?;
+    check_uses_availability(pool, &parsed, plugin_policy, &mut result).await?;
     result.valid = result.errors.is_empty();
     Ok(result)
 }
@@ -95,7 +107,7 @@ pub async fn validate_pipeline_yaml_for_viewer(
 async fn check_uses_availability(
     pool: &SqlitePool,
     parsed: &PipelineYaml,
-    local_dir: &std::path::Path,
+    policy: &PluginPolicy,
     result: &mut YamlValidationResult,
 ) -> Result<(), AppError> {
     let references: Vec<(usize, String)> = parsed
@@ -124,7 +136,10 @@ async fn check_uses_availability(
 
     // Local plugin directory; a missing directory is an empty library, not an
     // error (same semantics as GET /plugins).
-    let local_index = LocalStepIndex::new(local_dir.to_path_buf());
+    let local_index = LocalStepIndex::new(policy.local_dir.clone());
+    let reviewed_hashes = crate::services::plugin_resolver::load_reviewed_hashes(
+        &policy.reviewed_manifest.to_string_lossy(),
+    );
 
     for (index, uses_ref) in references {
         let field = format!("steps.{index}.uses");
@@ -132,26 +147,31 @@ async fn check_uses_availability(
             Ok(parsed) => parsed,
             Err(error) => {
                 result.errors.push(YamlValidationError {
-                    field,
+                    field: field.clone(),
                     message: error,
                 });
                 continue;
             }
         };
 
-        let mut versions: Vec<&str> = pool_rows
-            .iter()
-            .filter(|(ns, id, _, _)| format!("{ns}/{id}") == reference)
-            .map(|(_, _, version, _)| version.as_str())
-            .collect();
-        let mut hashes: Vec<&str> = pool_rows
-            .iter()
-            .filter(|(ns, id, _, _)| format!("{ns}/{id}") == reference)
-            .map(|(_, _, _, sha)| sha.as_str())
-            .collect();
+        let mut versions: Vec<&str> = Vec::new();
+        let mut hashes: Vec<&str> = Vec::new();
+        let mut reviewed = false;
+        // Pool rows carry the badge computed at sync time; local entries are
+        // checked against the ledger by content hash.
+        for (ns, id, version, sha) in &pool_rows {
+            if format!("{ns}/{id}") == reference {
+                versions.push(version.as_str());
+                hashes.push(sha.as_str());
+                reviewed |= reviewed_hashes.contains(sha);
+            }
+        }
         let local_versions = local_index.available_versions(&reference);
-        versions.extend(local_versions.iter().map(|(version, _)| version.as_str()));
-        hashes.extend(local_versions.iter().map(|(_, sha)| sha.as_str()));
+        for (version, sha) in &local_versions {
+            versions.push(version.as_str());
+            hashes.push(sha.as_str());
+            reviewed |= reviewed_hashes.contains(sha);
+        }
 
         if versions.is_empty() {
             result.errors.push(YamlValidationError {
@@ -173,7 +193,7 @@ async fn check_uses_availability(
                     .any(|candidate| candidate.eq_ignore_ascii_case(hex))
                 {
                     result.errors.push(YamlValidationError {
-                        field,
+                        field: field.clone(),
                         message: format!(
                             "no plugin '{reference}' with content sha256:{hex} is available here"
                         ),
@@ -187,13 +207,34 @@ async fn check_uses_availability(
                     available.sort_unstable();
                     available.dedup();
                     result.errors.push(YamlValidationError {
-                        field,
+                        field: field.clone(),
                         message: format!(
                             "plugin '{reference}' has no version matching @{pin} here — available: {}",
                             available.join(", ")
                         ),
                     });
                 }
+            }
+        }
+
+        // Review verdict: the strict switch decides whether "not in the
+        // reviewed ledger" blocks or just reminds. Save applies the same
+        // rule, so the editor never promises more than it delivers.
+        if !reviewed {
+            if policy.require_reviewed {
+                result.errors.push(YamlValidationError {
+                    field,
+                    message: format!(
+                        "plugin '{reference}' is not in the reviewed manifest — the review gate \
+                         (strict mode) rejects it at save; add its hash to reviews.json or \
+                         disable the gate"
+                    ),
+                });
+            } else {
+                result.warnings.push(format!(
+                    "{field}: plugin '{reference}' is not in the reviewed manifest — allowed \
+                     because the review gate is off"
+                ));
             }
         }
     }
