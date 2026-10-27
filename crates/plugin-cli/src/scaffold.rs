@@ -180,7 +180,13 @@ mod tests {
         assert!(dir.path().join("plugins/alice/hello/README.md").exists());
         let spec = fs::read_to_string(&spec_path).unwrap();
         assert!(spec.contains("id: alice/hello"));
-        assert!(spec.contains("requires_buz: \">=1.10.6\""));
+        // The scaffold pins the contract version it was generated against; derive it
+        // from the crate so a release bump does not break the test.
+        let expected = format!("requires_buz: \">={}\"", env!("CARGO_PKG_VERSION"));
+        assert!(
+            spec.contains(&expected),
+            "scaffolded spec must gate on the current contract: {spec}"
+        );
         assert!(spec.contains("$INPUT_EXAMPLE"));
         // The scaffold must clear the same gate the Manager applies.
         assert_eq!(
