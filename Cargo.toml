@@ -4,6 +4,7 @@ members = [
     "crates/shared",
     "crates/manager",
     "crates/runner",
+    "crates/plugin-cli",
 ]
 
 [workspace.package]

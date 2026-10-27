@@ -1,0 +1,125 @@
+//! Shared path conventions — the single place that knows how a plugin
+//! repository is laid out and how source URLs resolve.
+
+use anyhow::Context;
+use std::path::{Path, PathBuf};
+
+pub const INDEX_FILE: &str = "index.json";
+pub const META_FILE: &str = "meta.json";
+pub const REVISION_FILE: &str = "revision.json";
+
+/// `<namespace>/<name>` with lowercase `[a-z0-9-]` parts.
+pub fn is_valid_id(id: &str) -> bool {
+    !id.contains("//")
+        && id.split('/').count() == 2
+        && id.split('/').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        })
+}
+
+/// Three-part numeric semver (`X.Y.Z`).
+pub fn is_semver(raw: &str) -> bool {
+    raw.split('.').count() == 3
+        && raw
+            .split('.')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Recursively discover spec files under `dir`, sorted, skipping hidden
+/// entries and symlinks (mirrors the Python walker's contract).
+pub fn discover_spec_files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    walk(dir, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn walk(current: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    let entries = std::fs::read_dir(current)
+        .with_context(|| format!("cannot read directory {}", current.display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            walk(&path, files)?;
+        } else if matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("yaml") | Some("yml")
+        ) {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Base URL of a source: the index URL minus its `index.json` tail.
+/// Keep in sync with the Manager's `base_url` (step_pool.rs).
+pub fn base_url(index_url: &str) -> String {
+    let trimmed = index_url.trim_end_matches('/');
+    match trimmed.strip_suffix(INDEX_FILE) {
+        Some(without) => without.trim_end_matches('/').to_string(),
+        None => trimmed.to_string(),
+    }
+}
+
+pub fn join_url(base: &str, rest: &str) -> String {
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        rest.trim_start_matches('/')
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_url_strips_index_tail() {
+        assert_eq!(
+            base_url("https://x.example/main/plugins/buz/index.json"),
+            "https://x.example/main/plugins/buz"
+        );
+        assert_eq!(
+            base_url("https://x.example/main/plugins/buz"),
+            "https://x.example/main/plugins/buz"
+        );
+        assert_eq!(
+            base_url("https://x.example/main/plugins/buz/"),
+            "https://x.example/main/plugins/buz"
+        );
+    }
+
+    #[test]
+    fn join_url_trims_slashes() {
+        assert_eq!(
+            join_url("https://x/base/", "/a.json"),
+            "https://x/base/a.json"
+        );
+    }
+
+    #[test]
+    fn id_and_semver_gates() {
+        assert!(is_valid_id("buz/hello"));
+        assert!(is_valid_id("alice/oss-upload-2"));
+        assert!(!is_valid_id("archive"));
+        assert!(!is_valid_id("Buz/hello"));
+        assert!(!is_valid_id("buz/Hello"));
+        assert!(!is_valid_id("a/b/c"));
+        assert!(is_semver("1.10.6"));
+        assert!(!is_semver("1.10"));
+        assert!(!is_semver("1.x.0"));
+    }
+}
