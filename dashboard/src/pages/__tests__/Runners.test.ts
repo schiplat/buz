@@ -276,7 +276,12 @@ describe('Runner overview platform card and network interfaces', () => {
       disk_total_gb: 296.5, disk_used_gb: 273.1,
       network_interfaces: [
         { name: 'eth0', ips: ['192.168.1.10'], mac: 'aa:1f:0b:6c:d9:e2' },
+        { name: 'bond0', ips: ['10.10.0.7'], mac: 'aa:1f:0b:6c:d9:e3' },
+        { name: 'vmbr0', ips: ['192.168.1.5'], mac: 'aa:1f:0b:6c:d9:e4' },
+        { name: 'vmenet0', ips: ['172.28.16.1'], mac: '00:1d:d8:5a:9b:41' },
         { name: 'docker0', ips: ['172.17.0.1'], mac: '02:42:7a:9c:1d:03' },
+        { name: 'utun3', ips: ['100.72.4.19'], mac: '' },
+        { name: 'lo0', ips: [], mac: '00:00:00:00:00:00' },
       ],
       ip_addresses: ['192.168.1.10'],
       uptime_seconds: 280800,
@@ -311,13 +316,20 @@ describe('Runner overview platform card and network interfaces', () => {
     await nextTick()
 
     const text = () => document.body.textContent ?? ''
-    expect(text()).toContain('1 physical · 1 virtual')
+    expect(text()).toContain('2 physical · 1 loopback · 1 bridge · 1 vpn · 2 virtual')
     expect(text()).toContain('to Manager')
     expect(text()).toContain('192.168.1.10')
     expect(text()).toContain('aa:1f:0b:6c:d9:e2')
-    expect(text()).toContain('Virtual & bridges (1)')
+    expect(text()).toContain('Loopback (1)')
+    expect(text()).toContain('Bridges (1)')
+    expect(text()).toContain('Tunnels & VPN (1)')
+    expect(text()).toContain('Virtual (2)')
+    // bond0 carries real traffic — it must render as a physical nic.
+    expect(text()).toContain('bond0')
     // Collapsed via v-show: still in the DOM but hidden.
     const dockerMac = text().includes('02:42:7a:9c:1d:03')
     expect(dockerMac).toBe(true)
+    // Hyper-V style virtual adapters must land in the fold, not among physical nics.
+    expect(text()).toContain('vmenet0')
   })
 })

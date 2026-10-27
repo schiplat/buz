@@ -164,7 +164,7 @@ function openDetail(r: Runner) {
   editSshHostKeyPolicy.value = r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure'
   editTeamId.value = r.team_id ?? 'shared'
   editExecutionMode.value = r.execution_mode ?? 'host'
-  showVirtualIfaces.value = false
+  openFolds.value = { loopback: false, bridge: false, tunnel: false, virtual: false }
   copiedNetValue.value = null
   drawerOpen.value = true
   loadRunnerEvents(r.id)
@@ -464,19 +464,54 @@ const resourceHealth = computed(() => {
 })
 
 // ── Network tab: interfaces with bound IPs + MAC ──
-/** Mirror of the Runner-side demoted/virtual interface rules (runner sysinfo). */
-function isVirtualIface(name: string): boolean {
+/** VPN/tunnel, bridge, and other virtual interface prefixes — the Network tab
+ *  shows each as its own group. Together they mirror the Runner-side
+ *  `DEMOTED_IFACE_PREFIXES` (runner sysinfo). bond0, team0, wwan0 and usb0
+ *  are deliberately excluded — they carry real traffic. */
+const TUNNEL_IFACE_PREFIXES = ['tun', 'tap', 'utun', 'wg', 'tailscale', 'zt', 'ppp', 'ipsec', 'xfrm', 'sit', 'gre']
+const BRIDGE_IFACE_PREFIXES = ['br', 'vmbr', 'virbr', 'fwbr']
+const VIRTUAL_IFACE_PREFIXES = [
+  'docker', 'podman', 'veth', 'cni', 'cali', 'cilium', 'flannel', 'weave', 'kube-', 'vxlan',
+  'geneve',
+  'vmnet', 'vmenet', 'vboxnet', 'vnic', 'macvlan', 'macvtap', 'vif', 'anpi',
+  'fwln', 'fwpr', 'dummy', 'awdl',
+]
+
+type IfaceKind = 'physical' | 'loopback' | 'bridge' | 'tunnel' | 'virtual'
+type IfaceFoldKey = Exclude<IfaceKind, 'physical'>
+function ifaceKind(name: string): IfaceKind {
   const n = name.toLowerCase()
-  return n === 'lo' || n === 'docker0'
-    || n.startsWith('br-') || n.startsWith('veth') || n.startsWith('virbr')
-    || n.startsWith('cni') || n.startsWith('flannel') || n.startsWith('tun') || n.startsWith('tap')
+  // `lo` exact only — a `lo` prefix would catch Windows' "Local Area Connection".
+  if (n === 'lo' || n === 'lo0') return 'loopback'
+  if (BRIDGE_IFACE_PREFIXES.some((p) => n.startsWith(p))) return 'bridge'
+  if (TUNNEL_IFACE_PREFIXES.some((p) => n.startsWith(p))) return 'tunnel'
+  if (VIRTUAL_IFACE_PREFIXES.some((p) => n.startsWith(p))) return 'virtual'
+  return 'physical'
 }
-const physicalIfaces = computed(() => (activeRunner.value?.system_info?.network_interfaces ?? []).filter((n) => !isVirtualIface(n.name)))
-const virtualIfaces = computed(() => (activeRunner.value?.system_info?.network_interfaces ?? []).filter((n) => isVirtualIface(n.name)))
+
+const allIfaces = computed(() => activeRunner.value?.system_info?.network_interfaces ?? [])
+const ifacesOfKind = (kind: IfaceKind) => allIfaces.value.filter((n) => ifaceKind(n.name) === kind)
+const physicalIfaces = computed(() => ifacesOfKind('physical'))
+const loopbackIfaces = computed(() => ifacesOfKind('loopback'))
+const bridgeIfaces = computed(() => ifacesOfKind('bridge'))
+const tunnelIfaces = computed(() => ifacesOfKind('tunnel'))
+const virtualIfaces = computed(() => ifacesOfKind('virtual'))
+
+const ifaceFolds = computed(() => ([
+  { key: 'loopback' as const, label: 'Loopback', list: loopbackIfaces.value },
+  { key: 'bridge' as const, label: 'Bridges', list: bridgeIfaces.value },
+  { key: 'tunnel' as const, label: 'Tunnels & VPN', list: tunnelIfaces.value },
+  { key: 'virtual' as const, label: 'Virtual', list: virtualIfaces.value },
+]).filter((f) => f.list.length > 0))
+
 /** First advertised address — the Runner already sorts Manager-subnet IPs first. */
 const primaryIp = computed(() => activeRunner.value?.system_info?.ip_addresses?.[0] ?? null)
-const showVirtualIfaces = ref(false)
+const openFolds = ref<Record<IfaceFoldKey, boolean>>({ loopback: false, bridge: false, tunnel: false, virtual: false })
 const copiedNetValue = ref<string | null>(null)
+
+function toggleIfaceFold(key: IfaceFoldKey) {
+  openFolds.value[key] = !openFolds.value[key]
+}
 
 async function copyNetValue(value: string) {
   const ok = await copyText(value)
@@ -911,8 +946,8 @@ const eventBadge = (t: string) => {
               <div v-if="hasInfo(activeRunner)" class="rounded-xl border border-border/60 bg-background px-3.5 py-3.5">
                 <div class="flex items-center justify-between">
                   <span class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Interfaces</span>
-                  <span v-if="physicalIfaces.length || virtualIfaces.length" class="text-[10px] text-muted-foreground/70">
-                    {{ physicalIfaces.length }} physical · {{ virtualIfaces.length }} virtual
+                  <span v-if="allIfaces.length" class="text-[10px] text-muted-foreground/70">
+                    {{ physicalIfaces.length }} physical · {{ loopbackIfaces.length }} loopback · {{ bridgeIfaces.length }} bridge · {{ tunnelIfaces.length }} vpn · {{ virtualIfaces.length }} virtual
                   </span>
                 </div>
                 <div v-if="!physicalIfaces.length && !virtualIfaces.length" class="text-xs text-muted-foreground mt-2">No interfaces reported</div>
@@ -947,20 +982,26 @@ const eventBadge = (t: string) => {
                   </div>
                 </div>
 
-                <div v-if="virtualIfaces.length" class="pt-1" :class="physicalIfaces.length ? 'border-t border-border/30 mt-1' : ''">
-                  <button
-                    type="button"
-                    class="flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground hover:text-foreground transition-colors py-2"
-                    @click="showVirtualIfaces = !showVirtualIfaces"
-                  >
-                    <ChevronRight class="h-3 w-3 transition-transform" :class="showVirtualIfaces ? 'rotate-90' : ''" />
-                    Virtual &amp; bridges ({{ virtualIfaces.length }})
-                  </button>
-                  <div v-show="showVirtualIfaces" class="space-y-1.5 pb-1">
-                    <div v-for="nic in virtualIfaces" :key="nic.name" class="min-w-0">
-                      <div class="text-xs font-medium text-muted-foreground">{{ nic.name }}</div>
-                      <div class="font-mono text-[11px] text-muted-foreground/70 truncate">
-                        {{ nic.ips.join(', ') || 'no address' }}<template v-if="nic.mac"> · {{ nic.mac }}</template>
+                <div
+                  v-if="ifaceFolds.length"
+                  class="divide-y divide-border/30"
+                  :class="physicalIfaces.length ? 'border-t border-border/30' : ''"
+                >
+                  <div v-for="fold in ifaceFolds" :key="fold.key" class="py-1">
+                    <button
+                      type="button"
+                      class="flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground hover:text-foreground transition-colors py-2"
+                      @click="toggleIfaceFold(fold.key)"
+                    >
+                      <ChevronRight class="h-3 w-3 transition-transform" :class="openFolds[fold.key] ? 'rotate-90' : ''" />
+                      {{ fold.label }} ({{ fold.list.length }})
+                    </button>
+                    <div v-show="openFolds[fold.key]" class="space-y-1.5 pb-1">
+                      <div v-for="nic in fold.list" :key="nic.name" class="min-w-0">
+                        <div class="text-xs font-medium text-muted-foreground">{{ nic.name }}</div>
+                        <div class="font-mono text-[11px] text-muted-foreground/70 truncate">
+                          {{ nic.ips.join(', ') || 'no address' }}<template v-if="nic.mac && nic.mac !== '00:00:00:00:00:00'"> · {{ nic.mac }}</template>
+                        </div>
                       </div>
                     </div>
                   </div>

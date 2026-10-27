@@ -177,17 +177,60 @@ fn order_ip_addresses(mut candidates: Vec<IpCandidate>) -> Vec<String> {
     out
 }
 
+/// Prefixes of hypervisor/bridge/tunnel interfaces that rank last when
+/// advertising IPs. Deliberately excludes bond*/team*/wwan*/usb* — those
+/// carry real traffic and must stay candidates for the primary address.
+/// Keep in sync with the dashboard's `isVirtualIface` (Runners.vue).
+const DEMOTED_IFACE_PREFIXES: &[&str] = &[
+    // linux/macOS bridges & OVS: br0, br-lan, br-int, bridge0
+    "br",
+    // container runtimes & CNI plugins
+    "docker",
+    "podman",
+    "veth",
+    "cni",
+    "cali",
+    "cilium",
+    "flannel",
+    "weave",
+    "kube-",
+    "vxlan",
+    "geneve",
+    // hypervisors & VM plumbing
+    "vmnet",
+    "vmenet",
+    "vmbr",
+    "vboxnet",
+    "vnic",
+    "macvlan",
+    "macvtap",
+    "vif",
+    "virbr",
+    "anpi",
+    // tunnels & VPNs
+    "tun",
+    "tap",
+    "utun",
+    "wg",
+    "tailscale",
+    "zt",
+    "ppp",
+    "ipsec",
+    "xfrm",
+    "sit",
+    "gre",
+    // misc plumbing (proxmox firewall links, dummies, apple awdl)
+    "fwbr",
+    "fwln",
+    "fwpr",
+    "dummy",
+    "awdl",
+];
+
 fn is_demoted_interface(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    n == "docker0"
-        || n == "lo"
-        || n.starts_with("br-")
-        || n.starts_with("veth")
-        || n.starts_with("virbr")
-        || n.starts_with("cni")
-        || n.starts_with("flannel")
-        || n.starts_with("tun")
-        || n.starts_with("tap")
+    // `lo` exact only — a `lo` prefix would catch Windows' "Local Area Connection".
+    n == "lo" || n == "lo0" || DEMOTED_IFACE_PREFIXES.iter().any(|p| n.starts_with(p))
 }
 
 fn is_ignored_addr(addr: IpAddr) -> bool {
