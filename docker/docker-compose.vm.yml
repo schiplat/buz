@@ -1,6 +1,7 @@
 # Compose override for the VM execution backend only.
 # Use together with docker-compose.yml, for example:
-#   docker compose -f docker-compose.yml -f docker-compose.vm.yml --profile sandbox up -d
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.vm.yml \
+#     --profile sandbox up -d
 # Exposing /dev/kvm grants the supervisor access to the host KVM device. Keep
 # sandboxd protected as a host-privileged service (it already has docker.sock).
 services:

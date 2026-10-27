@@ -1,6 +1,18 @@
-.PHONY: dev dev-dashboard dev-manager run build build-dashboard build-backend build example test test-docker-e2e ci package
+.PHONY: up down logs dev dev-dashboard dev-manager run build build-dashboard build-backend build example test test-docker-e2e ci package
 
 # ── One-step: build everything and run ─────────────────────────────
+# Docker Compose lives under docker/ (build contexts point at the repo root).
+COMPOSE := docker compose -f docker/docker-compose.yml
+
+up:
+	$(COMPOSE) up -d
+
+down:
+	$(COMPOSE) down
+
+logs:
+	$(COMPOSE) logs -f
+
 run: build
 	@echo "=== Starting Buz Manager ==="
 	cd example && BUZ_ALLOW_INSECURE_JWT=1 ../target/release/buz-manager

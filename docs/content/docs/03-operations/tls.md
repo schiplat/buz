@@ -143,7 +143,10 @@ file = "./logs/runner.log"
 1. Put PEMs next to compose or under a host path, e.g. `./certs/`.
 2. Mount them into the container and point config at container paths.
 
-Example overlay mounts (add to your compose / override):
+Example overlay mounts (add to your compose / override). The shipped compose
+file lives in `docker/`, so bind-mount paths in it are relative to that
+directory (`../deploy/...`); an overlay you keep at the repo root uses
+root-relative paths:
 
 ```yaml
 services:
@@ -166,8 +169,9 @@ tls_key  = "certs/key.pem"
 
 ```bash
 export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
-docker compose up -d manager
-docker logs -f "$(docker compose ps -q manager)"
+# Compose file lives in docker/ — run from the repo root:
+docker compose -f docker/docker-compose.yml up -d manager      # or: make up
+docker logs -f "$(docker compose -f docker/docker-compose.yml ps -q manager)"
 curl -k -sS https://127.0.0.1:8080/health
 ```
 

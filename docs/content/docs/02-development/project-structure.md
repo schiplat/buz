@@ -34,9 +34,10 @@ buz/
 │           ├── engine/     # Execution engines (shell, ssh, docker)
 │           └── masker/     # Log masking (Aho-Corasick)
 ├── dashboard/              # Vue 3 + TypeScript (built into buz-manager via rust-embed)
-├── Dockerfile              # Manager image → /app/buz/
-├── Dockerfile.runner       # Runner image → /app/buz/
-├── docker-compose.yml      # Mounts deploy/conf → /app/buz/conf
+├── docker/
+│   ├── Dockerfile          # Manager image → /app/buz/
+│   ├── Dockerfile.runner   # Runner image → /app/buz/
+│   ├── docker-compose.yml  # Mounts deploy/conf → /app/buz/conf (build context: repo root)
 ├── deploy/                 # Config templates (Docker + tar.gz) + README
 │   └── conf/
 │   └── src/

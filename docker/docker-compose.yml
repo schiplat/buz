@@ -2,25 +2,26 @@
 #
 # Same-host:
 #   1. export BUZ_JWT_SECRET=$(openssl rand -hex 32)
-#   2. docker compose up -d manager
+#   2. docker compose -f docker/docker-compose.yml up -d manager
 #   3. UI → Runners → New Runner → edit deploy/conf/runner.toml
-#   4. docker compose up -d runner
+#   4. docker compose -f docker/docker-compose.yml up -d runner
 #
 # Other host runner:
-#   BUZ_RUNNER_CONF=/etc/buz/runner.toml docker compose up -d runner
+#   BUZ_RUNNER_CONF=/etc/buz/runner.toml \
+#     docker compose -f docker/docker-compose.yml up -d runner
 
 services:
   manager:
     image: ${BUZ_IMAGE_MANAGER:-buz-manager:local}
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     ports:
       - "${BUZ_PORT:-8080}:8080"
     environment:
       BUZ_JWT_SECRET: ${BUZ_JWT_SECRET:-}
     volumes:
-      - ${BUZ_MANAGER_CONF:-./deploy/conf/manager.toml}:/app/buz/conf/manager.toml:ro
+      - ${BUZ_MANAGER_CONF:-../deploy/conf/manager.toml}:/app/buz/conf/manager.toml:ro
       - ${BUZ_MANAGER_DATA:-buz-data}:/app/buz/data
       - ${BUZ_MANAGER_PIPELINES:-buz-pipelines}:/app/buz/pipelines
     restart: unless-stopped
@@ -34,8 +35,8 @@ services:
   runner:
     image: ${BUZ_IMAGE_RUNNER:-buz-runner:local}
     build:
-      context: .
-      dockerfile: Dockerfile.runner
+      context: ..
+      dockerfile: docker/Dockerfile.runner
     # Same-compose DNS: manager_url = http://manager:8080 in deploy/conf/runner.toml
     depends_on:
       manager:
@@ -44,7 +45,7 @@ services:
         condition: service_healthy
         required: false
     volumes:
-      - ${BUZ_RUNNER_CONF:-./deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
+      - ${BUZ_RUNNER_CONF:-../deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
       - ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}:/app/buz/workspace
       - ${BUZ_RUNNER_LOGS:-buz-runner-logs}:/app/buz/logs
       - ${BUZ_RUNNER_STATE:-buz-runner-state}:/app/buz/state
@@ -54,7 +55,7 @@ services:
     # user: root
     # volumes:
     #   - /var/run/docker.sock:/var/run/docker.sock
-    #   - ${BUZ_RUNNER_CONF:-./deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
+    #   - ${BUZ_RUNNER_CONF:-../deploy/conf/runner.toml}:/app/buz/conf/runner.toml:ro
     #   - ${BUZ_RUNNER_WS:-buz-runner-ws}:/app/buz/workspace
     #   - ${BUZ_RUNNER_LOGS:-buz-runner-logs}:/app/buz/logs
     #   - ${BUZ_RUNNER_STATE:-buz-runner-state}:/app/buz/state
@@ -65,8 +66,8 @@ services:
     profiles: ["sandbox"]
     image: ${BUZ_IMAGE_SANDBOXD:-buz-sandboxd:local}
     build:
-      context: .
-      dockerfile: Dockerfile.sandboxd
+      context: ..
+      dockerfile: docker/Dockerfile.sandboxd
     user: "0:0"
     environment:
       BUZ_SANDBOXD_WORKSPACE_VOLUME: ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}
@@ -75,7 +76,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}:/app/buz/workspace
       - buz-sandboxd-socket:/run/buz-sandboxd
-      - ./deploy/conf/sandboxd.toml:/app/buz/conf/sandboxd.toml:ro
+      - ../deploy/conf/sandboxd.toml:/app/buz/conf/sandboxd.toml:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/buz-sandboxd", "--healthcheck"]
       interval: 10s

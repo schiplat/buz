@@ -72,7 +72,7 @@ Images:
 |-------|------------|
 | `buz-manager` | `Dockerfile` |
 | `buz-runner` | `Dockerfile.runner` |
-| `buz-standalone` (arm64 only) | `Dockerfile.standalone` — Manager + Runner in one image |
+| `buz-standalone` (arm64 only) | `docker/Dockerfile.standalone` — Manager + Runner in one image |
 
 Both split images are built for `linux/amd64` **and** `linux/arm64` (native matrix builds: `ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64, no QEMU emulation). The matrix jobs push platform-specific tags (`v1.7.3-amd64` / `v1.7.3-arm64`), and a final `merge` job assembles the shared multi-arch tags (`v1.7.3` / `1.7.3` / `latest`) with `docker buildx imagetools create`. Pushing the same tag concurrently from both jobs would make ACR produce a broken index (arm64 as `unknown/unknown`), so the two tags are never pushed in parallel.
 
@@ -130,8 +130,9 @@ Host templates for Compose **and** tar.gz releases live in **`deploy/conf/`**. C
 | Runner elsewhere | `BUZ_RUNNER_CONF=/etc/buz/runner.toml docker compose up -d runner` |
 
 ```bash
-docker build -t buz-manager:local -f Dockerfile .
-docker build -t buz-runner:local -f Dockerfile.runner .
+# Compose builds these for you (`make up`); building by hand from the repo root:
+docker build -t buz-manager:local -f docker/Dockerfile .
+docker build -t buz-runner:local -f docker/Dockerfile.runner .
 
 export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
 docker compose up -d manager

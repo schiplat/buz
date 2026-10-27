@@ -69,12 +69,13 @@ buz/
 │   ├── standalone/            # buz-standalone Compose
 │   └── nginx/                 # Reverse-proxy examples
 ├── scripts/                   # Release packaging, e2e helpers
-├── Dockerfile                 # buz-manager image
-├── Dockerfile.runner          # buz-runner image
-├── Dockerfile.standalone      # Manager + Runner (arm64 lab image)
-├── Dockerfile.sandboxd        # buz-sandboxd image (container/VM execution modes)
-├── docker-compose.yml
-├── docker-compose.vm.yml      # sandbox (VM mode) compose example
+├── docker/
+│   ├── Dockerfile             # buz-manager image
+│   ├── Dockerfile.runner      # buz-runner image
+│   ├── Dockerfile.standalone  # Manager + Runner (arm64 lab image)
+│   ├── Dockerfile.sandboxd    # buz-sandboxd image (container/VM execution modes)
+│   ├── docker-compose.yml     # `make up` / `docker compose -f docker/docker-compose.yml up -d`
+│   └── docker-compose.vm.yml  # sandbox (VM mode) compose overlay
 └── .github/workflows/         # CI, Docker, release
 ```
 
