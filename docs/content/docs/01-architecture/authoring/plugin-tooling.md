@@ -152,42 +152,124 @@ on failure it names each offending file and what to run. This is the
 intended plugin-repository gate: the committed manifests must equal what the
 tool produces.
 
-### Sign the index — `keygen` + `index --sign-key`
+### Sign the index — operation steps
 
-A source that must stay trustworthy even when served through a mirror signs
-its index:
+Signing binds the publisher (you) to the exact index bytes, so a mirror or
+anyone on the network cannot rewrite the index *and* the hashes inside it. The
+Manager enforces it only when **Settings → Index signature → Require signed
+index** is on — but publishing signatures is worth doing first, so turning the
+switch on later needs no republishing.
+
+#### Step 1 — create the keypair (once per namespace)
 
 ```bash
-# once: create a keypair (secret stays in CI; hand the public half to operators)
 buz-plugin keygen --key-id acme-2026 --out signing-key.json
-
-# every publish: sign the index that was just generated
-buz-plugin index --revision "$GITHUB_SHA" --updated-at "$(git log -1 --format=%cI)" \
-  --sign-key signing-key.json
 ```
 
-**Where the key lives.** The output of `keygen` has two halves with opposite
-handling:
+`--key-id` is free-form and recorded in every signature; use something like
+`<org>-<year>` so a rotation is identifiable later.
+
+The output has two halves with opposite handling:
 
 | Half | Secrecy | Where it belongs |
 |------|---------|------------------|
-| `secret_key` | **private** — whoever holds it can sign an index for your namespace | a CI secret (e.g. `BUZ_PLUGIN_SIGNING_KEY`) or a secret manager; file mode 600 if it must exist on disk; never in the repository, never in a log or chat |
-| `public_key` | public | everywhere the index is consumed: `plugin_index_public_key` in each Manager, plus your README/docs |
+| `secret_key` | **private** — whoever holds it can sign any index for your namespace | a CI secret (e.g. `BUZ_PLUGIN_SIGNING_KEY`) or a secret manager; mode 600 if it must exist on disk; never in a repository, a log, or a chat |
+| `public_key` | public | every Manager that consumes the source (`plugin_index_public_key`), plus README/docs |
 
-`keygen` refuses to be quiet about this: writing to a file sets mode 600 and
-prints a warning, and printing to stdout warns that the output is the private
-key. The plugins repository ignores `signing-key*.json` so an accidental copy
-cannot be committed. If the secret is leaked, generate a new pair and update
-`plugin_index_public_key` — the `key_id` recorded in every signature tells you
-which key a source actually used.
+`keygen` enforces the habit: it writes the file mode 600 with a warning, and
+warns on stderr when printing to stdout. The plugins repository ignores
+`signing-key*.json`.
 
-The signature lands in `index.json.sig`. The Manager verifies it only when
-**Settings → Index signature → Require signed index** is on, against the
-configured public key: an unsigned source, or one whose index was rewritten
-(the mirror attack — change the index *and* the hashes inside it), then fails
-with `index signature rejected`. `index --check --sign-key` re-verifies the
-signature in CI too. Per-plugin `meta.json` is unsigned, so signed sources
-refresh through the full index instead.
+#### Step 2 — put the secret where CI can read it
+
+```bash
+gh secret set BUZ_PLUGIN_SIGNING_KEY < signing-key.json
+rm signing-key.json        # the secret now lives only in the secret store
+```
+
+Use it **only in jobs triggered by pushes/tags** — a `pull_request` workflow
+(especially from forks) must never receive the signing key.
+
+#### Step 3 — sign on every publish
+
+```bash
+buz-plugin index \
+  --revision "$GITHUB_SHA" \
+  --updated-at "$(git log -1 --format=%cI)" \
+  --sign-key /tmp/signing-key.json
+```
+
+Writes `index.json.sig` next to `index.json` and prints `signed … (key id:
+acme-2026)`. Commit both files. In GitHub Actions:
+
+```yaml
+- name: Restore signing key
+  run: |
+    printf '%s' "${{ secrets.BUZ_PLUGIN_SIGNING_KEY }}" > /tmp/signing-key.json
+    chmod 600 /tmp/signing-key.json
+
+- name: Generate and sign the index
+  run: |
+    buz-plugin index --revision "$GITHUB_SHA" \
+      --updated-at "$(git log -1 --format=%cI)" --sign-key /tmp/signing-key.json
+```
+
+#### Step 4 — verify in CI (catches a stale signature)
+
+```bash
+buz-plugin index --check --sign-key /tmp/signing-key.json \
+  --revision "$GITHUB_SHA" --updated-at "$(git log -1 --format=%cI)"
+```
+
+This re-checks both the manifests **and** the signature, and the two failures
+are distinguishable:
+
+| What changed | Failure |
+|---|---|
+| `index.json` differs from what the specs produce (hand edit, forgotten regeneration) | `index.json is out of date — run buz-plugin index … and commit the result` |
+| manifests are current but the committed `index.json.sig` no longer matches them (regenerated without `--sign-key`, rotated key, edited signature) | `index.json.sig is out of date — re-run without --check to sign` |
+
+That is the CI gate: the committed signature must match the committed index.
+
+#### Step 5 — configure the Manager
+
+Settings → **Index signature**:
+
+| Setting | Value |
+|---------|-------|
+| *Index signature public key* | the `public_key` value from Step 1 (base64) |
+| *Require signed index* | on — after the source publishes a signature |
+
+With the switch on, a sync fails when the source is unsigned (`index is not
+signed — publish index.json.sig …`), when the signature was made by another key
+(`does not match the configured public key`), or when the index changed after
+signing (`index does not match its signature — signed sha256 …, received …
+(index.json and index.json.sig come from different revisions)`). The last one
+is the mirror-attack case.
+
+Per-plugin `meta.json` carries no signature, so a signed source refreshes
+through the full index instead of the meta shortcut.
+
+#### Step 6 — mirrors copy the signature
+
+A mirror is a plain file copy: `index.json`, `index.json.sig`, `reviews.json`,
+`revision.json`, the specs and `meta.json` files. If `index.json.sig` is
+missing, Managers with the switch on reject the mirror. Publish content first
+and the sentinel last, and treat the signature as part of the content.
+
+#### Rotating the key
+
+1. `buz-plugin keygen --key-id acme-2027 --out signing-key-2027.json`.
+2. Put the new public key into every Manager's *Index signature public key*
+   **before** you start signing with it (a Manager trusts one key at a time).
+3. Switch the CI secret to the new private key and publish; signatures now
+   carry `key_id: acme-2027`, which identifies them in logs and in the error
+   messages above.
+4. Delete the old key material.
+
+If a Manager must keep accepting both during the window, leave *Require signed
+index* off until the switch completes — or ask for multi-key support, which is
+not implemented yet.
 
 ### Check a mirror
 
