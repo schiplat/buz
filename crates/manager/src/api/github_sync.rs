@@ -15,7 +15,7 @@ use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent};
 use crate::crypto;
 use crate::middleware::{AuthUser, PlatformAdmin};
 use crate::rbac::secret_team_id;
@@ -253,7 +253,7 @@ pub async fn create_connection(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "github_connection.create")
+        AuditEvent::from_auth(&auth, Action::GithubConnectionCreate)
             .resource("github_connection", &id, &name)
             .after(Some(serde_json::json!({
                 "name": name,
@@ -379,7 +379,7 @@ pub async fn update_connection(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "github_connection.update")
+        AuditEvent::from_auth(&auth, Action::GithubConnectionUpdate)
             .resource("github_connection", &id, &new_name)
             .before(Some(serde_json::json!({ "name": old_name })))
             .after(Some(serde_json::json!({
@@ -422,7 +422,7 @@ pub async fn delete_connection(
         .await?;
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "github_connection.delete")
+        AuditEvent::from_auth(&auth, Action::GithubConnectionDelete)
             .resource("github_connection", &id, &name)
             .before(Some(serde_json::json!({ "name": name }))),
     )
@@ -631,7 +631,7 @@ pub async fn create_repo(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "github_repo.create")
+        AuditEvent::from_auth(&auth, Action::GithubRepoCreate)
             .resource("github_repo", &id, format!("{owner}/{repo}"))
             .after(Some(serde_json::json!({ "connection_id": &req.connection_id, "owner": owner, "repo": repo }))),
     )
@@ -688,7 +688,7 @@ pub async fn update_repo(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "github_repo.update")
+        AuditEvent::from_auth(&auth, Action::GithubRepoUpdate)
             .resource("github_repo", &id, format!("{old_owner}/{old_repo}"))
             .after(Some(
                 serde_json::json!({ "owner": new_owner, "repo": new_repo }),
@@ -726,7 +726,7 @@ pub async fn delete_repo(
         .await?;
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "github_repo.delete")
+        AuditEvent::from_auth(&auth, Action::GithubRepoDelete)
             .resource("github_repo", &id, format!("{owner}/{repo}"))
             .before(Some(serde_json::json!({ "owner": owner, "repo": repo }))),
     )
@@ -793,7 +793,7 @@ pub async fn fetch_repos(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "github_repo.fetch")
+        AuditEvent::from_auth(&auth, Action::GithubRepoFetch)
             .resource("github_connection", &req.connection_id, &owner)
             .after(Some(
                 serde_json::json!({ "owner": owner, "added": added, "existing": existing }),
@@ -836,7 +836,7 @@ pub async fn test_connection(
             Ok(login) => {
                 audit::record(
                     &state.pool,
-                    AuditEvent::from_auth(&auth, "github_connection.test")
+                    AuditEvent::from_auth(&auth, Action::GithubConnectionTest)
                         .resource("github_connection", &req.connection_id, &name)
                         .after(Some(serde_json::json!({ "ok": true, "login": login }))),
                 )
@@ -859,7 +859,7 @@ pub async fn test_connection(
         Ok(()) => {
             audit::record(
                 &state.pool,
-                AuditEvent::from_auth(&auth, "github_connection.test")
+                AuditEvent::from_auth(&auth, Action::GithubConnectionTest)
                     .resource("github_connection", &req.connection_id, &name)
                     .after(Some(serde_json::json!({ "ok": true }))),
             )
@@ -1011,7 +1011,7 @@ pub async fn add_secret_bind(
                 .unwrap_or_default();
             audit::record(
                 &state.pool,
-                AuditEvent::from_auth(&auth, "secret.github_bind.add")
+                AuditEvent::from_auth(&auth, Action::SecretGithubBindAdd)
                     .resource("secret", &secret_id, &secret_name)
                     .team(Some(team_id.clone()))
                     .meta(Some(serde_json::json!({
@@ -1037,7 +1037,7 @@ pub async fn add_secret_bind(
             .await?;
         audit::record(
             &state.pool,
-            AuditEvent::from_auth(&auth, "secret.github_bind.add")
+            AuditEvent::from_auth(&auth, Action::SecretGithubBindAdd)
                 .resource("secret", &secret_id, &secret_name)
                 .team(Some(team_id))
                 .meta(Some(serde_json::json!({
@@ -1082,7 +1082,7 @@ pub async fn add_secret_bind(
         .await?;
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "secret.github_bind.add")
+        AuditEvent::from_auth(&auth, Action::SecretGithubBindAdd)
             .resource("secret", &secret_id, &secret_name)
             .team(Some(team_id))
             .after(Some(serde_json::json!({
@@ -1176,7 +1176,7 @@ pub async fn patch_secret_bind(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "secret.github_bind.patch")
+        AuditEvent::from_auth(&auth, Action::SecretGithubBindPatch)
             .resource("secret", &secret_id, &secret_name)
             .team(Some(team_id))
             .after(Some(serde_json::json!({
@@ -1286,7 +1286,7 @@ pub async fn delete_secret_bind(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "secret.github_bind.remove")
+        AuditEvent::from_auth(&auth, Action::SecretGithubBindRemove)
             .resource("secret", &secret_id, &secret_name)
             .team(Some(team_id))
             .before(Some(
@@ -1441,7 +1441,7 @@ pub async fn push_secret_binds(
 
         audit::record(
             &state.pool,
-            AuditEvent::from_auth(&auth, "secret.github_push")
+            AuditEvent::from_auth(&auth, Action::SecretGithubPush)
                 .resource("secret", &secret_id, &secret_name)
                 .team(Some(secret_team.clone()))
                 .meta(Some(serde_json::json!({
@@ -1541,7 +1541,7 @@ pub async fn add_variable_bind(
                     .unwrap_or_default();
             audit::record(
                 &state.pool,
-                AuditEvent::from_auth(&auth, "variable.github_bind.add")
+                AuditEvent::from_auth(&auth, Action::VariableGithubBindAdd)
                     .resource("variable", &var_id, &var_name)
                     .meta(Some(serde_json::json!({
                         "repo_id": req.repo_id,
@@ -1566,7 +1566,7 @@ pub async fn add_variable_bind(
             .await?;
         audit::record(
             &state.pool,
-            AuditEvent::from_auth(&auth, "variable.github_bind.add")
+            AuditEvent::from_auth(&auth, Action::VariableGithubBindAdd)
                 .resource("variable", &var_id, &var_name)
                 .meta(Some(serde_json::json!({
                     "repo": format!("{owner}/{repo_name}"),
@@ -1598,7 +1598,7 @@ pub async fn add_variable_bind(
         .await?;
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "variable.github_bind.add")
+        AuditEvent::from_auth(&auth, Action::VariableGithubBindAdd)
             .resource("variable", &var_id, &var_name)
             .after(Some(serde_json::json!({
                 "repo": format!("{owner}/{repo_name}"),
@@ -1676,7 +1676,7 @@ pub async fn patch_variable_bind(
     let last_op: String = row.get(8);
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "variable.github_bind.patch")
+        AuditEvent::from_auth(&auth, Action::VariableGithubBindPatch)
             .resource("variable", &var_id, &var_name)
             .after(Some(serde_json::json!({
                 "repo": format!("{owner}/{repo_name}"),
@@ -1785,7 +1785,7 @@ pub async fn delete_variable_bind(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "variable.github_bind.remove")
+        AuditEvent::from_auth(&auth, Action::VariableGithubBindRemove)
             .resource("variable", &var_id, &var_name)
             .before(Some(
                 serde_json::json!({ "repo": format!("{owner}/{repo}") }),
@@ -1914,7 +1914,7 @@ pub async fn push_variable_binds(
 
         audit::record(
             &state.pool,
-            AuditEvent::from_auth(&auth, "variable.github_push")
+            AuditEvent::from_auth(&auth, Action::VariableGithubPush)
                 .resource("variable", &var_id, &var_name)
                 .meta(Some(serde_json::json!({
                     "repo": format!("{owner}/{repo}"),

@@ -436,6 +436,20 @@ pub async fn cancel(
             "job not found or already finished".into(),
         ));
     };
+    audit::record_in(
+        &mut *tx,
+        AuditEvent::new(Action::JobCancel, &auth)
+            .on(Resource::job(
+                &id,
+                pipeline_name.as_deref().unwrap_or(&pipeline_id),
+            ))
+            .team(Some(team_id.clone()))
+            .changes(
+                Some(serde_json::json!({ "status": cancelled.old_status })),
+                Some(serde_json::json!({ "status": "cancelled" })),
+            ),
+    )
+    .await?;
     tx.commit().await?;
     crate::services::poll_events::wake_all();
 
@@ -851,7 +865,7 @@ pub async fn approve(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "job.approve")
+        AuditEvent::from_auth(&auth, Action::JobApprove)
             .resource("job", &id, &pipeline_name)
             .team(Some(team_id))
             .after(Some(serde_json::json!({
@@ -1000,7 +1014,7 @@ pub async fn reject(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "job.reject")
+        AuditEvent::from_auth(&auth, Action::JobReject)
             .resource("job", &id, &pipeline_name)
             .team(Some(team_id))
             .after(Some(

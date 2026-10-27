@@ -8,7 +8,7 @@ use shared::protocol::{CreateVariableRequest, UpdateVariableRequest};
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent};
 use crate::middleware::{AuthUser, PlatformAdmin};
 use crate::state::AppState;
 
@@ -74,7 +74,7 @@ pub async fn create(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "variable.create")
+        AuditEvent::from_auth(&auth, Action::VariableCreate)
             .resource("variable", &id, &name)
             .after(Some(
                 serde_json::json!({ "id": id, "name": name, "value": req.value }),
@@ -147,7 +147,7 @@ pub async fn update(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "variable.update")
+        AuditEvent::from_auth(&auth, Action::VariableUpdate)
             .resource("variable", &id, &name)
             .before(Some(
                 serde_json::json!({ "id": id, "name": name, "value": old_value }),
@@ -185,7 +185,7 @@ pub async fn delete(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "variable.delete")
+        AuditEvent::from_auth(&auth, Action::VariableDelete)
             .resource("variable", &id, &name)
             .before(Some(
                 serde_json::json!({ "id": id, "name": name, "value": old_value }),

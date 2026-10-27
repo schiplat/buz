@@ -32,46 +32,204 @@ use crate::rbac::AuthUser;
 /// a variant here — never a free-form string — so the vocabulary stays
 /// exhaustive (the dashboard's action filter and the route-coverage test
 /// both rely on it).
+/// Canonical audit action names. Adding a new audited mutation means adding
+/// a variant here — never a free-form string — so the vocabulary stays
+/// exhaustive (the dashboard's action filter and the route-coverage test
+/// both rely on it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    // Step marketplace
+    // auth
+    AuthChangePassword,
+    AuthLogin,
+    AuthSetup,
+
+    // api_token
+    ApiTokenCreate,
+    ApiTokenRevoke,
+
+    // environment
+    EnvironmentConcurrencyCancel,
+    EnvironmentCreate,
+    EnvironmentDelete,
+    EnvironmentHostAllowlistAdd,
+    EnvironmentHostAllowlistRemove,
+    EnvironmentOverrideDelete,
+    EnvironmentOverrideUpsert,
+    EnvironmentSecretOverrideDelete,
+    EnvironmentSecretOverrideUpsert,
+    EnvironmentUpdate,
+
+    // git_hook
+    GitHookCreate,
+    GitHookDelete,
+
+    // github_connection
+    GithubConnectionCreate,
+    GithubConnectionDelete,
+    GithubConnectionTest,
+    GithubConnectionUpdate,
+
+    // github_repo
+    GithubRepoCreate,
+    GithubRepoDelete,
+    GithubRepoFetch,
+    GithubRepoUpdate,
+
+    // host
+    HostCreate,
+    HostDelete,
+    HostUpdate,
+
+    // job
+    JobApprove,
+    JobCancel,
+    JobDelete,
+    JobReject,
+
+    // pipeline
+    PipelineCreate,
+    PipelineDelete,
+    PipelineDisable,
+    PipelineEnable,
+    PipelineToggleActive,
+    PipelineTrigger,
+    PipelineUpdate,
+    PipelineYamlCreate,
+    PipelineYamlDelete,
+    PipelineYamlUpdate,
+
+    // runner
+    RunnerCreate,
+    RunnerDelete,
+    RunnerFreeze,
+    RunnerRegisterTokenReissued,
+    RunnerRestart,
+    RunnerUpdate,
+
+    // secret
+    SecretCreate,
+    SecretDelete,
+    SecretGithubBindAdd,
+    SecretGithubBindPatch,
+    SecretGithubBindRemove,
+    SecretGithubPush,
+    SecretUpdate,
+
+    // setting
+    SettingReset,
+    SettingUpdate,
+
+    // step_pool
+    StepPoolToggle,
+    StepPoolRefresh,
+
+    // step_source
     StepSourceCreate,
     StepSourceDelete,
     StepSourceSync,
-    StepPoolToggle,
-    // Platform settings
-    SettingUpdate,
-    SettingReset,
-    // Runners
-    RunnerCreate,
-    RunnerUpdate,
-    RunnerDelete,
-    RunnerFreeze,
-    RunnerRestart,
-    // Jobs
-    //
-    // Job status transitions are reported by the Runner itself (machine
-    // telemetry, one event per step) and are deliberately NOT audited: the
-    // log records operator decisions, not progress. Deleting a job is a
-    // decision and is audited.
-    JobDelete,
+
+    // team
+    TeamCreate,
+    TeamDelete,
+    TeamMemberRemove,
+    TeamMemberUpsert,
+    TeamUpdate,
+
+    // user
+    UserCreate,
+    UserDelete,
+    UserUpdate,
+
+    // variable
+    VariableCreate,
+    VariableDelete,
+    VariableGithubBindAdd,
+    VariableGithubBindPatch,
+    VariableGithubBindRemove,
+    VariableGithubPush,
+    VariableUpdate,
 }
 
 impl Action {
     pub fn as_str(self) -> &'static str {
         match self {
+            Action::AuthChangePassword => "auth.change_password",
+            Action::AuthLogin => "auth.login",
+            Action::AuthSetup => "auth.setup",
+            Action::ApiTokenCreate => "api_token.create",
+            Action::ApiTokenRevoke => "api_token.revoke",
+            Action::EnvironmentConcurrencyCancel => "environment.concurrency_cancel",
+            Action::EnvironmentCreate => "environment.create",
+            Action::EnvironmentDelete => "environment.delete",
+            Action::EnvironmentHostAllowlistAdd => "environment.host_allowlist.add",
+            Action::EnvironmentHostAllowlistRemove => "environment.host_allowlist.remove",
+            Action::EnvironmentOverrideDelete => "environment.override.delete",
+            Action::EnvironmentOverrideUpsert => "environment.override.upsert",
+            Action::EnvironmentSecretOverrideDelete => "environment.secret_override.delete",
+            Action::EnvironmentSecretOverrideUpsert => "environment.secret_override.upsert",
+            Action::EnvironmentUpdate => "environment.update",
+            Action::GitHookCreate => "git_hook.create",
+            Action::GitHookDelete => "git_hook.delete",
+            Action::GithubConnectionCreate => "github_connection.create",
+            Action::GithubConnectionDelete => "github_connection.delete",
+            Action::GithubConnectionTest => "github_connection.test",
+            Action::GithubConnectionUpdate => "github_connection.update",
+            Action::GithubRepoCreate => "github_repo.create",
+            Action::GithubRepoDelete => "github_repo.delete",
+            Action::GithubRepoFetch => "github_repo.fetch",
+            Action::GithubRepoUpdate => "github_repo.update",
+            Action::HostCreate => "host.create",
+            Action::HostDelete => "host.delete",
+            Action::HostUpdate => "host.update",
+            Action::JobApprove => "job.approve",
+            Action::JobCancel => "job.cancel",
+            Action::JobDelete => "job.delete",
+            Action::JobReject => "job.reject",
+            Action::PipelineCreate => "pipeline.create",
+            Action::PipelineDelete => "pipeline.delete",
+            Action::PipelineDisable => "pipeline.disable",
+            Action::PipelineEnable => "pipeline.enable",
+            Action::PipelineToggleActive => "pipeline.toggle_active",
+            Action::PipelineTrigger => "pipeline.trigger",
+            Action::PipelineUpdate => "pipeline.update",
+            Action::PipelineYamlCreate => "pipeline.yaml_create",
+            Action::PipelineYamlDelete => "pipeline.yaml_delete",
+            Action::PipelineYamlUpdate => "pipeline.yaml_update",
+            Action::RunnerCreate => "runner.create",
+            Action::RunnerDelete => "runner.delete",
+            Action::RunnerFreeze => "runner.freeze",
+            Action::RunnerRegisterTokenReissued => "runner.register_token_reissued",
+            Action::RunnerRestart => "runner.restart",
+            Action::RunnerUpdate => "runner.update",
+            Action::SecretCreate => "secret.create",
+            Action::SecretDelete => "secret.delete",
+            Action::SecretGithubBindAdd => "secret.github_bind.add",
+            Action::SecretGithubBindPatch => "secret.github_bind.patch",
+            Action::SecretGithubBindRemove => "secret.github_bind.remove",
+            Action::SecretGithubPush => "secret.github_push",
+            Action::SecretUpdate => "secret.update",
+            Action::SettingReset => "setting.reset",
+            Action::SettingUpdate => "setting.update",
+            Action::StepPoolToggle => "step_pool.toggle",
+            Action::StepPoolRefresh => "step_pool.refresh",
             Action::StepSourceCreate => "step_source.create",
             Action::StepSourceDelete => "step_source.delete",
             Action::StepSourceSync => "step_source.sync",
-            Action::StepPoolToggle => "step_pool.toggle",
-            Action::SettingUpdate => "setting.update",
-            Action::SettingReset => "setting.reset",
-            Action::RunnerCreate => "runner.create",
-            Action::RunnerUpdate => "runner.update",
-            Action::RunnerDelete => "runner.delete",
-            Action::RunnerFreeze => "runner.freeze",
-            Action::RunnerRestart => "runner.restart",
-            Action::JobDelete => "job.delete",
+            Action::TeamCreate => "team.create",
+            Action::TeamDelete => "team.delete",
+            Action::TeamMemberRemove => "team.member_remove",
+            Action::TeamMemberUpsert => "team.member_upsert",
+            Action::TeamUpdate => "team.update",
+            Action::UserCreate => "user.create",
+            Action::UserDelete => "user.delete",
+            Action::UserUpdate => "user.update",
+            Action::VariableCreate => "variable.create",
+            Action::VariableDelete => "variable.delete",
+            Action::VariableGithubBindAdd => "variable.github_bind.add",
+            Action::VariableGithubBindPatch => "variable.github_bind.patch",
+            Action::VariableGithubBindRemove => "variable.github_bind.remove",
+            Action::VariableGithubPush => "variable.github_push",
+            Action::VariableUpdate => "variable.update",
         }
     }
 }
@@ -100,6 +258,15 @@ pub enum Resource<'a> {
         id: &'a str,
         name: &'a str,
     },
+    User {
+        id: &'a str,
+        name: &'a str,
+    },
+    /// One plugin across all versions — index refresh.
+    StepPoolPlugin {
+        namespace: &'a str,
+        step_id: &'a str,
+    },
 }
 
 impl<'a> Resource<'a> {
@@ -127,6 +294,14 @@ impl<'a> Resource<'a> {
         Resource::Job { id, name }
     }
 
+    pub fn user(id: &'a str, name: &'a str) -> Self {
+        Resource::User { id, name }
+    }
+
+    pub fn step_pool_plugin(namespace: &'a str, step_id: &'a str) -> Self {
+        Resource::StepPoolPlugin { namespace, step_id }
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             Resource::StepSource { .. } => "step_source",
@@ -134,6 +309,8 @@ impl<'a> Resource<'a> {
             Resource::Setting { .. } => "setting",
             Resource::Runner { .. } => "runner",
             Resource::Job { .. } => "job",
+            Resource::User { .. } => "user",
+            Resource::StepPoolPlugin { .. } => "step_pool",
         }
     }
 
@@ -143,13 +320,15 @@ impl<'a> Resource<'a> {
         match self {
             Resource::StepSource { id, .. }
             | Resource::Runner { id, .. }
-            | Resource::Job { id, .. } => (*id).to_string(),
+            | Resource::Job { id, .. }
+            | Resource::User { id, .. } => (*id).to_string(),
             Resource::StepPool {
                 namespace,
                 step_id,
                 version,
             } => format!("{namespace}/{step_id}@{version}"),
             Resource::Setting { key } => (*key).to_string(),
+            Resource::StepPoolPlugin { namespace, step_id } => format!("{namespace}/{step_id}"),
         }
     }
 
@@ -158,8 +337,9 @@ impl<'a> Resource<'a> {
         match self {
             Resource::StepSource { name, .. }
             | Resource::Runner { name, .. }
-            | Resource::Job { name, .. } => (*name).to_string(),
-            Resource::StepPool { .. } => self.id(),
+            | Resource::Job { name, .. }
+            | Resource::User { name, .. } => (*name).to_string(),
+            Resource::StepPool { .. } | Resource::StepPoolPlugin { .. } => self.id(),
             Resource::Setting { key } => (*key).to_string(),
         }
     }
@@ -203,11 +383,11 @@ pub struct AuditEvent {
 
 impl AuditEvent {
     /// System-initiated event (no human actor) — scheduler gates, cleanup, ….
-    pub fn system(action: impl Into<String>) -> Self {
+    pub fn system(action: Action) -> Self {
         Self {
             actor_user_id: "system".into(),
             actor_username: "system".into(),
-            action: action.into(),
+            action: action.as_str().to_string(),
             resource_type: String::new(),
             resource_id: String::new(),
             resource_name: String::new(),
@@ -219,11 +399,11 @@ impl AuditEvent {
         }
     }
 
-    pub fn from_auth(auth: &AuthUser, action: impl Into<String>) -> Self {
+    pub fn from_auth(auth: &AuthUser, action: Action) -> Self {
         Self {
             actor_user_id: auth.id.clone(),
             actor_username: auth.username.clone(),
-            action: action.into(),
+            action: action.as_str().to_string(),
             resource_type: String::new(),
             resource_id: String::new(),
             resource_name: String::new(),
@@ -237,7 +417,16 @@ impl AuditEvent {
 
     /// Preferred constructor: a catalogued action plus its resource.
     pub fn new(action: Action, auth: &AuthUser) -> Self {
-        Self::from_auth(auth, action.as_str())
+        Self::from_auth(auth, action)
+    }
+
+    /// Event for an actor known only by id/username — login happens before an
+    /// `AuthUser` exists.
+    pub fn actor(user_id: &str, username: &str, action: Action) -> Self {
+        let mut event = Self::system(action);
+        event.actor_user_id = user_id.to_string();
+        event.actor_username = username.to_string();
+        event
     }
 
     /// Attach the resource (derives type / id / name consistently).

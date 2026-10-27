@@ -18,7 +18,7 @@ use shared::protocol::{CreateApiTokenRequest, CreateApiTokenResponse};
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent};
 use crate::middleware::PlatformAdmin;
 use crate::state::AppState;
 
@@ -63,7 +63,7 @@ pub async fn create(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "api_token.create")
+        AuditEvent::from_auth(&auth, Action::ApiTokenCreate)
             .resource("api_token", &id, name)
             .after(Some(serde_json::json!({
                 "prefix": prefix,
@@ -164,7 +164,7 @@ pub async fn revoke(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "api_token.revoke")
+        AuditEvent::from_auth(&auth, Action::ApiTokenRevoke)
             .resource("api_token", &id, &name)
             .meta(Some(serde_json::json!({ "revoked_by": auth.username }))),
     )

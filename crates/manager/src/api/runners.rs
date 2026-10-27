@@ -1044,11 +1044,8 @@ async fn poll_once(
                 }
                 crate::audit::record(
                     &state.pool,
-                    crate::audit::AuditEvent::system("environment.concurrency_cancel").resource(
-                        "job",
-                        superseded_id,
-                        "superseded by cancel_in_progress",
-                    ),
+                    crate::audit::AuditEvent::system(Action::EnvironmentConcurrencyCancel)
+                        .resource("job", superseded_id, "superseded by cancel_in_progress"),
                 )
                 .await;
             }
@@ -3100,7 +3097,7 @@ pub async fn reissue_register_token(
     .await;
     crate::audit::record(
         &state.pool,
-        crate::audit::AuditEvent::from_auth(&auth.0, "runner.register_token_reissued")
+        crate::audit::AuditEvent::from_auth(&auth.0, Action::RunnerRegisterTokenReissued)
             .resource("runner", &id, &name),
     )
     .await;

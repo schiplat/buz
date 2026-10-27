@@ -270,7 +270,7 @@ pub async fn delete_source(
 /// source index and upsert only this plugin's entries (curator's enable
 /// state survives). Returns the refreshed version rows.
 pub async fn refresh_plugin(
-    _auth: PlatformAdmin,
+    auth: PlatformAdmin,
     State(state): State<AppState>,
     Path((namespace, step_id)): Path<(String, String)>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
@@ -293,6 +293,13 @@ pub async fn refresh_plugin(
     )
     .await
     .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::StepPoolRefresh, &auth)
+            .on(Resource::step_pool_plugin(&namespace, &step_id))
+            .meta(Some(json!({ "versions": rows.len() }))),
+    )
+    .await;
     Ok(Json(ApiResponse::success(json!({ "items": rows }))))
 }
 

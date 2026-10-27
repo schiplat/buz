@@ -8,7 +8,7 @@ use shared::protocol::{CreateUserRequest, UpdateUserRequest};
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent};
 use crate::middleware::PlatformAdmin;
 use crate::password::hash_password;
 use crate::state::AppState;
@@ -83,7 +83,7 @@ pub async fn create(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "user.create")
+        AuditEvent::from_auth(&auth, Action::UserCreate)
             .resource("user", &id, username)
             .after(Some(serde_json::json!({
                 "id": id,
@@ -233,7 +233,7 @@ pub async fn update(
     });
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "user.update")
+        AuditEvent::from_auth(&auth, Action::UserUpdate)
             .resource("user", &id, &username)
             .before(Some(before))
             .after(Some(after))
@@ -295,7 +295,7 @@ pub async fn delete(
     }
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "user.delete")
+        AuditEvent::from_auth(&auth, Action::UserDelete)
             .resource("user", &id, &username)
             .before(before),
     )

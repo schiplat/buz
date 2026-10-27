@@ -8,7 +8,7 @@ use shared::protocol::{
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::AuthUser;
 use crate::password::{hash_password, validate_password_complexity, verify_password};
 use crate::state::AppState;
@@ -95,6 +95,17 @@ pub async fn setup(
         .await?;
     }
 
+    // No actor exists yet: the first admin is a system-provisioned account.
+    audit::record_in(
+        &mut *tx,
+        AuditEvent::system(Action::AuthSetup)
+            .on(Resource::user(&user_id, &username))
+            .after(Some(serde_json::json!({
+                "username": username,
+                "is_super_admin": true,
+            }))),
+    )
+    .await?;
     tx.commit().await?;
 
     tracing::info!("First platform admin created via web setup: {username}");
@@ -170,22 +181,12 @@ pub async fn login(
 
     audit::record(
         &state.pool,
-        AuditEvent {
-            actor_user_id: user_id.clone(),
-            actor_username: username.clone(),
-            action: "auth.login".into(),
-            resource_type: "user".into(),
-            resource_id: user_id.clone(),
-            resource_name: username.clone(),
-            team_id: None,
-            before: None,
-            after: Some(serde_json::json!({
+        AuditEvent::actor(&user_id, &username, Action::AuthLogin)
+            .on(Resource::user(&user_id, &username))
+            .after(Some(serde_json::json!({
                 "username": username.clone(),
                 "is_platform_admin": is_platform_admin != 0,
-            })),
-            meta: None,
-            ip: String::new(),
-        },
+            }))),
     )
     .await;
 
@@ -274,6 +275,13 @@ pub async fn change_password(
         .bind(&auth.id)
         .execute(&state.pool)
         .await?;
+    // The hash never enters the record; the event alone is the signal.
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::AuthChangePassword, &auth)
+            .on(Resource::user(&auth.id, &auth.username)),
+    )
+    .await;
 
     Ok(Json(ApiResponse::success(())))
 }

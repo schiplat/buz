@@ -19,7 +19,7 @@ use shared::secret_kind::{is_aliyun_oss_auth_kind, is_registry_kind, normalize_s
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent};
 use crate::crypto;
 use crate::middleware::{AuthUser, PlatformAdmin};
 use crate::state::AppState;
@@ -453,7 +453,7 @@ pub async fn add_host_allowlist(
     .await?;
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "environment.host_allowlist.add")
+        AuditEvent::from_auth(&auth, Action::EnvironmentHostAllowlistAdd)
             .resource("environment", &id, &kind)
             .after(Some(serde_json::json!({ "kind": kind, "value": value }))),
     )
@@ -483,7 +483,7 @@ pub async fn delete_host_allowlist(
     }
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "environment.host_allowlist.remove")
+        AuditEvent::from_auth(&auth, Action::EnvironmentHostAllowlistRemove)
             .resource("environment", &id, &kind)
             .before(Some(serde_json::json!({ "kind": kind, "value": value }))),
     )
@@ -618,7 +618,7 @@ pub async fn create(
     tracing::info!(environment = %slug, id = %id, "environments: created");
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "environment.create")
+        AuditEvent::from_auth(&auth, Action::EnvironmentCreate)
             .resource("environment", &id, &name)
             .after(Some(serde_json::json!({
                 "slug": slug,
@@ -758,7 +758,7 @@ pub async fn update(
     tracing::info!(environment = %slug, id = %id, "environments: updated");
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "environment.update")
+        AuditEvent::from_auth(&auth, Action::EnvironmentUpdate)
             .resource("environment", &id, &name)
             .before(Some(serde_json::json!({
                 "name": old_name,
@@ -808,7 +808,7 @@ pub async fn delete(
     tracing::info!(environment = %slug, id = %id, "environments: deleted");
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "environment.delete")
+        AuditEvent::from_auth(&auth, Action::EnvironmentDelete)
             .resource("environment", &id, &name)
             .before(Some(serde_json::json!({ "slug": slug }))),
     )
@@ -874,7 +874,7 @@ pub async fn upsert_override(
     );
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "environment.override.upsert")
+        AuditEvent::from_auth(&auth, Action::EnvironmentOverrideUpsert)
             .resource("environment", &id, &env_name)
             .after(Some(serde_json::json!({
                 "var_id": req.var_id,
@@ -922,7 +922,7 @@ pub async fn delete_override(
     );
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "environment.override.delete")
+        AuditEvent::from_auth(&auth, Action::EnvironmentOverrideDelete)
             .resource("environment", &id, &env_name)
             .before(Some(serde_json::json!({ "var_id": var_id }))),
     )
@@ -993,7 +993,7 @@ pub async fn upsert_secret_override(
     );
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "environment.secret_override.upsert")
+        AuditEvent::from_auth(&auth, Action::EnvironmentSecretOverrideUpsert)
             .resource("environment", &id, &env_name)
             .after(Some(serde_json::json!({
                 "secret_id": req.secret_id,
@@ -1043,7 +1043,7 @@ pub async fn delete_secret_override(
     );
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "environment.secret_override.delete")
+        AuditEvent::from_auth(&auth, Action::EnvironmentSecretOverrideDelete)
             .resource("environment", &id, &env_name)
             .before(Some(serde_json::json!({ "secret_id": secret_id }))),
     )

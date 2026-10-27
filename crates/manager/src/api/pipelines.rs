@@ -13,7 +13,7 @@ use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent};
 use crate::crypto;
 use crate::middleware::AuthUser;
 use crate::rbac::{pipeline_team_id, resolve_required_team_id, secret_team_id, team_in_clause};
@@ -240,7 +240,7 @@ pub async fn create(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "pipeline.create")
+        AuditEvent::from_auth(&auth, Action::PipelineCreate)
             .resource("pipeline", &pipeline_id, &req.name)
             .team(Some(team_id.clone()))
             .after(Some(serde_json::json!({
@@ -615,7 +615,7 @@ pub async fn update(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "pipeline.update")
+        AuditEvent::from_auth(&auth, Action::PipelineUpdate)
             .resource("pipeline", &id, &req.name)
             .team(Some(team_id.clone()))
             .before(before)
@@ -708,7 +708,7 @@ pub async fn delete(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "pipeline.delete")
+        AuditEvent::from_auth(&auth, Action::PipelineDelete)
             .resource("pipeline", &id, &name)
             .team(Some(team_id))
             .before(before),
@@ -752,7 +752,7 @@ pub async fn toggle_active(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "pipeline.toggle_active")
+        AuditEvent::from_auth(&auth, Action::PipelineToggleActive)
             .resource("pipeline", &id, &name)
             .team(Some(team_id))
             .before(Some(
@@ -868,7 +868,7 @@ pub async fn disable(
     let cancelled_ids: Vec<&str> = cancelled.iter().map(|(j, _, _)| j.as_str()).collect();
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "pipeline.disable")
+        AuditEvent::from_auth(&auth, Action::PipelineDisable)
             .resource("pipeline", &id, &name)
             .team(Some(team_id))
             .before(Some(serde_json::json!({ "is_active": was_active })))
@@ -922,7 +922,7 @@ pub async fn enable(
     // Audit inside the transaction: an unauditable enable is a failed enable.
     audit::record_in(
         &mut *tx,
-        AuditEvent::from_auth(&auth, "pipeline.enable")
+        AuditEvent::from_auth(&auth, Action::PipelineEnable)
             .resource("pipeline", &id, &name)
             .team(Some(team_id))
             .before(Some(serde_json::json!({ "is_active": was_active })))
@@ -996,7 +996,7 @@ pub async fn trigger(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "pipeline.trigger")
+        AuditEvent::from_auth(&auth, Action::PipelineTrigger)
             .resource("pipeline", &id, &name)
             .team(Some(team_id))
             .after(Some(serde_json::json!({

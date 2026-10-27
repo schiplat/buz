@@ -9,7 +9,7 @@ use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent};
 use crate::crypto;
 use crate::middleware::AuthUser;
 use crate::rbac::{host_team_id, resolve_optional_team_id};
@@ -148,7 +148,7 @@ pub async fn create(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "host.create")
+        AuditEvent::from_auth(&auth, Action::HostCreate)
             .resource("host", &id, &req.name)
             .team(team_id_opt.clone())
             .after(Some(serde_json::json!({
@@ -351,7 +351,7 @@ pub async fn update(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "host.update")
+        AuditEvent::from_auth(&auth, Action::HostUpdate)
             .resource("host", &id, &name)
             .team(team_after)
             .before(before)
@@ -419,7 +419,7 @@ pub async fn delete(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "host.delete")
+        AuditEvent::from_auth(&auth, Action::HostDelete)
             .resource("host", &id, &name)
             .team(team_id)
             .before(before),

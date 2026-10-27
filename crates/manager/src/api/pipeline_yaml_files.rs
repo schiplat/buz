@@ -16,7 +16,7 @@ use shared::protocol::response::ApiResponse;
 use shared::rbac::Perm;
 use sqlx::Row;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent};
 use crate::middleware::AuthUser;
 use crate::rbac::pipeline_team_id;
 use crate::services::pipeline_scanner::{
@@ -198,7 +198,7 @@ pub async fn create_file(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "pipeline.yaml_create")
+        AuditEvent::from_auth(&auth, Action::PipelineYamlCreate)
             .resource("pipeline", &result.pipeline_id, &result.name)
             .team(Some(target_team_id))
             .after(Some(serde_json::json!({
@@ -291,7 +291,7 @@ pub async fn put_file(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "pipeline.yaml_update")
+        AuditEvent::from_auth(&auth, Action::PipelineYamlUpdate)
             .resource("pipeline", &result.pipeline_id, &result.name)
             .team(Some(target_team_id))
             .after(Some(serde_json::json!({
@@ -324,7 +324,7 @@ pub async fn delete_file(
     if let Some(ref id) = deleted_id {
         audit::record(
             &state.pool,
-            AuditEvent::from_auth(&auth, "pipeline.yaml_delete")
+            AuditEvent::from_auth(&auth, Action::PipelineYamlDelete)
                 .resource("pipeline", id, &filename)
                 .after(Some(serde_json::json!({ "filename": filename }))),
         )

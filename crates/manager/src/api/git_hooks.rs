@@ -13,7 +13,7 @@ use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent};
 use crate::crypto;
 use crate::rbac::AuthUser;
 use crate::state::AppState;
@@ -185,7 +185,7 @@ pub async fn create_hook(
     };
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "git_hook.create")
+        AuditEvent::from_auth(&auth, Action::GitHookCreate)
             .resource("git_hook", &id, &name)
             .team(Some(team_id.clone()))
             .after(Some(serde_json::json!({
@@ -265,7 +265,7 @@ pub async fn delete_hook(
     }
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "git_hook.delete")
+        AuditEvent::from_auth(&auth, Action::GitHookDelete)
             .resource("git_hook", &hook_id, &name)
             .team(Some(team_id))
             .before(before),

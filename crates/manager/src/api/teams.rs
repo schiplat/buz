@@ -9,7 +9,7 @@ use shared::rbac::{Perm, TeamRole};
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{self, AuditEvent};
+use crate::audit::{self, Action, AuditEvent};
 use crate::middleware::AuthUser;
 use crate::state::AppState;
 
@@ -111,7 +111,7 @@ pub async fn create(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "team.create")
+        AuditEvent::from_auth(&auth, Action::TeamCreate)
             .resource("team", &id, name)
             .team(Some(id.clone()))
             .after(Some(serde_json::json!({
@@ -213,7 +213,7 @@ pub async fn update(
     });
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "team.update")
+        AuditEvent::from_auth(&auth, Action::TeamUpdate)
             .resource("team", &id, &team_name)
             .team(Some(id.clone()))
             .before(before)
@@ -278,7 +278,7 @@ pub async fn delete(
     }
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "team.delete")
+        AuditEvent::from_auth(&auth, Action::TeamDelete)
             .resource("team", &id, &team_name)
             .team(Some(id.clone()))
             .before(before),
@@ -367,7 +367,7 @@ pub async fn upsert_member(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "team.member_upsert")
+        AuditEvent::from_auth(&auth, Action::TeamMemberUpsert)
             .resource("team_member", &req.user_id, &req.user_id)
             .team(Some(id.clone()))
             .before(prev.map(|r| serde_json::json!({ "role": r })))
@@ -425,7 +425,7 @@ pub async fn remove_member(
     }
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "team.member_remove")
+        AuditEvent::from_auth(&auth, Action::TeamMemberRemove)
             .resource("team_member", &user_id, &user_id)
             .team(Some(id.clone()))
             .before(current_role.map(|r| serde_json::json!({ "role": r, "user_id": user_id }))),

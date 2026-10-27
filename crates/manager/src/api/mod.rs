@@ -378,3 +378,7 @@ mod settings_tests;
 #[cfg(test)]
 #[path = "tests/step_pool_tests.rs"]
 mod step_pool_tests;
+
+#[cfg(test)]
+#[path = "audit_coverage_tests.rs"]
+mod audit_coverage_tests;

@@ -15,7 +15,7 @@ use shared::secret_kind::{
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{self, secret_snapshot, AuditEvent};
+use crate::audit::{self, secret_snapshot, Action, AuditEvent};
 use crate::crypto;
 use crate::middleware::AuthUser;
 use crate::rbac::{resolve_required_team_id, secret_team_id, team_in_clause};
@@ -185,7 +185,7 @@ pub async fn create(
     let after = secret_snapshot(&id, &name, &slug, &team_id, team_shared, kind);
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "secret.create")
+        AuditEvent::from_auth(&auth, Action::SecretCreate)
             .resource("secret", &id, &name)
             .team(Some(team_id.clone()))
             .after(Some(after)),
@@ -383,7 +383,7 @@ pub async fn update(
     );
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "secret.update")
+        AuditEvent::from_auth(&auth, Action::SecretUpdate)
             .resource("secret", &id, &before_name)
             .team(Some(new_team_id.clone()))
             .before(Some(before))
@@ -436,7 +436,7 @@ pub async fn delete(
 
     audit::record(
         &state.pool,
-        AuditEvent::from_auth(&auth, "secret.delete")
+        AuditEvent::from_auth(&auth, Action::SecretDelete)
             .resource("secret", &id, &name)
             .team(Some(tid))
             .before(Some(before)),
