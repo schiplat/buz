@@ -1226,6 +1226,43 @@ async fn mirror_check_reports_out_of_sync_when_mirror_content_drifted() {
 }
 
 #[tokio::test]
+async fn sync_error_includes_the_raw_response_when_index_is_not_json() {
+    // A SPA fallback / wrong path: HTTP 200 with an HTML body.
+    let app = Router::new().route(
+        "/index.json",
+        axum::routing::get(|| async { "<!doctype html><html><body>page</body></html>" }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let source_url = format!("http://{addr}/index.json");
+
+    let (app, pool) = test_app().await;
+    let jwt = TokenManager::new(JWT_SECRET)
+        .create_token(ADMIN_ID, Role::Admin, 1)
+        .unwrap();
+    let body = add_source(&app, &jwt, &source_url).await;
+    let source_id = body["data"]["source"]["id"]
+        .as_str()
+        .expect("source id")
+        .to_string();
+
+    let source = crate::services::step_pool::get_source(&pool, &source_id)
+        .await
+        .expect("get source")
+        .expect("source exists");
+    let http = crate::services::step_pool::http_client(30);
+    let error =
+        crate::services::step_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+            .await
+            .unwrap_err()
+            .to_string();
+    assert!(error.contains("invalid index.json"), "{error}");
+    assert!(error.contains("response body: <!doctype html>"), "{error}");
+    assert!(error.contains("looks like HTML"), "{error}");
+}
+
+#[tokio::test]
 async fn mirror_check_requires_a_configured_mirror() {
     let (app, pool) = test_app().await;
     let jwt = TokenManager::new(JWT_SECRET)

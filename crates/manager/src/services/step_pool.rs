@@ -296,6 +296,36 @@ pub struct IndexEntry {
     pub engine: Option<String>,
 }
 
+/// When an index fails to parse, append a short printable prefix of what the
+/// endpoint actually returned. The sources list surfaces the message
+/// verbatim, so the common failure — a 200 HTML page from a SPA fallback —
+/// becomes self-evident instead of a bare serde position.
+fn unexpected_body_hint(raw: &str) -> String {
+    let trimmed = raw.trim_start();
+    if trimmed.is_empty() {
+        return " — the endpoint returned an empty body".to_string();
+    }
+    let hint = if trimmed.starts_with('<') {
+        " — the body looks like HTML: the URL is probably serving a page (wrong path, or a fallback page for missing files) instead of JSON"
+    } else if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        " — the body does not look like JSON"
+    } else {
+        ""
+    };
+    const MAX_CHARS: usize = 240;
+    let flattened: String = raw
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let truncated: String = flattened.chars().take(MAX_CHARS).collect();
+    let suffix = if flattened.chars().count() > MAX_CHARS {
+        " …(truncated)"
+    } else {
+        ""
+    };
+    format!(" — response body: {truncated}{suffix}{hint}")
+}
+
 fn parse_index(raw: &str) -> Result<StepIndex, String> {
     let index: StepIndex =
         serde_json::from_str(raw).map_err(|e| format!("invalid index.json: {e}"))?;
@@ -626,7 +656,8 @@ async fn sync_source_inner(
 ) -> Result<usize, anyhow::Error> {
     let bases = source_bases(source);
     let raw = http_get_text_from_bases(http, &bases, "index.json").await?;
-    let index = parse_index(&raw).map_err(|e| anyhow!("{e}"))?;
+    let index = parse_index(&raw)
+        .map_err(|e| anyhow!("invalid index.json: {e}{}", unexpected_body_hint(&raw)))?;
 
     // Official-style sources publish reviews.json next to the index; when it
     // is fetchable, pool rows carry the review badge by hash membership.
