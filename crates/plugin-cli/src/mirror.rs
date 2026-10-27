@@ -147,8 +147,9 @@ pub fn run(source: &str, mirror: &str, json: bool) -> anyhow::Result<()> {
                 report.canonical_revision.as_deref().unwrap_or("unknown")
             ),
             "out-of-sync" => println!(
-                "out-of-sync — canonical rev {:?}, mirror rev {:?}; re-sync the mirror",
-                report.canonical_revision, report.mirror_revision
+                "out-of-sync — canonical rev {}, mirror rev {}; re-sync the mirror",
+                report.canonical_revision.as_deref().unwrap_or("unknown"),
+                report.mirror_revision.as_deref().unwrap_or("unknown"),
             ),
             other => println!("{other}: {}", report.detail.as_deref().unwrap_or("")),
         }
