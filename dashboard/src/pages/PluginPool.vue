@@ -172,6 +172,31 @@ function groupDescription(group: PoolGroup): string | null {
 const groupRequires = (group: PoolGroup) =>
   group.versions.find((v) => v.requires_buz)?.requires_buz ?? null
 
+/** Compatibility tone for the requires-buz chip: green when some version of
+ *  the plugin runs on this Manager build, red when none does, neutral while
+ *  compatibility hasn't been checked. */
+function groupCompatTone(group: PoolGroup): string {
+  const states = group.versions.map((v) => v.buz_compatible)
+  if (states.some((s) => s === true)) {
+    return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+  }
+  if (states.length > 0 && states.every((s) => s === false)) {
+    return 'bg-red-500/10 text-red-600 dark:text-red-400'
+  }
+  return 'bg-muted text-muted-foreground'
+}
+
+function groupCompatTip(group: PoolGroup): string {
+  const states = group.versions.map((v) => v.buz_compatible)
+  if (states.some((s) => s === true)) {
+    return 'At least one version is compatible with this Manager build'
+  }
+  if (states.length > 0 && states.every((s) => s === false)) {
+    return 'No version is compatible with this Manager build'
+  }
+  return 'Compatibility not checked yet'
+}
+
 /** Category-tinted icon tile: a visual anchor for scanning the list. */
 const categoryIcon = (group: PoolGroup) => {
   switch (group.meta?.category) {
@@ -452,7 +477,12 @@ onMounted(load)
                 <span>by {{ group.meta.author }}</span>
               </template>
               <span v-if="group.meta?.engine">{{ group.meta.engine }} engine</span>
-              <span v-if="groupRequires(group)">requires buz {{ groupRequires(group) }}</span>
+              <span
+                v-if="groupRequires(group)"
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+                :class="groupCompatTone(group)"
+                :title="groupCompatTip(group)"
+              >requires buz {{ groupRequires(group) }}</span>
               <span>via {{ group.sourceName }}</span>
             </div>
 
