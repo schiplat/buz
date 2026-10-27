@@ -239,6 +239,15 @@ async fn main() -> anyhow::Result<()> {
     )
     .to_string_lossy()
     .into_owned();
+    tracing::info!(
+        require_signed_index = config.plugin_index.require_signed_index,
+        public_key_configured = !config.plugin_index.index_public_key.is_empty(),
+        "index signature defaults (manager.toml; the dashboard can override)"
+    );
+    services::plugin_resolver::init_signature_defaults(
+        config.plugin_index.require_signed_index,
+        config.plugin_index.index_public_key.clone(),
+    );
     services::plugin_resolver::init(services::plugin_resolver::StepIndexSettings {
         reviewed_manifest: reviewed_manifest.clone(),
         require_reviewed,

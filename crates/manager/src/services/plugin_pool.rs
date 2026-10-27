@@ -688,12 +688,15 @@ pub async fn sync_source(
     result
 }
 
-/// Effective signature policy: `(require, public_key)`.
+/// Effective signature policy: `(require, public_key)` — the dashboard value
+/// when set, otherwise the `manager.toml` default. Read per call (not cached in
+/// a process-wide slot) so one database's override never leaks into another.
 async fn signature_policy(pool: &SqlitePool) -> (bool, String) {
+    let (default_require, default_key) = crate::services::plugin_resolver::signature_defaults();
     let require = crate::services::platform_settings::effective(
         pool,
         crate::services::platform_settings::KEY_PLUGIN_REQUIRE_SIGNED_INDEX,
-        "false",
+        if default_require { "true" } else { "false" },
     )
     .await
     .trim()
@@ -701,7 +704,7 @@ async fn signature_policy(pool: &SqlitePool) -> (bool, String) {
     let public_key = crate::services::platform_settings::effective(
         pool,
         crate::services::platform_settings::KEY_PLUGIN_INDEX_PUBLIC_KEY,
-        "",
+        &default_key,
     )
     .await;
     (require, public_key)

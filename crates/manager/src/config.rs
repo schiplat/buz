@@ -57,6 +57,14 @@ pub struct PluginIndexConfig {
     /// is the serde default; the settings UI can override per deployment.
     #[serde(default = "default_sync_timeout_seconds")]
     pub sync_timeout_seconds: u64,
+    /// Base64 Ed25519 public key the Manager trusts for source indexes.
+    /// Empty → no trust anchor; signatures are not checked.
+    #[serde(default)]
+    pub index_public_key: String,
+    /// Strict mode: a sync must carry a signature that verifies against
+    /// `index_public_key`, otherwise the source is refused.
+    #[serde(default)]
+    pub require_signed_index: bool,
 }
 
 fn default_sync_timeout_seconds() -> u64 {
@@ -71,6 +79,8 @@ impl Default for PluginIndexConfig {
             require_reviewed: false,
             sync_timeout_seconds:
                 crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS,
+            index_public_key: String::new(),
+            require_signed_index: false,
         }
     }
 }
@@ -520,5 +530,46 @@ host = "127.0.0.1"
             .try_deserialize()
             .expect("deserialize config");
         assert_eq!(cfg.plugin_index.sync_timeout_seconds, 60);
+    }
+}
+
+#[cfg(test)]
+mod signature_config_tests {
+    use super::*;
+
+    /// The docs advertise these two keys under `[plugin_index]`; a silently
+    /// ignored key would leave a deployment that believes it is verifying
+    /// signatures without verifying anything.
+    #[test]
+    fn plugin_index_signature_keys_are_parsed() {
+        let cfg: Config = config::Config::builder()
+            .add_source(config::File::from_str(
+                r#"
+[server]
+host = "127.0.0.1"
+
+[plugin_index]
+index_public_key = "QlO0bHFJmHzQ5r3AcDoy+pmIwb4boh2kA/drxMFgsjA="
+require_signed_index = true
+"#,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("build config")
+            .try_deserialize()
+            .expect("keys accepted");
+
+        assert_eq!(
+            cfg.plugin_index.index_public_key,
+            "QlO0bHFJmHzQ5r3AcDoy+pmIwb4boh2kA/drxMFgsjA="
+        );
+        assert!(cfg.plugin_index.require_signed_index);
+    }
+
+    #[test]
+    fn signature_keys_default_to_off() {
+        let cfg = PluginIndexConfig::default();
+        assert!(cfg.index_public_key.is_empty());
+        assert!(!cfg.require_signed_index);
     }
 }

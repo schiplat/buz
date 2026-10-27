@@ -28,6 +28,19 @@ pub struct StepIndexSettings {
     pub require_reviewed: bool,
 }
 
+/// Index-signature trust anchor as configured in `manager.toml`. Kept out of
+/// [`StepIndexSettings`] because the dashboard override must be read per call
+/// (per database), not baked into a process-wide slot.
+static SIGNATURE_DEFAULTS: OnceLock<(bool, String)> = OnceLock::new();
+
+pub fn init_signature_defaults(require_signed_index: bool, index_public_key: String) {
+    let _ = SIGNATURE_DEFAULTS.set((require_signed_index, index_public_key));
+}
+
+pub fn signature_defaults() -> (bool, String) {
+    SIGNATURE_DEFAULTS.get().cloned().unwrap_or_default()
+}
+
 static SETTINGS: OnceLock<StepIndexSettings> = OnceLock::new();
 
 /// Admin-edited runtime overrides (web settings). `None` field = use the
