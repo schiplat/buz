@@ -616,3 +616,91 @@ async fn job_snapshot_freezes_trigger_time_team() {
         "snapshot records trigger-time team"
     );
 }
+
+/// The editor's lint endpoint must reject a `uses:` reference nobody can
+/// resolve here — that is the whole point of running the check while the
+/// author is still typing.
+#[tokio::test]
+async fn validate_reports_unknown_plugin_with_the_reference_in_the_message() {
+    let (_app, _pool, state) = test_app().await;
+    let jwt = TokenManager::new(JWT_SECRET)
+        .create_token(SUPER_ADMIN_ID, Role::Admin, 1)
+        .unwrap();
+    // Empty local plugin directory: nothing is available.
+    let empty = tempfile::tempdir().unwrap();
+    let mut state = state;
+    state.config.plugin_index.local_dir = empty.path().to_string_lossy().into_owned();
+    let app = axum::Router::new().nest("/api/v1", api::router(state));
+
+    let body = serde_json::json!({
+        "yaml": "name: probe\nenvironments: [default]\nsteps:\n  - name: run\n    uses: alice/ghost-plugin@1.0.0\n",
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/pipelines/validate")
+                .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let raw = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["valid"], false, "{body}");
+    let errors = body["data"]["errors"].as_array().expect("errors array");
+    let hit = errors
+        .iter()
+        .find(|error| error["field"] == "steps.0.uses")
+        .unwrap_or_else(|| panic!("expected steps.0.uses error, got {errors:?}"));
+    assert!(
+        hit["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("alice/ghost-plugin"),
+        "{hit}"
+    );
+
+    // …and a plugin that IS in the local directory passes the check.
+    let plugin_dir = empty.path().join("alice").join("real-plugin");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(
+        plugin_dir.join("1.0.0.yaml"),
+        "id: alice/real-plugin\nversion: 1.0.0\npublisher: community\nauthor: alice\n\
+         source_repo: https://github.com/alice/steps\nengine: shell\ninputs: {}\nrun: echo hi\n",
+    )
+    .unwrap();
+    let body = serde_json::json!({
+        "yaml": "name: probe\nenvironments: [default]\nsteps:\n  - name: run\n    uses: alice/real-plugin@1.0.0\n",
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/pipelines/validate")
+                .header(AUTHORIZATION, format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let raw = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    let errors = body["data"]["errors"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e["field"].as_str().unwrap_or("").starts_with("steps.")),
+        "available plugin must not error: {errors:?}"
+    );
+}

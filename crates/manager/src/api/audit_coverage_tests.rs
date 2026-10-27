@@ -223,6 +223,38 @@ const INTENTIONALLY_UNAUDITED: &[(&str, &str)] = &[
     ),
 ];
 
+/// Deprecated path aliases for the write routes: they register the SAME
+/// handlers as the canonical entries above, so the audit event is recorded
+/// once, in the handler — not per path. Kept apart from AUDITED so the table
+/// never claims a second record happens here. (`GET /steps` also aliases
+/// `GET /plugins`; it is a read, so it is outside this table.)
+const ALIAS_ROUTES: &[(&str, &str)] = &[
+    (
+        "DELETE /api/v1/admin/step-sources/{id}",
+        "alias of DELETE /api/v1/admin/plugin-sources/{id}",
+    ),
+    (
+        "POST /api/v1/admin/step-pool/{namespace}/{step_id}/refresh",
+        "alias of POST /api/v1/admin/plugin-pool/{namespace}/{step_id}/refresh",
+    ),
+    (
+        "POST /api/v1/admin/step-sources",
+        "alias of POST /api/v1/admin/plugin-sources",
+    ),
+    (
+        "POST /api/v1/admin/step-sources/{id}/mirror-check",
+        "alias of POST /api/v1/admin/plugin-sources/{id}/mirror-check",
+    ),
+    (
+        "POST /api/v1/admin/step-sources/{id}/sync",
+        "alias of POST /api/v1/admin/plugin-sources/{id}/sync",
+    ),
+    (
+        "PUT /api/v1/admin/step-pool/{namespace}/{step_id}/{version}",
+        "alias of PUT /api/v1/admin/plugin-pool/{namespace}/{step_id}/{version}",
+    ),
+];
+
 fn repo_file(relative: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
@@ -283,11 +315,12 @@ fn every_write_route_is_audited_or_declared_unaudited() {
         .iter()
         .map(|(r, _)| r.to_string())
         .collect();
+    let aliases: BTreeSet<String> = ALIAS_ROUTES.iter().map(|(r, _)| r.to_string()).collect();
 
     // Every router write route must be declared exactly once.
     let missing: Vec<&String> = router
         .iter()
-        .filter(|r| !audited.contains(*r) && !unaudited.contains(*r))
+        .filter(|r| !audited.contains(*r) && !unaudited.contains(*r) && !aliases.contains(*r))
         .collect();
     assert!(
         missing.is_empty(),
@@ -305,6 +338,7 @@ fn every_write_route_is_audited_or_declared_unaudited() {
     let stale: Vec<&String> = audited
         .iter()
         .chain(unaudited.iter())
+        .chain(aliases.iter())
         .filter(|r| !router.contains(*r))
         .collect();
     assert!(
@@ -317,9 +351,17 @@ fn every_write_route_is_audited_or_declared_unaudited() {
             .join("\n")
     );
 
-    // A route may not be both audited and excused.
+    // A route may be in exactly one table.
     let overlap: Vec<&String> = audited.intersection(&unaudited).collect();
     assert!(overlap.is_empty(), "both audited and excused: {overlap:?}");
+    let alias_overlap: Vec<&String> = aliases
+        .intersection(&audited)
+        .chain(aliases.intersection(&unaudited))
+        .collect();
+    assert!(
+        alias_overlap.is_empty(),
+        "route listed as an alias and as its own decision: {alias_overlap:?}"
+    );
 }
 
 #[test]

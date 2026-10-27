@@ -3,10 +3,18 @@ import { EditorState } from '@codemirror/state'
 import { describe, expect, it } from 'vitest'
 import { createPipelineYamlCompletionSource } from '../pipelineYamlCompletions'
 
+const pluginRefs = [
+  { uses: 'buz/checkout@1.2.0', reviewed: true, description: 'Clone the repository' },
+  { uses: 'buz/docker@1.1.0', reviewed: true, description: 'Docker build with docker-socket support' },
+  { uses: 'buz/docker-login@1.1.0', reviewed: false },
+  { uses: 'buz/config-fetch@1.1.0', reviewed: true },
+]
+
 const source = createPipelineYamlCompletionSource({
   secretNames: ['REGISTRY_PASSWORD', 'CONFIG_BUNDLE_URL'],
   variableNames: ['IMAGE_TAG'],
   environmentSlugs: ['staging', 'production'],
+  pluginRefs,
 })
 
 function complete(doc: string, explicit = true): CompletionResult | null {
@@ -38,19 +46,14 @@ describe('plugin-first pipeline YAML completions', () => {
   it.each(['', 'buz/', 'buz/docker', 'buz/docker-login@', 'buz/config-fetch@1.']) (
     'replaces the full uses reference for prefix %s', (prefix) => {
       const doc = `steps:\n  - uses: ${prefix}`
-      expect(labels(doc)).toEqual([
-        'buz/checkout@1.2.0',
-        'buz/git-clone@1.1.0',
-        'buz/setup-rust@1.1.0',
-        'buz/setup-node@1.1.0',
-        'buz/docker@1.1.0',
-        'buz/docker-login@1.1.0',
-        'buz/docker-logout@1.0.0',
-        'buz/config-fetch@1.1.0',
-      ])
+      // The list is live data (GET /plugins), not a hardcoded catalog: the
+      // options are exactly what the Manager reports.
+      expect(labels(doc)).toEqual(pluginRefs.map((plugin) => plugin.uses))
       const docker = complete(doc)!.options.find((option) => option.label === 'buz/docker@1.1.0')!
+      expect(docker.info).toContain('reviewed')
       expect(docker.info).toContain('docker-socket')
-      expect(docker.info).toContain('docker_socket_allowed')
+      const unreviewed = complete(doc)!.options.find((option) => option.label === 'buz/docker-login@1.1.0')!
+      expect(unreviewed.info).toContain('not reviewed')
       expect(apply(doc, 'buz/docker-login@1.1.0')).toBe('steps:\n  - uses: buz/docker-login@1.1.0')
       expect((complete(doc)!.validFor as RegExp).test('buz/docker-login@1.1.0')).toBe(true)
     },
@@ -76,20 +79,24 @@ describe('plugin-first pipeline YAML completions', () => {
     expect(workDir.info).toContain('default_dir')
   })
 
-  it('documents checkout trigger-commit default and the git-clone legacy entry', () => {
+  it('describes each suggestion from the plugin metadata the Manager reports', () => {
     const doc = 'steps:\n  - uses: '
     const checkout = complete(doc)!.options.find((option) => option.label === 'buz/checkout@1.2.0')!
-    expect(checkout.info).toContain('BUZ_GIT_SHA')
-    expect(checkout.info).toContain('submodules')
-    const gitClone = complete(doc)!.options.find((option) => option.label === 'buz/git-clone@1.1.0')!
-    expect(gitClone.info).toContain('superseded by buz/checkout')
-    expect(gitClone.info).toContain('default source')
-    for (const label of ['buz/setup-rust@1.1.0', 'buz/setup-node@1.1.0', 'buz/docker@1.1.0']) {
-      const info = complete(doc)!.options.find((option) => option.label === label)!.info
-      expect(info).toContain('default_dir: source')
-      expect(info).toContain('work_dir')
-      expect(info).not.toContain('with.work_dir')
-    }
+    // Descriptions come from the plugin spec (index meta), not a hardcoded
+    // catalog in the dashboard — the catalog went stale once already.
+    expect(checkout.info).toContain('reviewed')
+    expect(checkout.info).toContain('Clone the repository')
+
+    const unreviewed = complete(doc)!.options.find((option) => option.label === 'buz/docker-login@1.1.0')!
+    expect(unreviewed.info).toContain('not reviewed')
+  })
+
+  it('offers nothing when the Manager reports no plugins', () => {
+    const empty = createPipelineYamlCompletionSource({})
+    const doc = 'steps:\n  - uses: '
+    const result = empty(new CompletionContext(EditorState.create({ doc }), doc.length, true))
+    const options = result?.options.map((option) => option.label) ?? []
+    expect(options).not.toContain('buz/checkout@1.2.0')
   })
 
   it.each(['', 'REG'])('preserves the Secret expression when completing %s', (prefix) => {

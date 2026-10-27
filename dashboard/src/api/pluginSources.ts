@@ -3,7 +3,7 @@ import apiClient from './client'
 /** Step sources + curated pool (step-marketplace §6.8). Admin-managed;
  *  the library view lists what pipeline authors may `uses:` today. */
 
-export interface StepSource {
+export interface PluginSource {
   id: string
   name: string
   url: string
@@ -81,50 +81,56 @@ export interface SyncProgressState {
   error?: string | null
 }
 
-export const stepSourcesApi = {
-  async listSources(): Promise<{ items: StepSource[] }> {
-    const resp = await apiClient.get('/admin/step-sources')
-    return resp.data as { items: StepSource[] }
+export const pluginSourcesApi = {
+  /** Every plugin in the local plugin directory (GET /plugins). Used for
+   *  editor completions — not the pool, which is admin-only. */
+  async listLocalPlugins(): Promise<{ items: LocalTemplate[]; unparseable?: unknown[] }> {
+    const resp = await apiClient.get('/plugins')
+    return resp.data as { items: LocalTemplate[]; unparseable?: unknown[] }
+  },
+  async listSources(): Promise<{ items: PluginSource[] }> {
+    const resp = await apiClient.get('/admin/plugin-sources')
+    return resp.data as { items: PluginSource[] }
   },
   async createSource(
     name: string,
     url: string,
     autoEnable: boolean,
     mirrorUrl?: string,
-  ): Promise<{ source: StepSource }> {
+  ): Promise<{ source: PluginSource }> {
     // Returns immediately — the sync runs in the background and the UI polls
     // the list for last_synced_at / last_sync_error.
-    const resp = await apiClient.post('/admin/step-sources', {
+    const resp = await apiClient.post('/admin/plugin-sources', {
       name,
       url,
       auto_enable: autoEnable,
       mirror_url: mirrorUrl?.trim() ? mirrorUrl.trim() : null,
     })
-    return resp.data as { source: StepSource }
+    return resp.data as { source: PluginSource }
   },
   async syncSource(id: string): Promise<void> {
-    await apiClient.post(`/admin/step-sources/${id}/sync`)
+    await apiClient.post(`/admin/plugin-sources/${id}/sync`)
   },
   /** Mirror drift check: compares the namespace revision sentinel between
    *  the mirror and the canonical origin (tiny GETs; full-index fallback). */
   async checkMirror(id: string): Promise<MirrorCheckReport> {
-    const resp = await apiClient.post(`/admin/step-sources/${id}/mirror-check`)
+    const resp = await apiClient.post(`/admin/plugin-sources/${id}/mirror-check`)
     return resp.data as MirrorCheckReport
   },
   /** Live progress for a running background sync (progress bar). */
   async getSyncProgress(id: string): Promise<SyncProgressState> {
-    const resp = await apiClient.get(`/admin/step-sources/${id}/sync-progress`)
+    const resp = await apiClient.get(`/admin/plugin-sources/${id}/sync-progress`)
     return resp.data as SyncProgressState
   },
   async deleteSource(id: string): Promise<void> {
-    await apiClient.delete(`/admin/step-sources/${id}`)
+    await apiClient.delete(`/admin/plugin-sources/${id}`)
   },
   async listPool(): Promise<{ items: PoolEntry[] }> {
-    const resp = await apiClient.get('/admin/step-pool')
+    const resp = await apiClient.get('/admin/plugin-pool')
     return resp.data as { items: PoolEntry[] }
   },
   async refreshPlugin(namespace: string, stepId: string): Promise<{ items: PoolEntry[] }> {
-    const resp = await apiClient.post(`/admin/step-pool/${namespace}/${stepId}/refresh`)
+    const resp = await apiClient.post(`/admin/plugin-pool/${namespace}/${stepId}/refresh`)
     return resp.data as { items: PoolEntry[] }
   },
   async togglePoolEntry(
@@ -133,6 +139,6 @@ export const stepSourcesApi = {
     version: string,
     enabled: boolean,
   ): Promise<void> {
-    await apiClient.put(`/admin/step-pool/${namespace}/${stepId}/${version}`, { enabled })
+    await apiClient.put(`/admin/plugin-pool/${namespace}/${stepId}/${version}`, { enabled })
   },
 }

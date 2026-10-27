@@ -68,7 +68,7 @@ fn changes_records_only_differing_keys() {
 }
 
 #[test]
-fn step_pool_resource_composes_the_reference() {
+fn plugin_pool_resource_composes_the_reference() {
     use super::{Action, AuditEvent, Resource};
     use crate::rbac::AuthUser;
 

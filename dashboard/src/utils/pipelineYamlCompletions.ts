@@ -107,21 +107,15 @@ const ENGINE_VALUES: Completion[] = [
   { label: 'ssh', type: 'keyword', apply: 'ssh' },
 ]
 
-const TEMPLATE_VALUES: Completion[] = [
-  { label: 'buz/checkout@1.2.0', type: 'keyword', info: 'actions/checkout equivalent: ref defaults to BUZ_GIT_SHA on webhook triggers; branch/tag/full-SHA refs; submodules; into (default source)' },
-  { label: 'buz/git-clone@1.1.0', type: 'keyword', info: 'Legacy clone template (superseded by buz/checkout); into (default source), workspace-relative, no .. components' },
-  { label: 'buz/setup-rust@1.1.0', type: 'keyword', info: 'Pinned Rust toolchain (default_dir: source; override with a step-level work_dir:)' },
-  { label: 'buz/setup-node@1.1.0', type: 'keyword', info: 'Pinned Node toolchain (default_dir: source; override with a step-level work_dir:)' },
-  { label: 'buz/docker@1.1.0', type: 'keyword', info: 'default_dir: source (a step-level work_dir: overrides it); requests docker-socket — Runner administrator must separately enable docker_socket_allowed locally' },
-  { label: 'buz/docker-login@1.1.0', type: 'keyword', info: 'Registry authentication via with: registry / username / password' },
-  { label: 'buz/docker-logout@1.0.0', type: 'keyword', info: 'Remove registry credentials after pull / build / push' },
-  { label: 'buz/config-fetch@1.1.0', type: 'keyword', info: 'Fetch a config bundle before config.render' },
-]
 
 export type PipelineYamlCompletionOptions = {
   secretNames?: string[]
   variableNames?: string[]
   environmentSlugs?: string[]
+  /** `id@version` for every plugin available to this Manager. Empty/absent
+   *  means "no suggestions" — a hardcoded list would drift from the real
+   *  plugin library and suggest references that cannot resolve. */
+  pluginRefs?: Array<{ uses: string; reviewed?: boolean; description?: string }>
 }
 
 function lineBefore(ctx: CompletionContext): string {
@@ -189,7 +183,14 @@ export function createPipelineYamlCompletionSource(opts: PipelineYamlCompletionO
       options = ENGINE_VALUES
       from = ctx.pos - engineValue[1].length
     } else if (templateValue) {
-      options = TEMPLATE_VALUES
+      options = (opts.pluginRefs || []).map((plugin) => ({
+        label: plugin.uses,
+        type: 'keyword',
+        apply: plugin.uses,
+        info: [plugin.reviewed ? 'reviewed' : 'not reviewed', plugin.description]
+          .filter(Boolean)
+          .join(' · '),
+      }))
       from = ctx.pos - templateValue[1].length
     } else if (secretRef) {
       from = ctx.pos - secretRef[1].length

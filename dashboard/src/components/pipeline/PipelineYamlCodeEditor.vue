@@ -17,6 +17,8 @@ const props = withDefaults(
     secretNames?: string[]
     variableNames?: string[]
     environmentSlugs?: string[]
+    /** Live plugin refs (`id@version`) for `uses:` completions. */
+    pluginRefs?: Array<{ uses: string; reviewed?: boolean; description?: string }>
     placeholder?: string
     /** Debounce for remote validate lint (ms). */
     lintDebounceMs?: number
@@ -25,6 +27,7 @@ const props = withDefaults(
     secretNames: () => [],
     variableNames: () => [],
     environmentSlugs: () => [],
+    pluginRefs: () => [],
     placeholder: 'name: hello-world\nsteps:\n  - name: greet\n    run: echo Hello',
     lintDebounceMs: 550,
   },
@@ -116,6 +119,7 @@ function completionExt() {
         secretNames: props.secretNames,
         variableNames: props.variableNames,
         environmentSlugs: props.environmentSlugs,
+        pluginRefs: props.pluginRefs,
       }),
     ],
     activateOnTyping: true,

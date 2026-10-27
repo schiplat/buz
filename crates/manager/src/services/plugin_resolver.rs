@@ -433,6 +433,18 @@ impl LocalStepIndex {
     }
 
     /// Resolve a `uses:` reference against this index.
+    /// `(version, content sha256)` pairs for one plugin id in the local
+    /// index. For availability checks that must not resolve or download
+    /// anything (the editor's lint runs on every keystroke).
+    pub fn available_versions(&self, reference: &str) -> Vec<(String, String)> {
+        self.load()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| entry.spec.id == reference)
+            .map(|entry| (entry.spec.version, entry.content_sha256))
+            .collect()
+    }
+
     pub fn resolve(&self, uses_ref: &str, current_buz: &str) -> Result<ResolvedStep, String> {
         let (reference, pin) = parse_uses_reference(uses_ref)?;
 

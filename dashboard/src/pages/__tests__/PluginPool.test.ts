@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
 import PluginPool from '@/pages/PluginPool.vue'
-import { stepSourcesApi, type PoolEntry, type PoolEntryMeta } from '@/api/stepSources'
+import { pluginSourcesApi, type PoolEntry, type PoolEntryMeta } from '@/api/pluginSources'
 
 const { dialog } = vi.hoisted(() => ({
   dialog: { alert: vi.fn(), confirm: vi.fn() },
 }))
 
-vi.mock('@/api/stepSources', () => ({
-  stepSourcesApi: {
+vi.mock('@/api/pluginSources', () => ({
+  pluginSourcesApi: {
     listPool: vi.fn(),
     togglePoolEntry: vi.fn(),
     refreshPlugin: vi.fn(),
@@ -109,9 +109,9 @@ const defaultItems = (): PoolEntry[] => [
 beforeEach(() => {
   vi.resetAllMocks()
   dialog.alert.mockResolvedValue(undefined)
-  vi.mocked(stepSourcesApi.listPool).mockResolvedValue({ items: defaultItems() })
-  vi.mocked(stepSourcesApi.togglePoolEntry).mockResolvedValue(undefined)
-  vi.mocked(stepSourcesApi.refreshPlugin).mockResolvedValue({ items: [] })
+  vi.mocked(pluginSourcesApi.listPool).mockResolvedValue({ items: defaultItems() })
+  vi.mocked(pluginSourcesApi.togglePoolEntry).mockResolvedValue(undefined)
+  vi.mocked(pluginSourcesApi.refreshPlugin).mockResolvedValue({ items: [] })
 })
 
 afterEach(() => {
@@ -156,7 +156,7 @@ describe('PluginPool', () => {
     expect(disable).toBeTruthy()
     disable.click()
     await flush()
-    expect(stepSourcesApi.togglePoolEntry).toHaveBeenCalledWith(
+    expect(pluginSourcesApi.togglePoolEntry).toHaveBeenCalledWith(
       'alice',
       'oss-upload',
       '1.0.0',
@@ -174,7 +174,7 @@ describe('PluginPool', () => {
     expect(enable).toBeTruthy()
     enable.click()
     await flush()
-    expect(stepSourcesApi.togglePoolEntry).toHaveBeenCalledWith(
+    expect(pluginSourcesApi.togglePoolEntry).toHaveBeenCalledWith(
       'alice',
       'oss-upload',
       '1.1.0',
@@ -183,7 +183,7 @@ describe('PluginPool', () => {
   })
 
   it('marks incompatible versions in the dropdown, strip and a disabled Enable', async () => {
-    vi.mocked(stepSourcesApi.listPool).mockResolvedValue({
+    vi.mocked(pluginSourcesApi.listPool).mockResolvedValue({
       items: [
         poolEntry({
           version: '1.1.0',
@@ -213,11 +213,11 @@ describe('PluginPool', () => {
     expect(enable.disabled, 'Enable greyed for an incompatible version').toBe(true)
     enable.click()
     await flush()
-    expect(stepSourcesApi.togglePoolEntry).not.toHaveBeenCalled()
+    expect(pluginSourcesApi.togglePoolEntry).not.toHaveBeenCalled()
   })
 
   it('warns that an enabled-but-incompatible version may fail on new runs', async () => {
-    vi.mocked(stepSourcesApi.listPool).mockResolvedValue({
+    vi.mocked(pluginSourcesApi.listPool).mockResolvedValue({
       items: [
         poolEntry({
           version: '1.0.0',
@@ -236,7 +236,7 @@ describe('PluginPool', () => {
     expect(disable.disabled).toBe(false)
     disable.click()
     await flush()
-    expect(stepSourcesApi.togglePoolEntry).toHaveBeenCalledWith(
+    expect(pluginSourcesApi.togglePoolEntry).toHaveBeenCalledWith(
       'alice',
       'oss-upload',
       '1.0.0',
@@ -245,7 +245,7 @@ describe('PluginPool', () => {
   })
 
   it('surfaces a missing source file as a plain-language strip', async () => {
-    vi.mocked(stepSourcesApi.listPool).mockResolvedValue({
+    vi.mocked(pluginSourcesApi.listPool).mockResolvedValue({
       items: [
         poolEntry({
           version: '1.0.0',
@@ -264,7 +264,7 @@ describe('PluginPool', () => {
   })
 
   it('offers one-click upgrade: enable the target and retire the old version', async () => {
-    vi.mocked(stepSourcesApi.listPool).mockResolvedValue({
+    vi.mocked(pluginSourcesApi.listPool).mockResolvedValue({
       items: [
         poolEntry({ version: '1.1.0', enabled: false, buz_compatible: true }),
         poolEntry({ version: '1.0.0', enabled: true, buz_compatible: true }),
@@ -275,14 +275,14 @@ describe('PluginPool', () => {
     expect(upgrade, 'upgrade button when a newer compatible version is staged').toBeTruthy()
     upgrade.click()
     await flush()
-    expect(stepSourcesApi.togglePoolEntry).toHaveBeenCalledTimes(2)
-    expect(stepSourcesApi.togglePoolEntry).toHaveBeenCalledWith(
+    expect(pluginSourcesApi.togglePoolEntry).toHaveBeenCalledTimes(2)
+    expect(pluginSourcesApi.togglePoolEntry).toHaveBeenCalledWith(
       'alice',
       'oss-upload',
       '1.1.0',
       true,
     )
-    expect(stepSourcesApi.togglePoolEntry).toHaveBeenCalledWith(
+    expect(pluginSourcesApi.togglePoolEntry).toHaveBeenCalledWith(
       'alice',
       'oss-upload',
       '1.0.0',
@@ -291,7 +291,7 @@ describe('PluginPool', () => {
   })
 
   it('shows only Enable for a single staged version — no upgrade, no update badge', async () => {
-    vi.mocked(stepSourcesApi.listPool).mockResolvedValue({
+    vi.mocked(pluginSourcesApi.listPool).mockResolvedValue({
       items: [poolEntry({ version: '1.0.0', enabled: false, buz_compatible: true })],
     })
     const root = await mountPage()
@@ -304,7 +304,7 @@ describe('PluginPool', () => {
   })
 
   it('hides the upgrade button when the staged newer version is incompatible', async () => {
-    vi.mocked(stepSourcesApi.listPool).mockResolvedValue({
+    vi.mocked(pluginSourcesApi.listPool).mockResolvedValue({
       items: [
         poolEntry({
           version: '2.0.0',
@@ -337,7 +337,7 @@ describe('PluginPool', () => {
   })
 
   it('paginates plugins and keeps the page across a reload that only flips states', async () => {
-    vi.mocked(stepSourcesApi.listPool).mockResolvedValue({
+    vi.mocked(pluginSourcesApi.listPool).mockResolvedValue({
       items: Array.from({ length: 25 }, (_, i) =>
         poolEntry({ step_id: `step-${i + 1}` }),
       ),
@@ -355,7 +355,7 @@ describe('PluginPool', () => {
     expect(root.textContent).toContain('2 / 2')
 
     // Toggle the selected version on page 2: the reload must NOT jump back.
-    vi.mocked(stepSourcesApi.listPool).mockClear()
+    vi.mocked(pluginSourcesApi.listPool).mockClear()
     const enable = buttonByText(root, 'Enable')!
     enable.click()
     await flush()
@@ -379,7 +379,7 @@ describe('PluginPool', () => {
     expect(refresh, 'icon-only refresh button').toBeTruthy()
     refresh.click()
     await flush()
-    expect(stepSourcesApi.refreshPlugin).toHaveBeenCalledWith('alice', 'oss-upload')
+    expect(pluginSourcesApi.refreshPlugin).toHaveBeenCalledWith('alice', 'oss-upload')
   })
 
   it('copies the uses reference via the identity-line copy button', async () => {

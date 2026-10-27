@@ -4,6 +4,21 @@ use sqlx::SqlitePool;
 use crate::rbac::{AuthUser, TeamMembership};
 use crate::services::yaml_validate::{validate_pipeline_yaml, validate_pipeline_yaml_for_viewer};
 
+fn member_with_default_team() -> AuthUser {
+    AuthUser {
+        id: "u1".into(),
+        username: "dev".into(),
+        is_platform_admin: false,
+        is_super_admin: false,
+        memberships: vec![TeamMembership {
+            team_id: "t1".into(),
+            team_slug: "default".into(),
+            team_name: "Default".into(),
+            role: TeamRole::Developer,
+        }],
+    }
+}
+
 async fn pool_with_default_team() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:")
         .await
@@ -28,6 +43,20 @@ async fn pool_with_default_team() -> SqlitePool {
     .execute(&pool)
     .await
     .expect("environments");
+    sqlx::query(
+        "CREATE TABLE plugin_pool (
+            namespace TEXT NOT NULL, step_id TEXT NOT NULL, version TEXT NOT NULL,
+            sha256 TEXT NOT NULL, source_id TEXT NOT NULL, file_path TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 0, reviewed INTEGER NOT NULL DEFAULT 0,
+            added_by TEXT, added_at TEXT, requires_buz TEXT, buz_compatible INTEGER,
+            compat_error TEXT, compat_checked_against TEXT, meta_json TEXT,
+            updated_by TEXT, updated_at TEXT,
+            UNIQUE(namespace, step_id, version)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("plugin_pool");
     sqlx::query(
         "CREATE TABLE secrets (
             id TEXT PRIMARY KEY,
@@ -218,7 +247,8 @@ steps:
       T: ${secrets.REAL_SECRET}
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml_for_viewer(&pool, yaml, &outsider)
+    let empty_index = tempfile::tempdir().unwrap();
+    let r = validate_pipeline_yaml_for_viewer(&pool, yaml, &outsider, empty_index.path())
         .await
         .expect("validate");
     assert!(!r.valid);
@@ -260,7 +290,8 @@ steps:
     registry_secret: ${secrets.MISSING_ACR}
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml_for_viewer(&pool, yaml, &member)
+    let empty_index = tempfile::tempdir().unwrap();
+    let r = validate_pipeline_yaml_for_viewer(&pool, yaml, &member, empty_index.path())
         .await
         .expect("validate");
     assert!(!r.valid);
@@ -319,5 +350,88 @@ steps:
         third.errors.iter().any(|e| e.field == "secrets"),
         "errors: {:?}",
         third.errors
+    );
+}
+
+#[tokio::test]
+async fn viewer_rejects_uses_reference_that_is_not_available() {
+    let pool = pool_with_default_team().await;
+    let member = member_with_default_team();
+    let index = tempfile::tempdir().unwrap();
+    let yaml = r#"
+name: demo
+environments: [default]
+steps:
+  - name: run
+    uses: alice/typo-plugin@1.0.0
+"#;
+    let r = validate_pipeline_yaml_for_viewer(&pool, yaml, &member, index.path())
+        .await
+        .expect("validate");
+    assert!(!r.valid);
+    let error = r
+        .errors
+        .iter()
+        .find(|e| e.field == "steps.0.uses")
+        .unwrap_or_else(|| panic!("expected steps.0.uses error, got {:?}", r.errors));
+    assert!(
+        error.message.contains("alice/typo-plugin")
+            && error.message.contains("is not available here"),
+        "{}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn viewer_accepts_local_plugin_and_reports_version_mismatch() {
+    let pool = pool_with_default_team().await;
+    let member = member_with_default_team();
+    let index = tempfile::tempdir().unwrap();
+    let plugin_dir = index.path().join("alice").join("hello");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(
+        plugin_dir.join("1.2.0.yaml"),
+        "id: alice/hello\nversion: 1.2.0\npublisher: community\nauthor: alice\n\
+         source_repo: https://github.com/alice/steps\nengine: shell\ninputs: {}\nrun: echo hi\n",
+    )
+    .unwrap();
+
+    let ok = r#"
+name: demo
+environments: [default]
+steps:
+  - name: run
+    uses: alice/hello@1.2.0
+"#;
+    let r = validate_pipeline_yaml_for_viewer(&pool, ok, &member, index.path())
+        .await
+        .expect("validate");
+    assert!(
+        !r.errors.iter().any(|e| e.field.starts_with("steps.")),
+        "available plugin must pass: {:?}",
+        r.errors
+    );
+
+    // Major pin matches the local 1.2.0 …
+    let major = ok.replace("@1.2.0", "@1");
+    let r = validate_pipeline_yaml_for_viewer(&pool, &major, &member, index.path())
+        .await
+        .expect("validate");
+    assert!(!r.errors.iter().any(|e| e.field.starts_with("steps.")));
+
+    // … while a version nobody has must name what IS available.
+    let miss = ok.replace("@1.2.0", "@9.9.9");
+    let r = validate_pipeline_yaml_for_viewer(&pool, &miss, &member, index.path())
+        .await
+        .expect("validate");
+    let error = r
+        .errors
+        .iter()
+        .find(|e| e.field == "steps.0.uses")
+        .unwrap_or_else(|| panic!("expected version error, got {:?}", r.errors));
+    assert!(
+        error.message.contains("no version matching @9.9.9") && error.message.contains("1.2.0"),
+        "{}",
+        error.message
     );
 }

@@ -1973,10 +1973,16 @@ pub async fn validate_yaml(
     Json(req): Json<ValidateYamlRequest>,
 ) -> Result<Json<ApiResponse<shared::pipeline_yaml::YamlValidationResult>>, AppError> {
     // Viewer-scoped: no TeamView on YAML `team:` → generic error (no secret oracle).
+    let local_dir = crate::services::plugin_resolver::effective_local_dir(
+        &state.config.storage.data_dir,
+        &state.config.plugin_index.local_dir,
+    )
+    .map_err(|e| AppError::Internal(e.to_string()))?;
     let result = crate::services::yaml_validate::validate_pipeline_yaml_for_viewer(
         &state.pool,
         &req.yaml,
         &auth,
+        &local_dir,
     )
     .await?;
     Ok(Json(ApiResponse::success(result)))

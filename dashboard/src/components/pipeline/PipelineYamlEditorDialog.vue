@@ -28,6 +28,7 @@ import PipelineYamlCodeEditor from '@/components/pipeline/PipelineYamlCodeEditor
 import { cn } from '@/lib/utils'
 import { useAppDialog } from '@/composables/useAppDialog'
 import { DEFAULT_MARKETPLACE_URL, getMarketplaceUrl } from '@/api/health'
+import { pluginSourcesApi } from '@/api/pluginSources'
 
 const emit = defineEmits<{
   saved: [payload: { pipelineId: string | null }]
@@ -46,6 +47,7 @@ const editingId = ref<string | null>(null)
 const marketplaceHref = ref(DEFAULT_MARKETPLACE_URL)
 onMounted(async () => {
   marketplaceHref.value = await getMarketplaceUrl()
+  void loadPluginRefs()
 })
 const saving = ref(false)
 /** Dialog body tab — matches Secrets/Variables segmented control style. */
@@ -150,6 +152,22 @@ const availableEnvironments = ref<Environment[]>([])
 const secretNames = computed(() => availableSecrets.value.map((s) => s.name))
 const variableNames = computed(() => availableVariables.value.map((v) => v.name))
 const environmentSlugs = computed(() => availableEnvironments.value.map((e) => e.slug))
+
+/** `id@version` refs from the local plugin directory, for `uses:`
+ *  completions. Best-effort: a failure just means no suggestions. */
+const pluginRefs = ref<Array<{ uses: string; reviewed: boolean; description?: string }>>([])
+async function loadPluginRefs() {
+  try {
+    const result = await pluginSourcesApi.listLocalPlugins()
+    pluginRefs.value = (result.items ?? []).map((plugin) => ({
+      uses: `${plugin.id}@${plugin.version}`,
+      reviewed: plugin.reviewed,
+      description: plugin.description,
+    }))
+  } catch {
+    pluginRefs.value = []
+  }
+}
 
 const floatErrors = computed(() => yamlResult.value?.errors ?? [])
 const floatWarnings = computed(() => yamlResult.value?.warnings ?? [])
@@ -715,6 +733,7 @@ defineExpose({ openCreate, openEdit, close })
               :secret-names="secretNames"
               :variable-names="variableNames"
               :environment-slugs="environmentSlugs"
+              :plugin-refs="pluginRefs"
               class="h-full"
               @validated="onEditorValidated"
             />

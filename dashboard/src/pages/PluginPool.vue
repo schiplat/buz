@@ -15,7 +15,7 @@ import {
 } from '@lucide/vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
-import { stepSourcesApi, type PoolEntry } from '@/api/stepSources'
+import { pluginSourcesApi, type PoolEntry } from '@/api/pluginSources'
 import { useAppDialog } from '@/composables/useAppDialog'
 import { useClientPagination } from '@/composables/useClientPagination'
 import { formatLocalDateTime } from '@/utils/time'
@@ -339,7 +339,7 @@ function groupAlert(group: PoolGroup): string | null {
 async function load() {
   loading.value = true
   try {
-    const plt = await stepSourcesApi.listPool()
+    const plt = await pluginSourcesApi.listPool()
     pool.value = plt.items ?? []
   } catch (e) {
     await dialog.alert(`Failed to load the pool: ${e instanceof Error ? e.message : e}`)
@@ -352,7 +352,7 @@ async function load() {
 async function refreshGroup(group: { namespace: string; stepId: string }) {
   refreshing.value = `${group.namespace}/${group.stepId}`
   try {
-    await stepSourcesApi.refreshPlugin(group.namespace, group.stepId)
+    await pluginSourcesApi.refreshPlugin(group.namespace, group.stepId)
     await load()
   } catch (e) {
     await dialog.alert(`Refresh failed: ${e instanceof Error ? e.message : e}`)
@@ -370,7 +370,7 @@ async function toggleSelected(group: PoolGroup) {
   if (!entry || (isStuck(entry) && !entry.enabled)) return
   busy.value = entryKey(entry)
   try {
-    await stepSourcesApi.togglePoolEntry(
+    await pluginSourcesApi.togglePoolEntry(
       entry.namespace,
       entry.step_id,
       entry.version,
@@ -394,14 +394,14 @@ async function upgrade(group: PoolGroup) {
   if (!target) return
   busy.value = usesRef(group)
   try {
-    await stepSourcesApi.togglePoolEntry(
+    await pluginSourcesApi.togglePoolEntry(
       target.namespace,
       target.step_id,
       target.version,
       true,
     )
     for (const old of group.versions.filter((v) => v.enabled)) {
-      await stepSourcesApi.togglePoolEntry(old.namespace, old.step_id, old.version, false)
+      await pluginSourcesApi.togglePoolEntry(old.namespace, old.step_id, old.version, false)
     }
     await load()
   } catch (e) {

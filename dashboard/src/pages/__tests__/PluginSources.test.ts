@@ -1,15 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
 import PluginSources from '@/pages/PluginSources.vue'
-import { stepSourcesApi, type StepSource } from '@/api/stepSources'
+import { pluginSourcesApi, type PluginSource } from '@/api/pluginSources'
 import { adminSettingsApi, type PlatformSetting } from '@/api/adminSettings'
 
 const { dialog } = vi.hoisted(() => ({
   dialog: { alert: vi.fn(), confirm: vi.fn() },
 }))
 
-vi.mock('@/api/stepSources', () => ({
-  stepSourcesApi: {
+vi.mock('@/api/pluginSources', () => ({
+  pluginSourcesApi: {
     listSources: vi.fn(),
     createSource: vi.fn(),
     syncSource: vi.fn(),
@@ -26,7 +26,7 @@ vi.mock('vue-router', () => ({
   useRoute: () => ({ query: {} as Record<string, string> }),
 }))
 
-const source = (overrides: Partial<StepSource> = {}): StepSource => ({
+const source = (overrides: Partial<PluginSource> = {}): PluginSource => ({
   id: 'src-1',
   name: 'alice',
   url: 'https://example.com/alice/index.json',
@@ -65,7 +65,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   dialog.alert.mockResolvedValue(undefined)
   dialog.confirm.mockResolvedValue(true)
-  vi.mocked(stepSourcesApi.listSources).mockResolvedValue({ items: [source()] })
+  vi.mocked(pluginSourcesApi.listSources).mockResolvedValue({ items: [source()] })
   vi.mocked(adminSettingsApi.list).mockResolvedValue({
     items: [
       platformSetting({ key: 'marketplace_url', kind: 'url', value: '' }),
@@ -109,7 +109,7 @@ describe('PluginSources', () => {
   })
 
   it('clears "syncing…" once last_synced_at changes (success or failure)', async () => {
-    vi.mocked(stepSourcesApi.listSources)
+    vi.mocked(pluginSourcesApi.listSources)
       .mockResolvedValueOnce({ items: [source()] })
       .mockResolvedValue({
         items: [source({ last_synced_at: '2026-10-25T01:00:00Z' })],
@@ -124,7 +124,7 @@ describe('PluginSources', () => {
   })
 
   it('shows a live progress bar with true counts while a sync runs', async () => {
-    vi.mocked(stepSourcesApi.getSyncProgress).mockResolvedValue({
+    vi.mocked(pluginSourcesApi.getSyncProgress).mockResolvedValue({
       phase: 'processing',
       total_plugins: 29,
       done_plugins: 3,
@@ -144,7 +144,7 @@ describe('PluginSources', () => {
   })
 
   it('surfaces a failed sync in red through the progress bar', async () => {
-    vi.mocked(stepSourcesApi.getSyncProgress).mockResolvedValue({
+    vi.mocked(pluginSourcesApi.getSyncProgress).mockResolvedValue({
       phase: 'failed',
       total_plugins: 29,
       done_plugins: 0,
@@ -161,10 +161,10 @@ describe('PluginSources', () => {
   })
 
   it('adds a source, returns to the list, and shows the syncing state', async () => {
-    vi.mocked(stepSourcesApi.createSource).mockResolvedValue(undefined)
+    vi.mocked(pluginSourcesApi.createSource).mockResolvedValue(undefined)
     // After the add, the refreshed list carries the new source in its
     // in-flight state (no last_synced_at, no error yet).
-    vi.mocked(stepSourcesApi.listSources)
+    vi.mocked(pluginSourcesApi.listSources)
       .mockResolvedValueOnce({ items: [source()] })
       .mockResolvedValue({
         items: [
@@ -186,7 +186,7 @@ describe('PluginSources', () => {
       .find((b) => b.textContent?.includes('Add & sync'))!
     add.click()
     await flush()
-    expect(stepSourcesApi.createSource).toHaveBeenCalledWith('bob', 'https://example.com/bob/index.json', false, '')
+    expect(pluginSourcesApi.createSource).toHaveBeenCalledWith('bob', 'https://example.com/bob/index.json', false, '')
     // The form closed (back to the list) and the new row shows the
     // in-flight state while the background sync runs.
     expect(root.textContent).not.toContain('Index URL')
@@ -258,7 +258,7 @@ describe('PluginSources', () => {
     const opener = [...root.querySelectorAll('button')].find((b) => b.textContent?.includes('Add source'))!
     opener.click()
     await nextTick()
-    vi.mocked(stepSourcesApi.createSource).mockRejectedValue(new Error('boom'))
+    vi.mocked(pluginSourcesApi.createSource).mockRejectedValue(new Error('boom'))
     root.querySelector<HTMLInputElement>('input[type="text"]')!.value = 'bob'
     root.querySelector('input[type="text"]')!.dispatchEvent(new Event('input', { bubbles: true }))
     root.querySelector<HTMLInputElement>('input[type="url"]')!.value = 'https://example.com/bob/index.json'

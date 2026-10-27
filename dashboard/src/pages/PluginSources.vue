@@ -4,11 +4,11 @@ import { RefreshCw, RotateCcw, Trash2 } from '@lucide/vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import {
-  stepSourcesApi,
-  type StepSource,
+  pluginSourcesApi,
+  type PluginSource,
   type SyncProgressState,
   type MirrorCheckReport,
-} from '@/api/stepSources'
+} from '@/api/pluginSources'
 import { adminSettingsApi, type PlatformSetting } from '@/api/adminSettings'
 import { useAppDialog } from '@/composables/useAppDialog'
 import { useRoute, useRouter } from 'vue-router'
@@ -17,7 +17,7 @@ const dialog = useAppDialog()
 const router = useRouter()
 const route = useRoute()
 const loading = ref(true)
-const sources = ref<StepSource[]>([])
+const sources = ref<PluginSource[]>([])
 const settings = ref<PlatformSetting[]>([])
 const settingDrafts = ref<Record<string, string>>({})
 interface SettingMeta {
@@ -98,7 +98,7 @@ function startProgressPolling() {
     }
     for (const id of ids) {
       try {
-        syncProgress.value[id] = await stepSourcesApi.getSyncProgress(id)
+        syncProgress.value[id] = await pluginSourcesApi.getSyncProgress(id)
       } catch {
         // Transient — keep the bar; the next tick retries.
       }
@@ -115,24 +115,24 @@ function stopProgressPolling() {
   }
 }
 
-function isSyncTracked(source: StepSource): boolean {
+function isSyncTracked(source: PluginSource): boolean {
   return source.id in syncingSince.value || source.id in awaitingFirstSync.value
 }
 
 /** True while the row should render the progress bar (in-flight or failed). */
-function isSyncing(source: StepSource): boolean {
+function isSyncing(source: PluginSource): boolean {
   if (!isSyncTracked(source)) return false
   const phase = syncProgress.value[source.id]?.phase
   return phase === undefined || phase === 'index' || phase === 'processing'
 }
 
-function progressPercent(source: StepSource): number {
+function progressPercent(source: PluginSource): number {
   const progress = syncProgress.value[source.id]
   if (!progress?.total_entries) return 0
   return Math.min(100, Math.round(((progress.done_entries ?? 0) / progress.total_entries) * 100))
 }
 
-function progressLabel(source: StepSource): string {
+function progressLabel(source: PluginSource): string {
   const progress = syncProgress.value[source.id]
   if (!progress) return 'Starting sync…'
   if (progress.phase === 'failed') return `Sync failed: ${progress.error ?? 'unknown error'}`
@@ -169,7 +169,7 @@ async function load() {
   loading.value = true
   try {
     const [src, cfg] = await Promise.all([
-      stepSourcesApi.listSources(),
+      pluginSourcesApi.listSources(),
       adminSettingsApi.list().catch(() => ({ items: [] as PlatformSetting[] })),
     ])
     sources.value = src.items ?? []
@@ -300,26 +300,26 @@ function syncTimeoutMs(): number {
   return (Number.isFinite(secs) && secs > 0 ? secs : 60) * 1000
 }
 
-async function removeSource(source: StepSource) {
+async function removeSource(source: PluginSource) {
   const ok = await dialog.confirm(`Remove source "${source.name}" and its pool entries?`, {
     confirmLabel: 'Remove',
   })
   if (!ok) return
   busy.value = `del-${source.id}`
   try {
-    await stepSourcesApi.deleteSource(source.id)
+    await pluginSourcesApi.deleteSource(source.id)
     await load()
   } finally {
     busy.value = ''
   }
 }
 
-async function syncSource(source: StepSource) {
+async function syncSource(source: PluginSource) {
   busy.value = `sync-${source.id}`
   syncingSince.value[source.id] = source.last_synced_at ?? ''
   syncingStartedAt.value[source.id] = Date.now()
   try {
-    await stepSourcesApi.syncSource(source.id)
+    await pluginSourcesApi.syncSource(source.id)
     await load()
     startPolling()
     startProgressPolling()
@@ -332,7 +332,7 @@ async function addSource() {
   if (!newName.value.trim() || !newUrl.value.trim()) return
   busy.value = 'add'
   try {
-    const created = await stepSourcesApi.createSource(
+    const created = await pluginSourcesApi.createSource(
       newName.value.trim(),
       newUrl.value.trim(),
       newAutoEnable.value,
@@ -356,10 +356,10 @@ async function addSource() {
   }
 }
 
-async function checkMirror(source: StepSource) {
+async function checkMirror(source: PluginSource) {
   busy.value = `chk-${source.id}`
   try {
-    mirrorChecks.value[source.id] = await stepSourcesApi.checkMirror(source.id)
+    mirrorChecks.value[source.id] = await pluginSourcesApi.checkMirror(source.id)
   } catch (e) {
     await dialog.alert(`Mirror check failed: ${e instanceof Error ? e.message : e}`)
   } finally {
@@ -367,7 +367,7 @@ async function checkMirror(source: StepSource) {
   }
 }
 
-function mirrorCheckText(source: StepSource): string {
+function mirrorCheckText(source: PluginSource): string {
   const report = mirrorChecks.value[source.id]
   if (!report) return ''
   if (report.status === 'in-sync') return 'mirror in sync with the canonical origin'
@@ -377,7 +377,7 @@ function mirrorCheckText(source: StepSource): string {
   return report.status
 }
 
-function syncState(source: StepSource): string {
+function syncState(source: PluginSource): string {
   const started = syncingStartedAt.value[source.id]
   const inFlight =
     source.id in syncingSince.value &&
@@ -391,7 +391,7 @@ function syncState(source: StepSource): string {
 
 /** Terminal failure keeps the bar visible (in red) until the list load
  *  resolves the row — the stamped error then takes over. */
-function progressFailed(source: StepSource): boolean {
+function progressFailed(source: PluginSource): boolean {
   return isSyncTracked(source) && syncProgress.value[source.id]?.phase === 'failed'
 }
 

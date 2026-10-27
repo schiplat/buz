@@ -15,6 +15,7 @@ use shared::rbac::Perm;
 use sqlx::{Row, SqlitePool};
 
 use crate::rbac::AuthUser;
+use crate::services::plugin_resolver::LocalStepIndex;
 
 /// Validation outcome plus the typed document, so callers that need both
 /// (trigger path, scanner) don't pay a second parse. `parsed` is `None`
@@ -65,6 +66,7 @@ pub async fn validate_pipeline_yaml_for_viewer(
     pool: &SqlitePool,
     yaml: &str,
     auth: &AuthUser,
+    local_plugin_dir: &std::path::Path,
 ) -> Result<YamlValidationResult, AppError> {
     let cached = crate::services::yaml_cache::parse_cached(yaml);
     let mut result = cached.structural;
@@ -78,8 +80,130 @@ pub async fn validate_pipeline_yaml_for_viewer(
         ReferentialMode::Viewer { auth }
     };
     enrich_referential_errors(pool, &parsed, &mut result, mode).await?;
+    check_uses_availability(pool, &parsed, local_plugin_dir, &mut result).await?;
     result.valid = result.errors.is_empty();
     Ok(result)
+}
+
+/// `uses:` availability — every reference must be usable here: an enabled
+/// pool entry, or a spec in the local plugin directory. Save resolves the
+/// reference anyway (and rejects it when absent); checking during editing
+/// tells the author while the typo is still cheap to fix.
+///
+/// Local lookups only: no template download, no network, and no review-gate
+/// verdict (that is a save-time policy, not an availability question).
+async fn check_uses_availability(
+    pool: &SqlitePool,
+    parsed: &PipelineYaml,
+    local_dir: &std::path::Path,
+    result: &mut YamlValidationResult,
+) -> Result<(), AppError> {
+    let references: Vec<(usize, String)> = parsed
+        .steps
+        .iter()
+        .enumerate()
+        .filter_map(|(index, step)| {
+            step.uses
+                .as_deref()
+                .map(str::trim)
+                .filter(|uses| !uses.is_empty())
+                .map(|uses| (index, uses.to_string()))
+        })
+        .collect();
+    if references.is_empty() {
+        return Ok(());
+    }
+
+    // Enabled pool rows: the curator's allowlist for remote sources.
+    let pool_rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT namespace, step_id, version, sha256 FROM plugin_pool WHERE enabled = 1",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    // Local plugin directory; a missing directory is an empty library, not an
+    // error (same semantics as GET /plugins).
+    let local_index = LocalStepIndex::new(local_dir.to_path_buf());
+
+    for (index, uses_ref) in references {
+        let field = format!("steps.{index}.uses");
+        let (reference, pin) = match shared::pipeline_yaml::parse_uses_reference(&uses_ref) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                result.errors.push(YamlValidationError {
+                    field,
+                    message: error,
+                });
+                continue;
+            }
+        };
+
+        let mut versions: Vec<&str> = pool_rows
+            .iter()
+            .filter(|(ns, id, _, _)| format!("{ns}/{id}") == reference)
+            .map(|(_, _, version, _)| version.as_str())
+            .collect();
+        let mut hashes: Vec<&str> = pool_rows
+            .iter()
+            .filter(|(ns, id, _, _)| format!("{ns}/{id}") == reference)
+            .map(|(_, _, _, sha)| sha.as_str())
+            .collect();
+        let local_versions = local_index.available_versions(&reference);
+        versions.extend(local_versions.iter().map(|(version, _)| version.as_str()));
+        hashes.extend(local_versions.iter().map(|(_, sha)| sha.as_str()));
+
+        if versions.is_empty() {
+            result.errors.push(YamlValidationError {
+                field,
+                message: format!(
+                    "plugin '{reference}' is not available here — add its source and enable it in                      Plugin Pool, or place it in the local plugin directory"
+                ),
+            });
+            continue;
+        }
+
+        match &pin {
+            // Resolved through the source's index at save time; the editor
+            // cannot know the branch's current content.
+            shared::pipeline_yaml::UsesPin::Branch(_) => {}
+            shared::pipeline_yaml::UsesPin::Sha256(hex) => {
+                if !hashes
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(hex))
+                {
+                    result.errors.push(YamlValidationError {
+                        field,
+                        message: format!(
+                            "no plugin '{reference}' with content sha256:{hex} is available here"
+                        ),
+                    });
+                }
+            }
+            shared::pipeline_yaml::UsesPin::Version(pin) => {
+                let matched = versions.iter().any(|version| version_matches(version, pin));
+                if !matched {
+                    let mut available = versions.clone();
+                    available.sort_unstable();
+                    available.dedup();
+                    result.errors.push(YamlValidationError {
+                        field,
+                        message: format!(
+                            "plugin '{reference}' has no version matching @{pin} here — available: {}",
+                            available.join(", ")
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Pin matching mirrors resolution: exact for `@X.Y.Z`, prefix for the
+/// `@X` / `@X.Y` major/minor pins.
+fn version_matches(version: &str, pin: &str) -> bool {
+    version == pin || (pin.split('.').count() < 3 && version.starts_with(&format!("{pin}.")))
 }
 
 enum ReferentialMode<'a> {

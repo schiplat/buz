@@ -261,6 +261,39 @@ pub fn router(state: AppState) -> Router {
             "/admin/plugin-pool/{namespace}/{step_id}/{version}",
             put(plugin_sources::toggle_pool_entry),
         )
+        // Deprecated aliases for the pre-rename paths, kept for one release so
+        // external scripts survive the plugin vocabulary change. Same
+        // handlers; remove once the release after the rename ships.
+        .route(
+            "/admin/step-sources",
+            get(plugin_sources::list_sources).post(plugin_sources::create_source),
+        )
+        .route(
+            "/admin/step-sources/{id}",
+            delete(plugin_sources::delete_source),
+        )
+        .route(
+            "/admin/step-sources/{id}/sync",
+            post(plugin_sources::sync_source),
+        )
+        .route(
+            "/admin/step-sources/{id}/sync-progress",
+            get(plugin_sources::sync_progress),
+        )
+        .route(
+            "/admin/step-sources/{id}/mirror-check",
+            post(plugin_sources::check_mirror),
+        )
+        .route("/admin/step-pool", get(plugin_sources::list_pool))
+        .route(
+            "/admin/step-pool/{namespace}/{step_id}/refresh",
+            post(plugin_sources::refresh_plugin),
+        )
+        .route(
+            "/admin/step-pool/{namespace}/{step_id}/{version}",
+            put(plugin_sources::toggle_pool_entry),
+        )
+        .route("/steps", get(plugins::list_plugins))
         // Runner management (platform admin)
         .route(
             "/runners",
