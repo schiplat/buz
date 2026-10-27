@@ -53,22 +53,17 @@ enum Command {
         /// Spec files or directories containing *.yaml / *.yml
         paths: Vec<PathBuf>,
     },
-    /// Generate per-namespace indexes (+ meta.json + revision sentinels)
+    /// Generate the source-root manifest (+ meta.json + revision sentinel)
     Index {
+        /// Source root containing the namespace directories
         #[arg(long, default_value = "plugins")]
         plugins_dir: PathBuf,
-        /// Additionally write a merged repo-root-relative index (site view)
-        #[arg(long)]
-        merged: Option<PathBuf>,
-        /// Write revision.json sentinels with this source revision (CI commit sha)
+        /// Write revision.json with this source revision (CI commit sha)
         #[arg(long)]
         revision: Option<String>,
         /// Timestamp recorded beside the revision (ISO-8601, display only)
         #[arg(long)]
         updated_at: Option<String>,
-        /// Generate the index for one namespace only
-        #[arg(long)]
-        namespace: Option<String>,
         /// Skip per-plugin meta.json output
         #[arg(long, default_value_t = false)]
         no_meta: bool,
@@ -111,17 +106,13 @@ fn main() {
         Command::Validate { paths } => validate::run(paths),
         Command::Index {
             plugins_dir,
-            merged,
             revision,
             updated_at,
-            namespace,
             no_meta,
         } => indexgen::run(&indexgen::Options {
             plugins_dir: plugins_dir.clone(),
-            merged: merged.clone(),
             revision: revision.clone(),
             updated_at: updated_at.clone(),
-            namespace: namespace.clone(),
             no_meta: *no_meta,
         }),
         Command::MirrorCheck {

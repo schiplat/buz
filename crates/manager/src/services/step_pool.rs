@@ -339,15 +339,6 @@ fn parse_index(raw: &str) -> Result<StepIndex, String> {
     Ok(index)
 }
 
-/// The single namespace of a parsed index — `parse_index` has already
-/// validated that every entry shares it.
-fn index_namespace(index: &StepIndex) -> Option<String> {
-    index
-        .steps
-        .first()
-        .and_then(|entry| entry.id.split_once('/').map(|(ns, _)| ns.to_string()))
-}
-
 /// DB access -------------------------------------------------------------------
 
 pub async fn list_sources(pool: &SqlitePool) -> Result<Vec<SourceRow>, anyhow::Error> {
@@ -636,24 +627,6 @@ async fn sync_source_inner(
     let bases = source_bases(source);
     let raw = http_get_text_from_bases(http, &bases, "index.json").await?;
     let index = parse_index(&raw).map_err(|e| anyhow!("{e}"))?;
-    let base = base_url(&source.url);
-
-    // Layout convention: `plugins/<ns>/index.json`. A mismatch is not fatal —
-    // hosted sources may serve the index from any path — but it defeats the
-    // directory-as-namespace ownership convention, so surface it.
-    if let Some(ns) = index_namespace(&index) {
-        let base_dir = base.rsplit('/').find(|segment| !segment.is_empty());
-        if let Some(base_dir) = base_dir {
-            if base_dir != ns {
-                tracing::warn!(
-                    source = %source.url,
-                    index_namespace = %ns,
-                    base_dir = %base_dir,
-                    "source index does not live in its namespace directory (expected .../{ns}/index.json)"
-                );
-            }
-        }
-    }
 
     // Official-style sources publish reviews.json next to the index; when it
     // is fetchable, pool rows carry the review badge by hash membership.
@@ -1463,7 +1436,7 @@ mod index_tests {
             entry("buz/checkout", &"b".repeat(64)),
         ]));
         let index = parse_index(&raw).expect("single-namespace index parses");
-        assert_eq!(index_namespace(&index).as_deref(), Some("buz"));
+        assert_eq!(index.steps.len(), 2);
     }
 
     #[test]

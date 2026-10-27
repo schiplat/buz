@@ -99,15 +99,17 @@ rather than a silent runtime break.
 
 ## Publishing layout
 
-A plugin repository publishes **one index per namespace** — the namespace
-directory is the publishing/trust boundary:
+A plugin repository publishes **one source root per namespace** — the
+namespace is the publishing/trust boundary, and the manifests live at the
+root of that boundary:
 
 ```
 your-plugins/
-└── plugins/
-    └── buz/                  ← namespace directory
-        ├── index.json        ← id / version / file / sha256 (+ scalar meta)
-        ├── reviews.json      ← optional; reviewed-content manifest
+└── plugins/                  ← source root (what a Manager source URL points into)
+    ├── index.json            ← id / version / file / sha256 (+ scalar meta)
+    ├── reviews.json          ← optional; reviewed-content manifest
+    ├── revision.json         ← freshness sentinel (CI-written, last)
+    └── buz/                  ← namespace directory (specs)
         ├── http-check/
         │   ├── 1.0.0.yaml
         │   └── meta.json     ← generated; single-plugin refresh
@@ -115,26 +117,28 @@ your-plugins/
             └── 1.1.0.yaml
 ```
 
-- `file:` paths in `index.json` / `meta.json` are **relative to the index's
-  own directory**. The Manager joins them against the source base URL (the
-  `index.json` URL minus its tail), so the index can be hosted anywhere —
-  repo raw URLs, GitHub Pages, release assets — as long as the specs stay
-  inside the namespace directory.
-- One namespace per index: the Manager **rejects** an index whose entries
-  span several namespaces, and logs a warning when the index does not live
-  in a directory named after its namespace.
-- `reviews.json` is fetched from the same directory as the index and
+- `file:` paths in `index.json` / `meta.json` are **relative to the source
+  root**. The Manager joins them against the source base URL (the
+  `index.json` URL minus its tail), so a source can be hosted anywhere — a
+  static site, repo raw URLs, release assets, a self-hosted mirror — as
+  long as the whole tree keeps the same shape.
+- **One namespace per source root**: the Manager rejects an index whose
+  entries span several namespaces. Third-party plugins therefore publish
+  from their own repositories with this same layout and register as their
+  own Step Source, with their own curation policy.
+- `reviews.json` is fetched from the source root next to the index and
   provides the review badges (and the `require_reviewed` gate input).
-- Generate the index and review manifest from the specs — never hand-edit
-  hashes. The official repository's `scripts/gen_index.py` and
-  `scripts/gen_reviews.py` are the reference implementation.
-- A namespace may publish a **revision sentinel** — `revision.json` beside
-  the index, `{"revision": "<commit sha>", "updated_at": "<iso8601>"}`,
-  written by CI and refreshed on every green master build. Mirrors compare
-  two sentinel files (a few hundred bytes) to detect drift instead of
-  pulling the full index; the Manager's *Check mirror* action does the
-  same. Publish content first and the sentinel last — it commits the sync.
-  The index itself stays byte-deterministic: volatility lives in the
-  sentinel, not in the index.
+  Keeping it per source root is what keeps official review authority
+  separate from community entries.
+- `revision.json` carries `{"revision": "<commit sha>", "updated_at":
+  "<iso8601>"}`, written last by CI. Mirrors (and the Manager's *Check
+  mirror* action) compare sentinels — two tiny GETs — to detect drift
+  before pulling anything larger. Publish content first and the sentinel
+  last — it commits the sync. The index itself stays byte-deterministic:
+  volatility lives in the sentinel, not in the index.
+- Generate the manifests from the specs — never hand-edit hashes. The
+  official repository's `scripts/gen_index.py` / `scripts/gen_reviews.py`
+  and the `buz-plugin` CLI are the reference implementations.
 - The Step Source URL registered with the Manager is the index URL, e.g.
-  `https://raw.githubusercontent.com/<org>/<repo>/main/plugins/buz/index.json`.
+  `https://plugins.example.com/plugins/index.json`.
+

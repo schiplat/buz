@@ -1,8 +1,8 @@
-//! Per-namespace index generation: `plugins/<ns>/index.json` (+ per-plugin
-//! `meta.json` + `revision.json` sentinels + optional merged site view).
-//! Byte-compatible with the Python `gen_index.py` output this command
-//! supersedes: sorted entries, ordered fields, two-space JSON, trailing
-//! newline.
+//! Source-root manifest generation: `plugins/index.json` (+ per-plugin
+//! `meta.json` + the `revision.json` freshness sentinel). One source root
+//! carries exactly one namespace. Byte-compatible with the Python
+//! `gen_index.py` output this command supersedes: sorted entries, ordered
+//! fields, two-space JSON, trailing newline.
 
 use crate::layout;
 use anyhow::Context;
@@ -29,10 +29,8 @@ const META_FIELDS: [&str; 10] = [
 
 pub struct Options {
     pub plugins_dir: PathBuf,
-    pub merged: Option<PathBuf>,
     pub revision: Option<String>,
     pub updated_at: Option<String>,
-    pub namespace: Option<String>,
     pub no_meta: bool,
 }
 
@@ -95,10 +93,6 @@ struct MetaVersion {
     requires_buz: Option<String>,
 }
 
-fn current_buz() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
 #[derive(Serialize)]
 struct IndexFile {
     steps: Vec<IndexEntry>,
@@ -114,6 +108,10 @@ struct MetaFile {
 struct RevisionSentinelFile {
     revision: String,
     updated_at: Option<String>,
+}
+
+fn current_buz() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -147,7 +145,7 @@ struct ParsedSpec {
     entry: IndexEntry,
 }
 
-fn parse_spec(path: &Path, ns_dir: &Path) -> anyhow::Result<ParsedSpec> {
+fn parse_spec(path: &Path, source_root: &Path) -> anyhow::Result<ParsedSpec> {
     let display = path.display().to_string();
     let raw =
         std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
@@ -188,14 +186,14 @@ fn parse_spec(path: &Path, ns_dir: &Path) -> anyhow::Result<ParsedSpec> {
         .next()
         .expect("validated two-part id")
         .to_string();
-    // Layout convention: a namespace's specs live under plugins/<ns>/ and
-    // `file:` is relative to that directory (the manager's source base URL).
+    // `file:` is relative to the source root — the manager joins it against
+    // the source base URL (the index URL minus `index.json`).
     let rel = path
-        .strip_prefix(ns_dir)
+        .strip_prefix(source_root)
         .map_err(|_| {
             anyhow::anyhow!(
-                "{display}: namespace '{namespace}' specs must live under {}",
-                ns_dir.display()
+                "{display}: specs must live under the source root {}",
+                source_root.display()
             )
         })?
         .to_string_lossy()
@@ -226,13 +224,6 @@ fn parse_spec(path: &Path, ns_dir: &Path) -> anyhow::Result<ParsedSpec> {
     })
 }
 
-fn root_relative(path: &Path, root: &Path) -> anyhow::Result<String> {
-    let display = path.display().to_string();
-    path.strip_prefix(root)
-        .map(|rel| rel.to_string_lossy().to_string())
-        .map_err(|_| anyhow::anyhow!("{display}: path must be inside {}", root.display()))
-}
-
 fn emit_json<T: serde::Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -244,49 +235,32 @@ fn emit_json<T: serde::Serialize>(path: &Path, value: &T) -> anyhow::Result<()> 
 }
 
 pub fn run(options: &Options) -> anyhow::Result<()> {
-    let plugin_dir = std::env::current_dir()
+    let source_root = std::env::current_dir()
         .context("cannot determine the working directory")?
         .join(&options.plugins_dir);
-    let plugin_dir = plugin_dir.canonicalize().with_context(|| {
+    let source_root = source_root.canonicalize().with_context(|| {
         format!(
             "plugin directory {} not found",
             options.plugins_dir.display()
         )
     })?;
-    let root = plugin_dir.parent().unwrap_or(Path::new(".")).to_path_buf();
 
-    let files = layout::discover_spec_files(&plugin_dir)?;
+    let files = layout::discover_spec_files(&source_root)?;
     if files.is_empty() {
-        anyhow::bail!("{}: no *.yaml/*.yml step specs found", plugin_dir.display());
+        anyhow::bail!(
+            "{}: no *.yaml/*.yml step specs found",
+            source_root.display()
+        );
     }
 
-    // First pass: parse + validate every spec with the Manager's save-time
-    // gate, then group by id namespace.
+    // One source root = one namespace. This repository publishes the official
+    // `buz/` namespace; third-party plugins publish from their own
+    // repositories with this same layout (the manager rejects indexes that
+    // mix namespaces, so the boundary is enforced on consumption too).
     let mut seen: BTreeMap<(String, String), PathBuf> = BTreeMap::new();
     let mut by_ns: BTreeMap<String, Vec<ParsedSpec>> = BTreeMap::new();
     for path in &files {
-        // A spec's namespace is only known after parsing; validate against
-        // both candidate locations so the error names the convention.
-        let parsed = {
-            let provisional: StepSpec = serde_yaml::from_str(
-                &std::fs::read_to_string(path)
-                    .with_context(|| format!("cannot read {}", path.display()))?,
-            )
-            .with_context(|| format!("{}: invalid step spec YAML", path.display()))?;
-            let namespace = provisional.id.split('/').next().unwrap_or("").to_string();
-            parse_spec(path, &plugin_dir.join(&namespace))
-        };
-        let parsed = match parsed {
-            Ok(parsed) => parsed,
-            Err(first_error) => {
-                // Generic location succeeds → the namespace-layout error is
-                // the honest one; it fails → its error names the real issue.
-                match parse_spec(path, &plugin_dir) {
-                    Ok(_) => return Err(first_error),
-                    Err(generic_error) => return Err(generic_error),
-                }
-            }
-        };
+        let parsed = parse_spec(path, &source_root)?;
         let key = (parsed.entry.id.clone(), parsed.entry.version.clone());
         if let Some(previous) = seen.get(&key) {
             anyhow::bail!(
@@ -303,82 +277,40 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
             .or_default()
             .push(parsed);
     }
-
-    let namespaces: Vec<String> = match &options.namespace {
-        Some(namespace) => {
-            if !by_ns.contains_key(namespace) {
-                anyhow::bail!(
-                    "{}: no specs for namespace '{namespace}' (found: {})",
-                    plugin_dir.display(),
-                    by_ns.keys().cloned().collect::<Vec<_>>().join(", ")
-                );
-            }
-            vec![namespace.clone()]
-        }
-        None => {
-            if by_ns.len() > 1 {
-                anyhow::bail!(
-                    "{}: several namespaces ({}) — one index per namespace; pass --namespace",
-                    plugin_dir.display(),
-                    by_ns.keys().cloned().collect::<Vec<_>>().join(", ")
-                );
-            }
-            by_ns.keys().cloned().collect()
-        }
-    };
-
-    for namespace in &namespaces {
-        let mut entries: Vec<IndexEntry> = by_ns[namespace]
-            .iter()
-            .map(|parsed| parsed.entry.clone())
-            .collect();
-        entries.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
-        let index_path = plugin_dir.join(namespace).join(layout::INDEX_FILE);
-        let count = entries.len();
-        emit_json(&index_path, &IndexFile { steps: entries })?;
-        println!(
-            "index.json: {count} step(s) written to {}",
-            index_path.display()
+    if by_ns.len() > 1 {
+        anyhow::bail!(
+            "{}: several namespaces ({}) — one source root per namespace; \
+             third-party plugins publish from their own repositories with this same layout",
+            source_root.display(),
+            by_ns.keys().cloned().collect::<Vec<_>>().join(", ")
         );
     }
 
-    if let Some(merged_path) = &options.merged {
-        let mut merged: Vec<IndexEntry> = Vec::new();
-        for specs in by_ns.values() {
-            for parsed in specs {
-                let mut entry = parsed.entry.clone();
-                entry.file = root_relative(&parsed.path, &root)?;
-                merged.push(entry);
-            }
-        }
-        merged.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
-        let merged_path = if merged_path.is_absolute() {
-            merged_path.clone()
-        } else {
-            root.join(merged_path)
-        };
-        let merged_count = merged.len();
-        emit_json(&merged_path, &IndexFile { steps: merged })?;
-        println!(
-            "merged index: {merged_count} step(s) written to {}",
-            merged_path.display()
-        );
-    }
+    let mut entries: Vec<IndexEntry> = by_ns
+        .values()
+        .flat_map(|specs| specs.iter().map(|parsed| parsed.entry.clone()))
+        .collect();
+    entries.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
+    let index_path = source_root.join(layout::INDEX_FILE);
+    let count = entries.len();
+    emit_json(&index_path, &IndexFile { steps: entries })?;
+    println!(
+        "index.json: {count} step(s) written to {}",
+        index_path.display()
+    );
 
     if !options.no_meta {
         let mut metas: BTreeMap<PathBuf, (String, Vec<MetaVersion>)> = BTreeMap::new();
         for specs in by_ns.values() {
-            let ns_dir = plugin_dir.join(&specs.first().expect("non-empty").namespace);
             for parsed in specs {
                 let rel = parsed
                     .path
-                    .strip_prefix(&ns_dir)
+                    .strip_prefix(&source_root)
                     .map_err(|_| {
                         anyhow::anyhow!(
-                            "{}: namespace '{}' specs must live under {}",
+                            "{}: specs must live under the source root {}",
                             parsed.path.display(),
-                            parsed.namespace,
-                            ns_dir.display()
+                            source_root.display()
                         )
                     })?
                     .to_string_lossy()
@@ -400,13 +332,13 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
                     default_timeout: entry.default_timeout,
                     requires_buz: entry.requires_buz,
                 };
-                let plugin_dir_path = parsed
+                let plugin_meta_dir = parsed
                     .path
                     .parent()
                     .expect("spec has a parent")
                     .to_path_buf();
                 metas
-                    .entry(plugin_dir_path)
+                    .entry(plugin_meta_dir)
                     .or_insert_with(|| (entry.id, Vec::new()))
                     .1
                     .push(version);
@@ -427,23 +359,21 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
         println!("meta.json: {} plugin(s) written", metas.len());
     }
 
-    // Namespace revision sentinel — written LAST: mirrors publish content
-    // first and the sentinel commits the sync. Skipped without --revision so
-    // local runs never fabricate a version marker.
+    // Revision sentinel — written LAST: mirrors publish content first and
+    // the sentinel commits the sync. Skipped without --revision so local
+    // runs never fabricate a version marker.
     if let Some(revision) = &options.revision {
-        for namespace in &namespaces {
-            let sentinel_path = plugin_dir.join(namespace).join(layout::REVISION_FILE);
-            emit_json(
-                &sentinel_path,
-                &RevisionSentinelFile {
-                    revision: revision.clone(),
-                    updated_at: options.updated_at.clone(),
-                },
-            )?;
-        }
+        let sentinel_path = source_root.join(layout::REVISION_FILE);
+        emit_json(
+            &sentinel_path,
+            &RevisionSentinelFile {
+                revision: revision.clone(),
+                updated_at: options.updated_at.clone(),
+            },
+        )?;
         println!(
-            "revision.json: written for {} namespace(s) (revision {revision})",
-            namespaces.len()
+            "revision.json: written to {} (revision {revision})",
+            sentinel_path.display()
         );
     }
 
@@ -484,81 +414,64 @@ run: echo ok
         sha256_hex(content.as_bytes())
     }
 
+    fn options(root: &Path) -> Options {
+        Options {
+            plugins_dir: root.join("plugins"),
+            revision: None,
+            updated_at: None,
+            no_meta: false,
+        }
+    }
+
     #[test]
-    fn generates_namespace_index_meta_and_sentinel() {
+    fn generates_source_root_manifest_meta_and_sentinel() {
         let dir = tempfile::tempdir().unwrap();
         let root = write_repo(dir.path());
-        let options = Options {
-            plugins_dir: root.join("plugins"),
-            merged: Some(PathBuf::from("index.json")),
+        run(&Options {
             revision: Some("8d367d8".into()),
             updated_at: Some("2026-10-27T00:00:00Z".into()),
-            namespace: None,
-            no_meta: false,
-        };
-        run(&options).unwrap();
+            ..options(&root)
+        })
+        .unwrap();
 
         let sha = sha_of(SPEC);
-        let expected_index = format!(
-            r#"{{
-  "steps": [
-    {{
-      "id": "alice/oss-upload",
-      "version": "1.0.0",
-      "file": "oss-upload/1.0.0.yaml",
-      "sha256": "{sha}",
-      "author": "alice",
-      "publisher": "community",
-      "source_repo": "https://github.com/alice/my-buz-steps",
-      "engine": "shell",
-      "requires_buz": ">=1.0.0"
-    }}
-  ]
-}}
-"#
+        let written = fs::read_to_string(root.join("plugins/index.json")).unwrap();
+        // Pretty format, declaration-order keys, trailing newline.
+        assert!(
+            written.starts_with("{\n  \"steps\": [\n    {\n      \"id\": \"alice/oss-upload\",")
         );
+        let actual: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let entry = &actual["steps"][0];
+        assert_eq!(entry["id"], "alice/oss-upload");
+        assert_eq!(entry["version"], "1.0.0");
+        // `file:` is relative to the source root (the manager's base URL).
+        assert_eq!(entry["file"], "alice/oss-upload/1.0.0.yaml");
+        assert_eq!(entry["sha256"], sha);
+        assert_eq!(entry["author"], "alice");
+        assert_eq!(entry["publisher"], "community");
         assert_eq!(
-            fs::read_to_string(root.join("plugins/alice/index.json")).unwrap(),
-            expected_index
+            entry["source_repo"],
+            "https://github.com/alice/my-buz-steps"
         );
+        assert_eq!(entry["engine"], "shell");
+        assert_eq!(entry["requires_buz"], ">=1.0.0");
 
-        let expected_meta = format!(
-            r#"{{
-  "id": "alice/oss-upload",
-  "versions": [
-    {{
-      "version": "1.0.0",
-      "file": "oss-upload/1.0.0.yaml",
-      "sha256": "{sha}",
-      "author": "alice",
-      "publisher": "community",
-      "source_repo": "https://github.com/alice/my-buz-steps",
-      "engine": "shell",
-      "requires_buz": ">=1.0.0"
-    }}
-  ]
-}}
-"#
-        );
+        let meta_written =
+            fs::read_to_string(root.join("plugins/alice/oss-upload/meta.json")).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&meta_written).unwrap();
+        assert_eq!(meta["id"], "alice/oss-upload");
+        assert_eq!(meta["versions"][0]["file"], "alice/oss-upload/1.0.0.yaml");
+        assert_eq!(meta["versions"][0]["sha256"], sha);
+
+        let sentinel = fs::read_to_string(root.join("plugins/revision.json")).unwrap();
         assert_eq!(
-            fs::read_to_string(root.join("plugins/alice/oss-upload/meta.json")).unwrap(),
-            expected_meta
-        );
-
-        let expected_sentinel = r#"{
+            sentinel,
+            r#"{
   "revision": "8d367d8",
   "updated_at": "2026-10-27T00:00:00Z"
 }
-"#;
-        assert_eq!(
-            fs::read_to_string(root.join("plugins/alice/revision.json")).unwrap(),
-            expected_sentinel
+"#
         );
-
-        // Merged view: repo-root-relative file paths, identical content.
-        let merged = fs::read_to_string(root.join("index.json")).unwrap();
-        assert!(merged.contains("\"file\": \"plugins/alice/oss-upload/1.0.0.yaml\""));
-        assert!(merged.contains("alice/oss-upload"));
     }
 
     #[test]
@@ -567,16 +480,7 @@ run: echo ok
         let root = write_repo(dir.path());
         let plugin = root.join("plugins/alice/oss-upload");
         fs::write(plugin.join("1.0.0-dup.yaml"), SPEC).unwrap();
-        let error = run(&Options {
-            plugins_dir: root.join("plugins"),
-            merged: None,
-            revision: None,
-            updated_at: None,
-            namespace: None,
-            no_meta: true,
-        })
-        .unwrap_err()
-        .to_string();
+        let error = run(&options(&root)).unwrap_err().to_string();
         assert!(
             error.contains("duplicate id+version alice/oss-upload@1.0.0"),
             "{error}"
@@ -584,7 +488,7 @@ run: echo ok
     }
 
     #[test]
-    fn requires_namespace_flag_for_several_namespaces() {
+    fn rejects_multiple_namespaces_in_one_source_root() {
         let dir = tempfile::tempdir().unwrap();
         let root = write_repo(dir.path());
         let other = root.join("plugins/bob/upload");
@@ -594,29 +498,8 @@ run: echo ok
             SPEC.replacen("alice/oss-upload", "bob/upload", 1),
         )
         .unwrap();
-        let error = run(&Options {
-            plugins_dir: root.join("plugins"),
-            merged: None,
-            revision: None,
-            updated_at: None,
-            namespace: None,
-            no_meta: true,
-        })
-        .unwrap_err()
-        .to_string();
+        let error = run(&options(&root)).unwrap_err().to_string();
         assert!(error.contains("several namespaces (alice, bob)"), "{error}");
-
-        // --namespace generates exactly one index.
-        run(&Options {
-            plugins_dir: root.join("plugins"),
-            merged: None,
-            revision: None,
-            updated_at: None,
-            namespace: Some("bob".into()),
-            no_meta: true,
-        })
-        .unwrap();
-        assert!(root.join("plugins/bob/index.json").exists());
-        assert!(!root.join("plugins/alice/index.json").exists());
+        assert!(error.contains("one source root per namespace"), "{error}");
     }
 }
