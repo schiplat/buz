@@ -1384,3 +1384,151 @@ async fn pool_toggle_writes_an_audit_record_with_the_diff() {
     assert_eq!(parsed[1].0["enabled"], true);
     assert_eq!(parsed[1].1["enabled"], false);
 }
+
+/// Download policy: a full-meta index declares `requires_buz`, so a sync only
+/// fetches the newest version of each plugin. Older versions stage with an
+/// unknown verdict and are fetched when someone enables or pins them. This
+/// keeps first-sync traffic proportional to plugins, not to plugin-versions.
+#[tokio::test]
+async fn sync_downloads_only_the_newest_version_when_the_index_declares_requires_buz() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    // The template cache is keyed by content hash and lives on disk, so a
+    // fixed body would be served from cache on the second run and this mock
+    // server would never see a request. A per-run nonce keeps the assertion
+    // deterministic.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let spec = |version: &str| {
+        format!(
+            r#"id: car/tool
+# download-policy fixture nonce: {nonce}
+version: {version}
+publisher: community
+author: carol
+source_repo: https://github.com/carol/steps
+engine: shell
+requires_buz: ">=1.0.0"
+inputs:
+  name:
+    type: string
+    required: true
+run: |
+  echo "hello ${{INPUT_NAME}}"
+"#
+        )
+    };
+    let sha = |raw: &str| {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(raw.as_bytes()))
+    };
+
+    let versions = ["1.0.0", "1.1.0", "2.0.0"];
+    let specs: Vec<String> = versions.iter().map(|v| spec(v)).collect();
+    let index = format!(
+        r#"{{ "steps": [ {} ] }}"#,
+        versions
+            .iter()
+            .zip(&specs)
+            .map(|(version, body)| format!(
+                r#"{{ "id": "car/tool", "version": "{version}",
+                   "file": "steps/tool/{version}.yaml", "sha256": "{}",
+                   "requires_buz": ">=1.0.0" }}"#,
+                sha(body)
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let fetched: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let mut app = Router::new().route(
+        "/index.json",
+        axum::routing::get(move || {
+            let index = index.clone();
+            async move { index }
+        }),
+    );
+    for (version, body) in versions.iter().zip(&specs) {
+        let counter = fetched.clone();
+        let body = body.clone();
+        app = app.route(
+            format!("/steps/tool/{version}.yaml").as_str(),
+            axum::routing::get(move || {
+                let counter = counter.clone();
+                let body = body.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    body
+                }
+            }),
+        );
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
+    sqlx::query(
+        "INSERT INTO plugin_sources (id, name, url, auto_enable, enabled) \
+         VALUES ('src-newest', 'newest', ?, 0, 1)",
+    )
+    .bind(format!("http://{addr}/index.json"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let source = crate::services::plugin_pool::get_source(&pool, "src-newest")
+        .await
+        .unwrap()
+        .expect("source row");
+    let http = crate::services::plugin_pool::http_client(60);
+    crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+        .await
+        .expect("sync");
+
+    assert_eq!(
+        fetched.load(Ordering::SeqCst),
+        1,
+        "only the newest version is downloaded at sync time"
+    );
+
+    let verdicts: Vec<(String, Option<i64>)> =
+        sqlx::query_as("SELECT version, buz_compatible FROM plugin_pool ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        verdicts,
+        vec![
+            ("1.0.0".to_string(), None),
+            ("1.1.0".to_string(), None),
+            ("2.0.0".to_string(), Some(1)),
+        ],
+        "newest verified, older versions stage as unknown"
+    );
+
+    // Enabling an older version is the "user asked for it" path: it verifies
+    // on demand (cache miss → download).
+    crate::services::plugin_pool::verify_entry(
+        &http,
+        &pool,
+        "car",
+        "tool",
+        "1.0.0",
+        shared::version::VERSION,
+    )
+    .await
+    .expect("older version verifies on demand");
+    assert_eq!(
+        fetched.load(Ordering::SeqCst),
+        2,
+        "the requested version was downloaded when enabled"
+    );
+}

@@ -189,6 +189,25 @@ scripts.
 Because both moments call one function, a plugin tool and a Manager of the
 same contract version cannot disagree.
 
+### What a sync downloads
+
+A source's index lists every version, but a sync does **not** fetch them all:
+
+1. A `requires_buz` declared in the index is evaluated first — no download. An
+   entry this Manager is too old for is recorded as incompatible (with the
+   requirement in the message) straight away.
+2. The **newest version of each plugin is downloaded and fully validated**; the
+   rest enter the pool with an unknown verdict.
+3. An older version is downloaded the moment someone **enables it** (enable-time
+   verification) or a pipeline **resolves a pin to it** — both gate the content
+   the same way.
+
+Downloads are cached by content hash (`data/plugin-index-cache/templates/`), so
+repeat syncs and repeat resolutions cost nothing. The exception is a legacy
+source whose index carries no `requires_buz`: with no cheap gate to rule on an
+entry, every version is still verified at sync time — otherwise a compatible
+but not-newest version could never be auto-enabled.
+
 ## Rollout
 
 1. **Phase 1** — `crates/plugin-cli` with the four commands; the plugins

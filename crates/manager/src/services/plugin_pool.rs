@@ -525,6 +525,15 @@ async fn existing_rows_for_source(
 /// problem. Sources without the field leave the verdict unknown (NULL) on
 /// probe failure — retried on the next sync.
 /// Returns `(requires_buz, buz_compatible, compat_error, checked_against)`.
+/// Compatibility verdict for one index entry.
+///
+/// `verify_content` decides whether the template is actually downloaded. Only
+/// the newest version of a plugin is verified at sync time — older versions
+/// are staged as "unknown" and verified when someone enables them or pins
+/// them in a pipeline. A `requires_buz` declared by the index is evaluated
+/// without any download, so an obviously incompatible version still enters
+/// the pool flagged rather than unknown.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_compat(
     http: &reqwest::Client,
     bases: &[String],
@@ -536,6 +545,7 @@ async fn resolve_compat(
     current_buz: &str,
     existing: Option<&ExistingRowState>,
     declared_requires: Option<&str>,
+    verify_content: bool,
 ) -> (Option<String>, Option<bool>, Option<String>, Option<String>) {
     let needs_check = match existing {
         None => true,
@@ -551,6 +561,26 @@ async fn resolve_compat(
             state.compat_error.clone(),
             state.compat_checked_against.clone(),
         );
+    }
+    // Cheap, exact gate: the index already declares the contract requirement,
+    // so an unsatisfied one needs no download to be reported.
+    if let Some(requires) = declared_requires {
+        if shared::plugin_spec::buz_requirement_satisfied(requires, current_buz).is_err() {
+            let error = shared::plugin_spec::buz_requirement_satisfied(requires, current_buz)
+                .err()
+                .unwrap_or_default();
+            return (
+                Some(requires.to_string()),
+                Some(false),
+                Some(format!("requires_buz: {error}")),
+                Some(current_buz.to_string()),
+            );
+        }
+    }
+    if !verify_content {
+        // Staged but unverified: the verdict arrives when it is enabled or
+        // resolved, both of which download and gate the content.
+        return (declared_requires.map(str::to_string), None, None, None);
     }
     match fetch_content(http, bases, file_path, sha256).await {
         Ok(content) => {
@@ -747,6 +777,16 @@ async fn sync_source_inner(
         // seen is user territory: its rows keep their verdicts (the conflict
         // clause below never touches `enabled`) and later versions stage for
         // review instead.
+        // Only the newest version is content-verified here; the rest stage
+        // with an unknown verdict and verify on enable / pipeline resolution.
+        // Exception: when the index carries no `requires_buz` for an entry
+        // (legacy source), there is no cheap gate to rule on it, so it is
+        // verified as before — otherwise auto-enable could never see a
+        // compatible-but-not-newest version.
+        let newest_version = versions
+            .first()
+            .map(|entry| entry.version.clone())
+            .unwrap_or_default();
         let group_is_new = versions.iter().all(|entry| {
             !existing_rows.contains_key(&(
                 namespace.clone(),
@@ -775,6 +815,7 @@ async fn sync_source_inner(
                 current_buz,
                 existing,
                 entry.requires_buz.as_deref(),
+                entry.version == newest_version || entry.requires_buz.is_none(),
             )
             .await;
             let enable = init_slot_open && buz_compatible == Some(true);
@@ -978,6 +1019,13 @@ async fn upsert_plugin_meta(
     }
 
     let existing_rows = existing_rows_for_source(pool, &source.id).await?;
+    let newest_version = meta
+        .versions
+        .iter()
+        .map(|entry| entry.version.as_str())
+        .max_by(|a, b| version_sort_key(a).cmp(&version_sort_key(b)))
+        .unwrap_or_default()
+        .to_string();
 
     for entry in &meta.versions {
         let sha256 = entry.sha256.to_lowercase();
@@ -1006,6 +1054,7 @@ async fn upsert_plugin_meta(
             current_buz,
             existing,
             entry.requires_buz.as_deref(),
+            entry.version == newest_version || entry.requires_buz.is_none(),
         )
         .await;
         let meta_json = meta_json_string(
