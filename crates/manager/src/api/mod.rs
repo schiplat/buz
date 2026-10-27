@@ -24,10 +24,10 @@ mod hosts;
 mod jobs;
 mod logs;
 pub mod openapi;
+mod plugin_sources;
+mod plugins;
 mod secrets;
 mod settings;
-mod plugin_sources;
-mod steps;
 mod teams;
 mod trigger_events;
 mod users;
@@ -105,7 +105,7 @@ pub fn router(state: AppState) -> Router {
             "/pipelines/{id}/git-hooks/{hook_id}",
             delete(git_hooks::delete_hook),
         )
-        .route("/steps", get(steps::list_steps))
+        .route("/plugins", get(plugins::list_plugins))
         .route("/jobs", get(jobs::list))
         .route("/jobs/stats/trend", get(jobs::stats_trend))
         .route("/jobs/recent", get(jobs::recent))
@@ -368,8 +368,8 @@ mod jobs_stats_integration_tests;
 mod step_marketplace_integration_tests;
 
 #[cfg(test)]
-#[path = "tests/steps_library_tests.rs"]
-mod steps_library_integration_tests;
+#[path = "tests/plugins_library_tests.rs"]
+mod plugins_library_integration_tests;
 
 #[cfg(test)]
 #[path = "tests/settings_tests.rs"]

@@ -13,7 +13,7 @@ use tower::ServiceExt;
 
 use crate::api;
 use crate::config::{
-    AuthConfig, Config, PipelineConfig, RunnerConfig, ServerConfig, PluginIndexConfig,
+    AuthConfig, Config, PipelineConfig, PluginIndexConfig, RunnerConfig, ServerConfig,
 };
 use crate::db::run_migrations;
 use crate::services::log_broadcast::LogBroadcaster;

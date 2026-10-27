@@ -90,7 +90,8 @@ fn plan(
         reviewed_hashes,
         require_reviewed,
     };
-    let resolved = crate::services::plugin_resolver::resolve_uses_steps(steps, plugin_index, &policy)?;
+    let resolved =
+        crate::services::plugin_resolver::resolve_uses_steps(steps, plugin_index, &policy)?;
 
     let mut output = String::new();
     let mut images = Vec::new();

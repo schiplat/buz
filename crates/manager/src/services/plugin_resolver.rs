@@ -16,8 +16,8 @@ use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
 use shared::pipeline_yaml::{parse_uses_reference, UsesPin};
-use shared::protocol::{validate_input_values, StepDef};
 use shared::plugin_spec::{buz_requirement_satisfied, validate_plugin_spec, PluginSpec};
+use shared::protocol::{validate_input_values, StepDef};
 
 /// Step-index settings resolved from Manager config at startup.
 #[derive(Debug, Clone, Default)]

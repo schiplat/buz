@@ -69,10 +69,9 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
             }
         }
         SettingKind::Number => {
-            let secs: u64 = value
-                .trim()
-                .parse()
-                .map_err(|_| String::from("plugin_sync_timeout must be a whole number of seconds"))?;
+            let secs: u64 = value.trim().parse().map_err(|_| {
+                String::from("plugin_sync_timeout must be a whole number of seconds")
+            })?;
             // 0 disables the timeout entirely (reqwest semantics) — legal in
             // a config file for special cases, but flagged loudly in the UI
             // because a hung source then blocks pipeline saves indefinitely.

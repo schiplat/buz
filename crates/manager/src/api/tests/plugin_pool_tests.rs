@@ -715,7 +715,9 @@ run: |
     assert_eq!(progress.done_entries, 3);
     assert_eq!(progress.done_plugins, 3);
     assert!(progress.error.is_none());
-    let rows = crate::services::plugin_pool::list_pool(&pool).await.unwrap();
+    let rows = crate::services::plugin_pool::list_pool(&pool)
+        .await
+        .unwrap();
     let compatible = pool_row_for(&rows, "compatible");
     assert_eq!(compatible.buz_compatible, Some(true));
     assert_eq!(compatible.requires_buz.as_deref(), Some(">=1.0.0"));
@@ -744,7 +746,9 @@ run: |
     crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
         .await
         .expect("re-sync");
-    let rows = crate::services::plugin_pool::list_pool(&pool).await.unwrap();
+    let rows = crate::services::plugin_pool::list_pool(&pool)
+        .await
+        .unwrap();
     assert_eq!(pool_row_for(&rows, "too-new").buz_compatible, Some(false));
 
     // Manager upgrade: syncing under a newer build re-verifies — the
@@ -752,7 +756,9 @@ run: |
     crate::services::plugin_pool::sync_source(&http, &pool, &source, "99.0.0")
         .await
         .expect("re-sync under new manager version");
-    let rows = crate::services::plugin_pool::list_pool(&pool).await.unwrap();
+    let rows = crate::services::plugin_pool::list_pool(&pool)
+        .await
+        .unwrap();
     let too_new = pool_row_for(&rows, "too-new");
     assert_eq!(
         too_new.buz_compatible,
@@ -984,7 +990,9 @@ async fn full_meta_source_probes_files_on_staging() {
         .await
         .expect("sync from full-meta index");
 
-    let rows = crate::services::plugin_pool::list_pool(&pool).await.unwrap();
+    let rows = crate::services::plugin_pool::list_pool(&pool)
+        .await
+        .unwrap();
     let row = |step_id: &str| {
         rows.iter()
             .find(|row| row.step_id == step_id)
@@ -1348,11 +1356,12 @@ async fn pool_toggle_writes_an_audit_record_with_the_diff() {
     }
     // Curation provenance lands on the row itself (state), while the audit
     // log above carries the event stream.
-    let provenance: (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT updated_by, updated_at FROM plugin_pool WHERE step_id = 'oss-upload'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let provenance: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT updated_by, updated_at FROM plugin_pool WHERE step_id = 'oss-upload'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(
         provenance.0.as_deref(),
         Some("boss"),

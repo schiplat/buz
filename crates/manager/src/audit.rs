@@ -32,10 +32,6 @@ use crate::rbac::AuthUser;
 /// a variant here — never a free-form string — so the vocabulary stays
 /// exhaustive (the dashboard's action filter and the route-coverage test
 /// both rely on it).
-/// Canonical audit action names. Adding a new audited mutation means adding
-/// a variant here — never a free-form string — so the vocabulary stays
-/// exhaustive (the dashboard's action filter and the route-coverage test
-/// both rely on it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     // auth
@@ -120,13 +116,13 @@ pub enum Action {
     SettingUpdate,
 
     // plugin_pool
-    StepPoolToggle,
-    StepPoolRefresh,
+    PluginPoolToggle,
+    PluginPoolRefresh,
 
     // plugin_source
-    StepSourceCreate,
-    StepSourceDelete,
-    StepSourceSync,
+    PluginSourceCreate,
+    PluginSourceDelete,
+    PluginSourceSync,
 
     // team
     TeamCreate,
@@ -210,11 +206,11 @@ impl Action {
             Action::SecretUpdate => "secret.update",
             Action::SettingReset => "setting.reset",
             Action::SettingUpdate => "setting.update",
-            Action::StepPoolToggle => "plugin_pool.toggle",
-            Action::StepPoolRefresh => "plugin_pool.refresh",
-            Action::StepSourceCreate => "plugin_source.create",
-            Action::StepSourceDelete => "plugin_source.delete",
-            Action::StepSourceSync => "plugin_source.sync",
+            Action::PluginPoolToggle => "plugin_pool.toggle",
+            Action::PluginPoolRefresh => "plugin_pool.refresh",
+            Action::PluginSourceCreate => "plugin_source.create",
+            Action::PluginSourceDelete => "plugin_source.delete",
+            Action::PluginSourceSync => "plugin_source.sync",
             Action::TeamCreate => "team.create",
             Action::TeamDelete => "team.delete",
             Action::TeamMemberRemove => "team.member_remove",

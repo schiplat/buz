@@ -1,4 +1,4 @@
-//! Step library listing API (GET /api/v1/steps) — reads the local step
+//! Step library listing API (GET /api/v1/plugins) — reads the local step
 //! directory; unparseable files are reported, not fatal.
 
 use axum::{
@@ -70,7 +70,7 @@ async fn test_app_with_dir(dir: &std::path::Path) -> (Router, String) {
 }
 
 async fn get_json(app: &Router, jwt: Option<&str>) -> (StatusCode, serde_json::Value) {
-    let mut builder = Request::builder().method("GET").uri("/api/v1/steps");
+    let mut builder = Request::builder().method("GET").uri("/api/v1/plugins");
     if let Some(jwt) = jwt {
         builder = builder.header(AUTHORIZATION, format!("Bearer {jwt}"));
     }

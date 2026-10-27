@@ -79,7 +79,7 @@ fn step_pool_resource_composes_the_reference() {
         is_super_admin: false,
         memberships: vec![],
     };
-    let event = AuditEvent::new(Action::StepPoolToggle, &auth).on(Resource::plugin_pool(
+    let event = AuditEvent::new(Action::PluginPoolToggle, &auth).on(Resource::plugin_pool(
         "buz",
         "helm-upgrade",
         "1.0.0",

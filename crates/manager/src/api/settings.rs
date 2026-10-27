@@ -64,7 +64,13 @@ pub async fn get_settings(
             "path",
             // Empty config → the reviews.json beside the plugin directory
             // (one buz-plugins clone in the data volume provides both).
-            if state.config.plugin_index.reviewed_manifest.trim().is_empty() {
+            if state
+                .config
+                .plugin_index
+                .reviewed_manifest
+                .trim()
+                .is_empty()
+            {
                 crate::services::plugin_resolver::reviewed_manifest_default(std::path::Path::new(
                     &state.config.storage.data_dir,
                 ))

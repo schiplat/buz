@@ -94,7 +94,7 @@ pub async fn create_source(
     .map_err(|e| AppError::Internal(e.to_string()))?;
     audit::record(
         &state.pool,
-        AuditEvent::new(Action::StepSourceCreate, &auth)
+        AuditEvent::new(Action::PluginSourceCreate, &auth)
             .on(Resource::plugin_source(&id, &name))
             .after(Some(json!({
                 "name": name,
@@ -183,7 +183,7 @@ pub async fn sync_source(
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
     audit::record(
         &state.pool,
-        AuditEvent::new(Action::StepSourceSync, &auth)
+        AuditEvent::new(Action::PluginSourceSync, &auth)
             .on(Resource::plugin_source(&source.id, &source.name))
             .meta(Some(json!({ "trigger": "manual" }))),
     )
@@ -237,7 +237,7 @@ pub async fn delete_source(
     if let Some(removed) = &removed {
         audit::record(
             &state.pool,
-            AuditEvent::new(Action::StepSourceDelete, &auth)
+            AuditEvent::new(Action::PluginSourceDelete, &auth)
                 .on(Resource::plugin_source(&removed.id, &removed.name))
                 .before(Some(json!({
                     "name": removed.name,
@@ -295,7 +295,7 @@ pub async fn refresh_plugin(
     .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
     audit::record(
         &state.pool,
-        AuditEvent::new(Action::StepPoolRefresh, &auth)
+        AuditEvent::new(Action::PluginPoolRefresh, &auth)
             .on(Resource::step_pool_plugin(&namespace, &step_id))
             .meta(Some(json!({ "versions": rows.len() }))),
     )
@@ -381,7 +381,7 @@ pub async fn toggle_pool_entry(
     }
     audit::record_in(
         &mut *tx,
-        AuditEvent::new(Action::StepPoolToggle, &auth)
+        AuditEvent::new(Action::PluginPoolToggle, &auth)
             .on(Resource::plugin_pool(&namespace, &step_id, &version))
             .changes(
                 Some(json!({ "enabled": previous_enabled.map(|v| v != 0) })),

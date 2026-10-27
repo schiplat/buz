@@ -583,8 +583,9 @@ async fn resolve_compat(
                 // wraps the requirement error with the `requires_buz:`
                 // prefix), so the list hint and a gate refusal never disagree.
                 Some(requires) if incompatible_per_index => {
-                    let error = shared::plugin_spec::buz_requirement_satisfied(requires, current_buz)
-                        .unwrap_err();
+                    let error =
+                        shared::plugin_spec::buz_requirement_satisfied(requires, current_buz)
+                            .unwrap_err();
                     (
                         Some(requires.to_string()),
                         Some(false),
@@ -1347,12 +1348,13 @@ pub async fn resolve_remote(
         ));
     }
 
-    let spec: shared::plugin_spec::PluginSpec = serde_yaml::from_str(&picked.content).map_err(|e| {
-        format!(
-            "template {}/{}/{} is invalid YAML: {e}",
-            picked.namespace, picked.step_id, picked.version
-        )
-    })?;
+    let spec: shared::plugin_spec::PluginSpec =
+        serde_yaml::from_str(&picked.content).map_err(|e| {
+            format!(
+                "template {}/{}/{} is invalid YAML: {e}",
+                picked.namespace, picked.step_id, picked.version
+            )
+        })?;
     if spec.id != format!("{}/{}", picked.namespace, picked.step_id) {
         return Err(format!(
             "template id mismatch: index says {}/{}, YAML says {}",

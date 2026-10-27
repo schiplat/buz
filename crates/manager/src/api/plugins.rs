@@ -6,8 +6,8 @@ use axum::{extract::State, Json};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use shared::error::AppError;
-use shared::protocol::response::ApiResponse;
 use shared::plugin_spec::{validate_plugin_spec, PluginSpec};
+use shared::protocol::response::ApiResponse;
 
 use crate::middleware::AuthUser;
 use crate::state::AppState;
@@ -16,7 +16,7 @@ use crate::state::AppState;
 /// directory, with attribution, inputs, and search metadata. Unparseable
 /// files are reported separately so operators can fix or remove them
 /// (`buz-manager step-validate` prints the details).
-pub async fn list_steps(
+pub async fn list_plugins(
     _auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
@@ -69,7 +69,8 @@ pub async fn list_steps(
 
         let buz_compatible = match spec.requires_buz.as_deref() {
             Some(raw) => {
-                shared::plugin_spec::buz_requirement_satisfied(raw, env!("CARGO_PKG_VERSION")).is_ok()
+                shared::plugin_spec::buz_requirement_satisfied(raw, env!("CARGO_PKG_VERSION"))
+                    .is_ok()
             }
             None => true,
         };

@@ -17,7 +17,7 @@ fn pipeline_plan_cli_parses_without_manager_configuration() {
         "pipeline",
         "plan",
         "examples/pipeline.yml",
-        "--step-index",
+        "--plugin-index",
         "./plugins",
         "--reviews",
         "./reviews.json",
