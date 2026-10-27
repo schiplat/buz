@@ -1549,8 +1549,8 @@ async fn signed_index_is_verified_and_tampering_is_rejected() {
 
     // Server A serves the authentic index + signature; server B serves a
     // rewritten index with the same (stale) signature — the mirror attack.
-    let good_sig =
-        shared::plugin_signature::sign_index(index.as_bytes(), &secret, "test-key").expect("sign");
+    let good_sig = shared::plugin_signature::sign_document(index.as_bytes(), &secret, "test-key")
+        .expect("sign");
     let tampered_index = index.replace("alice/oss-upload", "alice/evil-upload");
     let app_a = Router::new()
         .route(
@@ -1669,6 +1669,213 @@ async fn signed_index_is_verified_and_tampering_is_rejected() {
     );
 }
 
+/// Under the trust anchor the review ledger carries its own signature: a
+/// rewritten (or simply unsigned) reviews.json could mark attacker-chosen
+/// hashes as human-reviewed and walk straight through the review gate. The
+/// ledger is signed by the same key, in the same publish run.
+#[tokio::test]
+async fn reviews_ledger_must_be_signed_when_the_trust_anchor_is_on() {
+    let (secret, public) = shared::plugin_signature::generate_keypair().expect("keypair");
+    let yaml = community_spec();
+    let yaml_sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(yaml.as_bytes()))
+    };
+    let index = format!(
+        r#"{{ "sequence": 1, "issued_at": "2026-10-26T00:00:00Z", "steps": [ {{
+            "id": "alice/oss-upload", "version": "1.0.0",
+            "file": "steps/oss-upload/1.0.0.yaml", "sha256": "{yaml_sha}" }} ] }}"#
+    );
+    let ledger = |body: &str| body.to_string();
+
+    // What the fake source currently serves. The ledger and its signature are
+    // independent Options so a test can serve a ledger whose `.sig` 404s.
+    #[derive(Clone, Default)]
+    struct Served {
+        index: String,
+        index_sig: String,
+        reviews: Option<String>,
+        reviews_sig: Option<String>,
+    }
+    let served = std::sync::Arc::new(std::sync::Mutex::new(Served::default()));
+    // Publish a fresh index (always) and ledger (when given), signing each.
+    let publish = {
+        let served = served.clone();
+        let secret = secret.clone();
+        move |index_body: String, reviews_body: Option<String>| {
+            let mut next = Served {
+                index_sig: shared::plugin_signature::sign_document(
+                    index_body.as_bytes(),
+                    &secret,
+                    "test-key",
+                )
+                .expect("sign index"),
+                ..Served::default()
+            };
+            next.index = index_body;
+            if let Some(ledger_body) = reviews_body {
+                next.reviews_sig = Some(
+                    shared::plugin_signature::sign_document(
+                        ledger_body.as_bytes(),
+                        &secret,
+                        "test-key",
+                    )
+                    .expect("sign ledger"),
+                );
+                next.reviews = Some(ledger_body);
+            }
+            *served.lock().unwrap() = next;
+        }
+    };
+    let app = Router::new()
+        .route(
+            "/index.json",
+            axum::routing::get({
+                let served = served.clone();
+                move || {
+                    let body = { served.lock().unwrap().index.clone() };
+                    async move { body }
+                }
+            }),
+        )
+        .route(
+            "/index.json.sig",
+            axum::routing::get({
+                let served = served.clone();
+                move || {
+                    let body = { served.lock().unwrap().index_sig.clone() };
+                    async move { body }
+                }
+            }),
+        )
+        .route(
+            "/reviews.json",
+            axum::routing::get({
+                let served = served.clone();
+                move || {
+                    let body = { served.lock().unwrap().reviews.clone() };
+                    async move {
+                        match body {
+                            Some(text) => (StatusCode::OK, text),
+                            None => (StatusCode::NOT_FOUND, String::new()),
+                        }
+                    }
+                }
+            }),
+        )
+        .route(
+            "/reviews.json.sig",
+            axum::routing::get({
+                let served = served.clone();
+                move || {
+                    let body = { served.lock().unwrap().reviews_sig.clone() };
+                    async move {
+                        match body {
+                            Some(text) => (StatusCode::OK, text),
+                            None => (StatusCode::NOT_FOUND, String::new()),
+                        }
+                    }
+                }
+            }),
+        )
+        .route(
+            "/steps/oss-upload/1.0.0.yaml",
+            axum::routing::get({
+                let yaml = yaml.clone();
+                move || {
+                    let body = yaml.clone();
+                    async move { body }
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let (_, pool) = test_app().await;
+    for (key, value) in [
+        ("plugin_require_signed_index", "true".to_string()),
+        ("plugin_index_public_key", public.clone()),
+    ] {
+        sqlx::query(
+            "INSERT INTO platform_settings (key, value) VALUES (?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO plugin_sources (id, name, url, auto_enable, enabled, created_by) \
+         VALUES ('rl', 'Ledger source', ?, 0, 1, 'test')",
+    )
+    .bind(format!("http://{addr}/index.json"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let source = crate::services::plugin_pool::get_source(&pool, "rl")
+        .await
+        .unwrap()
+        .unwrap();
+    let http = crate::services::plugin_pool::http_client(30);
+    let sync = || {
+        crate::services::plugin_pool::sync_source(&http, &pool, &source, shared::version::VERSION)
+    };
+    let reviewed = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT reviewed FROM plugin_pool \
+             WHERE namespace = 'alice' AND step_id = 'oss-upload'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    // The happy path: signed index + signed ledger → the badge lands.
+    publish(
+        index.clone(),
+        Some(ledger(&format!(
+            r#"{{"reviews": [{{"sha256": "{yaml_sha}", "reviewed_by": "human", "date": "2026-10-26"}}]}}"#
+        ))),
+    );
+    sync().await.expect("signed ledger is accepted");
+    assert_eq!(reviewed().await, 1, "the reviewed hash carries the badge");
+
+    // A rewritten ledger under the OLD signature is refused (publish() always
+    // signs, so the tampering is applied to the served pair directly).
+    {
+        let mut served_now = served.lock().unwrap();
+        served_now.reviews = Some(ledger(r#"{"reviews": [{"sha256": "bb"}]}"#));
+    }
+    let error = sync().await.unwrap_err().to_string();
+    assert!(error.contains("reviews.json signature rejected"), "{error}");
+
+    // A ledger whose signature is absent (404) is refused too — under the
+    // trust anchor an unsigned ledger is as untrustworthy as an unsigned
+    // index.
+    served.lock().unwrap().reviews_sig = None;
+    let error = sync().await.unwrap_err().to_string();
+    assert!(
+        error.contains("publishes reviews.json without its signature"),
+        "{error}"
+    );
+
+    // Trust anchor off → the ledger is consumed as before (today's behavior).
+    sqlx::query(
+        "UPDATE platform_settings SET value = 'false' WHERE key = 'plugin_require_signed_index'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    publish(index, Some(ledger(r#"{"reviews": [{"sha256": "bb"}]}"#)));
+    sync()
+        .await
+        .expect("without the anchor the ledger needs no signature");
+    assert_eq!(reviewed().await, 0, "only real hashes get the badge");
+}
+
 /// Anti-rollback: a signature proves authenticity, not freshness. An attacker
 /// who kept an older signed index (and the signed hashes inside it) can replay
 /// the pair forever and every hash check still passes. The signed `sequence`
@@ -1696,7 +1903,7 @@ async fn signed_index_rollback_and_forked_sequence_are_refused() {
         let served = served.clone();
         let secret = secret.clone();
         move |body: String| {
-            let sig = shared::plugin_signature::sign_index(body.as_bytes(), &secret, "test-key")
+            let sig = shared::plugin_signature::sign_document(body.as_bytes(), &secret, "test-key")
                 .expect("sign");
             *served.lock().unwrap() = (body, sig);
         }

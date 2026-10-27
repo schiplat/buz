@@ -1,27 +1,34 @@
-//! Detached signatures for a source index (`index.json.sig`).
+//! Detached signatures for a source's trust documents (`index.json.sig`,
+//! `reviews.json.sig`).
 //!
 //! The index pins every template by content hash, but an unsigned index can be
 //! rewritten **together with** those hashes — the chain stays self-consistent
 //! while the content is attacker-chosen. A detached Ed25519 signature over the
-//! exact index bytes closes that gap: the publisher signs, a Manager verifies
-//! against a configured public key (typically one per source).
+//! exact bytes closes that gap: the publisher signs, a Manager verifies
+//! against a configured public key (typically one per source). The review
+//! ledger gets the same treatment: under a trust anchor, an unsigned ledger
+//! could resurrect "reviewed" verdicts the publisher has since revoked.
 //!
-//! Format (`index.json.sig`, JSON so the key id and diagnostics are readable):
+//! Format (`<document>.sig`, JSON so the key id and diagnostics are readable):
 //!
 //! ```json
 //! { "alg": "ed25519", "key_id": "buz-official-2026",
-//!   "signature": "<base64 64-byte signature>", "sha256": "<hex of index bytes>" }
+//!   "signature": "<base64 64-byte signature>", "sha256": "<hex of document bytes>" }
 //! ```
 //!
 //! `sha256` duplicates what the signature proves; it exists so a mismatch can
-//! be reported as "signed a different index" instead of a bare crypto error.
+//! be reported as "signed a different document" instead of a bare crypto error.
 
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-/// File name next to `index.json`; mirrors must copy it along.
+/// Signature file next to `index.json`; mirrors must copy it along.
 pub const SIGNATURE_FILE: &str = "index.json.sig";
+
+/// Signature file next to `reviews.json`, produced by the same
+/// `buz-plugin index --sign-key` run.
+pub const REVIEWS_SIGNATURE_FILE: &str = "reviews.json.sig";
 
 pub const ALG: &str = "ed25519";
 
@@ -75,33 +82,37 @@ pub fn generate_keypair() -> Result<(String, String), String> {
     ))
 }
 
-/// Sign index bytes; returns the serialized `index.json.sig` content.
-pub fn sign_index(
-    index_bytes: &[u8],
+/// Sign document bytes (an index, a review ledger); returns the serialized
+/// `<document>.sig` content.
+pub fn sign_document(
+    document_bytes: &[u8],
     secret_key_base64: &str,
     key_id: &str,
 ) -> Result<String, String> {
     let seed = decode_key(secret_key_base64, "secret key")?;
     let signing = SigningKey::from_bytes(&seed);
-    let signature = signing.sign(index_bytes);
+    let signature = signing.sign(document_bytes);
     let file = IndexSignature {
         alg: ALG.to_string(),
         key_id: key_id.trim().to_string(),
         signature: b64().encode(signature.to_bytes()),
-        sha256: sha256_hex(index_bytes),
+        sha256: sha256_hex(document_bytes),
     };
     serde_json::to_string_pretty(&file).map_err(|e| format!("cannot serialize signature: {e}"))
 }
 
-/// Verify `index_bytes` against a signature file and a trusted public key.
-/// Returns the signature's `key_id` so callers can log which key matched.
-pub fn verify_index(
-    index_bytes: &[u8],
+/// Verify document bytes against a signature file and a trusted public key.
+/// `signature_file` names the `.sig` document in error messages so a
+/// reviews-ledger failure does not read as an index failure. Returns the
+/// signature's `key_id` so callers can log which key matched.
+pub fn verify_document(
+    document_bytes: &[u8],
     signature_json: &str,
     public_key_base64: &str,
+    signature_file: &str,
 ) -> Result<String, String> {
     let file: IndexSignature = serde_json::from_str(signature_json)
-        .map_err(|e| format!("{SIGNATURE_FILE} is not a signature document: {e}"))?;
+        .map_err(|e| format!("{signature_file} is not a signature document: {e}"))?;
     if file.alg != ALG {
         return Err(format!(
             "unsupported signature algorithm '{}' — only '{ALG}' is accepted",
@@ -117,19 +128,19 @@ pub fn verify_index(
     let signature =
         Signature::from_slice(&raw).map_err(|e| format!("signature must be 64 bytes: {e}"))?;
     verifying
-        .verify_strict(index_bytes, &signature)
+        .verify_strict(document_bytes, &signature)
         .map_err(|_| {
-            let actual = sha256_hex(index_bytes);
+            let actual = sha256_hex(document_bytes);
             if actual == file.sha256 {
                 // Same bytes, bad signature → wrong key rather than tampering.
                 format!(
-                    "index signature does not match the configured public key (key '{}')",
+                    "signature does not match the configured public key (key '{}')",
                     file.key_id
                 )
             } else {
                 format!(
-                    "index does not match its signature — signed sha256 {}, received {} \
-                     (index.json and index.json.sig come from different revisions)",
+                    "document does not match its signature — signed sha256 {}, received {} \
+                     (the document and its signature come from different revisions)",
                     file.sha256, actual
                 )
             }

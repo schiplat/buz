@@ -352,32 +352,75 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
             .find(|(path, _)| path == &source_root.join(layout::INDEX_FILE))
             .map(|(_, content)| content.as_str())
             .ok_or_else(|| anyhow::anyhow!("index.json was not planned"))?;
-        let signature =
-            shared::plugin_signature::sign_index(index_content.as_bytes(), secret, key_id)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let sig_path = source_root.join(shared::plugin_signature::SIGNATURE_FILE);
-        if options.check {
-            let existing = std::fs::read_to_string(&sig_path).unwrap_or_default();
-            if existing != signature {
-                anyhow::bail!(
-                    "{} is out of date — re-run without --check to sign",
-                    sig_path.display()
-                );
+        sign_one(
+            &source_root,
+            shared::plugin_signature::SIGNATURE_FILE,
+            index_content.as_bytes(),
+            secret,
+            key_id,
+            options.check,
+        )?;
+        // The review ledger is trusted under the same trust anchor as the
+        // index, so a source that publishes one signs it in the same run —
+        // otherwise the badges could be forged by rewriting the ledger alone.
+        let reviews_path = source_root.join(layout::REVIEWS_FILE);
+        match std::fs::read_to_string(&reviews_path) {
+            Ok(ledger) => sign_one(
+                &source_root,
+                shared::plugin_signature::REVIEWS_SIGNATURE_FILE,
+                ledger.as_bytes(),
+                secret,
+                key_id,
+                options.check,
+            )?,
+            Err(error) if reviews_path.exists() => {
+                return Err(error)
+                    .with_context(|| format!("cannot read {}", reviews_path.display()));
             }
-            println!("signature up to date ({})", sig_path.display());
-        } else {
-            write_json(&sig_path, &signature)?;
-            println!("signed {} (key id: {key_id})", sig_path.display());
+            Err(_) => {}
         }
     } else if options.check {
         // An existing signature must not survive a manifest change.
-        let sig_path = source_root.join(shared::plugin_signature::SIGNATURE_FILE);
-        if sig_path.exists() {
-            println!(
-                "note: {} exists but --sign-key was not given — signature not re-checked",
+        for name in [
+            shared::plugin_signature::SIGNATURE_FILE,
+            shared::plugin_signature::REVIEWS_SIGNATURE_FILE,
+        ] {
+            let sig_path = source_root.join(name);
+            if sig_path.exists() {
+                println!(
+                    "note: {} exists but --sign-key was not given — signature not re-checked",
+                    sig_path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Sign (or, with `check`, re-verify) one document next to the source root.
+fn sign_one(
+    source_root: &Path,
+    signature_file: &str,
+    document: &[u8],
+    secret: &str,
+    key_id: &str,
+    check: bool,
+) -> anyhow::Result<()> {
+    let signature = shared::plugin_signature::sign_document(document, secret, key_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let sig_path = source_root.join(signature_file);
+    if check {
+        let existing = std::fs::read_to_string(&sig_path).unwrap_or_default();
+        if existing != signature {
+            anyhow::bail!(
+                "{} is out of date — re-run without --check to sign",
                 sig_path.display()
             );
         }
+        println!("signature up to date ({})", sig_path.display());
+    } else {
+        write_json(&sig_path, &signature)?;
+        println!("signed {} (key id: {key_id})", sig_path.display());
     }
     Ok(())
 }
@@ -843,6 +886,66 @@ run: echo ok
         opts.sequence = Some(0);
         let error = run(&opts).unwrap_err().to_string();
         assert!(error.contains("--sequence must be at least 1"), "{error}");
+    }
+
+    /// `--sign-key` signs the review ledger beside the index in the same run:
+    /// under a trust anchor the manager refuses an unsigned ledger, so one
+    /// publish must produce both signatures (and `--check` both stale ones).
+    #[test]
+    fn sign_key_covers_the_review_ledger_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        copy_tree(&fixtures().join("repo"), &repo);
+        let (secret, public) = shared::plugin_signature::generate_keypair().unwrap();
+        let key_path = repo.join("key.json");
+        fs::write(
+            &key_path,
+            format!("{{\"key_id\": \"k\", \"secret_key\": \"{secret}\"}}"),
+        )
+        .unwrap();
+        let ledger_path = repo.join("plugins/reviews.json");
+        fs::write(&ledger_path, "{\"reviews\": []}\n").unwrap();
+        let opts = Options {
+            updated_at: Some("2026-10-27T00:00:00Z".into()),
+            sign_key: Some(key_path),
+            ..options(&repo)
+        };
+
+        run(&opts).unwrap();
+        let index = fs::read_to_string(repo.join("plugins/index.json")).unwrap();
+        let sig = fs::read_to_string(repo.join("plugins/index.json.sig")).unwrap();
+        assert_eq!(
+            shared::plugin_signature::verify_document(
+                index.as_bytes(),
+                &sig,
+                &public,
+                shared::plugin_signature::SIGNATURE_FILE
+            )
+            .unwrap(),
+            "k"
+        );
+        let ledger = fs::read_to_string(&ledger_path).unwrap();
+        let ledger_sig = fs::read_to_string(repo.join("plugins/reviews.json.sig")).unwrap();
+        shared::plugin_signature::verify_document(
+            ledger.as_bytes(),
+            &ledger_sig,
+            &public,
+            shared::plugin_signature::REVIEWS_SIGNATURE_FILE,
+        )
+        .unwrap();
+
+        // An edited ledger makes --check fail naming the ledger signature.
+        let mut check_opts = opts.clone();
+        check_opts.check = true;
+        fs::write(&ledger_path, "{\"reviews\": [{\"sha256\": \"bb\"}]}\n").unwrap();
+        let error = run(&check_opts).unwrap_err().to_string();
+        assert!(error.contains("reviews.json.sig is out of date"), "{error}");
+
+        // No ledger → no ledger signature, index signing unaffected.
+        fs::remove_file(&ledger_path).unwrap();
+        fs::remove_file(repo.join("plugins/reviews.json.sig")).unwrap();
+        run(&opts).unwrap();
+        assert!(!repo.join("plugins/reviews.json.sig").exists());
     }
 
     #[test]

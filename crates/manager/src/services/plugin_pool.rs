@@ -748,15 +748,16 @@ async fn signature_policy(pool: &SqlitePool) -> (bool, String) {
 ///
 /// Returns the verifying key id when the index WAS verified: only an
 /// authentic index may advance the anti-rollback watermark (see
-/// [`enforce_index_freshness`]).
+/// [`enforce_index_freshness`]), and only then is the review ledger required
+/// to carry its own signature too (see [`verified_reviews`]).
 async fn verify_index_signature(
     http: &reqwest::Client,
     bases: &[String],
     index_text: &str,
-    pool: &SqlitePool,
+    require: bool,
+    public_key: &str,
     source_name: &str,
 ) -> anyhow::Result<Option<String>> {
-    let (require, public_key) = signature_policy(pool).await;
     if !require {
         return Ok(None);
     }
@@ -773,11 +774,52 @@ async fn verify_index_signature(
              (`buz-plugin index --sign-key`) or turn off the required-signature setting: {e}"
             )
         })?;
-    let key_id =
-        shared::plugin_signature::verify_index(index_text.as_bytes(), &signature, &public_key)
-            .map_err(|e| anyhow!("source '{source_name}' index signature rejected: {e}"))?;
+    let key_id = shared::plugin_signature::verify_document(
+        index_text.as_bytes(),
+        &signature,
+        public_key,
+        shared::plugin_signature::SIGNATURE_FILE,
+    )
+    .map_err(|e| anyhow!("source '{source_name}' index signature rejected: {e}"))?;
     tracing::info!(source = %source_name, key_id = %key_id, "index signature verified");
     Ok(Some(key_id))
+}
+
+/// Under the trust anchor, a review ledger is trusted only with its own
+/// signature: an unsigned or forged `reviews.json` could mark attacker-chosen
+/// hashes as human-reviewed and walk straight through `require_reviewed`.
+/// The ledger and its `reviews.json.sig` are produced by the same
+/// `buz-plugin index --sign-key` run, so a source that publishes a ledger
+/// publishes the signature next to it. Without the trust anchor the ledger is
+/// consumed as-is (the review gate is then the operator's own choice).
+async fn verified_reviews(
+    http: &reqwest::Client,
+    bases: &[String],
+    ledger: &str,
+    source_name: &str,
+    public_key: &str,
+) -> anyhow::Result<()> {
+    let signature = http_get_text_from_bases(
+        http,
+        bases,
+        shared::plugin_signature::REVIEWS_SIGNATURE_FILE,
+    )
+    .await
+    .map_err(|e| {
+        anyhow!(
+            "source '{source_name}' publishes reviews.json without its signature — publish \
+             reviews.json.sig alongside (buz-plugin index --sign-key signs index and ledger \
+             together) or turn off the required-signature setting: {e}"
+        )
+    })?;
+    shared::plugin_signature::verify_document(
+        ledger.as_bytes(),
+        &signature,
+        public_key,
+        shared::plugin_signature::REVIEWS_SIGNATURE_FILE,
+    )
+    .map_err(|e| anyhow!("source '{source_name}' reviews.json signature rejected: {e}"))?;
+    Ok(())
 }
 
 /// Anti-rollback watermark.
@@ -874,7 +916,16 @@ async fn sync_source_inner(
 ) -> Result<usize, anyhow::Error> {
     let bases = source_bases(source);
     let raw = http_get_text_from_bases(http, &bases, "index.json").await?;
-    let verified = verify_index_signature(http, &bases, &raw, pool, &source.name).await?;
+    let (require_signed, public_key) = signature_policy(pool).await;
+    let verified = verify_index_signature(
+        http,
+        &bases,
+        &raw,
+        require_signed,
+        &public_key,
+        &source.name,
+    )
+    .await?;
     let index = parse_index(&raw)
         .map_err(|e| anyhow!("invalid index.json: {e}{}", unexpected_body_hint(&raw)))?;
     if verified.is_some() {
@@ -886,26 +937,33 @@ async fn sync_source_inner(
     // Official-style sources publish reviews.json next to the index; when it
     // is fetchable, pool rows carry the review badge by hash membership.
     // When it is NOT fetchable, `reviewed` keeps each row's CURRENT value —
-    // a transient fetch failure must never wipe review badges.
+    // a transient fetch failure must never wipe review badges. Under the
+    // trust anchor a fetched ledger must carry its own signature, so the
+    // badges cannot be forged by rewriting the ledger alone.
     let fetched_reviews: Option<std::collections::HashSet<String>> =
         match http_get_text_from_bases(http, &bases, "reviews.json").await {
-            Ok(raw) => Some(
-                serde_json::from_str::<serde_json::Value>(&raw)
-                    .ok()
-                    .and_then(|v| v.get("reviews").cloned())
-                    .and_then(|r| serde_json::from_value::<Vec<serde_json::Value>>(r).ok())
-                    .map(|reviews| {
-                        reviews
-                            .iter()
-                            .filter_map(|r| {
-                                r.get("sha256")
-                                    .and_then(|s| s.as_str())
-                                    .map(str::to_lowercase)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            ),
+            Ok(raw) => {
+                if require_signed {
+                    verified_reviews(http, &bases, &raw, &source.name, &public_key).await?;
+                }
+                Some(
+                    serde_json::from_str::<serde_json::Value>(&raw)
+                        .ok()
+                        .and_then(|v| v.get("reviews").cloned())
+                        .and_then(|r| serde_json::from_value::<Vec<serde_json::Value>>(r).ok())
+                        .map(|reviews| {
+                            reviews
+                                .iter()
+                                .filter_map(|r| {
+                                    r.get("sha256")
+                                        .and_then(|s| s.as_str())
+                                        .map(str::to_lowercase)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                )
+            }
             Err(e) => {
                 tracing::debug!(
                     source = %source.name,

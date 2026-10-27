@@ -54,7 +54,7 @@ const settingsMeta: Record<string, SettingMeta> = {
   },
   plugin_require_signed_index: {
     label: 'Require signed index',
-    help: 'When on, every sync verifies index.json.sig against the public key below and rejects sources that are unsigned or were rewritten (for example by a mirror). Publish the signature with `buz-plugin index --sign-key`.',
+    help: 'When on, every sync verifies index.json.sig against the public key below and rejects sources that are unsigned or were rewritten (for example by a mirror). A fetched reviews.json must carry a verifying reviews.json.sig too, and the signed index sequence may never move backwards (a replayed older catalog is refused). Publish the signatures with `buz-plugin index --sign-key`.',
   },
   plugin_index_public_key: {
     label: 'Index signature public key',

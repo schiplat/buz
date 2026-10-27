@@ -207,24 +207,32 @@ Use it **only in jobs triggered by pushes/tags** — a `pull_request` workflow
 
 #### Step 3 — sign on every publish
 
+One `--sign-key` run signs both trust documents: `index.json` always, plus
+`reviews.json` when it lives beside the index — a source that publishes a
+ledger publishes its signature in the same breath. Refresh the ledger
+*before* signing, so the signature covers the refreshed badges:
+
 ```bash
+python3 scripts/gen_reviews.py --auto --commit "$(git rev-parse --short HEAD)"   # ledger first
 buz-plugin index \
   --revision "$GITHUB_SHA" \
   --updated-at "$(git log -1 --format=%cI)" \
   --sign-key /tmp/signing-key.json
 ```
 
-Writes `index.json.sig` next to `index.json` and prints `signed … (key id:
-acme-2026)`. Commit both files. In GitHub Actions:
+Writes `index.json.sig` (and `reviews.json.sig`) next to their documents and
+prints `signed … (key id: acme-2026)`. Commit them together with the
+manifests. In GitHub Actions:
 
 ```yaml
-- name: Generate and sign the index
+- name: Refresh the review ledger, then sign
   env:
     # Passed through env (not interpolated into the script) so the secret is
     # never part of the rendered command, and masked in logs.
     BUZ_PLUGIN_SIGNING_KEY: ${{ secrets.BUZ_PLUGIN_SIGNING_KEY }}
   run: |
     set -euo pipefail
+    python3 scripts/gen_reviews.py --auto --commit "${GITHUB_SHA::7}"
     umask 077                       # the key file never exists as world-readable
     KEY="$RUNNER_TEMP/signing-key.json"
     printf '%s' "$BUZ_PLUGIN_SIGNING_KEY" > "$KEY"
@@ -242,15 +250,16 @@ buz-plugin index --check --sign-key /tmp/signing-key.json \
   --revision "$GITHUB_SHA" --updated-at "$(git log -1 --format=%cI)"
 ```
 
-This re-checks both the manifests **and** the signature, and the two failures
-are distinguishable:
+This re-checks the manifests **and** both signatures, and the failures are
+distinguishable:
 
 | What changed | Failure |
 |---|---|
 | `index.json` differs from what the specs produce (hand edit, forgotten regeneration) | `index.json is out of date — run buz-plugin index … and commit the result` |
-| manifests are current but the committed `index.json.sig` no longer matches them (regenerated without `--sign-key`, rotated key, edited signature) | `index.json.sig is out of date — re-run without --check to sign` |
+| manifests are current but a committed `.sig` no longer matches its document (regenerated without `--sign-key`, rotated key, edited signature or ledger) | `index.json.sig / reviews.json.sig is out of date — re-run without --check to sign` |
 
-That is the CI gate: the committed signature must match the committed index.
+That is the CI gate: the committed signatures must match the committed
+documents.
 
 #### Step 5 — configure the Manager
 
@@ -259,14 +268,16 @@ Settings → **Index signature**:
 | Setting | Value |
 |---------|-------|
 | *Index signature public key* | the `public_key` value from Step 1 (base64) |
-| *Require signed index* | on — after the source publishes a signature |
+| *Require signed index* | on — after the source publishes signatures |
 
 With the switch on, a sync fails when the source is unsigned (`index is not
 signed — publish index.json.sig …`), when the signature was made by another key
-(`does not match the configured public key`), or when the index changed after
-signing (`index does not match its signature — signed sha256 …, received …
-(index.json and index.json.sig come from different revisions)`). The last one
-is the mirror-attack case.
+(`does not match the configured public key`), when the index changed after
+signing (`index does not match its signature — signed sha256 …, received …`),
+or when a fetched `reviews.json` has no verifying `reviews.json.sig` — the
+ledger carries the review badges, so an unsigned or rewritten one is refused
+rather than trusted. The third case is the mirror-attack; the last one is the
+forged-ledger attack.
 
 Per-plugin `meta.json` carries no signature, so a signed source refreshes
 through the full index instead of the meta shortcut.
@@ -295,10 +306,11 @@ watermark is also visible on the Sources page (`index sequence N · issued …`)
 
 #### Step 6 — mirrors copy the signature
 
-A mirror is a plain file copy: `index.json`, `index.json.sig`, `reviews.json`,
-`revision.json`, the specs and `meta.json` files. If `index.json.sig` is
-missing, Managers with the switch on reject the mirror. Publish content first
-and the sentinel last, and treat the signature as part of the content.
+A mirror is a plain file copy: `index.json`, `index.json.sig`,
+`reviews.json`, `reviews.json.sig`, `revision.json`, the specs and
+`meta.json` files. If a signature is missing, Managers with the switch on
+reject the mirror. Publish content first and the sentinel last, and treat
+the signatures as part of the content.
 
 #### Rotating the key
 

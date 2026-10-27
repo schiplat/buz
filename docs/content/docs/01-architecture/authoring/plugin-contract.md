@@ -109,7 +109,8 @@ your-plugins/
     ├── index.json            ← sequence + issued_at + entries (id / version / file / sha256)
     ├── reviews.json          ← optional; reviewed-content manifest
     ├── revision.json         ← freshness sentinel (CI-written, last)
-    ├── index.json.sig     ← optional detached signature over index.json
+    ├── index.json.sig        ← optional detached signature over index.json
+    ├── reviews.json.sig      ← optional; signature over reviews.json (same signing run)
     └── buz/                  ← namespace directory (specs)
         ├── http-check/
         │   ├── 1.0.0.yaml
@@ -152,7 +153,9 @@ trustworthy, and the index byte-stable:
   recorded after human review; the review gate (`require_reviewed`)
   rejects any template whose hash is absent from it. It lives per source
   root so official review authority and community entries never share a
-  ledger.
+  ledger. A rewritten ledger could mark attacker-chosen hashes as
+  reviewed, so under a trust anchor it is trusted only with its own
+  signature (below).
 - **`index.json.sig` is a detached Ed25519 signature over the exact index
   bytes** (`{"alg":"ed25519","key_id":"…","signature":"<base64>","sha256":"<hex>"}`).
   The content hashes inside an unsigned index can be rewritten together with
@@ -161,6 +164,10 @@ trustworthy, and the index byte-stable:
   `buz-plugin index --sign-key` and copy it alongside the index when mirroring.
   Authenticity is not freshness — the signed `sequence` supplies the ordering
   that makes a replay of an older signed index detectable.
+- **`reviews.json.sig` signs the ledger the same way**, produced by the same
+  `--sign-key` run. When *Require signed index* is on, a sync that fetches a
+  ledger without a verifying signature fails — otherwise anyone who could
+  rewrite `reviews.json` alone could grant themselves review approval.
 - **`revision.json` is the freshness sentinel.** It carries
   `{"revision": "<commit sha>", "updated_at": "<iso8601>"}` and is written
   **last** — it commits the sync. Comparing two sentinels (a few hundred
