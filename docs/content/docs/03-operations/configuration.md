@@ -214,6 +214,8 @@ firecracker_guest_image = "docker.io/library/debian@sha256:<digest>"
 firecracker_runtime = "<runtime configured in Docker daemon>"
 ```
 
+> **Planned replacement.** A design record — [Sandbox Host Configuration & Resource Profiles](/docs/01-architecture/execution/sandbox-host-configuration/) — moves this policy out of `sandboxd.toml` into Manager-managed configuration with named resource profiles. It is **not implemented yet**; the file-based workflow above remains current.
+
 All sandboxed tiers currently support local shell steps only: SSH, per-step Docker engine, registry-auth handoff, and host-side config preparation are rejected before the job starts. See [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes) for the full compatibility/security boundary and [Sandbox Isolation Tiers](/docs/01-architecture/execution/sandbox-isolation-tiers/) for the tier model.
 
 | Key | Notes |

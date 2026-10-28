@@ -95,6 +95,8 @@ Precedence: **UI policy > `runner.toml` > built-in default** — but the UI poli
 | `tls_skip_verify` | `runner.toml → [runner]` | TLS verification — **dev only** | — |
 | `standalone` | `runner.toml → [runner]` | Empty-token lab mode — **lab only** | — |
 
+> **Planned change.** A design record — [Sandbox Host Configuration & Resource Profiles](/docs/01-architecture/execution/sandbox-host-configuration/) — proposes moving the `[sandbox]` tier image/runtime keys out of `runner.toml` (and out of `sandboxd.toml`) into Manager-managed sandbox host configuration. Until it ships, the machine-local keys above remain authoritative.
+
 ### 2.2 Policy-managed (Manager UI → Runners — overrides `runner.toml` at job time)
 
 | Key | Declared in | Takes effect on | Overrides |
