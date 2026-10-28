@@ -83,9 +83,7 @@ pub fn plan(
     let pipeline: PipelineYaml =
         serde_yaml::from_str(raw).map_err(|error| format!("invalid pipeline YAML: {error}"))?;
     let steps: Vec<StepDef> = pipeline.steps.iter().map(StepDef::from).collect();
-    let reviewed_hashes = reviews_path
-        .map(|path| shared_reviewed_hashes(path))
-        .unwrap_or_default();
+    let reviewed_hashes = reviews_path.map(shared_reviewed_hashes).unwrap_or_default();
     let policy = crate::services::plugin_resolver::ResolutionPolicy {
         reviewed_hashes,
         require_reviewed,

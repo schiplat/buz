@@ -198,9 +198,9 @@ pub async fn create(
         )
         .await
         .map_err(AppError::ValidationFailed)?;
-        let steps = insert_steps(&mut *tx, &pipeline_id, &resolved.steps).await?;
+        let steps = insert_steps(&mut tx, &pipeline_id, &resolved.steps).await?;
         crate::services::plugin_resolver::replace_step_resolutions(
-            &mut *tx,
+            &mut tx,
             &pipeline_id,
             &resolved.resolutions,
         )
@@ -209,17 +209,17 @@ pub async fn create(
 
         // Insert env variables
         if let Some(envs) = &req.env {
-            insert_env_vars(&mut *tx, &pipeline_id, envs).await?;
+            insert_env_vars(&mut tx, &pipeline_id, envs).await?;
         }
 
         // Insert explicit secret bindings
         if let Some(secret_ids) = &req.secret_ids {
-            insert_pipeline_secret_bindings(&mut *tx, &pipeline_id, secret_ids).await?;
+            insert_pipeline_secret_bindings(&mut tx, &pipeline_id, secret_ids).await?;
         }
 
         // Insert explicit variable bindings
         if let Some(var_ids) = &req.var_ids {
-            insert_pipeline_var_bindings(&mut *tx, &pipeline_id, var_ids).await?;
+            insert_pipeline_var_bindings(&mut tx, &pipeline_id, var_ids).await?;
         }
         Ok(steps)
     }
@@ -591,9 +591,9 @@ pub async fn update(
         .execute(&mut *tx)
         .await?;
 
-    let steps = insert_steps(&mut *tx, &id, &resolved_steps.steps).await?;
+    let steps = insert_steps(&mut tx, &id, &resolved_steps.steps).await?;
     crate::services::plugin_resolver::replace_step_resolutions(
-        &mut *tx,
+        &mut tx,
         &id,
         &resolved_steps.resolutions,
     )
@@ -601,13 +601,13 @@ pub async fn update(
     .map_err(AppError::Internal)?;
 
     if let Some(envs) = &req.env {
-        insert_env_vars(&mut *tx, &id, envs).await?;
+        insert_env_vars(&mut tx, &id, envs).await?;
     }
     if let Some(secret_ids) = &req.secret_ids {
-        insert_pipeline_secret_bindings(&mut *tx, &id, secret_ids).await?;
+        insert_pipeline_secret_bindings(&mut tx, &id, secret_ids).await?;
     }
     if let Some(var_ids) = &req.var_ids {
-        insert_pipeline_var_bindings(&mut *tx, &id, var_ids).await?;
+        insert_pipeline_var_bindings(&mut tx, &id, var_ids).await?;
     }
     tx.commit().await?;
 
@@ -921,7 +921,7 @@ pub async fn enable(
     }
     // Audit inside the transaction: an unauditable enable is a failed enable.
     audit::record_in(
-        &mut *tx,
+        &mut tx,
         AuditEvent::from_auth(&auth, Action::PipelineEnable)
             .resource("pipeline", &id, &name)
             .team(Some(team_id))
@@ -1360,7 +1360,7 @@ pub async fn do_trigger(
     // Static host declarations are checked at trigger time. Dynamic host
     // references resolve only when a Runner claims the job, so restricted
     // environments reject them rather than allowing an unchecked target.
-    if let Some(env_id) = environment_id.as_deref() {
+    if let Some(env_id) = environment_id {
         let allowed: Vec<(String, String)> =
             sqlx::query("SELECT kind, value FROM environment_hosts WHERE environment_id = ?")
                 .bind(env_id)

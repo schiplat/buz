@@ -413,7 +413,7 @@ async fn resolve_uses_steps_stages_provenance_for_caller_transaction() {
 
     let mut tx = pool.begin().await.unwrap();
     manager::services::plugin_resolver::replace_step_resolutions(
-        &mut *tx,
+        &mut tx,
         "pipe-1",
         &resolved.resolutions,
     )

@@ -394,8 +394,8 @@ pub async fn upsert_from_yaml(
             .execute(&mut *tx)
             .await?;
 
-        insert_steps(&mut *tx, &id, &steps).await?;
-        crate::services::plugin_resolver::replace_step_resolutions(&mut *tx, &id, &resolutions)
+        insert_steps(&mut tx, &id, &steps).await?;
+        crate::services::plugin_resolver::replace_step_resolutions(&mut tx, &id, &resolutions)
             .await
             .map_err(anyhow::Error::msg)?;
 
@@ -407,7 +407,7 @@ pub async fn upsert_from_yaml(
                     value: v.clone(),
                 })
                 .collect();
-            insert_env_vars(&mut *tx, &id, &pairs).await?;
+            insert_env_vars(&mut tx, &id, &pairs).await?;
         }
         if !pipeline_secrets.is_empty() {
             // Same-team name resolve only (never bind another team's secret)
@@ -433,7 +433,7 @@ pub async fn upsert_from_yaml(
                     "YAML secrets: some names missing or not in this pipeline's team — skipped"
                 );
             }
-            insert_pipeline_secret_bindings(&mut *tx, &id, &secret_ids).await?;
+            insert_pipeline_secret_bindings(&mut tx, &id, &secret_ids).await?;
         }
         if let Some(ref var_names) = parsed.variables {
             if !var_names.is_empty() {
@@ -456,7 +456,7 @@ pub async fn upsert_from_yaml(
                     .into_iter()
                     .map(|r| r.0)
                     .collect();
-                insert_pipeline_var_bindings(&mut *tx, &id, &var_ids).await?;
+                insert_pipeline_var_bindings(&mut tx, &id, &var_ids).await?;
             }
         }
 
@@ -500,8 +500,8 @@ pub async fn upsert_from_yaml(
         .execute(&mut *tx)
         .await?;
 
-        insert_steps(&mut *tx, &id, &steps).await?;
-        crate::services::plugin_resolver::replace_step_resolutions(&mut *tx, &id, &resolutions)
+        insert_steps(&mut tx, &id, &steps).await?;
+        crate::services::plugin_resolver::replace_step_resolutions(&mut tx, &id, &resolutions)
             .await
             .map_err(anyhow::Error::msg)?;
 
@@ -513,7 +513,7 @@ pub async fn upsert_from_yaml(
                     value: v.clone(),
                 })
                 .collect();
-            insert_env_vars(&mut *tx, &id, &pairs).await?;
+            insert_env_vars(&mut tx, &id, &pairs).await?;
         }
         if !pipeline_secrets.is_empty() {
             // Same-team name resolve only (never bind another team's secret)
@@ -539,7 +539,7 @@ pub async fn upsert_from_yaml(
                     "YAML secrets: some names missing or not in this pipeline's team — skipped"
                 );
             }
-            insert_pipeline_secret_bindings(&mut *tx, &id, &secret_ids).await?;
+            insert_pipeline_secret_bindings(&mut tx, &id, &secret_ids).await?;
         }
         if let Some(ref var_names) = parsed.variables {
             if !var_names.is_empty() {
@@ -562,7 +562,7 @@ pub async fn upsert_from_yaml(
                     .into_iter()
                     .map(|r| r.0)
                     .collect();
-                insert_pipeline_var_bindings(&mut *tx, &id, &var_ids).await?;
+                insert_pipeline_var_bindings(&mut tx, &id, &var_ids).await?;
             }
         }
 
@@ -841,6 +841,7 @@ pub async fn list_yaml_files(
 /// When `bind_pipeline_id` is set (migrating a Form/API pipeline), that row is
 /// retargeted to `source=yaml` + this path before upsert so the id is preserved.
 /// `is_active` is never forced on.
+#[allow(clippy::too_many_arguments)] // scanner context: paths, settings, index, progress
 pub async fn write_and_upsert_yaml_locked(
     pool: &SqlitePool,
     scan_dir: &str,
@@ -1258,6 +1259,7 @@ pub async fn yaml_sync_status(
 
 /// Extract trigger information from the YAML `on` block.
 /// Tuple order: (type, webhook path/secret/environment, cron schedule/environment, inputs).
+#[allow(clippy::type_complexity)] // mirrors the trigger YAML shape one field per slot
 fn extract_trigger(
     on: &Option<TriggerYaml>,
 ) -> (

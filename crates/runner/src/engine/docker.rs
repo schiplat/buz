@@ -49,6 +49,7 @@ pub fn build_docker_run_args(
     )
 }
 
+#[allow(clippy::too_many_arguments)] // docker run surface: image, workdir, cmd, env, volumes, socket
 pub fn build_docker_run_args_with_socket(
     image: &str,
     runner_workspace_dir: &str,

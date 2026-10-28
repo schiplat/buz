@@ -58,7 +58,7 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
                 return Ok(());
             }
             let parsed = url::Url::parse(value)
-                .map_err(|_| format!("marketplace_url must be an absolute http(s) URL"))?;
+                .map_err(|_| "marketplace_url must be an absolute http(s) URL".to_string())?;
             if parsed.scheme() != "http" && parsed.scheme() != "https" {
                 return Err("marketplace_url must be an http(s) URL".into());
             }

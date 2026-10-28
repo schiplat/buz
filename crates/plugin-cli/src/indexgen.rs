@@ -145,7 +145,7 @@ fn catalog_header(
     if options.sequence.is_none() {
         if let Some(prev) = previous.as_ref().filter(|prev| prev.steps == planned_steps) {
             if let Some(sequence) = prev.sequence {
-                let issued_at = prev.issued_at.clone().unwrap_or_else(|| now_rfc3339());
+                let issued_at = prev.issued_at.clone().unwrap_or_else(now_rfc3339);
                 return Ok((sequence, issued_at));
             }
         }
@@ -156,7 +156,7 @@ fn catalog_header(
         .and_then(|prev| prev.sequence)
         .unwrap_or(0);
     let sequence = options.sequence.unwrap_or(previous_sequence + 1);
-    let issued_at = options.updated_at.clone().unwrap_or_else(|| now_rfc3339());
+    let issued_at = options.updated_at.clone().unwrap_or_else(now_rfc3339);
     Ok((sequence, issued_at))
 }
 

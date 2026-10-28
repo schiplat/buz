@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use crate::services::plugin_resolver::{self, ResolutionPolicy, ResolvedPlugin};
 
-/// URL helpers ----------------------------------------------------------------
+// URL helpers ------------------------------------------------------------------
 
 /// Base URL of a source: the index URL minus its `index.json` tail.
 pub fn base_url(index_url: &str) -> String {
@@ -103,7 +103,7 @@ fn version_sort_key(version: &str) -> (u64, u64, u64) {
     (next(), next(), next())
 }
 
-/// Rows -----------------------------------------------------------------------
+// Rows ------------------------------------------------------------------
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SourceRow {
@@ -142,6 +142,7 @@ pub struct PoolEntryMeta {
     pub engine: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)] // one row of pool settings; a struct here would only add noise
 fn meta_json_string(
     category: &Option<String>,
     name: &Option<String>,
@@ -395,9 +396,10 @@ pub fn parse_index(raw: &str) -> Result<PluginIndex, String> {
     Ok(index)
 }
 
-/// DB access -------------------------------------------------------------------
+// DB access ------------------------------------------------------------------
 
 pub async fn list_sources(pool: &SqlitePool) -> Result<Vec<SourceRow>, anyhow::Error> {
+    #[allow(clippy::type_complexity)] // sqlx row tuple mirrors the SELECT column order
     let rows: Vec<(
         String,
         String,
@@ -479,7 +481,7 @@ async fn enabled_rows_for_namespace(
     Ok(rows.into_iter().map(pool_row_from).collect())
 }
 
-/// Sync ------------------------------------------------------------------------
+// Sync ------------------------------------------------------------------
 
 /// Per-row state a sync round needs: the review badge, the pinned sha256,
 /// and the cached compatibility verdict plus the manager version it was
@@ -498,6 +500,7 @@ async fn existing_rows_for_source(
     pool: &SqlitePool,
     source_id: &str,
 ) -> Result<std::collections::HashMap<(String, String, String), ExistingRowState>, anyhow::Error> {
+    #[allow(clippy::type_complexity)] // sqlx row tuple mirrors the SELECT column order
     let rows: Vec<(
         String,
         String,
@@ -632,10 +635,7 @@ async fn resolve_compat(
         Err(fetch_error) => {
             let incompatible_per_index = declared_requires
                 .map(|requires| {
-                    matches!(
-                        shared::plugin_spec::buz_requirement_satisfied(requires, current_buz),
-                        Err(_)
-                    )
+                    shared::plugin_spec::buz_requirement_satisfied(requires, current_buz).is_err()
                 })
                 .unwrap_or(false);
             match declared_requires {
@@ -1013,7 +1013,7 @@ async fn sync_source_inner(
     let mut undownloadable = 0usize;
     for (namespace, plugin_id, versions) in groups {
         let mut versions = versions;
-        versions.sort_by(|a, b| version_sort_key(&b.version).cmp(&version_sort_key(&a.version)));
+        versions.sort_by_key(|v| std::cmp::Reverse(version_sort_key(&v.version)));
         // Initialization: a plugin the pool has never seen starts with its
         // LATEST COMPATIBLE version enabled — never the whole version list,
         // and never an incompatible one. A plugin the curator has already
@@ -1278,6 +1278,7 @@ struct PluginMetaEntry {
 /// Upsert one plugin's rows from its meta.json. Same conflict semantics as
 /// the full sync (enable state preserved); review badges are preserved too —
 /// meta.json carries no review data, the full sync refreshes those.
+#[allow(clippy::too_many_arguments)] // one row of pool settings; a struct here would only add noise
 async fn upsert_plugin_meta(
     http: &reqwest::Client,
     pool: &SqlitePool,
@@ -1383,7 +1384,7 @@ async fn upsert_plugin_meta(
     Ok(())
 }
 
-/// Enable-time verification（收录即校验）---------------------------------------
+// Enable-time verification（收录即校验）---------------------------------------
 
 /// Fetch (cache → HTTP), verify the sha256, parse, and run the save-time spec
 /// validation. An entry only enters the enabled pool once this passes —
@@ -1488,7 +1489,7 @@ pub async fn sync_all_enabled(
     synced
 }
 
-/// Resolution ------------------------------------------------------------------
+// Resolution ------------------------------------------------------------------
 
 /// Resolve a `uses:` reference from the enabled pool. `None` = the namespace
 /// has no pool entries (caller falls back to the local index). Branch pins
@@ -1791,7 +1792,7 @@ async fn http_get_text(http: &reqwest::Client, url: &str) -> Result<String, anyh
         .map_err(|e| anyhow!("source response could not be read: {e}"))
 }
 
-/// Mirror drift check -------------------------------------------------------
+// Mirror drift check ------------------------------------------------------------------
 
 #[derive(Debug, serde::Serialize)]
 pub struct MirrorCheck {

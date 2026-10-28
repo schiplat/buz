@@ -414,9 +414,7 @@ async fn handle_mock_conn(
         )
     } else if method == "POST" && path.ends_with("/actions/variables") {
         ("201 Created", String::new(), String::new())
-    } else if method == "PATCH" && path.contains("/actions/variables/") {
-        ("204 No Content", String::new(), String::new())
-    } else if method == "DELETE" && path.contains("/actions/variables/") {
+    } else if (method == "PATCH" || method == "DELETE") && path.contains("/actions/variables/") {
         ("204 No Content", String::new(), String::new())
     } else if path.starts_with("/orgs/myorg/repos") {
         let list = owned

@@ -99,17 +99,20 @@ pub fn validate_prerequisites(
     kvm_path: &Path,
     requested_runtime: &str,
 ) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        !requested_runtime.trim().is_empty() == descriptor.runtime().is_some(),
-        "requested runtime for '{}' tier does not match supervisor policy",
-        descriptor.mode.as_str()
-    );
-    if let Some(runtime) = descriptor.runtime() {
-        anyhow::ensure!(
-            requested_runtime.trim() == runtime,
-            "requested runtime for '{}' tier does not match supervisor policy",
+    let requested = requested_runtime.trim();
+    match descriptor.runtime() {
+        Some(configured) => anyhow::ensure!(
+            requested == configured,
+            "requested runtime '{requested}' for '{}' tier does not match supervisor policy \
+             '{configured}'",
             descriptor.mode.as_str()
-        );
+        ),
+        None => anyhow::ensure!(
+            requested.is_empty(),
+            "requested runtime '{requested}' for '{}' tier does not match supervisor policy \
+             (the supervisor configured none)",
+            descriptor.mode.as_str()
+        ),
     }
     if descriptor.requires_linux {
         anyhow::ensure!(

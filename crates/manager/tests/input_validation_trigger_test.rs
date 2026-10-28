@@ -417,7 +417,7 @@ async fn webhook_path_enforces_required() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/hooks/deploy-prod?tag=1.2.3"))
+                .uri("/api/v1/hooks/deploy-prod?tag=1.2.3".to_string())
                 .header("Content-Type", "application/json")
                 .body(Body::from(r#"{}"#))
                 .unwrap(),

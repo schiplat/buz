@@ -2657,8 +2657,7 @@ async fn validate_execution_mode_transition(
         .fetch_one(&mut *tx)
         .await?;
         if !fresh || !checked_fresh || backend != ExecutionBackendStatus::Supported {
-            let detail =
-                reason.unwrap_or_else(|| "capability check is stale or unsupported".into());
+            let detail = reason.unwrap_or("capability check is stale or unsupported");
             return Err(AppError::Conflict(format!(
                 "runner does not support {} execution: {detail}",
                 mode.as_str()
@@ -2775,7 +2774,7 @@ pub async fn update_runner(
             .fetch_one(&mut *tx)
             .await?;
         if current != mode.as_str() {
-            if let Err(error) = validate_execution_mode_transition(&mut *tx, &id, mode).await {
+            if let Err(error) = validate_execution_mode_transition(&mut tx, &id, mode).await {
                 tx.rollback().await?;
                 return Err(error);
             }

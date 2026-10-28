@@ -97,7 +97,7 @@ pub async fn setup(
 
     // No actor exists yet: the first admin is a system-provisioned account.
     audit::record_in(
-        &mut *tx,
+        &mut tx,
         AuditEvent::system(Action::AuthSetup)
             .on(Resource::user(&user_id, &username))
             .after(Some(serde_json::json!({

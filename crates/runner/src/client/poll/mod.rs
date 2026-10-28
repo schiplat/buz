@@ -1065,6 +1065,7 @@ async fn build_step_secrets(
 /// and the Manager-attached fail-fast errors (input validation, env
 /// expansion, registry auth, host resolution, config auth/render). Every
 /// error here has already been reported via StepLogger before returning.
+#[allow(clippy::too_many_arguments)] // job execution context: step, sandbox, secrets, logging handles
 async fn announce_step(
     log: &StepLogger,
     config: &Config,
@@ -1245,6 +1246,7 @@ async fn open_ssh_sessions(
 /// Prepare failures MUST be reported with this step's `step_order` (not
 /// the job-level -1 catch in `run_one_job`) so Job Detail attaches the
 /// ERROR to the correct terminal without frontend guessing.
+#[allow(clippy::too_many_arguments)] // job execution context: step, sandbox, secrets, logging handles
 async fn prepare_step_config(
     log: &StepLogger,
     config: &Config,
@@ -1915,6 +1917,7 @@ impl SandboxOutputMasker {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // job execution context: step, sandbox, secrets, logging handles
 async fn run_sandbox_step(
     log: &StepLogger,
     config: &Config,
@@ -1998,6 +2001,7 @@ async fn run_sandbox_step(
 /// - `KEY<<DELIM` — multiline block; following lines until a line equal to
 ///   `DELIM` are joined with `\n` (GHA heredoc form).
 /// - Blank lines and `# comments` are skipped; anything else is a warning.
+///
 /// Duplicate keys: the last write wins (file order).
 pub fn parse_buz_env_file(path: &str) -> anyhow::Result<Vec<(String, String)>> {
     let content = match std::fs::read_to_string(path) {

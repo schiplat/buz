@@ -115,7 +115,7 @@ impl PluginSpec {
 
     /// Plugin-id portion of `id` (`buz/feishu` → `feishu`).
     pub fn plugin_id(&self) -> &str {
-        self.id.split('/').last().unwrap_or("")
+        self.id.rsplit('/').next().unwrap_or("")
     }
 
     /// Effective engine (`shell` when omitted).
@@ -535,7 +535,7 @@ pub fn validate_plugin_spec(spec: &PluginSpec, current_buz: &str) -> Result<(), 
     }
     if !spec.capabilities.is_empty() {
         let version = parse_version_triple(current_buz);
-        if version.map_or(true, |version| version < (1, 8, 0)) {
+        if version.is_none_or(|version| version < (1, 8, 0)) {
             errors.push("capabilities: this plugin requires Buz >= 1.8.0".into());
         }
         let requirement = spec

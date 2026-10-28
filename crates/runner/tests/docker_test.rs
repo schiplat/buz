@@ -21,8 +21,10 @@ fn temp_socket() -> (
 
 #[test]
 fn strict_policy_allows_workspace_without_extra_capabilities() {
-    let mut runner = RunnerSection::default();
-    runner.docker_mount_policy = DockerMountPolicy::Strict;
+    let runner = RunnerSection {
+        docker_mount_policy: DockerMountPolicy::Strict,
+        ..Default::default()
+    };
     assert_eq!(
         validate_step_policy(&runner, &[], &[], false, false).unwrap(),
         None
@@ -31,8 +33,10 @@ fn strict_policy_allows_workspace_without_extra_capabilities() {
 
 #[test]
 fn strict_policy_rejects_explicit_mount_privileged_and_host_prepare() {
-    let mut runner = RunnerSection::default();
-    runner.docker_mount_policy = DockerMountPolicy::Strict;
+    let runner = RunnerSection {
+        docker_mount_policy: DockerMountPolicy::Strict,
+        ..Default::default()
+    };
     assert!(validate_step_policy(&runner, &[], &["/data:/data".into()], false, false).is_err());
     assert!(validate_step_policy(&runner, &[], &[], true, false).is_err());
     assert!(validate_step_policy(&runner, &[], &[], false, true).is_err());
@@ -40,10 +44,12 @@ fn strict_policy_rejects_explicit_mount_privileged_and_host_prepare() {
 
 #[test]
 fn socket_capability_requires_local_allow_and_valid_source() {
-    let mut runner = RunnerSection::default();
-    runner.docker_mount_policy = DockerMountPolicy::Strict;
     let (socket_dir, _listener, socket_path) = temp_socket();
-    runner.docker_socket_path = socket_path.to_string_lossy().into_owned();
+    let mut runner = RunnerSection {
+        docker_mount_policy: DockerMountPolicy::Strict,
+        docker_socket_path: socket_path.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
     let cap = vec!["docker-socket".to_string()];
     assert!(validate_step_policy(&runner, &cap, &[], false, false).is_err());
     runner.docker_socket_allowed = true;
@@ -59,11 +65,13 @@ fn socket_capability_requires_local_allow_and_valid_source() {
 
 #[test]
 fn strict_policy_accepts_capability_only_and_rejects_explicit_socket_mounts() {
-    let mut runner = RunnerSection::default();
-    runner.docker_mount_policy = DockerMountPolicy::Strict;
     let (socket_dir, _listener, socket_path) = temp_socket();
-    runner.docker_socket_allowed = true;
-    runner.docker_socket_path = socket_path.to_string_lossy().into_owned();
+    let mut runner = RunnerSection {
+        docker_mount_policy: DockerMountPolicy::Strict,
+        docker_socket_allowed: true,
+        docker_socket_path: socket_path.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
     let cap = vec!["docker-socket".to_string()];
     assert!(validate_step_policy(&runner, &cap, &[], false, false)
         .unwrap()
@@ -82,16 +90,26 @@ fn strict_policy_accepts_capability_only_and_rejects_explicit_socket_mounts() {
 
 #[test]
 fn legacy_policy_keeps_normal_mounts_but_socket_requires_local_authorization() {
-    let mut runner = RunnerSection::default();
+    let default_runner = RunnerSection::default();
     assert!(
-        validate_step_policy(&runner, &[], &["/data:/data".into()], false, false)
+        validate_step_policy(&default_runner, &[], &["/data:/data".into()], false, false)
             .unwrap()
             .is_none()
     );
     let (socket_dir, _listener, socket_path) = temp_socket();
-    runner.docker_socket_path = socket_path.to_string_lossy().into_owned();
+    let mut runner = RunnerSection {
+        docker_socket_path: socket_path.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
     let socket_volume = format!("{}:/var/run/docker.sock", socket_path.display());
-    assert!(validate_step_policy(&runner, &[], &[socket_volume.clone()], false, false).is_err());
+    assert!(validate_step_policy(
+        &runner,
+        &[],
+        std::slice::from_ref(&socket_volume),
+        false,
+        false
+    )
+    .is_err());
     runner.docker_socket_allowed = true;
     assert!(
         validate_step_policy(&runner, &[], &[socket_volume], false, false)

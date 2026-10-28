@@ -662,8 +662,10 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn sandbox_modes_reject_ssh_before_contacting_supervisor() {
-    let mut config = runner::config::Config::default();
-    config.execution_mode = shared::protocol::RunnerExecutionMode::Container;
+    let config = runner::config::Config {
+        execution_mode: shared::protocol::RunnerExecutionMode::Container,
+        ..Default::default()
+    };
     let task = serde_json::json!({
         "job_id": "unsupported-ssh-job",
         "tasks": [{ "name": "remote", "exec_type": "ssh", "command_template": "echo hi" }]
@@ -689,8 +691,10 @@ async fn sandbox_mode_fails_closed_when_supervisor_is_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().join("job-shell");
     std::fs::create_dir(&workspace).unwrap();
-    let mut config = runner::config::Config::default();
-    config.execution_mode = shared::protocol::RunnerExecutionMode::Container;
+    let mut config = runner::config::Config {
+        execution_mode: shared::protocol::RunnerExecutionMode::Container,
+        ..Default::default()
+    };
     config.runner.workspace_dir = workspace.to_string_lossy().into_owned();
     config.sandbox.workspace_root = dir.path().to_string_lossy().into_owned();
     config.sandbox.container_image = "job-image@sha256:abc".into();

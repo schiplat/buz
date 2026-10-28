@@ -32,6 +32,7 @@ async fn pipeline_team(pool: &sqlx::SqlitePool, pipeline_id: &str) -> Result<Str
         .ok_or_else(|| AppError::NotFound("pipeline not found".into()))
 }
 
+#[allow(clippy::too_many_arguments)] // handler context: state, path, body, headers, auth
 fn public_hook_view(
     id: &str,
     label: &str,

@@ -102,7 +102,7 @@ Run `buz-plugin validate {plugin_dir_display}` before committing.
 
     // The template starts minimal on purpose: validate immediately and
     // surface what the contract still requires (e.g. community attribution).
-    match validate::check(&[plugin_dir.clone()]) {
+    match validate::check(std::slice::from_ref(&plugin_dir)) {
         Ok(0) => println!("spec passes the contract gate — ready to commit"),
         Ok(failures) => {
             println!("{failures} check(s) failed — fix the items above, then re-run validate")

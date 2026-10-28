@@ -51,6 +51,12 @@ pub struct LogBroadcaster {
     pipeline_sinks: Arc<RwLock<HashMap<String, JobSink>>>,
 }
 
+impl Default for LogBroadcaster {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LogBroadcaster {
     pub fn new() -> Self {
         Self {

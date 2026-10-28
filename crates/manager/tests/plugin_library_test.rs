@@ -213,7 +213,7 @@ async fn uses_step_resolves_expands_and_locks_provenance() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(&format!("/api/v1/pipelines/{pipeline_id}/trigger"))
+                .uri(format!("/api/v1/pipelines/{pipeline_id}/trigger"))
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(r#"{"environment":"default","inputs":{}}"#))
@@ -244,7 +244,7 @@ async fn uses_step_resolves_expands_and_locks_provenance() {
     assert_eq!(task["marketplace"]["source"], source);
     assert_eq!(task["marketplace"]["reviewed"], false);
     assert_eq!(task["step_order"], 1);
-    assert_eq!(snapshot_raw.contains("${secrets.FEISHU}"), true);
+    assert!(snapshot_raw.contains("${secrets.FEISHU}"));
     assert!(!snapshot_raw.contains("not-a-url"));
 
     // Claim validates the decrypted secret against the template constraint,
@@ -328,7 +328,7 @@ async fn frozen_docker_task_claim_preserves_privileged_and_nullable_host_id() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(&format!("/api/v1/pipelines/{pipeline_id}/trigger"))
+                .uri(format!("/api/v1/pipelines/{pipeline_id}/trigger"))
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(r#"{"environment":"default","inputs":{}}"#))
@@ -424,7 +424,7 @@ run: echo "$INPUT_RETRIES"
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(&format!("/api/v1/pipelines/{pipeline_id}/trigger"))
+                .uri(format!("/api/v1/pipelines/{pipeline_id}/trigger"))
                 .header(AUTHORIZATION, format!("Bearer {jwt}"))
                 .header("Content-Type", "application/json")
                 .body(Body::from(r#"{"environment":"default","inputs":{}}"#))

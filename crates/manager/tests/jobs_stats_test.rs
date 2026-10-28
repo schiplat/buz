@@ -299,7 +299,7 @@ async fn trend_team_param_scopes_for_admin_and_forbids_non_members() {
     // total 6 (j1,j2,j3,j5,j7,j8), success 2, failed 2, pending 2.
     let (status, body) = get_json(
         &app,
-        &format!("/api/v1/jobs/stats/trend?days=7&team_id=team-1"),
+        "/api/v1/jobs/stats/trend?days=7&team_id=team-1",
         bearer(ADMIN_ID, true),
     )
     .await;
@@ -316,7 +316,7 @@ async fn trend_team_param_scopes_for_admin_and_forbids_non_members() {
     // Developer asking for another team is rejected.
     let (status, _) = get_json(
         &app,
-        &format!("/api/v1/jobs/stats/trend?days=7&team_id=team-2"),
+        "/api/v1/jobs/stats/trend?days=7&team_id=team-2",
         bearer(USER_ID, false),
     )
     .await;

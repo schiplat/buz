@@ -1,0 +1,15 @@
+# cargo-audit policy: advisories that are documented as accepted risk in
+# SECURITY.md. Anything not listed here must stay clean.
+[advisories]
+ignore = [
+    # rsa (via russh SSH support): Marvin Attack timing side channel. No fixed
+    # release exists upstream. Impact is limited to RSA key exchange paths —
+    # prefer Ed25519 keys and modern ciphers. See SECURITY.md.
+    "RUSTSEC-2023-0071",
+    # tokio: `AsyncFd::new` and related constructors violate I/O safety. This
+    # workspace does not use AsyncFd and no dependency enables that feature
+    # (`cargo tree -e features -i tokio`), so the unsound API is unreachable.
+    # tokio 1.54.1 also breaks the clock-probe tests; the upgrade needs its own
+    # investigation. See SECURITY.md.
+    "RUSTSEC-2026-0386",
+]

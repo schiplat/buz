@@ -171,6 +171,7 @@ pub async fn handle(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // handler context: state, path, body, headers, auth
 async fn finish_claimed(
     state: &AppState,
     event_id: &str,

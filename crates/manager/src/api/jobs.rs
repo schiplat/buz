@@ -437,7 +437,7 @@ pub async fn cancel(
         ));
     };
     audit::record_in(
-        &mut *tx,
+        &mut tx,
         AuditEvent::new(Action::JobCancel, &auth)
             .on(Resource::job(
                 &id,

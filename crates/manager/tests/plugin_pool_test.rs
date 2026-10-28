@@ -521,10 +521,7 @@ inputs:
 run: |
   echo "hello ${INPUT_NAME}"
 "#
-    .replace(
-        "\n", "
-",
-    );
+    .to_string();
     let yaml_sha = {
         use sha2::{Digest, Sha256};
         format!("{:x}", Sha256::digest(yaml.as_bytes()))
@@ -936,12 +933,11 @@ async fn full_meta_source_probes_files_on_staging() {
         use sha2::{Digest, Sha256};
         format!("{:x}", Sha256::digest(raw.as_bytes()))
     };
-    let fast_spec = format!(
-        "id: dave/fast\nversion: 1.0.0\npublisher: community\nauthor: dave\n\
+    let fast_spec = "id: dave/fast\nversion: 1.0.0\npublisher: community\nauthor: dave\n\
          source_repo: https://github.com/dave/steps\nengine: shell\n\
          requires_buz: \">=1.0.0\"\ninputs:\n  name:\n    type: string\n    required: true\n\
          run: |\n  echo hello\n"
-    );
+        .to_string();
     let portal_spec = fast_spec
         .replace("dave/fast", "dave/portal")
         .replace(">=1.0.0", ">=99.0.0");
@@ -1358,7 +1354,8 @@ async fn pool_toggle_writes_an_audit_record_with_the_diff() {
         assert_eq!(status, StatusCode::OK, "{body}");
     }
 
-    let rows: Vec<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+    type AuditRow = (String, String, String, Option<String>, Option<String>);
+    let rows: Vec<AuditRow> = sqlx::query_as(
         "SELECT action, resource_type, resource_id, before_json, after_json \
          FROM audit_logs WHERE action = 'plugin_pool.toggle' ORDER BY created_at",
     )

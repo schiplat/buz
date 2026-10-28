@@ -421,7 +421,7 @@ pub async fn toggle_pool_entry(
         return Err(AppError::NotFound("pool entry not found".into()));
     }
     audit::record_in(
-        &mut *tx,
+        &mut tx,
         AuditEvent::new(Action::PluginPoolToggle, &auth)
             .on(Resource::plugin_pool(&namespace, &plugin_id, &version))
             .changes(

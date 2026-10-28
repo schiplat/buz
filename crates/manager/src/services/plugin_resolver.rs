@@ -92,7 +92,6 @@ fn settings() -> PluginIndexSettings {
         reviewed_manifest: overrides
             .reviewed_manifest
             .unwrap_or(base.reviewed_manifest),
-        ..base
     }
 }
 
@@ -848,7 +847,7 @@ pub async fn resolve_uses_steps_async(
             // `buz/` via git clone, air-gap vendor dirs — resolves from the
             // local index. Branch pins error on the local path by design.
             let (resolved, reviewed) = match super::plugin_pool::resolve_remote(
-                &http,
+                http,
                 pool,
                 &uses_ref,
                 &policy,
