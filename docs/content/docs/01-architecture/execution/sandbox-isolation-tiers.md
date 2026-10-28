@@ -222,5 +222,6 @@ Measured 2026-10-28 on the verification host (Debian 13, **ARM64, 2 vCPU, no `/d
 
 - [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes)
 - [Configuration — sandbox and VM options](/docs/03-operations/configuration/)
+- [Sandbox Host Configuration & Resource Profiles](/docs/01-architecture/execution/sandbox-host-configuration/) — accepted design for Manager-managed host policy and named resource profiles
 - [Security Notes](https://github.com/schiplat/buz/blob/master/SECURITY.md)
 - Upstream: [gVisor](https://github.com/google/gvisor), [Firecracker](https://github.com/firecracker-microvm/firecracker)
