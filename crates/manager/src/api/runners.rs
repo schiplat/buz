@@ -141,14 +141,11 @@ fn i64_bool(v: i64) -> bool {
 }
 
 fn parse_execution_mode(value: String) -> Result<shared::protocol::RunnerExecutionMode, AppError> {
-    match value.as_str() {
-        "host" => Ok(shared::protocol::RunnerExecutionMode::Host),
-        "container" => Ok(shared::protocol::RunnerExecutionMode::Container),
-        "vm" => Ok(shared::protocol::RunnerExecutionMode::Vm),
-        _ => Err(AppError::Internal(format!(
-            "invalid runner execution_mode '{value}'"
-        ))),
-    }
+    shared::protocol::RunnerExecutionMode::parse(&value).ok_or_else(|| {
+        AppError::ValidationFailed(format!(
+            "invalid runner execution_mode '{value}' (expected host | container | sandbox | vm)"
+        ))
+    })
 }
 
 async fn validate_runner_team(
@@ -2643,12 +2640,12 @@ async fn validate_execution_mode_transition(
                     .into(),
             ));
         };
-        let (backend, reason) = match mode {
-            RunnerExecutionMode::Container => {
-                (capabilities.container, capabilities.container_reason)
-            }
-            RunnerExecutionMode::Vm => (capabilities.vm, capabilities.vm_reason),
-            RunnerExecutionMode::Host => unreachable!(),
+        // One per-tier lookup for every sandboxed tier — Host never reaches here.
+        let Some((backend, reason)) = capabilities.backend(mode) else {
+            return Err(AppError::Conflict(format!(
+                "runner does not support {} execution: host has no sandbox backend",
+                mode.as_str()
+            )));
         };
         let checked_fresh: bool = sqlx::query_scalar(
             "SELECT COALESCE(datetime(?) >= datetime('now', '-5 minutes') AND datetime(?) <= datetime('now', '+30 seconds'), 0)",
@@ -3171,6 +3168,10 @@ pub async fn get_events(
 #[cfg(test)]
 #[path = "tests/runner_label_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/runner_execution_mode_tests.rs"]
+mod execution_mode_tests;
 
 #[cfg(test)]
 #[path = "tests/runner_config_path_tests.rs"]

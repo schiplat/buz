@@ -1,5 +1,7 @@
 pub mod response;
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Deserialize a nullable PATCH field while preserving whether it was omitted:
@@ -193,22 +195,54 @@ pub struct HeartbeatResponse {
 }
 
 /// Job-wide execution isolation selected by the Runner's Manager policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+///
+/// Variants are isolation-strength tiers, weakest first (see
+/// [`isolation_level`](Self::isolation_level)). A tier names the boundary a job
+/// can rely on, never the implementation: the host operator decides which OCI
+/// runtime delivers each sandboxed tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RunnerExecutionMode {
     #[default]
     Host,
     Container,
+    Sandbox,
     Vm,
 }
 
 impl RunnerExecutionMode {
+    /// Every tier, weakest isolation first.
+    pub const ALL: [Self; 4] = [Self::Host, Self::Container, Self::Sandbox, Self::Vm];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Host => "host",
             Self::Container => "container",
+            Self::Sandbox => "sandbox",
             Self::Vm => "vm",
         }
+    }
+
+    /// Inverse of [`as_str`](Self::as_str); `None` for unknown tier names.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.as_str() == value)
+    }
+
+    /// L0 host < L1 container < L2 sandbox < L3 vm. Orders the boundary between
+    /// the job and the host kernel; L2 and L3 carry different risk shapes, so
+    /// this is not a total security ranking.
+    pub fn isolation_level(self) -> u8 {
+        match self {
+            Self::Host => 0,
+            Self::Container => 1,
+            Self::Sandbox => 2,
+            Self::Vm => 3,
+        }
+    }
+
+    /// Whether jobs run behind the host-side sandbox supervisor.
+    pub fn is_sandboxed(self) -> bool {
+        self != Self::Host
     }
 }
 
@@ -262,7 +296,7 @@ fn default_ssh_host_key_policy() -> String {
 }
 
 /// Whether a Runner host can execute jobs using one sandbox backend.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionBackendStatus {
     #[default]
@@ -271,7 +305,10 @@ pub enum ExecutionBackendStatus {
     Unsupported,
 }
 
-/// Fresh host-side verification results for the sandbox execution backends.
+/// Fresh host-side verification results, one status per sandboxed tier.
+///
+/// Older Runners omit the `sandbox` tier and the `runtimes` map; every field
+/// defaults so mixed-version fleets keep heartbeating.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct RunnerExecutionCapabilities {
     #[serde(default)]
@@ -279,16 +316,53 @@ pub struct RunnerExecutionCapabilities {
     #[serde(default)]
     pub container_reason: Option<String>,
     #[serde(default)]
+    pub sandbox: ExecutionBackendStatus,
+    #[serde(default)]
+    pub sandbox_reason: Option<String>,
+    #[serde(default)]
     pub vm: ExecutionBackendStatus,
     #[serde(default)]
     pub vm_reason: Option<String>,
+    /// OCI runtime delivering each probed tier, keyed by tier name
+    /// (`"sandbox" -> "runsc"`); informational, for operators and the UI.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub runtimes: BTreeMap<String, String>,
     #[serde(default)]
     pub checked_at: Option<String>,
 }
 
-#[cfg(test)]
-#[path = "execution_capabilities_tests.rs"]
-mod execution_capabilities_tests;
+impl RunnerExecutionCapabilities {
+    /// Status and reason for one sandboxed tier; `None` for Host, which needs no backend.
+    pub fn backend(
+        &self,
+        mode: RunnerExecutionMode,
+    ) -> Option<(ExecutionBackendStatus, Option<&str>)> {
+        let (status, reason) = match mode {
+            RunnerExecutionMode::Host => return None,
+            RunnerExecutionMode::Container => (self.container, &self.container_reason),
+            RunnerExecutionMode::Sandbox => (self.sandbox, &self.sandbox_reason),
+            RunnerExecutionMode::Vm => (self.vm, &self.vm_reason),
+        };
+        Some((status, reason.as_deref()))
+    }
+
+    /// Records one tier's probe result; a no-op for Host.
+    pub fn set_backend(
+        &mut self,
+        mode: RunnerExecutionMode,
+        status: ExecutionBackendStatus,
+        reason: Option<String>,
+    ) {
+        let slot = match mode {
+            RunnerExecutionMode::Host => return,
+            RunnerExecutionMode::Container => (&mut self.container, &mut self.container_reason),
+            RunnerExecutionMode::Sandbox => (&mut self.sandbox, &mut self.sandbox_reason),
+            RunnerExecutionMode::Vm => (&mut self.vm, &mut self.vm_reason),
+        };
+        *slot.0 = status;
+        *slot.1 = reason;
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemInfo {
@@ -350,7 +424,7 @@ pub struct CreateRunnerRequest {
     pub docker_enabled: Option<bool>,
     #[serde(default)]
     pub wasm_enabled: Option<bool>,
-    /// `host` (default), `container`, or `vm`; Runner-local config supplies the runtime backend.
+    /// `host` (default), `container`, `sandbox`, or `vm`; Runner-local config supplies the runtime backend.
     #[serde(default)]
     pub execution_mode: Option<RunnerExecutionMode>,
     /// `insecure` | `known_hosts`

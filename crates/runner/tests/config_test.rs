@@ -1,4 +1,10 @@
-use super::*;
+use runner::config::{load, DockerConfigIsolation, DockerMountPolicy, EngineConfig};
+
+fn write_config(dir: &tempfile::TempDir, raw: &str) -> String {
+    let path = dir.path().join("runner.toml");
+    std::fs::write(&path, raw).unwrap();
+    path.to_str().unwrap().to_string()
+}
 
 #[test]
 fn accepts_flat_runner_section() {
@@ -17,9 +23,7 @@ docker_enabled = true
 level = "debug"
 "#;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    let cfg = load(Some(&write_config(&dir, raw))).unwrap();
     assert_eq!(cfg.runner.name, "new-runner");
     assert_eq!(cfg.runner.manager_url, "http://127.0.0.1:8080");
     assert_eq!(cfg.runner.register_token, "tok");
@@ -43,10 +47,7 @@ register_token = "tok"
 token_cache_path = "/var/lib/buz/runner-token"
 "#;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-
-    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    let cfg = load(Some(&write_config(&dir, raw))).unwrap();
     assert_eq!(cfg.runner.token_cache_path, "/var/lib/buz/runner-token");
 }
 
@@ -59,9 +60,7 @@ manager_url = "http://127.0.0.1:8080"
 register_token = "tok"
 "#;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    let cfg = load(Some(&write_config(&dir, raw))).unwrap();
     assert_eq!(cfg.logging.file.as_deref(), Some("./logs/runner.log"));
 }
 
@@ -77,9 +76,7 @@ register_token = "tok"
 file = ""
 "#;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    let cfg = load(Some(&write_config(&dir, raw))).unwrap();
     assert!(cfg.logging.file.is_none());
 }
 
@@ -92,9 +89,7 @@ manager_url = "http://127.0.0.1:8080"
 standalone = true
 "#;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    let cfg = load(Some(&write_config(&dir, raw))).unwrap();
     assert!(cfg.runner.standalone);
     assert!(cfg.runner.register_token.is_empty());
 }
@@ -107,9 +102,9 @@ name = "r"
 manager_url = "http://127.0.0.1:8080"
 "#;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-    let err = load(Some(path.to_str().unwrap())).unwrap_err().to_string();
+    let err = load(Some(&write_config(&dir, raw)))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("register_token is required"), "{err}");
 }
 
@@ -124,9 +119,9 @@ register_token = "tok"
 name = "x"
 "#;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-    let err = load(Some(path.to_str().unwrap())).unwrap_err().to_string();
+    let err = load(Some(&write_config(&dir, raw)))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("obsolete [manager]"), "{err}");
 }
 
@@ -158,9 +153,7 @@ docker_socket_allowed = true
 docker_socket_path = "/run/docker/daemon.sock"
 "#;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    let cfg = load(Some(&write_config(&dir, raw))).unwrap();
     assert_eq!(cfg.runner.docker_mount_policy, DockerMountPolicy::Strict);
     assert!(cfg.runner.docker_socket_allowed);
     assert_eq!(cfg.runner.docker_socket_path, "/run/docker/daemon.sock");
@@ -171,9 +164,7 @@ fn docker_mount_policy_rejects_unknown_mode() {
     let raw =
         "[runner]\\nregister_token = \\\"tok\\\"\\ndocker_mount_policy = \\\"permissive\\\"\\n";
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-    assert!(load(Some(path.to_str().unwrap())).is_err());
+    assert!(load(Some(&write_config(&dir, raw))).is_err());
 }
 
 #[test]
@@ -187,9 +178,7 @@ register_token = "tok"
 docker_enabled = true
 "#;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    let cfg = load(Some(&write_config(&dir, raw))).unwrap();
     assert_eq!(
         cfg.engine.docker_config_isolation,
         DockerConfigIsolation::PerJob
@@ -207,9 +196,7 @@ register_token = "tok"
 docker_config_isolation = "shared"
 "#;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-    let cfg = load(Some(path.to_str().unwrap())).unwrap();
+    let cfg = load(Some(&write_config(&dir, raw))).unwrap();
     assert_eq!(
         cfg.engine.docker_config_isolation,
         DockerConfigIsolation::Shared
@@ -227,7 +214,69 @@ register_token = "tok"
 docker_config_isolation = "global"
 "#;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("runner.toml");
-    std::fs::write(&path, raw).unwrap();
-    assert!(load(Some(path.to_str().unwrap())).is_err());
+    assert!(load(Some(&write_config(&dir, raw))).is_err());
+}
+
+#[test]
+fn defaults_are_host_mode_with_no_sandbox_backends() {
+    let raw = r#"
+[runner]
+name = "r"
+register_token = "tok"
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = load(Some(&write_config(&dir, raw))).unwrap();
+    assert_eq!(
+        cfg.execution_mode,
+        shared::protocol::RunnerExecutionMode::Host
+    );
+    let backends = cfg.sandbox.backends();
+    for mode in shared::protocol::RunnerExecutionMode::ALL {
+        match mode.is_sandboxed() {
+            true => assert!(
+                !backends.get(mode).unwrap().is_configured(),
+                "{mode:?} must be unconfigured by default"
+            ),
+            false => assert!(backends.get(mode).is_none()),
+        }
+    }
+}
+
+#[test]
+fn sandbox_section_maps_each_tier_to_its_image_and_runtime() {
+    let raw = r#"
+[runner]
+name = "r"
+register_token = "tok"
+
+[sandbox]
+container_image = "reg/job@sha256:aaa"
+container_runtime = ""
+sandbox_image = "reg/sbx@sha256:bbb"
+sandbox_runtime = "runsc"
+firecracker_guest_image = "reg/vm@sha256:ccc"
+firecracker_runtime = "kata-fc"
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = load(Some(&write_config(&dir, raw))).unwrap();
+    let backends = cfg.sandbox.backends();
+
+    assert!(backends
+        .get(shared::protocol::RunnerExecutionMode::Host)
+        .is_none());
+    let container = backends
+        .get(shared::protocol::RunnerExecutionMode::Container)
+        .unwrap();
+    assert_eq!(container.image, "reg/job@sha256:aaa");
+    assert!(container.runtime().is_none(), "container defaults to runc");
+    let sandbox = backends
+        .get(shared::protocol::RunnerExecutionMode::Sandbox)
+        .unwrap();
+    assert_eq!(sandbox.image, "reg/sbx@sha256:bbb");
+    assert_eq!(sandbox.runtime(), Some("runsc"));
+    let vm = backends
+        .get(shared::protocol::RunnerExecutionMode::Vm)
+        .unwrap();
+    assert_eq!(vm.image, "reg/vm@sha256:ccc");
+    assert_eq!(vm.runtime(), Some("kata-fc"));
 }

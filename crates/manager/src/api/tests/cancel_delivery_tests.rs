@@ -1026,8 +1026,11 @@ async fn runner_execution_mode_requires_fresh_supported_capability() {
         execution_capabilities: Some(RunnerExecutionCapabilities {
             container: ExecutionBackendStatus::Supported,
             container_reason: None,
+            sandbox: ExecutionBackendStatus::Unknown,
+            sandbox_reason: None,
             vm: ExecutionBackendStatus::Unsupported,
             vm_reason: Some("KVM unavailable".into()),
+            runtimes: Default::default(),
             checked_at: Some(chrono::Utc::now().to_rfc3339()),
         }),
     };

@@ -6,6 +6,8 @@
 //! daemon/runtime. The Runner connects over a permissioned Unix socket and
 //! never receives daemon, root, or KVM access itself.
 
+pub mod backend;
+
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -19,10 +21,34 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use shared::protocol::{ExecutionBackendStatus, RunnerExecutionCapabilities, RunnerExecutionMode};
+use backend::{validate_prerequisites, BackendDescriptor, TierBackends};
+use shared::protocol::{RunnerExecutionCapabilities, RunnerExecutionMode};
 
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_EXEC_SECONDS: u64 = 24 * 60 * 60;
+
+/// The supervisor's view of the physical host, injectable so prerequisite
+/// rules (Linux, `/dev/kvm`) are testable on any development machine.
+#[derive(Debug, Clone)]
+pub struct HostFacts {
+    pub os: String,
+    pub kvm_path: PathBuf,
+}
+
+impl HostFacts {
+    pub fn detect() -> Self {
+        Self {
+            os: std::env::consts::OS.to_string(),
+            kvm_path: PathBuf::from("/dev/kvm"),
+        }
+    }
+}
+
+impl Default for HostFacts {
+    fn default() -> Self {
+        Self::detect()
+    }
+}
 
 pub async fn cleanup_stale_containers(config: &SandboxdConfig) -> anyhow::Result<()> {
     let output = Command::new(&config.docker_cli)
@@ -78,6 +104,14 @@ pub struct SandboxdConfig {
     pub docker_cli: String,
     #[serde(default)]
     pub container_image: String,
+    /// OCI runtime for the Container tier; empty uses the daemon default (runc).
+    #[serde(default)]
+    pub container_runtime: String,
+    #[serde(default)]
+    pub sandbox_image: String,
+    /// OCI runtime delivering the Sandbox tier, e.g. `runsc`.
+    #[serde(default)]
+    pub sandbox_runtime: String,
     #[serde(default)]
     pub firecracker_guest_image: String,
     #[serde(default)]
@@ -94,6 +128,29 @@ pub struct SandboxdConfig {
     pub memory_limit: String,
     #[serde(default = "default_cpu_limit")]
     pub cpu_limit: String,
+}
+
+impl SandboxdConfig {
+    /// Per-tier backend table for this supervisor's pinned policy.
+    pub fn backends(&self) -> TierBackends {
+        TierBackends::from_tiers([
+            (
+                RunnerExecutionMode::Container,
+                &self.container_image,
+                &self.container_runtime,
+            ),
+            (
+                RunnerExecutionMode::Sandbox,
+                &self.sandbox_image,
+                &self.sandbox_runtime,
+            ),
+            (
+                RunnerExecutionMode::Vm,
+                &self.firecracker_guest_image,
+                &self.firecracker_runtime,
+            ),
+        ])
+    }
 }
 
 fn default_instance_id() -> String {
@@ -126,6 +183,7 @@ fn default_cpu_limit() -> String {
 pub struct Service {
     pub config: Arc<SandboxdConfig>,
     pub jobs: Arc<Mutex<HashMap<String, JobRuntime>>>,
+    pub host: HostFacts,
 }
 
 #[derive(Clone)]
@@ -207,6 +265,7 @@ pub async fn serve(config: SandboxdConfig) -> anyhow::Result<()> {
             ..config
         }),
         jobs: Arc::new(Mutex::new(HashMap::new())),
+        host: HostFacts::detect(),
     };
     loop {
         let (stream, _) = listener.accept().await?;
@@ -314,70 +373,77 @@ async fn process_request(
     }
 }
 
-pub fn validate_vm_prerequisites(
-    os: &str,
-    kvm_path: &Path,
-    requested_runtime: &str,
-    configured_runtime: &str,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(os == "linux", "VM mode requires a Linux host");
-    anyhow::ensure!(
-        kvm_path.exists(),
-        "VM mode requires an available /dev/kvm device"
-    );
-    anyhow::ensure!(
-        !requested_runtime.trim().is_empty() && requested_runtime == configured_runtime,
-        "configured Firecracker-compatible OCI runtime does not match sandboxd policy"
-    );
-    Ok(())
+/// One tier's backend as the Runner believes it to be configured.
+#[derive(Debug, Clone, Default)]
+struct RequestedBackend {
+    image: String,
+    oci_runtime: String,
 }
 
+fn requested_backends(request: &Value) -> HashMap<RunnerExecutionMode, RequestedBackend> {
+    request
+        .get("backends")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let mode =
+                        RunnerExecutionMode::parse(entry.get("mode").and_then(Value::as_str)?)?;
+                    let field = |key: &str| {
+                        entry
+                            .get(key)
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    Some((
+                        mode,
+                        RequestedBackend {
+                            image: field("image"),
+                            oci_runtime: field("oci_runtime"),
+                        },
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Probes every sandboxed tier the supervisor knows about — independent of
+/// the mode currently selected for this Runner — so a mode switch never waits
+/// on a first probe and operators see why an unavailable tier is unavailable.
 pub async fn probe_capabilities(service: &Service, request: &Value) -> anyhow::Result<Value> {
-    let container_image = request
-        .get("container_image")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let vm_image = request
-        .get("vm_image")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let requested_runtime = request
-        .get("firecracker_runtime")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let requested = requested_backends(request);
+    let backends = service.config.backends();
     let mut capabilities = RunnerExecutionCapabilities::default();
     let checked_at = chrono::Utc::now().to_rfc3339();
 
-    match probe_backend(service, RunnerExecutionMode::Container, container_image, "").await {
-        Ok(()) => capabilities.container = ExecutionBackendStatus::Supported,
-        Err(error) => {
-            capabilities.container = ExecutionBackendStatus::Unsupported;
-            capabilities.container_reason = Some(error.to_string());
-        }
-    }
-
-    let vm_result = async {
-        validate_vm_prerequisites(
-            std::env::consts::OS,
-            Path::new("/dev/kvm"),
-            requested_runtime,
-            &service.config.firecracker_runtime,
-        )?;
-        probe_backend(
-            service,
-            RunnerExecutionMode::Vm,
-            vm_image,
-            requested_runtime,
-        )
-        .await
-    }
-    .await;
-    match vm_result {
-        Ok(()) => capabilities.vm = ExecutionBackendStatus::Supported,
-        Err(error) => {
-            capabilities.vm = ExecutionBackendStatus::Unsupported;
-            capabilities.vm_reason = Some(error.to_string());
-        }
+    for mode in RunnerExecutionMode::ALL
+        .into_iter()
+        .filter(|m| m.is_sandboxed())
+    {
+        let Some(descriptor) = backends.get(mode) else {
+            continue;
+        };
+        let outcome = if !descriptor.is_configured() {
+            Err(anyhow::anyhow!(
+                "'{}' tier is not configured on this supervisor",
+                mode.as_str()
+            ))
+        } else {
+            let wanted = requested.get(&mode).cloned().unwrap_or_default();
+            match validate_prerequisites(
+                descriptor,
+                &service.host.os,
+                &service.host.kvm_path,
+                &wanted.oci_runtime,
+            ) {
+                Ok(()) => probe_backend(service, descriptor, &wanted.image).await,
+                Err(error) => Err(error),
+            }
+        };
+        backend::record_probe(&mut capabilities, descriptor, outcome);
     }
     capabilities.checked_at = Some(checked_at);
     Ok(json!({"ok": true, "capabilities": capabilities}))
@@ -448,21 +514,11 @@ fn sandbox_create_command(service: &Service, spec: SandboxCreateSpec<'_>) -> Com
 
 pub async fn probe_backend(
     service: &Service,
-    mode: RunnerExecutionMode,
+    descriptor: &BackendDescriptor,
     image: &str,
-    runtime: &str,
 ) -> anyhow::Result<()> {
-    let expected = match mode {
-        RunnerExecutionMode::Container => &service.config.container_image,
-        RunnerExecutionMode::Vm => &service.config.firecracker_guest_image,
-        RunnerExecutionMode::Host => anyhow::bail!("Host mode does not use a sandbox backend"),
-    };
     anyhow::ensure!(
-        !expected.trim().is_empty(),
-        "sandbox image is not configured"
-    );
-    anyhow::ensure!(
-        image == expected,
+        image == descriptor.image,
         "sandbox image does not match sandboxd configuration"
     );
     anyhow::ensure!(
@@ -477,7 +533,7 @@ pub async fn probe_backend(
             SandboxCreateSpec {
                 container: &probe_name,
                 image,
-                runtime: (mode == RunnerExecutionMode::Vm).then_some(runtime),
+                runtime: descriptor.runtime(),
                 user: "10001:10001",
                 mount: None,
                 probe: true,
@@ -544,11 +600,23 @@ pub async fn create_job(
     uid: u32,
     gid: u32,
 ) -> anyhow::Result<Value> {
-    let mode = match request.get("mode").and_then(Value::as_str) {
-        Some("container") => RunnerExecutionMode::Container,
-        Some("vm") => RunnerExecutionMode::Vm,
-        _ => anyhow::bail!("unsupported sandbox mode"),
-    };
+    let mode = RunnerExecutionMode::parse(
+        request
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
+    .filter(|mode| mode.is_sandboxed())
+    .ok_or_else(|| anyhow::anyhow!("unsupported sandbox mode"))?;
+    let backends = service.config.backends();
+    let descriptor = backends
+        .get(mode)
+        .ok_or_else(|| anyhow::anyhow!("no backend for '{}' tier", mode.as_str()))?;
+    anyhow::ensure!(
+        descriptor.is_configured(),
+        "'{}' tier is not configured on this supervisor",
+        mode.as_str()
+    );
     let workspace = request
         .get("workspace")
         .and_then(Value::as_str)
@@ -564,25 +632,23 @@ pub async fn create_job(
         .get("image")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let allowed_image = match mode {
-        RunnerExecutionMode::Container => &service.config.container_image,
-        RunnerExecutionMode::Vm => &service.config.firecracker_guest_image,
-        RunnerExecutionMode::Host => unreachable!(),
-    };
     anyhow::ensure!(
-        requested_image == allowed_image,
+        requested_image == descriptor.image,
         "requested sandbox image does not match host policy"
     );
-    let runtime = if mode == RunnerExecutionMode::Vm {
-        let value = service.config.firecracker_runtime.trim();
-        anyhow::ensure!(
-            !value.is_empty(),
-            "Firecracker runtime is not configured on sandboxd"
-        );
-        Some(value)
-    } else {
-        None
-    };
+    let requested_runtime = request
+        .get("oci_runtime")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // Re-check host prerequisites at job start: the host may have drifted
+    // since the last capability probe.
+    validate_prerequisites(
+        descriptor,
+        &service.host.os,
+        &service.host.kvm_path,
+        requested_runtime,
+    )?;
+    let runtime = descriptor.runtime();
     anyhow::ensure!(
         !service.config.container_network.trim().is_empty(),
         "sandbox network policy is empty"
@@ -753,10 +819,13 @@ pub async fn exec_step_stream(
     let exec_command = if timeout_seconds == 0 {
         shell_quote(command)
     } else {
-        // The job image contract requires the POSIX `timeout` utility. A
-        // timed-out step exits normally with 124 and leaves later steps alive.
+        // The job image contract requires the `timeout` utility. Short flags
+        // (`-s TERM -k 5`) are the only form both GNU coreutils and busybox
+        // applets accept; long flags (`--signal`) break busybox-based images
+        // such as Alpine. A timed-out step exits with 124 and leaves later
+        // steps alive.
         format!(
-            "timeout --signal=TERM --kill-after=5s {}s sh -elc {}",
+            "timeout -s TERM -k 5 {}s sh -elc {}",
             timeout_seconds,
             shell_quote(command)
         )

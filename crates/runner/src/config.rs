@@ -22,18 +22,31 @@ pub struct Config {
     pub sandbox: SandboxSection,
 }
 
+/// `[sandbox]` — machine-local backends for the sandboxed execution tiers.
+///
+/// One digest-pinned image plus an optional OCI runtime per tier; see
+/// [`crate::sandbox::backend`] for how they become per-tier descriptors.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SandboxSection {
     /// Local socket exposed by the privileged, host-side buz-sandboxd service.
     #[serde(default = "default_sandbox_socket")]
     pub supervisor_socket: String,
-    /// Locally provisioned, digest-pinned job image for Container mode.
+    /// Digest-pinned job image for the Container tier (L1).
     #[serde(default)]
     pub container_image: String,
-    /// Read-only guest rootfs/image provisioned for Firecracker VM mode.
+    /// OCI runtime for the Container tier; empty uses the daemon default (runc).
+    #[serde(default)]
+    pub container_runtime: String,
+    /// Digest-pinned job image for the Sandbox tier (L2, userspace kernel).
+    #[serde(default)]
+    pub sandbox_image: String,
+    /// OCI runtime delivering the Sandbox tier, e.g. `runsc`.
+    #[serde(default)]
+    pub sandbox_runtime: String,
+    /// Digest-pinned guest image for the VM tier (L3).
     #[serde(default)]
     pub firecracker_guest_image: String,
-    /// Firecracker-compatible OCI runtime name used for VM jobs.
+    /// Firecracker-compatible OCI runtime delivering the VM tier.
     #[serde(default)]
     pub firecracker_runtime: String,
     /// Workspace root accepted by the host-side supervisor.
@@ -43,11 +56,37 @@ pub struct SandboxSection {
     pub request_timeout_seconds: u64,
 }
 
+impl SandboxSection {
+    /// Per-tier backend table for this Runner's host configuration.
+    pub fn backends(&self) -> crate::sandbox::backend::TierBackends {
+        crate::sandbox::backend::TierBackends::from_tiers([
+            (
+                RunnerExecutionMode::Container,
+                &self.container_image,
+                &self.container_runtime,
+            ),
+            (
+                RunnerExecutionMode::Sandbox,
+                &self.sandbox_image,
+                &self.sandbox_runtime,
+            ),
+            (
+                RunnerExecutionMode::Vm,
+                &self.firecracker_guest_image,
+                &self.firecracker_runtime,
+            ),
+        ])
+    }
+}
+
 impl Default for SandboxSection {
     fn default() -> Self {
         Self {
             supervisor_socket: default_sandbox_socket(),
             container_image: String::new(),
+            container_runtime: String::new(),
+            sandbox_image: String::new(),
+            sandbox_runtime: String::new(),
             firecracker_guest_image: String::new(),
             firecracker_runtime: String::new(),
             workspace_root: default_workspace_dir(),
@@ -350,7 +389,3 @@ pub fn load(config_path: Option<&str>) -> anyhow::Result<Config> {
 
     Ok(cfg)
 }
-
-#[cfg(test)]
-#[path = "config_tests.rs"]
-mod tests;

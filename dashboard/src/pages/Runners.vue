@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, type ComputedRef } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
@@ -107,12 +107,12 @@ const editTeamId = ref('shared')
 const editExecutionMode = ref<RunnerExecutionMode>('host')
 const savingPolicy = ref(false)
 
-function backendSupport(runner: Runner | null, mode: 'container' | 'vm') {
+function backendSupport(runner: Runner | null, mode: Exclude<RunnerExecutionMode, 'host'>) {
   const caps = runner?.system_info?.execution_capabilities
   const checkedAt = caps?.checked_at ? Date.parse(caps.checked_at) : Number.NaN
   const fresh = Number.isFinite(checkedAt) && Date.now() - checkedAt <= 300_000 && checkedAt - Date.now() <= 30_000
   const status = caps?.[mode] ?? 'unknown'
-  const reason = mode === 'container' ? caps?.container_reason : caps?.vm_reason
+  const reason = mode === 'container' ? caps?.container_reason : mode === 'sandbox' ? caps?.sandbox_reason : caps?.vm_reason
   return {
     supported: runner?.status === 'online' && fresh && status === 'supported',
     status: runner?.status !== 'online' || !fresh ? 'unknown' : status,
@@ -122,15 +122,24 @@ function backendSupport(runner: Runner | null, mode: 'container' | 'vm') {
     checkedAt: caps?.checked_at,
   }
 }
+const tierRuntime = (mode: Exclude<RunnerExecutionMode, 'host'>) => {
+  const runtimes = activeRunner.value?.system_info?.execution_capabilities?.runtimes
+  return runtimes?.[mode] || ''
+}
 const containerSupport = computed(() => backendSupport(activeRunner.value, 'container'))
+const sandboxSupport = computed(() => backendSupport(activeRunner.value, 'sandbox'))
 const vmSupport = computed(() => backendSupport(activeRunner.value, 'vm'))
+const tierSupport: Record<Exclude<RunnerExecutionMode, 'host'>, ComputedRef<{ supported: boolean; status: string; reason: string; checkedAt?: string | null }>> = {
+  container: containerSupport,
+  sandbox: sandboxSupport,
+  vm: vmSupport,
+}
 function canSelectMode(mode: RunnerExecutionMode) {
-  return mode === 'host' || (mode === 'container' ? containerSupport.value.supported : vmSupport.value.supported)
+  return mode === 'host' || tierSupport[mode].value.supported
 }
 function modeBlockReason(mode: RunnerExecutionMode) {
-  if (mode === 'container') return containerSupport.value.reason
-  if (mode === 'vm') return vmSupport.value.reason
-  return ''
+  if (mode === 'host') return ''
+  return tierSupport[mode].value.reason
 }
 function formatCapabilityTime(value?: string | null) {
   if (!value) return 'Not checked'
@@ -841,11 +850,14 @@ const eventBadge = (t: string) => {
               <div class="rounded-lg border border-border/50 bg-background/70 p-3 space-y-2">
                 <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Sandbox environment checks</div>
                 <div v-for="item in [
-                  { key: 'container', label: 'Container', support: containerSupport },
-                  { key: 'vm', label: 'VM / Firecracker-compatible OCI runtime', support: vmSupport },
+                  { key: 'container', label: 'L1 Container (hardened, host kernel)', support: containerSupport },
+                  { key: 'sandbox', label: 'L2 Sandbox (userspace kernel, no KVM)', support: sandboxSupport },
+                  { key: 'vm', label: 'L3 VM (Firecracker-compatible runtime, KVM)', support: vmSupport },
                 ]" :key="item.key" class="flex items-start justify-between gap-3 text-[11px]">
                   <div class="min-w-0">
-                    <div class="font-medium">{{ item.label }} · {{ item.support.status }}</div>
+                    <div class="font-medium">
+                      {{ item.label }} · {{ item.support.status }}<template v-if="item.support.status === 'supported' && tierRuntime(item.key as 'container' | 'sandbox' | 'vm')"> · {{ tierRuntime(item.key as 'container' | 'sandbox' | 'vm') }}</template>
+                    </div>
                     <div v-if="item.support.status !== 'supported'" class="text-muted-foreground break-words">{{ item.support.reason }}</div>
                   </div>
                   <span class="shrink-0 text-muted-foreground">{{ formatCapabilityTime(item.support.checkedAt) }}</span>
@@ -854,15 +866,16 @@ const eventBadge = (t: string) => {
               <div>
                 <label class="text-xs text-muted-foreground block mb-1">Job execution mode</label>
                 <select v-model="editExecutionMode" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm outline-hidden focus:border-ring/40">
-                  <option value="host">Host (current behavior)</option>
-                  <option value="container" :disabled="!containerSupport.supported">Job container</option>
-                  <option value="vm" :disabled="!vmSupport.supported">VM (Firecracker-compatible OCI runtime)</option>
+                  <option value="host">L0 Host — no per-job isolation (free, default)</option>
+                  <option value="container" :disabled="!containerSupport.supported">L1 Container — hardened, shares host kernel (free)</option>
+                  <option value="sandbox" :disabled="!sandboxSupport.supported">L2 Sandbox — userspace kernel, no KVM needed (low cost)</option>
+                  <option value="vm" :disabled="!vmSupport.supported">L3 VM — hardware boundary, needs Linux + KVM (highest cost)</option>
                 </select>
                 <p v-if="!canSelectMode(editExecutionMode)" class="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
                   {{ modeBlockReason(editExecutionMode) }}
                 </p>
                 <p class="mt-1 text-[10px] text-muted-foreground">
-                  Container/VM supports local shell steps only; SSH, per-step Docker, registry auth and host-side config prep fail closed. VM mode delegates to a host-provided Firecracker-compatible OCI runtime.
+                  Sandboxed modes support local shell steps only; SSH, per-step Docker, registry auth and host-side config prep fail closed. The Runner probes each tier automatically — you choose the default tier here; the system never picks one for you.
                 </p>
               </div>
               <div>
@@ -1125,7 +1138,7 @@ const eventBadge = (t: string) => {
                   <option value="host">Host (initial mode)</option>
                 </select>
                 <p class="mt-1.5 text-[11px] text-muted-foreground">
-                  New Runners start in Host mode. Register the Runner and wait for its first sandbox environment check; supported Container/VM modes can then be selected in its details.
+                  New Runners start in Host mode. Register the Runner and wait for its first sandbox environment check; supported tiers (Container / Sandbox / VM) can then be selected in its details.
                 </p>
               </div>
               <div>

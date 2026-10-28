@@ -1,7 +1,6 @@
-use shared::protocol::RunnerPolicyConfig;
-
-use crate::config::{Config, SshHostKeyPolicy};
-use crate::policy;
+use runner::config::{Config, SshHostKeyPolicy};
+use runner::policy;
+use shared::protocol::{RunnerExecutionMode, RunnerPolicyConfig};
 
 #[test]
 fn apply_to_config_overwrites_strategy_keeps_paths() {
@@ -12,17 +11,17 @@ fn apply_to_config_overwrites_strategy_keeps_paths() {
     cfg.engine.docker_enabled = false;
     cfg.engine.ssh_host_key_policy = SshHostKeyPolicy::Insecure;
 
-    let policy = RunnerPolicyConfig {
+    let policy_config = RunnerPolicyConfig {
         max_concurrent_jobs: 4,
         clean_workspace_after_job: true,
-        execution_mode: shared::protocol::RunnerExecutionMode::Host,
+        execution_mode: RunnerExecutionMode::Host,
         shell_enabled: true,
         ssh_enabled: false,
         docker_enabled: true,
         wasm_enabled: true,
         ssh_host_key_policy: "known_hosts".into(),
     };
-    policy::apply_to_config(&mut cfg, &policy);
+    policy::apply_to_config(&mut cfg, &policy_config);
 
     assert_eq!(cfg.runner.workspace_dir, "/var/buz");
     assert_eq!(cfg.runner.token_cache_path, "/var/lib/buz/runner-token");
@@ -35,4 +34,19 @@ fn apply_to_config_overwrites_strategy_keeps_paths() {
     assert!(cfg.engine.docker_enabled);
     assert!(cfg.engine.wasm_enabled);
     assert_eq!(cfg.engine.ssh_host_key_policy, SshHostKeyPolicy::KnownHosts);
+}
+
+#[test]
+fn sandboxed_policy_modes_reach_the_runner_config_unchanged() {
+    for mode in RunnerExecutionMode::ALL {
+        let mut cfg = Config::default();
+        policy::apply_to_config(
+            &mut cfg,
+            &RunnerPolicyConfig {
+                execution_mode: mode,
+                ..RunnerPolicyConfig::default()
+            },
+        );
+        assert_eq!(cfg.execution_mode, mode);
+    }
 }

@@ -368,8 +368,8 @@ mod webhook_environment_integration_tests;
 mod jobs_stats_integration_tests;
 
 #[cfg(test)]
-#[path = "tests/step_marketplace_tests.rs"]
-mod step_marketplace_integration_tests;
+#[path = "tests/plugin_library_tests.rs"]
+mod plugin_library_integration_tests;
 
 #[cfg(test)]
 #[path = "tests/plugins_library_tests.rs"]

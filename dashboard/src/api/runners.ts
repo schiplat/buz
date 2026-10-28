@@ -11,8 +11,12 @@ export type ExecutionBackendStatus = 'unknown' | 'supported' | 'unsupported'
 export interface RunnerExecutionCapabilities {
   container: ExecutionBackendStatus
   container_reason?: string | null
+  sandbox: ExecutionBackendStatus
+  sandbox_reason?: string | null
   vm: ExecutionBackendStatus
   vm_reason?: string | null
+  /** OCI runtime delivering each probed tier, e.g. `{ sandbox: 'runsc' }`. */
+  runtimes?: Record<string, string> | null
   checked_at?: string | null
 }
 
@@ -43,7 +47,8 @@ export interface SystemInfo {
   execution_capabilities?: RunnerExecutionCapabilities | null
 }
 
-export type RunnerExecutionMode = 'host' | 'container' | 'vm'
+/** Isolation-strength tiers, weakest first: host → container → sandbox → vm. */
+export type RunnerExecutionMode = 'host' | 'container' | 'sandbox' | 'vm'
 
 /** UI-managed runner strategy (synced to the agent via register/heartbeat). */
 export interface RunnerPolicy {

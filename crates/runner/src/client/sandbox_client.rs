@@ -18,16 +18,26 @@ use tokio::time::Duration;
 use crate::config::{Config, SandboxSection};
 use shared::protocol::RunnerExecutionMode;
 
+/// One tier's backend as this Runner has it configured, sent so the supervisor
+/// can confirm both halves agree before anything runs.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct WireBackend<'a> {
+    pub mode: RunnerExecutionMode,
+    pub image: &'a str,
+    pub oci_runtime: &'a str,
+}
+
+/// Runner → supervisor wire contract (newline-delimited JSON). Public so the
+/// crate's integration tests can pin the exact shape the supervisor parses.
 #[derive(Debug, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
-enum Request<'a> {
+pub enum Request<'a> {
     CreateJob {
         job_id: &'a str,
         mode: RunnerExecutionMode,
         workspace: &'a str,
         image: &'a str,
-        guest_image: &'a str,
-        firecracker_runtime: &'a str,
+        oci_runtime: &'a str,
     },
     ExecStep {
         handle: &'a str,
@@ -44,23 +54,22 @@ enum Request<'a> {
         handle: &'a str,
     },
     ProbeCapabilities {
-        container_image: &'a str,
-        vm_image: &'a str,
-        firecracker_runtime: &'a str,
+        backends: Vec<WireBackend<'a>>,
     },
 }
 
+/// Supervisor → Runner wire contract.
 #[derive(Debug, Deserialize)]
-struct Response {
-    ok: bool,
+pub struct Response {
+    pub ok: bool,
     #[serde(default)]
-    handle: String,
+    pub handle: String,
     #[serde(default)]
-    content: String,
+    pub content: String,
     #[serde(default)]
-    error: String,
+    pub error: String,
     #[serde(default)]
-    capabilities: Option<shared::protocol::RunnerExecutionCapabilities>,
+    pub capabilities: Option<shared::protocol::RunnerExecutionCapabilities>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,10 +124,7 @@ pub async fn create_job(
     workspace: &str,
 ) -> anyhow::Result<SandboxHandle> {
     let mode = config.execution_mode;
-    anyhow::ensure!(
-        mode != RunnerExecutionMode::Host,
-        "sandbox create requested in Host mode"
-    );
+    anyhow::ensure!(mode.is_sandboxed(), "sandbox create requested in Host mode");
     let workspace_root =
         std::fs::canonicalize(&config.sandbox.workspace_root).map_err(|error| {
             anyhow::anyhow!(
@@ -132,31 +138,24 @@ pub async fn create_job(
         "job workspace is outside configured sandbox workspace_root"
     );
     let workspace = workspace_path.to_string_lossy().into_owned();
-    let image = match mode {
-        RunnerExecutionMode::Container => &config.sandbox.container_image,
-        RunnerExecutionMode::Vm => &config.sandbox.firecracker_guest_image,
-        RunnerExecutionMode::Host => unreachable!(),
-    };
-    anyhow::ensure!(
-        !image.trim().is_empty(),
-        "sandbox image/runtime image is not configured for mode '{}'",
-        mode.as_str()
-    );
-    if mode == RunnerExecutionMode::Vm {
-        anyhow::ensure!(
-            !config.sandbox.firecracker_runtime.trim().is_empty(),
-            "Firecracker-compatible runtime is not configured on this Runner"
-        );
-    }
+    let backends = config.sandbox.backends();
+    let backend = backends
+        .get(mode)
+        .filter(|backend| backend.is_configured())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "sandbox image is not configured for '{}' tier on this Runner",
+                mode.as_str()
+            )
+        })?;
     let response = request(
         &config.sandbox,
         Request::CreateJob {
             job_id,
             mode,
             workspace: &workspace,
-            image,
-            guest_image: &config.sandbox.firecracker_guest_image,
-            firecracker_runtime: &config.sandbox.firecracker_runtime,
+            image: &backend.image,
+            oci_runtime: &backend.oci_runtime,
         },
     )
     .await?;
@@ -243,15 +242,22 @@ pub async fn exec_step(
     }
 }
 
+/// Asks the supervisor to exercise every tier this Runner has configured.
 pub async fn probe_capabilities(
     config: &SandboxSection,
 ) -> anyhow::Result<shared::protocol::RunnerExecutionCapabilities> {
+    let backends = config.backends();
     let response = request(
         config,
         Request::ProbeCapabilities {
-            container_image: &config.container_image,
-            vm_image: &config.firecracker_guest_image,
-            firecracker_runtime: &config.firecracker_runtime,
+            backends: backends
+                .configured()
+                .map(|backend| WireBackend {
+                    mode: backend.mode,
+                    image: &backend.image,
+                    oci_runtime: &backend.oci_runtime,
+                })
+                .collect(),
         },
     )
     .await?;
@@ -322,7 +328,3 @@ async fn request_with_timeout(
         Ok(response)
     }
 }
-
-#[cfg(test)]
-#[path = "sandbox_tests.rs"]
-mod tests;

@@ -44,7 +44,3 @@ pub fn max_concurrent(policy: &SharedPolicy) -> u32 {
         .map(|g| g.max_concurrent_jobs.max(1))
         .unwrap_or(1)
 }
-
-#[cfg(test)]
-#[path = "policy_tests.rs"]
-mod tests;

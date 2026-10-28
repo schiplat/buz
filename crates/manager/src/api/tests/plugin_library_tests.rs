@@ -1,4 +1,4 @@
-//! Step marketplace smoke (ADR Phase 1): a pipeline step referencing a
+//! Plugin library smoke test (ADR step-marketplace Phase 1): a pipeline step referencing a
 //! local-index template resolves and locks at save time. Covers the happy
 //! path end-to-end over the HTTP API plus the two main authoring errors.
 

@@ -85,13 +85,24 @@ pub async fn run_heartbeat_loop(
 async fn probe_execution_capabilities(config: &Config) -> RunnerExecutionCapabilities {
     match crate::client::sandbox_client::probe_capabilities(&config.sandbox).await {
         Ok(capabilities) => capabilities,
-        Err(error) => RunnerExecutionCapabilities {
-            container: shared::protocol::ExecutionBackendStatus::Unsupported,
-            container_reason: Some(format!("sandbox supervisor probe failed: {error:#}")),
-            vm: shared::protocol::ExecutionBackendStatus::Unsupported,
-            vm_reason: Some(format!("sandbox supervisor probe failed: {error:#}")),
-            checked_at: Some(chrono::Utc::now().to_rfc3339()),
-        },
+        Err(error) => {
+            // Supervisor unreachable: every sandboxed tier is unavailable, and the
+            // Manager must see the same reason for each of them.
+            let reason = format!("sandbox supervisor probe failed: {error:#}");
+            let mut capabilities = RunnerExecutionCapabilities::default();
+            for mode in shared::protocol::RunnerExecutionMode::ALL
+                .into_iter()
+                .filter(|mode| mode.is_sandboxed())
+            {
+                capabilities.set_backend(
+                    mode,
+                    shared::protocol::ExecutionBackendStatus::Unsupported,
+                    Some(reason.clone()),
+                );
+            }
+            capabilities.checked_at = Some(chrono::Utc::now().to_rfc3339());
+            capabilities
+        }
     }
 }
 

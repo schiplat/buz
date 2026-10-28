@@ -38,15 +38,21 @@ warn_threshold_seconds = 60
 max_skew_seconds = 300
 # fail_on_skew = true
 
-# Job-wide Container/VM modes are selected in Manager UI → Runners.
-# Docker/VM runtime capabilities are probed by sandboxd and reported in the Runner
-# details page; Manager permits non-Host modes only after a fresh supported check.
-# VM mode requires Linux + accessible /dev/kvm and an installed Firecracker-compatible OCI runtime.
-# Sandbox jobs reject SSH, per-step Docker, registry auth, and host config preparation.
+# Job-wide execution tiers (host < container < sandbox < vm) are selected in
+# Manager UI → Runners; the Runner only probes and reports what this host can
+# deliver, the user picks the default tier. Manager permits a sandboxed tier
+# only after a fresh supported check.
+# Tier prerequisites: Container needs a Docker daemon; Sandbox (L2, e.g. gVisor
+# runsc) needs Linux but no /dev/kvm; VM (L3) needs Linux + /dev/kvm and an
+# installed Firecracker-compatible OCI runtime.
+# Sandboxed jobs reject SSH, per-step Docker, registry auth, and host config prep.
 [sandbox]
 supervisor_socket = "/run/buz-sandboxd/sandboxd.sock"
 workspace_root = "/app/buz/workspace"
 # container_image = "docker.io/library/debian@sha256:<digest>"
+# container_runtime = ""            # empty uses the daemon default (runc)
+# sandbox_image = "docker.io/library/debian@sha256:<digest>"
+# sandbox_runtime = "runsc"          # L2 delivery, e.g. gVisor's OCI runtime
 # firecracker_guest_image = "docker.io/library/debian@sha256:<digest>"
 # firecracker_runtime = "<Firecracker-compatible Docker runtime name>"
 

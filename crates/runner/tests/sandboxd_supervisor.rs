@@ -1,9 +1,9 @@
 use runner::sandbox::{
-    cleanup_stale_containers, create_job, destroy_job, exec_step_stream, probe_backend, read_file,
-    safe_work_dir, validate_vm_prerequisites, SandboxdConfig, Service,
+    cleanup_stale_containers, create_job, destroy_job, exec_step_stream, probe_backend,
+    probe_capabilities, read_file, safe_work_dir, HostFacts, SandboxdConfig, Service,
 };
 use serde_json::json;
-use shared::protocol::RunnerExecutionMode;
+use shared::protocol::ExecutionBackendStatus;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,6 +24,10 @@ fn fake_service(root: &std::path::Path) -> (Service, tempfile::TempDir) {
     )
     .unwrap();
     std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // A file standing in for /dev/kvm so VM-tier jobs and probes are testable
+    // on hosts without hardware virtualization.
+    let kvm = dir.path().join("kvm");
+    std::fs::write(&kvm, "").unwrap();
     let config = SandboxdConfig {
         instance_id: "test-sandboxd".into(),
         socket: dir
@@ -37,6 +41,9 @@ fn fake_service(root: &std::path::Path) -> (Service, tempfile::TempDir) {
             .into_owned(),
         docker_cli: docker.to_string_lossy().into_owned(),
         container_image: "buz-job@sha256:abc".into(),
+        container_runtime: String::new(),
+        sandbox_image: "buz-sandbox@sha256:789".into(),
+        sandbox_runtime: "runsc".into(),
         firecracker_guest_image: "buz-vm@sha256:def".into(),
         firecracker_runtime: "io.containerd.firecracker.v2".into(),
         socket_gid: 10001,
@@ -49,6 +56,10 @@ fn fake_service(root: &std::path::Path) -> (Service, tempfile::TempDir) {
     let service = Service {
         config: Arc::new(config),
         jobs: Arc::new(Mutex::new(HashMap::new())),
+        host: HostFacts {
+            os: "linux".into(),
+            kvm_path: kvm,
+        },
     };
     (service, dir)
 }
@@ -151,6 +162,18 @@ async fn container_supervisor_create_exec_read_and_destroy() {
         "container capabilities: {log}"
     );
     assert!(log.contains("--user 10001:10001"), "peer identity: {log}");
+    assert!(
+        log.contains("timeout -s TERM -k 5 10s"),
+        "step timeout must use busybox-compatible short flags: {log}"
+    );
+    assert!(
+        !log.contains("--signal"),
+        "GNU-only long flags break busybox-based images: {log}"
+    );
+    assert!(
+        !log.contains("--runtime"),
+        "container tier defaults to the daemon runtime: {log}"
+    );
     destroy_job(&service, &json!({"handle":handle}))
         .await
         .unwrap();
@@ -256,7 +279,8 @@ async fn vm_mode_uses_firecracker_compatible_runtime() {
         &json!({
             "mode":"vm",
             "workspace":workspace,
-            "image":"buz-vm@sha256:def"
+            "image":"buz-vm@sha256:def",
+            "oci_runtime":"io.containerd.firecracker.v2"
         }),
         10001,
         10001,
@@ -271,6 +295,124 @@ async fn vm_mode_uses_firecracker_compatible_runtime() {
     destroy_job(&service, &json!({"handle":created["handle"]}))
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn sandbox_tier_uses_the_gvisor_runtime_without_kvm_requirements() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("job-sandbox");
+    std::fs::create_dir(&workspace).unwrap();
+    let (service, helper_dir) = fake_service(root.path());
+    // Host without /dev/kvm: the sandbox tier must still be selectable.
+    let service = Service {
+        config: service.config.clone(),
+        jobs: service.jobs.clone(),
+        host: HostFacts {
+            os: "linux".into(),
+            kvm_path: root.path().join("no-kvm-here"),
+        },
+    };
+    let created = create_job(
+        &service,
+        &json!({
+            "mode":"sandbox",
+            "workspace":workspace,
+            "image":"buz-sandbox@sha256:789",
+            "oci_runtime":"runsc"
+        }),
+        10001,
+        10001,
+    )
+    .await
+    .unwrap();
+    let log = std::fs::read_to_string(helper_dir.path().join("docker-args")).unwrap();
+    assert!(log.contains("--runtime runsc"), "sandbox runtime: {log}");
+    destroy_job(&service, &json!({"handle":created["handle"]}))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn job_start_fails_closed_when_host_drifted_since_the_probe() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("job-drift");
+    std::fs::create_dir(&workspace).unwrap();
+    let (service, _helper_dir) = fake_service(root.path());
+    // The probe saw /dev/kvm, but the host lost it before the job started.
+    let mut config = (*service.config).clone();
+    config.workspace_volume = None;
+    let drifted = Service {
+        config: Arc::new(config),
+        jobs: service.jobs.clone(),
+        host: HostFacts {
+            os: "linux".into(),
+            kvm_path: root.path().join("kvm-gone"),
+        },
+    };
+    let outcome = create_job(
+        &drifted,
+        &json!({
+            "mode":"vm",
+            "workspace":workspace,
+            "image":"buz-vm@sha256:def",
+            "oci_runtime":"io.containerd.firecracker.v2"
+        }),
+        10001,
+        10001,
+    )
+    .await;
+    let error = outcome.unwrap_err().to_string();
+    assert!(error.contains("/dev/kvm"), "drift re-check: {error}");
+
+    // A runtime mismatch against supervisor policy also fails closed.
+    let mismatch = create_job(
+        &drifted,
+        &json!({
+            "mode":"sandbox",
+            "workspace":root.path().join("job-drift"),
+            "image":"buz-sandbox@sha256:789",
+            "oci_runtime":"kata-fc"
+        }),
+        10001,
+        10001,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        mismatch.contains("does not match supervisor policy"),
+        "runtime mismatch: {mismatch}"
+    );
+}
+
+#[tokio::test]
+async fn unsupported_mode_and_foreign_image_are_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("job-3");
+    std::fs::create_dir(&workspace).unwrap();
+    let (service, _helper_dir) = fake_service(root.path());
+    let host_mode = create_job(
+        &service,
+        &json!({"mode":"host","workspace":workspace,"image":"buz-job@sha256:abc"}),
+        10001,
+        10001,
+    )
+    .await;
+    let error = host_mode.unwrap_err().to_string();
+    assert!(error.contains("unsupported sandbox mode"), "{error}");
+    let unknown_mode = create_job(
+        &service,
+        &json!({"mode":"gvisor","workspace":workspace,"image":"buz-job@sha256:abc"}),
+        10001,
+        10001,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        unknown_mode.contains("unsupported sandbox mode"),
+        "{unknown_mode}"
+    );
 }
 
 #[tokio::test]
@@ -346,6 +488,101 @@ async fn sandboxd_mounts_only_job_volume_subpath_when_configured() {
 }
 
 #[tokio::test]
+async fn capability_probe_reports_every_tier_with_runtimes_and_reasons() {
+    let root = tempfile::tempdir().unwrap();
+    let (service, _helper_dir) = fake_service(root.path());
+    let response = probe_capabilities(
+        &service,
+        &json!({"op":"probe_capabilities","backends":[
+            {"mode":"container","image":"buz-job@sha256:abc","oci_runtime":""},
+            {"mode":"sandbox","image":"buz-sandbox@sha256:789","oci_runtime":"runsc"},
+            {"mode":"vm","image":"buz-vm@sha256:def","oci_runtime":"io.containerd.firecracker.v2"}
+        ]}),
+    )
+    .await
+    .unwrap();
+    let capabilities: shared::protocol::RunnerExecutionCapabilities =
+        serde_json::from_value(response["capabilities"].clone()).unwrap();
+    assert_eq!(capabilities.container, ExecutionBackendStatus::Supported);
+    assert_eq!(capabilities.sandbox, ExecutionBackendStatus::Supported);
+    assert_eq!(capabilities.vm, ExecutionBackendStatus::Supported);
+    assert!(capabilities.container_reason.is_none());
+    assert_eq!(
+        capabilities.runtimes.get("sandbox").map(String::as_str),
+        Some("runsc")
+    );
+    assert_eq!(
+        capabilities.runtimes.get("vm").map(String::as_str),
+        Some("io.containerd.firecracker.v2")
+    );
+    assert!(!capabilities.runtimes.contains_key("container"));
+}
+
+#[tokio::test]
+async fn capability_probe_fails_closed_for_unconfigured_and_legacy_clients() {
+    let root = tempfile::tempdir().unwrap();
+    let (service, _helper_dir) = fake_service(root.path());
+    let mut config = (*service.config).clone();
+    config.sandbox_image = String::new();
+    config.sandbox_runtime = String::new();
+    let service = Service {
+        config: Arc::new(config),
+        jobs: service.jobs.clone(),
+        host: service.host.clone(),
+    };
+
+    // A tier the supervisor does not know gets a reason, never silence.
+    let response = probe_capabilities(
+        &service,
+        &json!({"op":"probe_capabilities","backends":[
+            {"mode":"container","image":"buz-job@sha256:abc","oci_runtime":""},
+            {"mode":"sandbox","image":"x@sha256:1","oci_runtime":"runsc"}
+        ]}),
+    )
+    .await
+    .unwrap();
+    let capabilities: shared::protocol::RunnerExecutionCapabilities =
+        serde_json::from_value(response["capabilities"].clone()).unwrap();
+    assert_eq!(capabilities.container, ExecutionBackendStatus::Supported);
+    assert_eq!(capabilities.sandbox, ExecutionBackendStatus::Unsupported);
+    assert!(
+        capabilities
+            .sandbox_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not configured"),
+        "unconfigured tier reason: {:?}",
+        capabilities.sandbox_reason
+    );
+    assert_eq!(capabilities.vm, ExecutionBackendStatus::Unsupported);
+    assert!(
+        capabilities
+            .vm_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("does not match supervisor policy"),
+        "vm tier was claimed by no runner-side backend entry"
+    );
+
+    // Legacy runner payload (no `backends` key): everything fails closed.
+    let response = probe_capabilities(&service, &json!({"op":"probe_capabilities"}))
+        .await
+        .unwrap();
+    let capabilities: shared::protocol::RunnerExecutionCapabilities =
+        serde_json::from_value(response["capabilities"].clone()).unwrap();
+    assert_eq!(capabilities.container, ExecutionBackendStatus::Unsupported);
+    assert!(
+        capabilities
+            .container_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("does not match"),
+        "legacy payload cannot claim the pinned image: {:?}",
+        capabilities.container_reason
+    );
+}
+
+#[tokio::test]
 async fn capability_probe_removes_probe_container_when_exec_fails() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
@@ -361,12 +598,17 @@ async fn capability_probe_removes_probe_container_when_exec_fails() {
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
     let image = "job@sha256:abc".to_string();
+    let kvm = dir.path().join("kvm");
+    std::fs::write(&kvm, "").unwrap();
     let config = SandboxdConfig {
         instance_id: "test-sandboxd".into(),
         socket: dir.path().join("sock").display().to_string(),
         workspace_root: dir.path().display().to_string(),
         docker_cli: script.display().to_string(),
         container_image: image.clone(),
+        container_runtime: String::new(),
+        sandbox_image: String::new(),
+        sandbox_runtime: String::new(),
         firecracker_guest_image: image.clone(),
         firecracker_runtime: "firecracker".into(),
         socket_gid: 10001,
@@ -379,12 +621,16 @@ async fn capability_probe_removes_probe_container_when_exec_fails() {
     let service = Service {
         config: Arc::new(config),
         jobs: Arc::new(Mutex::new(HashMap::new())),
+        host: HostFacts {
+            os: "linux".into(),
+            kvm_path: kvm,
+        },
     };
-    assert!(
-        probe_backend(&service, RunnerExecutionMode::Container, &image, "")
-            .await
-            .is_err()
-    );
+    let backends = service.config.backends();
+    let descriptor = backends
+        .get(shared::protocol::RunnerExecutionMode::Container)
+        .unwrap();
+    assert!(probe_backend(&service, descriptor, &image).await.is_err());
     assert!(std::fs::read_to_string(log)
         .unwrap()
         .contains("rm --force buz-sandbox-probe-"));
@@ -411,9 +657,12 @@ async fn stale_cleanup_only_removes_this_instance_containers() {
         socket: dir.path().join("sock").display().to_string(),
         workspace_root: dir.path().display().to_string(),
         docker_cli: script.display().to_string(),
-        container_image: image.clone(),
-        firecracker_guest_image: image,
-        firecracker_runtime: "firecracker".into(),
+        container_image: image,
+        container_runtime: String::new(),
+        sandbox_image: String::new(),
+        sandbox_runtime: String::new(),
+        firecracker_guest_image: String::new(),
+        firecracker_runtime: String::new(),
         socket_gid: 10001,
         workspace_volume: None,
         allowed_runner_uid: Some(10001),
@@ -432,35 +681,4 @@ async fn stale_cleanup_only_removes_this_instance_containers() {
         !log.contains("stale-foreign"),
         "foreign-instance ids must not be listed or removed: {log}"
     );
-}
-
-#[test]
-fn vm_prerequisites_fail_closed_for_non_linux_hosts() {
-    let error = validate_vm_prerequisites(
-        "macos",
-        std::path::Path::new("/dev/kvm"),
-        "firecracker",
-        "firecracker",
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("Linux"));
-}
-
-#[test]
-fn vm_prerequisites_require_runtime_and_kvm() {
-    let error = validate_vm_prerequisites(
-        "linux",
-        std::path::Path::new("/missing/kvm"),
-        "firecracker",
-        "firecracker",
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("/dev/kvm"));
-    assert!(validate_vm_prerequisites(
-        "linux",
-        std::path::Path::new("/dev/null"),
-        "wrong-runtime",
-        "firecracker",
-    )
-    .is_err());
 }

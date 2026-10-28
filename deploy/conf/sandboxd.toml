@@ -15,12 +15,19 @@ allowed_runner_uid = 10001
 
 # Administrator-pinned OCI job images; Runner requests must match these exactly.
 # Use digest-pinned images and ensure the image contains /bin/sh.
-# Probes create, start, exec in, and remove a short-lived container/VM every five minutes.
+# Probes create, start, exec in, and remove a short-lived container/VM every five
+# minutes, independently of the mode currently selected for the Runner.
 # A backend is reported supported only if all actions (including cleanup) succeed.
-# VM support additionally requires Linux, readable /dev/kvm, and the configured runtime.
+# Tier prerequisites: Container needs nothing special; Sandbox needs Linux but
+# no /dev/kvm (userspace-kernel OCI runtime such as runsc); VM needs Linux plus
+# a readable /dev/kvm and the configured runtime.
 # Runner mode selection requires an online heartbeat plus a check no older than 5m.
-container_image = ""  # set to an admin-pinned image digest before enabling Container mode
+container_image = ""  # set to an admin-pinned image digest before enabling Container mode (L1)
+container_runtime = ""  # empty uses the daemon default (runc)
+sandbox_image = ""  # set to an admin-pinned image digest before enabling Sandbox mode (L2, e.g. gVisor)
+sandbox_runtime = ""  # OCI runtime delivering L2, e.g. "runsc"; empty disables the tier
+# VM tier (L3): configure this runtime in the host Docker daemon to use a
+# Firecracker/KVM-backed OCI runtime. Example names are runtime-installation-
+# specific; leave empty until provisioned.
 firecracker_guest_image = ""  # set to an admin-pinned guest image digest for VM mode
-# Configure this runtime in the host Docker daemon to use a Firecracker/KVM-backed OCI runtime.
-# Example names are runtime-installation-specific; leave empty until provisioned.
 firecracker_runtime = ""

@@ -588,7 +588,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
 
     add_column_if_missing(pool, "jobs", "queue_position INTEGER").await;
 
-    // ── Step marketplace: sources + pool (ADR step-marketplace §6.8) ──
+    // ── Plugin library (formerly "step marketplace", ADR step-marketplace §6.8): sources + pool ──
     // Plugin vocabulary: databases created before the rename carry the old
     // table names. Rename first — the CREATE statements below are no-ops for
     // renamed tables, and queries would otherwise hit "no such table".

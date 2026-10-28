@@ -1,13 +1,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
-mod client;
-mod config;
-mod engine;
-mod masker;
-mod policy;
-mod secret;
-mod sysinfo;
+use runner::{client, config, policy, sysinfo};
 
 /// Buz Runner — lightweight cross‑network task execution agent.
 #[derive(Parser)]

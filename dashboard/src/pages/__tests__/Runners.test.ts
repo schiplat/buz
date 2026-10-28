@@ -136,6 +136,7 @@ describe('Runner team binding', () => {
     const mode = [...document.body.querySelectorAll<HTMLSelectElement>('select')]
       .find((select) => [...select.options].some((option) => option.value === 'container'))!
     expect(mode.querySelector<HTMLOptionElement>('option[value="container"]')!.disabled).toBe(true)
+    expect(mode.querySelector<HTMLOptionElement>('option[value="sandbox"]')!.disabled).toBe(true)
     expect(mode.querySelector<HTMLOptionElement>('option[value="vm"]')!.disabled).toBe(true)
     expect(document.body.textContent).toContain('Runner is offline.')
 
@@ -153,7 +154,12 @@ describe('Runner team binding', () => {
         memory_total_mb: 1024, memory_used_mb: 1, swap_total_mb: 0, swap_used_mb: 0,
         disk_total_gb: 10, disk_used_gb: 1, network_interfaces: [], ip_addresses: [], uptime_seconds: 1,
         execution_capabilities: {
-          container: 'supported', vm: 'unsupported', vm_reason: 'KVM is unavailable', checked_at: checkedAt,
+          container: 'supported',
+          sandbox: 'unsupported',
+          sandbox_reason: 'runsc is not installed',
+          vm: 'unsupported',
+          vm_reason: 'KVM is unavailable',
+          checked_at: checkedAt,
         },
       },
     })])
@@ -163,9 +169,43 @@ describe('Runner team binding', () => {
     const onlineMode = [...document.body.querySelectorAll<HTMLSelectElement>('select')]
       .find((select) => [...select.options].some((option) => option.value === 'container'))!
     expect(onlineMode.querySelector<HTMLOptionElement>('option[value="container"]')!.disabled).toBe(false)
+    expect(onlineMode.querySelector<HTMLOptionElement>('option[value="sandbox"]')!.disabled).toBe(true)
     expect(onlineMode.querySelector<HTMLOptionElement>('option[value="vm"]')!.disabled).toBe(true)
     expect(document.body.textContent).toContain('KVM is unavailable')
-    expect(document.body.textContent).toContain('Container · supported')
+    expect(document.body.textContent).toContain('runsc is not installed')
+    expect(document.body.textContent).toContain('L1 Container (hardened, host kernel) · supported')
+  })
+
+  it('enables the full tier ladder and shows delivering runtimes when supported', async () => {
+    const checkedAt = new Date().toISOString()
+    await mountPage([runner({
+      status: 'online',
+      last_seen: checkedAt,
+      system_info: {
+        runner_version: '1.10.0', hostname: 'runner-one', os: 'Linux', kernel_version: 'k',
+        cpu_arch: 'x86_64', cpu_cores: 2, cpu_model: 'cpu', cpu_usage_percent: 1,
+        memory_total_mb: 1024, memory_used_mb: 1, swap_total_mb: 0, swap_used_mb: 0,
+        disk_total_gb: 10, disk_used_gb: 1, network_interfaces: [], ip_addresses: [], uptime_seconds: 1,
+        execution_capabilities: {
+          container: 'supported',
+          sandbox: 'supported',
+          vm: 'supported',
+          runtimes: { sandbox: 'runsc', vm: 'kata-fc' },
+          checked_at: checkedAt,
+        },
+      },
+    })])
+    document.querySelector<HTMLButtonElement>('button[title="Open runner-one"]')!.click()
+    await nextTick()
+    const mode = [...document.body.querySelectorAll<HTMLSelectElement>('select')]
+      .find((select) => [...select.options].some((option) => option.value === 'container'))!
+    for (const tier of ['container', 'sandbox', 'vm']) {
+      expect(mode.querySelector<HTMLOptionElement>(`option[value="${tier}"]`)!.disabled).toBe(false)
+    }
+    const checks = document.body.textContent!
+    expect(checks).toContain('L2 Sandbox (userspace kernel, no KVM) · supported · runsc')
+    expect(checks).toContain('L3 VM (Firecracker-compatible runtime, KVM) · supported · kata-fc')
+    expect(checks).toContain('the system never picks one for you')
   })
 
   it('create dialog backdrop scrolls when the form exceeds the viewport', async () => {

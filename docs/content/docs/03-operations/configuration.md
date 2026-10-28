@@ -168,11 +168,15 @@ token_cache_path = "./state/runner-token" # durable Manager-issued JWT cache
 # docker_config_isolation = "per_job"
 
 [sandbox]
-# Used only when Manager UI → Runners selects container or vm mode.
+# Used only when Manager UI → Runners selects a sandboxed tier
+# (container | sandbox | vm). One digest-pinned image per tier.
 supervisor_socket = "/run/buz-sandboxd/sandboxd.sock"
 workspace_root = "/app/buz/workspace"
 # Set to the same immutable image digest configured in sandboxd.toml.
 # container_image = "docker.io/library/debian@sha256:<digest>"
+# container_runtime = ""            # empty uses the Docker daemon default (runc)
+# sandbox_image = "docker.io/library/debian@sha256:<digest>"
+# sandbox_runtime = "runsc"          # L2 userspace-kernel runtime (e.g. gVisor); no KVM needed
 # firecracker_guest_image = "docker.io/library/debian@sha256:<digest>"
 # firecracker_runtime = "<host Docker daemon Firecracker-compatible runtime name>"
 
@@ -187,9 +191,9 @@ level = "info"
 # file = "./logs/runner.log"   # Runner default if omitted: ./logs/runner.log
 ```
 
-The supervisor actively probes each configured backend at startup and every five minutes by creating, starting, executing in, and removing a short-lived digest-pinned image. Capability results and failure reasons are reported on heartbeat and displayed in Runner details. VM requires Linux, readable `/dev/kvm`, and a successfully exercised Firecracker-compatible OCI runtime; this is host-provided runtime delegation, not Buz-managed Firecracker/jailer. Manager allows selecting Container/VM only when the Runner is online and its capability check is no older than five minutes. A real job still performs normal create-time checks and fails closed if the host changed after the probe.
+The supervisor actively probes every configured sandboxed tier at startup and every five minutes by creating, starting, executing in, and removing a short-lived digest-pinned image — independent of the tier currently selected for the Runner, so switching tiers never waits for a first probe. Capability results, failure reasons, and the delivering OCI runtime name are reported on heartbeat and displayed in Runner details. Tier prerequisites: Container needs a Docker daemon; Sandbox needs Linux and a userspace-kernel OCI runtime (e.g. `runsc`) but no `/dev/kvm`; VM requires Linux, readable `/dev/kvm`, and a successfully exercised Firecracker-compatible OCI runtime — this is host-provided runtime delegation, not Buz-managed Firecracker/jailer. The Manager allows selecting a sandboxed tier only when the Runner is online and its capability check is no older than five minutes. A real job re-checks the tier prerequisites at start and fails closed if the host drifted after the probe; the system never auto-selects, upgrades, or downgrades the tier — that is the operator's choice in the Manager UI.
 
-The optional host-side `buz-sandboxd` service uses a separate `conf/sandboxd.toml` (not the Runner policy file). It must share the same workspace volume as Runner and be permissioned to accept only the Runner UID. In Compose, build/start the `sandboxd` profile and keep its Docker socket private; Docker-daemon access is host-root-equivalent. Set the pinned `container_image` and, if using VM mode, the digest-pinned `firecracker_guest_image` plus a Firecracker-compatible runtime registered with the Docker daemon. VM mode requires Linux KVM and a pre-provisioned Firecracker-compatible OCI runtime; Buz does not bundle a guest kernel/image or configure KVM for you.
+The optional host-side `buz-sandboxd` service uses a separate `conf/sandboxd.toml` (not the Runner policy file). It must share the same workspace volume as Runner and be permissioned to accept only the Runner UID. In Compose, build/start the `sandboxd` profile and keep its Docker socket private; Docker-daemon access is host-root-equivalent. Set the pinned `container_image`, and per tier you want to enable: for the Sandbox tier the digest-pinned `sandbox_image` plus a userspace-kernel runtime (e.g. `runsc` registered with the Docker daemon — Linux required, no KVM), for the VM tier the digest-pinned `firecracker_guest_image` plus a Firecracker-compatible runtime registered with the Docker daemon (Linux KVM required). Buz does not bundle any runtime, guest kernel/image, or configure KVM for you.
 
 `sandboxd.instance_id` must be unique per sandboxd deployment sharing one Docker daemon. On startup sandboxd refuses to take over a socket whose live peer answers a `health` probe, removes stale sockets only when nothing is listening, and force-removes leftover `buz.sandboxd.managed=true` containers carrying its own `buz.sandboxd.instance=<id>` label — it never touches other instances' containers. Compose sets the id via `BUZ_SANDBOXD_INSTANCE_ID` (default `compose-sandboxd`) and exposes `/dev/kvm` to sandboxd only through the optional `docker-compose.vm.yml` override (`docker compose -f docker/docker-compose.yml -f docker/docker-compose.vm.yml --profile sandbox up -d`), because the default Compose path cannot reach the host KVM device. The container image ships a `buz-sandboxd --healthcheck` subcommand used as the Compose healthcheck; the Runner waits for it via an optional `depends_on` condition, so Host-only deployments are unaffected.
 
@@ -203,11 +207,14 @@ workspace_root = "/app/buz/workspace"
 workspace_volume = "buz-runner-ws"
 allowed_runner_uid = 10001
 container_image = "docker.io/library/debian@sha256:<digest>"
+container_runtime = ""                                   # empty → daemon default (runc)
+sandbox_image = "docker.io/library/debian@sha256:<digest>"
+sandbox_runtime = "runsc"                                # L2 userspace-kernel runtime
 firecracker_guest_image = "docker.io/library/debian@sha256:<digest>"
 firecracker_runtime = "<runtime configured in Docker daemon>"
 ```
 
-Both sandbox modes currently support local shell steps only: SSH, per-step Docker engine, registry-auth handoff, and host-side config preparation are rejected before the job starts. See [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes) for the full compatibility/security boundary.
+All sandboxed tiers currently support local shell steps only: SSH, per-step Docker engine, registry-auth handoff, and host-side config preparation are rejected before the job starts. See [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes) for the full compatibility/security boundary and [Sandbox Isolation Tiers](/docs/01-architecture/execution/sandbox-isolation-tiers/) for the tier model.
 
 | Key | Notes |
 |-----|-------|
