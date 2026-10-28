@@ -57,7 +57,7 @@ pub async fn lock_yaml_file(
     Ok(lock.lock_owned().await)
 }
 
-async fn read_yaml_for_scan(
+pub async fn read_yaml_for_scan(
     scan_dir: &str,
     filename: &str,
 ) -> Result<(String, OwnedMutexGuard<()>), AppError> {
@@ -1334,7 +1334,3 @@ fn parse_concurrency_timeout_seconds(raw: Option<&str>) -> i64 {
         Some(s) => shared::pipeline_yaml::parse_duration_seconds(s).unwrap_or(1800),
     }
 }
-
-#[cfg(test)]
-#[path = "tests/pipeline_scanner_path_tests.rs"]
-mod path_tests;

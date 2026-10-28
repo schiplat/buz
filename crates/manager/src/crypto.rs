@@ -225,7 +225,3 @@ pub fn mask_string(raw: &str) -> String {
     let tail: String = chars[n - 2..].iter().collect();
     format!("{head}****{tail}")
 }
-
-#[cfg(test)]
-#[path = "crypto_tests.rs"]
-mod tests;

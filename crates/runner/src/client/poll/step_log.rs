@@ -16,7 +16,7 @@ use super::update_job_status;
 
 /// Severity implied by a chunk-layout offset: verbose extras are Debug,
 /// the cancel marker is Warn, errors are Error, everything else Info.
-fn level_for_offset(offset: i32) -> LogLevel {
+pub fn level_for_offset(offset: i32) -> LogLevel {
     match offset {
         LOG_STEP_ERROR => LogLevel::Error,
         LOG_STEP_CANCELLED => LogLevel::Warn,
@@ -31,26 +31,26 @@ fn level_for_offset(offset: i32) -> LogLevel {
 
 /// Chunk layout contract lives on `shared::protocol::LogChunk` — the
 /// Manager and the terminal both read it from there.
-pub(crate) fn step_log_base(step_idx: usize) -> i32 {
+pub fn step_log_base(step_idx: usize) -> i32 {
     (step_idx * 10_000) as i32
 }
 
 /// Job-start runner identity banner (`==> RUNNER`), ordered before step 0's
 /// first chunk (`step_log_base(0) == 0`) so it appears at the very top of the
 /// job's logs.
-pub(crate) const LOG_RUNNER_BANNER: i32 = -2;
+pub const LOG_RUNNER_BANNER: i32 = -2;
 
-pub(crate) const LOG_STEP_VERBOSE_PREPARE: i32 = 0;
-pub(crate) const LOG_STEP_VERBOSE_CONFIG: i32 = 1;
-pub(crate) const LOG_STEP_VERBOSE_CONFIG_PREP: i32 = 2;
-pub(crate) const LOG_LOGIN: i32 = 3;
-pub(crate) const LOG_STEP_VERBOSE_EXEC: i32 = 4;
-pub(crate) const LOG_ECHO: i32 = 5;
-pub(crate) const LOG_STREAM_START: i32 = 6;
-pub(crate) const LOG_STEP_VERBOSE_RESULT: i32 = 9993;
-pub(crate) const LOG_STEP_ERROR: i32 = 9997;
-const LOG_STEP_CANCELLED: i32 = 9998;
-pub(super) const LOG_STEP_SUMMARY: i32 = 9999;
+pub const LOG_STEP_VERBOSE_PREPARE: i32 = 0;
+pub const LOG_STEP_VERBOSE_CONFIG: i32 = 1;
+pub const LOG_STEP_VERBOSE_CONFIG_PREP: i32 = 2;
+pub const LOG_LOGIN: i32 = 3;
+pub const LOG_STEP_VERBOSE_EXEC: i32 = 4;
+pub const LOG_ECHO: i32 = 5;
+pub const LOG_STREAM_START: i32 = 6;
+pub const LOG_STEP_VERBOSE_RESULT: i32 = 9993;
+pub const LOG_STEP_ERROR: i32 = 9997;
+pub const LOG_STEP_CANCELLED: i32 = 9998;
+pub const LOG_STEP_SUMMARY: i32 = 9999;
 
 /// Two-pass output redaction shared by every execution path: value masking
 /// first, then forced masking (rendered `.env` secret values,
@@ -98,13 +98,7 @@ pub(super) struct StepLogger {
 }
 
 impl StepLogger {
-    pub(super) fn new(
-        client: &Client,
-        config: &Config,
-        token: &str,
-        job_id: &str,
-        idx: usize,
-    ) -> Self {
+    pub fn new(client: &Client, config: &Config, token: &str, job_id: &str, idx: usize) -> Self {
         Self {
             client: client.clone(),
             config: config.clone(),
@@ -243,7 +237,7 @@ impl StepLogger {
 ///   cmd   echo hi
 ///         more…
 /// ```
-pub(crate) fn build_step_echo(
+pub fn build_step_echo(
     exec_type: &str,
     command: &str,
     env: &HashMap<String, String>,
@@ -286,13 +280,13 @@ pub(crate) fn build_step_echo(
 }
 
 /// Banner for a successful local `docker login` before pull/run.
-pub(crate) fn build_login_banner(registry: &str) -> String {
+pub fn build_login_banner(registry: &str) -> String {
     format!("==> LOGIN [{registry}]\n")
 }
 
 /// Identity banner for the runner that executed this job (version + OS),
 /// uploaded once at job start so every job's logs are self-describing.
-pub(crate) fn build_runner_banner() -> String {
+pub fn build_runner_banner() -> String {
     let mut out = String::from("==> RUNNER\n");
     out.push_str(&format!(
         "  {:<16} {}\n",
@@ -310,7 +304,7 @@ pub(crate) fn build_runner_banner() -> String {
 /// Banner after SSH auth: target (`user@host:port`) and remote workspace (`pwd`).
 ///
 /// Never includes credentials. Empty workspace omits the workspace line.
-pub(crate) fn build_ssh_banner(targets: &[(String, String)]) -> String {
+pub fn build_ssh_banner(targets: &[(String, String)]) -> String {
     let mut out = String::new();
     for (target, workspace) in targets {
         out.push_str(&format!("==> SSH [{target}]\n"));
@@ -322,7 +316,7 @@ pub(crate) fn build_ssh_banner(targets: &[(String, String)]) -> String {
 }
 
 /// Resolved SSH targets from Manager `host` payload objects (no credentials).
-pub(crate) fn format_resolved_ssh_targets(step: &serde_json::Value) -> Vec<String> {
+pub fn format_resolved_ssh_targets(step: &serde_json::Value) -> Vec<String> {
     let host_values = step["host"]
         .as_array()
         .cloned()
@@ -366,7 +360,7 @@ pub(super) fn build_verbose_stage(stage: &str) -> String {
 /// Uploaded **before** `config_source` prepare so a prepare-stage failure
 /// (e.g. OSS 404) still shows the step shape — previously STEP CONFIG only
 /// ran after a successful unpack, so Verbose looked identical to a normal run.
-pub(crate) fn build_verbose_step_config(
+pub fn build_verbose_step_config(
     step: &serde_json::Value,
     exec_type: &str,
     registry_secret_ref: &str,
@@ -440,7 +434,7 @@ pub(crate) fn build_verbose_step_config(
 /// Populated from the `signed_at_epoch` / `expires_epoch` fields the Manager
 /// stamps into `config_auth`; absent when talking to an older Manager.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ConfigUrlAge {
+pub struct ConfigUrlAge {
     pub signed_at_epoch: i64,
     pub expires_epoch: i64,
     pub age_secs: i64,
@@ -449,17 +443,17 @@ pub(crate) struct ConfigUrlAge {
 
 impl ConfigUrlAge {
     /// True once OSS would reject the URL for being expired.
-    pub(crate) fn is_expired(&self) -> bool {
+    pub fn is_expired(&self) -> bool {
         self.remaining_secs <= 0
     }
 
     /// Effective lifetime granted at signing time.
-    pub(crate) fn ttl_secs(&self) -> i64 {
+    pub fn ttl_secs(&self) -> i64 {
         self.expires_epoch - self.signed_at_epoch
     }
 
     /// `3598s` while valid, `EXPIRED (61s ago)` once past the deadline.
-    pub(crate) fn remaining_label(&self) -> String {
+    pub fn remaining_label(&self) -> String {
         if self.remaining_secs > 0 {
             format!("{}s", self.remaining_secs)
         } else {
@@ -470,7 +464,7 @@ impl ConfigUrlAge {
 
 /// Read the signed-URL window out of `config_auth` against a caller-supplied
 /// `now` (kept explicit so tests are deterministic).
-pub(crate) fn config_url_age(step: &serde_json::Value, now_epoch: i64) -> Option<ConfigUrlAge> {
+pub fn config_url_age(step: &serde_json::Value, now_epoch: i64) -> Option<ConfigUrlAge> {
     let auth = step.get("config_auth")?;
     let signed_at_epoch = auth.get("signed_at_epoch").and_then(|v| v.as_i64())?;
     let expires_epoch = auth.get("expires_epoch").and_then(|v| v.as_i64())?;
@@ -487,7 +481,7 @@ pub(crate) fn config_url_age(step: &serde_json::Value, now_epoch: i64) -> Option
 /// Always safe for Verbose (URL redacted). In Debug mode the signed URL is
 /// printed in full — that is the main visible difference for prepare-only
 /// failures like OSS 404, where no RUN echo ever happens.
-pub(crate) fn build_config_prep_banner(step: &serde_json::Value, debug_unredact: bool) -> String {
+pub fn build_config_prep_banner(step: &serde_json::Value, debug_unredact: bool) -> String {
     let mut out = String::from("==> CONFIG PREP\n");
     let mut push_field = |label: &str, value: String| {
         if !value.is_empty() {
@@ -562,7 +556,7 @@ pub(crate) fn build_config_prep_progress(
 }
 
 /// Verbose-mode step result summary (duration + exit code).
-pub(crate) fn build_verbose_step_result(duration: Duration, exit_code: i32) -> String {
+pub fn build_verbose_step_result(duration: Duration, exit_code: i32) -> String {
     let dur = if duration.as_secs_f64() >= 1.0 {
         format!("{:.2}s", duration.as_secs_f64())
     } else {
@@ -572,7 +566,7 @@ pub(crate) fn build_verbose_step_result(duration: Duration, exit_code: i32) -> S
 }
 
 /// Human hint when a step exits non-zero (avoid always blaming interactive input).
-pub(crate) fn step_failure_hint(stderr: &str, exit_code: i32) -> String {
+pub fn step_failure_hint(stderr: &str, exit_code: i32) -> String {
     let s = stderr.to_ascii_lowercase();
     if s.contains("timeout") {
         return "the step exceeded its timeout.".into();
@@ -606,7 +600,7 @@ pub(crate) fn step_failure_hint(stderr: &str, exit_code: i32) -> String {
 }
 
 /// Structured failure body under `==> ERROR`.
-pub(crate) fn build_step_failure_message(
+pub fn build_step_failure_message(
     step_name: &str,
     exit_code: i32,
     command: &str,
@@ -625,7 +619,3 @@ pub(crate) fn build_step_failure_message(
          hint     {hint}"
     )
 }
-
-#[cfg(test)]
-#[path = "step_log_tests.rs"]
-mod tests;

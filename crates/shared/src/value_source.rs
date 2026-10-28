@@ -403,7 +403,3 @@ fn lookup_legacy<'a>(name: &str, map: &'a ValueMap) -> Option<&'a str> {
         .map(|s| s.as_str())
         .or_else(|| map.secrets.get(name).map(|s| s.as_str()))
 }
-
-#[cfg(test)]
-#[path = "value_source_tests.rs"]
-mod tests;

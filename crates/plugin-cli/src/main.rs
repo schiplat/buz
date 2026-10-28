@@ -5,11 +5,7 @@
 //! authority); the Manager re-runs the same validation when it consumes a
 //! template. Feedback here, enforcement there — never two implementations.
 
-mod indexgen;
-mod layout;
-mod mirror;
-mod scaffold;
-mod validate;
+use plugin_cli::{indexgen, mirror, scaffold, validate};
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;

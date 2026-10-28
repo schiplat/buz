@@ -4,7 +4,7 @@
 //! snapshot at trigger (expressions kept), and resolved + sent asynchronously
 //! when the job reaches a terminal status.
 
-mod feishu;
+pub mod feishu;
 
 use async_trait::async_trait;
 use sqlx::{Row, SqlitePool};
@@ -269,7 +269,3 @@ fn parse_sqlite_datetime(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         .ok()
         .map(|ndt| ndt.and_utc())
 }
-
-#[cfg(test)]
-#[path = "../tests/notify_tests.rs"]
-mod tests;

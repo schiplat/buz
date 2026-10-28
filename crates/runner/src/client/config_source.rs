@@ -73,13 +73,13 @@ pub struct ConfigPrep {
 }
 
 #[derive(Debug, Clone)]
-struct EnvRenderSpec {
-    template: String,
-    output: String,
-    mode: u32,
-    on_missing: MissingPolicy,
+pub struct EnvRenderSpec {
+    pub template: String,
+    pub output: String,
+    pub mode: u32,
+    pub on_missing: MissingPolicy,
     /// Number of timestamped `.bak` backups to keep (0 disables backups).
-    backup_keep: usize,
+    pub backup_keep: usize,
 }
 
 /// True when the step needs prepare (OSS deliver and/or `config_render`).
@@ -106,7 +106,7 @@ fn has_config_render(step: &serde_json::Value) -> bool {
 }
 
 /// Extract the signed OSS GET URL from the dispatched step.
-fn config_url(step: &serde_json::Value) -> anyhow::Result<String> {
+pub fn config_url(step: &serde_json::Value) -> anyhow::Result<String> {
     step.get("config_auth")
         .and_then(|a| a.get("url"))
         .and_then(|v| v.as_str())
@@ -118,7 +118,7 @@ fn config_url(step: &serde_json::Value) -> anyhow::Result<String> {
 }
 
 /// Human label for the source archive in error messages (never the signed URL).
-fn archive_label(step: &serde_json::Value) -> String {
+pub fn archive_label(step: &serde_json::Value) -> String {
     step.get("config_auth")
         .and_then(|a| a.get("object_key"))
         .and_then(|v| v.as_str())
@@ -182,7 +182,7 @@ fn parse_one_render_entry(
 }
 
 /// Parse `config_render` (JSON array or single object) into specs.
-fn config_render_specs(step: &serde_json::Value) -> Result<Vec<EnvRenderSpec>, String> {
+pub fn config_render_specs(step: &serde_json::Value) -> Result<Vec<EnvRenderSpec>, String> {
     let er = match step.get("config_render") {
         Some(v) if !v.is_null() => v,
         _ => return Ok(vec![]),
@@ -205,7 +205,7 @@ fn config_render_specs(step: &serde_json::Value) -> Result<Vec<EnvRenderSpec>, S
 
 /// Local unpack / render dir: absolute `config_dest` as-is, relative joined to
 /// the job workspace, unset → a per-step dir inside the workspace.
-fn resolve_local_dir(step: &serde_json::Value, local_root: &Path, step_idx: usize) -> PathBuf {
+pub fn resolve_local_dir(step: &serde_json::Value, local_root: &Path, step_idx: usize) -> PathBuf {
     match step
         .get("config_dest")
         .and_then(|v| v.as_str())
@@ -220,7 +220,7 @@ fn resolve_local_dir(step: &serde_json::Value, local_root: &Path, step_idx: usiz
 
 /// Remote (SSH) dest: absolute `config_dest` as-is, relative or unset → a
 /// deterministic per-job temp dir on the target.
-fn resolve_remote_dir(step: &serde_json::Value, job_id: &str, step_idx: usize) -> String {
+pub fn resolve_remote_dir(step: &serde_json::Value, job_id: &str, step_idx: usize) -> String {
     match step
         .get("config_dest")
         .and_then(|v| v.as_str())
@@ -246,7 +246,7 @@ fn xml_tag_text(xml: &str, tag: &str) -> Option<String> {
 /// Build a human-readable reason from an OSS error body, falling back to a
 /// trimmed snippet when the body isn't the expected XML shape. Never exposes
 /// the signed URL — only the `<Code>` / `<Message>` OSS reports.
-fn oss_error_detail(body: &str) -> String {
+pub fn oss_error_detail(body: &str) -> String {
     match (xml_tag_text(body, "Code"), xml_tag_text(body, "Message")) {
         (Some(code), Some(msg)) => format!("{code}: {msg}"),
         (Some(code), None) => code,
@@ -276,7 +276,7 @@ fn oss_error_detail(body: &str) -> String {
 /// - clocks aligned → the URL was already expired when it was used (Manager
 ///   clock lagged at signing time, or the task sat too long before execution);
 /// - local behind/ahead of OSS → this host needs NTP.
-pub(crate) fn describe_download_failure(
+pub fn describe_download_failure(
     status: reqwest::StatusCode,
     date_header: Option<&str>,
     sent_at: chrono::DateTime<chrono::Utc>,
@@ -410,7 +410,7 @@ fn list_files(root: &Path) -> Vec<String> {
 
 /// Extract a tar.gz byte blob into `dest` via the system `tar`, returning the
 /// unpacked file list (root-relative, for the Verbose listing).
-fn unpack(tarball: &[u8], dest: &Path) -> anyhow::Result<Vec<String>> {
+pub fn unpack(tarball: &[u8], dest: &Path) -> anyhow::Result<Vec<String>> {
     std::fs::create_dir_all(dest)
         .with_context(|| format!("cannot create config dir '{}'", dest.display()))?;
     let mut child = std::process::Command::new("tar")
@@ -441,7 +441,7 @@ fn unpack(tarball: &[u8], dest: &Path) -> anyhow::Result<Vec<String>> {
 
 /// Render the template against the job's `ValueMap`, merge with the existing
 /// output content, and run the compose round-trip guard.
-fn render_env_with_old(
+pub fn render_env_with_old(
     config_dir: &Path,
     spec: &EnvRenderSpec,
     values: &ValueMap,
@@ -476,7 +476,7 @@ fn render_env_with_old(
 /// Back up the existing output file to `<output>.bak.<timestamp>` before it is
 /// overwritten, then prune so only the most recent `keep` backups remain.
 /// `keep == 0` disables backups entirely (caller should skip this fn).
-fn backup_output_local(path: &Path, old: &str, keep: usize) -> anyhow::Result<()> {
+pub fn backup_output_local(path: &Path, old: &str, keep: usize) -> anyhow::Result<()> {
     let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("env");
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
     let backup = path.with_file_name(format!("{file_name}.bak.{ts}"));
@@ -486,7 +486,7 @@ fn backup_output_local(path: &Path, old: &str, keep: usize) -> anyhow::Result<()
 }
 
 /// Remove the oldest `<output>.bak.*` files beyond `keep`, keeping the newest.
-fn prune_backups_local(path: &Path, keep: usize) -> anyhow::Result<()> {
+pub fn prune_backups_local(path: &Path, keep: usize) -> anyhow::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("env");
     let prefix = format!("{base}.bak.");
@@ -550,7 +550,7 @@ fn push_files_logs(logs: &mut Vec<PrepLogLine>, files: &[String]) {
 
 /// Apply all render specs under `config_dir`, returning union of changed keys
 /// and forced-redact values from the last render (secret set is job-wide).
-fn apply_renders_local(
+pub fn apply_renders_local(
     config_dir: &Path,
     specs: &[EnvRenderSpec],
     values: &ValueMap,
@@ -606,7 +606,7 @@ fn flock_unlock(file: &std::fs::File) {
 
 /// Atomic replace: write to a temp file in the same directory, fsync, then
 /// rename over the target, all under `flock` on a sibling lock file.
-fn write_atomic(path: &Path, content: &str, mode: u32) -> anyhow::Result<()> {
+pub fn write_atomic(path: &Path, content: &str, mode: u32) -> anyhow::Result<()> {
     let lock_path = PathBuf::from(format!("{}.lock", path.display()));
     let lock = std::fs::OpenOptions::new()
         .create(true)
@@ -657,7 +657,7 @@ fn write_atomic(path: &Path, content: &str, mode: u32) -> anyhow::Result<()> {
 }
 
 /// Set `BUZ_ENV_CHANGED` / `BUZ_ENV_CHANGED_KEYS` for the run block.
-fn set_changed_env(env: &mut HashMap<String, String>, changed: &[String]) {
+pub fn set_changed_env(env: &mut HashMap<String, String>, changed: &[String]) {
     if changed.is_empty() {
         env.insert("BUZ_ENV_CHANGED".to_string(), "0".to_string());
     } else {
@@ -1257,7 +1257,3 @@ async fn prepare_one_host_render_only(
     }
     Ok((host_changed, forced_redact, host_logs))
 }
-
-#[cfg(test)]
-#[path = "config_source_tests.rs"]
-mod tests;

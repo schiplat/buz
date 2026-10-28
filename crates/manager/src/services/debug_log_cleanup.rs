@@ -72,7 +72,3 @@ pub fn spawn_debug_log_cleanup(pool: SqlitePool, broadcaster: LogBroadcaster) {
         }
     });
 }
-
-#[cfg(test)]
-#[path = "tests/debug_log_cleanup_tests.rs"]
-mod tests;

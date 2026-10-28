@@ -205,7 +205,3 @@ pub fn round_trip_check(content: &str) -> Result<(), String> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "env_render_tests.rs"]
-mod tests;

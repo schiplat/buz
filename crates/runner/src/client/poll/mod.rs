@@ -14,7 +14,7 @@ use crate::masker::SecretCatalog;
 use crate::policy::{self, SharedPolicy};
 use std::collections::{HashMap, HashSet};
 
-pub(crate) mod step_log;
+pub mod step_log;
 
 use step_log::{
     build_config_prep_banner, build_config_prep_progress, build_login_banner, build_runner_banner,
@@ -24,10 +24,6 @@ use step_log::{
     LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_CONFIG_PREP, LOG_STEP_VERBOSE_EXEC,
     LOG_STEP_VERBOSE_PREPARE, LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
 };
-
-#[cfg(test)]
-#[path = "poll_tests.rs"]
-mod tests;
 
 /// Poll loop with concurrent job slots and exponential backoff on failures.
 ///
@@ -237,15 +233,15 @@ async fn run_one_job(
 /// One claim poll's outcome: an optional job plus cancel notices the Manager
 /// delivered on the same response (replacing the old per-job 2s probes).
 #[derive(Default)]
-struct PollOutcome {
-    task: Option<serde_json::Value>,
-    cancelled_jobs: Vec<String>,
-    retry_after_ms: Option<u64>,
+pub struct PollOutcome {
+    pub task: Option<serde_json::Value>,
+    pub cancelled_jobs: Vec<String>,
+    pub retry_after_ms: Option<u64>,
 }
 
 /// Parse a poll response body (`data` object) into task + cancel notices.
 /// `job_id` presence distinguishes a job payload from a cancel-only payload.
-fn parse_poll_data(data: serde_json::Value) -> PollOutcome {
+pub fn parse_poll_data(data: serde_json::Value) -> PollOutcome {
     if data.is_null() {
         return PollOutcome::default();
     }
@@ -273,19 +269,19 @@ fn parse_poll_data(data: serde_json::Value) -> PollOutcome {
 
 /// Live jobs' cancel signals, shared between the claim loop (which receives
 /// Manager notices) and the job tasks (which race steps against them).
-type CancelRegistry = Arc<Mutex<HashMap<String, watch::Sender<bool>>>>;
+pub type CancelRegistry = Arc<Mutex<HashMap<String, watch::Sender<bool>>>>;
 
 /// Fire (and consume) a job's cancel signal. Unknown ids — already finished
 /// locally, or reported after the task exited — are dropped: the Manager's
 /// terminal-state protection settles the verdict either way.
-fn signal_cancel(registry: &CancelRegistry, job_id: &str) {
+pub fn signal_cancel(registry: &CancelRegistry, job_id: &str) {
     if let Some(tx) = registry.lock().expect("cancel registry").remove(job_id) {
         let _ = tx.send(true);
     }
 }
 
 /// Resolves once the Manager reports this job cancelled via the claim channel.
-async fn cancel_triggered(rx: &mut watch::Receiver<bool>) -> bool {
+pub async fn cancel_triggered(rx: &mut watch::Receiver<bool>) -> bool {
     loop {
         if *rx.borrow() {
             return true;
@@ -299,7 +295,7 @@ async fn cancel_triggered(rx: &mut watch::Receiver<bool>) -> bool {
 /// Idle runners can hold one long poll for the full client timeout budget.
 /// Active runners refresh their capacity snapshot frequently so a completed
 /// local job makes the next claim eligible without cancelling an in-flight poll.
-fn poll_wait_seconds(active_jobs: u32) -> u64 {
+pub fn poll_wait_seconds(active_jobs: u32) -> u64 {
     if active_jobs == 0 {
         45
     } else {
@@ -348,7 +344,7 @@ async fn poll_for_task(
     ))
 }
 
-async fn execute_job(
+pub async fn execute_job(
     client: &Client,
     config: &Config,
     token: &str,
@@ -1844,7 +1840,7 @@ async fn finalize_step(
     Ok(false)
 }
 
-struct SandboxOutputMasker {
+pub struct SandboxOutputMasker {
     pending: String,
     max_secret_bytes: usize,
     secret_values: Vec<String>,
@@ -1852,7 +1848,7 @@ struct SandboxOutputMasker {
 }
 
 impl SandboxOutputMasker {
-    fn new(secret_values: &[String], forced_values: &[String]) -> Self {
+    pub fn new(secret_values: &[String], forced_values: &[String]) -> Self {
         let max_secret_bytes = secret_values
             .iter()
             .chain(forced_values)
@@ -1867,7 +1863,7 @@ impl SandboxOutputMasker {
         }
     }
 
-    fn push(&mut self, chunk: &str, flush: bool) -> String {
+    pub fn push(&mut self, chunk: &str, flush: bool) -> String {
         self.pending.push_str(chunk);
         let mut safe_bytes = if flush || self.max_secret_bytes <= 1 {
             self.pending.len()
@@ -1995,18 +1991,6 @@ async fn run_sandbox_step(
     }
 }
 
-#[cfg(test)]
-mod sandbox_output_masker_tests {
-    use super::SandboxOutputMasker;
-
-    #[test]
-    fn catches_secrets_split_across_frames() {
-        let mut masker = SandboxOutputMasker::new(&["secret123".to_string()], &[]);
-        assert_eq!(masker.push("before secre", false), "befo");
-        assert_eq!(masker.push("t123 after", true), "re *** after");
-    }
-}
-
 /// Parse a `$BUZ_ENV` file (GHA `$GITHUB_ENV` format).
 ///
 /// - `KEY=value` — everything after the first `=` is the value (no quote
@@ -2015,7 +1999,7 @@ mod sandbox_output_masker_tests {
 ///   `DELIM` are joined with `\n` (GHA heredoc form).
 /// - Blank lines and `# comments` are skipped; anything else is a warning.
 /// Duplicate keys: the last write wins (file order).
-pub(crate) fn parse_buz_env_file(path: &str) -> anyhow::Result<Vec<(String, String)>> {
+pub fn parse_buz_env_file(path: &str) -> anyhow::Result<Vec<(String, String)>> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -2082,7 +2066,7 @@ fn parse_buz_env_content(content: &str) -> anyhow::Result<Vec<(String, String)>>
 /// Normalize the claim response's `metadata` object plus git trigger inputs
 /// into `BUZ_*` environment variables (marketplace ADR §5.2). Empty or
 /// absent values are omitted — non-git triggers carry no `BUZ_GIT_*`.
-fn buz_metadata_env(
+pub fn buz_metadata_env(
     task: &serde_json::Value,
     job_id: &str,
     manager_url: &str,
@@ -2141,7 +2125,10 @@ fn buz_metadata_env(
 /// Build an SSH command string with environment variable exports prepended.
 /// Follows the same INPUT_* convention as the shell and docker engines,
 /// and also exports step-level secret values.
-fn build_ssh_env_command(command: &str, env: &std::collections::HashMap<String, String>) -> String {
+pub fn build_ssh_env_command(
+    command: &str,
+    env: &std::collections::HashMap<String, String>,
+) -> String {
     let mut prefix = String::from("set -e; ");
     // DOCKER_CONFIG target dir may not exist on the host yet — docker login
     // creates it, but pulls reading a missing dir misbehave on older CLIs.
@@ -2182,7 +2169,7 @@ fn shell_escape(value: &str) -> String {
 /// [`build_ssh_env_command`]) stays active for the user command: fail-fast is
 /// built in and a failing command still triggers the logout before the shell
 /// exits with its exit code.
-fn wrap_remote_cmd_with_registry_login(user_command: &str) -> String {
+pub fn wrap_remote_cmd_with_registry_login(user_command: &str) -> String {
     format!(
         r#"printf '%s\n' "$BUZ_REGISTRY_PASSWORD" | docker login -u "$BUZ_REGISTRY_USER" --password-stdin "$BUZ_REGISTRY_HOST" || exit $?
 trap 'docker logout "$BUZ_REGISTRY_HOST" >/dev/null 2>&1 || true' EXIT
@@ -2292,7 +2279,7 @@ async fn execute_ssh_step(
 /// Merge per-host SSH results into one step output (wait-all semantics).
 ///
 /// `Ok(output)` / `Err(error)` per host. Any failure → non-zero step exit.
-pub(crate) fn merge_ssh_host_outputs(
+pub fn merge_ssh_host_outputs(
     step_name: &str,
     multi: bool,
     mut results: Vec<(String, anyhow::Result<engine::ssh::SshOutput>)>,
@@ -2408,7 +2395,7 @@ async fn update_job_status(
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("status update failed after all retries")))
 }
 
-fn is_safe_workspace_subdir(dir: &str) -> bool {
+pub fn is_safe_workspace_subdir(dir: &str) -> bool {
     let path = Path::new(dir);
     !path.as_os_str().is_empty()
         && !path.is_absolute()
@@ -2430,7 +2417,7 @@ pub fn job_docker_config_dir(job_ws: &str) -> String {
 ///
 /// No-op under `shared`. Best-effort by contract: if this fails the job still
 /// runs — `docker login` recreates the dir on first use.
-fn prepare_job_docker_config_dir(
+pub fn prepare_job_docker_config_dir(
     job_ws: &str,
     isolation: DockerConfigIsolation,
 ) -> std::io::Result<()> {
@@ -2449,7 +2436,7 @@ fn prepare_job_docker_config_dir(
 
 /// Remove the job Docker config dir. Missing dir is fine (already cleaned with
 /// the workspace); any other error is logged, never fails the job.
-fn clean_job_docker_config(job_ws: &str) {
+pub fn clean_job_docker_config(job_ws: &str) {
     let dir = job_docker_config_dir(job_ws);
     if let Err(e) = std::fs::remove_dir_all(&dir) {
         if e.kind() != std::io::ErrorKind::NotFound {

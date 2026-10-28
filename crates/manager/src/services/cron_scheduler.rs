@@ -14,7 +14,7 @@ const MIN_TRIGGER_GAP_SECS: i64 = 120;
 
 /// Normalize a cron expression to 7-field form accepted by the `cron` 0.15 crate.
 /// Accepts both 5-field (min hr dom mon dow) and 7-field formats.
-fn normalize_cron(expr: &str) -> String {
+pub fn normalize_cron(expr: &str) -> String {
     let fields: Vec<&str> = expr.split_whitespace().collect();
     match fields.len() {
         5 => format!("0 {} *", expr),
@@ -168,7 +168,7 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
     });
 }
 
-async fn fetch_active_cron_pipelines(
+pub async fn fetch_active_cron_pipelines(
     pool: &SqlitePool,
 ) -> Result<Vec<(String, String, Option<String>, String)>, sqlx::Error> {
     let rows = sqlx::query(
@@ -194,7 +194,3 @@ async fn fetch_active_cron_pipelines(
         })
         .collect())
 }
-
-#[cfg(test)]
-#[path = "tests/cron_scheduler_tests.rs"]
-mod tests;

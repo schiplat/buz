@@ -20,7 +20,7 @@ use crate::rbac::{pipeline_team_id, resolve_required_team_id, secret_team_id, te
 use crate::state::AppState;
 
 /// Success jobs ÷ total jobs for a pipeline. `None` when there are no builds yet.
-pub(crate) fn job_success_rate(success_count: i64, total_count: i64) -> Option<f64> {
+pub fn job_success_rate(success_count: i64, total_count: i64) -> Option<f64> {
     if total_count <= 0 {
         None
     } else {
@@ -1098,7 +1098,7 @@ pub(crate) async fn resolve_concurrency_status_in_tx(
 /// `trigger_user_id` / `auth` are `Some` for manual UI triggers (ACL + self-approve);
 /// automated sources (webhook / cron / git) pass `None`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn do_trigger(
+pub async fn do_trigger(
     state: &AppState,
     pipeline_id: &str,
     triggered_by: &str,
@@ -2007,7 +2007,3 @@ pub async fn validate_yaml(
     .await?;
     Ok(Json(ApiResponse::success(result)))
 }
-
-#[cfg(test)]
-#[path = "tests/pipelines_list_tests.rs"]
-mod tests;

@@ -461,7 +461,3 @@ pub async fn parse_and_resolve_team(
     let (team_id, slug) = resolve_parsed_team_id(pool, &parsed).await?;
     Ok((parsed, team_id, slug))
 }
-
-#[cfg(test)]
-#[path = "tests/yaml_validate_tests.rs"]
-mod yaml_validate_tests;

@@ -63,7 +63,7 @@ struct DueConnection {
 /// True when `last_fetch_at` (SQLite UTC `YYYY-MM-DD HH:MM:SS`) is older than
 /// `interval_minutes`. Null or unparseable timestamps are treated as due so a
 /// broken record re-fetches instead of stalling.
-fn connection_is_due(last_fetch_at: Option<&str>, interval_minutes: i64) -> bool {
+pub fn connection_is_due(last_fetch_at: Option<&str>, interval_minutes: i64) -> bool {
     let Some(last) = last_fetch_at else {
         return true;
     };
@@ -170,7 +170,3 @@ async fn run_due_fetches(state: &AppState) -> anyhow::Result<()> {
 
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "tests/github_fetch_scheduler_tests.rs"]
-mod tests;

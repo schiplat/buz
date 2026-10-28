@@ -13,11 +13,11 @@ use tokio::task::JoinSet;
 use crate::config::Config;
 use crate::engine;
 
-const MAX_CONCURRENT_PULLS: usize = 3;
+pub const MAX_CONCURRENT_PULLS: usize = 3;
 
 /// A best-effort collection of anonymous digest pulls. The anonymous Docker
 /// config is unique to this job and contains no credentials.
-pub(super) struct ImagePrefetch {
+pub struct ImagePrefetch {
     tasks: JoinSet<(String, anyhow::Result<()>)>,
     pending: HashSet<String>,
     completed: HashMap<String, anyhow::Result<()>>,
@@ -25,14 +25,18 @@ pub(super) struct ImagePrefetch {
 }
 
 impl ImagePrefetch {
-    pub(super) fn start(tasks: &[Value], config: &Config, job_id: &str) -> Option<Self> {
+    pub fn start(tasks: &[Value], config: &Config, job_id: &str) -> Option<Self> {
         let candidates = candidates(tasks, config);
         Self::start_with_candidates(candidates, job_id, |image, config_dir| async move {
             engine::docker::pull_image(&image, Some(&config_dir)).await
         })
     }
 
-    fn start_with_candidates<F, Fut>(candidates: Vec<String>, job_id: &str, pull: F) -> Option<Self>
+    pub fn start_with_candidates<F, Fut>(
+        candidates: Vec<String>,
+        job_id: &str,
+        pull: F,
+    ) -> Option<Self>
     where
         F: Fn(String, String) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
@@ -76,7 +80,7 @@ impl ImagePrefetch {
         })
     }
 
-    pub(super) async fn abort_and_drain(&mut self) {
+    pub async fn abort_and_drain(&mut self) {
         self.tasks.abort_all();
         while self.tasks.join_next().await.is_some() {}
         self.pending.clear();
@@ -84,7 +88,7 @@ impl ImagePrefetch {
 
     /// Wait for the pull associated with this Docker step, if it was eligible.
     /// Failures are returned to the caller for warning-only handling.
-    pub(super) async fn wait_for(&mut self, image: &str) -> Option<anyhow::Result<()>> {
+    pub async fn wait_for(&mut self, image: &str) -> Option<anyhow::Result<()>> {
         let image = image.trim();
         if !self.pending.contains(image) {
             return None;
@@ -114,7 +118,7 @@ impl ImagePrefetch {
 /// references pinned to an explicit sha256 digest are safe for anonymous early
 /// pulls; all tags, private namespaces, other registries and auth-bearing steps
 /// remain on the original step-time Docker path.
-fn candidates(tasks: &[Value], config: &Config) -> Vec<String> {
+pub fn candidates(tasks: &[Value], config: &Config) -> Vec<String> {
     if !config.engine.docker_enabled {
         return Vec::new();
     }
@@ -186,7 +190,7 @@ fn candidates(tasks: &[Value], config: &Config) -> Vec<String> {
 /// Strict subset of Docker references: an unqualified official image name,
 /// optionally prefixed with `docker.io/library/`, pinned to sha256 and nothing
 /// else. Tag+digest forms are rejected rather than partially parsed.
-pub(super) fn is_public_library_digest(reference: &str) -> bool {
+pub fn is_public_library_digest(reference: &str) -> bool {
     if reference.is_empty()
         || reference.trim() != reference
         || reference.chars().any(char::is_whitespace)
@@ -263,7 +267,3 @@ impl Drop for AnonymousDockerConfig {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "image_prefetch_tests.rs"]
-mod tests;

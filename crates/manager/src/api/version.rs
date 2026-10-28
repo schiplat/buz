@@ -213,7 +213,3 @@ pub async fn health(
     };
     (code, body)
 }
-
-#[cfg(test)]
-#[path = "tests/version_tests.rs"]
-mod tests;

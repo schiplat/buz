@@ -160,7 +160,7 @@ impl ClockGuard {
         // An allowlisted host must not become an arbitrary-port scanner. The
         // guard's own tests probe a plain-HTTP loopback server on an ephemeral
         // port, which is the one target the port rule cannot cover.
-        let test_loopback = cfg!(test) && !source.starts_with("https://");
+        let test_loopback = loopback_http_tolerated(source);
         match port {
             Some(p) if !test_loopback && !port_allowed(&host, p, &self.config.allowed_hosts) => {
                 Err(format!(
@@ -247,6 +247,29 @@ pub fn oss_source_url(bucket: &str, endpoint: &str) -> String {
     format!("https://{}.{}/", bucket.trim(), host)
 }
 
+/// Test-support switch for the loopback-HTTP probe tests. Production code never
+/// calls this; even when enabled, only loopback literals are tolerated and
+/// plain `http` to any other host is still refused.
+#[doc(hidden)]
+pub fn allow_loopback_http_for_tests() {
+    ALLOW_LOOPBACK_HTTP.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+static ALLOW_LOOPBACK_HTTP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn loopback_http_tolerated(source: &str) -> bool {
+    ALLOW_LOOPBACK_HTTP.load(std::sync::atomic::Ordering::Relaxed)
+        && source
+            .strip_prefix("http://")
+            .map(|rest| {
+                let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+                let host = authority.split(':').next().unwrap_or("");
+                matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1")
+            })
+            .unwrap_or(false)
+}
+
 /// Extract the host from a probe source URL, rejecting anything that could be
 /// used to reach a different target than the one shown.
 ///
@@ -257,13 +280,13 @@ pub fn oss_source_url(bucket: &str, endpoint: &str) -> String {
 /// (see [`port_allowed`]).
 ///
 /// `oss_source_url` always builds `https://`, so plain `http` can only come
-/// from a hand-written source; the guard's own tests run against a plain-HTTP
-/// loopback server, hence the test-only tolerance for loopback hosts.
+/// from a hand-written source. The probe tests exercise this guard against a
+/// local plain-HTTP server, so [`allow_loopback_http_for_tests`] opens a
+/// **loopback-only** exception; plain `http` to any other host stays refused.
 pub fn probe_target(source: &str) -> Result<(String, Option<u16>), String> {
-    let is_https = source.starts_with("https://");
     let rest = match source.strip_prefix("https://") {
         Some(rest) => rest,
-        None if cfg!(test) => source
+        None if loopback_http_tolerated(source) => source
             .strip_prefix("http://")
             .ok_or_else(|| format!("clock probe refused: '{source}' is not an https URL"))?,
         None => {
@@ -307,18 +330,7 @@ pub fn probe_target(source: &str) -> Result<(String, Option<u16>), String> {
                 format!("clock probe refused: '{source}' has an invalid port '{p}'")
             })?),
         };
-    if cfg!(test) && !is_https && !is_loopback_host(&host) {
-        return Err(format!(
-            "clock probe refused: plain http is only acceptable for a loopback test server, \
-             got host '{host}'"
-        ));
-    }
     Ok((host, port))
-}
-
-/// True for loopback authorities (`localhost`, `127.0.0.0/8`, `::1`).
-fn is_loopback_host(host: &str) -> bool {
-    host == "localhost" || host == "::1" || host == "[::1]" || host.starts_with("127.")
 }
 
 /// True when `port` on an allowlisted `host` may be probed.
@@ -427,7 +439,3 @@ pub async fn guard_signing(guard: &ClockGuard, source_url: &str, ttl_secs: i64) 
         }
     }
 }
-
-#[cfg(test)]
-#[path = "tests/clock_tests.rs"]
-mod tests;

@@ -147,7 +147,3 @@ pub fn verify_document(
         })?;
     Ok(file.key_id)
 }
-
-#[cfg(test)]
-#[path = "plugin_signature_tests.rs"]
-mod tests;

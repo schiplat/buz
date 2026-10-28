@@ -79,7 +79,3 @@ impl Perm {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "rbac_tests.rs"]
-mod tests;

@@ -20,7 +20,7 @@ use shared::pipeline_yaml::{parse_and_validate, PipelineYaml, YamlValidationResu
 
 /// Entries kept. Pipeline fleets are dozens-to-hundreds of files; 256 covers
 /// a scan cycle plus any recently-edited revisions without unbounded growth.
-const CAP: usize = 256;
+pub const CAP: usize = 256;
 
 #[derive(Debug, Clone)]
 pub struct CachedYaml {
@@ -31,9 +31,9 @@ pub struct CachedYaml {
 }
 
 #[derive(Default)]
-struct Cache {
-    order: VecDeque<String>,
-    map: HashMap<String, CachedYaml>,
+pub struct Cache {
+    pub order: VecDeque<String>,
+    pub map: HashMap<String, CachedYaml>,
 }
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
@@ -80,8 +80,9 @@ fn insert_cached(guard: &mut Option<Cache>, key: String, entry: CachedYaml) {
     cache.map.insert(key, entry);
 }
 
-#[cfg(test)]
-fn parse_in_cache(cache: &mut Option<Cache>, content: &str) -> CachedYaml {
+/// Test-support constructor used by the integration tests: parses through the
+/// cache path so hit/miss behaviour is exercised.
+pub fn parse_in_cache(cache: &mut Option<Cache>, content: &str) -> CachedYaml {
     let key = format!("{:x}", Sha256::digest(content.as_bytes()));
     if let Some(hit) = cache
         .as_ref()
@@ -94,11 +95,7 @@ fn parse_in_cache(cache: &mut Option<Cache>, content: &str) -> CachedYaml {
     entry
 }
 
-#[cfg(test)]
-fn new_cache() -> Option<Cache> {
+/// Test-support constructor used by the integration tests.
+pub fn new_cache() -> Option<Cache> {
     None
 }
-
-#[cfg(test)]
-#[path = "tests/yaml_cache_tests.rs"]
-mod yaml_cache_tests;

@@ -249,7 +249,3 @@ pub fn startup_error_message(source: &str, skew_secs: i64, max_skew_seconds: i64
         describe_skew(skew_secs)
     )
 }
-
-#[cfg(test)]
-#[path = "clock_tests.rs"]
-mod tests;

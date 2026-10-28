@@ -52,6 +52,27 @@ buz/
 └── docs/                   # Hugo documentation site
 ```
 
+## Test layout
+
+Every crate keeps its tests under `crates/<crate>/tests/` as standard
+integration tests; nothing lives inline in `src/`. Each binary-only crate
+(`manager`, `runner`, `plugin-cli`) therefore has a thin `src/lib.rs` that
+re-exports its modules, with the binary as a shell over that library — this is
+what makes the modules reachable from `tests/`.
+
+| Crate | Tests |
+|-------|-------|
+| `shared` | `crates/shared/tests/` — protocol, masking, value sources, plugin signatures |
+| `manager` | `crates/manager/tests/` — API integration suites, migrations, services |
+| `runner` | `crates/runner/tests/` — sandbox supervisor, engines, poll loop, config |
+| `plugin-cli` | `crates/plugin-cli/tests/` — index generation, layout, mirror, scaffold |
+| `dashboard` | `dashboard/src/**/__tests__/` — Vitest component and util suites |
+
+Consequence worth knowing: a test that exercises an internal helper forces that
+helper to be `pub`. That is deliberate — the API surface documents exactly what
+the test suite depends on — so prefer narrow helpers over exposing a whole
+module.
+
 ## Component boundaries
 
 Buz is one of two components. The step-template plugins — template content,

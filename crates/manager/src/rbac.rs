@@ -416,7 +416,3 @@ async fn backfill_team_id(
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "rbac_tests.rs"]
-mod tests;

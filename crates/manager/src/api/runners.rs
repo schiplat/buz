@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 /// Peer address when the server is served with `into_make_service_with_connect_info`.
 /// Missing ConnectInfo → `None` (treated as non-loopback for standalone checks).
-pub(crate) struct ClientAddr(pub(crate) Option<SocketAddr>);
+pub struct ClientAddr(pub Option<SocketAddr>);
 
 impl<S> FromRequestParts<S> for ClientAddr
 where
@@ -43,14 +43,14 @@ where
 
 /// True when the runner has **every** label required by the pipeline/job
 /// (intersection / "must match ALL"). Empty `required` matches any runner.
-pub(crate) fn runner_satisfies_labels(runner_labels: &[String], required: &[String]) -> bool {
+pub fn runner_satisfies_labels(runner_labels: &[String], required: &[String]) -> bool {
     required
         .iter()
         .all(|need| runner_labels.iter().any(|have| have == need))
 }
 
 /// Prefer frozen job snapshot `runner_labels`; fall back to live pipeline labels JSON.
-fn required_labels_for_job(snapshot_json: &str, pipeline_labels_json: &str) -> Vec<String> {
+pub fn required_labels_for_job(snapshot_json: &str, pipeline_labels_json: &str) -> Vec<String> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(snapshot_json) {
         if let Some(arr) = v.get("runner_labels").and_then(|x| x.as_array()) {
             return arr
@@ -85,7 +85,7 @@ async fn log_runner_event(
 }
 
 /// Validate and clamp max_concurrent_jobs to 1..=32.
-pub(crate) fn normalize_max_concurrent(v: Option<u32>) -> Result<u32, AppError> {
+pub fn normalize_max_concurrent(v: Option<u32>) -> Result<u32, AppError> {
     let n = v.unwrap_or(1);
     if !(1..=32).contains(&n) {
         return Err(AppError::ValidationFailed(
@@ -118,7 +118,7 @@ fn bearer_proves_runner(
     }
 }
 
-pub(crate) fn normalize_ssh_host_key_policy(v: Option<String>) -> Result<String, AppError> {
+pub fn normalize_ssh_host_key_policy(v: Option<String>) -> Result<String, AppError> {
     let p = v.unwrap_or_else(|| "known_hosts".into());
     match p.as_str() {
         "insecure" | "known_hosts" => Ok(p),
@@ -140,7 +140,9 @@ fn i64_bool(v: i64) -> bool {
     v != 0
 }
 
-fn parse_execution_mode(value: String) -> Result<shared::protocol::RunnerExecutionMode, AppError> {
+pub fn parse_execution_mode(
+    value: String,
+) -> Result<shared::protocol::RunnerExecutionMode, AppError> {
     shared::protocol::RunnerExecutionMode::parse(&value).ok_or_else(|| {
         AppError::ValidationFailed(format!(
             "invalid runner execution_mode '{value}' (expected host | container | sandbox | vm)"
@@ -255,7 +257,7 @@ pub async fn create_runner(
 /// Core runner creation used by both the HTTP handler and the
 /// `gen-runner-token` CLI subcommand. Persists the runner and returns its
 /// one-shot register token.
-pub(crate) async fn create_runner_record(
+pub async fn create_runner_record(
     pool: &sqlx::SqlitePool,
     req: &CreateRunnerRequest,
 ) -> Result<CreatedRunner, AppError> {
@@ -326,7 +328,7 @@ pub(crate) async fn create_runner_record(
 }
 
 /// Result of `create_runner_record` — identifier, name, and one-shot token.
-pub(crate) struct CreatedRunner {
+pub struct CreatedRunner {
     pub id: String,
     pub name: String,
     pub register_token: String,
@@ -662,7 +664,7 @@ pub async fn poll(
     poll_with_wait(auth, state, active_jobs, acks, long_poll).await
 }
 
-pub(super) async fn poll_with_wait(
+pub async fn poll_with_wait(
     auth: RunnerClaims,
     state: AppState,
     active_jobs: i64,
@@ -3164,26 +3166,6 @@ pub async fn get_events(
         "total_pages": ((total as f64) / (page_size as f64)).ceil() as i64,
     }))))
 }
-
-#[cfg(test)]
-#[path = "tests/runner_label_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "tests/runner_execution_mode_tests.rs"]
-mod execution_mode_tests;
-
-#[cfg(test)]
-#[path = "tests/runner_config_path_tests.rs"]
-mod config_path_tests;
-
-#[cfg(test)]
-#[path = "tests/runner_create_tests.rs"]
-mod create_tests;
-
-#[cfg(test)]
-#[path = "tests/runner_reregister_tests.rs"]
-mod reregister_tests;
 
 /// Poll response envelope for no-job paths; cancel notices ride the claim channel.
 fn cancel_only_response(cancelled_jobs: Vec<String>) -> serde_json::Value {

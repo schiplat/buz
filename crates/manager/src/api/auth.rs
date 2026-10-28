@@ -25,7 +25,7 @@ pub async fn setup_status(
 }
 
 /// Validate first-admin setup fields.
-pub(crate) fn validate_setup(req: &SetupAdminRequest) -> Result<(), AppError> {
+pub fn validate_setup(req: &SetupAdminRequest) -> Result<(), AppError> {
     let username = req.username.trim();
     if username.is_empty() {
         return Err(AppError::ValidationFailed("username is required".into()));
@@ -227,7 +227,7 @@ pub async fn me(auth: AuthUser) -> Result<Json<ApiResponse<serde_json::Value>>, 
 }
 
 /// Validate change-password fields before hitting the database.
-pub(crate) fn validate_change_password(req: &ChangePasswordRequest) -> Result<(), AppError> {
+pub fn validate_change_password(req: &ChangePasswordRequest) -> Result<(), AppError> {
     if req.current_password.is_empty() {
         return Err(AppError::ValidationFailed(
             "current_password is required".into(),
@@ -285,7 +285,3 @@ pub async fn change_password(
 
     Ok(Json(ApiResponse::success(())))
 }
-
-#[cfg(test)]
-#[path = "tests/auth_change_password_tests.rs"]
-mod tests;

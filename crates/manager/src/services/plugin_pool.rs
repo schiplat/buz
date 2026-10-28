@@ -352,7 +352,7 @@ fn unexpected_body_hint(raw: &str) -> String {
     format!(" — response body: {truncated}{suffix}{hint}")
 }
 
-fn parse_index(raw: &str) -> Result<PluginIndex, String> {
+pub fn parse_index(raw: &str) -> Result<PluginIndex, String> {
     let index: PluginIndex =
         serde_json::from_str(raw).map_err(|e| format!("invalid index.json: {e}"))?;
     let mut seen = std::collections::HashSet::new();
@@ -1789,49 +1789,6 @@ async fn http_get_text(http: &reqwest::Client, url: &str) -> Result<String, anyh
     resp.text()
         .await
         .map_err(|e| anyhow!("source response could not be read: {e}"))
-}
-
-#[cfg(test)]
-mod index_tests {
-    use super::*;
-
-    fn index_json(steps: serde_json::Value) -> String {
-        serde_json::json!({ "steps": steps }).to_string()
-    }
-
-    fn entry(id: &str, sha256: &str) -> serde_json::Value {
-        serde_json::json!({ "id": id, "version": "1.0.0", "file": "x.yaml", "sha256": sha256 })
-    }
-
-    #[test]
-    fn parse_accepts_single_namespace_index() {
-        let raw = index_json(serde_json::json!([
-            entry("buz/archive", &"a".repeat(64)),
-            entry("buz/checkout", &"b".repeat(64)),
-        ]));
-        let index = parse_index(&raw).expect("single-namespace index parses");
-        assert_eq!(index.steps.len(), 2);
-    }
-
-    #[test]
-    fn parse_rejects_mixed_namespace_index() {
-        let raw = index_json(serde_json::json!([
-            entry("buz/archive", &"a".repeat(64)),
-            entry("alice/upload", &"b".repeat(64)),
-        ]));
-        let error = parse_index(&raw).unwrap_err();
-        assert!(
-            error.contains("mixes namespaces 'buz' and 'alice'"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn parse_rejects_ids_without_namespace() {
-        let raw = index_json(serde_json::json!([entry("archive", &"a".repeat(64))]));
-        let error = parse_index(&raw).unwrap_err();
-        assert!(error.contains("'<namespace>/<plugin>'"), "{error}");
-    }
 }
 
 /// Mirror drift check -------------------------------------------------------

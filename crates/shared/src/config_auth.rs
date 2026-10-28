@@ -266,7 +266,3 @@ fn percent_encode_query_value(s: &str) -> String {
     }
     out
 }
-
-#[cfg(test)]
-#[path = "config_auth_tests.rs"]
-mod tests;

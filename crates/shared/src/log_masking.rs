@@ -157,7 +157,3 @@ pub fn mask_secrets_forced(text: &str, secrets: &[String]) -> String {
         None => text.to_string(),
     }
 }
-
-#[cfg(test)]
-#[path = "log_masking_tests.rs"]
-mod tests;

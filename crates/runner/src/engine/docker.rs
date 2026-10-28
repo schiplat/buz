@@ -25,9 +25,8 @@ pub const CONTAINER_WORKSPACE: &str = "/buz/workspace";
 ///
 /// Order: global flags → volumes → env → image → shell + script.
 ///
-/// Test-only convenience wrapper; production callers pass socket/name via
-/// [`build_docker_run_args_with_socket`].
-#[cfg(test)]
+/// Convenience wrapper over [`build_docker_run_args_with_socket`] using the
+/// default socket path (the integration tests exercise this shape).
 pub fn build_docker_run_args(
     image: &str,
     runner_workspace_dir: &str,
@@ -50,7 +49,7 @@ pub fn build_docker_run_args(
     )
 }
 
-fn build_docker_run_args_with_socket(
+pub fn build_docker_run_args_with_socket(
     image: &str,
     runner_workspace_dir: &str,
     command: &str,
@@ -259,7 +258,7 @@ pub async fn pull_image(image: &str, docker_config_dir: Option<&str>) -> anyhow:
     .await
 }
 
-async fn pull_image_with_program_and_timeout(
+pub async fn pull_image_with_program_and_timeout(
     program: &Path,
     image: &str,
     docker_config_dir: Option<&str>,
@@ -445,9 +444,8 @@ pub async fn stop_container(name: &str, docker_config_dir: Option<&str>) {
 /// `docker_config_dir` — when set, the Docker CLI (image pull / push auth)
 /// reads credentials from this job-scoped config dir (`DOCKER_CONFIG`) instead
 /// of the host-global `~/.docker/config.json`. Container env is unaffected.
-/// Test-only convenience wrapper; production callers use
-/// [`execute_streaming_with_socket`].
-#[cfg(test)]
+/// Convenience wrapper over [`execute_streaming_with_socket`] using the
+/// default socket path (the e2e test exercises this shape).
 #[allow(clippy::too_many_arguments)] // docker run surface: image/workdir/cmd/env/volumes/workdir/privileged + config scope
 pub async fn execute_streaming(
     image: &str,
@@ -549,11 +547,3 @@ pub async fn execute_streaming_with_socket(
 
     Ok((child, rx, guard))
 }
-
-#[cfg(test)]
-#[path = "docker_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "docker_e2e_tests.rs"]
-mod e2e_tests;

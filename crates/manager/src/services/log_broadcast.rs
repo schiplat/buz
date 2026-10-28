@@ -183,7 +183,3 @@ impl LogBroadcaster {
         self.pipeline_sinks.read().unwrap().len()
     }
 }
-
-#[cfg(test)]
-#[path = "tests/log_broadcast_tests.rs"]
-mod tests;

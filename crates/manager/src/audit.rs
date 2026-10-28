@@ -638,7 +638,3 @@ where
     .await?;
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "audit_tests.rs"]
-mod tests;

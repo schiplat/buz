@@ -82,7 +82,3 @@ pub fn format_utc(epoch_secs: i64) -> String {
         None => format!("epoch {epoch_secs}"),
     }
 }
-
-#[cfg(test)]
-#[path = "clock_tests.rs"]
-mod tests;

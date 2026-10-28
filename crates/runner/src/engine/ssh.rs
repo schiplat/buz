@@ -52,7 +52,7 @@ const SSH_CONNECT_BACKOFF_MS: &[u64] = &[400, 1_000, 2_000];
 ///
 /// Does **not** match command-level timeouts (`SSH command timed out after …`) —
 /// those must not reconnect-and-rerun a long `run` block.
-pub(crate) fn is_transient_ssh_error(err: &anyhow::Error) -> bool {
+pub fn is_transient_ssh_error(err: &anyhow::Error) -> bool {
     let s = format!("{err:#}").to_ascii_lowercase();
     if s.contains("ssh command timed out") {
         return false;
@@ -546,7 +546,7 @@ async fn connect_authenticated(conn: &SshConnectionParams) -> anyhow::Result<Ssh
 }
 
 /// Human-readable name for a key algorithm.
-fn key_type_display(alg: &ssh_key::Algorithm) -> &'static str {
+pub fn key_type_display(alg: &ssh_key::Algorithm) -> &'static str {
     let cloned = alg.clone();
     if cloned.is_rsa() {
         return "RSA";
@@ -676,7 +676,7 @@ async fn authenticate_with_private_key(
 ///
 /// If the server gave a preferred hash, that goes first.
 /// Then we try Sha512, Sha256, and finally None (legacy ssh-rsa).
-fn build_rsa_fallback_chain(preferred: Option<HashAlg>) -> Vec<Option<HashAlg>> {
+pub fn build_rsa_fallback_chain(preferred: Option<HashAlg>) -> Vec<Option<HashAlg>> {
     let all: &[Option<HashAlg>] = &[
         Some(HashAlg::Sha512),
         Some(HashAlg::Sha256),
@@ -701,7 +701,7 @@ fn build_rsa_fallback_chain(preferred: Option<HashAlg>) -> Vec<Option<HashAlg>> 
 }
 
 /// Human-readable label for an RSA hash algorithm.
-fn hash_label(hash_alg: &Option<HashAlg>) -> &'static str {
+pub fn hash_label(hash_alg: &Option<HashAlg>) -> &'static str {
     match hash_alg {
         Some(HashAlg::Sha512) => "rsa-sha2-512",
         Some(HashAlg::Sha256) => "rsa-sha2-256",
@@ -711,7 +711,7 @@ fn hash_label(hash_alg: &Option<HashAlg>) -> &'static str {
 }
 
 /// Label for an SSH agent identity in logs / errors.
-fn format_agent_identity_label(index: usize, comment: &str) -> String {
+pub fn format_agent_identity_label(index: usize, comment: &str) -> String {
     if comment.is_empty() {
         format!("#{}", index + 1)
     } else {
@@ -1012,7 +1012,7 @@ impl client::Handler for HostKeyHandler {
 }
 
 /// Verify `server_public_key` against an OpenSSH known_hosts file.
-fn verify_against_known_hosts(
+pub fn verify_against_known_hosts(
     host: &str,
     port: u16,
     server_public_key: &ssh_key::PublicKey,
@@ -1053,7 +1053,7 @@ fn verify_against_known_hosts(
     }
 }
 
-fn resolve_known_hosts_path(configured: Option<&str>) -> anyhow::Result<std::path::PathBuf> {
+pub fn resolve_known_hosts_path(configured: Option<&str>) -> anyhow::Result<std::path::PathBuf> {
     if let Some(p) = configured.map(str::trim).filter(|s| !s.is_empty()) {
         return Ok(std::path::PathBuf::from(p));
     }
@@ -1066,7 +1066,3 @@ fn resolve_known_hosts_path(configured: Option<&str>) -> anyhow::Result<std::pat
         .join(".ssh")
         .join("known_hosts"))
 }
-
-#[cfg(test)]
-#[path = "ssh_tests.rs"]
-mod tests;

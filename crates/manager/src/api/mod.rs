@@ -5,35 +5,35 @@ use axum::{
 
 use crate::state::AppState;
 
-mod auth;
-mod pipeline_yaml_files;
-mod pipelines;
+pub mod auth;
+pub mod pipeline_yaml_files;
+pub mod pipelines;
 pub mod runners;
 // Re-export helper functions for YAML scanner and trigger logic
 pub(crate) use pipelines::{
     do_trigger, insert_env_vars, insert_pipeline_secret_bindings, insert_pipeline_var_bindings,
     insert_steps,
 };
-mod api_tokens;
-mod audit_logs;
-mod environments;
-mod git_hooks;
-mod git_webhook;
-mod github_sync;
-mod hosts;
-mod jobs;
-mod logs;
+pub mod api_tokens;
+pub mod audit_logs;
+pub mod environments;
+pub mod git_hooks;
+pub mod git_webhook;
+pub mod github_sync;
+pub mod hosts;
+pub mod jobs;
+pub mod logs;
 pub mod openapi;
-mod plugin_sources;
-mod plugins;
-mod secrets;
-mod settings;
-mod teams;
-mod trigger_events;
-mod users;
-mod variables;
-pub(crate) mod version;
-mod webhook;
+pub mod plugin_sources;
+pub mod plugins;
+pub mod secrets;
+pub mod settings;
+pub mod teams;
+pub mod trigger_events;
+pub mod users;
+pub mod variables;
+pub mod version;
+pub mod webhook;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -290,99 +290,3 @@ pub fn router(state: AppState) -> Router {
         .route("/hooks/{path}", post(webhook::handle))
         .with_state(state)
 }
-
-#[cfg(test)]
-#[path = "tests/api_token_tests.rs"]
-mod api_token_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/pipeline_disable_tests.rs"]
-mod pipeline_disable_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/pipeline_env_tests.rs"]
-mod pipeline_env_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/debug_trigger_tests.rs"]
-mod debug_trigger_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/dispatch_log_mask_tests.rs"]
-mod dispatch_log_mask_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/verbose_trigger_tests.rs"]
-mod verbose_trigger_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/pipeline_yaml_files_tests.rs"]
-mod pipeline_yaml_files_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/runner_standalone_register_tests.rs"]
-mod runner_standalone_register_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/runner_restart_tests.rs"]
-mod runner_restart_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/github_sync_tests.rs"]
-mod github_sync_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/input_validation_trigger_tests.rs"]
-mod input_validation_trigger_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/environments_tests.rs"]
-mod environments_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/environment_approval_tests.rs"]
-mod environment_approval_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/runner_terminal_status_tests.rs"]
-mod runner_terminal_status_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/cancel_delivery_tests.rs"]
-mod cancel_delivery_tests;
-
-#[cfg(test)]
-#[path = "tests/cancel_in_progress_tests.rs"]
-mod cancel_in_progress_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/approval_race_tests.rs"]
-mod approval_race_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/webhook_environment_tests.rs"]
-mod webhook_environment_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/jobs_stats_tests.rs"]
-mod jobs_stats_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/plugin_library_tests.rs"]
-mod plugin_library_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/plugins_library_tests.rs"]
-mod plugins_library_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/settings_tests.rs"]
-mod settings_tests;
-
-#[cfg(test)]
-#[path = "tests/plugin_pool_tests.rs"]
-mod plugin_pool_tests;
-
-#[cfg(test)]
-#[path = "audit_coverage_tests.rs"]
-mod audit_coverage_tests;

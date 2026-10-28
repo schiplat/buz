@@ -60,7 +60,3 @@ pub fn verify_password(password: &str, password_hash: &str) -> bool {
         .verify_password(password.as_bytes(), &parsed)
         .is_ok()
 }
-
-#[cfg(test)]
-#[path = "password_tests.rs"]
-mod tests;

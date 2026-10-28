@@ -252,7 +252,3 @@ fn rsa_fallback_chain(preferred: Option<HashAlg>) -> Vec<Option<HashAlg>> {
     }
     chain
 }
-
-#[cfg(test)]
-#[path = "ssh_probe_tests.rs"]
-mod tests;

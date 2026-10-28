@@ -152,15 +152,15 @@ pub fn collect_system_info(started_at: std::time::Instant, opts: &SysInfoOpts) -
 }
 
 #[derive(Debug, Clone)]
-struct IpCandidate {
-    ip: String,
-    preferred_iface: bool,
-    same_subnet: bool,
-    demoted: bool,
+pub struct IpCandidate {
+    pub ip: String,
+    pub preferred_iface: bool,
+    pub same_subnet: bool,
+    pub demoted: bool,
 }
 
 /// Order advertised IPs: preferred interface → same subnet as Manager → non-virtual → lexical.
-fn order_ip_addresses(mut candidates: Vec<IpCandidate>) -> Vec<String> {
+pub fn order_ip_addresses(mut candidates: Vec<IpCandidate>) -> Vec<String> {
     candidates.sort_by(|a, b| {
         b.preferred_iface
             .cmp(&a.preferred_iface)
@@ -227,7 +227,7 @@ const DEMOTED_IFACE_PREFIXES: &[&str] = &[
     "awdl",
 ];
 
-fn is_demoted_interface(name: &str) -> bool {
+pub fn is_demoted_interface(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     // `lo` exact only — a `lo` prefix would catch Windows' "Local Area Connection".
     n == "lo" || n == "lo0" || DEMOTED_IFACE_PREFIXES.iter().any(|p| n.starts_with(p))
@@ -240,7 +240,7 @@ fn is_ignored_addr(addr: IpAddr) -> bool {
     }
 }
 
-fn host_ip_from_url(url: &str) -> Option<IpAddr> {
+pub fn host_ip_from_url(url: &str) -> Option<IpAddr> {
     let trimmed = url.trim();
     let without_scheme = trimmed
         .strip_prefix("http://")
@@ -266,7 +266,7 @@ fn ip_in_network(target: IpAddr, local: IpAddr, prefix: u8) -> bool {
     }
 }
 
-fn ipv4_same_network(a: Ipv4Addr, b: Ipv4Addr, prefix: u8) -> bool {
+pub fn ipv4_same_network(a: Ipv4Addr, b: Ipv4Addr, prefix: u8) -> bool {
     if prefix > 32 {
         return false;
     }
@@ -291,7 +291,3 @@ fn ipv6_same_network(a: Ipv6Addr, b: Ipv6Addr, prefix: u8) -> bool {
     };
     (a & mask) == (b & mask)
 }
-
-#[cfg(test)]
-#[path = "sysinfo_tests.rs"]
-mod tests;

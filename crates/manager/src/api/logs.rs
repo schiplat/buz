@@ -197,7 +197,7 @@ async fn handle_stream(socket: WebSocket, broadcast: LogBroadcaster, job_id: Str
 /// job. Non-admins must not even learn such a job exists — the pipeline
 /// WebSocket drops these messages on the subscriber side, matching the
 /// REST-level debug filtering on `list` / `get_one`.
-fn is_debug_status_message(msg: &str) -> bool {
+pub fn is_debug_status_message(msg: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(msg)
         .map(|v| {
             v.get("data")
@@ -282,7 +282,3 @@ async fn handle_pipeline_stream(
 
     broadcast.pipeline_cleanup(&pipeline_id);
 }
-
-#[cfg(test)]
-#[path = "tests/logs_unit_tests.rs"]
-mod tests;

@@ -178,7 +178,3 @@ pub fn merge_hook_inputs(
 
     inputs
 }
-
-#[cfg(test)]
-#[path = "tests/webhook_tests.rs"]
-mod tests;
