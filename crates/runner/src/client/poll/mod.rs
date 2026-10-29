@@ -1391,6 +1391,9 @@ async fn run_shell_step(
     if let Some(handle) = run.sandbox_handle {
         let mut sandbox_env = run.env.clone();
         sandbox_env.insert("BUZ_STEP_ENGINE".into(), exec_type.to_string());
+        // Let build scripts size themselves (e.g. make -j) by the effective
+        // envelope the supervisor applied, not the one the pipeline asked for.
+        sandbox_env.insert("BUZ_RESOURCE_PROFILE".into(), handle.profile().to_string());
         sandbox_env.insert(
             "BUZ_ENV".into(),
             format!("{}/.buz/env", engine::docker::CONTAINER_WORKSPACE),

@@ -400,6 +400,9 @@ runner:
 - Revocation and profile removal are enforced at dispatch using the **intersection of the desired
   and applied documents**: a profile deleted from the desired document stops being dispatched even
   if a host has not yet applied the removal.
+- Sandboxed steps see the profile the supervisor applied as `$BUZ_RESOURCE_PROFILE` (the value
+  echoed by `create_job`, the same one the claim recorded). Scripts can size themselves from it and
+  from `nproc` instead of re-deriving the request from the pipeline.
 
 ## Scheduling and capacity
 
