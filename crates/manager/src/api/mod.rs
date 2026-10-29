@@ -37,6 +37,8 @@ pub mod webhook;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        // Control-plane identity (public — IDs are public identifiers)
+        .route("/meta", get(version::meta))
         // Auth (public)
         .route("/auth/login", post(auth::login))
         .route("/auth/setup-status", get(auth::setup_status))

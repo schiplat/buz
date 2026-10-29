@@ -169,6 +169,17 @@ pub struct RunnerSection {
     /// Local persistent file for the Manager-issued Runner JWT.
     #[serde(default = "default_token_cache_path")]
     pub token_cache_path: String,
+    /// This Runner installation's deployment identity — resolved at startup
+    /// (`BUZ_RUNNER_INSTANCE_ID` > persisted state file > generated) and sent
+    /// on register/heartbeat. Normally left empty in TOML; setting it here is
+    /// ignored in favour of the env variable.
+    #[serde(default)]
+    pub instance_id: String,
+    /// Host machine identity — resolved at startup (`BUZ_HOST_ID` >
+    /// machine-id > hostname) and sent on register/heartbeat. Normally left
+    /// empty in TOML; setting it here is ignored in favour of the env variable.
+    #[serde(default)]
+    pub host_id: String,
     /// Deprecated — labels are UI-managed. Kept for deserialize compatibility.
     #[serde(default)]
     #[allow(dead_code)]
@@ -194,6 +205,8 @@ impl Default for RunnerSection {
             docker_socket_allowed: false,
             docker_socket_path: default_docker_socket_path(),
             token_cache_path: default_token_cache_path(),
+            instance_id: String::new(),
+            host_id: String::new(),
             labels: Vec::new(),
             clean_workspace_after_job: false,
             prefer_interfaces: Vec::new(),

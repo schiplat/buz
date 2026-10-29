@@ -34,5 +34,25 @@ async fn main() -> anyhow::Result<()> {
         parsed.sandboxd.instance_id = instance;
     }
     let _guard = shared::logging::init("buz_sandboxd", &shared::logging::LoggingConfig::default());
+
+    // Host identity for log/audit correlation (env > machine-id > hostname).
+    // Never fatal: an unresolvable host id must not stop the supervisor.
+    let (host_id, host_source) = match shared::instance::resolve_host_id("BUZ_SANDBOXD_HOST_ID") {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            tracing::warn!(error = %error, "host id unresolved; reporting 'unknown'");
+            ("unknown".to_string(), shared::instance::IdSource::Hostname)
+        }
+    };
+    let instance_id = parsed.sandboxd.instance_id.clone();
+    let _ = shared::instance::validate(&instance_id)
+        .map_err(|error| tracing::warn!(%error, %instance_id, "sandboxd instance id is not a valid identity"));
+    tracing::info!(
+        instance = %instance_id,
+        host_id = %host_id,
+        host_source = host_source.as_str(),
+        "sandbox supervisor starting"
+    );
+
     sandbox::serve(parsed.sandboxd).await
 }

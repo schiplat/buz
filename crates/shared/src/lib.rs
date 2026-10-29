@@ -4,6 +4,7 @@ pub mod clock;
 pub mod config_auth;
 pub mod error;
 pub mod git_webhook;
+pub mod instance;
 pub mod log_masking;
 pub mod logging;
 pub mod models;

@@ -1,5 +1,12 @@
 -- Buz v0.1.0 - Phase 1 Initial Schema
 
+-- Key/value store for Manager-local facts that must survive restarts but are
+-- not admin-editable settings (currently: the generated manager_instance_id).
+CREATE TABLE IF NOT EXISTS manager_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS runners (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
@@ -11,6 +18,8 @@ CREATE TABLE IF NOT EXISTS runners (
     status TEXT NOT NULL DEFAULT 'offline',
     version TEXT,
     system_info TEXT NOT NULL DEFAULT '{}',
+    host_id TEXT NOT NULL DEFAULT '',
+    runner_instance_id TEXT NOT NULL DEFAULT '',
     is_frozen INTEGER NOT NULL DEFAULT 0,
     restart_requested INTEGER NOT NULL DEFAULT 0,
     max_concurrent_jobs INTEGER NOT NULL DEFAULT 1,

@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
-use runner::{client, config, policy, sysinfo};
+use runner::{client, config, identity, policy, sysinfo};
 
 /// Buz Runner — lightweight cross‑network task execution agent.
 #[derive(Parser)]
@@ -53,13 +53,19 @@ async fn main() -> anyhow::Result<()> {
     run_loop(config).await
 }
 
-async fn run_loop(config: config::Config) -> anyhow::Result<()> {
+async fn run_loop(mut config: config::Config) -> anyhow::Result<()> {
     let mut client_builder = reqwest::Client::builder();
 
     if config.runner.tls_skip_verify {
         client_builder = client_builder.danger_accept_invalid_certs(true);
         tracing::warn!("TLS certificate verification is DISABLED — do not use in production");
     }
+
+    // Deployment identity: resolved once (env > state file > generated) and
+    // stored back into config so register/heartbeat payloads carry it.
+    identity::resolve_into(&mut config).unwrap_or_else(|error| {
+        tracing::warn!(error = %error, "runner identity unresolved; register/heartbeat omit it");
+    });
 
     let http_client = client_builder.build()?;
     let started_at = std::time::Instant::now();

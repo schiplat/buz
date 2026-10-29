@@ -121,6 +121,8 @@ async fn send_heartbeat(
         .json(&HeartbeatRequest {
             status: "online".into(),
             system_info: Some(system_info.clone()),
+            host_id: config.runner.host_id.clone(),
+            runner_instance_id: config.runner.instance_id.clone(),
         })
         .send()
         .await

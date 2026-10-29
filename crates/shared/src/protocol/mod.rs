@@ -163,6 +163,12 @@ pub struct RegisterRequest {
     #[serde(default)]
     pub labels: Vec<String>,
     pub version: Option<String>,
+    /// Host machine identity (env-pinned or machine-id derived); older Runners omit it.
+    #[serde(default)]
+    pub host_id: String,
+    /// Deployment identity of this Runner installation; survives re-registration.
+    #[serde(default)]
+    pub runner_instance_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -179,6 +185,12 @@ pub struct HeartbeatRequest {
     pub status: String,
     #[serde(default)]
     pub system_info: Option<SystemInfo>,
+    /// Host machine identity; empty on older Runners (stored value kept).
+    #[serde(default)]
+    pub host_id: String,
+    /// Deployment identity of this Runner installation; empty on older Runners.
+    #[serde(default)]
+    pub runner_instance_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]

@@ -61,6 +61,59 @@ pub async fn init(config: &Config) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
+/// Read one Manager-local fact from `manager_meta`.
+pub async fn manager_meta_get(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT value FROM manager_meta WHERE key = ?")
+            .bind(key)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// Persist one Manager-local fact in `manager_meta` (upsert).
+pub async fn manager_meta_set(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Result<()> {
+    sqlx::query("INSERT INTO manager_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(key)
+        .bind(value)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// `manager_meta` key holding the persistent Manager control-plane identity.
+pub const META_KEY_MANAGER_INSTANCE_ID: &str = "manager_instance_id";
+
+/// Resolve the Manager instance identity: `BUZ_MANAGER_INSTANCE_ID` (env,
+/// pinned by the operator) > the value persisted in `manager_meta` on a
+/// previous boot > generate `mgr-<uuid>` once and persist it.
+///
+/// Multiple Managers on different devices are independent control planes (the
+/// SQLite database is local to one device); this identity binds ownership and
+/// log/audit correlation — it is not an HA coordinator.
+pub async fn ensure_manager_instance_id(pool: &SqlitePool) -> anyhow::Result<String> {
+    const ENV_VAR: &str = "BUZ_MANAGER_INSTANCE_ID";
+    match shared::instance::from_env(ENV_VAR) {
+        Ok(Some(id)) => {
+            manager_meta_set(pool, META_KEY_MANAGER_INSTANCE_ID, &id).await?;
+            Ok(id)
+        }
+        Ok(None) => {
+            if let Some(existing) = manager_meta_get(pool, META_KEY_MANAGER_INSTANCE_ID).await? {
+                if let Ok(id) = shared::instance::validate(&existing) {
+                    return Ok(id);
+                }
+                tracing::warn!(stored = %existing, "persisted manager_instance_id is invalid; regenerating");
+            }
+            let id = shared::instance::validate(&format!("mgr-{}", uuid::Uuid::new_v4()))
+                .map_err(anyhow::Error::msg)?;
+            manager_meta_set(pool, META_KEY_MANAGER_INSTANCE_ID, &id).await?;
+            Ok(id)
+        }
+        Err(error) => Err(anyhow::anyhow!("invalid {ENV_VAR}: {error}")),
+    }
+}
+
 /// Add a column unless it already exists. `ALTER TABLE ... ADD COLUMN` has no
 /// `IF NOT EXISTS` in SQLite, so migrations are written idempotently by
 /// ignoring the duplicate-column error — but ONLY that error: a wrong table
@@ -146,6 +199,17 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
 
     // Add system_info column to runners table (safe to fail if already present)
     add_column_if_missing(pool, "runners", "system_info TEXT NOT NULL DEFAULT '{}'").await;
+
+    // Runner-reported deployment identities (see shared::instance): the host
+    // machine id and this Runner installation's instance id. Empty on runners
+    // that have not reported yet; both are public identifiers, never secrets.
+    add_column_if_missing(pool, "runners", "host_id TEXT NOT NULL DEFAULT ''").await;
+    add_column_if_missing(
+        pool,
+        "runners",
+        "runner_instance_id TEXT NOT NULL DEFAULT ''",
+    )
+    .await;
 
     // Add privileged column to tasks table (safe to fail if already present)
     add_column_if_missing(pool, "tasks", "privileged INTEGER NOT NULL DEFAULT 0").await;

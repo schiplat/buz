@@ -169,6 +169,19 @@ async fn validate_runner_team(
     Ok(Some(team_id.to_string()))
 }
 
+/// Accept a runner-reported deployment identity only when it validates;
+/// otherwise return empty so the stored value is kept (COALESCE pattern) and
+/// the report is logged. A malformed id must not fail a register/heartbeat.
+fn sanitized_instance_id(raw: &str, what: &str, runner: &str) -> String {
+    match shared::instance::validate(raw) {
+        Ok(id) => id,
+        Err(error) => {
+            tracing::warn!(%error, what, runner, "runner reported an invalid instance id; ignoring");
+            String::new()
+        }
+    }
+}
+
 /// Load UI policy columns for a runner.
 async fn load_runner_policy(
     pool: &sqlx::SqlitePool,
@@ -525,19 +538,30 @@ pub async fn register(
 
     // Labels are UI-managed — do not overwrite from the agent register payload.
     let version = req.version.as_deref().filter(|v| !v.is_empty());
+    // Deployment identities are stored when reported (older Runners omit them);
+    // malformed values are dropped with a warning rather than rejecting the
+    // registration — identity is correlation data, not an auth input.
+    let host_id = sanitized_instance_id(&req.host_id, "host_id", name);
+    let runner_instance_id =
+        sanitized_instance_id(&req.runner_instance_id, "runner_instance_id", name);
 
     sqlx::query(
         "UPDATE runners SET token = ?, register_token = '', status = 'online', \
-         version = COALESCE(?, version), last_seen = datetime('now'), updated_at = datetime('now'), \
+         version = COALESCE(?, version), \
+         host_id = COALESCE(NULLIF(?, ''), host_id), \
+         runner_instance_id = COALESCE(NULLIF(?, ''), runner_instance_id), \
+         last_seen = datetime('now'), updated_at = datetime('now'), \
          restart_requested = 0 WHERE id = ?",
     )
     .bind(&runner_jwt)
     .bind(version)
+    .bind(&host_id)
+    .bind(&runner_instance_id)
     .bind(&runner_id)
     .execute(&state.pool)
     .await?;
 
-    tracing::info!("Runner registered: {} ({runner_id})", name);
+    tracing::info!(runner = %name, host_id = %host_id, instance = %runner_instance_id, "Runner registered: {} ({runner_id})", name);
 
     let policy = load_runner_policy(&state.pool, &runner_id).await?;
     let labels_db: String = sqlx::query_scalar("SELECT labels FROM runners WHERE id = ?")
@@ -581,13 +605,25 @@ pub async fn heartbeat(
         .map(|si| si.runner_version.as_str())
         .filter(|v| !v.is_empty());
 
+    // Keep the last reported deployment identities; empty/malformed values
+    // leave the stored ones untouched.
+    let host_id = sanitized_instance_id(&req.host_id, "host_id", &auth.runner_id);
+    let runner_instance_id = sanitized_instance_id(
+        &req.runner_instance_id,
+        "runner_instance_id",
+        &auth.runner_id,
+    );
     sqlx::query(
         "UPDATE runners SET status = ?, system_info = ?, version = COALESCE(?, version), \
+         host_id = COALESCE(NULLIF(?, ''), host_id), \
+         runner_instance_id = COALESCE(NULLIF(?, ''), runner_instance_id), \
          last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&req.status)
     .bind(&system_info_json)
     .bind(version)
+    .bind(&host_id)
+    .bind(&runner_instance_id)
     .bind(&auth.runner_id)
     .execute(&state.pool)
     .await?;
@@ -2503,7 +2539,7 @@ pub async fn list_runners(
                 r.shell_enabled, r.ssh_enabled, r.docker_enabled, r.wasm_enabled, r.ssh_host_key_policy,
                 r.created_at, r.updated_at, r.team_id,
                 (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs,
-                r.execution_mode
+                r.execution_mode, r.host_id, r.runner_instance_id
          FROM runners r ORDER BY r.created_at DESC",
     )
     .fetch_all(&state.pool)
@@ -2553,6 +2589,8 @@ pub async fn list_runners(
                 "created_at": r.get::<Option<String>, _>(15),
                 "updated_at": r.get::<Option<String>, _>(16),
                 "running_jobs": r.get::<i64, _>(18),
+                "host_id": r.get::<String, _>(20),
+                "runner_instance_id": r.get::<String, _>(21),
             }))
         })
         .collect::<Result<Vec<_>, AppError>>()?;
@@ -2567,7 +2605,8 @@ pub async fn get_runner(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let r = sqlx::query(
         "SELECT id, name, labels, status, version, system_info, last_seen,
-                created_at, updated_at, team_id FROM runners WHERE id = ?",
+                created_at, updated_at, team_id, host_id, runner_instance_id
+         FROM runners WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.pool)
@@ -2596,6 +2635,8 @@ pub async fn get_runner(
         "created_at": r.get::<Option<String>, _>(7),
         "updated_at": r.get::<Option<String>, _>(8),
         "team_id": r.get::<Option<String>, _>(9),
+        "host_id": r.get::<String, _>(10),
+        "runner_instance_id": r.get::<String, _>(11),
         "running_jobs": running_jobs,
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,

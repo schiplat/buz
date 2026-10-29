@@ -7,6 +7,7 @@
 pub mod client;
 pub mod config;
 pub mod engine;
+pub mod identity;
 pub mod masker;
 pub mod policy;
 pub mod sandbox;
