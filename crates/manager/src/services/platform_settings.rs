@@ -20,6 +20,21 @@ pub const KEY_PLUGIN_SYNC_TIMEOUT: &str = "plugin_sync_timeout";
 pub const KEY_PLUGIN_REQUIRE_SIGNED_INDEX: &str = "plugin_require_signed_index";
 pub const KEY_PLUGIN_INDEX_PUBLIC_KEY: &str = "plugin_index_public_key";
 
+/// Sandbox host configuration (design record: sandbox-host-configuration).
+/// Two-person approval for config changes; default off.
+pub const KEY_SANDBOX_CONFIG_REQUIRE_APPROVAL: &str = "sandbox_config_require_approval";
+/// Days to keep sandbox config version history and audit diffs.
+pub const KEY_SANDBOX_CONFIG_RETENTION_DAYS: &str = "sandbox_config_history_retention_days";
+/// sandboxd long-poll period in seconds.
+pub const KEY_SANDBOX_CONFIG_POLL_SECONDS: &str = "sandbox_config_poll_seconds";
+/// How long a host may lag behind the desired version before non-default
+/// profile dispatch is paused.
+pub const KEY_SANDBOX_CONFIG_STALE_SECONDS: &str = "sandbox_config_dispatch_stale_after_seconds";
+
+pub const DEFAULT_SANDBOX_CONFIG_RETENTION_DAYS: u64 = 30;
+pub const DEFAULT_SANDBOX_CONFIG_POLL_SECONDS: u64 = 30;
+pub const DEFAULT_SANDBOX_CONFIG_STALE_SECONDS: u64 = 300;
+
 /// Default source-sync timeout (seconds) — the single source of truth: the
 /// manager.toml serde default, the settings API default, and the HTTP client
 /// construction all read this constant (DB override via the settings UI).
@@ -44,6 +59,10 @@ pub fn setting_kind(key: &str) -> Option<SettingKind> {
         KEY_PLUGIN_SYNC_TIMEOUT => Some(SettingKind::Number),
         KEY_PLUGIN_REQUIRE_SIGNED_INDEX => Some(SettingKind::Bool),
         KEY_PLUGIN_INDEX_PUBLIC_KEY => Some(SettingKind::PublicKey),
+        KEY_SANDBOX_CONFIG_REQUIRE_APPROVAL => Some(SettingKind::Bool),
+        KEY_SANDBOX_CONFIG_RETENTION_DAYS => Some(SettingKind::Number),
+        KEY_SANDBOX_CONFIG_POLL_SECONDS => Some(SettingKind::Number),
+        KEY_SANDBOX_CONFIG_STALE_SECONDS => Some(SettingKind::Number),
         _ => None,
     }
 }
@@ -97,16 +116,53 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
             Ok(())
         }
         SettingKind::Number => {
-            let secs: u64 = value.trim().parse().map_err(|_| {
-                String::from("plugin_sync_timeout must be a whole number of seconds")
-            })?;
-            // 0 disables the timeout entirely (reqwest semantics) — legal in
-            // a config file for special cases, but flagged loudly in the UI
-            // because a hung source then blocks pipeline saves indefinitely.
-            if secs == 0 || (5..=300).contains(&secs) {
-                Ok(())
-            } else {
-                Err("plugin_sync_timeout must be 0 (disable) or between 5 and 300 seconds".into())
+            // Per-key ranges: each Number setting carries its own domain.
+            let parsed: u64 = value
+                .trim()
+                .parse()
+                .map_err(|_| format!("{key} must be a whole number"))?;
+            match key {
+                KEY_PLUGIN_SYNC_TIMEOUT => {
+                    // 0 disables the timeout entirely (reqwest semantics) — legal in
+                    // a config file for special cases, but flagged loudly in the UI
+                    // because a hung source then blocks pipeline saves indefinitely.
+                    if parsed == 0 || (5..=300).contains(&parsed) {
+                        Ok(())
+                    } else {
+                        Err(
+                            "plugin_sync_timeout must be 0 (disable) or between 5 and 300 seconds"
+                                .into(),
+                        )
+                    }
+                }
+                KEY_SANDBOX_CONFIG_RETENTION_DAYS => {
+                    if (1..=3650).contains(&parsed) {
+                        Ok(())
+                    } else {
+                        Err(
+                            "sandbox_config_history_retention_days must be between 1 and 3650"
+                                .into(),
+                        )
+                    }
+                }
+                KEY_SANDBOX_CONFIG_POLL_SECONDS => {
+                    if (5..=600).contains(&parsed) {
+                        Ok(())
+                    } else {
+                        Err("sandbox_config_poll_seconds must be between 5 and 600".into())
+                    }
+                }
+                KEY_SANDBOX_CONFIG_STALE_SECONDS => {
+                    if (60..=86400).contains(&parsed) {
+                        Ok(())
+                    } else {
+                        Err(
+                            "sandbox_config_dispatch_stale_after_seconds must be between 60 and 86400"
+                                .into(),
+                        )
+                    }
+                }
+                _ => Err(format!("unknown numeric setting '{key}'")),
             }
         }
     }
@@ -116,7 +172,7 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
 /// compatibility with older Managers).
 pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?)",
+        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(KEY_MARKETPLACE_URL)
     .bind(KEY_PLUGIN_REVIEW_REQUIRED)
@@ -125,6 +181,10 @@ pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
     .bind(KEY_PLUGIN_SYNC_TIMEOUT)
     .bind(KEY_PLUGIN_REQUIRE_SIGNED_INDEX)
     .bind(KEY_PLUGIN_INDEX_PUBLIC_KEY)
+    .bind(KEY_SANDBOX_CONFIG_REQUIRE_APPROVAL)
+    .bind(KEY_SANDBOX_CONFIG_RETENTION_DAYS)
+    .bind(KEY_SANDBOX_CONFIG_POLL_SECONDS)
+    .bind(KEY_SANDBOX_CONFIG_STALE_SECONDS)
     .fetch_all(pool)
     .await
     .unwrap_or_default();

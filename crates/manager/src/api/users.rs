@@ -18,7 +18,7 @@ pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let rows = sqlx::query(
-        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active, created_at, updated_at
+        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active, created_at, updated_at, is_ops
          FROM users ORDER BY username ASC",
     )
     .fetch_all(&state.pool)
@@ -36,6 +36,7 @@ pub async fn list(
                 "is_active": r.get::<i64, _>(5) != 0,
                 "created_at": r.get::<Option<String>, _>(6),
                 "updated_at": r.get::<Option<String>, _>(7),
+                "is_ops": r.get::<i64, _>(8) != 0,
             })
         })
         .collect();
@@ -59,11 +60,12 @@ pub async fn create(
     let hash = hash_password(&req.password).map_err(AppError::Internal)?;
     let is_admin = req.is_platform_admin.unwrap_or(false);
     let is_super = req.is_super_admin.unwrap_or(false) && auth.is_super_admin;
+    let is_ops = req.is_ops.unwrap_or(false);
     let display = req.display_name.unwrap_or_else(|| username.to_string());
 
     sqlx::query(
-        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, 1)",
+        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_ops, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(&id)
     .bind(username)
@@ -71,6 +73,7 @@ pub async fn create(
     .bind(&display)
     .bind(if is_admin { 1 } else { 0 })
     .bind(if is_super { 1 } else { 0 })
+    .bind(if is_ops { 1 } else { 0 })
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -91,6 +94,7 @@ pub async fn create(
                 "display_name": display,
                 "is_platform_admin": is_admin,
                 "is_super_admin": is_super,
+                "is_ops": is_ops,
                 "is_active": true,
             }))),
     )
@@ -101,6 +105,7 @@ pub async fn create(
         "username": username,
         "is_platform_admin": is_admin,
         "is_super_admin": is_super,
+        "is_ops": is_ops,
     }))))
 }
 
@@ -204,6 +209,15 @@ pub async fn update(
         .await?;
     }
 
+    // Platform-ops flag: any platform admin may grant/revoke it.
+    if let Some(is_ops) = req.is_ops {
+        sqlx::query("UPDATE users SET is_ops = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(if is_ops { 1 } else { 0 })
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+    }
+
     if let Some(active) = req.is_active {
         if !active && id == auth.id {
             return Err(AppError::ValidationFailed(
@@ -218,7 +232,7 @@ pub async fn update(
     }
 
     let after_row = sqlx::query(
-        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active FROM users WHERE id = ?",
+        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active, is_ops FROM users WHERE id = ?",
     )
     .bind(&id)
     .fetch_one(&state.pool)
@@ -230,6 +244,7 @@ pub async fn update(
         "is_platform_admin": after_row.get::<i64, _>(3) != 0,
         "is_super_admin": after_row.get::<i64, _>(4) != 0,
         "is_active": after_row.get::<i64, _>(5) != 0,
+        "is_ops": after_row.get::<i64, _>(6) != 0,
     });
     audit::record(
         &state.pool,

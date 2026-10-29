@@ -71,6 +71,10 @@ const AUDITED: &[(&str, &str)] = &[
         "variable.github_bind.remove",
     ),
     (
+        "DELETE /api/v1/ops/resource-grants/{team_id}/{profile}",
+        "resource_grant.update",
+    ),
+    (
         "PATCH /api/v1/pipelines/{id}/toggle-active",
         "pipeline.toggle_active",
     ),
@@ -148,6 +152,28 @@ const AUDITED: &[(&str, &str)] = &[
         "POST /api/v1/variables/{id}/github-binds/push",
         "variable.github_push",
     ),
+    (
+        "POST /api/v1/ops/sandbox-changes/{id}/approve",
+        "sandbox_host.config_approved",
+    ),
+    (
+        "POST /api/v1/ops/sandbox-changes/{id}/reject",
+        "sandbox_host.config_rejected",
+    ),
+    ("POST /api/v1/ops/sandbox-hosts", "sandbox_host.enroll"),
+    (
+        "POST /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/rollback",
+        "sandbox_host.rollback",
+    ),
+    (
+        "POST /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/token/rotate",
+        "sandbox_host.token_rotate",
+    ),
+    ("PUT /api/v1/ops/resource-grants", "resource_grant.update"),
+    (
+        "PUT /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/config",
+        "sandbox_host.config_update",
+    ),
     ("PUT /api/v1/admin/settings/{key}", "setting.update"),
     (
         "PUT /api/v1/admin/plugin-pool/{namespace}/{plugin_id}/{version}",
@@ -192,6 +218,10 @@ const INTENTIONALLY_UNAUDITED: &[(&str, &str)] = &[
     (
         "POST /api/v1/admin/plugin-sources/{id}/mirror-check",
         "read-only probe: compares sentinels, writes nothing",
+    ),
+    (
+        "POST /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/validate",
+        "dry-run config validation: mutates nothing (results come back in the response)",
     ),
     (
         "POST /api/v1/hooks/git/{provider}/{hook_key}",

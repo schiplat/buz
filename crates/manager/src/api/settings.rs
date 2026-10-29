@@ -16,8 +16,11 @@ use shared::protocol::response::ApiResponse;
 use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::PlatformAdmin;
 use crate::services::platform_settings::{
-    self, KEY_PLUGIN_INDEX_LOCAL_DIR, KEY_PLUGIN_REVIEWED_MANIFEST, KEY_PLUGIN_REVIEW_REQUIRED,
-    KEY_PLUGIN_SYNC_TIMEOUT,
+    self, DEFAULT_SANDBOX_CONFIG_POLL_SECONDS, DEFAULT_SANDBOX_CONFIG_RETENTION_DAYS,
+    DEFAULT_SANDBOX_CONFIG_STALE_SECONDS, KEY_PLUGIN_INDEX_LOCAL_DIR, KEY_PLUGIN_REVIEWED_MANIFEST,
+    KEY_PLUGIN_REVIEW_REQUIRED, KEY_PLUGIN_SYNC_TIMEOUT, KEY_SANDBOX_CONFIG_POLL_SECONDS,
+    KEY_SANDBOX_CONFIG_REQUIRE_APPROVAL, KEY_SANDBOX_CONFIG_RETENTION_DAYS,
+    KEY_SANDBOX_CONFIG_STALE_SECONDS,
 };
 use crate::state::AppState;
 
@@ -84,6 +87,22 @@ pub async fn get_settings(
             KEY_PLUGIN_SYNC_TIMEOUT,
             "number",
             state.config.plugin_index.sync_timeout_seconds.to_string(),
+        ),
+        item(KEY_SANDBOX_CONFIG_REQUIRE_APPROVAL, "bool", "false".into()),
+        item(
+            KEY_SANDBOX_CONFIG_RETENTION_DAYS,
+            "number",
+            DEFAULT_SANDBOX_CONFIG_RETENTION_DAYS.to_string(),
+        ),
+        item(
+            KEY_SANDBOX_CONFIG_POLL_SECONDS,
+            "number",
+            DEFAULT_SANDBOX_CONFIG_POLL_SECONDS.to_string(),
+        ),
+        item(
+            KEY_SANDBOX_CONFIG_STALE_SECONDS,
+            "number",
+            DEFAULT_SANDBOX_CONFIG_STALE_SECONDS.to_string(),
         ),
     ];
     // Path settings carry existence/readability of the effective value so

@@ -56,6 +56,34 @@ impl FromRequestParts<AppState> for PlatformAdmin {
     }
 }
 
+/// Platform administrator **or** platform-ops user. Gates the ops API
+/// namespace (sandbox host administration); grants nothing else — every other
+/// namespace keeps its own extractor.
+#[derive(Debug, Clone)]
+pub struct OpsAdmin(pub AuthUser);
+
+impl std::ops::Deref for OpsAdmin {
+    type Target = AuthUser;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl FromRequestParts<AppState> for OpsAdmin {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        if !user.is_ops {
+            return Err(forbidden_err("ops or platform admin required"));
+        }
+        Ok(OpsAdmin(user))
+    }
+}
+
 /// Authenticated runner identity extracted from a Runner JWT.
 #[derive(Debug, Clone)]
 pub struct RunnerClaims {

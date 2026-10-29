@@ -13,9 +13,16 @@ const TOKEN_RANDOM_BYTES: usize = 32;
 
 /// Generate a new random API token, e.g. `buz_a1b2c3…`.
 pub fn generate_token() -> String {
+    generate_with_prefix(API_TOKEN_PREFIX)
+}
+
+/// Generate a random bearer token with a custom prefix (used for sandboxd
+/// instance tokens, `buzsd_…`, so the credential type is recognizable in
+/// logs and token lists).
+pub fn generate_with_prefix(prefix: &str) -> String {
     let mut bytes = [0u8; TOKEN_RANDOM_BYTES];
     getrandom::getrandom(&mut bytes).expect("os random for api token");
-    format!("{API_TOKEN_PREFIX}{}", hex::encode(bytes))
+    format!("{prefix}{}", hex::encode(bytes))
 }
 
 /// SHA-256 hex digest of a token, used as the stored credential.

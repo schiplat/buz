@@ -95,6 +95,9 @@ pub struct CreateUserRequest {
     /// Super admin can view all audit logs and all API tokens.
     #[serde(default)]
     pub is_super_admin: Option<bool>,
+    /// Platform-ops user: sandbox host administration via the ops API.
+    #[serde(default)]
+    pub is_ops: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -109,6 +112,8 @@ pub struct UpdateUserRequest {
     pub is_active: Option<bool>,
     #[serde(default)]
     pub is_super_admin: Option<bool>,
+    #[serde(default)]
+    pub is_ops: Option<bool>,
 }
 
 // --- API tokens ---

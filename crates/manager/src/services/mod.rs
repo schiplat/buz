@@ -11,6 +11,7 @@ pub mod plugin_pool;
 pub mod plugin_resolver;
 pub mod poll_events;
 pub mod runner_monitor;
+pub mod sandbox_config;
 pub mod scheduler;
 pub mod sync_progress;
 pub mod yaml_cache;

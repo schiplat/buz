@@ -124,7 +124,7 @@ async fn auth_user_from_query_token(
         .verify(token_str)
         .map_err(|_| AppError::AuthFailed("invalid or missing token".into()))?;
 
-    if !matches!(claims.role, Role::Admin | Role::User) {
+    if !matches!(claims.role, Role::Admin | Role::Ops | Role::User) {
         return Err(AppError::AuthFailed("user role required".into()));
     }
 

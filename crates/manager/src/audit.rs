@@ -102,6 +102,15 @@ pub enum Action {
     RunnerRestart,
     RunnerUpdate,
 
+    // sandbox host (ops namespace)
+    SandboxHostConfigApproved,
+    SandboxHostConfigRejected,
+    SandboxHostConfigUpdate,
+    SandboxHostEnroll,
+    SandboxHostRollback,
+    SandboxHostTokenRotate,
+    ResourceGrantUpdate,
+
     // secret
     SecretCreate,
     SecretDelete,
@@ -198,6 +207,13 @@ impl Action {
             Action::RunnerRegisterTokenReissued => "runner.register_token_reissued",
             Action::RunnerRestart => "runner.restart",
             Action::RunnerUpdate => "runner.update",
+            Action::SandboxHostConfigApproved => "sandbox_host.config_approved",
+            Action::SandboxHostConfigRejected => "sandbox_host.config_rejected",
+            Action::SandboxHostConfigUpdate => "sandbox_host.config_update",
+            Action::SandboxHostEnroll => "sandbox_host.enroll",
+            Action::SandboxHostRollback => "sandbox_host.rollback",
+            Action::SandboxHostTokenRotate => "sandbox_host.token_rotate",
+            Action::ResourceGrantUpdate => "resource_grant.update",
             Action::SecretCreate => "secret.create",
             Action::SecretDelete => "secret.delete",
             Action::SecretGithubBindAdd => "secret.github_bind.add",
@@ -252,6 +268,16 @@ pub enum Resource<'a> {
         id: &'a str,
         name: &'a str,
     },
+    /// One sandboxd instance, identified by (host_id, instance_id).
+    SandboxHost {
+        id: &'a str,
+        name: &'a str,
+    },
+    /// One team's grant on one resource profile (id = team, name = profile).
+    ResourceGrant {
+        id: &'a str,
+        name: &'a str,
+    },
     Job {
         id: &'a str,
         name: &'a str,
@@ -288,6 +314,20 @@ impl<'a> Resource<'a> {
         Resource::Runner { id, name }
     }
 
+    pub fn sandbox_host(host_id: &'a str, instance_id: &'a str) -> Self {
+        Resource::SandboxHost {
+            id: host_id,
+            name: instance_id,
+        }
+    }
+
+    pub fn resource_grant(team_id: &'a str, profile: &'a str) -> Self {
+        Resource::ResourceGrant {
+            id: team_id,
+            name: profile,
+        }
+    }
+
     pub fn job(id: &'a str, name: &'a str) -> Self {
         Resource::Job { id, name }
     }
@@ -309,6 +349,8 @@ impl<'a> Resource<'a> {
             Resource::PluginPool { .. } => "plugin_pool",
             Resource::Setting { .. } => "setting",
             Resource::Runner { .. } => "runner",
+            Resource::SandboxHost { .. } => "sandbox_host",
+            Resource::ResourceGrant { .. } => "resource_grant",
             Resource::Job { .. } => "job",
             Resource::User { .. } => "user",
             Resource::PluginPoolEntry { .. } => "plugin_pool",
@@ -321,6 +363,8 @@ impl<'a> Resource<'a> {
         match self {
             Resource::PluginSource { id, .. }
             | Resource::Runner { id, .. }
+            | Resource::SandboxHost { id, .. }
+            | Resource::ResourceGrant { id, .. }
             | Resource::Job { id, .. }
             | Resource::User { id, .. } => (*id).to_string(),
             Resource::PluginPool {
@@ -341,6 +385,8 @@ impl<'a> Resource<'a> {
         match self {
             Resource::PluginSource { name, .. }
             | Resource::Runner { name, .. }
+            | Resource::SandboxHost { name, .. }
+            | Resource::ResourceGrant { name, .. }
             | Resource::Job { name, .. }
             | Resource::User { name, .. } => (*name).to_string(),
             Resource::PluginPool { .. } | Resource::PluginPoolEntry { .. } => self.id(),

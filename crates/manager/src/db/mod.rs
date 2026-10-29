@@ -181,6 +181,7 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     for path in [
         include_str!("migrations/001_init.sql"),
         include_str!("migrations/002_step_resolutions.sql"),
+        include_str!("migrations/003_sandbox_hosts.sql"),
     ] {
         // Split by ; and execute each statement
         for statement in path.split(';') {
@@ -930,6 +931,11 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // Super admin sees all audit logs and all API tokens; regular platform
     // admins see only their own. Safe to fail when the column already exists.
     add_column_if_missing(pool, "users", "is_super_admin INTEGER NOT NULL DEFAULT 0").await;
+
+    // Platform-ops flag: sandbox host administration (ops API namespace).
+    // Implies nothing else — admins keep full access; ops users are scoped to
+    // the ops namespace and read-only elsewhere.
+    add_column_if_missing(pool, "users", "is_ops INTEGER NOT NULL DEFAULT 0").await;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS api_tokens (

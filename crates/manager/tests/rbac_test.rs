@@ -20,6 +20,7 @@ async fn test_pool() -> sqlx::SqlitePool {
             display_name TEXT NOT NULL DEFAULT '',
             is_platform_admin INTEGER NOT NULL DEFAULT 0,
             is_super_admin INTEGER NOT NULL DEFAULT 0,
+            is_ops INTEGER NOT NULL DEFAULT 0,
             is_active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
