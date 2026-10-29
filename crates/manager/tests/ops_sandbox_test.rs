@@ -517,6 +517,7 @@ async fn get_host_reports_document_and_attached_runners() {
             docker_enabled: None,
             wasm_enabled: None,
             ssh_host_key_policy: None,
+            claim_strategy: None,
         },
     )
     .await

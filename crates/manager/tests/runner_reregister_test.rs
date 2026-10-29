@@ -84,6 +84,7 @@ async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
             docker_enabled: None,
             wasm_enabled: None,
             ssh_host_key_policy: None,
+            claim_strategy: None,
         },
     )
     .await

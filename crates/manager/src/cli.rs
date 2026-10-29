@@ -227,6 +227,7 @@ pub async fn gen_runner_token(
         docker_enabled: None,
         wasm_enabled: None,
         ssh_host_key_policy: None,
+        claim_strategy: None,
     };
 
     let created = match api::runners::create_runner_record(&pool, &req).await {

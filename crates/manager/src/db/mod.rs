@@ -227,6 +227,23 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     add_column_if_missing(pool, "jobs", "resource_slots INTEGER NOT NULL DEFAULT 1").await;
     add_column_if_missing(pool, "jobs", "resource_spec TEXT NOT NULL DEFAULT '{}'").await;
     add_column_if_missing(pool, "jobs", "sandbox_instance_id TEXT NOT NULL DEFAULT ''").await;
+    // Why a pending job was last skipped by a poller (slot wait, profile not
+    // offered, host mode); cleared on claim. Display-only.
+    add_column_if_missing(pool, "jobs", "dispatch_reason TEXT NOT NULL DEFAULT ''").await;
+    // Slot-aware claim: UI-managed walk strategy and the heartbeat-derived
+    // sandboxd instance this Runner is attached to.
+    add_column_if_missing(
+        pool,
+        "runners",
+        "claim_strategy TEXT NOT NULL DEFAULT 'backfill'",
+    )
+    .await;
+    add_column_if_missing(
+        pool,
+        "runners",
+        "sandbox_instance_id TEXT NOT NULL DEFAULT ''",
+    )
+    .await;
 
     // Add privileged column to tasks table (safe to fail if already present)
     add_column_if_missing(pool, "tasks", "privileged INTEGER NOT NULL DEFAULT 0").await;

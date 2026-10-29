@@ -49,6 +49,16 @@ pub fn runner_satisfies_labels(runner_labels: &[String], required: &[String]) ->
         .all(|need| runner_labels.iter().any(|have| have == need))
 }
 
+/// Best-effort note of why a poller skipped a pending job (slot wait,
+/// profile not offered, host mode). Display-only; cleared on claim.
+async fn record_dispatch_reason(pool: &sqlx::SqlitePool, job_id: &str, reason: &str) {
+    let _ = sqlx::query("UPDATE jobs SET dispatch_reason = ? WHERE id = ? AND status = 'pending'")
+        .bind(reason)
+        .bind(job_id)
+        .execute(pool)
+        .await;
+}
+
 /// `(resource_profile, team_id)` frozen into the job snapshot at trigger.
 /// An empty profile means the implicit `default`.
 fn job_resource_request(snapshot_raw: &str) -> (String, Option<String>) {
@@ -135,6 +145,16 @@ fn bearer_proves_runner(
     }
 }
 
+/// Validate and default the claim strategy (`backfill` | `fifo`).
+pub fn normalize_claim_strategy(v: Option<String>) -> Result<String, AppError> {
+    let raw = v.unwrap_or_default();
+    crate::services::slot_scheduler::ClaimStrategy::parse(&raw)
+        .map(|s| s.as_str().to_string())
+        .ok_or_else(|| {
+            AppError::ValidationFailed("claim_strategy must be 'backfill' or 'fifo'".into())
+        })
+}
+
 pub fn normalize_ssh_host_key_policy(v: Option<String>) -> Result<String, AppError> {
     let p = v.unwrap_or_else(|| "known_hosts".into());
     match p.as_str() {
@@ -207,7 +227,7 @@ async fn load_runner_policy(
     let row = sqlx::query(
         "SELECT max_concurrent_jobs, clean_workspace_after_job,
                 shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy,
-                execution_mode
+                execution_mode, claim_strategy
          FROM runners WHERE id = ?",
     )
     .bind(runner_id)
@@ -231,6 +251,8 @@ async fn load_runner_policy(
             }
         },
         execution_mode: parse_execution_mode(row.get::<String, _>(7))?,
+        claim_strategy: normalize_claim_strategy(Some(row.get::<String, _>(8)))
+            .unwrap_or_else(|_| "backfill".into()),
     })
 }
 
@@ -244,6 +266,7 @@ fn policy_json(p: &RunnerPolicyConfig) -> serde_json::Value {
         "docker_enabled": p.docker_enabled,
         "wasm_enabled": p.wasm_enabled,
         "ssh_host_key_policy": p.ssh_host_key_policy,
+        "claim_strategy": p.claim_strategy,
     })
 }
 
@@ -297,6 +320,7 @@ pub async fn create_runner_record(
         .unwrap_or_else(|_| "[]".into());
     let max_concurrent = normalize_max_concurrent(req.max_concurrent_jobs)?;
     let ssh_policy = normalize_ssh_host_key_policy(req.ssh_host_key_policy.clone())?;
+    let claim_strategy = normalize_claim_strategy(req.claim_strategy.clone())?;
     let clean = bool_i64(req.clean_workspace_after_job, false);
     let shell = bool_i64(req.shell_enabled, true);
     let ssh = bool_i64(req.ssh_enabled, true);
@@ -314,8 +338,8 @@ pub async fn create_runner_record(
     sqlx::query(
         "INSERT INTO runners (id, name, register_token, labels, status, version, team_id, execution_mode,
          max_concurrent_jobs, clean_workspace_after_job,
-         shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy)
-         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy, claim_strategy)
+         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&req.name)
@@ -331,6 +355,7 @@ pub async fn create_runner_record(
     .bind(docker)
     .bind(wasm)
     .bind(&ssh_policy)
+    .bind(&claim_strategy)
     .execute(pool)
     .await?;
 
@@ -407,6 +432,7 @@ pub async fn ensure_standalone_auto_approve(
             docker_enabled: None,
             wasm_enabled: None,
             ssh_host_key_policy: None,
+            claim_strategy: None,
         };
         match create_runner_record(pool, &req).await {
             Ok(created) => {
@@ -630,10 +656,22 @@ pub async fn heartbeat(
         "runner_instance_id",
         &auth.runner_id,
     );
+    // The sandboxd instance this Runner is attached to, derived from the
+    // heartbeat's sandbox block so the claim path can group slot usage by host
+    // without parsing the system_info blob.
+    let sandbox_instance_id = req
+        .system_info
+        .as_ref()
+        .and_then(|si| si.sandboxd.as_ref())
+        .and_then(|b| b.get("instance_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(|raw| sanitized_instance_id(raw, "sandbox_instance_id", &auth.runner_id))
+        .unwrap_or_default();
     sqlx::query(
         "UPDATE runners SET status = ?, system_info = ?, version = COALESCE(?, version), \
          host_id = COALESCE(NULLIF(?, ''), host_id), \
          runner_instance_id = COALESCE(NULLIF(?, ''), runner_instance_id), \
+         sandbox_instance_id = COALESCE(NULLIF(?, ''), sandbox_instance_id), \
          last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&req.status)
@@ -641,6 +679,7 @@ pub async fn heartbeat(
     .bind(version)
     .bind(&host_id)
     .bind(&runner_instance_id)
+    .bind(&sandbox_instance_id)
     .bind(&auth.runner_id)
     .execute(&state.pool)
     .await?;
@@ -847,6 +886,35 @@ async fn poll_once(
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
 
+    // Slot-aware dispatch context: execution mode, attached sandbox host,
+    // queue-walk strategy, and the staleness threshold (see slot_scheduler).
+    let dispatch = {
+        let row: (String, String, String, String) = sqlx::query_as(
+            "SELECT execution_mode, host_id, sandbox_instance_id, claim_strategy
+             FROM runners WHERE id = ?",
+        )
+        .bind(&auth.runner_id)
+        .fetch_one(&state.pool)
+        .await?;
+        let stale_after_seconds: i64 = crate::services::platform_settings::effective(
+            &state.pool,
+            crate::services::platform_settings::KEY_SANDBOX_CONFIG_STALE_SECONDS,
+            &crate::services::platform_settings::DEFAULT_SANDBOX_CONFIG_STALE_SECONDS.to_string(),
+        )
+        .await
+        .trim()
+        .parse()
+        .unwrap_or(crate::services::platform_settings::DEFAULT_SANDBOX_CONFIG_STALE_SECONDS as i64);
+        crate::services::slot_scheduler::RunnerDispatchContext {
+            execution_mode: parse_execution_mode(row.0)?,
+            host_id: row.1,
+            sandbox_instance_id: row.2,
+            strategy: crate::services::slot_scheduler::ClaimStrategy::parse(&row.3)
+                .unwrap_or_default(),
+            stale_after_seconds,
+        }
+    };
+
     // Candidates: oldest pending jobs with pipeline (+ snapshot) labels.
     // Claim only if runner has ALL required labels (see runner_satisfies_labels).
     let candidates = sqlx::query(
@@ -958,6 +1026,37 @@ async fn poll_once(
             tx.rollback().await?;
             continue;
         }
+
+        // Slot gate — inside the IMMEDIATE transaction so two concurrent
+        // polls cannot both see "fits" and oversell the host budget.
+        let (slots, resource_spec, sandbox_key) = match crate::services::slot_scheduler::decide(
+            &mut tx,
+            &dispatch,
+            &job_profile,
+        )
+        .await?
+        {
+            crate::services::slot_scheduler::Decision::Dispatch {
+                slots,
+                spec,
+                sandbox_key,
+            } => (slots, spec, sandbox_key),
+            crate::services::slot_scheduler::Decision::WaitForCapacity { reason } => {
+                tx.rollback().await?;
+                record_dispatch_reason(&state.pool, &job_id, &reason).await;
+                match dispatch.strategy {
+                    // Strict order within this Runner's eligible set: the
+                    // oldest fitting-in-principle job blocks the round.
+                    crate::services::slot_scheduler::ClaimStrategy::Fifo => break,
+                    crate::services::slot_scheduler::ClaimStrategy::Backfill => continue,
+                }
+            }
+            crate::services::slot_scheduler::Decision::NotEligible { reason } => {
+                tx.rollback().await?;
+                record_dispatch_reason(&state.pool, &job_id, &reason).await;
+                continue;
+            }
+        };
         let mut superseded_ids: Vec<String> = Vec::new();
 
         if let Some(env_id) = candidate_environment_id.as_deref() {
@@ -1086,11 +1185,15 @@ async fn poll_once(
 
         let got = sqlx::query(
             "UPDATE jobs SET status = 'running', runner_id = ?, start_time = datetime('now'),
+             resource_slots = ?, resource_spec = ?, sandbox_instance_id = ?, dispatch_reason = '',
              updated_at = datetime('now')
              WHERE id = ? AND status = 'pending'
              RETURNING id, pipeline_id, trigger_params, environment_id, run_number, run_attempt",
         )
         .bind(&auth.runner_id)
+        .bind(slots)
+        .bind(resource_spec.to_string())
+        .bind(&sandbox_key)
         .bind(&job_id)
         .fetch_optional(&mut *tx)
         .await?;
@@ -2595,7 +2698,7 @@ pub async fn list_runners(
                 r.shell_enabled, r.ssh_enabled, r.docker_enabled, r.wasm_enabled, r.ssh_host_key_policy,
                 r.created_at, r.updated_at, r.team_id,
                 (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs,
-                r.execution_mode, r.host_id, r.runner_instance_id
+                r.execution_mode, r.host_id, r.runner_instance_id, r.claim_strategy
          FROM runners r ORDER BY r.created_at DESC",
     )
     .fetch_all(&state.pool)
@@ -2623,6 +2726,8 @@ pub async fn list_runners(
                     }
                 },
                 execution_mode: parse_execution_mode(r.get::<String, _>(19))?,
+                claim_strategy: normalize_claim_strategy(Some(r.get::<String, _>(22)))
+                    .unwrap_or_else(|_| "backfill".into()),
             };
             Ok(serde_json::json!({
                 "id": r.get::<String, _>(0),
@@ -2640,6 +2745,7 @@ pub async fn list_runners(
                 "docker_enabled": policy.docker_enabled,
                 "wasm_enabled": policy.wasm_enabled,
                 "ssh_host_key_policy": policy.ssh_host_key_policy,
+                "claim_strategy": policy.claim_strategy,
                 "execution_mode": policy.execution_mode.as_str(),
                 "team_id": r.get::<Option<String>, _>(17),
                 "created_at": r.get::<Option<String>, _>(15),
@@ -2702,6 +2808,7 @@ pub async fn get_runner(
         "wasm_enabled": policy.wasm_enabled,
         "ssh_host_key_policy": policy.ssh_host_key_policy,
         "execution_mode": policy.execution_mode.as_str(),
+        "claim_strategy": policy.claim_strategy,
     }))))
 }
 
@@ -2941,6 +3048,16 @@ pub async fn update_runner(
         .execute(&state.pool)
         .await?;
     }
+    if req.claim_strategy.is_some() {
+        let strategy = normalize_claim_strategy(req.claim_strategy.clone())?;
+        sqlx::query(
+            "UPDATE runners SET claim_strategy = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&strategy)
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    }
 
     log_runner_event(&state.pool, &id, "updated", "Runner policy updated from UI").await;
 
@@ -3005,6 +3122,7 @@ pub async fn update_runner(
         "wasm_enabled": policy.wasm_enabled,
         "ssh_host_key_policy": policy.ssh_host_key_policy,
         "execution_mode": policy.execution_mode.as_str(),
+        "claim_strategy": policy.claim_strategy,
     }))))
 }
 

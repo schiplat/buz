@@ -349,7 +349,8 @@ pub async fn get_one(
                 j.status, j.trigger_by, j.trigger_params, j.snapshot, j.step_statuses, j.retry_times,
                 j.start_time, j.end_time, j.created_at, j.updated_at, j.debug_unredact, j.verbose_logs,
                 j.trigger_user_id, j.run_number, j.run_attempt,
-                j.resource_profile, j.resource_slots, j.resource_spec, j.sandbox_instance_id
+                j.resource_profile, j.resource_slots, j.resource_spec, j.sandbox_instance_id,
+                j.dispatch_reason
          FROM jobs j
          LEFT JOIN pipelines p ON j.pipeline_id = p.id
          WHERE j.id = ?",
@@ -413,6 +414,8 @@ pub async fn get_one(
         "resource_spec": serde_json::from_str::<serde_json::Value>(&r.get::<String, _>(21))
             .unwrap_or(serde_json::json!({})),
         "sandbox_instance_id": r.get::<String, _>(22),
+        // Why the last poller skipped this job while pending ('' once claimed).
+        "dispatch_reason": r.get::<String, _>(23),
     }))))
 }
 

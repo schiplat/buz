@@ -283,6 +283,11 @@ pub struct RunnerPolicyConfig {
     /// `insecure` | `known_hosts`
     #[serde(default = "default_ssh_host_key_policy")]
     pub ssh_host_key_policy: String,
+    /// How this Runner walks its candidate queue when a job does not fit the
+    /// sandbox host's slot budget: `backfill` (default) skips it and keeps
+    /// looking; `fifo` claims nothing this round. Hot-reloaded on heartbeat.
+    #[serde(default = "default_claim_strategy")]
+    pub claim_strategy: String,
 }
 
 impl Default for RunnerPolicyConfig {
@@ -296,8 +301,13 @@ impl Default for RunnerPolicyConfig {
             docker_enabled: false,
             wasm_enabled: false,
             ssh_host_key_policy: default_ssh_host_key_policy(),
+            claim_strategy: default_claim_strategy(),
         }
     }
+}
+
+fn default_claim_strategy() -> String {
+    "backfill".into()
 }
 
 fn default_max_concurrent_jobs() -> u32 {
@@ -453,6 +463,9 @@ pub struct CreateRunnerRequest {
     /// `insecure` | `known_hosts`
     #[serde(default)]
     pub ssh_host_key_policy: Option<String>,
+    /// `backfill` (default) | `fifo`
+    #[serde(default)]
+    pub claim_strategy: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -477,6 +490,8 @@ pub struct UpdateRunnerRequest {
     #[serde(default)]
     pub execution_mode: Option<RunnerExecutionMode>,
     pub ssh_host_key_policy: Option<String>,
+    #[serde(default)]
+    pub claim_strategy: Option<String>,
 }
 
 // --- Job ---

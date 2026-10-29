@@ -237,6 +237,37 @@ async fn granted_profile_is_frozen_into_job_snapshot_and_claim_payload() {
     let (app, pool) = test_app().await;
     let pipeline_id = pipeline_with_profile(&app, &pool, "large").await;
     grant(&app, "large").await;
+    // Dispatch requires a sandboxed runner on an enrolled host offering the
+    // profile (host mode cannot enforce it — see slot_scheduling_test).
+    sqlx::query(
+        "UPDATE runners SET execution_mode = 'container', host_id = 'host-a',
+         sandbox_instance_id = 'sandboxd-01' WHERE id = 'runner-1'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let doc = serde_json::json!({
+        "profiles": { "default": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 },
+                      "large": { "memory": "8g", "cpu": "4", "pids": 512, "slots": 4 } },
+        "tiers": { "container": { "image": "repo@sha256:abc", "runtime": "" } },
+        "network": "bridge"
+    })
+    .to_string();
+    sqlx::query(
+        "INSERT INTO sandbox_hosts (host_id, instance_id, status, max_resource_slots, desired_version, applied_version)
+         VALUES ('host-a', 'sandboxd-01', 'insync', 8, 1, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sandbox_host_configs (host_id, instance_id, version, document, document_sha256, created_by)
+         VALUES ('host-a', 'sandboxd-01', 1, ?, 'sha', 'boss')",
+    )
+    .bind(&doc)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let (status, resp) = trigger(&app, &pipeline_id).await;
     assert_eq!(status, StatusCode::OK, "{resp}");
