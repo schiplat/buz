@@ -14,6 +14,7 @@ pub mod plugin_spec;
 pub mod protocol;
 pub mod rbac;
 pub mod registry_auth;
+pub mod sandbox_config;
 pub mod secret_kind;
 pub mod secret_ref;
 pub mod value_source;

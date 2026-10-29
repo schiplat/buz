@@ -393,9 +393,16 @@ pub async fn execute_job(
             config.execution_mode.as_str(),
             unsupported.join(", ")
         );
+        // PR #6 wires the claim payload to `runner.resources`; until then
+        // every job uses the implicit default envelope.
         Some(
-            crate::client::sandbox_client::create_job(config, job_id, &config.runner.workspace_dir)
-                .await?,
+            crate::client::sandbox_client::create_job(
+                config,
+                job_id,
+                &config.runner.workspace_dir,
+                "",
+            )
+            .await?,
         )
     };
     let mut prefetch = crate::client::image_prefetch::ImagePrefetch::start(tasks, config, job_id);
