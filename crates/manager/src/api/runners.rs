@@ -49,6 +49,23 @@ pub fn runner_satisfies_labels(runner_labels: &[String], required: &[String]) ->
         .all(|need| runner_labels.iter().any(|have| have == need))
 }
 
+/// `(resource_profile, team_id)` frozen into the job snapshot at trigger.
+/// An empty profile means the implicit `default`.
+fn job_resource_request(snapshot_raw: &str) -> (String, Option<String>) {
+    let snapshot: serde_json::Value = serde_json::from_str(snapshot_raw).unwrap_or_default();
+    let profile = snapshot
+        .get("resource_profile")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let team = snapshot
+        .get("team_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    (profile, team)
+}
+
 /// Prefer frozen job snapshot `runner_labels`; fall back to live pipeline labels JSON.
 pub fn required_labels_for_job(snapshot_json: &str, pipeline_labels_json: &str) -> Vec<String> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(snapshot_json) {
@@ -875,6 +892,44 @@ async fn poll_once(
         let required = required_labels_for_job(&snapshot_raw, &pipeline_labels_json);
         if !runner_satisfies_labels(&runner_labels, &required) {
             continue;
+        }
+
+        // Re-check the resource-profile grant at claim: it may have been
+        // revoked while the job was queued. Revocation fails the job
+        // terminally rather than leaving it pending forever — and it is a
+        // different failure from "no host offers this profile" (which queues).
+        let (job_profile, job_team) = job_resource_request(&snapshot_raw);
+        if let Some(profile) = crate::services::resource_grants::requested_profile(&job_profile) {
+            if let Err(error) = crate::services::resource_grants::ensure_team_may_use(
+                &state.pool,
+                job_team.as_deref().unwrap_or_default(),
+                profile,
+            )
+            .await
+            {
+                tracing::warn!(
+                    job = %job_id,
+                    profile,
+                    team = ?job_team,
+                    %error,
+                    "resource profile grant revoked while queued; failing job"
+                );
+                let _ = sqlx::query(
+                    "UPDATE jobs SET status = 'failed', end_time = datetime('now'),
+                     updated_at = datetime('now') WHERE id = ? AND status = 'pending'",
+                )
+                .bind(&job_id)
+                .execute(&state.pool)
+                .await;
+                crate::services::notify::spawn_job_notify(
+                    state.pool.clone(),
+                    state.config.auth.jwt_secret.clone(),
+                    state.config.server.public_base_url.clone(),
+                    job_id.clone(),
+                    "failed".to_string(),
+                );
+                continue;
+            }
         }
 
         // Serialize environment gate evaluation with the claim. SQLite's
@@ -2236,6 +2291,7 @@ async fn poll_once(
         "tasks": tasks,
         "inputs": trigger_params,
         "masking_input_keys": masking_input_keys,
+        "resource_profile": job_resource_request(&snapshot_raw).0,
         "env": env,
         "secret_env_keys": secret_env_keys,
         "secrets": secrets,

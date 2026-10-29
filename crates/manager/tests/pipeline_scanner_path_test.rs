@@ -190,3 +190,72 @@ fn etag_stable_for_same_content() {
     assert_eq!(a, b);
     assert_ne!(a, yaml_content_etag("name: y\nsteps: []\n"));
 }
+
+#[tokio::test]
+async fn scanner_projects_runner_resources_into_resource_profile_on_insert_and_update() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory sqlite");
+    manager::db::run_migrations(&pool, "test-secret-0123456789-abcdefghijklmnop")
+        .await
+        .expect("migrate");
+    sqlx::query("INSERT INTO teams (id, name, slug) VALUES ('team-default', 'Default', 'default')")
+        .execute(&pool)
+        .await
+        .expect("seed default team");
+
+    let large_yaml = r#"
+name: scanner-resources
+team: default
+environments: [default]
+runner:
+  labels: [linux-x64]
+  resources: large
+steps:
+  - name: run
+    run: make
+"#;
+    let parsed = serde_yaml::from_str(large_yaml).expect("parse YAML");
+    let pipeline_id = upsert_from_yaml(
+        &pool,
+        "scanner-resources.yml",
+        &parsed,
+        Path::new("."),
+        large_yaml,
+        60,
+    )
+    .await
+    .expect("insert");
+    let profile: String = sqlx::query_scalar("SELECT resource_profile FROM pipelines WHERE id = ?")
+        .bind(&pipeline_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read profile");
+    assert_eq!(profile, "large");
+
+    // Explicit `default` and an omitted key both normalize to '' (implicit).
+    let default_yaml = large_yaml.replace("resources: large", "resources: default");
+    let parsed = serde_yaml::from_str(&default_yaml).expect("parse YAML");
+    let same_id = upsert_from_yaml(
+        &pool,
+        "scanner-resources.yml",
+        &parsed,
+        Path::new("."),
+        &default_yaml,
+        60,
+    )
+    .await
+    .expect("update");
+    assert_eq!(same_id, pipeline_id);
+    let profile: String = sqlx::query_scalar("SELECT resource_profile FROM pipelines WHERE id = ?")
+        .bind(&pipeline_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read profile");
+    assert_eq!(
+        profile, "",
+        "explicit default normalizes to the implicit form"
+    );
+}

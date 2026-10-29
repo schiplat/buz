@@ -228,6 +228,11 @@ pub struct RunnerYaml {
     pub labels: Option<Vec<String>>,
     #[serde(default)]
     pub timeout: Option<String>,
+    /// Resource profile **name** requested for the whole job (the sandbox is
+    /// created once per job). Omitted = `default`. Never a number or object;
+    /// step-level `resources` is rejected by the step schema.
+    #[serde(default)]
+    pub resources: Option<String>,
 }
 
 /// One `config.render` entry (template → output file).
@@ -518,6 +523,8 @@ pub struct RunnerConfig {
     pub labels: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1406,6 +1413,17 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         parsed.runner.as_ref().and_then(|r| r.timeout.as_deref()),
         &mut errors,
     );
+
+    // 5c. runner.resources — a profile NAME (authorization and availability are
+    // Manager-side, at trigger/claim; only the syntax is checked here).
+    if let Some(resources) = parsed.runner.as_ref().and_then(|r| r.resources.as_deref()) {
+        if let Err(problem) = crate::sandbox_config::validate_profile_name(resources) {
+            errors.push(YamlValidationError {
+                field: "runner.resources".into(),
+                message: problem,
+            });
+        }
+    }
     for (i, step) in parsed.steps.iter().enumerate() {
         validate_duration_field(
             &format!("steps[{i}].timeout"),
@@ -1619,6 +1637,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         runner: parsed.runner.as_ref().map(|r| RunnerConfig {
             labels: r.labels.clone(),
             timeout: r.timeout.clone(),
+            resources: r.resources.clone(),
         }),
         trigger_type: Some(
             parsed

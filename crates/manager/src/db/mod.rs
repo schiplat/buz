@@ -212,6 +212,22 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     )
     .await;
 
+    // Resource profile requests (sandbox-host-configuration design record).
+    // pipelines.resource_profile: the YAML `runner.resources` name ('' = default).
+    // jobs.resource_profile: frozen at trigger after the team grant check;
+    // jobs.resource_slots / resource_spec / sandbox_instance_id: filled at
+    // claim from the dispatching host's applied document (scheduling PR).
+    add_column_if_missing(
+        pool,
+        "pipelines",
+        "resource_profile TEXT NOT NULL DEFAULT ''",
+    )
+    .await;
+    add_column_if_missing(pool, "jobs", "resource_profile TEXT NOT NULL DEFAULT ''").await;
+    add_column_if_missing(pool, "jobs", "resource_slots INTEGER NOT NULL DEFAULT 1").await;
+    add_column_if_missing(pool, "jobs", "resource_spec TEXT NOT NULL DEFAULT '{}'").await;
+    add_column_if_missing(pool, "jobs", "sandbox_instance_id TEXT NOT NULL DEFAULT ''").await;
+
     // Add privileged column to tasks table (safe to fail if already present)
     add_column_if_missing(pool, "tasks", "privileged INTEGER NOT NULL DEFAULT 0").await;
 

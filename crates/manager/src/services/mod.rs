@@ -10,6 +10,7 @@ pub mod platform_settings;
 pub mod plugin_pool;
 pub mod plugin_resolver;
 pub mod poll_events;
+pub mod resource_grants;
 pub mod runner_monitor;
 pub mod sandbox_config;
 pub mod sandbox_config_events;

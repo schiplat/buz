@@ -393,14 +393,19 @@ pub async fn execute_job(
             config.execution_mode.as_str(),
             unsupported.join(", ")
         );
-        // PR #6 wires the claim payload to `runner.resources`; until then
-        // every job uses the implicit default envelope.
+        // The Manager froze `runner.resources` into the claim payload after the
+        // team-grant check; sandboxd resolves the envelope from its applied
+        // document (empty = default; unknown = error, never a downgrade).
+        let resource_profile = task
+            .get("resource_profile")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
         Some(
             crate::client::sandbox_client::create_job(
                 config,
                 job_id,
                 &config.runner.workspace_dir,
-                "",
+                resource_profile,
             )
             .await?,
         )

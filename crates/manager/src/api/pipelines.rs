@@ -1134,7 +1134,7 @@ pub async fn do_trigger(
     let pipeline = sqlx::query(
         "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
                 concurrency_max_queue, concurrency_queue_timeout_seconds, input_defs, team_id,
-                environments, is_active
+                environments, is_active, resource_profile
          FROM pipelines WHERE id = ?",
     )
     .bind(pipeline_id)
@@ -1155,6 +1155,12 @@ pub async fn do_trigger(
     let team_id: String = pipeline.get(8);
     let declared_environments: Vec<String> =
         serde_json::from_str(&pipeline.get::<String, _>(9)).unwrap_or_default();
+    // Resource profile requested by `runner.resources`. The authorization
+    // subject is the job's resolved team (the same team used for dispatch and
+    // runner binding). Unauthorized → fail fast before anything is scheduled.
+    let resource_profile: String = pipeline.get::<String, _>(11).trim().to_string();
+    crate::services::resource_grants::ensure_team_may_use(&state.pool, &team_id, &resource_profile)
+        .await?;
     let input_defs: Vec<PipelineInputDef> =
         serde_json::from_str(&input_defs_raw).unwrap_or_default();
     let masking_keys = masking_input_names(&input_defs);
@@ -1486,6 +1492,7 @@ pub async fn do_trigger(
         "pipeline": pipeline_snapshot,
         "team_id": team_id,
         "runner_labels": serde_json::from_str::<Vec<String>>(&runner_labels).unwrap_or_default(),
+        "resource_profile": resource_profile,
         "concurrency_group": concurrency_group,
         "concurrency_mode": effective_concurrency_mode,
         "concurrency_max_queue": concurrency_group
@@ -1554,8 +1561,8 @@ pub async fn do_trigger(
     sqlx::query(
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot,
                            debug_unredact, verbose_logs, environment_id, trigger_user_id,
-                           run_number, run_attempt, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))",
+                           run_number, run_attempt, resource_profile, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), datetime('now'))",
     )
     .bind(&job_id)
     .bind(pipeline_id)
@@ -1568,6 +1575,7 @@ pub async fn do_trigger(
     .bind(environment_id)
     .bind(trigger_user_id)
     .bind(run_number)
+    .bind(&resource_profile)
     .execute(&mut *tx)
     .await?;
     tx.commit()

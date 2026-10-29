@@ -348,7 +348,8 @@ pub async fn get_one(
         "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
                 j.status, j.trigger_by, j.trigger_params, j.snapshot, j.step_statuses, j.retry_times,
                 j.start_time, j.end_time, j.created_at, j.updated_at, j.debug_unredact, j.verbose_logs,
-                j.trigger_user_id, j.run_number, j.run_attempt
+                j.trigger_user_id, j.run_number, j.run_attempt,
+                j.resource_profile, j.resource_slots, j.resource_spec, j.sandbox_instance_id
          FROM jobs j
          LEFT JOIN pipelines p ON j.pipeline_id = p.id
          WHERE j.id = ?",
@@ -405,6 +406,13 @@ pub async fn get_one(
         "run_attempt": r.get::<i64, _>(18),
         "team_id": team_id,
         "approvals": approvals,
+        // Requested profile ('' = default) frozen at trigger; slots/spec and
+        // the dispatching sandbox instance are filled at claim.
+        "resource_profile": r.get::<String, _>(19),
+        "resource_slots": r.get::<i64, _>(20),
+        "resource_spec": serde_json::from_str::<serde_json::Value>(&r.get::<String, _>(21))
+            .unwrap_or(serde_json::json!({})),
+        "sandbox_instance_id": r.get::<String, _>(22),
     }))))
 }
 

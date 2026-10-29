@@ -51,6 +51,25 @@ pub struct SandboxHostDocument {
     pub network: String,
 }
 
+/// Profile name rule shared by the document validator, the ops grant API,
+/// and pipeline YAML (`runner.resources`): `[a-z0-9][a-z0-9-]{0,31}`.
+pub fn validate_profile_name(name: &str) -> Result<(), String> {
+    let name = name.trim();
+    let valid = !name.is_empty()
+        && name.len() <= 32
+        && name
+            .chars()
+            .enumerate()
+            .all(|(i, c)| c.is_ascii_digit() || c.is_ascii_lowercase() || (c == '-' && i > 0));
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "profile name '{name}' is invalid (expected [a-z0-9][a-z0-9-]{{0,31}})"
+        ))
+    }
+}
+
 /// Validate the whole document. `Ok` returns a normalized copy plus
 /// **warnings** (saved, but shown to the operator); `Err` lists hard problems
 /// — the ops API rejects the write, and sandboxd refuses to apply.
@@ -71,16 +90,10 @@ pub fn validate(
     let mut normalized_profiles = BTreeMap::new();
     for (name, profile) in &doc.profiles {
         let name = name.trim();
-        if name != DEFAULT_PROFILE
-            && (name.is_empty()
-                || name.len() > 32
-                || !name.chars().enumerate().all(|(i, c)| {
-                    c.is_ascii_digit() || c.is_ascii_lowercase() || (c == '-' && i > 0)
-                }))
-        {
-            problems.push(format!(
-                "profile name '{name}' is invalid (expected [a-z0-9][a-z0-9-]{{0,31}})"
-            ));
+        if name != DEFAULT_PROFILE {
+            if let Err(problem) = validate_profile_name(name) {
+                problems.push(problem);
+            }
         }
         if let Err(problem) = validate_memory(&profile.memory) {
             problems.push(format!("profile '{name}': {problem}"));
