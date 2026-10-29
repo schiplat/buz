@@ -89,13 +89,11 @@ Precedence: **UI policy > `runner.toml` > built-in default** — but the UI poli
 | `prefer_interfaces` | `runner.toml → [runner]` | Multi-NIC IP ordering | — |
 | `ssh_known_hosts_path` | `runner.toml → [engine]` | Host-key file when policy = `known_hosts` | — |
 | `docker_config_isolation` | `runner.toml → [engine]` | Docker CLI config scope: `per_job` (default) / `shared` | — |
-| `sandbox.supervisor_socket` / `workspace_root` | `runner.toml → [sandbox]` | Local sandboxd Unix socket and workspace allow-root | — |
-| `sandbox.container_image` | `runner.toml → [sandbox]` | Locally provisioned job Container image (pin by digest) | — |
-| `sandbox.firecracker_guest_image` / `firecracker_runtime` | `runner.toml → [sandbox]` | Guest OCI image and host-installed Firecracker-compatible OCI runtime | — |
+| `sandbox.supervisor_socket` / `workspace_root` / `snapshot_path` | `runner.toml → [sandbox]` | Local sandboxd Unix socket, workspace allow-root, observational snapshot | — |
 | `tls_skip_verify` | `runner.toml → [runner]` | TLS verification — **dev only** | — |
 | `standalone` | `runner.toml → [runner]` | Empty-token lab mode — **lab only** | — |
 
-> **Planned change.** A design record — [Sandbox Host Configuration & Resource Profiles](/docs/01-architecture/execution/sandbox-host-configuration/) — proposes moving the `[sandbox]` tier image/runtime keys out of `runner.toml` (and out of `sandboxd.toml`) into Manager-managed sandbox host configuration. Until it ships, the machine-local keys above remain authoritative.
+> **Sandbox host policy is not a config file.** Tier images, OCI runtimes, resource profiles, and the job network are Manager-managed per sandbox host (ops API / Dashboard → Sandbox Hosts); `buz-sandboxd` itself takes only host bootstrap from env. `conf/sandboxd.toml` is gone — see [Sandbox Host Configuration](/docs/01-architecture/execution/sandbox-host-configuration/) and the migration steps in [Configuration](/docs/03-operations/configuration/).
 
 ### 2.2 Policy-managed (Manager UI → Runners — overrides `runner.toml` at job time)
 

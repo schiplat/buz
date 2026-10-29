@@ -4,10 +4,10 @@ weight: 27
 description: "Design record: Manager-managed sandbox host configuration, named resource profiles, quota-aware scheduling, and host/instance identity — replacing sandboxd.toml"
 ---
 
-> **Status: ACCEPTED DESIGN — 2026-10-28. Not implemented.**
-> Until this lands, the current `deploy/conf/sandboxd.toml` behaviour documented in
-> [Configuration](/docs/03-operations/configuration/) remains authoritative. This page is the
-> implementation contract for its replacement; it is not a description of shipped behaviour.
+> **Status: SHIPPED (2026-10-29).** This page is the implementation contract and now describes
+> shipped behavior. See [Configuration](/docs/03-operations/configuration/) → "Sandbox host
+> configuration" for the operator workflow and the migration steps from the retired
+> `conf/sandboxd.toml`. Legacy `runner.toml → [sandbox]` tier keys are ignored on load.
 
 This page records the accepted design for moving sandbox host policy out of host-local files into
 **Manager-managed configuration**, adding **named resource profiles**, and making sandboxed job sizing
@@ -37,8 +37,8 @@ Runner, sandboxd, and hosts end to end.
 
 ## Why
 
-Today the host supervisor is configured by `deploy/conf/sandboxd.toml`, while the Runner's
-`runner.toml → [sandbox]` repeats the same tier images and runtimes. The two files must be kept in
+Before this change the host supervisor was configured by `deploy/conf/sandboxd.toml`, while the
+Runner's `runner.toml → [sandbox]` repeated the same tier images and runtimes. The two files must be kept in
 sync by hand, and the resource envelope is a fixed default (`memory_limit = "2g"`,
 `cpu_limit = "2"`, `--pids-limit 256` hardcoded). There is no per-job sizing, no Manager-side
 visibility, and no way to authorize "large" jobs separately from ordinary ones.

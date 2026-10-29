@@ -47,14 +47,12 @@ max_skew_seconds = 300
 # installed Firecracker-compatible OCI runtime.
 # Sandboxed jobs reject SSH, per-step Docker, registry auth, and host config prep.
 [sandbox]
+# Host-local wiring only: WHERE to reach the supervisor. WHAT to run (tier
+# images, runtimes, resource profiles) is Manager-managed — enroll the sandbox
+# host via the ops API and publish the document there.
 supervisor_socket = "/run/buz-sandboxd/sandboxd.sock"
 workspace_root = "/app/buz/workspace"
-# container_image = "docker.io/library/debian@sha256:<digest>"
-# container_runtime = ""            # empty uses the daemon default (runc)
-# sandbox_image = "docker.io/library/debian@sha256:<digest>"
-# sandbox_runtime = "runsc"          # L2 delivery, e.g. gVisor's OCI runtime
-# firecracker_guest_image = "docker.io/library/debian@sha256:<digest>"
-# firecracker_runtime = "<Firecracker-compatible Docker runtime name>"
+# snapshot_path = "./state/sandboxd.snapshot.json"   # observational copy
 
 [logging]
 level = "info"

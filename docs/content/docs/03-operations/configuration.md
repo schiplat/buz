@@ -168,17 +168,12 @@ token_cache_path = "./state/runner-token" # durable Manager-issued JWT cache
 # docker_config_isolation = "per_job"
 
 [sandbox]
-# Used only when Manager UI → Runners selects a sandboxed tier
-# (container | sandbox | vm). One digest-pinned image per tier.
+# Host-local wiring only (used when Manager UI → Runners selects a sandboxed
+# tier). WHAT runs — tier images, OCI runtimes, resource profiles — is
+# Manager-managed per sandbox host; see "Sandbox host configuration" below.
 supervisor_socket = "/run/buz-sandboxd/sandboxd.sock"
 workspace_root = "/app/buz/workspace"
-# Set to the same immutable image digest configured in sandboxd.toml.
-# container_image = "docker.io/library/debian@sha256:<digest>"
-# container_runtime = ""            # empty uses the Docker daemon default (runc)
-# sandbox_image = "docker.io/library/debian@sha256:<digest>"
-# sandbox_runtime = "runsc"          # L2 userspace-kernel runtime (e.g. gVisor); no KVM needed
-# firecracker_guest_image = "docker.io/library/debian@sha256:<digest>"
-# firecracker_runtime = "<host Docker daemon Firecracker-compatible runtime name>"
+# snapshot_path = "./state/sandboxd.snapshot.json"   # observational copy of the applied document
 
 [clock]
 enabled = true                 # validate this host's clock against the Manager
@@ -193,28 +188,90 @@ level = "info"
 
 The supervisor actively probes every configured sandboxed tier at startup and every five minutes by creating, starting, executing in, and removing a short-lived digest-pinned image — independent of the tier currently selected for the Runner, so switching tiers never waits for a first probe. Capability results, failure reasons, and the delivering OCI runtime name are reported on heartbeat and displayed in Runner details. Tier prerequisites: Container needs a Docker daemon; Sandbox needs Linux and a userspace-kernel OCI runtime (e.g. `runsc`) but no `/dev/kvm`; VM requires Linux, readable `/dev/kvm`, and a successfully exercised Firecracker-compatible OCI runtime — this is host-provided runtime delegation, not Buz-managed Firecracker/jailer. The Manager allows selecting a sandboxed tier only when the Runner is online and its capability check is no older than five minutes. A real job re-checks the tier prerequisites at start and fails closed if the host drifted after the probe; the system never auto-selects, upgrades, or downgrades the tier — that is the operator's choice in the Manager UI.
 
-The optional host-side `buz-sandboxd` service uses a separate `conf/sandboxd.toml` (not the Runner policy file). It must share the same workspace volume as Runner and be permissioned to accept only the Runner UID. In Compose, build/start the `sandboxd` profile and keep its Docker socket private; Docker-daemon access is host-root-equivalent. Set the pinned `container_image`, and per tier you want to enable: for the Sandbox tier the digest-pinned `sandbox_image` plus a userspace-kernel runtime (e.g. `runsc` registered with the Docker daemon — Linux required, no KVM), for the VM tier the digest-pinned `firecracker_guest_image` plus a Firecracker-compatible runtime registered with the Docker daemon (Linux KVM required). Buz does not bundle any runtime, guest kernel/image, or configure KVM for you.
+## Sandbox host configuration
 
-`sandboxd.instance_id` must be unique per sandboxd deployment sharing one Docker daemon. On startup sandboxd refuses to take over a socket whose live peer answers a `health` probe, removes stale sockets only when nothing is listening, and force-removes leftover `buz.sandboxd.managed=true` containers carrying its own `buz.sandboxd.instance=<id>` label — it never touches other instances' containers. Compose sets the id via `BUZ_SANDBOXD_INSTANCE_ID` (default `compose-sandboxd`) and exposes `/dev/kvm` to sandboxd only through the optional `docker-compose.vm.yml` override (`docker compose -f docker/docker-compose.yml -f docker/docker-compose.vm.yml --profile sandbox up -d`), because the default Compose path cannot reach the host KVM device. The container image ships a `buz-sandboxd --healthcheck` subcommand used as the Compose healthcheck; the Runner waits for it via an optional `depends_on` condition, so Host-only deployments are unaffected.
+The host-side `buz-sandboxd` supervisor has **no config file**. It takes only host bootstrap from
+flags/environment and pulls its **policy** — resource profiles, tier images and OCI runtimes, job
+network — from the Manager over HTTPS with a per-instance token. The Manager is the single source
+of truth; sandboxd validates each document, applies it atomically, and caches the last good one
+root-owned so it can serve jobs through a Manager outage. Until a document has been applied,
+`create_job` is refused while `--healthcheck` keeps passing (there is no built-in default image or
+envelope). Design record: [Sandbox Host Configuration & Resource Profiles](/docs/01-architecture/execution/sandbox-host-configuration/).
 
-Example:
+### Bootstrap (env / flags)
 
-```toml
-[sandboxd]
-instance_id = "sandboxd-01"
-socket = "/run/buz-sandboxd/sandboxd.sock"
-workspace_root = "/app/buz/workspace"
-workspace_volume = "buz-runner-ws"
-allowed_runner_uid = 10001
-container_image = "docker.io/library/debian@sha256:<digest>"
-container_runtime = ""                                   # empty → daemon default (runc)
-sandbox_image = "docker.io/library/debian@sha256:<digest>"
-sandbox_runtime = "runsc"                                # L2 userspace-kernel runtime
-firecracker_guest_image = "docker.io/library/debian@sha256:<digest>"
-firecracker_runtime = "<runtime configured in Docker daemon>"
-```
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `BUZ_MANAGER_URL` | — | Manager base URL. Empty = offline: cache only, no updates. |
+| `BUZ_MANAGER_INSTANCE_ID` | — | Pin the owning control plane (`GET /api/v1/meta`); a response from another Manager is rejected. Recommended in production. |
+| `BUZ_SANDBOXD_TOKEN_FILE` | — | File (`0400`) holding the enrollment token (`buzsd_…`). Preferred over `BUZ_SANDBOXD_TOKEN`. |
+| `BUZ_HOST_ID` | machine-id → hostname | Host identity shared with the Runner on this machine. Set it explicitly in containers/VM templates (clones share machine-ids). |
+| `BUZ_SANDBOXD_INSTANCE_ID` | `sandboxd-<host_id>` | Unique per Docker daemon; labels containers for stale cleanup. |
+| `BUZ_SANDBOXD_SOCKET` | `/run/buz-sandboxd/sandboxd.sock` | Unix socket the Runner connects to. |
+| `BUZ_SANDBOXD_WORKSPACE_ROOT` / `_WORKSPACE_VOLUME` | `/var/lib/buz/workspaces` / — | Job workspace root; the named volume in Compose. |
+| `BUZ_SANDBOXD_ALLOWED_RUNNER_UID` / `_SOCKET_GID` | — / `10001` | Only this UID may connect; socket group. |
+| `BUZ_SANDBOXD_DOCKER_CLI` | `/usr/bin/docker` | Docker CLI used to drive the daemon. |
+| `BUZ_SANDBOXD_STATE_DIR` | `/var/lib/buz-sandboxd` | Root-owned last-known-good cache. |
+| `BUZ_SANDBOXD_TLS_SKIP_VERIFY` | `false` | Labs only. |
 
-> **Planned replacement.** A design record — [Sandbox Host Configuration & Resource Profiles](/docs/01-architecture/execution/sandbox-host-configuration/) — moves this policy out of `sandboxd.toml` into Manager-managed configuration with named resource profiles. It is **not implemented yet**; the file-based workflow above remains current.
+### Enroll and publish
+
+1. **Enroll** the `(host_id, instance_id)` pair (ops or admin): `POST /api/v1/ops/sandbox-hosts`
+   or Dashboard → Sandbox Hosts → Enroll. The response shows the token **once**; store it in the
+   token file on the host. Re-enrolling or `POST …/token/rotate` replaces it.
+2. **Publish a document** (`PUT /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/config`,
+   `If-Match: <desired_version>`), or edit it in the Dashboard. `default` must exist; every profile
+   has `memory`, `cpu`, `pids`, `slots`; tier images must be digest-pinned. `POST …/validate` dry-runs.
+
+   ```json
+   {
+     "profiles": {
+       "default": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 },
+       "large":   { "memory": "8g", "cpu": "4", "pids": 512, "slots": 4 }
+     },
+     "tiers": {
+       "container": { "image": "docker.io/library/debian@sha256:<digest>", "runtime": "" },
+       "sandbox":   { "image": "docker.io/library/debian@sha256:<digest>", "runtime": "runsc" },
+       "vm":        { "image": "docker.io/library/debian@sha256:<digest>", "runtime": "<firecracker-compatible runtime>" }
+     },
+     "network": "bridge"
+   }
+   ```
+3. **Watch it apply**: sandboxd long-polls (`Prefer: wait=30`) and applies within about a second;
+   `applied_version` on the host record (and the Runner heartbeat's `sandboxd` block) confirms it.
+   Running containers keep the limits they were created with; new containers use the new document.
+4. **Grant profiles**: `default` is implicit for every team. Grant others with
+   `PUT /api/v1/ops/resource-grants {team_id, profile}`. Pipelines request one with
+   `runner.resources: large`; an ungranted request fails at trigger, and a grant revoked while a job
+   is queued fails that job at claim.
+
+Capacity is two gates: `max_concurrent_jobs` per Runner (job count) and `max_resource_slots` per
+sandbox host (summed over running jobs across every Runner on that host). A `large` job with
+`slots = 4` consumes four units. Each Runner walks its queue by `claim_strategy`: `backfill`
+(default) skips jobs that do not fit; `fifo` claims nothing while the oldest eligible job does not
+fit. Pending jobs show *why* they wait (`dispatch_reason`).
+
+Platform settings: `sandbox_config_require_approval` (two-person approval, default off),
+`sandbox_config_history_retention_days` (30), `sandbox_config_poll_seconds` (30),
+`sandbox_config_dispatch_stale_after_seconds` (300 — a host lagging the desired version longer than
+this stops receiving non-default profiles).
+
+### Migrating from `sandboxd.toml`
+
+This is a coordinated, breaking release: upgrade Manager, Runner, and sandboxd binaries together
+(drain jobs first). Then, per host:
+
+1. Enroll the host and save the token file.
+2. Translate the old file: `container_image`/`container_runtime` → `tiers.container`,
+   `sandbox_*` → `tiers.sandbox`, `firecracker_*` → `tiers.vm`, `container_network` → `network`,
+   `memory_limit`/`cpu_limit` → `profiles.default` (add `pids: 256`, `slots: 1`). Publish it.
+3. Replace `--config conf/sandboxd.toml` with the bootstrap env above (Compose:
+   `BUZ_MANAGER_URL`, `BUZ_SANDBOXD_TOKEN_HOST_PATH`, `BUZ_HOST_ID`, `BUZ_SANDBOXD_INSTANCE_ID`);
+   delete the file. `runner.toml → [sandbox]` tier keys are ignored on load and can be removed.
+4. Set `max_resource_slots` on the host record once you want slot-aware dispatch; `0` leaves the
+   budget unlimited (default-profile behavior is unchanged).
+
+`BUZ_SANDBOXD_INSTANCE_ID` must be unique per Docker daemon. On startup sandboxd refuses to take over a socket whose live peer answers a `health` probe, removes stale sockets only when nothing is listening, and force-removes leftover `buz.sandboxd.managed=true` containers carrying its own `buz.sandboxd.instance=<id>` label — it never touches other instances' containers. Compose exposes `/dev/kvm` to sandboxd only through the optional `docker-compose.vm.yml` override (`docker compose -f docker/docker-compose.yml -f docker/docker-compose.vm.yml --profile sandbox up -d`), because the default Compose path cannot reach the host KVM device. The container image ships a `buz-sandboxd --healthcheck` subcommand used as the Compose healthcheck; the Runner waits for it via an optional `depends_on` condition, so Host-only deployments are unaffected.
 
 All sandboxed tiers currently support local shell steps only: SSH, per-step Docker engine, registry-auth handoff, and host-side config preparation are rejected before the job starts. See [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes) for the full compatibility/security boundary and [Sandbox Isolation Tiers](/docs/01-architecture/execution/sandbox-isolation-tiers/) for the tier model.
 
