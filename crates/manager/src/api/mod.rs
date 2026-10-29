@@ -27,6 +27,7 @@ pub mod openapi;
 pub mod ops_sandbox;
 pub mod plugin_sources;
 pub mod plugins;
+pub mod sandboxd_config;
 pub mod secrets;
 pub mod settings;
 pub mod teams;
@@ -86,6 +87,9 @@ pub fn router(state: AppState) -> Router {
             "/ops/resource-grants/{team_id}/{profile}",
             delete(ops_sandbox::delete_grant),
         )
+        // sandboxd-facing (per-instance buzsd_ token): long-poll config + status
+        .route("/sandboxd/config", get(sandboxd_config::get_config))
+        .route("/sandboxd/status", post(sandboxd_config::report_status))
         // Auth (public)
         .route("/auth/login", post(auth::login))
         .route("/auth/setup-status", get(auth::setup_status))

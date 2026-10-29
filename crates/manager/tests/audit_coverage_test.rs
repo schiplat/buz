@@ -224,6 +224,10 @@ const INTENTIONALLY_UNAUDITED: &[(&str, &str)] = &[
         "dry-run config validation: mutates nothing (results come back in the response)",
     ),
     (
+        "POST /api/v1/sandboxd/status",
+        "sandboxd-reported applied version/health: machine telemetry on every poll",
+    ),
+    (
         "POST /api/v1/hooks/git/{provider}/{hook_key}",
         "inbound git webhook (no actor); the pipelines it triggers are audited",
     ),

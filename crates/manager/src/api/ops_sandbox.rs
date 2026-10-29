@@ -183,6 +183,8 @@ async fn apply_document(
     .bind(instance_id)
     .execute(pool)
     .await?;
+    // Wake every sandboxd long-poll; each re-checks its own desired version.
+    crate::services::sandbox_config_events::wake_all();
     Ok(version)
 }
 

@@ -113,6 +113,48 @@ impl FromRequestParts<AppState> for RunnerClaims {
     }
 }
 
+/// Authenticated sandboxd instance, resolved from its opaque `buzsd_…` bearer
+/// token (SHA-256 looked up in `sandbox_hosts.token_hash`). Scoped to exactly
+/// one `(host_id, instance_id)`: the token can fetch that host's configuration
+/// and report its status — nothing else. It is never a user and never a Runner.
+#[derive(Debug, Clone)]
+pub struct SandboxdClaims {
+    pub host_id: String,
+    pub instance_id: String,
+}
+
+impl FromRequestParts<AppState> for SandboxdClaims {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let token = extract_bearer(parts)?;
+        if !token.starts_with("buzsd_") {
+            return Err(forbidden_err("sandboxd token required"));
+        }
+        let token_hash = shared::api_token::hash_token(token);
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT host_id, instance_id FROM sandbox_hosts WHERE token_hash = ? AND token_hash != ''",
+        )
+        .bind(&token_hash)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("sandboxd token lookup failed: {e}");
+            auth_err("invalid or revoked token")
+        })?;
+        let Some((host_id, instance_id)) = row else {
+            return Err(auth_err("invalid or revoked token"));
+        };
+        Ok(SandboxdClaims {
+            host_id,
+            instance_id,
+        })
+    }
+}
+
 #[allow(clippy::result_large_err)] // Axum extractors commonly use Response as Err
 fn extract_bearer(parts: &Parts) -> Result<&str, Response> {
     let header = parts
