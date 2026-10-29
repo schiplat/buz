@@ -697,7 +697,6 @@ async fn sandbox_mode_fails_closed_when_supervisor_is_unavailable() {
     };
     config.runner.workspace_dir = workspace.to_string_lossy().into_owned();
     config.sandbox.workspace_root = dir.path().to_string_lossy().into_owned();
-    config.sandbox.container_image = "job-image@sha256:abc".into();
     config.sandbox.supervisor_socket = dir
         .path()
         .join("missing.sock")

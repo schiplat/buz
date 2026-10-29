@@ -409,6 +409,12 @@ pub struct SystemInfo {
     /// Host-verified support for job-wide sandbox backends. Absent on older Runners.
     #[serde(default)]
     pub execution_capabilities: Option<RunnerExecutionCapabilities>,
+    /// Sandbox supervisor status block (identity, applied config version/hash,
+    /// profiles, manager reachability, snapshot state). Present only when the
+    /// Runner runs a sandboxed tier; the shape is owned by the Runner and kept
+    /// as JSON so adding a field never breaks older Managers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandboxd: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

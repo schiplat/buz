@@ -74,10 +74,6 @@ pub struct Response {
     /// Effective profile name for a created job.
     #[serde(default)]
     pub profile: String,
-    /// Everything else (status block, get_config document) — kept raw so the
-    /// Runner forwards it without re-modelling every field.
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -266,14 +262,22 @@ pub async fn probe_capabilities(
 
 /// Supervisor status block (identity, applied version/hash, profiles, load).
 pub async fn status(config: &SandboxSection) -> anyhow::Result<Value> {
-    let response = request(config, Request::Status {}).await?;
-    Ok(Value::Object(response.extra))
+    request_raw(
+        config,
+        Request::Status {},
+        Duration::from_secs(config.request_timeout_seconds.max(1)),
+    )
+    .await
 }
 
 /// Full applied document plus version/hash metadata.
 pub async fn get_config(config: &SandboxSection) -> anyhow::Result<Value> {
-    let response = request(config, Request::GetConfig {}).await?;
-    Ok(Value::Object(response.extra))
+    request_raw(
+        config,
+        Request::GetConfig {},
+        Duration::from_secs(config.request_timeout_seconds.max(1)),
+    )
+    .await
 }
 
 pub async fn read_job_file(
@@ -312,6 +316,19 @@ async fn request_with_timeout(
     request: Request<'_>,
     timeout: Duration,
 ) -> anyhow::Result<Response> {
+    let raw = request_raw(config, request, timeout).await?;
+    let response: Response = serde_json::from_value(raw)?;
+    Ok(response)
+}
+
+/// One request/response round trip returning the raw JSON object. Used for
+/// `status` / `get_config`, whose shape the supervisor owns and the Runner
+/// forwards verbatim (heartbeat block, snapshot).
+async fn request_raw(
+    config: &SandboxSection,
+    request: Request<'_>,
+    timeout: Duration,
+) -> anyhow::Result<Value> {
     #[cfg(not(unix))]
     anyhow::bail!("sandbox supervisor Unix socket is only supported on Unix hosts");
 
@@ -333,8 +350,12 @@ async fn request_with_timeout(
             !line.is_empty(),
             "sandbox supervisor closed without a response"
         );
-        let response: Response = serde_json::from_str(&line)?;
-        anyhow::ensure!(response.ok, "sandbox supervisor: {}", response.error);
-        Ok(response)
+        let raw: Value = serde_json::from_str(&line)?;
+        anyhow::ensure!(
+            raw["ok"].as_bool() == Some(true),
+            "sandbox supervisor: {}",
+            raw["error"].as_str().unwrap_or("request failed")
+        );
+        Ok(raw)
     }
 }

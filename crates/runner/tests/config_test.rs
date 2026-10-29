@@ -218,7 +218,7 @@ docker_config_isolation = "global"
 }
 
 #[test]
-fn defaults_are_host_mode_with_no_sandbox_backends() {
+fn defaults_are_host_mode_with_local_sandbox_wiring_only() {
     let raw = r#"
 [runner]
 name = "r"
@@ -230,53 +230,38 @@ register_token = "tok"
         cfg.execution_mode,
         shared::protocol::RunnerExecutionMode::Host
     );
-    let backends = cfg.sandbox.backends();
-    for mode in shared::protocol::RunnerExecutionMode::ALL {
-        match mode.is_sandboxed() {
-            true => assert!(
-                !backends.get(mode).unwrap().is_configured(),
-                "{mode:?} must be unconfigured by default"
-            ),
-            false => assert!(backends.get(mode).is_none()),
-        }
-    }
+    assert_eq!(
+        cfg.sandbox.supervisor_socket,
+        "/run/buz-sandboxd/sandboxd.sock"
+    );
+    assert_eq!(cfg.sandbox.snapshot_path, "./state/sandboxd.snapshot.json");
+    assert_eq!(cfg.sandbox.request_timeout_seconds, 30);
 }
 
 #[test]
-fn sandbox_section_maps_each_tier_to_its_image_and_runtime() {
+fn sandbox_section_keeps_only_host_local_wiring_and_ignores_legacy_tier_keys() {
+    // Tier images/runtimes are Manager-managed now; a runner.toml that still
+    // carries them must load (ignored), not fail, so operators can upgrade
+    // binaries before cleaning configs.
     let raw = r#"
 [runner]
 name = "r"
 register_token = "tok"
 
 [sandbox]
+supervisor_socket = "/tmp/sbx.sock"
+workspace_root = "/srv/ws"
+snapshot_path = "/var/lib/buz/sandboxd.snapshot.json"
 container_image = "reg/job@sha256:aaa"
-container_runtime = ""
-sandbox_image = "reg/sbx@sha256:bbb"
 sandbox_runtime = "runsc"
 firecracker_guest_image = "reg/vm@sha256:ccc"
-firecracker_runtime = "kata-fc"
 "#;
     let dir = tempfile::tempdir().unwrap();
     let cfg = load(Some(&write_config(&dir, raw))).unwrap();
-    let backends = cfg.sandbox.backends();
-
-    assert!(backends
-        .get(shared::protocol::RunnerExecutionMode::Host)
-        .is_none());
-    let container = backends
-        .get(shared::protocol::RunnerExecutionMode::Container)
-        .unwrap();
-    assert_eq!(container.image, "reg/job@sha256:aaa");
-    assert!(container.runtime().is_none(), "container defaults to runc");
-    let sandbox = backends
-        .get(shared::protocol::RunnerExecutionMode::Sandbox)
-        .unwrap();
-    assert_eq!(sandbox.image, "reg/sbx@sha256:bbb");
-    assert_eq!(sandbox.runtime(), Some("runsc"));
-    let vm = backends
-        .get(shared::protocol::RunnerExecutionMode::Vm)
-        .unwrap();
-    assert_eq!(vm.image, "reg/vm@sha256:ccc");
-    assert_eq!(vm.runtime(), Some("kata-fc"));
+    assert_eq!(cfg.sandbox.supervisor_socket, "/tmp/sbx.sock");
+    assert_eq!(cfg.sandbox.workspace_root, "/srv/ws");
+    assert_eq!(
+        cfg.sandbox.snapshot_path,
+        "/var/lib/buz/sandboxd.snapshot.json"
+    );
 }

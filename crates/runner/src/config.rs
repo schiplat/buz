@@ -22,75 +22,39 @@ pub struct Config {
     pub sandbox: SandboxSection,
 }
 
-/// `[sandbox]` — machine-local backends for the sandboxed execution tiers.
+/// `[sandbox]` — host-local wiring to the sandbox supervisor.
 ///
-/// One digest-pinned image plus an optional OCI runtime per tier; see
-/// [`crate::sandbox::backend`] for how they become per-tier descriptors.
+/// Only *where* to reach the supervisor; *what* to run (tier images, runtimes,
+/// resource profiles) is the Manager's applied document — see the
+/// sandbox-host-configuration design record. Old configs' `container_image` /
+/// `sandbox_runtime` / `firecracker_*` keys are ignored on load.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SandboxSection {
     /// Local socket exposed by the privileged, host-side buz-sandboxd service.
     #[serde(default = "default_sandbox_socket")]
     pub supervisor_socket: String,
-    /// Digest-pinned job image for the Container tier (L1).
-    #[serde(default)]
-    pub container_image: String,
-    /// OCI runtime for the Container tier; empty uses the daemon default (runc).
-    #[serde(default)]
-    pub container_runtime: String,
-    /// Digest-pinned job image for the Sandbox tier (L2, userspace kernel).
-    #[serde(default)]
-    pub sandbox_image: String,
-    /// OCI runtime delivering the Sandbox tier, e.g. `runsc`.
-    #[serde(default)]
-    pub sandbox_runtime: String,
-    /// Digest-pinned guest image for the VM tier (L3).
-    #[serde(default)]
-    pub firecracker_guest_image: String,
-    /// Firecracker-compatible OCI runtime delivering the VM tier.
-    #[serde(default)]
-    pub firecracker_runtime: String,
     /// Workspace root accepted by the host-side supervisor.
     #[serde(default = "default_workspace_dir")]
     pub workspace_root: String,
     #[serde(default = "default_sandbox_timeout")]
     pub request_timeout_seconds: u64,
+    /// Observational copy of sandboxd's applied configuration. Written (0600,
+    /// atomic) only when the applied hash changes; never read by sandboxd.
+    #[serde(default = "default_sandbox_snapshot_path")]
+    pub snapshot_path: String,
 }
 
-impl SandboxSection {
-    /// Per-tier backend table for this Runner's host configuration.
-    pub fn backends(&self) -> crate::sandbox::backend::TierBackends {
-        crate::sandbox::backend::TierBackends::from_tiers([
-            (
-                RunnerExecutionMode::Container,
-                &self.container_image,
-                &self.container_runtime,
-            ),
-            (
-                RunnerExecutionMode::Sandbox,
-                &self.sandbox_image,
-                &self.sandbox_runtime,
-            ),
-            (
-                RunnerExecutionMode::Vm,
-                &self.firecracker_guest_image,
-                &self.firecracker_runtime,
-            ),
-        ])
-    }
+fn default_sandbox_snapshot_path() -> String {
+    "./state/sandboxd.snapshot.json".into()
 }
 
 impl Default for SandboxSection {
     fn default() -> Self {
         Self {
             supervisor_socket: default_sandbox_socket(),
-            container_image: String::new(),
-            container_runtime: String::new(),
-            sandbox_image: String::new(),
-            sandbox_runtime: String::new(),
-            firecracker_guest_image: String::new(),
-            firecracker_runtime: String::new(),
             workspace_root: default_workspace_dir(),
             request_timeout_seconds: default_sandbox_timeout(),
+            snapshot_path: default_sandbox_snapshot_path(),
         }
     }
 }

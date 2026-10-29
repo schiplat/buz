@@ -97,6 +97,7 @@ async fn run_loop(mut config: config::Config) -> anyhow::Result<()> {
                 prefer_interfaces: config.runner.prefer_interfaces.clone(),
                 clock_skew_seconds: clock_monitor.skew_secs(),
                 execution_capabilities: None,
+                sandboxd: None,
             },
         );
         tracing::info!(

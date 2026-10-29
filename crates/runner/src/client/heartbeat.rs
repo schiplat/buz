@@ -19,7 +19,26 @@ pub async fn run_heartbeat_loop(
 ) {
     let mut capabilities = probe_execution_capabilities(config).await;
     let mut last_capability_check = std::time::Instant::now();
+    // Observes sandboxd's applied configuration every heartbeat (cheap
+    // `status`), maintains the observational snapshot, and tells us when
+    // the config version changed so capabilities are re-probed at once
+    // instead of on the 5-minute cadence.
+    let mut observer = crate::client::sandbox_snapshot::Observer::default();
     loop {
+        let sandboxd_block = if policy::snapshot(&shared_policy)
+            .execution_mode
+            .is_sandboxed()
+        {
+            let observation = observer.observe(config).await;
+            if observation.config_changed {
+                tracing::info!("sandboxd configuration changed; re-probing capabilities");
+                capabilities = probe_execution_capabilities(config).await;
+                last_capability_check = std::time::Instant::now();
+            }
+            Some(observation.block)
+        } else {
+            None
+        };
         if last_capability_check.elapsed() >= std::time::Duration::from_secs(300) {
             capabilities = probe_execution_capabilities(config).await;
             last_capability_check = std::time::Instant::now();
@@ -34,6 +53,7 @@ pub async fn run_heartbeat_loop(
                 prefer_interfaces: config.runner.prefer_interfaces.clone(),
                 clock_skew_seconds: clock_monitor.skew_secs(),
                 execution_capabilities: Some(capabilities.clone()),
+                sandboxd: sandboxd_block,
             },
         );
 
