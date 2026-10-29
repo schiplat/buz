@@ -29,6 +29,16 @@ export interface Job {
   run_attempt?: number
   /** Append-only approval trail (approve/reject/cancel/timeout). */
   approvals?: JobApprovalRecord[]
+  /** Requested resource profile ('' = default), frozen at trigger. */
+  resource_profile?: string
+  /** Slots the dispatching sandbox host billed (claim time). */
+  resource_slots?: number
+  /** Effective envelope snapshot from the host's applied document. */
+  resource_spec?: { memory?: string; cpu?: string; pids?: number; slots?: number } | null
+  /** `host_id/instance_id` of the sandboxd that ran (or will run) this job. */
+  sandbox_instance_id?: string
+  /** Why the last poller skipped this job while pending; cleared on claim. */
+  dispatch_reason?: string
 }
 
 export interface JobApprovalRecord {

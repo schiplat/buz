@@ -103,6 +103,7 @@ const editShellEnabled = ref(true)
 const editSshEnabled = ref(true)
 const editDockerEnabled = ref(false)
 const editSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
+const editClaimStrategy = ref<'backfill' | 'fifo'>('backfill')
 const editTeamId = ref('shared')
 const editExecutionMode = ref<RunnerExecutionMode>('host')
 const savingPolicy = ref(false)
@@ -171,6 +172,7 @@ function openDetail(r: Runner) {
   editSshEnabled.value = r.ssh_enabled !== false
   editDockerEnabled.value = !!r.docker_enabled
   editSshHostKeyPolicy.value = r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure'
+  editClaimStrategy.value = r.claim_strategy === 'fifo' ? 'fifo' : 'backfill'
   editTeamId.value = r.team_id ?? 'shared'
   editExecutionMode.value = r.execution_mode ?? 'host'
   openFolds.value = { loopback: false, bridge: false, tunnel: false, virtual: false }
@@ -267,7 +269,8 @@ function policyDirty(): boolean {
     editShellEnabled.value !== (r.shell_enabled !== false) ||
     editSshEnabled.value !== (r.ssh_enabled !== false) ||
     editDockerEnabled.value !== !!r.docker_enabled ||
-    editSshHostKeyPolicy.value !== (r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure')
+    editSshHostKeyPolicy.value !== (r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure') ||
+    editClaimStrategy.value !== (r.claim_strategy === 'fifo' ? 'fifo' : 'backfill')
   )
 }
 
@@ -287,6 +290,7 @@ async function savePolicy() {
       ssh_enabled: editSshEnabled.value,
       docker_enabled: editDockerEnabled.value,
       ssh_host_key_policy: editSshHostKeyPolicy.value,
+      claim_strategy: editClaimStrategy.value,
     })
     activeRunner.value = { ...activeRunner.value, ...updated }
     editLabels.value = (updated.labels || []).join(', ')
@@ -901,6 +905,12 @@ const eventBadge = (t: string) => {
                   running {{ activeRunner.running_jobs ?? 0 }} / max {{ activeRunner.max_concurrent_jobs ?? 1 }}
                 </span>
               </div>
+              <div v-if="activeRunner.host_id || activeRunner.sandbox_instance_id" class="text-[11px] text-muted-foreground">
+                Execution host
+                <code class="font-mono text-[10px]">{{ activeRunner.host_id || '—' }}</code> · sandboxd
+                <code class="font-mono text-[10px]">{{ activeRunner.sandbox_instance_id || '—' }}</code>
+                · claim order <span class="font-medium">{{ activeRunner.claim_strategy === 'fifo' ? 'fifo' : 'backfill' }}</span>
+              </div>
               <label class="flex items-start gap-2 text-xs cursor-pointer">
                 <input v-model="editCleanWorkspace" type="checkbox" class="rounded-sm border-border mt-0.5" />
                 <span>
@@ -942,6 +952,16 @@ const eventBadge = (t: string) => {
                 >
                   <option value="insecure">insecure (accept any)</option>
                   <option value="known_hosts">known_hosts</option>
+                </select>
+              </div>
+              <div class="flex items-center gap-2">
+                <label class="text-xs text-muted-foreground w-28 shrink-0">Claim order</label>
+                <select
+                  v-model="editClaimStrategy"
+                  class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs outline-hidden focus:border-ring/40"
+                >
+                  <option value="backfill">backfill (skip jobs that do not fit)</option>
+                  <option value="fifo">fifo (strict order within eligible set)</option>
                 </select>
               </div>
               <div class="flex justify-end pt-1">

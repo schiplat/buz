@@ -61,6 +61,8 @@ export interface RunnerPolicy {
   wasm_enabled: boolean
   /** `insecure` | `known_hosts` */
   ssh_host_key_policy: string
+  /** `backfill` (default) | `fifo` — queue walk when a job does not fit the host slot budget */
+  claim_strategy: string
 }
 
 export interface Runner {
@@ -82,8 +84,15 @@ export interface Runner {
   docker_enabled?: boolean
   wasm_enabled?: boolean
   ssh_host_key_policy?: string
+  /** `backfill` (default) | `fifo` — queue walk on slot budget misses. */
+  claim_strategy?: string
   /** Currently running jobs on this runner. */
   running_jobs?: number
+  /** Execution-host identities reported via register/heartbeat. */
+  host_id?: string
+  runner_instance_id?: string
+  /** sandboxd instance this runner is attached to (heartbeat-derived). */
+  sandbox_instance_id?: string
   last_seen: string | null
   created_at: string
   updated_at: string

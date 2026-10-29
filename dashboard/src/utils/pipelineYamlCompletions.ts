@@ -35,6 +35,11 @@ const TRIGGER: Completion[] = [
 const RUNNER: Completion[] = [
   { label: 'labels', type: 'property', info: 'Runner must match ALL labels' },
   { label: 'timeout', type: 'property', info: 'e.g. 60m' },
+  {
+    label: 'resources',
+    type: 'property',
+    info: 'Resource profile NAME (default | granted tier); the envelope lives on the sandbox host',
+  },
 ]
 
 const CONCURRENCY: Completion[] = [

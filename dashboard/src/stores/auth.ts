@@ -11,6 +11,8 @@ export const useAuthStore = defineStore('auth', () => {
   const userId = ref<string | null>(localStorage.getItem('buz_user_id'))
   const isPlatformAdmin = ref(localStorage.getItem('buz_is_admin') === '1')
   const isSuperAdmin = ref(localStorage.getItem('buz_is_super_admin') === '1')
+  /** Platform-ops user: sandbox host administration (admin implies ops). */
+  const isOps = ref(localStorage.getItem('buz_is_ops') === '1')
   const teams = ref<TeamMembership[]>([])
 
   /** Empty string = All my teams. Persisted across reloads. */
@@ -98,6 +100,8 @@ export const useAuthStore = defineStore('auth', () => {
       userId.value = me.id
       username.value = me.username
       isPlatformAdmin.value = me.is_platform_admin
+      isOps.value = !!me.is_ops || me.is_platform_admin
+      localStorage.setItem('buz_is_ops', isOps.value ? '1' : '0')
       isSuperAdmin.value = !!me.is_super_admin
       teams.value = me.teams || []
       localStorage.setItem('buz_user_id', me.id)
@@ -115,6 +119,8 @@ export const useAuthStore = defineStore('auth', () => {
     username.value = null
     userId.value = null
     isPlatformAdmin.value = false
+    isOps.value = false
+    localStorage.removeItem('buz_is_ops')
     isSuperAdmin.value = false
     teams.value = []
     localStorage.removeItem('buz_token')
@@ -132,6 +138,7 @@ export const useAuthStore = defineStore('auth', () => {
     username,
     userId,
     isPlatformAdmin,
+    isOps,
     isSuperAdmin,
     teams,
     activeTeamId,

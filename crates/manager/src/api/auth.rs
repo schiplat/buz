@@ -225,6 +225,7 @@ pub async fn me(auth: AuthUser) -> Result<Json<ApiResponse<serde_json::Value>>, 
         "username": auth.username,
         "is_platform_admin": auth.is_platform_admin,
         "is_super_admin": auth.is_super_admin,
+        "is_ops": auth.is_ops,
         "teams": teams,
     }))))
 }

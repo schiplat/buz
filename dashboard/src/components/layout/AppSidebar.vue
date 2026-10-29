@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import {Box,
+import {
+  Box,
+  Boxes,
   EyeOff,
   Globe,
   KeyRound,
@@ -32,6 +34,7 @@ type NavLink = {
   icon: typeof OverviewIcon
   to: string
   adminOnly?: boolean
+  opsOnly?: boolean
 }
 
 type NavSection = {
@@ -46,6 +49,7 @@ const allEntries: NavEntry[] = [
   { kind: 'section', label: 'Infrastructure' },
   { kind: 'link', name: 'runners', label: 'Runners', icon: Server, to: '/runners', adminOnly: true },
   { kind: 'link', name: 'hosts', label: 'Hosts', icon: Globe, to: '/hosts' },
+  { kind: 'link', name: 'sandbox-hosts', label: 'Sandbox Hosts', icon: Boxes, to: '/sandbox-hosts', opsOnly: true },
   { kind: 'link', name: 'environments', label: 'Environments', icon: Layers, to: '/environments' },
   { kind: 'link', name: 'secrets-variables', label: 'Secrets & Variables', icon: EyeOff, to: '/secrets-variables' },
   { kind: 'link', name: 'plugin-library', label: 'Plugins', icon: Package, to: '/plugin-library', adminOnly: true },
@@ -62,6 +66,7 @@ const entries = computed(() =>
   allEntries.filter((e) => {
     if (e.kind === 'section') return true
     if (e.adminOnly && !auth.isPlatformAdmin) return false
+    if (e.opsOnly && !auth.isOps && !auth.isPlatformAdmin) return false
     return true
   }),
 )

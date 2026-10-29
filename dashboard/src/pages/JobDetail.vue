@@ -955,6 +955,20 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
             <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Retry</div>
             <div class="font-mono text-sm tabular-nums text-foreground/80">{{ job.retry_times }}</div>
           </div>
+          <div v-if="job.resource_profile">
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Profile</div>
+            <div class="font-mono text-xs text-foreground/80">
+              {{ job.resource_profile }}
+              <span v-if="job.resource_slots" class="text-muted-foreground">({{ job.resource_slots }} slot{{ job.resource_slots > 1 ? 's' : '' }})</span>
+            </div>
+            <div v-if="job.resource_spec" class="text-[10px] text-muted-foreground">
+              {{ job.resource_spec.memory }} · {{ job.resource_spec.cpu }} cpu · pids {{ job.resource_spec.pids }}
+            </div>
+          </div>
+          <div v-if="job.dispatch_reason">
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Dispatch</div>
+            <div class="text-xs text-amber-600">{{ job.dispatch_reason }}</div>
+          </div>
           <div>
             <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Started</div>
             <div class="text-xs text-muted-foreground">{{ formatLocalDateTime(job.start_time) }}</div>
