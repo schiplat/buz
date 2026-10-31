@@ -381,6 +381,8 @@ runner:
 Optional. Comma-separated list in the form, YAML array in the file. The manager dispatches jobs only to runners whose own labels contain **all** of these (AND / intersection match). Empty list matches any runner.
 
 > Labels are capability selectors (`linux-x64`, `gpu`, …), **not** a security boundary. Cross-team execution isolation is controlled by the Runner's team binding (admin-managed): a team-bound Runner only receives this team's jobs regardless of labels. Jobs always run as the Runner's OS user and are not sandboxed from one another.
+>
+> Keep labels capability-named (`linux-x64`, not `sandbox`): isolation tiers are Runner Policy chosen by a platform admin, and never appear in pipeline YAML. See [Runner Policy — Who decides what: the authoring boundary](/docs/01-architecture/execution/runner-concurrent-jobs/#who-decides-what-the-authoring-boundary).
 
 | | |
 |---|---|

@@ -23,6 +23,9 @@ Runner, sandboxd, and hosts end to end.
   key is introduced.
 - **Named profiles** (`memory`, `cpu`, `pids`, `slots`) replace the fixed `memory_limit`/`cpu_limit`
   pair. `default` is reserved and implicitly available to every team.
+- **The profile catalog is fleet-wide** (Platform defaults); a host document is a selection that
+  inherits it wholesale and opts entries out via `exclude_profiles`. A profile name means the same
+  envelope on every host.
 - **Jobs request a profile by name** through `runner.resources`; Manager checks a **team grant** at
   trigger and claim time. Numeric overrides from pipelines are never accepted.
 - **Two capacity limits**: `max_concurrent_jobs` per Runner (process concurrency) and
@@ -57,6 +60,77 @@ large envelopes, and is the host currently enforcing the version we think it is?
 | **Host** | One physical or virtual machine. May run one or more Runners and one or more sandboxd instances. |
 | **Tier** | Isolation boundary: `host`, `container`, `sandbox`, `vm`. See [Sandbox Isolation Tiers](/docs/01-architecture/execution/sandbox-isolation-tiers/). |
 | **Profile** | Named resource envelope: memory, CPU, pids, and scheduling weight. Orthogonal to tier. |
+
+### How tiers, profiles, and host offers interact
+
+Three independent dimensions determine what a job gets when it runs on a
+sandboxed host. Each is controlled at a different level and none can replace
+the others:
+
+```
+Pipeline trigger
+    │
+    ├── Tier          Runner.execution_mode selects the isolation boundary
+    │                 (container / sandbox / vm) — constrained by what the
+    │                 Runner's capability probe reports as supported.
+    │
+    ├── Profile       Pipeline `runner.resources: <name>` selects the resource
+    │                 envelope (memory / cpu / pids / slot weight) — authorized
+    │                 via team-level profile grants.
+    │
+    └── Host offers   The sandbox host's config document declares which tier
+                      images and profiles this machine provides. Dispatch
+                      checks the host actually offers the requested profile.
+```
+
+- **Tier answers "how isolated from the host kernel?"** — a security choice
+  (`container` shares the kernel; `sandbox` uses gVisor; `vm` uses a real
+  guest kernel). Selected per Runner, constrained by probe results.
+- **Profile answers "how much resource does the job get?"** — a capacity
+  choice (memory, CPU, pids). Requested per pipeline, authorized per team.
+- **Host offers answer "can this machine serve the combination?"** — the host
+  offers the whole platform catalog unless its document excludes entries it
+  cannot serve (`exclude_profiles`), and pins whatever tier images it does not
+  inherit. A job whose tier or profile is missing on the selected host fails
+  closed.
+
+```mermaid
+flowchart LR
+    subgraph trigger["Pipeline trigger"]
+        P1["runner.labels"]
+        P2["runner.resources: gpu-8"]
+        P3["environment"]
+    end
+
+    subgraph runner["Runner (fx000)"]
+        MODE["execution_mode\n= sandbox (L2)"]
+        TEAM["team binding\n= team fx"]
+    end
+
+    subgraph host["Sandbox host (web-100)"]
+        TIERS["tiers\ncontainer ✓ · sandbox ✓"]
+        PROFILES["profiles\ndefault · large · gpu-8"]
+        BUDGET["slot budget\n8"]
+    end
+
+    GRANTS["Profile grants\nteam fx → gpu-8"]
+
+    trigger -->|"labels match"| runner
+    runner -->|"claims job"| host
+    MODE -->|"selects tier\n→ sandbox image"| host
+    P2 -->|"requests profile"| GRANTS
+    GRANTS -->|"authorized"| host
+    host -->|"offers profile + tier\n→ create job"| JOB["Job runs in\nsandbox (L2) + gpu-8"]
+```
+
+The three are orthogonal: a `sandbox` tier job can use the `default` profile,
+and a `container` tier job can use `gpu-8`. Neither dimension subsumes the
+other.
+
+The authoring side of this split — what pipeline authors write versus what
+platform admins configure, and why Runner labels use capability vocabulary
+rather than tier names — is described in
+[Runner Policy — Who decides what: the authoring boundary](/docs/01-architecture/execution/runner-concurrent-jobs/#who-decides-what-the-authoring-boundary).
 
 ## Identity model
 
@@ -161,9 +235,23 @@ pids = 512
 slots = 4
 ```
 
-- `default` is reserved and required: operators configure its values, but no other profile may use
-  the name. It is implicitly available to every team. Saving a `default` profile with `slots > 1`
-  should warn: every job that omits `resources` consumes that baseline.
+**The catalog lives in one place: Platform defaults.** Profile names and numbers are defined
+fleet-wide (Manager `sandbox_default_profiles`, edited from the Sandbox hosts page). A name means
+the same thing on every host — a pipeline asking for `large` gets the same envelope regardless of
+which machine picks up the job. Host documents do not restate the catalog and there is no
+per-host profile creation.
+
+- `default` is reserved: only the catalog defines its values, and no other profile may use the
+  name. It is the **fallback envelope** — every job without `runner.resources` runs in it — and it
+  is implicitly available to every team (never grant-gated). A `default` profile with `slots > 1`
+  warns: every job that omits `resources` consumes that baseline. Before an operator saves a
+  catalog, a built-in floor (`2g` / `2` cpu / `256` pids / `1` slot) guarantees the fallback
+  exists.
+- **A host selects from the catalog; it does not define into it.** Every catalog profile is
+  offered on a host unless the host's document names it in `exclude_profiles` — the machine-level
+  opt-out for envelopes the machine cannot serve (a small VM excluding `gpu-8`). Excluding
+  `default` is rejected: the fallback must exist everywhere. Legacy host-side overrides keep
+  working but lose their UI entry; the catalog is the single vocabulary.
 - `slots` is a scheduling weight, not a cgroup setting. It is resolved from the **applied** host
   configuration when a job is claimed.
 - `pids` replaces the currently hardcoded `--pids-limit 256`. The `/tmp` tmpfs size (currently
@@ -172,11 +260,15 @@ slots = 4
 - Existing `memory_limit`/`cpu_limit` semantics become the implicit `default` profile.
 
 Profiles and tiers are orthogonal: `sandbox` selects the isolation boundary, `large` selects the
-size. A job can run `large` on `container`, `sandbox`, or `vm`.
+size. A job can run `large` on `container`, `sandbox`, or `vm`. See
+[How tiers, profiles, and host offers interact](#how-tiers-profiles-and-host-offers-interact) for
+the full three-dimension model.
 
 ## Managed configuration document
 
-Manager stores one desired document per `(host_id, sandboxd_instance_id)`:
+Manager stores one desired document per `(host_id, sandboxd_instance_id)`. The document is a
+**selection, not a restatement**: tiers, profiles, and network inherit the platform catalog unless
+the host pins its own value, and `exclude_profiles` opts catalog entries out on this machine:
 
 ```json
 {
@@ -184,18 +276,19 @@ Manager stores one desired document per `(host_id, sandboxd_instance_id)`:
   "host_id": "host-a",
   "sandboxd_instance_id": "sandboxd-01",
   "version": 12,
-  "profiles": {
-    "default": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 },
-    "large":   { "memory": "8g", "cpu": "4", "pids": 512, "slots": 4 }
-  },
+  "profiles": {},
+  "exclude_profiles": ["gpu-8"],
   "tiers": {
-    "container": { "image": "repo@sha256:…", "runtime": "" },
-    "sandbox":   { "image": "repo@sha256:…", "runtime": "runsc" },
-    "vm":        { "image": "repo@sha256:…", "runtime": "kata-fc" }
+    "sandbox": { "image": "repo@sha256:…", "runtime": "runsc" }
   },
-  "network": "bridge"
+  "network": ""
 }
 ```
+
+sandboxd is always served the **effective** document — the platform catalog merged under the
+host's own definitions, minus its exclusions, with the `bridge` network floor applied — and
+validates exactly those bytes. What the host declares above reads: offer the whole catalog except
+`gpu-8`, pin the `sandbox` tier image/runtime, inherit everything else.
 
 This removes the duplicated tier image/runtime configuration from
 `runner.toml → [sandbox]`. The Runner no longer needs to know images at all:
