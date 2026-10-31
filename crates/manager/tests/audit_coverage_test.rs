@@ -75,6 +75,10 @@ const AUDITED: &[(&str, &str)] = &[
         "resource_grant.update",
     ),
     (
+        "DELETE /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}",
+        "sandbox_host.delete",
+    ),
+    (
         "PATCH /api/v1/pipelines/{id}/toggle-active",
         "pipeline.toggle_active",
     ),
@@ -171,6 +175,10 @@ const AUDITED: &[(&str, &str)] = &[
     ),
     ("PUT /api/v1/ops/resource-grants", "resource_grant.update"),
     (
+        "PUT /api/v1/ops/sandbox-defaults",
+        "sandbox_host.defaults_update",
+    ),
+    (
         "PUT /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/config",
         "sandbox_host.config_update",
     ),
@@ -222,6 +230,10 @@ const INTENTIONALLY_UNAUDITED: &[(&str, &str)] = &[
     (
         "POST /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/validate",
         "dry-run config validation: mutates nothing (results come back in the response)",
+    ),
+    (
+        "POST /api/v1/ops/images/resolve",
+        "read-only registry probe: resolves a tag to its digest, writes nothing",
     ),
     (
         "POST /api/v1/sandboxd/status",

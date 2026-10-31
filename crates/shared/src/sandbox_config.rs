@@ -7,7 +7,7 @@
 //! write) and `buz-sandboxd` (on apply) run — one implementation, two callers.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Reserved profile name every team can use implicitly; operators configure
 /// its values but no other profile may take the name.
@@ -40,10 +40,19 @@ pub struct TierBackend {
 }
 
 /// The whole desired document for one sandboxd instance.
+///
+/// Profiles are a *selection*, not a restatement: the platform catalog
+/// (Manager `sandbox_default_profiles`) defines every profile's name and
+/// numbers, and a host inherits all of it unless it names an entry in
+/// `exclude_profiles` — the machine-level opt-out for envelopes it cannot
+/// serve. A host's own `profiles` rows only exist for legacy overrides kept
+/// out of the catalog; new ones are not created.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct SandboxHostDocument {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub profiles: BTreeMap<String, ResourceProfile>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub exclude_profiles: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tiers: BTreeMap<String, TierBackend>,
     /// Docker network for job containers (`bridge` unless configured).
@@ -70,6 +79,102 @@ pub fn validate_profile_name(name: &str) -> Result<(), String> {
     }
 }
 
+/// Fill tiers the host document leaves undefined with platform defaults.
+/// Host definitions always win; defaults never add profiles or change the
+/// network, so a host document stays the operator's own statement.
+pub fn merge_missing_tiers(
+    doc: &SandboxHostDocument,
+    defaults: &BTreeMap<String, TierBackend>,
+) -> SandboxHostDocument {
+    let mut merged = doc.clone();
+    for (name, tier) in defaults {
+        merged
+            .tiers
+            .entry(name.clone())
+            .or_insert_with(|| tier.clone());
+    }
+    merged
+}
+
+/// Merge platform-default resource profiles into a host document: host
+/// definitions always win, defaults only fill gaps (mirrors tiers).
+pub fn merge_missing_profiles(
+    doc: &SandboxHostDocument,
+    defaults: &BTreeMap<String, ResourceProfile>,
+) -> SandboxHostDocument {
+    let mut merged = doc.clone();
+    for (name, profile) in defaults {
+        merged
+            .profiles
+            .entry(name.clone())
+            .or_insert_with(|| profile.clone());
+    }
+    merged
+}
+
+/// Drop the profiles a host explicitly excludes from its inherited catalog.
+/// `default` is never dropped: it is the fallback envelope for jobs without
+/// `runner.resources`, so excluding it would strand them fail-closed.
+pub fn apply_profile_exclusions(mut doc: SandboxHostDocument) -> SandboxHostDocument {
+    doc.exclude_profiles.remove(DEFAULT_PROFILE);
+    doc.profiles
+        .retain(|name, _| !doc.exclude_profiles.contains(name));
+    doc
+}
+
+/// Validate a platform default-profile table with the same rules the document
+/// validator applies to profiles: 'default' required, name regex, value ranges.
+pub fn validate_default_profiles(profiles: &BTreeMap<String, ResourceProfile>) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !profiles.contains_key(DEFAULT_PROFILE) {
+        problems.push(format!(
+            "default profiles must define the reserved '{DEFAULT_PROFILE}' profile"
+        ));
+    }
+    for (name, profile) in profiles {
+        if name != DEFAULT_PROFILE {
+            if let Err(problem) = validate_profile_name(name) {
+                problems.push(problem);
+            }
+        }
+        if let Err(problem) = validate_memory(&profile.memory) {
+            problems.push(format!("profile '{name}': {problem}"));
+        }
+        if let Err(problem) = validate_cpu(&profile.cpu) {
+            problems.push(format!("profile '{name}': {problem}"));
+        }
+        if profile.pids == 0 {
+            problems.push(format!("profile '{name}': pids must be at least 1"));
+        }
+        if !(1..=MAX_SLOTS).contains(&profile.slots) {
+            problems.push(format!(
+                "profile '{name}': slots must be between 1 and {MAX_SLOTS}"
+            ));
+        }
+    }
+    problems
+}
+
+/// Validate a platform default-tier table with the same rules the document
+/// validator applies: known tier names and digest-pinned images.
+pub fn validate_default_tiers(tiers: &BTreeMap<String, TierBackend>) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (name, tier) in tiers {
+        if !matches!(name.as_str(), "container" | "sandbox" | "vm") {
+            problems.push(format!(
+                "default tier '{name}' is unknown (expected container, sandbox, or vm)"
+            ));
+        }
+        let image = tier.image.trim();
+        if image.is_empty() || !image.contains("@sha256:") {
+            problems.push(format!(
+                "default tier '{name}': image must be pinned by sha256 digest (repo@sha256:…)"
+            ));
+        }
+    }
+    problems
+}
+
 /// Validate the whole document. `Ok` returns a normalized copy plus
 /// **warnings** (saved, but shown to the operator); `Err` lists hard problems
 /// — the ops API rejects the write, and sandboxd refuses to apply.
@@ -79,14 +184,9 @@ pub fn validate(
     let mut problems = Vec::new();
     let mut warnings = Vec::new();
 
-    if doc.profiles.is_empty() {
-        problems.push("profiles must define at least the 'default' profile".into());
-    }
-    if !doc.profiles.contains_key(DEFAULT_PROFILE) {
-        problems.push(format!(
-            "profiles must define the reserved '{DEFAULT_PROFILE}' profile"
-        ));
-    }
+    // Profiles are optional in a host document: the platform catalog fills
+    // every entry the host does not restate, including the implicit 'default'
+    // fallback. Values that ARE present still must be well-formed.
     let mut normalized_profiles = BTreeMap::new();
     for (name, profile) in &doc.profiles {
         let name = name.trim();
@@ -133,6 +233,26 @@ pub fn validate(
         );
     }
 
+    // Exclusions name catalog entries this machine refuses; the names must be
+    // well-formed, and the fallback itself can never be opted out of.
+    let mut normalized_exclusions = BTreeSet::new();
+    for name in &doc.exclude_profiles {
+        let name = name.trim();
+        if name == DEFAULT_PROFILE {
+            problems.push(
+                "the 'default' profile cannot be excluded — it is the fallback \
+                 envelope for jobs without runner.resources"
+                    .into(),
+            );
+            continue;
+        }
+        if let Err(problem) = validate_profile_name(name) {
+            problems.push(problem);
+            continue;
+        }
+        normalized_exclusions.insert(name.to_string());
+    }
+
     let mut normalized_tiers = BTreeMap::new();
     for (name, tier) in &doc.tiers {
         let name = name.trim();
@@ -160,14 +280,14 @@ pub fn validate(
         );
     }
 
-    if doc.network.trim().is_empty() {
-        problems.push("network must not be empty (use 'bridge' unless configured)".into());
-    }
+    // Network may be left empty to inherit the platform default (`bridge`
+    // floor); a host that restates it pins its own value.
 
     if problems.is_empty() {
         Ok((
             SandboxHostDocument {
                 profiles: normalized_profiles,
+                exclude_profiles: normalized_exclusions,
                 tiers: normalized_tiers,
                 network: doc.network.trim().to_string(),
             },

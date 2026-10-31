@@ -64,6 +64,7 @@ fn full_document() -> SandboxHostDocument {
     );
     SandboxHostDocument {
         profiles,
+        exclude_profiles: Default::default(),
         tiers,
         network: "bridge".into(),
     }

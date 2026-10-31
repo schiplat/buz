@@ -77,13 +77,36 @@ async fn read_desired(
     let Some((version, document)) = row else {
         return Err(AppError::NotFound("sandbox host not enrolled".into()));
     };
-    let document_sha256 = document
+    // Nothing published yet: there is no document to deliver, and defaults
+    // alone cannot form one (a document must define the 'default' profile).
+    if document.is_none() {
+        return Ok(FetchOutcome {
+            desired_version: version,
+            document_json: None,
+            document_sha256: String::new(),
+        });
+    }
+    // Tiers the host leaves undefined inherit the platform defaults; what is
+    // delivered here is the effective document, and the sha256 covers exactly
+    // those bytes.
+    let tier_defaults = crate::services::sandbox_defaults::load(pool).await?;
+    let profile_defaults = crate::services::sandbox_defaults::load_default_profiles(pool).await?;
+    let network_default = crate::services::sandbox_defaults::load_default_network(pool).await?;
+    let host_document: SandboxHostDocument = document
         .as_deref()
-        .map(|json| sc::sha256_hex(json.as_bytes()))
+        .and_then(|raw| serde_json::from_str(raw).ok())
         .unwrap_or_default();
+    let effective = crate::services::sandbox_defaults::effective_document(
+        &host_document,
+        &tier_defaults,
+        &profile_defaults,
+        &network_default,
+    )
+    .to_string();
+    let document_sha256 = sc::sha256_hex(effective.as_bytes());
     Ok(FetchOutcome {
         desired_version: version,
-        document_json: document,
+        document_json: Some(effective),
         document_sha256,
     })
 }
@@ -129,8 +152,16 @@ async fn reconcile_db_restore(
     let restored: SandboxHostDocument = stored
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default();
-    let (document, _) =
-        sc::validate(&restored).map_err(|problems| AppError::Internal(problems.join("; ")))?;
+    // An empty document (nothing stored at all) is passed through as-is: the
+    // host keeps its cache version number via the bump alone. Anything else
+    // must still be a valid document.
+    let document = if restored.profiles.is_empty() && restored.tiers.is_empty() {
+        restored
+    } else {
+        sc::validate(&restored)
+            .map_err(|problems| AppError::Internal(problems.join("; ")))?
+            .0
+    };
 
     let version = applied_version + 1;
     let json = serde_json::to_string(&sc::canonical_json(&document))
@@ -275,7 +306,10 @@ pub async fn get_config(
 
 /// POST /sandboxd/status — the host reports what it has applied and any
 /// fetch/apply error. Updates the ops-visible state and reconciles a restored
-/// database exactly like the fetch path does.
+/// database exactly like the fetch path does. `applied_at` is the push date
+/// of the currently applied version: it only advances when the reported
+/// version differs from the stored one, so heartbeat reports never overwrite
+/// when that version landed.
 pub async fn report_status(
     claims: SandboxdClaims,
     State(state): State<AppState>,
@@ -290,7 +324,9 @@ pub async fn report_status(
         "UPDATE sandbox_hosts SET
            applied_version = ?,
            applied_sha256 = ?,
-           applied_at = CASE WHEN ? > 0 THEN datetime('now') ELSE applied_at END,
+           applied_at = CASE
+             WHEN ? > 0 AND ? != applied_version THEN datetime('now')
+             ELSE applied_at END,
            last_fetch_at = datetime('now'),
            last_fetch_error = ?,
            consecutive_fetch_failures = ?,
@@ -303,6 +339,7 @@ pub async fn report_status(
     )
     .bind(report.applied_version)
     .bind(&report.applied_sha256)
+    .bind(report.applied_version)
     .bind(report.applied_version)
     .bind(if error.is_empty() {
         None

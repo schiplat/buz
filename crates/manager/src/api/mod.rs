@@ -48,7 +48,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/ops/sandbox-hosts/{host_id}/{instance_id}",
-            get(ops_sandbox::get_host),
+            get(ops_sandbox::get_host).delete(ops_sandbox::delete_host),
         )
         .route(
             "/ops/sandbox-hosts/{host_id}/{instance_id}/config",
@@ -69,6 +69,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/ops/sandbox-hosts/{host_id}/{instance_id}/token/rotate",
             post(ops_sandbox::rotate_token),
+        )
+        .route("/ops/images/resolve", post(ops_sandbox::resolve_image))
+        .route(
+            "/ops/sandbox-defaults",
+            get(ops_sandbox::get_defaults).put(ops_sandbox::put_defaults),
         )
         .route("/ops/sandbox-changes", get(ops_sandbox::list_changes))
         .route(

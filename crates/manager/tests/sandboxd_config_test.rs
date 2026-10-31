@@ -313,6 +313,97 @@ async fn status_report_updates_applied_state() {
 }
 
 #[tokio::test]
+async fn applied_at_is_the_push_date_and_survives_heartbeats() {
+    let (app, pool, token) = app_with_host().await;
+    put_config(&app).await;
+
+    // The first report of v1 lands the push date.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/sandboxd/status",
+        Some(&token),
+        None,
+        Some(serde_json::json!({ "applied_version": 1, "applied_sha256": "abc" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let pushed_at: String =
+        sqlx::query_scalar("SELECT applied_at FROM sandbox_hosts WHERE host_id = 'host-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    // Heartbeats of the SAME version must never rewrite when it landed.
+    // datetime('now') has 1s resolution, hence the sleep.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/sandboxd/status",
+        Some(&token),
+        None,
+        Some(serde_json::json!({ "applied_version": 1, "applied_sha256": "abc" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let same: String =
+        sqlx::query_scalar("SELECT applied_at FROM sandbox_hosts WHERE host_id = 'host-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(same, pushed_at, "same-version reports keep the push date");
+
+    // The ops API marks the host pushed once applied == desired, with the
+    // push date visible.
+    let (status, resp) = call(
+        &app,
+        "GET",
+        "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01",
+        Some(&ops_jwt()),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert_eq!(resp["data"]["pushed"], true);
+    assert_eq!(resp["data"]["applied_at"], pushed_at);
+
+    // A newly published version flips to not-pushed until the host applies it.
+    put_config(&app).await; // v2 desired
+    let (status, resp) = call(
+        &app,
+        "GET",
+        "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01",
+        Some(&ops_jwt()),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert_eq!(resp["data"]["pushed"], false);
+
+    // Its first report records a NEW push date.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/sandboxd/status",
+        Some(&token),
+        None,
+        Some(serde_json::json!({ "applied_version": 2, "applied_sha256": "def" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let next: String =
+        sqlx::query_scalar("SELECT applied_at FROM sandbox_hosts WHERE host_id = 'host-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_ne!(next, pushed_at, "a new version records a new push date");
+}
+
+#[tokio::test]
 async fn db_restore_bumps_desired_past_a_higher_applied_version() {
     let (app, pool, token) = app_with_host().await;
     put_config(&app).await; // desired = 1
@@ -390,4 +481,157 @@ async fn rotated_token_invalidates_the_old_one() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "new token must work");
+}
+
+const DEFAULT_IMAGE: &str =
+    "ghcr.io/buz/envelope@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+#[tokio::test]
+async fn platform_default_tiers_fill_undefined_tiers_and_propagate() {
+    let (app, pool, token) = app_with_host().await;
+    put_config(&app).await;
+    let before: i64 =
+        sqlx::query_scalar("SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let (status, resp) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/sandbox-defaults",
+        Some(&ops_jwt()),
+        None,
+        Some(serde_json::json!({
+            "tiers": { "container": { "image": DEFAULT_IMAGE, "runtime": "" } },
+            "profiles": { "default": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 } }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert_eq!(
+        resp["data"]["bumped_hosts"].as_array().unwrap().len(),
+        1,
+        "the host inherits the tier, so its effective document changed"
+    );
+
+    // The desired version moved, which is what wakes the long-poll.
+    let after: i64 =
+        sqlx::query_scalar("SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(after > before, "desired version must advance");
+
+    // sandboxd is served the effective document with the inherited tier.
+    let (status, resp) = call(
+        &app,
+        "GET",
+        "/api/v1/sandboxd/config",
+        Some(&token),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert_eq!(
+        resp["data"]["config"]["tiers"]["container"]["image"],
+        DEFAULT_IMAGE
+    );
+}
+
+#[tokio::test]
+async fn host_defined_tiers_win_and_skip_the_bump() {
+    let (app, pool, token) = app_with_host().await;
+    let mut document = valid_document();
+    document["tiers"] = serde_json::json!({
+        "container": { "image": "ghcr.io/buz/own@sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd", "runtime": "" }
+    });
+    let (status, resp) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01/config",
+        Some(&ops_jwt()),
+        None,
+        Some(document),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{put:?}", put = resp);
+    let before: i64 =
+        sqlx::query_scalar("SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let (status, resp) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/sandbox-defaults",
+        Some(&ops_jwt()),
+        None,
+        Some(serde_json::json!({
+            "tiers": { "container": { "image": DEFAULT_IMAGE, "runtime": "" } },
+            "profiles": { "default": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 } }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert!(resp["data"]["bumped_hosts"].as_array().unwrap().is_empty());
+
+    let after: i64 =
+        sqlx::query_scalar("SELECT desired_version FROM sandbox_hosts WHERE host_id = 'host-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(before, after, "no bump when the host defines the tier");
+
+    // The host's own definition is delivered, not the default.
+    let (status, resp) = call(
+        &app,
+        "GET",
+        "/api/v1/sandboxd/config",
+        Some(&token),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert!(resp["data"]["config"]["tiers"]["container"]["image"]
+        .as_str()
+        .unwrap()
+        .ends_with("abcd"));
+}
+
+#[tokio::test]
+async fn unpinned_default_tier_is_rejected() {
+    let (app, _pool, _token) = app_with_host().await;
+    let (status, resp) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/sandbox-defaults",
+        Some(&ops_jwt()),
+        None,
+        Some(serde_json::json!({
+            "tiers": { "container": { "image": "ghcr.io/buz/envelope:latest", "runtime": "" } }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{resp}");
+}
+
+#[tokio::test]
+async fn unknown_default_tier_name_is_rejected() {
+    let (app, _pool, _token) = app_with_host().await;
+    let (status, resp) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/sandbox-defaults",
+        Some(&ops_jwt()),
+        None,
+        Some(serde_json::json!({
+            "tiers": { "chroot": { "image": DEFAULT_IMAGE, "runtime": "" } }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{resp}");
 }

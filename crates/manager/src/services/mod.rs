@@ -14,6 +14,7 @@ pub mod resource_grants;
 pub mod runner_monitor;
 pub mod sandbox_config;
 pub mod sandbox_config_events;
+pub mod sandbox_defaults;
 pub mod scheduler;
 pub mod slot_scheduler;
 pub mod sync_progress;

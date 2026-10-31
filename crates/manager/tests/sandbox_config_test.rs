@@ -18,6 +18,7 @@ fn base_doc() -> SandboxHostDocument {
     );
     SandboxHostDocument {
         profiles,
+        exclude_profiles: Default::default(),
         tiers: BTreeMap::new(),
         network: "bridge".into(),
     }
@@ -33,16 +34,43 @@ fn accepts_a_minimal_valid_document() {
 }
 
 #[test]
-fn rejects_when_default_profile_missing() {
+fn accepts_a_selection_only_document_without_default() {
+    // Host documents are a pure selection: an empty profiles section inherits
+    // the platform catalog (including the implicit 'default' fallback), so
+    // neither a default row nor a network value is required any more.
+    let doc = SandboxHostDocument {
+        profiles: BTreeMap::new(),
+        exclude_profiles: Default::default(),
+        tiers: BTreeMap::new(),
+        network: String::new(),
+    };
+    let (normalized, warnings) = sandbox_config::validate(&doc).expect("valid");
+    assert!(normalized.profiles.is_empty());
+    assert_eq!(normalized.network, "");
+    assert!(warnings.is_empty());
+}
+
+#[test]
+fn rejects_excluding_the_default_profile_and_bad_exclusion_names() {
     let mut doc = base_doc();
-    doc.profiles.remove(DEFAULT_PROFILE);
+    doc.exclude_profiles.insert(DEFAULT_PROFILE.into());
+    doc.exclude_profiles.insert("GPU-8".into());
     let problems = sandbox_config::validate(&doc).unwrap_err();
+    let joined = problems.join("; ");
     assert!(
-        problems
-            .iter()
-            .any(|p| p.contains("reserved 'default' profile")),
-        "problems: {problems:?}"
+        joined.contains("'default' profile cannot be excluded"),
+        "{joined}"
     );
+    assert!(joined.contains("profile name 'GPU-8'"), "{joined}");
+}
+
+#[test]
+fn normalizes_valid_exclusions() {
+    let mut doc = base_doc();
+    doc.exclude_profiles.insert("  gpu-8  ".into());
+    let (normalized, _) = sandbox_config::validate(&doc).expect("valid");
+    assert!(normalized.exclude_profiles.contains("gpu-8"));
+    assert_eq!(normalized.exclude_profiles.len(), 1);
 }
 
 #[test]
@@ -57,7 +85,6 @@ fn rejects_invalid_profile_names_and_values() {
             slots: 0,
         },
     );
-    doc.network = "  ".into();
     let problems = sandbox_config::validate(&doc).unwrap_err();
     let joined = problems.join("; ");
     assert!(joined.contains("profile name 'Large!'"), "{joined}");
@@ -65,7 +92,6 @@ fn rejects_invalid_profile_names_and_values() {
     assert!(joined.contains("cpu"), "{joined}");
     assert!(joined.contains("pids"), "{joined}");
     assert!(joined.contains("slots"), "{joined}");
-    assert!(joined.contains("network"), "{joined}");
 }
 
 #[test]

@@ -9,14 +9,19 @@
 //!
 //! Everything here runs INSIDE the claim's `BEGIN IMMEDIATE` transaction so
 //! two concurrent polls cannot both see "fits" and oversell. Profiles are
-//! resolved from the host's **applied** document (what sandboxd is actually
-//! enforcing), intersected with the **desired** document so a profile ops
-//! removed stops dispatching before the host has even applied the removal.
+//! resolved from the host's **applied** effective document (what sandboxd is
+//! actually enforcing), intersected with the **desired** effective document so
+//! a profile ops removed or excluded stops dispatching before the host has
+//! even applied the removal.
 
 use serde_json::Value;
 use shared::protocol::RunnerExecutionMode;
-use shared::sandbox_config::{SandboxHostDocument, DEFAULT_PROFILE};
+use shared::sandbox_config::{
+    apply_profile_exclusions, merge_missing_profiles, SandboxHostDocument, DEFAULT_PROFILE,
+};
 use sqlx::SqliteConnection;
+
+use crate::services::sandbox_defaults::catalog_from_stored;
 
 /// How a Runner walks its candidate queue when a job does not fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -110,6 +115,9 @@ async fn load_document(
 }
 
 /// Decide whether `runner` may claim a job requesting `profile` now.
+/// Tenant policy lives on the Runner itself (its optional team binding is
+/// enforced in the poll loop before this gate); the sandbox host serves
+/// whichever runner claims through it.
 pub async fn decide(
     tx: &mut SqliteConnection,
     runner: &RunnerDispatchContext,
@@ -161,12 +169,12 @@ pub async fn decide(
     .bind(&runner.sandbox_instance_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((max_slots, desired_version, applied_version)) = host else {
+    let Some((host_max_slots, desired_version, applied_version)) = host else {
         return Ok(if is_default {
             Decision::Dispatch {
                 slots: 1,
                 spec: Value::Object(Default::default()),
-                sandbox_key: key,
+                sandbox_key: String::new(),
             }
         } else {
             Decision::NotEligible {
@@ -175,6 +183,19 @@ pub async fn decide(
                 ),
             }
         });
+    };
+    // Effective slot budget: the host's own cap when explicitly set (>0),
+    // otherwise the platform default budget (0 = unlimited).
+    let platform_max_slots: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(CAST(value AS INTEGER), 0) FROM platform_settings WHERE key = 'sandbox_default_max_slots'",
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .unwrap_or(0);
+    let max_slots = if host_max_slots > 0 {
+        host_max_slots
+    } else {
+        platform_max_slots
     };
 
     let applied = load_document(
@@ -204,7 +225,10 @@ pub async fn decide(
             reason: format!("sandbox host {key} does not offer resource profile '{name}'"),
         });
     };
-    // desired ∩ applied: a profile ops removed stops dispatching immediately.
+    // desired ∩ applied: a profile ops removed or excluded stops dispatching
+    // immediately. Compared on the *effective* desired document — host
+    // documents inherit the platform catalog, so a profile's absence from the
+    // raw document is inheritance, not removal.
     if !is_default && desired_version != applied_version {
         let desired = load_document(
             tx,
@@ -213,12 +237,23 @@ pub async fn decide(
             desired_version,
         )
         .await?;
-        if desired.is_some_and(|d| !d.profiles.contains_key(name)) {
-            return Ok(Decision::NotEligible {
-                reason: format!(
-                    "resource profile '{name}' was removed from sandbox host {key} (pending apply)"
-                ),
-            });
+        if let Some(desired) = desired {
+            let stored: Option<String> = sqlx::query_scalar(
+                "SELECT value FROM platform_settings WHERE key = 'sandbox_default_profiles'",
+            )
+            .fetch_optional(&mut *tx)
+            .await?;
+            let desired_effective = apply_profile_exclusions(merge_missing_profiles(
+                &desired,
+                &catalog_from_stored(stored.as_deref()),
+            ));
+            if !desired_effective.profiles.contains_key(name) {
+                return Ok(Decision::NotEligible {
+                    reason: format!(
+                        "resource profile '{name}' was removed from sandbox host {key} (pending apply)"
+                    ),
+                });
+            }
         }
     }
 

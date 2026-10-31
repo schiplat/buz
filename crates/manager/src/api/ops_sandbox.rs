@@ -43,6 +43,11 @@ pub struct EnrollRequest {
 }
 
 #[derive(Deserialize)]
+pub struct ResolveImageRequest {
+    pub image: String,
+}
+
+#[derive(Deserialize)]
 pub struct PutConfigRequest {
     /// The full desired document (without version — the Manager owns it).
     #[serde(flatten)]
@@ -94,7 +99,8 @@ async fn load_host(
     sqlx::query(
         "SELECT host_id, instance_id, status, max_resource_slots, desired_version,
                 applied_version, applied_sha256, applied_at, last_fetch_at,
-                last_fetch_error, consecutive_fetch_failures, created_at, updated_at
+                last_fetch_error, consecutive_fetch_failures, created_at, updated_at,
+                COALESCE(last_fetch_at >= datetime('now', '-300 seconds'), 0) AS live
          FROM sandbox_hosts WHERE host_id = ? AND instance_id = ?",
     )
     .bind(host_id)
@@ -106,13 +112,18 @@ async fn load_host(
 
 fn host_json(r: &sqlx::sqlite::SqliteRow) -> Value {
     use sqlx::Row;
+    let desired: i64 = r.get(4);
+    let applied: i64 = r.get(5);
     json!({
         "host_id": r.get::<String, _>(0),
         "instance_id": r.get::<String, _>(1),
         "status": r.get::<String, _>(2),
         "max_resource_slots": r.get::<i64, _>(3),
-        "desired_version": r.get::<i64, _>(4),
-        "applied_version": r.get::<i64, _>(5),
+        "desired_version": desired,
+        "applied_version": applied,
+        // True once sandboxd has fetched AND applied the latest desired
+        // version; false means a published version is still in flight.
+        "pushed": desired > 0 && applied >= desired,
         "applied_sha256": r.get::<String, _>(6),
         "applied_at": r.get::<Option<String>, _>(7),
         "last_fetch_at": r.get::<Option<String>, _>(8),
@@ -120,6 +131,10 @@ fn host_json(r: &sqlx::sqlite::SqliteRow) -> Value {
         "consecutive_fetch_failures": r.get::<i64, _>(10),
         "created_at": r.get::<Option<String>, _>(11),
         "updated_at": r.get::<Option<String>, _>(12),
+        // Server-derived liveness: sandboxd long-polls config (45s max wait),
+        // so a fetch within the last 5 minutes means the daemon is reachable.
+        // Computed against DB time — immune to client clock skew.
+        "live": r.get::<i64, _>(13) != 0,
     })
 }
 
@@ -208,12 +223,76 @@ pub async fn list_hosts(
     let rows = sqlx::query(
         "SELECT host_id, instance_id, status, max_resource_slots, desired_version,
                 applied_version, applied_sha256, applied_at, last_fetch_at,
-                last_fetch_error, consecutive_fetch_failures, created_at, updated_at
+                last_fetch_error, consecutive_fetch_failures, created_at, updated_at,
+                COALESCE(last_fetch_at >= datetime('now', '-300 seconds'), 0) AS live
          FROM sandbox_hosts ORDER BY host_id, instance_id",
     )
     .fetch_all(&state.pool)
     .await?;
-    let hosts: Vec<Value> = rows.iter().map(host_json).collect();
+    let mut hosts: Vec<Value> = rows.iter().map(host_json).collect();
+    // Attach each host's latest (desired) document — mirrors get_host so the
+    // ops UI can read profile inventory and the editor's current text without
+    // a per-host round trip. The document returned is the *effective* one:
+    // platform default tiers and profiles merged under the host's own
+    // definitions, exactly what dispatch offers — a single source of truth
+    // for the ops UI (grants table, job-size chips).
+    let tier_defaults = crate::services::sandbox_defaults::load(&state.pool).await?;
+    let profile_defaults =
+        crate::services::sandbox_defaults::load_default_profiles(&state.pool).await?;
+    let network_default =
+        crate::services::sandbox_defaults::load_default_network(&state.pool).await?;
+    let docs: std::collections::HashMap<String, serde_json::Value> =
+        sqlx::query_as::<_, (String, String, String)>(
+            "SELECT c.host_id, c.instance_id, c.document
+             FROM sandbox_host_configs c
+             JOIN (SELECT host_id, instance_id, MAX(version) AS version
+                   FROM sandbox_host_configs GROUP BY host_id, instance_id) latest
+               ON c.host_id = latest.host_id
+              AND c.instance_id = latest.instance_id
+              AND c.version = latest.version",
+        )
+        .fetch_all(&state.pool)
+        .await?
+        .into_iter()
+        .filter_map(|(host_id, instance_id, raw)| {
+            let document: shared::sandbox_config::SandboxHostDocument =
+                serde_json::from_str(&raw).ok()?;
+            let effective = crate::services::sandbox_defaults::effective_document(
+                &document,
+                &tier_defaults,
+                &profile_defaults,
+                &network_default,
+            );
+            Some((format!("{host_id}/{instance_id}"), effective))
+        })
+        .collect();
+    // Runners bound to each (host_id, sandbox_instance_id) pair — drives the
+    // ops UI's runner count and the delete guard.
+    let runner_rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT host_id, sandbox_instance_id, name FROM runners
+         WHERE host_id != '' ORDER BY name",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut runners_by_pair: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (host, instance, name) in runner_rows {
+        runners_by_pair
+            .entry(format!("{host}/{instance}"))
+            .or_default()
+            .push(name);
+    }
+    for host in &mut hosts {
+        let key = format!(
+            "{}/{}",
+            host["host_id"].as_str().unwrap_or_default(),
+            host["instance_id"].as_str().unwrap_or_default()
+        );
+        if let Some(doc) = docs.get(&key) {
+            host["document"] = doc.clone();
+        }
+        host["attached_runners"] = json!(runners_by_pair.get(&key).cloned().unwrap_or_default());
+    }
     Ok(Json(ApiResponse::success(json!({ "hosts": hosts }))))
 }
 
@@ -287,6 +366,217 @@ pub async fn get_host(
             .collect();
     body["attached_runners"] = json!(runners);
     Ok(Json(ApiResponse::success(body)))
+}
+
+/// DELETE /ops/sandbox-hosts/{host_id}/{instance_id} — remove an enrollment.
+/// Refused while runners still report this host instance; cascades the host's
+/// config versions and pending changes. Team profile grants are fleet-wide
+/// and deliberately untouched.
+pub async fn delete_host(
+    auth: OpsAdmin,
+    Path((host_id, instance_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    validate_pair(&host_id, &instance_id)?;
+    load_host(&state.pool, &host_id, &instance_id).await?;
+    let bound: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runners WHERE host_id = ? AND sandbox_instance_id = ?",
+    )
+    .bind(&host_id)
+    .bind(&instance_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if bound > 0 {
+        return Err(AppError::ValidationFailed(format!(
+            "{bound} runner(s) still bound to {host_id}/{instance_id} — detach them before deleting the enrollment"
+        )));
+    }
+    let mut tx = state.pool.begin().await?;
+    for table in [
+        "sandbox_config_changes",
+        "sandbox_host_configs",
+        "sandbox_hosts",
+    ] {
+        sqlx::query(&format!(
+            "DELETE FROM {table} WHERE host_id = ? AND instance_id = ?"
+        ))
+        .bind(&host_id)
+        .bind(&instance_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, Action::SandboxHostDelete)
+            .on(Resource::sandbox_host(&host_id, &instance_id)),
+    )
+    .await;
+
+    tracing::info!(host = %host_id, instance = %instance_id, "sandbox host enrollment deleted");
+    Ok(Json(ApiResponse::success(Value::Null)))
+}
+
+/// POST /ops/images/resolve — resolve a human-readable image reference.
+pub async fn resolve_image(
+    _auth: OpsAdmin,
+    Json(body): Json<Value>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let raw = body
+        .get("image")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .trim();
+    if raw.is_empty() {
+        return Err(AppError::ValidationFailed(
+            "image reference is empty".into(),
+        ));
+    }
+    match crate::image_registry::resolve_pinned(raw).await {
+        Ok(pinned) => Ok(Json(ApiResponse::success(json!({ "pinned": pinned })))),
+        Err(error) => Err(AppError::ValidationFailed(error)),
+    }
+}
+
+/// GET /ops/sandbox-defaults — the platform defaults catalog: default tier
+/// images, default resource profiles (job sizes), docker network, and host
+/// slot budget.
+pub async fn get_defaults(
+    _auth: OpsAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let tiers = crate::services::sandbox_defaults::load(&state.pool).await?;
+    let profiles = crate::services::sandbox_defaults::load_default_profiles(&state.pool).await?;
+    let network = crate::services::sandbox_defaults::load_default_network(&state.pool).await?;
+    let max_slots = crate::services::sandbox_defaults::load_default_max_slots(&state.pool).await?;
+    Ok(Json(ApiResponse::success(json!({
+        "tiers": tiers,
+        "profiles": profiles,
+        "network": network,
+        "max_slots": max_slots,
+    }))))
+}
+
+/// PUT /ops/sandbox-defaults — replace the platform defaults catalog. Every
+/// host whose effective document changes gets the next desired version so its
+/// long-poll wakes up and it re-fetches. When the approval setting is on, the
+/// whole catalog queues as one pending change.
+pub async fn put_defaults(
+    auth: OpsAdmin,
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let tiers: std::collections::BTreeMap<String, shared::sandbox_config::TierBackend> =
+        serde_json::from_value(body.get("tiers").cloned().unwrap_or_else(|| json!({}))).map_err(
+            |e| {
+                AppError::ValidationFailed(format!(
+                    "tiers must map tier names to {{ image, runtime }}: {e}"
+                ))
+            },
+        )?;
+    let profiles: std::collections::BTreeMap<String, shared::sandbox_config::ResourceProfile> =
+        serde_json::from_value(body.get("profiles").cloned().unwrap_or_else(|| json!({})))
+            .map_err(|e| {
+                AppError::ValidationFailed(format!(
+                    "profiles must map profile names to {{ memory, cpu, pids, slots }}: {e}"
+                ))
+            })?;
+    let network = body
+        .get("network")
+        .and_then(|v| v.as_str())
+        .unwrap_or("bridge")
+        .trim()
+        .to_string();
+    let max_slots = body.get("max_slots").and_then(|v| v.as_i64()).unwrap_or(0);
+    if network.is_empty() {
+        return Err(AppError::ValidationFailed(
+            "network must not be empty (use 'bridge' unless configured)".into(),
+        ));
+    }
+    if !(0..=10_000).contains(&max_slots) {
+        return Err(AppError::ValidationFailed(
+            "max_slots must be between 0 and 10000 (0 = unlimited)".into(),
+        ));
+    }
+    let problems = [
+        shared::sandbox_config::validate_default_tiers(&tiers),
+        shared::sandbox_config::validate_default_profiles(&profiles),
+    ]
+    .concat();
+    if !problems.is_empty() {
+        return Err(AppError::ValidationFailed(problems.join("; ")));
+    }
+
+    let before = crate::services::sandbox_defaults::load_all_defaults(&state.pool).await?;
+    let after = crate::services::sandbox_defaults::AllDefaults {
+        tiers: tiers.clone(),
+        profiles: profiles.clone(),
+        network: network.clone(),
+        max_slots,
+    };
+    let after_json = serde_json::to_value(&after).map_err(|e| AppError::Internal(e.to_string()))?;
+    let before_json =
+        serde_json::to_value(&before).map_err(|e| AppError::Internal(e.to_string()))?;
+
+    if require_approval_enabled(&state.pool).await? {
+        let change_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sandbox_config_changes
+             (id, host_id, instance_id, status, requested_by, before_document, after_document)
+             VALUES (?, 'platform-defaults', 'defaults', 'pending', ?, ?, ?)",
+        )
+        .bind(&change_id)
+        .bind(&auth.username)
+        .bind(serde_json::to_string(&before_json).unwrap_or_default())
+        .bind(serde_json::to_string(&after_json).map_err(|e| AppError::Internal(e.to_string()))?)
+        .execute(&state.pool)
+        .await?;
+        audit::record(
+            &state.pool,
+            AuditEvent::from_auth(&auth, Action::SandboxHostConfigRequested).after(Some(json!({
+                "change_id": change_id,
+                "kind": "platform-defaults",
+                "requested_by": auth.username,
+            }))),
+        )
+        .await;
+        return Ok(Json(ApiResponse::success(json!({
+            "pending": true,
+            "change_id": change_id,
+        }))));
+    }
+
+    crate::services::sandbox_defaults::save_all(&state.pool, &after, &auth.username)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let bumped = crate::services::sandbox_defaults::bump_hosts_for_defaults(
+        &state.pool,
+        &before.tiers,
+        &after.tiers,
+        &before.profiles,
+        &after.profiles,
+        &before.network,
+        &after.network,
+    )
+    .await?;
+    // Wake long-polls so the new versions are delivered immediately. The slot
+    // budget is read live per claim and needs no bump.
+    crate::services::sandbox_config_events::wake_all();
+
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, Action::SandboxHostDefaultsUpdate)
+            .before(Some(before_json))
+            .after(Some(
+                json!({ "defaults": after_json, "bumped_hosts": bumped }),
+            )),
+    )
+    .await;
+    tracing::info!(bumped = bumped.len(), "platform defaults updated");
+    Ok(Json(ApiResponse::success(
+        json!({ "bumped_hosts": bumped }),
+    )))
 }
 
 /// PUT /ops/sandbox-hosts/{host_id}/{instance_id}/config — replace the whole
@@ -562,6 +852,58 @@ pub async fn approve_change(
         return Err(AppError::Conflict(
             "the requesting user cannot approve their own change".into(),
         ));
+    }
+    // Platform-defaults rows carry the full defaults catalog (tiers,
+    // profiles, network, budget) rather than a per-host document; approving
+    // saves the catalog and bumps affected hosts.
+    if host_id == "platform-defaults" {
+        let catalog: crate::services::sandbox_defaults::AllDefaults =
+            serde_json::from_str(&after_document)
+                .map_err(|e| AppError::Internal(format!("catalog unreadable: {e}")))?;
+        let problems = [
+            shared::sandbox_config::validate_default_tiers(&catalog.tiers),
+            shared::sandbox_config::validate_default_profiles(&catalog.profiles),
+        ]
+        .concat();
+        if !problems.is_empty() {
+            return Err(AppError::Internal(problems.join("; ")));
+        }
+        let before = crate::services::sandbox_defaults::load_all_defaults(&state.pool).await?;
+        crate::services::sandbox_defaults::save_all(&state.pool, &catalog, &requested_by)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let bumped = crate::services::sandbox_defaults::bump_hosts_for_defaults(
+            &state.pool,
+            &before.tiers,
+            &catalog.tiers,
+            &before.profiles,
+            &catalog.profiles,
+            &before.network,
+            &catalog.network,
+        )
+        .await?;
+        crate::services::sandbox_config_events::wake_all();
+        let version = bumped.len() as i64;
+        sqlx::query(
+            "UPDATE sandbox_config_changes SET status = 'approved', approved_by = ?, decided_at = datetime('now')
+             WHERE id = ?",
+        )
+        .bind(&auth.username)
+        .bind(&change_id)
+        .execute(&state.pool)
+        .await?;
+        audit::record(
+            &state.pool,
+            AuditEvent::from_auth(&auth, Action::SandboxHostConfigApproved).after(Some(json!({
+                "change_id": change_id,
+                "requested_by": requested_by,
+                "kind": instance_id,
+                "bumped_hosts": version,
+                "comment": req.comment,
+            }))),
+        )
+        .await;
+        return Ok(Json(ApiResponse::success(json!({ "version": version }))));
     }
     let document: SandboxHostDocument = serde_json::from_str(&after_document)
         .map_err(|e| AppError::Internal(format!("pending document unreadable: {e}")))?;

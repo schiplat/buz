@@ -553,6 +553,10 @@ async fn get_host_reports_document_and_attached_runners() {
     assert_eq!(status, StatusCode::OK, "{resp}");
     let body = data(&resp);
     assert_eq!(body["desired_version"], 1);
+    assert_eq!(
+        body["pushed"], false,
+        "published but sandboxd has not applied it yet"
+    );
     assert!(body["document"]["profiles"]["default"].is_object());
     let runners = body["attached_runners"].as_array().unwrap();
     assert!(runners.iter().any(|r| r == "attached-runner"));
@@ -584,4 +588,93 @@ async fn token_rotate_replaces_the_hash() {
             .await
             .unwrap();
     assert_ne!(before, after);
+}
+
+#[tokio::test]
+async fn delete_removes_unbound_enrollment_and_cascades_history() {
+    let (app, pool) = test_app().await;
+    enrolled_host(&app).await;
+    let ops = jwt("ops-1", Role::Ops);
+
+    // Give the enrollment one config version so the cascade has something to
+    // remove.
+    let (status, resp) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01/config",
+        Some(&ops),
+        None,
+        Some(valid_document()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let (status, resp) = call(
+        &app,
+        "DELETE",
+        "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01",
+        Some(&ops),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    // Enrollment and its config history are gone.
+    let (status, _) = call(
+        &app,
+        "GET",
+        "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01",
+        Some(&ops),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let configs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sandbox_host_configs
+         WHERE host_id = 'host-a' AND instance_id = 'sandboxd-01'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(configs, 0);
+}
+
+#[tokio::test]
+async fn delete_is_refused_while_runners_are_bound() {
+    let (app, pool) = test_app().await;
+    enrolled_host(&app).await;
+    let ops = jwt("ops-1", Role::Ops);
+
+    sqlx::query(
+        "INSERT INTO runners (id, name, register_token, host_id, sandbox_instance_id)
+         VALUES ('r-1', 'runner-a', 'tok', 'host-a', 'sandboxd-01')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, resp) = call(
+        &app,
+        "DELETE",
+        "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01",
+        Some(&ops),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{resp}");
+
+    // The enrollment survives the refused delete.
+    let (status, _) = call(
+        &app,
+        "GET",
+        "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01",
+        Some(&ops),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 }

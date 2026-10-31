@@ -172,6 +172,15 @@ impl ImageReference {
     }
 }
 
+fn registry_client() -> Result<Client, String> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(7))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("cannot create registry client: {error}"))
+}
+
 pub async fn check_image(raw: &str) -> ImageAvailability {
     let image = match ImageReference::parse(raw) {
         Ok(image) => image,
@@ -181,16 +190,9 @@ pub async fn check_image(raw: &str) -> ImageAvailability {
         Ok(base) => base,
         Err(error) => return ImageAvailability::Unverified(error),
     };
-    let client = match Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(7))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    {
+    let client = match registry_client() {
         Ok(client) => client,
-        Err(error) => {
-            return ImageAvailability::Unverified(format!("cannot create registry client: {error}"))
-        }
+        Err(error) => return ImageAvailability::Unverified(error),
     };
     match tokio::time::timeout(
         Duration::from_secs(10),
@@ -203,6 +205,110 @@ pub async fn check_image(raw: &str) -> ImageAvailability {
     }
 }
 
+/// Resolve `repo/image:tag` to its digest-pinned form `repo/image@sha256:…`.
+/// Already-pinned references round-trip unchanged.
+///
+/// The digest pins what the operator approved: a tag can be re-pushed, so the
+/// host document must record the immutable reference the registry answered
+/// with rather than the mutable name the human typed.
+pub async fn resolve_pinned(raw: &str) -> Result<String, String> {
+    let image = ImageReference::parse(raw)?;
+    if image.reference.starts_with("sha256:") {
+        return Ok(pinned_reference(&image, &image.reference));
+    }
+    let base = image.registry_base()?;
+    let client = registry_client()?;
+    match tokio::time::timeout(
+        Duration::from_secs(10),
+        resolve_digest_at(&client, &image, &base, false),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err("registry digest lookup exceeded 10 seconds".into()),
+    }
+}
+
+async fn resolve_digest_at(
+    client: &Client,
+    image: &ImageReference,
+    base: &Url,
+    allow_local_http_auth: bool,
+) -> Result<String, String> {
+    let manifest_url = image.manifest_url(base)?;
+    let response = request_manifest(
+        client,
+        &manifest_url,
+        Method::HEAD,
+        allow_local_http_auth,
+        true,
+    )
+    .await?;
+    match response.status() {
+        status if status.is_success() => {
+            if let Some(digest) = response
+                .headers()
+                .get("docker-content-digest")
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_sha256_digest)
+            {
+                return Ok(pinned_reference(image, &digest));
+            }
+            // Some registries omit the header on HEAD. The digest is defined
+            // as sha256 over the exact manifest bytes, so fetch the full body
+            // (no Range) and hash it.
+            let full = request_manifest(
+                client,
+                &manifest_url,
+                Method::GET,
+                allow_local_http_auth,
+                false,
+            )
+            .await?;
+            if !full.status().is_success() {
+                return Err(format!(
+                    "registry returned HTTP {} for the manifest",
+                    full.status()
+                ));
+            }
+            let body = read_response_bytes_limited(full, MAX_MANIFEST_FALLBACK_BYTES).await?;
+            Ok(pinned_reference(
+                image,
+                &format!("sha256:{}", shared::sandbox_config::sha256_hex(&body)),
+            ))
+        }
+        StatusCode::NOT_FOUND => Err(format!(
+            "image '{}:{}' was not found in the registry",
+            image.repository, image.reference
+        )),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+            Err("registry requires credentials or denied access".into())
+        }
+        status => Err(format!("registry returned HTTP {status}")),
+    }
+}
+
+fn parse_sha256_digest(raw: &str) -> Option<String> {
+    let raw = raw.trim().to_ascii_lowercase();
+    let hex = raw.strip_prefix("sha256:")?;
+    (hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| format!("sha256:{hex}"))
+}
+
+/// Render the reference in the operator's own spelling: `docker.io/library/*`
+/// is the implicit form, so its default registry prefix is dropped instead of
+/// expanding a name the operator never wrote.
+fn pinned_reference(image: &ImageReference, digest: &str) -> String {
+    if image.registry == "docker.io" {
+        let repository = image
+            .repository
+            .strip_prefix("library/")
+            .unwrap_or(&image.repository);
+        return format!("{repository}@{digest}");
+    }
+    format!("{}/{}@{}", image.registry, image.repository, digest)
+}
+
 pub async fn check_image_at(
     client: &Client,
     image: &ImageReference,
@@ -213,18 +319,31 @@ pub async fn check_image_at(
         Ok(url) => url,
         Err(error) => return ImageAvailability::Unverified(error),
     };
-    let mut response =
-        match request_manifest(client, &manifest_url, Method::HEAD, allow_local_http_auth).await {
-            Ok(response) => response,
-            Err(error) => return ImageAvailability::Unverified(error),
-        };
+    let mut response = match request_manifest(
+        client,
+        &manifest_url,
+        Method::HEAD,
+        allow_local_http_auth,
+        true,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => return ImageAvailability::Unverified(error),
+    };
     let mut used_get_fallback = false;
     if response.status() == StatusCode::METHOD_NOT_ALLOWED
         || response.status() == StatusCode::NOT_IMPLEMENTED
     {
         used_get_fallback = true;
-        response = match request_manifest(client, &manifest_url, Method::GET, allow_local_http_auth)
-            .await
+        response = match request_manifest(
+            client,
+            &manifest_url,
+            Method::GET,
+            allow_local_http_auth,
+            true,
+        )
+        .await
         {
             Ok(response) => response,
             Err(error) => return ImageAvailability::Unverified(error),
@@ -284,8 +403,9 @@ async fn request_manifest(
     url: &Url,
     method: Method,
     allow_local_http_auth: bool,
+    bounded_range: bool,
 ) -> Result<Response, String> {
-    let first = send_manifest_request(client, url, method.clone(), None).await?;
+    let first = send_manifest_request(client, url, method.clone(), None, bounded_range).await?;
     if first.status() != StatusCode::UNAUTHORIZED {
         return Ok(first);
     }
@@ -298,7 +418,7 @@ async fn request_manifest(
         return Ok(first);
     };
     let token = fetch_bearer_token(client, &challenge, url, allow_local_http_auth).await?;
-    send_manifest_request(client, url, method, Some(&token)).await
+    send_manifest_request(client, url, method, Some(&token), bounded_range).await
 }
 
 async fn send_manifest_request(
@@ -306,8 +426,9 @@ async fn send_manifest_request(
     url: &Url,
     method: Method,
     token: Option<&str>,
+    bounded_range: bool,
 ) -> Result<Response, String> {
-    let bounded_get = method == Method::GET;
+    let bounded_get = bounded_range && method == Method::GET;
     let mut request = client
         .request(method, url.clone())
         .header(ACCEPT, MANIFEST_ACCEPT);
@@ -426,4 +547,48 @@ pub fn parse_bearer_challenge(raw: &str) -> Option<BearerChallenge> {
         service: values.remove("service"),
         scope: values.remove("scope"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// The pinned reference keeps the operator's spelling: a bare Docker Hub
+    /// name stays short, an explicit registry keeps its host.
+    #[test]
+    fn pinned_reference_keeps_the_operator_spelling() {
+        let bare = ImageReference::parse("nginx:1.25").unwrap();
+        assert_eq!(pinned_reference(&bare, DIGEST), format!("nginx@{DIGEST}"));
+
+        let namespaced = ImageReference::parse("ghcr.io/buz/envelope-sandbox:v1").unwrap();
+        assert_eq!(
+            pinned_reference(&namespaced, DIGEST),
+            format!("ghcr.io/buz/envelope-sandbox@{DIGEST}")
+        );
+    }
+
+    /// An already-pinned reference round-trips unchanged.
+    #[test]
+    fn pinned_input_round_trips_through_the_parser() {
+        let image = ImageReference::parse(&format!("ghcr.io/buz/envelope@{DIGEST}")).unwrap();
+        assert_eq!(
+            pinned_reference(&image, &image.reference),
+            format!("ghcr.io/buz/envelope@{DIGEST}")
+        );
+    }
+
+    /// Only well-formed sha256 digests are accepted from the registry header.
+    #[test]
+    fn digest_header_parser_rejects_malformed_values() {
+        assert_eq!(parse_sha256_digest(DIGEST), Some(DIGEST.to_string()));
+        assert_eq!(
+            parse_sha256_digest(&format!("  {}  ", DIGEST.to_uppercase())),
+            Some(DIGEST.to_string())
+        );
+        assert_eq!(parse_sha256_digest("sha256:xyz"), None);
+        assert_eq!(parse_sha256_digest("md5:whatever"), None);
+        assert_eq!(parse_sha256_digest(""), None);
+    }
 }

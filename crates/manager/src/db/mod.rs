@@ -177,7 +177,106 @@ async fn rename_column_if_present(pool: &SqlitePool, table: &str, from: &str, to
     }
 }
 
+/// One-time data migration behind the whitelist retirement (2026-10): tenant
+/// policy moved from the per-host `sandbox_host_teams` whitelist onto the
+/// machine's Runner team bindings (`runners.team_id`). For each host instance
+/// whose whitelist holds exactly one still-existing team, every attached
+/// runner without a team binding adopts it. Multi-team whitelists are
+/// ambiguous (a machine maps to one runner team) and are dropped — affected
+/// hosts become open and the operator reconciles via runner bindings. Finally
+/// the table is removed. Idempotent: a no-op once the table is gone.
+async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
+    let table_exists: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sandbox_host_teams'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
+        != 0;
+    if !table_exists {
+        return;
+    }
+
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT host_id, instance_id, team_id FROM sandbox_host_teams ORDER BY team_id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let mut by_pair: std::collections::HashMap<(String, String), Vec<String>> =
+        std::collections::HashMap::new();
+    for (host_id, instance_id, team_id) in rows {
+        by_pair
+            .entry((host_id, instance_id))
+            .or_default()
+            .push(team_id);
+    }
+
+    let mut migrated: u64 = 0;
+    for ((host_id, instance_id), teams) in &by_pair {
+        // Exactly one team (that still exists) can map onto runner bindings.
+        if teams.len() != 1 {
+            tracing::warn!(
+                host = %host_id,
+                instance = %instance_id,
+                teams = teams.len(),
+                "host whitelist had multiple teams — dropped; bind runners manually"
+            );
+            continue;
+        }
+        let team_id = &teams[0];
+        let team_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM teams WHERE id = ?)")
+                .bind(team_id)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(false);
+        if !team_exists {
+            tracing::warn!(host = %host_id, team = %team_id, "whitelist team no longer exists — dropped");
+            continue;
+        }
+        let result = sqlx::query(
+            "UPDATE runners SET team_id = ?, updated_at = datetime('now')
+             WHERE host_id = ? AND sandbox_instance_id = ? AND team_id IS NULL",
+        )
+        .bind(team_id)
+        .bind(host_id)
+        .bind(instance_id)
+        .execute(pool)
+        .await;
+        match result {
+            Ok(res) if res.rows_affected() > 0 => {
+                migrated += res.rows_affected();
+                tracing::info!(host = %host_id, instance = %instance_id, team = %team_id,
+                    "migrated host whitelist onto runner team bindings");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, host = %host_id, "whitelist migration update failed")
+            }
+        }
+    }
+
+    if let Err(error) = sqlx::query("DROP TABLE IF EXISTS sandbox_host_teams")
+        .execute(pool)
+        .await
+    {
+        tracing::warn!(%error, "failed to drop sandbox_host_teams");
+    }
+    if migrated > 0 {
+        tracing::info!(
+            migrated,
+            "host whitelists retired onto runner team bindings"
+        );
+    }
+}
+
 pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Result<()> {
+    // NOTE: the per-host team whitelist (sandbox_host_teams) is retired before
+    // it ever shipped — tenant policy lives on runner team bindings. Dev
+    // databases that still hold the table are migrated and the table dropped
+    // by migrate_host_whitelists_to_runners below; fresh installs never create it.
     for path in [
         include_str!("migrations/001_init.sql"),
         include_str!("migrations/002_step_resolutions.sql"),
@@ -244,6 +343,16 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         "sandbox_instance_id TEXT NOT NULL DEFAULT ''",
     )
     .await;
+
+    // ── Retire the per-host team whitelist (sandbox_host_teams) ──
+    // Tenant policy lives on the Runner (runners.team_id, enforced in the
+    // poll loop). For each host instance whose whitelist holds exactly one
+    // still-existing team, bind every attached runner (team_id IS NULL) to
+    // that team; multi-team whitelists cannot map to one runner team and are
+    // dropped — affected hosts become open and the operator reconciles via
+    // runner bindings. Then the table is removed. Runs after the
+    // sandbox_instance_id column is ensured (the mapping needs it).
+    migrate_host_whitelists_to_runners(pool).await;
 
     // Add privileged column to tasks table (safe to fail if already present)
     add_column_if_missing(pool, "tasks", "privileged INTEGER NOT NULL DEFAULT 0").await;
