@@ -1112,15 +1112,23 @@ pub async fn delete(
 /// Runner calls this between steps to check if the job has been cancelled.
 /// Returns the current status — if "cancelled" the runner should bail immediately.
 pub async fn status_check(
-    _auth: RunnerClaims,
+    auth: RunnerClaims,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query("SELECT status FROM jobs WHERE id = ?")
+    let row = sqlx::query("SELECT status, runner_id FROM jobs WHERE id = ?")
         .bind(&id)
         .fetch_optional(&state.pool)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+
+    // Runner↔job binding: a runner may only poll jobs poll() dispatched to it.
+    let owner: Option<String> = row.get(1);
+    if owner.as_deref() != Some(auth.runner_id.as_str()) {
+        return Err(AppError::Unauthorized(
+            "job is not assigned to this runner".into(),
+        ));
+    }
 
     let status: String = row.get(0);
     Ok(Json(ApiResponse::success(serde_json::json!({
@@ -1143,7 +1151,7 @@ pub async fn claim(
 }
 
 pub async fn update_status(
-    _auth: RunnerClaims,
+    auth: RunnerClaims,
     Path(job_id): Path<String>,
     State(state): State<AppState>,
     Json(req): Json<shared::protocol::UpdateJobStatusRequest>,
@@ -1151,11 +1159,21 @@ pub async fn update_status(
     // If the job has been manually cancelled via the UI, silently ignore
     // Runner status updates so the cancellation sticks.
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    let row = sqlx::query("SELECT status FROM jobs WHERE id = ?")
+    let row = sqlx::query("SELECT status, runner_id FROM jobs WHERE id = ?")
         .bind(&job_id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+
+    // Runner↔job binding: only the runner poll() dispatched the job to may
+    // update it — a leaked runner JWT must not be able to touch other jobs.
+    let owner: Option<String> = row.get(1);
+    if owner.as_deref() != Some(auth.runner_id.as_str()) {
+        tx.rollback().await?;
+        return Err(AppError::Unauthorized(
+            "job is not assigned to this runner".into(),
+        ));
+    }
 
     let current_status: String = row.get(0);
 

@@ -234,7 +234,7 @@ onMounted(loadVars)
                   >{{ v.name }}</span>
                 </td>
                 <td class="px-5 py-3">
-                  <code class="mono-chip text-xs">{{ v.value }}</code>
+                  <code class="mono-chip text-xs">{{ v.value ?? '••••••' }}</code>
                 </td>
                 <td v-if="auth.isPlatformAdmin" class="px-5 py-3">
                   <GitHubBindChips

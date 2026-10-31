@@ -453,8 +453,9 @@ pub async fn test_connection(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
+        // Probing pulls stored (decryptable) credentials — manage tier, not view.
         let team_id = host_team_id(&state.pool, host_id).await?;
-        assert_host_visible(&auth, &team_id).await?;
+        assert_host_manage(&auth, &team_id).await?;
 
         let row = sqlx::query(
             "SELECT credential_type, credential_data, credential_passphrase FROM hosts WHERE id = ?",
@@ -497,6 +498,13 @@ pub async fn test_connection(
                 }
             }
         }
+    } else if !auth.is_platform_admin {
+        // Ad-hoc probes reach arbitrary host:port values — an SSRF-style
+        // primitive no regular user needs. Save the host first, then test
+        // from its card (manage-tier check above).
+        return Err(AppError::Unauthorized(
+            "ad-hoc connection tests are restricted to platform admins — save the host first and test from its card".into(),
+        ));
     }
 
     if host.is_empty() || username.is_empty() {

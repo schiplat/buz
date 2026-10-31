@@ -46,11 +46,26 @@ async fn assert_job_team_view(
 }
 
 pub async fn upload(
-    _auth: RunnerClaims,
+    auth: RunnerClaims,
     State(state): State<AppState>,
     Path(job_id): Path<String>,
     Json(chunk): Json<LogChunk>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
+    // Runner↔job binding: log chunks are accepted only for jobs poll()
+    // dispatched to this runner — otherwise any runner JWT could forge any
+    // job's logs.
+    let row = sqlx::query("SELECT runner_id FROM jobs WHERE id = ?")
+        .bind(&job_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let owner: Option<String> = row.get(0);
+    if owner.as_deref() != Some(auth.runner_id.as_str()) {
+        return Err(AppError::Unauthorized(
+            "job is not assigned to this runner".into(),
+        ));
+    }
+
     sqlx::query(
         "INSERT OR REPLACE INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
          VALUES (?, ?, ?, ?, ?, 1, ?)",
