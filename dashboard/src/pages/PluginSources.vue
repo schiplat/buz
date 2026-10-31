@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Check, Copy, RefreshCw, RotateCcw, Trash2 } from '@lucide/vue'
-import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import {
   pluginSourcesApi,
@@ -459,10 +458,10 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-6">
-    <PageHeader
-      title="Sources"
-      description="Where plugin templates come from. Syncing stages pool entries; curation happens in the Pool tab. A source may also publish reviews.json beside its index — the review ledger (which content hashes were human-reviewed) — distinct from the index itself (what exists and where)."
-    />
+    <!-- Usage hint (no PageHeader — the tab bar above is the page header) -->
+    <p class="type-meta max-w-3xl">
+      Where plugin templates come from. Syncing stages pool entries; curation happens in the Pool tab. A source may also publish reviews.json beside its index — the review ledger (which content hashes were human-reviewed) — distinct from the index itself (what exists and where).
+    </p>
 
     <section class="rounded-xl border border-border/50 bg-card overflow-hidden">
       <div class="flex items-center justify-between px-5 py-4 border-b border-border/50">

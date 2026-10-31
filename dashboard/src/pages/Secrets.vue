@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, Pencil, Trash2, Shield, GitBranch } from '@lucide/vue'
@@ -107,7 +106,6 @@ const saving = ref(false)
 const showValue = ref(false)
 
 const SECRET_REFERENCE = '${secrets.NAME}'
-const SECRETS_DESCRIPTION = `Encrypted credentials. Reference ${SECRET_REFERENCE} in plugin with, step env, or config.render templates. Team share is optional; values are masked in logs.`
 
 const DOCKER_LOGIN_EXAMPLE = `- name: Registry Login
   uses: buz/docker-login@1.1.0
@@ -270,14 +268,14 @@ onMounted(loadSecrets)
 
 <template>
   <div class="space-y-6">
-    <PageHeader
-      title="Secrets"
-      :description="SECRETS_DESCRIPTION"
-    >
-      <template #actions>
-        <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> Add Secret</UiButton>
-      </template>
-    </PageHeader>
+    <!-- Toolbar: usage hint + actions (no PageHeader — the tab bar above is
+         the page header, the TopNav carries the title) -->
+    <div class="flex items-center gap-3 flex-wrap">
+      <p class="type-meta min-w-0 basis-full sm:basis-auto sm:max-w-xl">
+        Encrypted credentials. Reference <code class="mono-chip text-[10px]">{{ SECRET_REFERENCE }}</code> in plugin with, step env, or config.render templates. Team share is optional; values are masked in logs.
+      </p>
+      <UiButton size="sm" class="sm:ml-auto" @click="openCreate"><Plus class="h-4 w-4" /> Add Secret</UiButton>
+    </div>
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
     <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">

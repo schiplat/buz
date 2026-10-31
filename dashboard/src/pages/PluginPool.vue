@@ -383,6 +383,11 @@ onMounted(load)
 
 <template>
   <div class="space-y-6">
+    <!-- Usage hint (no PageHeader — the tab bar above is the page header) -->
+    <p class="type-meta max-w-3xl">
+      Plugin templates synced from configured sources, ready to reference in a pipeline. Re-fetch pulls new versions from the source; the copy button gives you the <code class="mono-chip text-[10px]">uses:</code> reference for a step.
+    </p>
+
     <section class="rounded-xl border border-border/50 bg-card overflow-hidden">
       <!-- ── Toolbar: search + category filter + counts ── -->
       <div class="flex items-center gap-2.5 flex-wrap px-5 py-3 border-b border-border/50">
