@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Link, Settings, Braces, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp, Bell, AlertTriangle, AlertCircle, Snowflake } from '@lucide/vue'
+import { ArrowLeft, Play, Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock, Pencil, X, ChevronDown, ChevronRight, Copy, Check, Zap, Server, Sliders, List, RotateCw, Webhook, MoreHorizontal, Eye, CircleHelp, Bell, AlertTriangle, AlertCircle, Snowflake, FileCode2, Package, Terminal, Layers, Lock, Box } from '@lucide/vue'
 import { cn } from '@/lib/utils'
 import {
   pipelinesApi,
@@ -37,6 +37,7 @@ import { createManagedWebSocket, type ManagedWebSocket } from '@/utils/ws'
 import { navLog } from '@/utils/navigation'
 import { useAuthStore } from '@/stores/auth'
 import PipelineYamlEditorDialog from '@/components/pipeline/PipelineYamlEditorDialog.vue'
+import PipelineYamlCodeEditor from '@/components/pipeline/PipelineYamlCodeEditor.vue'
 import { useAppDialog } from '@/composables/useAppDialog'
 
 const route = useRoute()
@@ -45,6 +46,7 @@ const auth = useAuthStore()
 const dialog = useAppDialog()
 const pipelineId = computed(() => route.params.id as string)
 const yamlEditorRef = ref<InstanceType<typeof PipelineYamlEditorDialog> | null>(null)
+const sourceEditorRef = ref<InstanceType<typeof PipelineYamlCodeEditor> | null>(null)
 
 const pipeline = ref<any>(null)
 
@@ -64,6 +66,11 @@ watch(pipelineId, async () => {
   defYamlErrors.value = []
   defYamlFilename.value = ''
   defYamlName.value = ''
+  defYamlSource.value = ''
+  defView.value = 'overview'
+  defSourceCopied.value = false
+  activeSourceOutline.value = ''
+  expandedDefSteps.value = []
   await loadData()
   startPipelineWebSocket()
   if (activeTab.value === 'definition') {
@@ -276,6 +283,11 @@ const defYamlFilename = ref('')
 const defYamlName = ref('')
 const defYamlErrors = ref<string[]>([])
 const defYamlParsed = ref<YamlParsedData | null>(null)
+const defYamlSource = ref('')
+const defView = ref<'overview' | 'source'>('overview')
+const defSourceCopied = ref(false)
+const activeSourceOutline = ref('')
+const expandedDefSteps = ref<number[]>([])
 
 async function loadYamlDefinition() {
   if (!pipeline.value || pipeline.value.source !== 'yaml') {
@@ -284,6 +296,9 @@ async function loadYamlDefinition() {
     defYamlErrors.value = []
     defYamlFilename.value = ''
     defYamlName.value = ''
+    defYamlSource.value = ''
+    defView.value = 'overview'
+    expandedDefSteps.value = []
     return
   }
   defYamlLoading.value = true
@@ -291,6 +306,8 @@ async function loadYamlDefinition() {
   try {
     const src = await pipelinesApi.getYamlSource(pipelineId.value)
     defYamlFilename.value = src.filename
+    defYamlSource.value = src.yaml
+    activeSourceOutline.value = ''
     const validation = await pipelinesApi.validateYaml(src.yaml)
     const errs = (validation.errors || []).map(
       (e) => `${e.field}: ${e.message}`,
@@ -314,6 +331,7 @@ async function loadYamlDefinition() {
     defYamlAuthority.value = 'unavailable'
     defYamlParsed.value = null
     defYamlName.value = ''
+    defYamlSource.value = ''
     defYamlFilename.value = pipeline.value?.yaml_path || ''
     defYamlErrors.value = [
       e?.response?.data?.message || e?.message || 'Failed to load YAML file',
@@ -511,7 +529,6 @@ const definitionView = computed(() => {
   }
 })
 
-const showConcurrencyHelp = ref(false)
 
 /** Live pipeline concurrency settings for Definition tab (always shown). */
 const pipelineConcurrency = computed(() => definitionView.value?.concurrency ?? null)
@@ -519,9 +536,6 @@ const pipelineConcurrency = computed(() => definitionView.value?.concurrency ?? 
 /** Notify channels from YAML (Definition tab). */
 const pipelineNotify = computed(() => definitionView.value?.notify ?? [])
 
-const defHasInputDefs = computed(
-  () => (definitionView.value?.input_defs?.length || 0) > 0,
-)
 
 function formatConcurrencyTimeout(sec: number | null): string {
   if (sec == null || sec <= 0) return '—'
@@ -562,6 +576,239 @@ function pipelineConcurrencyHint(configured: boolean, mode: string | null): stri
       return ''
   }
 }
+
+const definitionTasks = computed<any[]>(
+  () => (definitionView.value?.tasks || []) as any[],
+)
+
+const pluginStepCount = computed(
+  () =>
+    definitionTasks.value.filter(
+      (step) => Boolean(step.uses || step.marketplace?.uses_ref),
+    ).length,
+)
+
+const triggerInputCount = computed(() => definitionView.value?.input_defs?.length || 0)
+
+const triggerSummary = computed(() => {
+  const type = definitionView.value?.trigger_type || 'manual'
+  const label = type.charAt(0).toUpperCase() + type.slice(1)
+  const inputs = triggerInputCount.value
+  return inputs > 0 ? `${label} · ${inputs} input${inputs === 1 ? '' : 's'}` : label
+})
+
+const triggerDetail = computed(() => {
+  const view = definitionView.value
+  if (!view) return ''
+  if (view.trigger_type === 'webhook' && view.webhook_path) {
+    return `${view.webhook_path}${view.webhook_environment ? ` · ${view.webhook_environment}` : ''}`
+  }
+  if (view.trigger_type === 'cron' && view.cron_expr) {
+    return `${view.cron_expr}${view.cron_environment ? ` · ${view.cron_environment}` : ''}`
+  }
+  return ''
+})
+
+const runnerSummary = computed(() => {
+  const labels = definitionView.value?.runner_labels || []
+  return labels.length ? labels.join(' · ') : 'any runner'
+})
+
+const environmentsSummary = computed(() => {
+  const envs = definitionView.value?.environments || []
+  return envs.length ? envs.join(' · ') : 'none'
+})
+
+const interfaceSummary = computed(() => {
+  const view = definitionView.value
+  return `${view?.input_defs?.length || 0} parameters · ${view?.variableNames?.length || 0} variables · ${view?.secretNames?.length || 0} secrets`
+})
+
+const interfaceHasAny = computed(() => {
+  const view = definitionView.value
+  if (!view) return false
+  return (
+    (view.input_defs?.length || 0) +
+      (view.variableNames?.length || 0) +
+      (view.secretNames?.length || 0) +
+      (view.envEntries?.length || 0) >
+    0
+  )
+})
+
+const executionSummary = computed(() => {
+  const view = definitionView.value
+  if (!view) return ''
+  const concurrency = pipelineConcurrency.value
+  const concurrencyLabel = concurrency?.configured
+    ? `${concurrency.group} · ${concurrency.mode}`
+    : 'not configured'
+  const timeout = formatConcurrencyTimeout(view.timeout_seconds || 0)
+  const notify = view.notify?.length ? `${view.notify.length} notify` : 'no notify'
+  return `${concurrencyLabel} · ${timeout} · ${notify}`
+})
+
+const defAuthorityLabel = computed(() =>
+  definitionView.value?.authority === 'file' ? 'YAML file' : 'UI definition',
+)
+
+const defHeaderFile = computed(
+  () =>
+    definitionView.value?.filename ||
+    defYamlFilename.value ||
+    pipeline.value?.yaml_path ||
+    yamlSync.value?.filename ||
+    '',
+)
+
+const defHeaderSub = computed(() => {
+  const steps = definitionTasks.value.length
+  const file = defHeaderFile.value || 'no file'
+  const sync = yamlSync.value?.status === 'in_sync' ? ' · in sync' : ''
+  return `${file} · ${steps} step${steps === 1 ? '' : 's'} · ${defAuthorityLabel.value}${sync}`
+})
+
+function isDefStepOpen(index: number) {
+  return expandedDefSteps.value.includes(index)
+}
+
+function toggleDefStep(index: number) {
+  expandedDefSteps.value = isDefStepOpen(index)
+    ? expandedDefSteps.value.filter((item) => item !== index)
+    : [...expandedDefSteps.value, index]
+}
+
+function expandAllDefSteps() {
+  expandedDefSteps.value = definitionTasks.value.map((_, index) => index)
+}
+
+function collapseAllDefSteps() {
+  expandedDefSteps.value = []
+}
+
+function stepUsesRef(step: any): string {
+  return String(step?.marketplace?.uses_ref || step?.uses || '').trim()
+}
+
+function stepIsPlugin(step: any): boolean {
+  return Boolean(stepUsesRef(step))
+}
+
+function stepReviewed(step: any): boolean | null {
+  const reviewed = step?.marketplace?.reviewed
+  return reviewed == null ? null : Boolean(reviewed)
+}
+
+function stepSubLabel(step: any): string {
+  const uses = stepUsesRef(step)
+  const host = String(step?.host_names || step?.host_id || '').trim()
+  if (uses) return host ? `${uses} · ${host}` : uses
+  const engine = String(step?.exec_type || 'shell')
+  if (engine === 'ssh') {
+    return host ? `ssh · ${host}` : 'ssh'
+  }
+  if (engine === 'docker') {
+    const image = String(step?.image || '').trim()
+    return image ? `docker · ${image}` : 'docker'
+  }
+  return engine
+}
+
+function stepMetaLabel(step: any): string {
+  const parts: string[] = []
+  if (Number(step?.timeout_seconds) > 0) {
+    parts.push(formatConcurrencyTimeout(Number(step.timeout_seconds)))
+  }
+  if (Number(step?.retry_count) > 0) {
+    parts.push(`retry ${step.retry_count}`)
+  }
+  return parts.join(' · ')
+}
+
+function stepPreview(step: any): string {
+  const command = String(step?.command_template || '').trim()
+  if (command) return command.split('\n')[0]
+  const inputs =
+    step?.plugin_inputs && typeof step.plugin_inputs === 'object'
+      ? Object.keys(step.plugin_inputs)
+      : []
+  if (inputs.length) {
+    return `with: ${inputs.slice(0, 4).join(', ')}${inputs.length > 4 ? ', …' : ''}`
+  }
+  return ''
+}
+
+function stepDeprecatedFields(step: any): string[] {
+  const out: string[] = []
+  if (String(step?.registry_secret || '').trim()) {
+    out.push('registry_secret → use buz/docker-login')
+  }
+  if (String(step?.config_source || '').trim()) {
+    out.push('config.source → use buz/config-fetch')
+  }
+  if (String(step?.config_key_path || '').trim()) {
+    out.push('config_key_path → use buz/config-fetch')
+  }
+  return out
+}
+
+function stepEnvEntries(step: any): { name: string; value: string }[] {
+  const env = step?.step_env
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return []
+  return Object.entries(env).map(([name, value]) => ({
+    name,
+    value: String(value ?? ''),
+  }))
+}
+
+type SourceOutlineItem = { key: string; label: string; line: number; sub: boolean }
+
+const sourceOutline = computed<SourceOutlineItem[]>(() => {
+  const lines = defYamlSource.value.split('\n')
+  const items: SourceOutlineItem[] = []
+  let inSteps = false
+  let stepIndex = 0
+  lines.forEach((line, index) => {
+    const top = line.match(/^([A-Za-z_][\w-]*):/)
+    if (top) {
+      inSteps = top[1] === 'steps'
+      items.push({
+        key: `top-${top[1]}`,
+        label: top[1],
+        line: index + 1,
+        sub: false,
+      })
+      return
+    }
+    if (!inSteps) return
+    const step = line.match(/^\s+-\s*name:\s*(.+?)\s*$/)
+    if (!step) return
+    stepIndex += 1
+    items.push({
+      key: `step-${stepIndex}`,
+      label: step[1],
+      line: index + 1,
+      sub: true,
+    })
+  })
+  return items
+})
+
+function jumpToSourceLine(item: SourceOutlineItem) {
+  activeSourceOutline.value = item.key
+  sourceEditorRef.value?.scrollToLine(item.line)
+}
+
+async function copyDefSource() {
+  if (!defYamlSource.value) return
+  const ok = await copyText(defYamlSource.value)
+  if (!ok) return
+  defSourceCopied.value = true
+  setTimeout(() => {
+    defSourceCopied.value = false
+  }, 2000)
+}
+
 const historyTotalPages = computed(() => Math.ceil(jobs.value.length / historyPageSize))
 const historyPagedJobs = computed(() => {
   const start = (historyPage.value - 1) * historyPageSize
@@ -1309,16 +1556,19 @@ async function handleTrigger() {
       <div class="flex gap-0 flex-1 min-h-0 bg-muted/50 rounded-2xl overflow-hidden">
         <!-- ====== Left Sidebar ====== -->
         <div class="scrollbar-sidebar w-[18rem] shrink-0 flex flex-col overflow-y-auto p-4" @click="handleSidebarClick">
-          <div class="space-y-0.5 mt-1">
+          <div class="px-3 pb-1.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/60">
+            Views
+          </div>
+          <div class="space-y-0.5">
             <button
-              class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors"
+              class="w-full text-left px-3 py-2 rounded-lg text-[13px] transition-colors"
               :class="activeTab === 'stage' ? 'bg-card shadow-xs font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
               @click="navigateTab('stage')"
             >
               Stage View
             </button>
             <button
-              class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center justify-between"
+              class="w-full text-left px-3 py-2 rounded-lg text-[13px] transition-colors flex items-center justify-between"
               :class="activeTab === 'history' ? 'bg-card shadow-xs font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
               @click="navigateTab('history')"
             >
@@ -1326,14 +1576,14 @@ async function handleTrigger() {
               <span v-if="jobs.length > 0" class="text-xs tabular-nums">{{ jobs.length }}</span>
             </button>
             <button
-              class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors"
+              class="w-full text-left px-3 py-2 rounded-lg text-[13px] transition-colors"
               :class="activeTab === 'definition' ? 'bg-card shadow-xs font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
               @click="navigateTab('definition')"
             >
               Definition
             </button>
             <button
-              class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center justify-between"
+              class="w-full text-left px-3 py-2 rounded-lg text-[13px] transition-colors flex items-center justify-between"
               :class="activeTab === 'trigger-events' ? 'bg-card shadow-xs font-medium text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-card/50'"
               @click="navigateTab('trigger-events')"
             >
@@ -1341,7 +1591,22 @@ async function handleTrigger() {
               <span v-if="triggerEventsTotal > 0" class="text-xs tabular-nums">{{ triggerEventsTotal }}</span>
             </button>
           </div>
-          <div class="mt-10 pt-5 border-t border-border/40 px-3">
+          <div class="mt-3 border-t border-border/40 px-3 pt-3">
+            <div class="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/70">
+              <FileCode2 class="h-3 w-3 shrink-0" />
+              <span class="truncate">{{ defHeaderFile || 'no YAML file' }}</span>
+              <template v-if="hasYamlSource">
+                <template v-if="yamlSync?.status === 'in_sync'">
+                  <span class="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
+                  <span class="shrink-0">in sync</span>
+                </template>
+                <span v-else-if="yamlSync?.status" class="shrink-0 text-amber-600">
+                  {{ yamlSync?.status?.replace('_', ' ') }}
+                </span>
+              </template>
+            </div>
+          </div>
+          <div class="mt-6 pt-5 border-t border-border/40 px-3">
             <!-- Section heading + summary strip -->
             <div class="flex items-center justify-between mb-3">
               <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Recent Builds</div>
@@ -1740,535 +2005,556 @@ async function handleTrigger() {
               </button>
             </div>
 
-            <div
-              v-else-if="definitionView"
-              class="rounded-xl border border-border/40 bg-card overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
-            >
-              <!-- ── Header ── -->
-              <div class="px-5 pt-4 pb-3 flex items-start justify-between gap-4">
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center gap-2.5 flex-wrap">
-                    <h2 class="text-sm font-semibold tracking-tight">{{ definitionView.name }}</h2>
-                    <span class="mono-chip text-xs text-muted-foreground opacity-60 select-all">{{ definitionView.id?.slice(-8) }}</span>
-                  </div>
-                  <p v-if="definitionView.description" class="text-xs text-muted-foreground mt-1.5 leading-relaxed">{{ definitionView.description }}</p>
-                </div>
-                <div class="flex items-center gap-2 shrink-0 pt-0.5">
-                  <span
-                    v-if="definitionView.authority === 'file'"
-                    class="text-xs text-muted-foreground bg-muted/60 rounded-sm px-2 py-0.5 font-medium"
-                  >from file</span>
-                  <span
-                    v-else-if="hasYamlSource"
-                    class="text-xs text-muted-foreground bg-muted/60 rounded-sm px-2 py-0.5 font-medium"
-                  >from YAML</span>
-                  <button
-                    class="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
-                    @click="openEditDialog"
-                  >
-                    <Pencil class="h-3 w-3" />
-                    Edit YAML
-                  </button>
-                </div>
-              </div>
-
-              <!-- ── Four-card grid ── -->
-              <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
-                <!-- Trigger -->
-                <div class="p-4">
-                  <div class="flex items-center gap-1.5 mb-3">
-                    <Zap class="h-3.5 w-3.5 text-amber-500" />
-                    <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Trigger</span>
-                  </div>
-                  <div class="space-y-1.5">
-                    <span class="mono-chip text-xs font-semibold px-2">{{ definitionView.trigger_type?.toUpperCase() }}</span>
-                    <div v-if="definitionView.webhook_path" class="flex items-center gap-1.5">
-                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">path</span>
-                      <code class="text-xs font-mono text-foreground/70">{{ definitionView.webhook_path }}</code>
-                      <span v-if="definitionView.webhook_environment" class="text-xs text-muted-foreground">default: {{ definitionView.webhook_environment }}</span>
+            <template v-else-if="definitionView">
+              <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div class="flex min-w-0 items-start gap-2.5">
+                  <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-card text-muted-foreground">
+                    <FileCode2 class="h-4 w-4" />
+                  </span>
+                  <div class="min-w-0">
+                    <div class="text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/70">
+                      Pipeline definition
                     </div>
-                    <div v-if="definitionView.cron_expr" class="flex items-center gap-1.5">
-                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">cron</span>
-                      <code class="text-xs font-mono text-foreground/70">{{ definitionView.cron_expr }}</code>
-                      <span v-if="definitionView.cron_environment" class="text-xs text-muted-foreground">scheduled target: {{ definitionView.cron_environment }}</span>
-                    </div>
-                    <div v-if="!definitionView.webhook_path && !definitionView.cron_expr" class="text-xs text-muted-foreground/50 italic">No external trigger configured</div>
-                  </div>
-                </div>
-
-                <!-- Runner -->
-                <div class="p-4 border-l border-border/15">
-                  <div class="flex items-center gap-1.5 mb-3">
-                    <Server class="h-3.5 w-3.5 text-blue-500" />
-                    <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Runner</span>
-                    <span v-if="(definitionView.runner_labels || []).length" class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.runner_labels.length }} label{{ definitionView.runner_labels.length !== 1 ? 's' : '' }}</span>
-                  </div>
-                  <div class="space-y-2">
-                    <div class="flex flex-wrap gap-1">
-                      <span v-for="l in (definitionView.runner_labels || [])" :key="l" class="mono-chip text-xs">{{ l }}</span>
-                      <span v-if="!(definitionView.runner_labels || []).length" class="text-xs text-muted-foreground/50 italic">No labels set</span>
-                    </div>
-                    <div class="flex items-center gap-1.5">
-                      <Clock class="h-3 w-3 text-muted-foreground/50" />
-                      <span class="font-mono text-xs text-muted-foreground font-medium">{{ definitionView.timeout_seconds }}s</span>
-                      <span class="text-xs text-muted-foreground/50">timeout</span>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Bindings -->
-                <div class="p-4 border-l border-border/15">
-                  <div class="flex items-center gap-1.5 mb-3">
-                    <Link class="h-3.5 w-3.5 text-violet-500" />
-                    <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Bindings</span>
-                  </div>
-                  <div class="space-y-2.5">
-                    <div>
-                      <div class="flex items-center gap-1.5 mb-1">
-                        <span class="h-1.5 w-1.5 rounded-full bg-emerald-500/60"></span>
-                        <span class="text-xs text-muted-foreground/60 uppercase tracking-wider">Variables</span>
-                        <span v-if="definitionView.variableNames.length" class="text-xs text-muted-foreground/40 ml-auto">{{ definitionView.variableNames.length }}</span>
-                      </div>
-                      <div v-if="definitionView.variableNames.length === 0" class="text-xs text-muted-foreground/40 pl-3.5">No variables bound</div>
-                      <div v-else class="flex flex-wrap gap-1 pl-3.5">
-                        <code v-for="v in definitionView.variableNames" :key="v" class="mono-chip text-xs">{{ v }}</code>
-                      </div>
-                    </div>
-                    <div>
-                      <div class="flex items-center gap-1.5 mb-1">
-                        <span class="h-1.5 w-1.5 rounded-full bg-rose-500/60"></span>
-                        <span class="text-xs text-muted-foreground/60 uppercase tracking-wider">Secrets</span>
-                        <span v-if="definitionView.secretNames.length" class="text-xs text-muted-foreground/40 ml-auto">{{ definitionView.secretNames.length }}</span>
-                      </div>
-                      <div v-if="definitionView.secretNames.length === 0" class="text-xs text-muted-foreground/40 pl-3.5">No secrets bound</div>
-                      <div v-else class="flex flex-wrap gap-1 pl-3.5">
-                        <code v-for="s in definitionView.secretNames" :key="s" class="mono-chip text-xs">{{ s }}</code>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Config -->
-                <div class="p-4 border-l border-border/15">
-                  <div class="flex items-center gap-1.5 mb-3">
-                    <Settings class="h-3.5 w-3.5 text-muted-foreground/70" />
-                    <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Config</span>
-                  </div>
-                  <div class="space-y-2">
-                    <div v-if="definitionView.team_id" class="flex items-center gap-1.5">
-                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">team</span>
-                      <code class="mono-chip text-xs truncate">{{ teamLabel(definitionView.team_id) }}</code>
-                    </div>
-                    <div class="flex items-center gap-1.5">
-                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">source</span>
-                      <span class="mono-chip text-xs">{{ definitionView.source || 'form' }}</span>
-                    </div>
-                    <div v-if="definitionView.filename" class="flex items-center gap-1.5">
-                      <span class="text-xs text-muted-foreground/60 font-mono w-10 shrink-0">file</span>
-                      <code class="mono-chip text-xs truncate">{{ definitionView.filename }}</code>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- ── Concurrency (always shown) ── -->
-              <div v-if="pipelineConcurrency" class="border-t border-border/20 px-5 py-4">
-                <div class="flex items-center gap-2 mb-3">
-                  <List class="h-3.5 w-3.5 text-purple-500" />
-                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Concurrency</span>
-                  <button
-                    type="button"
-                    class="inline-flex items-center text-muted-foreground/50 hover:text-foreground transition-colors"
-                    :aria-expanded="showConcurrencyHelp"
-                    aria-label="Concurrency help"
-                    @click="showConcurrencyHelp = !showConcurrencyHelp"
-                  >
-                    <CircleHelp class="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    class="ml-auto inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
-                    @click="openEditDialog"
-                  >
-                    <Pencil class="h-3 w-3" />
-                    Edit YAML
-                  </button>
-                </div>
-
-                <template v-if="pipelineConcurrency.configured">
-                  <div class="flex flex-wrap items-center gap-2 text-xs">
-                    <span class="text-muted-foreground">Group</span>
-                    <code class="mono-chip text-xs">{{ pipelineConcurrency.group }}</code>
-                    <span class="text-muted-foreground ml-1">Mode</span>
-                    <span
-                      class="font-semibold rounded-sm px-1.5 py-0.5 border"
-                      :class="{
-                        'bg-amber-500/10 text-amber-600 border-amber-500/20': pipelineConcurrency.mode === 'queue',
-                        'bg-blue-500/10 text-blue-600 border-blue-500/20': pipelineConcurrency.mode === 'discard-new',
-                        'bg-emerald-500/10 text-emerald-600 border-emerald-500/20': pipelineConcurrency.mode === 'discard-old',
-                      }"
-                    >{{ pipelineConcurrency.mode }}</span>
-                    <template v-if="pipelineConcurrency.mode === 'queue'">
-                      <span class="text-muted-foreground ml-1">Max queue</span>
-                      <span class="font-mono tabular-nums text-foreground/80">{{ pipelineConcurrency.maxQueue ?? '—' }}</span>
-                      <span class="text-muted-foreground ml-1">Queue timeout</span>
-                      <span class="font-mono tabular-nums text-foreground/80">{{ formatConcurrencyTimeout(pipelineConcurrency.queueTimeoutSec) }}</span>
-                    </template>
-                  </div>
-                </template>
-                <template v-else>
-                  <div class="flex flex-wrap items-center gap-2 text-xs">
-                    <span class="text-muted-foreground">Status</span>
-                    <span class="font-semibold rounded-sm px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
-                    <span class="text-muted-foreground ml-1">Default mode if enabled</span>
-                    <span class="font-mono rounded-sm px-1.5 py-0.5 border bg-emerald-500/10 text-emerald-700 border-emerald-500/20">discard-old</span>
-                    <span class="text-muted-foreground ml-1">Max queue</span>
-                    <span class="font-mono tabular-nums text-foreground/80">3</span>
-                    <span class="text-muted-foreground ml-1">Queue timeout</span>
-                    <span class="font-mono tabular-nums text-foreground/80">30m</span>
-                  </div>
-                </template>
-
-                <p class="mt-2 text-xs text-muted-foreground leading-relaxed">
-                  {{ pipelineConcurrencyHint(pipelineConcurrency.configured, pipelineConcurrency.mode) }}
-                </p>
-                <div
-                  v-if="showConcurrencyHelp"
-                  class="mt-3 rounded-lg border border-border/50 bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground leading-relaxed space-y-2"
-                >
-                  <p class="font-medium text-foreground/80">Adjustable fields</p>
-                  <ul class="list-disc pl-4 space-y-1">
-                    <li><code class="font-mono text-[10px]">concurrency.group</code> — required to enable; shared lock name</li>
-                    <li><code class="font-mono text-[10px]">mode</code> — <code class="font-mono text-[10px]">discard-old</code> (YAML default), <code class="font-mono text-[10px]">queue</code>, or <code class="font-mono text-[10px]">discard-new</code></li>
-                    <li><code class="font-mono text-[10px]">max-queue</code> (1–100, default 3) — only when mode is <code class="font-mono text-[10px]">queue</code></li>
-                    <li><code class="font-mono text-[10px]">queue-timeout</code> (default 30m) — only when mode is <code class="font-mono text-[10px]">queue</code></li>
-                  </ul>
-                  <p>
-                    Change via
-                    <button type="button" class="text-primary underline underline-offset-2" @click="openEditDialog">Edit YAML</button>
-                    (<code class="font-mono text-[10px]">concurrency:</code> block). Save writes the file and applies immediately.
-
-                    Applies to new jobs; already-created job snapshots stay frozen.
-                  </p>
-                </div>
-              </div>
-
-              <!-- ── Notify (always shown) ── -->
-              <div class="border-t border-border/20 px-5 py-4">
-                <div class="flex items-center gap-2 mb-3">
-                  <Bell class="h-3.5 w-3.5 text-sky-500" />
-                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notify</span>
-                  <span v-if="pipelineNotify.length" class="text-xs text-muted-foreground/50 ml-auto">{{ pipelineNotify.length }} channel{{ pipelineNotify.length !== 1 ? 's' : '' }}</span>
-                  <button
-                    v-else
-                    type="button"
-                    class="ml-auto inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
-                    @click="openEditDialog"
-                  >
-                    <Pencil class="h-3 w-3" />
-                    Edit YAML
-                  </button>
-                </div>
-
-                <template v-if="pipelineNotify.length">
-                  <div class="space-y-2">
-                    <div
-                      v-for="(ch, i) in pipelineNotify"
-                      :key="i"
-                      class="flex flex-wrap items-center gap-2 text-xs"
+                    <h2 class="mt-0.5 text-[17px] font-semibold tracking-tight">Definition</h2>
+                    <p class="mt-0.5 truncate text-[10.5px] text-muted-foreground" :title="defHeaderSub">
+                      {{ defHeaderSub }}
+                    </p>
+                    <p
+                      v-if="definitionView.description"
+                      class="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground line-clamp-2"
+                      :title="definitionView.description"
                     >
-                      <span class="text-muted-foreground">Type</span>
-                      <code class="mono-chip text-xs">{{ ch.type }}</code>
-                      <span class="text-muted-foreground ml-1">Webhook</span>
-                      <code class="mono-chip text-xs truncate max-w-[20rem]" :title="ch.webhook">{{ ch.webhook }}</code>
-                      <span class="text-muted-foreground ml-1">On</span>
-                      <span class="font-mono text-foreground/80">{{ (ch.on && ch.on.length ? ch.on : ['success', 'failure']).join(', ') }}</span>
-                    </div>
+                      {{ definitionView.description }}
+                    </p>
                   </div>
-                  <p class="mt-2 text-xs text-muted-foreground leading-relaxed">
-                    Manager sends an end-of-build card when the job reaches a matching terminal status.
-                    Set <code class="font-mono text-[10px]">server.public_base_url</code> for a View Job link.
-                  </p>
-                </template>
-                <template v-else>
-                  <div class="flex flex-wrap items-center gap-2 text-xs">
-                    <span class="text-muted-foreground">Status</span>
-                    <span class="font-semibold rounded-sm px-1.5 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
-                    <span class="text-muted-foreground ml-1">Add</span>
-                    <code class="font-mono text-[10px] rounded-sm px-1.5 py-0.5 border bg-sky-500/10 text-sky-700 border-sky-500/20">notify:</code>
-                    <span class="text-muted-foreground">in YAML (e.g. Feishu webhook via Secrets)</span>
-                  </div>
-                </template>
-              </div>
-
-              <!-- ── Declared deployment environments ── -->
-              <div class="border-t border-border/20 px-5 py-4">
-                <div class="flex items-center gap-2 mb-3">
-                  <Server class="h-3.5 w-3.5 text-teal-500" />
-                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Declared environments</span>
-                  <span class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.environments.length }}</span>
                 </div>
-                <div v-if="definitionView.environments.length" class="flex flex-wrap gap-2">
-                  <code v-for="slug in definitionView.environments" :key="slug" class="mono-chip text-xs">{{ slug }}</code>
-                </div>
-                <p v-else class="text-xs text-destructive">No environments declared; this pipeline cannot be triggered.</p>
-                <p class="mt-2 text-[11px] text-muted-foreground">Every run must select one of these registered environment slugs. Manual inputs named “environment” do not select the deployment environment.</p>
-              </div>
-
-              <!-- ── Environment (pipeline-level env:) ── -->
-              <div
-                v-if="definitionView.envEntries.length"
-                class="border-t border-border/20 px-5 py-4"
-              >
-                <div class="flex items-center gap-2 mb-3">
-                  <Braces class="h-3.5 w-3.5 text-teal-500" />
-                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Environment</span>
-                  <span class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.envEntries.length }}</span>
-                </div>
-                <dl class="space-y-2">
+                <div class="flex shrink-0 flex-wrap items-center gap-2">
                   <div
-                    v-for="e in definitionView.envEntries"
-                    :key="e.name"
-                    class="grid grid-cols-[minmax(8rem,12rem)_1fr] gap-x-4 gap-y-0.5 items-baseline text-xs"
+                    v-if="pipeline?.source === 'yaml'"
+                    class="inline-flex items-center gap-0.5 rounded-lg border border-border/60 bg-card p-0.5"
+                    role="group"
+                    aria-label="Definition view"
                   >
-                    <dt class="font-mono text-muted-foreground truncate" :title="e.name">{{ e.name }}</dt>
-                    <dd class="font-mono text-foreground/85 break-all leading-relaxed">{{ e.value || '—' }}</dd>
-                  </div>
-                </dl>
-              </div>
-
-              <!-- ── Parameters ── -->
-              <div v-if="defHasInputDefs" class="border-t border-border/20 px-5 py-4">
-                <div class="flex items-center gap-2 mb-3">
-                  <Sliders class="h-3.5 w-3.5 text-orange-500" />
-                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Parameters</span>
-                  <span class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.input_defs.length }}</span>
-                </div>
-                <div class="divide-y divide-border/20 -mx-5">
-                  <div
-                    v-for="inp in definitionView.input_defs"
-                    :key="inp.name"
-                    class="px-5 py-2.5 flex items-center gap-3 text-xs"
-                  >
-                    <span class="font-mono font-semibold text-foreground w-36 shrink-0">{{ inp.name }}</span>
-                    <span v-if="inp.description" class="text-muted-foreground min-w-0">{{ inp.description }}</span>
-                    <span v-else class="italic text-muted-foreground/50">—</span>
-                    <span class="flex-1" />
-                    <span
-                      v-if="inp.type || inp.pattern || inp.options?.length"
-                      class="inline-flex items-center overflow-hidden rounded-full border border-sky-500/20 shrink-0 max-w-[20rem]"
+                    <button
+                      type="button"
+                      :aria-pressed="defView === 'overview'"
+                      class="rounded-md px-2.5 py-1 text-[10.5px] font-medium transition-colors"
+                      :class="defView === 'overview' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'"
+                      @click="defView = 'overview'"
                     >
-                      <span
-                        class="px-2 py-0.5 font-medium bg-sky-500/10 text-sky-600"
-                        :title="typeHint(inp.type || '')"
-                      >{{ inp.type || 'any' }}</span>
-                      <span
-                        v-if="inp.pattern"
-                        class="px-2 py-0.5 font-mono text-[10px] bg-cyan-500/10 text-cyan-600 border-l border-cyan-500/20"
-                        :title="`Regex — validated at trigger: /${inp.pattern}/`"
-                      >/{{ inp.pattern }}/</span>
-                      <span
-                        v-if="inp.options?.length"
-                        class="px-2 py-0.5 font-mono text-[10px] bg-teal-500/10 text-teal-600 border-l border-teal-500/20"
-                        title="Allowed values"
-                      >{{ inp.options.join(', ') }}</span>
-                    </span>
-                    <span
-                      class="font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0"
-                      :class="inp.required ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20' : 'bg-slate-500/10 text-slate-500 border border-slate-500/20'"
-                    >{{ inp.required ? 'required' : 'optional' }}</span>
-                    <span
-                      v-if="inp.masking"
-                      class="font-medium rounded-full px-2 py-0.5 uppercase tracking-wide shrink-0 bg-violet-500/10 text-violet-600 border border-violet-500/20"
-                      title="Redacted in logs, audit, and job snapshots"
-                    >masking</span>
-                    <span v-if="inp.default && !inp.masking" class="text-muted-foreground font-mono shrink-0">= {{ inp.default }}</span>
-                    <span v-else-if="inp.default && inp.masking" class="text-muted-foreground font-mono shrink-0">= ***</span>
-                    <span v-else class="text-muted-foreground/35 italic font-mono shrink-0 select-none">= ?</span>
+                      Overview
+                    </button>
+                    <button
+                      type="button"
+                      :aria-pressed="defView === 'source'"
+                      class="rounded-md px-2.5 py-1 text-[10.5px] font-medium transition-colors"
+                      :class="defView === 'source' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'"
+                      @click="defView = 'source'"
+                    >
+                      Source
+                    </button>
                   </div>
+                  <UiButton size="sm" variant="outline" @click="openEditDialog">
+                    <Pencil class="h-3.5 w-3.5" />
+                    Edit YAML
+                  </UiButton>
                 </div>
               </div>
 
-              <!-- ── Steps ── -->
-              <div class="border-t border-border/20 px-5 py-4">
-                <div class="flex items-center gap-2 mb-3">
-                  <List class="h-3.5 w-3.5 text-indigo-500" />
-                  <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Steps</span>
-                  <span v-if="(definitionView.tasks || []).length" class="text-xs text-muted-foreground/50 ml-auto">{{ definitionView.tasks.length }}</span>
-                </div>
-                <div v-if="!(definitionView.tasks || []).length" class="py-8 text-center text-xs text-muted-foreground/50">
-                  No steps defined.
-                </div>
-                <div v-else class="divide-y divide-border/20 -mx-5">
-                  <div
-                    v-for="(step, idx) in definitionView.tasks"
-                    :key="idx"
-                    class="px-5 py-3.5"
-                  >
-                    <!-- Step header: number, name, engine badge, flags, metadata -->
-                    <div class="flex items-center gap-2 mb-2 flex-wrap text-xs">
-                      <span class="font-mono font-bold text-muted-foreground/70 tabular-nums w-6">
-                        {{ String(Number(idx) + 1).padStart(2, '0') }}
+              <template v-if="defView === 'overview'">
+                <div class="mb-4 overflow-hidden rounded-2xl border border-border/60 bg-card">
+                  <div class="grid grid-cols-1 divide-y divide-border/60 sm:grid-cols-2 sm:divide-y-0 xl:grid-cols-4 xl:divide-x xl:divide-border/60">
+                    <div class="flex items-start gap-2.5 px-4 py-3.5">
+                      <span class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                        <Zap class="h-3.5 w-3.5" />
                       </span>
-                      <span class="font-semibold text-foreground">{{ step.name }}</span>
-                      <span class="mono-chip text-xs font-medium">{{ step.exec_type }}</span>
-
-                      <!-- Timeout -->
-                      <span v-if="step.timeout_seconds > 0" class="inline-flex items-center gap-1 text-muted-foreground/70">
-                        <Clock class="h-3 w-3" />
-                        <span class="font-mono">{{ step.timeout_seconds }}s</span>
-                      </span>
-
-                      <!-- Retry -->
-                      <span v-if="step.retry_count > 0" class="inline-flex items-center gap-1 text-muted-foreground/70">
-                        <RotateCw class="h-3 w-3" />
-                        <span class="font-mono">{{ step.retry_count }}</span>
-                      </span>
-
-                      <span class="flex-1" />
-
-                      <!-- Flags: continue-on-error, privileged -->
-                      <span v-if="step.fail_strategy === 'continue'" class="font-medium text-amber-600 bg-amber-500/8 border border-amber-500/20 rounded-sm px-1.5 py-0.5">
-                        continue-on-error
-                      </span>
-                      <span v-if="(step as any).privileged" class="font-semibold text-red-500 bg-red-500/8 border border-red-500/20 rounded-sm px-1.5 py-0.5 uppercase tracking-wider">
-                        privileged
-                      </span>
-                      <span
-                        v-if="(step as any).capabilities?.length"
-                        class="font-semibold text-red-600 bg-red-500/10 border border-red-500/25 rounded-sm px-1.5 py-0.5"
-                        title="Plugin-requested capabilities are not grants; each Runner administrator must separately authorize them locally."
-                      >requests: {{ (step as any).capabilities.join(', ') }}</span>
-                      <span
-                        v-if="(step as any).capabilities?.includes('docker-socket')"
-                        class="font-medium text-amber-700"
-                      >High privilege: Runner admin must set <code>docker_socket_allowed = true</code> in local Runner config.</span>
-                    </div>
-
-                    <!-- Docker engine extras: image + volumes + pull secret -->
-                    <div v-if="step.image || step.volumes || step.registry_secret" class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-xs">
-                      <span v-if="step.image" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs w-8">image</span>
-                        <code class="mono-chip text-xs">{{ step.image }}</code>
-                      </span>
-                      <span v-if="step.registry_secret" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs">registry secret</span>
-                        <code class="mono-chip text-xs">{{ step.registry_secret }}</code>
-                        <span class="text-amber-600 dark:text-amber-400" title="Legacy compatibility only; use buz/docker-login before registry operations.">Deprecated · use buz/docker-login</span>
-                      </span>
-                      <span v-if="step.volumes" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs w-14">volumes</span>
-                        <code class="mono-chip text-xs">{{ Array.isArray(step.volumes) ? (step.volumes as string[]).join(', ') : step.volumes }}</code>
-                      </span>
-                    </div>
-
-                    <!-- Nested config: deliver / render -->
-                    <div
-                      v-if="(step as any).config_source || (step as any).config_key_path || (step as any).config_dest || formatConfigRenderSummary((step as any).config_render)"
-                      class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-xs"
-                    >
-                      <span v-if="(step as any).config_source" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs">config.source</span>
-                        <code class="mono-chip text-xs">{{ (step as any).config_source }}</code>
-                        <span class="text-amber-600 dark:text-amber-400" title="Legacy compatibility only; fetch with buz/config-fetch, then use config.render.">Deprecated · use buz/config-fetch</span>
-                      </span>
-                      <span v-if="(step as any).config_key_path" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs">key_path</span>
-                        <code class="mono-chip text-xs">{{ (step as any).config_key_path }}</code>
-                        <span class="text-amber-600 dark:text-amber-400" title="Legacy compatibility only; pass a complete bundle URL to buz/config-fetch.">Deprecated · use buz/config-fetch</span>
-                      </span>
-                      <span v-if="(step as any).config_dest" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs">dest</span>
-                        <code class="mono-chip text-xs">{{ (step as any).config_dest }}</code>
-                      </span>
-                      <span
-                        v-if="formatConfigRenderSummary((step as any).config_render)"
-                        class="inline-flex items-center gap-1"
-                      >
-                        <span class="text-muted-foreground/60 text-xs">render</span>
-                        <code class="mono-chip text-xs">{{ formatConfigRenderSummary((step as any).config_render) }}</code>
-                      </span>
-                    </div>
-
-                    <!-- Step-level env: -->
-                    <div
-                      v-if="step.step_env && typeof step.step_env === 'object' && Object.keys(step.step_env).length"
-                      class="mb-2"
-                    >
-                      <dl class="space-y-1">
+                      <div class="min-w-0">
+                        <div class="text-[8.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/70">Trigger</div>
+                        <div class="mt-0.5 text-[11.5px] text-foreground/80">{{ triggerSummary }}</div>
                         <div
-                          v-for="(val, key) in step.step_env"
-                          :key="String(key)"
-                          class="grid grid-cols-[minmax(5rem,9rem)_1fr] gap-x-3 items-baseline text-xs"
+                          v-if="triggerDetail"
+                          class="mt-0.5 truncate font-mono text-[9.5px] text-muted-foreground"
+                          :title="triggerDetail"
+                        >{{ triggerDetail }}</div>
+                      </div>
+                    </div>
+                    <div class="flex items-start gap-2.5 px-4 py-3.5">
+                      <span class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                        <Server class="h-3.5 w-3.5" />
+                      </span>
+                      <div class="min-w-0">
+                        <div class="text-[8.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/70">Runner</div>
+                        <div class="mt-0.5 break-words font-mono text-[10.5px] text-foreground/80">{{ runnerSummary }}</div>
+                      </div>
+                    </div>
+                    <div class="flex items-start gap-2.5 px-4 py-3.5">
+                      <span class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                        <Layers class="h-3.5 w-3.5" />
+                      </span>
+                      <div class="min-w-0">
+                        <div class="text-[8.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/70">Environments</div>
+                        <div
+                          class="mt-0.5 break-words text-[11.5px]"
+                          :class="(definitionView.environments || []).length ? 'text-foreground/80' : 'text-destructive'"
+                        >{{ environmentsSummary }}</div>
+                        <div
+                          v-if="!(definitionView.environments || []).length"
+                          class="mt-0.5 text-[9px] leading-snug text-destructive"
                         >
-                          <dt class="font-mono text-muted-foreground/70 truncate" :title="String(key)">{{ key }}</dt>
-                          <dd class="font-mono text-foreground/80 break-all leading-relaxed">{{ val }}</dd>
+                          A run needs one declared environment.
                         </div>
-                      </dl>
-                    </div>
-
-                    <!-- Other step metadata: SSH hosts, host labels, dir -->
-                    <div
-                      v-if="sshHostDisplay(step) || step.host_labels || step.work_dir || step.hosts_strategy"
-                      class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-xs"
-                    >
-                      <span v-if="step.work_dir" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs w-8">dir</span>
-                        <code class="mono-chip text-xs">{{ step.work_dir }}</code>
-                      </span>
-                      <span v-if="sshHostDisplay(step)" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs w-14">host</span>
-                        <code class="mono-chip text-xs">{{ sshHostDisplay(step) }}</code>
-                      </span>
-                      <span v-if="step.host_labels" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs w-14">labels</span>
-                        <code class="mono-chip text-xs">{{ step.host_labels }}</code>
-                      </span>
-                      <span v-if="step.hosts_strategy" class="inline-flex items-center gap-1">
-                        <span class="text-muted-foreground/60 text-xs w-16">strategy</span>
-                        <code class="mono-chip text-xs">{{ step.hosts_strategy }}</code>
-                      </span>
-                    </div>
-
-                    <div v-if="step.marketplace" class="mt-2 rounded-lg border border-border/40 bg-muted/20 px-2.5 py-2 text-[10px] font-mono text-muted-foreground/70 space-y-1">
-                      <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <span class="font-semibold text-foreground/70">{{ step.marketplace.uses_ref }}</span>
-                        <span v-if="step.marketplace.resolved_version">v{{ step.marketplace.resolved_version }}</span>
-                        <span v-if="step.marketplace.reviewed != null" :class="step.marketplace.reviewed ? 'text-emerald-600' : 'text-amber-600'">{{ step.marketplace.reviewed ? 'reviewed' : 'unreviewed' }}</span>
                       </div>
-                      <div v-if="step.marketplace.content_sha256" class="break-all">sha256:{{ step.marketplace.content_sha256 }}</div>
-                      <div v-if="step.marketplace.source" class="break-all">source: {{ step.marketplace.source }}</div>
-                      <div v-if="step.marketplace.inputs?.length" class="space-y-0.5">
-                        <div class="text-[9px] uppercase tracking-wide text-muted-foreground/60">Declared plugin inputs</div>
-                        <div v-for="input in step.marketplace.inputs" :key="input.name || input['name']" class="break-all">{{ input['name'] }}<span v-if="input['required'] === true || input['required'] === 'true'"> (required)</span><span v-if="input['description']"> — {{ input['description'] }}</span></div>
+                    </div>
+                    <div class="flex items-start gap-2.5 px-4 py-3.5">
+                      <span class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                        <List class="h-3.5 w-3.5" />
+                      </span>
+                      <div class="min-w-0">
+                        <div class="text-[8.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/70">Steps</div>
+                        <div class="mt-0.5 text-[11.5px] text-foreground/80">
+                          <strong class="text-[15px] font-semibold text-foreground">{{ definitionTasks.length }}</strong>
+                          <span class="ml-1 text-muted-foreground">{{ pluginStepCount }} plugin · {{ definitionTasks.length - pluginStepCount }} inline</span>
+                        </div>
                       </div>
-                      <div v-if="step.capabilities?.length" class="font-semibold text-red-600" title="Runner admins authorize capabilities separately in local Runner configuration.">Requests (not grants): {{ step.capabilities.join(', ') }}</div>
-                      <div v-if="step.capabilities?.includes('docker-socket')" class="text-amber-700">High privilege: Docker socket access gives root-equivalent control of the Runner's Docker host. A Runner administrator must enable <code>docker_socket_allowed = true</code> locally.</div>
-                      <div v-if="step.privileged" class="font-semibold text-red-600">High privilege: privileged container requested.</div>
                     </div>
-                    <div v-else-if="step.uses" class="mt-2 rounded-lg border border-border/40 bg-muted/20 px-2.5 py-2 text-[10px] font-mono text-muted-foreground/70 space-y-1">
-                      <div class="font-semibold text-foreground/70">{{ step.uses }}</div>
-                      <div v-if="Object.keys(step.plugin_inputs || {}).length" class="space-y-0.5">
-                        <div class="text-[9px] uppercase tracking-wide text-muted-foreground/60">Requested inputs</div>
-                        <div v-for="(value, key) in step.plugin_inputs" :key="String(key)" class="break-all"><span class="text-muted-foreground/50">{{ key }}:</span> {{ value }}</div>
-                      </div>
-                      <div v-if="step.capabilities?.length" class="font-semibold text-red-600" title="Runner admins authorize capabilities separately in local Runner configuration.">Requests (not grants): {{ step.capabilities.join(', ') }}</div>
-                      <div v-if="step.capabilities?.includes('docker-socket')" class="text-amber-700">High privilege: Docker socket access gives root-equivalent control of the Runner's Docker host. A Runner administrator must enable <code>docker_socket_allowed = true</code> locally.</div>
-                      <div v-if="step.privileged" class="font-semibold text-red-600">High privilege: privileged container requested.</div>
-                    </div>
-                    <!-- Step secrets badge -->
-                    <div v-if="step.step_secrets" class="flex items-center gap-1.5 mb-2 text-xs text-muted-foreground/70">
-                      <span>step secrets:</span>
-                      <code class="mono-chip text-xs">{{ step.step_secrets }}</code>
-                    </div>
+                  </div>
 
-                    <!-- Command block — keep text node flush against tags so
-                         whitespace-pre-wrap does not indent the first line -->
-                    <div class="relative font-mono text-xs leading-relaxed text-foreground/80 bg-muted/30 rounded-lg px-3.5 py-2.5 whitespace-pre-wrap break-all border border-border/25"><div class="absolute left-0 top-1 bottom-1 w-0.5 rounded-full bg-border/30" aria-hidden="true" />{{ step.command_template }}</div>
+                  <div class="border-t border-border/60 bg-muted/30">
+                    <details class="def-details group border-b border-border/60 last:border-b-0">
+                      <summary class="flex cursor-pointer list-none items-center gap-2.5 px-4 py-2.5 transition-colors hover:bg-card [&::-webkit-details-marker]:hidden">
+                        <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                          <Sliders class="h-3.5 w-3.5" />
+                        </span>
+                        <span class="min-w-0 flex-1">
+                          <span class="block text-[11.5px] font-medium text-foreground">Interface</span>
+                          <span class="block truncate text-[10px] text-muted-foreground">{{ interfaceSummary }}</span>
+                        </span>
+                        <ChevronRight class="def-chevron h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      </summary>
+                      <div class="border-t border-border/50 bg-card px-4 py-3">
+                        <div v-if="interfaceHasAny" class="space-y-4">
+                          <div v-if="(definitionView.input_defs || []).length" class="min-w-0">
+                            <div class="mb-1.5 flex items-center justify-between text-[9.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground/70">
+                              <span>Parameters</span>
+                              <span class="font-mono text-[9px] font-normal">{{ definitionView.input_defs.length }}</span>
+                            </div>
+                            <div class="overflow-hidden rounded-lg border border-border/50">
+                              <div
+                                v-for="inp in definitionView.input_defs"
+                                :key="inp.name"
+                                class="grid grid-cols-1 gap-2 border-t border-border/50 px-3 py-2 first:border-t-0 sm:grid-cols-[minmax(9rem,15rem)_minmax(0,1fr)] sm:items-start"
+                              >
+                                <div class="min-w-0">
+                                  <div class="break-all font-mono text-[11px] leading-snug text-foreground/85">{{ inp.name }}</div>
+                                  <div
+                                    v-if="inp.description"
+                                    class="mt-0.5 text-[10px] leading-relaxed text-muted-foreground"
+                                  >
+                                    {{ inp.description }}
+                                  </div>
+                                </div>
+                                <div class="flex min-w-0 flex-wrap items-center gap-1.5">
+                                  <span
+                                    v-if="inp.type"
+                                    class="rounded-sm border border-sky-500/20 bg-sky-500/10 px-1 py-0.5 text-[9px] text-sky-600"
+                                    :title="typeHint(inp.type)"
+                                  >{{ inp.type }}</span>
+                                  <span
+                                    v-if="inp.pattern"
+                                    class="break-all whitespace-normal rounded-sm border border-cyan-500/20 bg-cyan-500/10 px-1 py-0.5 font-mono text-[9px] leading-snug text-cyan-600"
+                                    :title="`Regex — validated at trigger: /${inp.pattern}/`"
+                                  >/{{ inp.pattern }}/</span>
+                                  <span
+                                    v-if="inp.options?.length"
+                                    class="break-all whitespace-normal rounded-sm border border-teal-500/20 bg-teal-500/10 px-1 py-0.5 font-mono text-[9px] leading-snug text-teal-600"
+                                    :title="inp.options.join(', ')"
+                                  >{{ inp.options.join(', ') }}</span>
+                                  <span
+                                    v-if="inp.masking"
+                                    class="rounded-sm border border-violet-500/20 bg-violet-500/10 px-1 py-0.5 text-[9px] text-violet-600"
+                                    title="Redacted in logs, audit, and job snapshots"
+                                  >masking</span>
+                                  <span
+                                    class="rounded-sm border px-1 py-0.5 text-[9px]"
+                                    :class="inp.required ? 'border-amber-500/20 bg-amber-500/10 text-amber-600' : 'border-border/50 bg-muted text-muted-foreground'"
+                                  >{{ inp.required ? 'required' : 'optional' }}</span>
+                                  <span
+                                    v-if="inp.default"
+                                    class="break-all font-mono text-[9px] text-muted-foreground"
+                                  >
+                                    {{ inp.masking ? '= ***' : `= ${inp.default}` }}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div
+                            v-if="((definitionView.variableNames || []).length + (definitionView.secretNames || []).length + (definitionView.envEntries || []).length) > 0"
+                            class="grid grid-cols-1 gap-4 lg:grid-cols-3"
+                          >
+                            <div v-if="(definitionView.variableNames || []).length" class="min-w-0">
+                              <div class="mb-1.5 flex items-center justify-between text-[9.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground/70">
+                                <span>Variables</span>
+                                <span class="font-mono text-[9px] font-normal">{{ definitionView.variableNames.length }}</span>
+                              </div>
+                              <div class="flex flex-wrap gap-1">
+                                <code
+                                  v-for="name in definitionView.variableNames"
+                                  :key="name"
+                                  class="inline-block max-w-full break-all rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] leading-tight text-foreground/75"
+                                >{{ name }}</code>
+                              </div>
+                            </div>
+                            <div v-if="(definitionView.secretNames || []).length" class="min-w-0">
+                              <div class="mb-1.5 flex items-center justify-between text-[9.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground/70">
+                                <span>Secrets</span>
+                                <span class="font-mono text-[9px] font-normal">{{ definitionView.secretNames.length }}</span>
+                              </div>
+                              <div class="flex flex-wrap gap-1">
+                                <code
+                                  v-for="name in definitionView.secretNames"
+                                  :key="name"
+                                  class="inline-block max-w-full break-all rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] leading-tight text-foreground/75"
+                                >{{ name }}</code>
+                              </div>
+                            </div>
+                            <div v-if="(definitionView.envEntries || []).length" class="min-w-0">
+                              <div class="mb-1.5 flex items-center justify-between text-[9.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground/70">
+                                <span>Pipeline env</span>
+                                <span class="font-mono text-[9px] font-normal">{{ definitionView.envEntries.length }}</span>
+                              </div>
+                              <div
+                                v-for="entry in definitionView.envEntries"
+                                :key="entry.name"
+                                class="break-all py-0.5 font-mono text-[10px] leading-relaxed"
+                              >
+                                <span class="text-muted-foreground/70">{{ entry.name }}</span>
+                                <span class="text-muted-foreground/40"> = </span>
+                                <span class="text-foreground/80">{{ entry.value }}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <p v-else class="text-xs text-muted-foreground">No interface declared.</p>
+                      </div>
+                    </details>
+
+                    <details class="def-details group border-b border-border/60 last:border-b-0">
+                      <summary class="flex cursor-pointer list-none items-center gap-2.5 px-4 py-2.5 transition-colors hover:bg-card [&::-webkit-details-marker]:hidden">
+                        <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                          <Zap class="h-3.5 w-3.5" />
+                        </span>
+                        <span class="min-w-0 flex-1">
+                          <span class="block text-[11.5px] font-medium text-foreground">Execution</span>
+                          <span class="block truncate text-[10px] text-muted-foreground">{{ executionSummary }}</span>
+                        </span>
+                        <ChevronRight class="def-chevron h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      </summary>
+                      <div class="border-t border-border/50 bg-card px-4 py-3">
+                        <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                          <div>
+                            <div class="text-[9.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground/70">Concurrency</div>
+                            <div v-if="pipelineConcurrency?.configured" class="mt-1 flex flex-wrap items-center gap-1.5">
+                              <code class="mono-chip text-[10px]">{{ pipelineConcurrency.group }}</code>
+                              <span
+                                class="rounded-sm border px-1 py-0.5 text-[9px] font-medium"
+                                :class="{
+                                  'border-amber-500/20 bg-amber-500/10 text-amber-600': pipelineConcurrency.mode === 'queue',
+                                  'border-blue-500/20 bg-blue-500/10 text-blue-600': pipelineConcurrency.mode === 'discard-new',
+                                  'border-emerald-500/20 bg-emerald-500/10 text-emerald-600': pipelineConcurrency.mode === 'discard-old',
+                                }"
+                              >{{ pipelineConcurrency.mode }}</span>
+                              <span v-if="pipelineConcurrency.mode === 'queue'" class="font-mono text-[10px] text-muted-foreground">
+                                max {{ pipelineConcurrency.maxQueue }} · {{ formatConcurrencyTimeout(pipelineConcurrency.queueTimeoutSec) }}
+                              </span>
+                            </div>
+                            <span v-else class="mt-1 inline-flex rounded-sm border border-border/50 bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                              not configured
+                            </span>
+                            <p class="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                              {{ pipelineConcurrencyHint(!!pipelineConcurrency?.configured, pipelineConcurrency?.mode ?? null) }}
+                            </p>
+                          </div>
+                          <div>
+                            <div class="text-[9.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground/70">Job timeout</div>
+                            <div class="mt-1 font-mono text-xs text-foreground/80">{{ formatConcurrencyTimeout(definitionView.timeout_seconds) }}</div>
+                          </div>
+                          <div>
+                            <div class="text-[9.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground/70">Notify</div>
+                            <template v-if="pipelineNotify.length">
+                              <div v-for="(channel, i) in pipelineNotify" :key="i" class="mt-1 text-[10px] text-foreground/80">
+                                <span class="font-mono">{{ channel.type }}</span>
+                                <span class="text-muted-foreground"> · {{ (channel.on && channel.on.length ? channel.on : ['success', 'failure']).join(', ') }}</span>
+                                <div class="truncate font-mono text-[9.5px] text-muted-foreground" :title="channel.webhook">{{ channel.webhook }}</div>
+                              </div>
+                            </template>
+                            <span v-else class="mt-1 inline-flex rounded-sm border border-border/50 bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                              not configured
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </details>
                   </div>
                 </div>
-              </div>
-            </div>
+
+                <section aria-label="Steps">
+                  <div class="mb-2.5 flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2">
+                      <h3 class="text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">Steps</h3>
+                      <span class="rounded-full border border-border/60 bg-card px-1.5 font-mono text-[9.5px] text-muted-foreground">{{ definitionTasks.length }}</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                      <button type="button" class="text-[10.5px] text-muted-foreground transition-colors hover:text-foreground" @click="expandAllDefSteps">Expand all</button>
+                      <button type="button" class="text-[10.5px] text-muted-foreground transition-colors hover:text-foreground" @click="collapseAllDefSteps">Collapse all</button>
+                    </div>
+                  </div>
+
+                  <div v-if="!definitionTasks.length" class="rounded-xl border border-border/60 bg-card px-4 py-8 text-center text-xs text-muted-foreground">
+                    No steps defined.
+                  </div>
+                  <div v-else class="space-y-2">
+                    <article
+                      v-for="(step, idx) in definitionTasks"
+                      :key="idx"
+                      class="rounded-xl border bg-card px-3.5 py-3 transition-colors"
+                      :class="isDefStepOpen(idx) ? 'border-foreground/15 shadow-sm' : 'border-border/60 hover:border-border'"
+                    >
+                      <button
+                        type="button"
+                        class="flex w-full items-center gap-2.5 text-left"
+                        :aria-expanded="isDefStepOpen(idx)"
+                        @click="toggleDefStep(idx)"
+                      >
+                        <span
+                          class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md font-mono text-[9.5px]"
+                          :class="isDefStepOpen(idx) ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'"
+                        >{{ String(idx + 1).padStart(2, '0') }}</span>
+                        <span class="min-w-0 flex-1">
+                          <span class="block truncate text-[13.5px] font-semibold tracking-tight text-foreground">{{ step.name || 'unnamed' }}</span>
+                          <span class="mt-0.5 flex items-center gap-1 font-mono text-[9.5px] text-muted-foreground">
+                            <Package v-if="stepIsPlugin(step)" class="h-2.5 w-2.5 shrink-0" />
+                            <Terminal v-else-if="step.exec_type === 'shell'" class="h-2.5 w-2.5 shrink-0" />
+                            <Server v-else-if="step.exec_type === 'ssh'" class="h-2.5 w-2.5 shrink-0" />
+                            <Box v-else class="h-2.5 w-2.5 shrink-0" />
+                            <span class="truncate">{{ stepSubLabel(step) }}</span>
+                            <span v-if="stepReviewed(step) === true" class="text-emerald-600">· reviewed</span>
+                            <span v-else-if="stepReviewed(step) === false" class="text-amber-600">· unreviewed</span>
+                            <span v-if="step.fail_strategy === 'continue'" class="text-amber-600">· continue-on-error</span>
+                          </span>
+                        </span>
+                        <span class="shrink-0 font-mono text-[9.5px] text-muted-foreground">{{ stepMetaLabel(step) }}</span>
+                        <ChevronRight
+                          class="def-chevron h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          :class="{ 'rotate-90': isDefStepOpen(idx) }"
+                        />
+                      </button>
+
+                      <p
+                        v-if="!isDefStepOpen(idx) && stepPreview(step)"
+                        class="mt-1.5 truncate pl-[34px] font-mono text-[10.5px] text-muted-foreground"
+                        :title="stepPreview(step)"
+                      >{{ stepPreview(step) }}</p>
+
+                      <div
+                        v-if="step.capabilities?.length"
+                        class="ml-[34px] mt-2 flex items-start gap-1.5 rounded-md border border-red-500/25 bg-red-500/5 px-2.5 py-1.5 text-[10px] leading-relaxed text-red-600"
+                      >
+                        <AlertTriangle class="mt-0.5 h-3 w-3 shrink-0" />
+                        <span>
+                          Requests <code class="font-mono">{{ step.capabilities.join(', ') }}</code> — not a grant; a Runner admin must authorize it locally.
+                          <template v-if="step.capabilities.includes('docker-socket')"> Docker socket access is root-equivalent on that host.</template>
+                        </span>
+                      </div>
+                      <div
+                        v-if="step.privileged"
+                        class="ml-[34px] mt-2 flex items-start gap-1.5 rounded-md border border-red-500/25 bg-red-500/5 px-2.5 py-1.5 text-[10px] leading-relaxed text-red-600"
+                      >
+                        <AlertTriangle class="mt-0.5 h-3 w-3 shrink-0" />
+                        <span>Privileged container requested — high privilege.</span>
+                      </div>
+                      <div
+                        v-if="stepDeprecatedFields(step).length"
+                        class="ml-[34px] mt-2 flex items-start gap-1.5 rounded-md border border-amber-500/25 bg-amber-500/5 px-2.5 py-1.5 text-[10px] leading-relaxed text-amber-700"
+                      >
+                        <AlertTriangle class="mt-0.5 h-3 w-3 shrink-0" />
+                        <span>Deprecated: {{ stepDeprecatedFields(step).join(' · ') }}</span>
+                      </div>
+
+                      <div v-if="isDefStepOpen(idx)" class="ml-[34px] mt-2.5 rounded-lg border border-border/60 bg-muted/40 p-3">
+                        <dl class="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2">
+                          <div class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Engine</dt>
+                            <dd class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ step.exec_type }}</dd>
+                          </div>
+                          <div v-if="step.timeout_seconds > 0" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Timeout</dt>
+                            <dd class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ formatConcurrencyTimeout(step.timeout_seconds) }}</dd>
+                          </div>
+                          <div v-if="step.retry_count > 0" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Retry</dt>
+                            <dd class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ step.retry_count }}</dd>
+                          </div>
+                          <div v-if="step.work_dir" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Work dir</dt>
+                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.work_dir }}</dd>
+                          </div>
+                          <div v-if="sshHostDisplay(step)" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Host</dt>
+                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ sshHostDisplay(step) }}</dd>
+                          </div>
+                          <div v-if="step.host_labels" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Host labels</dt>
+                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.host_labels }}</dd>
+                          </div>
+                          <div v-if="step.hosts_strategy" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Strategy</dt>
+                            <dd class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ step.hosts_strategy }}</dd>
+                          </div>
+                          <div v-if="step.image" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Image</dt>
+                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.image }}</dd>
+                          </div>
+                          <div v-if="step.volumes" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Volumes</dt>
+                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ Array.isArray(step.volumes) ? step.volumes.join(', ') : step.volumes }}</dd>
+                          </div>
+                          <div v-if="step.registry_secret" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Registry secret</dt>
+                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.registry_secret }}</dd>
+                          </div>
+                          <div v-if="step.config_source" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">config.source</dt>
+                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.config_source }}</dd>
+                          </div>
+                          <div v-if="step.config_key_path" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">config.key_path</dt>
+                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.config_key_path }}</dd>
+                          </div>
+                          <div v-if="step.config_dest" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">config.dest</dt>
+                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.config_dest }}</dd>
+                          </div>
+                          <div v-if="formatConfigRenderSummary(step.config_render)" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">config.render</dt>
+                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ formatConfigRenderSummary(step.config_render) }}</dd>
+                          </div>
+                          <div v-if="step.step_secrets" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Step secrets</dt>
+                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.step_secrets }}</dd>
+                          </div>
+                        </dl>
+
+                        <div v-if="stepEnvEntries(step).length" class="mt-3">
+                          <div class="mb-1 text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Step env</div>
+                          <div class="overflow-hidden rounded-md border border-border/60 bg-card">
+                            <div
+                              v-for="entry in stepEnvEntries(step)"
+                              :key="entry.name"
+                              class="grid grid-cols-[minmax(5rem,9rem)_1fr] gap-3 border-t border-border/50 px-2.5 py-1 first:border-t-0"
+                            >
+                              <span class="truncate font-mono text-[10px] text-muted-foreground/70" :title="entry.name">{{ entry.name }}</span>
+                              <span class="break-all font-mono text-[10px] text-foreground/80">{{ entry.value }}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div
+                          v-if="step.marketplace"
+                          class="mt-3 rounded-md border border-border/60 bg-card px-2.5 py-2 font-mono text-[9.5px] leading-relaxed text-muted-foreground/80"
+                        >
+                          <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                            <span class="font-semibold text-foreground/70">{{ step.marketplace.uses_ref }}</span>
+                            <span v-if="step.marketplace.resolved_version">v{{ step.marketplace.resolved_version }}</span>
+                            <span v-if="step.marketplace.reviewed != null" :class="step.marketplace.reviewed ? 'text-emerald-600' : 'text-amber-600'">{{ step.marketplace.reviewed ? 'reviewed' : 'unreviewed' }}</span>
+                          </div>
+                          <div v-if="step.marketplace.content_sha256" class="mt-1 break-all">sha256:{{ step.marketplace.content_sha256 }}</div>
+                          <div v-if="step.marketplace.source" class="break-all">source: {{ step.marketplace.source }}</div>
+                          <div v-if="step.marketplace.requires_buz" class="text-muted-foreground/60">Requires Buz {{ step.marketplace.requires_buz }}</div>
+                          <div v-if="step.marketplace.inputs?.length" class="mt-1 space-y-0.5">
+                            <div class="text-[8.5px] uppercase tracking-wide text-muted-foreground/60">Declared plugin inputs</div>
+                            <div v-for="input in step.marketplace.inputs" :key="input.name || input['name']" class="break-all">
+                              {{ input['name'] }}<span v-if="input['required'] === true || input['required'] === 'true'"> (required)</span><span v-if="input['description']"> — {{ input['description'] }}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div
+                          v-else-if="step.uses"
+                          class="mt-3 rounded-md border border-border/60 bg-card px-2.5 py-2 font-mono text-[9.5px] text-muted-foreground/80"
+                        >
+                          <div class="font-semibold text-foreground/70">{{ step.uses }}</div>
+                          <div v-for="(value, key) in (step.plugin_inputs || {})" :key="String(key)" class="mt-0.5 break-all">
+                            <span class="text-muted-foreground/50">{{ key }}:</span> {{ value }}
+                          </div>
+                        </div>
+
+                        <div
+                          v-if="step.command_template"
+                          class="mt-3 whitespace-pre-wrap break-words rounded-md border border-border/60 bg-card px-2.5 py-2 font-mono text-[10px] leading-relaxed text-foreground/80"
+                        >{{ step.command_template }}</div>
+                      </div>
+                    </article>
+                  </div>
+                </section>
+
+                <div class="mt-2 flex flex-wrap gap-x-3 gap-y-1 border-t border-border/50 pt-2.5 text-[9.5px] text-muted-foreground/70">
+                  <span>{{ defAuthorityLabel }}</span>
+                  <span>team {{ teamLabel(definitionView.team_id) }}</span>
+                  <span class="font-mono">id {{ definitionView.id?.slice(-8) }}</span>
+                </div>
+              </template>
+
+              <template v-else>
+                <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div class="flex items-center gap-2 text-[12.5px] font-semibold">
+                    <FileCode2 class="h-4 w-4 text-muted-foreground" />
+                    <span class="font-mono">{{ defHeaderFile || 'YAML' }}</span>
+                    <span class="inline-flex items-center gap-1 rounded-full border border-border/60 bg-card px-1.5 py-0.5 text-[9px] font-normal text-muted-foreground">
+                      <Lock class="h-2.5 w-2.5" />
+                      read-only
+                    </span>
+                  </div>
+                  <UiButton size="sm" variant="outline" :disabled="!defYamlSource" @click="copyDefSource">
+                    <Check v-if="defSourceCopied" class="h-3.5 w-3.5" />
+                    <Copy v-else class="h-3.5 w-3.5" />
+                    {{ defSourceCopied ? 'Copied' : 'Copy' }}
+                  </UiButton>
+                </div>
+                <p class="mb-2 text-[10.5px] text-muted-foreground">
+                  Read-only view of {{ defHeaderFile || 'the YAML file' }} · {{ definitionTasks.length }} steps
+                </p>
+                <div v-if="defYamlSource" class="grid grid-cols-1 gap-3 lg:grid-cols-[11rem_minmax(0,1fr)]">
+                  <nav class="rounded-xl border border-border/60 bg-card p-1.5 lg:max-h-[32rem] lg:overflow-y-auto" aria-label="YAML outline">
+                    <div class="px-1.5 pb-1 text-[8.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/60">
+                      Outline
+                    </div>
+                    <button
+                      v-for="item in sourceOutline"
+                      :key="item.key"
+                      type="button"
+                      class="flex w-full items-center justify-between gap-2 rounded-md px-1.5 py-1 text-left font-mono text-[10.5px] transition-colors"
+                      :class="[
+                        activeSourceOutline === item.key
+                          ? 'bg-muted text-foreground'
+                          : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                        item.sub ? 'pl-4' : '',
+                      ]"
+                      @click="jumpToSourceLine(item)"
+                    >
+                      <span class="truncate">{{ item.label }}</span>
+                      <span class="shrink-0 text-[9px] text-muted-foreground/50">{{ item.line }}</span>
+                    </button>
+                  </nav>
+                  <div class="h-[32rem] overflow-hidden rounded-xl border border-border/60 bg-card">
+                    <PipelineYamlCodeEditor ref="sourceEditorRef" v-model="defYamlSource" readonly class="h-full" />
+                  </div>
+                </div>
+                <div v-else class="rounded-xl border border-border/40 bg-card px-4 py-10 text-center text-xs text-muted-foreground">
+                  No YAML source available for this pipeline.
+                </div>
+              </template>
+            </template>
           </div>
 
           <!-- ======== TRIGGER EVENTS ======== -->
@@ -2483,3 +2769,12 @@ async function handleTrigger() {
     <PipelineYamlEditorDialog ref="yamlEditorRef" @saved="onYamlSaved" />
   </div>
 </template>
+
+<style scoped>
+.def-chevron {
+  transition: transform 0.15s ease, rotate 0.15s ease;
+}
+.def-details[open] .def-chevron {
+  transform: rotate(90deg);
+}
+</style>

@@ -6,7 +6,7 @@ import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import {
   Plus, X, Play, Trash2,
-  ChevronDown, ChevronRight, Loader2, Puzzle, Pencil, Minus, Snowflake, Clock, CircleHelp,
+  ChevronDown, ChevronRight, Loader2, Puzzle, Pencil, Minus, Snowflake, CircleHelp,
 } from '@lucide/vue'
 import {
   pipelinesApi,
@@ -37,12 +37,39 @@ const searchQuery = ref('')
 const filterTrigger = ref('')
 const filterSource = ref('')
 const filterActive = ref('')
+/** Status chip filter from the summary bar: '' = all, otherwise a job status
+ *  bucket; the pipeline table then shows only pipelines whose latest job
+ *  falls in that bucket (24h chips additionally check recency). */
+const statusFilter = ref<'' | 'running' | 'approval' | 'queued' | 'passed' | 'failed'>('')
+
+function toggleStatusFilter(key: 'running' | 'approval' | 'queued' | 'passed' | 'failed') {
+  statusFilter.value = statusFilter.value === key ? '' : key
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function pipelineInStatusBucket(p: Pipeline, key: typeof statusFilter.value): boolean {
+  const status = p.latest_job_status
+  if (!status) return false
+  // Buckets must mirror the summary-bar counts exactly:
+  // Approval = pending + waiting_approval (both need a human/Runner action).
+  if (key === 'running') return status === 'running'
+  if (key === 'approval') return status === 'pending' || status === 'waiting_approval'
+  if (key === 'queued') return status === 'queued'
+  // 24h buckets: pipeline rows only know the latest job's status; the row's
+  // updated_at advances when its jobs change, so require it to be recent.
+  const recent = p.updated_at != null && statNow.value - parseUtc(p.updated_at) < DAY_MS
+  if (!recent) return false
+  if (key === 'passed') return status === 'success'
+  return status === 'failed'
+}
 
 const filteredPipelines = computed(() => {
   let source = pipelines.value.filter((p) => auth.matchesActiveTeam(p.team_id))
   if (filterTrigger.value) source = source.filter((p) => p.trigger_type === filterTrigger.value)
   if (filterSource.value) source = source.filter((p) => p.source === filterSource.value)
   if (filterActive.value) source = source.filter((p) => (filterActive.value === 'active' ? p.is_active : !p.is_active))
+  if (statusFilter.value) source = source.filter((p) => pipelineInStatusBucket(p, statusFilter.value))
   const q = searchQuery.value.trim().toLowerCase()
   if (!q) return source
   return source.filter((p) => {
@@ -155,9 +182,8 @@ async function loadEnvironments() {
   }
 }
 
-// ── Jobs stats panel ──
+// ── Jobs status summary bar ──
 const allJobs = ref<Job[]>([])
-const statsExpanded = ref(false)
 const statNow = ref(Date.now())
 let statTimer: ReturnType<typeof setInterval> | null = null
 
@@ -168,7 +194,7 @@ const runningJobs = computed(() =>
   teamFilteredJobs.value.filter(j => j.status === 'running'),
 )
 const pendingJobs = computed(() =>
-  teamFilteredJobs.value.filter(j => j.status === 'pending'),
+  teamFilteredJobs.value.filter(j => j.status === 'pending' || j.status === 'waiting_approval'),
 )
 const queuedJobs = computed(() =>
   teamFilteredJobs.value.filter(j => j.status === 'queued'),
@@ -181,36 +207,23 @@ const activeCount = computed(() =>
   runningJobs.value.length + pendingJobs.value.length + queuedJobs.value.length,
 )
 
-function elapsed(ts: string | null | undefined): string {
-  if (!ts) return '—'
-  const diff = Math.max(0, Math.floor((statNow.value - parseUtc(ts)) / 1000))
-  if (diff < 60) return `${diff}s`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ${diff % 60}s`
-  return `${Math.floor(diff / 3600)}h ${Math.floor((diff % 3600) / 60)}m`
-}
-
-function jogNameLabel(j: Job): string {
-  return j.pipeline_name || j.pipeline_id?.slice(0, 8) || 'Unknown'
-}
-
-function runNum(job: Job): number {
-  const same = allJobs.value.filter(j => j.pipeline_id === job.pipeline_id)
-  const idx = same.findIndex(j => j.id === job.id)
-  return idx >= 0 ? same.length - idx : 0
-}
-
-function goJob(jobId: string) {
-  router.push(`/jobs/${jobId}`)
-}
-
-async function cancelStatsJob(jobId: string) {
-  try {
-    await jobsApi.cancel(jobId)
-    allJobs.value = allJobs.value.filter(j => j.id !== jobId)
-  } catch (e) {
-    console.error(e)
-  }
-}
+/** Terminal jobs in the last 24h, for the aggregate pass/fail counts. */
+const passedJobs24h = computed(() =>
+  teamFilteredJobs.value.filter(
+    (j) =>
+      j.status === 'success' &&
+      j.end_time != null &&
+      statNow.value - parseUtc(j.end_time) < DAY_MS,
+  ),
+)
+const failedJobs24h = computed(() =>
+  teamFilteredJobs.value.filter(
+    (j) =>
+      j.status === 'failed' &&
+      j.end_time != null &&
+      statNow.value - parseUtc(j.end_time) < DAY_MS,
+  ),
+)
 
 async function fetchJobs() {
   try {
@@ -231,17 +244,6 @@ function stopStatsTimer() {
   if (statTimer) {
     clearInterval(statTimer)
     statTimer = null
-  }
-}
-
-function toggleStats() {
-  statsExpanded.value = !statsExpanded.value
-  if (statsExpanded.value) {
-    stopStatsTimer()
-    statTimer = setInterval(() => { statNow.value = Date.now() }, 1000)
-  } else {
-    stopStatsTimer()
-    startStatsTimer()
   }
 }
 
@@ -446,135 +448,92 @@ async function handleToggleActive(p: Pipeline) {
       </template>
     </PageHeader>
 
-    <!-- ── Jobs stats panel ── -->
-    <div v-if="!loading && hasActiveJobs">
-      <div
-        class="flex items-center px-1 py-3.5 cursor-pointer select-none hover:bg-muted/10 transition-colors"
-        @click="toggleStats"
+    <!-- ── Jobs status summary bar (aggregate; click a status to filter) ── -->
+    <div
+      v-if="!loading && allJobs.length > 0"
+      class="mb-4 flex flex-wrap items-center gap-1 rounded-xl border border-border/60 bg-card px-2.5 py-2"
+      role="group"
+      aria-label="Run status summary — click a status to filter the table"
+    >
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] transition-colors"
+        :class="statusFilter === 'running' ? 'bg-muted font-medium text-foreground ring-1 ring-border' : 'text-foreground/80 hover:bg-muted/60'"
+        :aria-pressed="statusFilter === 'running'"
+        title="Show pipelines with a running job"
+        @click="toggleStatusFilter('running')"
       >
-        <div class="flex items-center gap-5">
-          <span v-if="runningJobs.length > 0" class="inline-flex items-baseline gap-2">
-            <span class="w-2.5 h-2.5 rounded-full bg-amber-500" />
-            <span class="text-sm font-semibold tabular-nums text-amber-500">{{ runningJobs.length }}</span>
-            <span class="text-xs text-amber-500/70 leading-none">running</span>
-          </span>
-          <span v-if="pendingJobs.length > 0" class="inline-flex items-baseline gap-2">
-            <span class="w-2.5 h-2.5 rounded-full bg-slate-400" />
-            <span class="text-sm font-semibold tabular-nums text-muted-foreground">{{ pendingJobs.length }}</span>
-            <span class="text-xs text-muted-foreground/50 leading-none">pending</span>
-          </span>
-          <span v-if="queuedJobs.length > 0" class="inline-flex items-baseline gap-2">
-            <span class="w-2.5 h-2.5 rounded-full bg-purple-400" />
-            <span class="text-sm font-semibold tabular-nums text-purple-400">{{ queuedJobs.length }}</span>
-            <span class="text-xs text-purple-400/70 leading-none">queued</span>
-          </span>
-        </div>
-
-        <div class="ml-auto flex items-center gap-2">
-          <span class="inline-flex items-baseline gap-1">
-            <span class="text-sm font-semibold tabular-nums text-muted-foreground/80">{{ activeCount }}</span>
-            <span class="text-xs text-muted-foreground/40 leading-none">of</span>
-            <span class="text-sm tabular-nums text-muted-foreground/60">{{ totalJobCount }}</span>
-          </span>
-          <button class="w-5 h-5 flex items-center justify-center">
-            <ChevronDown v-if="statsExpanded" class="h-4 w-4 text-muted-foreground/40" />
-            <ChevronRight v-else class="h-4 w-4 text-muted-foreground/40" />
-          </button>
-        </div>
-      </div>
-
-      <template v-if="statsExpanded">
-        <template v-if="runningJobs.length > 0">
-          <div class="border-t border-border/20" />
-          <div class="px-5 py-2 text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center justify-between">
-            <span>Running</span>
-            <span class="font-mono tabular-nums text-xs">{{ runningJobs.length }} job{{ runningJobs.length !== 1 ? 's' : '' }}</span>
-          </div>
-          <div class="divide-y divide-border/10">
-            <div
-              v-for="j in runningJobs"
-              :key="j.id"
-              class="px-5 py-2 flex items-center gap-3 text-sm hover:bg-muted/30 transition-colors cursor-pointer"
-              @click="goJob(j.id)"
-            >
-              <span class="font-mono text-xs w-10 tabular-nums text-muted-foreground/60 shrink-0">#{{ runNum(j) }}</span>
-              <span class="flex-1 font-medium text-foreground/80 truncate">{{ jogNameLabel(j) }}</span>
-              <span class="text-xs font-mono tabular-nums text-amber-500/80 shrink-0">
-                <Clock class="h-3.5 w-3.5 inline mr-0.5 -mt-px" />{{ elapsed(j.start_time) }}
-              </span>
-              <button
-                class="shrink-0 ml-1 rounded-sm p-0.5 hover:bg-red-500/10 transition-colors"
-                title="Cancel"
-                @click.stop="cancelStatsJob(j.id)"
-              >
-                <X class="h-4 w-4 text-red-400/70 hover:text-red-500 transition-colors" />
-              </button>
-            </div>
-          </div>
-        </template>
-
-        <template v-if="pendingJobs.length > 0">
-          <div class="border-t border-border/20" />
-          <div class="px-5 py-2 text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center justify-between">
-            <span>Pending</span>
-            <span class="font-mono tabular-nums text-xs">{{ pendingJobs.length }} job{{ pendingJobs.length !== 1 ? 's' : '' }}</span>
-          </div>
-          <div class="divide-y divide-border/10">
-            <div
-              v-for="j in pendingJobs"
-              :key="j.id"
-              class="px-5 py-2 flex items-center gap-3 text-sm hover:bg-muted/30 transition-colors cursor-pointer"
-              @click="goJob(j.id)"
-            >
-              <span class="font-mono text-xs w-10 tabular-nums text-muted-foreground/60 shrink-0">#{{ runNum(j) }}</span>
-              <span class="flex-1 font-medium text-foreground/80 truncate">{{ jogNameLabel(j) }}</span>
-              <span class="text-xs font-mono tabular-nums text-muted-foreground/50 shrink-0">{{ elapsed(j.created_at) }} ago</span>
-              <button
-                class="shrink-0 ml-1 rounded-sm p-0.5 hover:bg-red-500/10 transition-colors"
-                title="Cancel"
-                @click.stop="cancelStatsJob(j.id)"
-              >
-                <X class="h-4 w-4 text-red-400/70 hover:text-red-500 transition-colors" />
-              </button>
-            </div>
-          </div>
-        </template>
-
-        <template v-if="queuedJobs.length > 0">
-          <div class="border-t border-border/20" />
-          <div class="px-5 py-2 text-xs uppercase tracking-wider text-muted-foreground font-semibold flex items-center justify-between">
-            <span>Queued</span>
-            <span class="font-mono tabular-nums text-xs">{{ queuedJobs.length }} job{{ queuedJobs.length !== 1 ? 's' : '' }}</span>
-          </div>
-          <div class="divide-y divide-border/10">
-            <div
-              v-for="j in queuedJobs"
-              :key="j.id"
-              class="px-5 py-2 flex items-center gap-3 text-sm hover:bg-muted/30 transition-colors cursor-pointer"
-              @click="goJob(j.id)"
-            >
-              <span class="font-mono text-xs w-10 tabular-nums text-muted-foreground/60 shrink-0">#{{ runNum(j) }}</span>
-              <span class="flex-1 font-medium text-foreground/80 truncate">{{ jogNameLabel(j) }}</span>
-              <span class="text-xs font-mono tabular-nums text-muted-foreground/50 shrink-0">{{ elapsed(j.created_at) }} ago</span>
-              <button
-                class="shrink-0 ml-1 rounded-sm p-0.5 hover:bg-red-500/10 transition-colors"
-                title="Cancel"
-                @click.stop="cancelStatsJob(j.id)"
-              >
-                <X class="h-4 w-4 text-red-400/70 hover:text-red-500 transition-colors" />
-              </button>
-            </div>
-          </div>
-        </template>
-
-        <div class="border-t border-border/20" />
-        <div class="px-5 py-2 text-center">
-          <button
-            class="text-xs text-muted-foreground hover:text-foreground transition-colors"
-            @click="fetchJobs"
-          >Refresh</button>
-        </div>
-      </template>
+        <span class="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true"></span>
+        <span class="font-mono text-[12px] font-medium tabular-nums" :class="runningJobs.length === 0 && 'text-muted-foreground/50'">{{ runningJobs.length }}</span>
+        <span>Running</span>
+      </button>
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] transition-colors"
+        :class="statusFilter === 'approval' ? 'bg-muted font-medium text-foreground ring-1 ring-border' : 'text-foreground/80 hover:bg-muted/60'"
+        :aria-pressed="statusFilter === 'approval'"
+        title="Show pipelines waiting for approval"
+        @click="toggleStatusFilter('approval')"
+      >
+        <span class="h-1.5 w-1.5 rounded-full bg-violet-500" aria-hidden="true"></span>
+        <span class="font-mono text-[12px] font-medium tabular-nums" :class="pendingJobs.length === 0 && 'text-muted-foreground/50'">{{ pendingJobs.length }}</span>
+        <span>Approval</span>
+      </button>
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] transition-colors"
+        :class="statusFilter === 'queued' ? 'bg-muted font-medium text-foreground ring-1 ring-border' : 'text-foreground/80 hover:bg-muted/60'"
+        :aria-pressed="statusFilter === 'queued'"
+        title="Show pipelines with queued jobs"
+        @click="toggleStatusFilter('queued')"
+      >
+        <span class="h-1.5 w-1.5 rounded-full bg-sky-500" aria-hidden="true"></span>
+        <span class="font-mono text-[12px] font-medium tabular-nums" :class="queuedJobs.length === 0 && 'text-muted-foreground/50'">{{ queuedJobs.length }}</span>
+        <span>Queued</span>
+      </button>
+      <span class="mx-2 hidden h-3.5 w-px bg-border/60 sm:block" aria-hidden="true"></span>
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] transition-colors"
+        :class="statusFilter === 'passed' ? 'bg-muted font-medium text-foreground ring-1 ring-border' : 'text-foreground/80 hover:bg-muted/60'"
+        :aria-pressed="statusFilter === 'passed'"
+        title="Show pipelines that passed in the last 24h"
+        @click="toggleStatusFilter('passed')"
+      >
+        <span class="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>
+        <span class="font-mono text-[12px] font-medium tabular-nums" :class="passedJobs24h.length === 0 && 'text-muted-foreground/50'">{{ passedJobs24h.length }}</span>
+        <span>Passed · 24h</span>
+      </button>
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] transition-colors"
+        :class="statusFilter === 'failed' ? 'bg-muted font-medium text-foreground ring-1 ring-red-500/40' : 'text-foreground/80 hover:bg-muted/60'"
+        :aria-pressed="statusFilter === 'failed'"
+        title="Show pipelines that failed in the last 24h"
+        @click="toggleStatusFilter('failed')"
+      >
+        <span class="h-1.5 w-1.5 rounded-full bg-red-500" aria-hidden="true"></span>
+        <span class="font-mono text-[12px] font-medium tabular-nums" :class="failedJobs24h.length === 0 ? 'text-muted-foreground/50' : 'text-red-600'">{{ failedJobs24h.length }}</span>
+        <span>Failed · 24h</span>
+      </button>
+      <span class="ml-auto inline-flex items-center gap-2.5 pl-3 text-[10.5px] text-muted-foreground">
+        <span><strong class="font-mono font-medium text-foreground/70">{{ activeCount }}</strong> active · <strong class="font-mono font-medium text-foreground/70">{{ totalJobCount }}</strong> total</span>
+        <button
+          v-if="statusFilter"
+          type="button"
+          class="inline-flex items-center gap-1 rounded-md border border-border/60 px-1.5 py-0.5 text-[10px] transition-colors hover:bg-muted"
+          @click="statusFilter = ''"
+        >
+          Clear filter <X class="h-2.5 w-2.5" />
+        </button>
+        <span
+          class="inline-flex items-center gap-1 font-mono text-[8.5px] uppercase tracking-[0.08em] text-muted-foreground/60"
+          title="Auto-refreshes every 5s"
+        >
+          <span class="h-1 w-1 rounded-full bg-emerald-500" aria-hidden="true"></span>
+          Live
+        </span>
+      </span>
     </div>
 
     <div v-if="loading" class="surface-card p-8 text-center type-meta">Loading...</div>
