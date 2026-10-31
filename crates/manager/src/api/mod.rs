@@ -337,6 +337,10 @@ pub fn router(state: AppState) -> Router {
         .route("/runners/{id}/freeze", patch(runners::toggle_freeze))
         .route("/runners/{id}/restart", post(runners::restart))
         .route(
+            "/runners/{id}/reprobe-capabilities",
+            post(runners::reprobe_capabilities),
+        )
+        .route(
             "/runners/{id}/register-token/reissue",
             post(runners::reissue_register_token),
         )

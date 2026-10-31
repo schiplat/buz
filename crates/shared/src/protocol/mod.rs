@@ -209,6 +209,11 @@ pub struct HeartbeatResponse {
     /// DB flag once it has been served.
     #[serde(default)]
     pub restart: bool,
+    /// One-shot capability re-probe command: the Runner re-probes its sandbox
+    /// backends immediately and reports fresh results on the next heartbeat.
+    /// `false` is the steady state; the Manager clears the DB flag once served.
+    #[serde(default)]
+    pub reprobe: bool,
 }
 
 /// Job-wide execution isolation selected by the Runner's Manager policy.

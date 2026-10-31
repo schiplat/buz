@@ -379,6 +379,16 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
             .execute(pool)
             .await;
 
+    // One-shot capability re-probe flag: set by
+    // POST /runners/{id}/reprobe-capabilities, served via the next heartbeat,
+    // then cleared. Unlike restart it does not block dispatch — probing is
+    // observational.
+    let _ = sqlx::query(
+        "ALTER TABLE runners ADD COLUMN capability_reprobe_requested INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(pool)
+    .await;
+
     // Max parallel jobs per runner (UI-controlled; default 1 = serial)
     let _ = sqlx::query(
         "ALTER TABLE runners ADD COLUMN max_concurrent_jobs INTEGER NOT NULL DEFAULT 1",

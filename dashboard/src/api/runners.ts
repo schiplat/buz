@@ -159,6 +159,11 @@ export const runnersApi = {
     return resp.data
   },
 
+  async reprobeCapabilities(id: string): Promise<{ reprobe_requested: boolean }> {
+    const resp = await apiClient.post(`/runners/${id}/reprobe-capabilities`)
+    return resp.data
+  },
+
   async reissueRegisterToken(id: string): Promise<ReissueRegisterTokenResponse> {
     const resp = await apiClient.post(`/runners/${id}/register-token/reissue`)
     return resp.data

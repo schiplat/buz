@@ -99,6 +99,7 @@ pub enum Action {
     RunnerDelete,
     RunnerFreeze,
     RunnerRegisterTokenReissued,
+    RunnerReprobeCapabilities,
     RunnerRestart,
     RunnerUpdate,
 
@@ -209,6 +210,7 @@ impl Action {
             Action::RunnerDelete => "runner.delete",
             Action::RunnerFreeze => "runner.freeze",
             Action::RunnerRegisterTokenReissued => "runner.register_token_reissued",
+            Action::RunnerReprobeCapabilities => "runner.reprobe_capabilities",
             Action::RunnerRestart => "runner.restart",
             Action::RunnerUpdate => "runner.update",
             Action::SandboxHostConfigRequested => "sandbox_host.config_requested",

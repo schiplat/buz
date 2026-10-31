@@ -16,6 +16,7 @@ vi.mock('@/api/runners', () => ({
     events: vi.fn(),
     toggleFreeze: vi.fn(),
     restart: vi.fn(),
+    reprobeCapabilities: vi.fn(),
     reissueRegisterToken: vi.fn(),
     delete: vi.fn(),
   },
@@ -206,6 +207,31 @@ describe('Runner team binding', () => {
     expect(checks).toContain('L2 Sandbox (userspace kernel, no KVM) · supported · runsc')
     expect(checks).toContain('L3 VM (Firecracker-compatible runtime, KVM) · supported · kata-fc')
     expect(checks).toContain('the system never picks one for you')
+  })
+
+  it('requests a capability re-probe from the environment checks panel', async () => {
+    // Offline runner: the Re-probe button is disabled, with an inline reason.
+    await mountPage([runner()])
+    document.querySelector<HTMLButtonElement>('button[title="Open runner-one"]')!.click()
+    await nextTick()
+    expect(button('Re-probe').disabled).toBe(true)
+    expect(document.body.textContent).toContain('Runner is offline — re-probe unavailable')
+
+    // Online runner: clicking asks the Manager to re-probe and shows the hint.
+    app?.unmount()
+    app = undefined
+    document.body.innerHTML = ''
+    vi.mocked(runnersApi.reprobeCapabilities).mockResolvedValue({ reprobe_requested: true })
+    await mountPage([runner({ status: 'online', last_seen: new Date().toISOString() })])
+    document.querySelector<HTMLButtonElement>('button[title="Open runner-one"]')!.click()
+    await nextTick()
+    const reprobe = button('Re-probe')
+    expect(reprobe.disabled).toBe(false)
+    reprobe.click()
+    await flush()
+
+    expect(runnersApi.reprobeCapabilities).toHaveBeenCalledWith('runner-1')
+    expect(document.body.textContent).toContain('Re-probe requested')
   })
 
   it('create dialog backdrop scrolls when the form exceeds the viewport', async () => {

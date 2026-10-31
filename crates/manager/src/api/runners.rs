@@ -710,11 +710,38 @@ pub async fn heartbeat(
         .await;
     }
 
+    // Serve a pending one-shot capability re-probe command, then clear it
+    // (serve-and-consume). Like restart, the Runner sees it on its next
+    // heartbeat (≤30s) and probes immediately instead of idling.
+    let reprobe_requested: bool =
+        sqlx::query_scalar("SELECT capability_reprobe_requested FROM runners WHERE id = ?")
+            .bind(&auth.runner_id)
+            .fetch_one(&state.pool)
+            .await
+            .map(|v: i64| v != 0)
+            .unwrap_or(false);
+
+    if reprobe_requested {
+        tracing::info!(runner = %auth.runner_id, "Serving capability re-probe command via heartbeat");
+        sqlx::query("UPDATE runners SET capability_reprobe_requested = 0 WHERE id = ?")
+            .bind(&auth.runner_id)
+            .execute(&state.pool)
+            .await?;
+        log_runner_event(
+            &state.pool,
+            &auth.runner_id,
+            "capability_reprobe_served",
+            "Capability re-probe command delivered to runner",
+        )
+        .await;
+    }
+
     Ok((
         StatusCode::OK,
         Json(ApiResponse::success(HeartbeatResponse {
             policy,
             restart: restart_requested,
+            reprobe: reprobe_requested,
         })),
     ))
 }
@@ -3271,6 +3298,49 @@ pub async fn restart(
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "restart_requested": true
+    }))))
+}
+
+/// Request an on-demand sandbox capability re-probe: sets a one-shot flag the
+/// Runner's next heartbeat (≤30s) serves; the Runner then probes its backends
+/// immediately and reports fresh results on the following heartbeat. Unlike
+/// restart this does not block dispatch — probing is observational and safe
+/// while jobs run.
+pub async fn reprobe_capabilities(
+    auth: PlatformAdmin,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let row = sqlx::query("SELECT name FROM runners WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
+    let name: String = row.get(0);
+
+    sqlx::query(
+        "UPDATE runners SET capability_reprobe_requested = 1, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(&id)
+    .execute(&state.pool)
+    .await?;
+
+    tracing::info!("Runner {name} ({id}) capability re-probe requested");
+    log_runner_event(
+        &state.pool,
+        &id,
+        "capability_reprobe_requested",
+        "Capability re-probe requested — fresh results on next heartbeat",
+    )
+    .await;
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::RunnerReprobeCapabilities, &auth).on(Resource::runner(&id, &name)),
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "reprobe_requested": true
     }))))
 }
 

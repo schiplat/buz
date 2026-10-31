@@ -4,7 +4,7 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
-import { Plus, X, Copy, Check, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw, KeyRound, ChevronRight } from '@lucide/vue'
+import { Plus, X, Copy, Check, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw, KeyRound, ChevronRight, RefreshCw } from '@lucide/vue'
 import { runnersApi, type Runner, type RunnerExecutionMode } from '@/api/runners'
 import { teamsApi, type Team } from '@/api/teams'
 import { formatLocalDateTime } from '@/utils/time'
@@ -107,6 +107,8 @@ const editClaimStrategy = ref<'backfill' | 'fifo'>('backfill')
 const editTeamId = ref('shared')
 const editExecutionMode = ref<RunnerExecutionMode>('host')
 const savingPolicy = ref(false)
+const reprobeSaving = ref(false)
+const reprobeRequested = ref(false)
 
 function backendSupport(runner: Runner | null, mode: Exclude<RunnerExecutionMode, 'host'>) {
   const caps = runner?.system_info?.execution_capabilities
@@ -177,6 +179,7 @@ function openDetail(r: Runner) {
   editExecutionMode.value = r.execution_mode ?? 'host'
   openFolds.value = { loopback: false, bridge: false, tunnel: false, virtual: false }
   copiedNetValue.value = null
+  reprobeRequested.value = false
   drawerOpen.value = true
   loadRunnerEvents(r.id)
 }
@@ -347,6 +350,21 @@ async function handleRestart(r: Runner) {
     console.error(e)
     const detail = e?.response?.data?.message || e?.message || 'Failed to restart runner'
     await dialog.alert(detail)
+  }
+}
+
+async function handleReprobe() {
+  if (!activeRunner.value || reprobeSaving.value) return
+  reprobeSaving.value = true
+  try {
+    await runnersApi.reprobeCapabilities(activeRunner.value.id)
+    reprobeRequested.value = true
+  } catch (e: any) {
+    console.error(e)
+    const detail = e?.response?.data?.message || e?.message || 'Failed to request capability re-probe'
+    await dialog.alert(detail)
+  } finally {
+    reprobeSaving.value = false
   }
 }
 
@@ -852,7 +870,21 @@ const eventBadge = (t: string) => {
                 </p>
               </div>
               <div class="rounded-lg border border-border/50 bg-background/70 p-3 space-y-2">
-                <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Sandbox environment checks</div>
+                <div class="flex items-center justify-between gap-2">
+                  <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Sandbox environment checks</div>
+                  <div class="flex shrink-0 items-center gap-2">
+                    <span v-if="activeRunner && activeRunner.status !== 'online'" class="text-[10px] text-muted-foreground/70">Runner is offline — re-probe unavailable</span>
+                    <UiButton
+                      size="sm"
+                      variant="ghost"
+                      :loading="reprobeSaving"
+                      :disabled="activeRunner?.status !== 'online'"
+                      title="Ask the Runner to re-probe its sandbox backends now — fresh results arrive with its next heartbeat (≤30s)"
+                      @click="handleReprobe"
+                    ><RefreshCw class="h-4 w-4" /> Re-probe</UiButton>
+                  </div>
+                </div>
+                <p v-if="reprobeRequested" class="text-[10px] text-muted-foreground">Re-probe requested — fresh results arrive with the Runner's next heartbeat (≤30s).</p>
                 <div v-for="item in [
                   { key: 'container', label: 'L1 Container (hardened, host kernel)', support: containerSupport },
                   { key: 'sandbox', label: 'L2 Sandbox (userspace kernel, no KVM)', support: sandboxSupport },

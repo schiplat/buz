@@ -136,6 +136,10 @@ const AUDITED: &[(&str, &str)] = &[
         "runner.register_token_reissued",
     ),
     ("POST /api/v1/runners/{id}/restart", "runner.restart"),
+    (
+        "POST /api/v1/runners/{id}/reprobe-capabilities",
+        "runner.reprobe_capabilities",
+    ),
     ("POST /api/v1/secrets", "secret.create"),
     (
         "POST /api/v1/secrets/{id}/github-binds",
