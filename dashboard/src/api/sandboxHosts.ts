@@ -18,6 +18,9 @@ export interface TierBackend {
 
 export interface SandboxHostDocument {
   profiles: Record<string, ResourceProfile>
+  /** Catalog profiles this host refuses (a machine that cannot serve them);
+   *  everything else in the platform catalog is offered implicitly. */
+  exclude_profiles?: string[]
   tiers: Record<string, TierBackend>
   network: string
 }
@@ -29,8 +32,13 @@ export interface SandboxHost {
   max_resource_slots: number
   desired_version: number
   applied_version: number
-  applied_sha256: string
+  /** True once sandboxd has fetched AND applied the latest desired version. */
+  pushed: boolean
+  /** Server-derived liveness: sandboxd fetched config within the last 5 minutes. */
+  live: boolean
+  /** Push date of the currently applied version (set when the version changes). */
   applied_at: string | null
+  applied_sha256: string
   last_fetch_at: string | null
   last_fetch_error: string | null
   consecutive_fetch_failures: number
@@ -87,6 +95,53 @@ export const sandboxHostsApi = {
     return resp.data as SandboxHost
   },
 
+  /** Delete an enrollment; the Manager refuses while runners are still bound. */
+  async remove(hostId: string, instanceId: string): Promise<void> {
+    await apiClient.delete(`/ops/sandbox-hosts/${hostId}/${instanceId}`)
+  },
+
+  /** Whitelist a team for this host (zero bindings = open to every team). */
+  async bindTeam(hostId: string, instanceId: string, teamId: string): Promise<void> {
+    await apiClient.put(`/ops/sandbox-hosts/${hostId}/${instanceId}/teams/${teamId}`)
+  },
+  /** Remove a team from the host's whitelist; its jobs stop dispatching here. */
+  async unbindTeam(hostId: string, instanceId: string, teamId: string): Promise<void> {
+    await apiClient.delete(`/ops/sandbox-hosts/${hostId}/${instanceId}/teams/${teamId}`)
+  },
+
+  /** Resolve a tag reference to its digest-pinned form (read-only registry probe). */
+  async resolveImage(image: string): Promise<string> {
+    const resp = await apiClient.post('/ops/images/resolve', { image })
+    return (resp.data as { pinned: string }).pinned
+  },
+
+  /** Platform defaults catalog: tiers, profiles, network, budget. */
+  async getDefaults(): Promise<{
+    tiers: Record<string, { image: string; runtime: string }>
+    profiles: Record<string, ResourceProfile>
+    network: string
+    max_slots: number
+  }> {
+    const resp = await apiClient.get('/ops/sandbox-defaults')
+    return resp.data as {
+      tiers: Record<string, { image: string; runtime: string }>
+      profiles: Record<string, ResourceProfile>
+      network: string
+      max_slots: number
+    }
+  },
+
+  /** Replace the platform defaults catalog; hosts inheriting a changed value get a new desired version. */
+  async putDefaults(defaults: {
+    tiers: Record<string, { image: string; runtime: string }>
+    profiles: Record<string, ResourceProfile>
+    network: string
+    max_slots: number
+  }): Promise<{ bumped_hosts: string[] }> {
+    const resp = await apiClient.put('/ops/sandbox-defaults', defaults)
+    return resp.data as { bumped_hosts: string[] }
+  },
+
   /** Replace the desired document; `desiredVersion` enables If-Match. */
   async putConfig(
     hostId: string,
@@ -136,6 +191,7 @@ export const sandboxHostsApi = {
     const resp = await apiClient.post(`/ops/sandbox-hosts/${hostId}/${instanceId}/token/rotate`)
     return resp.data as { token: string }
   },
+
 
   async changes(status = 'pending'): Promise<PendingChange[]> {
     const resp = await apiClient.get(`/ops/sandbox-changes?status=${encodeURIComponent(status)}`)

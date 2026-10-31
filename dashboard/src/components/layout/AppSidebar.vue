@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   Box,
-  Boxes,
   EyeOff,
   Globe,
   KeyRound,
@@ -47,9 +46,8 @@ type NavEntry = NavLink | NavSection
 const allEntries: NavEntry[] = [
   { kind: 'link', name: 'dashboard', label: 'Overview', icon: OverviewIcon, to: '/dashboard' },
   { kind: 'section', label: 'Infrastructure' },
-  { kind: 'link', name: 'runners', label: 'Runners', icon: Server, to: '/runners', adminOnly: true },
-  { kind: 'link', name: 'hosts', label: 'Hosts', icon: Globe, to: '/hosts' },
-  { kind: 'link', name: 'sandbox-hosts', label: 'Sandbox Hosts', icon: Boxes, to: '/sandbox-hosts', opsOnly: true },
+  { kind: 'link', name: 'runners', label: 'Runners', icon: Server, to: '/runners/list', adminOnly: true },
+  { kind: 'link', name: 'hosts', label: 'SSH Targets', icon: Globe, to: '/hosts' },
   { kind: 'link', name: 'environments', label: 'Environments', icon: Layers, to: '/environments' },
   { kind: 'link', name: 'secrets-variables', label: 'Secrets & Variables', icon: EyeOff, to: '/secrets-variables' },
   { kind: 'link', name: 'plugin-library', label: 'Plugins', icon: Package, to: '/plugin-library', adminOnly: true },
@@ -91,7 +89,20 @@ onMounted(async () => {
 })
 
 function isActive(name: string) {
-  if (name === 'pipelines') return route.name === 'pipelines' || route.name === 'pipeline-detail'
+  if (name === 'pipelines') {
+    return (
+      route.name === 'pipelines' ||
+      route.name === 'pipeline-detail' ||
+      route.name === 'job-detail'
+    )
+  }
+  if (name === 'runners') {
+    return (
+      route.name === 'runners' ||
+      route.name === 'runners-list' ||
+      route.name === 'sandbox-hosts'
+    )
+  }
   if (name === 'environments') return route.name === 'environments' || route.name === 'environment-detail'
   if (name === 'secrets-variables') {
     return (
