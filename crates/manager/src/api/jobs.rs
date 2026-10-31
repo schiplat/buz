@@ -740,7 +740,7 @@ pub async fn approve(
         && protection_forbid_self_approve(&snapshot)
         && trigger_user_id.as_deref() == Some(auth.id.as_str())
     {
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "self-approval is forbidden for this environment".into(),
         ));
     }
@@ -950,7 +950,7 @@ pub async fn reject(
         && protection_forbid_self_approve(&snapshot)
         && trigger_user_id.as_deref() == Some(auth.id.as_str())
     {
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "self-approval is forbidden for this environment".into(),
         ));
     }
@@ -1125,7 +1125,7 @@ pub async fn status_check(
     // Runner↔job binding: a runner may only poll jobs poll() dispatched to it.
     let owner: Option<String> = row.get(1);
     if owner.as_deref() != Some(auth.runner_id.as_str()) {
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "job is not assigned to this runner".into(),
         ));
     }
@@ -1170,7 +1170,7 @@ pub async fn update_status(
     let owner: Option<String> = row.get(1);
     if owner.as_deref() != Some(auth.runner_id.as_str()) {
         tx.rollback().await?;
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "job is not assigned to this runner".into(),
         ));
     }

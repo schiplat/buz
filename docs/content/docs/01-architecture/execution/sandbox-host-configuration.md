@@ -437,8 +437,10 @@ source and sandboxd never trusts it.
 
 ## Ops API
 
-Manager hosts the ops surface under `/api/v1/ops`. Only the platform admin role (or a new `ops`
-role) may use it; machine access uses an API token associated with such a user.
+Manager hosts the ops surface under `/api/v1/ops`. It is gated by the `OpsAdmin` extractor:
+platform admins and users with the platform-ops flag (`is_ops`, surfaced as the `ops` JWT role)
+qualify; the ops role grants nothing outside the ops namespace. Machine access uses an API token
+associated with such a user.
 
 | Method | Path | Purpose |
 |--------|------|---------|

@@ -137,6 +137,13 @@ pub async fn create(
     auth.check_team(&team_id, Perm::PipelineWrite)?;
     verify_pipeline_secret_bindings(&state.pool, &auth, &team_id, req.secret_ids.as_ref()).await?;
     super::environments::validate_environment_slugs(&state.pool, &req.environments).await?;
+    let webhook_secret = validate_webhook_secret_binding(
+        &state.pool,
+        &team_id,
+        &req.trigger_type,
+        req.webhook_secret.as_deref(),
+    )
+    .await?;
 
     let pipeline_id = Uuid::new_v4().to_string();
     let environments_json =
@@ -147,17 +154,18 @@ pub async fn create(
 
     let mut tx = state.pool.begin().await?;
     sqlx::query(
-        "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path, cron_expr,
-         runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
+        "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path, webhook_secret,
+         cron_expr, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
          concurrency_max_queue, concurrency_queue_timeout_seconds,
          owner_group, team_id, input_defs, environments, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(&pipeline_id)
     .bind(&req.name)
     .bind(req.description.as_deref().unwrap_or(""))
     .bind(&req.trigger_type)
     .bind(&req.webhook_path)
+    .bind(&webhook_secret)
     .bind(&req.cron_expr)
     .bind(&labels_json)
     .bind(req.timeout_seconds.unwrap_or(3600))
@@ -278,7 +286,7 @@ pub async fn get_one(
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let r = sqlx::query(
-        "SELECT id, name, description, trigger_type, webhook_path, cron_expr,
+        "SELECT id, name, description, trigger_type, webhook_path, webhook_secret, cron_expr,
                 runner_labels, timeout_seconds, source, input_defs, concurrency_group, is_active,
                 owner_group, team_id, created_at, updated_at,
                 concurrency_mode, concurrency_max_queue, concurrency_queue_timeout_seconds,
@@ -381,24 +389,26 @@ pub async fn get_one(
         "description": r.get::<String, _>(2),
         "trigger_type": r.get::<String, _>(3),
         "webhook_path": r.get::<Option<String>, _>(4),
-        "cron_expr": r.get::<Option<String>, _>(5),
+        // Secret NAME only (never the value) — the form needs it for edits.
+        "webhook_secret": r.get::<Option<String>, _>(5),
+        "cron_expr": r.get::<Option<String>, _>(6),
         "runner_labels": serde_json::from_str::<Vec<String>>(&labels).unwrap_or_default(),
-        "timeout_seconds": r.get::<i64, _>(7),
-        "source": r.get::<String, _>(8),
+        "timeout_seconds": r.get::<i64, _>(8),
+        "source": r.get::<String, _>(9),
         "input_defs": input_defs,
-        "concurrency_group": r.get::<Option<String>, _>(10),
-        "is_active": r.get::<i64, _>(11) != 0,
-        "owner_group": r.get::<String, _>(12),
-        "team_id": r.get::<String, _>(13),
+        "concurrency_group": r.get::<Option<String>, _>(11),
+        "is_active": r.get::<i64, _>(12) != 0,
+        "owner_group": r.get::<String, _>(13),
+        "team_id": r.get::<String, _>(14),
         "secret_ids": secret_ids,
         "var_ids": var_ids,
-        "created_at": r.get::<Option<String>, _>(14),
-        "updated_at": r.get::<Option<String>, _>(15),
-        "concurrency_mode": r.get::<Option<String>, _>(16),
-        "concurrency_max_queue": r.get::<Option<i64>, _>(17),
-        "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(18),
-        "yaml_path": r.get::<Option<String>, _>(19),
-        "environments": serde_json::from_str::<Vec<String>>(&r.get::<String, _>(20)).unwrap_or_default(),
+        "created_at": r.get::<Option<String>, _>(15),
+        "updated_at": r.get::<Option<String>, _>(16),
+        "concurrency_mode": r.get::<Option<String>, _>(17),
+        "concurrency_max_queue": r.get::<Option<i64>, _>(18),
+        "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(19),
+        "yaml_path": r.get::<Option<String>, _>(20),
+        "environments": serde_json::from_str::<Vec<String>>(&r.get::<String, _>(21)).unwrap_or_default(),
         "tasks": tasks,
         "env": envs,
         "yaml_sync": crate::services::pipeline_scanner::yaml_sync_status(
@@ -469,6 +479,13 @@ pub async fn update(
 
     verify_pipeline_secret_bindings(&state.pool, &auth, &team_id, req.secret_ids.as_ref()).await?;
     super::environments::validate_environment_slugs(&state.pool, &req.environments).await?;
+    let webhook_secret = validate_webhook_secret_binding(
+        &state.pool,
+        &team_id,
+        &req.trigger_type,
+        req.webhook_secret.as_deref(),
+    )
+    .await?;
 
     let stored_team_id: String = sqlx::query_scalar("SELECT team_id FROM pipelines WHERE id = ?")
         .bind(&id)
@@ -535,16 +552,17 @@ pub async fn update(
     }
     let result = sqlx::query(
         "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?, webhook_path = ?,
-         cron_expr = ?, runner_labels = ?, timeout_seconds = ?, concurrency_group = ?,
-         concurrency_mode = ?, concurrency_max_queue = ?, concurrency_queue_timeout_seconds = ?,
-         owner_group = ?, team_id = ?, input_defs = ?, environments = ?,
-         updated_at = datetime('now')
+         webhook_secret = ?, cron_expr = ?, runner_labels = ?, timeout_seconds = ?,
+         concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
+         concurrency_queue_timeout_seconds = ?, owner_group = ?, team_id = ?, input_defs = ?,
+         environments = ?, updated_at = datetime('now')
          WHERE id = ?",
     )
     .bind(&req.name)
     .bind(req.description.as_deref().unwrap_or(""))
     .bind(&req.trigger_type)
     .bind(&req.webhook_path)
+    .bind(&webhook_secret)
     .bind(&req.cron_expr)
     .bind(&labels_json)
     .bind(req.timeout_seconds.unwrap_or(3600))
@@ -951,7 +969,7 @@ pub async fn trigger(
     // Non-admins are rejected outright; the flag is never honored silently.
     let debug_unredact = body.debug.unwrap_or(false);
     if debug_unredact && !auth.is_platform_admin {
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "debug (no-redaction) trigger requires a platform admin".into(),
         ));
     }
@@ -1256,7 +1274,7 @@ pub async fn do_trigger(
         let protection = env_protection.expect("checked above");
         match auth {
             None => {
-                return Err(AppError::Unauthorized(
+                return Err(AppError::Forbidden(
                     "protected environment rejects automated triggers".into(),
                 ));
             }
@@ -1618,6 +1636,42 @@ pub async fn do_trigger(
 }
 
 // --- helpers ---
+
+/// Webhook pipelines must bind `webhook_secret` — the NAME of a team secret
+/// whose value signs every hook request (`X-Buz-Signature`). An unprotected
+/// webhook is triggerable by anyone who can guess the path, so an empty name
+/// is rejected outright and a name with no matching team secret is rejected
+/// so the pipeline never goes live un-signable. Returns the stored name
+/// (empty for non-webhook triggers).
+async fn validate_webhook_secret_binding(
+    pool: &sqlx::SqlitePool,
+    team_id: &str,
+    trigger_type: &str,
+    webhook_secret: Option<&str>,
+) -> Result<String, AppError> {
+    if trigger_type != "webhook" {
+        return Ok(String::new());
+    }
+    let name = webhook_secret.unwrap_or("").trim();
+    if name.is_empty() {
+        return Err(AppError::ValidationFailed(
+            "webhook pipelines require `webhook_secret` — the name of a team secret whose value signs hook requests (X-Buz-Signature)"
+                .into(),
+        ));
+    }
+    let exists: Option<String> =
+        sqlx::query_scalar("SELECT id FROM secrets WHERE team_id = ? AND name = ?")
+            .bind(team_id)
+            .bind(name)
+            .fetch_optional(pool)
+            .await?;
+    if exists.is_none() {
+        return Err(AppError::ValidationFailed(format!(
+            "webhook_secret '{name}' does not match any secret in this team — create the secret first"
+        )));
+    }
+    Ok(name.to_string())
+}
 
 async fn verify_pipeline_secret_bindings(
     pool: &sqlx::SqlitePool,

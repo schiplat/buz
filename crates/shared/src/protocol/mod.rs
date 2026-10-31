@@ -602,6 +602,11 @@ pub struct CreatePipelineRequest {
     pub webhook_path: Option<String>,
     #[serde(default)]
     pub webhook_environment: Option<String>,
+    /// NAME of the team secret whose value signs webhook requests
+    /// (`X-Buz-Signature`). Required for trigger_type=webhook — an
+    /// unprotected webhook is triggerable by anyone who can guess the path.
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
     pub cron_expr: Option<String>,
     #[serde(default)]
     pub cron_environment: Option<String>,

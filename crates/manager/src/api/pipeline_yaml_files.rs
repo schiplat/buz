@@ -367,7 +367,7 @@ async fn authorize_file_access(
                 return Ok(());
             }
             if matches!(perm, Perm::TeamView) {
-                return Err(AppError::Unauthorized(
+                return Err(AppError::Forbidden(
                     "unbound YAML file requires platform admin".into(),
                 ));
             }
@@ -376,7 +376,7 @@ async fn authorize_file_access(
                 .iter()
                 .any(|m| auth.check_team(&m.team_id, Perm::PipelineWrite).is_ok());
             if !can_write {
-                return Err(AppError::Unauthorized(
+                return Err(AppError::Forbidden(
                     "PipelineWrite required to create YAML files".into(),
                 ));
             }

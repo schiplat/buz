@@ -152,7 +152,7 @@ pub async fn revoke(
     let name: String = row.get(1);
 
     if !auth.is_super_admin && owner_id != auth.id {
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "only super admins can revoke another admin's api token".into(),
         ));
     }

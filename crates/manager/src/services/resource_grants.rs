@@ -35,7 +35,7 @@ pub async fn ensure_team_may_use(
     if granted {
         Ok(())
     } else {
-        Err(AppError::Unauthorized(format!(
+        Err(AppError::Forbidden(format!(
             "team is not authorized to request resource profile '{profile}' \
              (ask a platform operator to grant it)"
         )))

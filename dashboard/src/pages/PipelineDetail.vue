@@ -455,6 +455,7 @@ const definitionView = computed(() => {
       trigger_type: parsed.trigger_type || 'manual',
       webhook_path: tc?.webhook_path || '',
       webhook_environment: tc?.webhook_environment || '',
+      webhook_secret: tc?.webhook_secret || '',
       cron_expr: tc?.cron_expr || '',
       cron_environment: tc?.cron_environment || '',
       runner_labels: runner?.labels || [],
@@ -511,6 +512,7 @@ const definitionView = computed(() => {
     trigger_type: p.trigger_type || 'manual',
     webhook_path: p.webhook_path || '',
     webhook_environment: p.webhook_environment || '',
+    webhook_secret: p.webhook_secret || '',
     cron_expr: p.cron_expr || '',
     cron_environment: p.cron_environment || '',
     runner_labels: p.runner_labels || [],
@@ -601,7 +603,10 @@ const triggerDetail = computed(() => {
   const view = definitionView.value
   if (!view) return ''
   if (view.trigger_type === 'webhook' && view.webhook_path) {
-    return `${view.webhook_path}${view.webhook_environment ? ` · ${view.webhook_environment}` : ''}`
+    const env = view.webhook_environment ? ` · ${view.webhook_environment}` : ''
+    // Every webhook is signed — surface which team secret signs it.
+    const signed = view.webhook_secret ? ` · signed by ${view.webhook_secret}` : ' · ⚠ unsigned'
+    return `${view.webhook_path}${env}${signed}`
   }
   if (view.trigger_type === 'cron' && view.cron_expr) {
     return `${view.cron_expr}${view.cron_environment ? ` · ${view.cron_environment}` : ''}`

@@ -380,65 +380,9 @@ async fn invalid_input_never_creates_a_job() {
 
 #[tokio::test]
 async fn webhook_path_enforces_required() {
-    let (app, pool) = test_app().await;
-    let payload = format!(
-        r#"{{
-            "name": "hook-validate",
-            "trigger_type": "webhook",
-    "environments": ["default"],
-            "webhook_path": "deploy-prod",
-            "runner_labels": ["linux-x64"],
-            "team_id": "team-1",
-            "env": [],
-            "steps": [{{ "name": "echo", "run": "echo hi", "engine": "shell" }}],
-            "input_defs": {INPUT_DEFS_JSON}
-        }}"#
-    );
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/pipelines")
-                .header(AUTHORIZATION, bearer(&admin_jwt()))
-                .header("Content-Type", "application/json")
-                .body(Body::from(payload))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "create webhook pipeline");
-    let created = read_body(resp).await;
-    let pid = created["data"]["id"].as_str().expect("pipeline id");
-
-    // on.webhook.secret is mandatory now: an unsigned, guessable path is
-    // refused (403) before any input validation happens.
-    let bare = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/hooks/deploy-prod?tag=1.2.3")
-                .header("Content-Type", "application/json")
-                .body(Body::from(r#"{}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        bare.status(),
-        StatusCode::FORBIDDEN,
-        "unprotected webhook refused: {:?}",
-        read_body(bare).await
-    );
-
-    // Declare the team secret this webhook now requires. The pipeline row
-    // carries the bare secret name; the API-created row has none yet.
-    sqlx::query("UPDATE pipelines SET webhook_secret = 'HOOK_SECRET' WHERE id = ?")
-        .bind(pid)
-        .execute(&pool)
-        .await
-        .expect("declare webhook secret on pipeline");
+    let (app, _pool) = test_app().await;
+    // The team secret must exist before the pipeline: create() rejects a
+    // webhook pipeline whose webhook_secret names no team secret.
     let seeded = app
         .clone()
         .oneshot(
@@ -460,8 +404,42 @@ async fn webhook_path_enforces_required() {
         "seed team secret: {:?}",
         read_body(seeded).await
     );
+    let payload = format!(
+        r#"{{
+            "name": "hook-validate",
+            "trigger_type": "webhook",
+    "environments": ["default"],
+            "webhook_path": "deploy-prod",
+            "webhook_secret": "HOOK_SECRET",
+            "runner_labels": ["linux-x64"],
+            "team_id": "team-1",
+            "env": [],
+            "steps": [{{ "name": "echo", "run": "echo hi", "engine": "shell" }}],
+            "input_defs": {INPUT_DEFS_JSON}
+        }}"#
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/pipelines")
+                .header(AUTHORIZATION, bearer(&admin_jwt()))
+                .header("Content-Type", "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "create webhook pipeline: {:?}",
+        read_body(resp).await
+    );
 
-    // Protected path: a request without the signature is rejected.
+    // A webhook without the signature header is refused (403) before any
+    // input validation happens — the pipeline row now carries HOOK_SECRET.
     let unsigned = app
         .clone()
         .oneshot(
@@ -477,7 +455,8 @@ async fn webhook_path_enforces_required() {
     assert_eq!(
         unsigned.status(),
         StatusCode::FORBIDDEN,
-        "signature required once the secret is declared"
+        "signature required once the secret is declared: {:?}",
+        read_body(unsigned).await
     );
 
     // Missing required `deploy_host` via the webhook path (signed).

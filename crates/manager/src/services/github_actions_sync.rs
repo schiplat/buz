@@ -115,10 +115,10 @@ impl GitHubClient {
         let body = resp.text().await.unwrap_or_default();
         let detail = extract_gh_error_message(&body).unwrap_or(body);
         match status.as_u16() {
-            401 => AppError::Unauthorized(format!(
+            401 => AppError::Forbidden(format!(
                 "GitHub token rejected (401): {detail} — check the connection token"
             )),
-            403 => AppError::Unauthorized(format!(
+            403 => AppError::Forbidden(format!(
                 "GitHub permission denied (403): {detail} — token scope or fine-grained \
                  'Actions' write permission missing"
             )),

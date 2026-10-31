@@ -26,6 +26,7 @@ const TRIGGER: Completion[] = [
   { label: 'cron', type: 'keyword', info: 'Cron schedule trigger' },
   { label: 'inputs', type: 'property' },
   { label: 'path', type: 'property', info: 'Webhook path segment' },
+  { label: 'secret', type: 'property', info: 'on.webhook.secret: NAME of the team secret signing requests (required for webhook)' },
   { label: 'schedule', type: 'property', info: 'Cron expression' },
   { label: 'required', type: 'property' },
   { label: 'default', type: 'property' },

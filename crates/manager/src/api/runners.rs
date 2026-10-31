@@ -491,7 +491,7 @@ pub async fn register(
             ?peer,
             "standalone mode rejected non-loopback runner registration"
         );
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "standalone mode rejects non-loopback runner registration".into(),
         ));
     }
@@ -567,7 +567,7 @@ pub async fn register(
                 runner = %name,
                 "standalone register rejected: runner not authorized (create in UI or auto_approve)"
             );
-            return Err(AppError::Unauthorized(
+            return Err(AppError::Forbidden(
                 "standalone: runner not authorized — create it in Manager UI (New Runner) \
                  or add the name to standalone.auto_approve"
                     .into(),

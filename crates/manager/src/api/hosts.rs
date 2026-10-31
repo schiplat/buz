@@ -77,6 +77,9 @@ pub async fn list(
             .fetch_all(&state.pool)
             .await?
         } else {
+            // Hosts have a "shared" tier (NULL/'' team = visible to everyone,
+            // manageable by admins only — see assert_host_visible), so this is
+            // an OR-filter that rbac::team_in_clause (pure AND) can't express.
             let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!(
                 "SELECT id, name, host, port, username, credential_type, credential_data, labels,
@@ -502,7 +505,7 @@ pub async fn test_connection(
         // Ad-hoc probes reach arbitrary host:port values — an SSRF-style
         // primitive no regular user needs. Save the host first, then test
         // from its card (manage-tier check above).
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "ad-hoc connection tests are restricted to platform admins — save the host first and test from its card".into(),
         ));
     }

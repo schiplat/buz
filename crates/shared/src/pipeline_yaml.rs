@@ -509,6 +509,9 @@ pub struct TriggerConfig {
     pub webhook_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub webhook_environment: Option<String>,
+    /// Bare team secret NAME signing webhook requests (from on.webhook.secret).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_secret: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cron_expr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1658,6 +1661,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         trigger_config: parsed.on.as_ref().map(|on| TriggerConfig {
             webhook_path: on.webhook.as_ref().and_then(|w| w.path.clone()),
             webhook_environment: on.webhook.as_ref().and_then(|w| w.environment.clone()),
+            webhook_secret: on.webhook.as_ref().and_then(|w| w.secret.clone()),
             cron_expr: on.cron.as_ref().and_then(|c| c.schedule.clone()),
             cron_environment: on.cron.as_ref().and_then(|c| c.environment.clone()),
             inputs: on.manual.as_ref().and_then(|m| {

@@ -127,7 +127,7 @@ async fn rejects_non_admin_user() {
     let err = verify_cli_admin_token(&pool, JWT_SECRET, &token)
         .await
         .unwrap_err();
-    assert!(matches!(err, AppError::Unauthorized(_)), "{err:?}");
+    assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
 }
 
 #[tokio::test]
@@ -258,7 +258,7 @@ async fn rejects_api_token_of_non_admin_user() {
     let err = verify_cli_admin_token(&pool, JWT_SECRET, &raw)
         .await
         .unwrap_err();
-    assert!(matches!(err, AppError::Unauthorized(_)), "{err:?}");
+    assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
 }
 
 #[tokio::test]

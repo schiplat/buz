@@ -72,6 +72,9 @@ export interface CreatePipelinePayload {
   description?: string
   trigger_type: string
   webhook_path?: string
+  /** NAME of the team secret signing webhook requests (X-Buz-Signature).
+   *  Required for trigger_type=webhook. */
+  webhook_secret?: string
   cron_expr?: string
   runner_labels: string[]
   timeout_seconds?: number
@@ -219,6 +222,8 @@ export interface YamlNotifyChannel {
 export interface YamlTriggerConfig {
   webhook_path?: string | null
   webhook_environment?: string | null
+  /** Bare team secret NAME signing webhook requests (from on.webhook.secret). */
+  webhook_secret?: string | null
   cron_expr?: string | null
   cron_environment?: string | null
   inputs?: YamlInputData[] | null

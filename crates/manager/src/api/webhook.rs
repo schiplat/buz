@@ -72,7 +72,7 @@ pub async fn handle(
         tracing::warn!(
             "Webhook rejected: pipeline '{pipeline_name}' has no on.webhook.secret configured"
         );
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "this webhook is unprotected — set `on.webhook.secret: <secret name>` on the pipeline, then sign requests with X-Buz-Signature"
                 .into(),
         ));
@@ -94,7 +94,7 @@ pub async fn handle(
                     "Webhook rejected: secret '{webhook_secret_name}' missing or undecryptable \
                      for pipeline '{pipeline_name}'"
                 );
-                return Err(AppError::Unauthorized(
+                return Err(AppError::Forbidden(
                     "webhook secret is configured on this pipeline but could not be resolved \
                      — ask an admin to check the team secret"
                         .into(),
@@ -111,7 +111,7 @@ pub async fn handle(
                 tracing::warn!(
                     "Webhook rejected: invalid or missing X-Buz-Signature for pipeline '{pipeline_name}'"
                 );
-                return Err(AppError::Unauthorized(
+                return Err(AppError::Forbidden(
                     "invalid or missing X-Buz-Signature header".into(),
                 ));
             }

@@ -177,43 +177,15 @@ async fn json_req(
 
 /// Webhook pipeline declaring several environments, with an optional `version`
 /// input so business inputs can be told apart from the reserved selector.
-/// Declares the mandatory on.webhook.secret and seeds the matching team
-/// secret so hook_req's signatures verify.
+/// Seeds the team secret first, then binds it via the API's `webhook_secret`
+/// field — create() rejects webhook pipelines whose secret is missing or
+/// unknown, so the order matters.
 async fn create_webhook_pipeline(
     app: &Router,
-    pool: &SqlitePool,
+    _pool: &SqlitePool,
     jwt: &str,
     environments: &[&str],
 ) -> String {
-    let pipe = json_req(
-        app,
-        "POST",
-        "/api/v1/pipelines",
-        jwt,
-        Some(serde_json::json!({
-            "name": "hook-pipe",
-            "trigger_type": "webhook",
-            "webhook_path": "deploy-app",
-            "runner_labels": ["linux-x64"],
-            "team_id": "team-1",
-            "environments": environments,
-            "input_defs": [{ "name": "version", "type": "string", "required": false }],
-            "env": [],
-            "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
-        })),
-    )
-    .await;
-    assert_eq!(pipe.status(), StatusCode::OK, "create webhook pipeline");
-    let pipeline_id = read_body(pipe).await["data"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    sqlx::query("UPDATE pipelines SET webhook_secret = ? WHERE id = ?")
-        .bind(HOOK_TEST_SECRET_NAME)
-        .bind(&pipeline_id)
-        .execute(pool)
-        .await
-        .unwrap();
     let seeded = json_req(
         app,
         "POST",
@@ -227,7 +199,30 @@ async fn create_webhook_pipeline(
     )
     .await;
     assert_eq!(seeded.status(), StatusCode::OK, "seed webhook team secret");
-    pipeline_id
+    let pipe = json_req(
+        app,
+        "POST",
+        "/api/v1/pipelines",
+        jwt,
+        Some(serde_json::json!({
+            "name": "hook-pipe",
+            "trigger_type": "webhook",
+            "webhook_path": "deploy-app",
+            "webhook_secret": HOOK_TEST_SECRET_NAME,
+            "runner_labels": ["linux-x64"],
+            "team_id": "team-1",
+            "environments": environments,
+            "input_defs": [{ "name": "version", "type": "string", "required": false }],
+            "env": [],
+            "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
+        })),
+    )
+    .await;
+    assert_eq!(pipe.status(), StatusCode::OK, "create webhook pipeline");
+    read_body(pipe).await["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 async fn set_webhook_environment(pool: &SqlitePool, pipeline_id: &str, slug: &str) {

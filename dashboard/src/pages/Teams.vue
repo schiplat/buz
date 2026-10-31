@@ -129,7 +129,7 @@ onMounted(load)
                 class="font-mono text-[12px] font-medium leading-snug text-foreground/90 break-all"
                 :title="t.name"
               >{{ t.name }}</div>
-              <div class="text-xs text-muted-foreground font-mono">{{ t.slug }} · {{ t.my_role || 'admin' }}</div>
+              <div class="text-xs text-muted-foreground font-mono">{{ t.slug }} · {{ t.my_role || '—' }}</div>
             </div>
             <UiButton
               v-if="auth.isPlatformAdmin || t.my_role === 'owner'"
@@ -157,7 +157,13 @@ onMounted(load)
               class="flex items-center justify-between text-sm"
             >
               <span>{{ m.username }} <span class="text-xs text-muted-foreground">({{ m.role }})</span></span>
-              <UiButton variant="ghost" size="sm" @click="removeMember(m)">
+              <UiButton
+                v-if="auth.isPlatformAdmin || selected.my_role === 'owner'"
+                variant="ghost"
+                size="sm"
+                :title="`Remove ${m.username} from ${selected.name}`"
+                @click="removeMember(m)"
+              >
                 <Trash2 class="h-3.5 w-3.5 text-red-500" />
               </UiButton>
             </li>

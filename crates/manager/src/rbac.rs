@@ -43,12 +43,12 @@ impl AuthUser {
             return Ok(());
         }
         let Some(role) = self.role_in(team_id) else {
-            return Err(AppError::Unauthorized("not a member of this team".into()));
+            return Err(AppError::Forbidden("not a member of this team".into()));
         };
         if role.at_least(perm.min_role()) {
             Ok(())
         } else {
-            Err(AppError::Unauthorized(format!(
+            Err(AppError::Forbidden(format!(
                 "insufficient team role for {:?}",
                 perm
             )))
@@ -61,12 +61,12 @@ impl AuthUser {
             return Ok(());
         }
         let Some(role) = self.role_in(team_id) else {
-            return Err(AppError::Unauthorized("not a member of this team".into()));
+            return Err(AppError::Forbidden("not a member of this team".into()));
         };
         if role.at_least(required) {
             Ok(())
         } else {
-            Err(AppError::Unauthorized(format!(
+            Err(AppError::Forbidden(format!(
                 "requires team role >= {}",
                 required.as_str()
             )))
@@ -77,7 +77,7 @@ impl AuthUser {
         if self.is_platform_admin {
             Ok(())
         } else {
-            Err(AppError::Unauthorized("platform admin required".into()))
+            Err(AppError::Forbidden("platform admin required".into()))
         }
     }
 
@@ -205,7 +205,7 @@ pub async fn verify_cli_admin_token(
 ) -> Result<AuthUser, AppError> {
     let user = authenticate_user_token(pool, jwt_secret, token).await?;
     if !user.is_platform_admin {
-        return Err(AppError::Unauthorized("platform admin required".into()));
+        return Err(AppError::Forbidden("platform admin required".into()));
     }
     Ok(user)
 }

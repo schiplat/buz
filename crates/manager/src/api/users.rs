@@ -184,7 +184,7 @@ pub async fn update(
     // Super admin tier may only be granted/revoked by another super admin.
     if let Some(is_super) = req.is_super_admin {
         if !auth.is_super_admin {
-            return Err(AppError::Unauthorized(
+            return Err(AppError::Forbidden(
                 "only super admins can change super admin status".into(),
             ));
         }

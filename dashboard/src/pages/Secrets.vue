@@ -78,10 +78,10 @@ function needsGithubPush(s: Secret): boolean {
   )
 }
 
-/** Secret binds need SecretManage: platform admin or owner/maintainer in the team. */
+/** GitHub-bind management mirrors the backend exactly: bind/unbind/push are
+ *  platform-admin-only (the push uses a connection PAT — see github_sync.rs),
+ *  while secret create/update/delete follow the team-role matrix instead. */
 function canManageSecret(s: Secret): boolean {
-  // GitHub binds push the secret to a repo with a connection PAT, so the
-  // bind/unbind/push actions are platform-admin-only.
   return auth.isPlatformAdmin
 }
 
