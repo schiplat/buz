@@ -504,7 +504,10 @@ async fn platform_default_tiers_fill_undefined_tiers_and_propagate() {
         None,
         Some(serde_json::json!({
             "tiers": { "container": { "image": DEFAULT_IMAGE, "runtime": "" } },
-            "profiles": { "default": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 } }
+            "profiles": {
+                "default": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 },
+                "small": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 }
+            }
         })),
     )
     .await;
@@ -571,7 +574,14 @@ async fn host_defined_tiers_win_and_skip_the_bump() {
         None,
         Some(serde_json::json!({
             "tiers": { "container": { "image": DEFAULT_IMAGE, "runtime": "" } },
-            "profiles": { "default": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 } }
+            // Identical to the built-in floor, so the profile dimension is
+            // bump-neutral and the test isolates the host-defined tier path.
+            "profiles": {
+                "default": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 },
+                "small": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 },
+                "medium": { "memory": "4g", "cpu": "4", "pids": 512, "slots": 2 },
+                "large": { "memory": "8g", "cpu": "8", "pids": 1024, "slots": 4 }
+            }
         })),
     )
     .await;

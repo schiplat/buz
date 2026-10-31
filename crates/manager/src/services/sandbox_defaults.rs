@@ -220,33 +220,74 @@ pub async fn save_default_max_slots(
 
 pub const PROFILES_SETTING_KEY: &str = "sandbox_default_profiles";
 
-/// Built-in floor for the platform profile catalog. The 'default' profile is
-/// the fallback envelope every job without `runner.resources` runs in, so the
-/// catalog can never be empty: before an operator saves their own catalog,
-/// this floor guarantees every host's effective document offers it.
+/// Built-in floor for the platform profile catalog: a standard ladder sized
+/// for common CI workloads (small < medium < large, each dimension doubling).
+/// 'default' is seeded as an alias of 'small' — jobs without
+/// `runner.resources` run in the small envelope. The floor applies only
+/// until an operator saves their own catalog, and the catalog stays fully
+/// editable there (only 'default' is mandatory; the rest can be renumbered,
+/// renamed, added, or deleted).
 pub fn builtin_default_profiles() -> BTreeMap<String, ResourceProfile> {
-    BTreeMap::from([(
-        shared::sandbox_config::DEFAULT_PROFILE.to_string(),
-        ResourceProfile {
-            memory: "2g".into(),
-            cpu: "2".into(),
-            pids: 256,
-            slots: 1,
-        },
-    )])
+    BTreeMap::from([
+        (
+            shared::sandbox_config::DEFAULT_PROFILE.to_string(),
+            ResourceProfile {
+                memory: "2g".into(),
+                cpu: "2".into(),
+                pids: 256,
+                slots: 1,
+            },
+        ),
+        (
+            shared::sandbox_config::SMALL_PROFILE.to_string(),
+            ResourceProfile {
+                memory: "2g".into(),
+                cpu: "2".into(),
+                pids: 256,
+                slots: 1,
+            },
+        ),
+        (
+            "medium".to_string(),
+            ResourceProfile {
+                memory: "4g".into(),
+                cpu: "4".into(),
+                pids: 512,
+                slots: 2,
+            },
+        ),
+        (
+            "large".to_string(),
+            ResourceProfile {
+                memory: "8g".into(),
+                cpu: "8".into(),
+                pids: 1024,
+                slots: 4,
+            },
+        ),
+    ])
 }
 
 /// Parse the stored JSON object (`{ profile: { memory, cpu, pids, slots } }`).
+/// Catalogs saved before `small` became mandatory gain it automatically on
+/// load (merged from the built-in floor) instead of failing validation — a
+/// strict check here would silently swap a legacy catalog for the floor.
 pub fn parse_default_profiles(raw: &str) -> Result<BTreeMap<String, ResourceProfile>, Vec<String>> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let parsed: BTreeMap<String, ResourceProfile> = serde_json::from_str(raw).map_err(|e| {
+    let mut parsed: BTreeMap<String, ResourceProfile> = serde_json::from_str(raw).map_err(|e| {
         vec![format!(
             "default profiles must be a JSON object of {{ memory, cpu, pids, slots }}: {e}"
         )]
     })?;
+    if !parsed.contains_key(shared::sandbox_config::SMALL_PROFILE) {
+        let small = builtin_default_profiles()
+            .remove(shared::sandbox_config::SMALL_PROFILE)
+            .expect("built-in floor defines 'small'");
+        parsed.insert(shared::sandbox_config::SMALL_PROFILE.to_string(), small);
+    }
     let problems = validate_default_profiles(&parsed);
     if problems.is_empty() {
         Ok(parsed)

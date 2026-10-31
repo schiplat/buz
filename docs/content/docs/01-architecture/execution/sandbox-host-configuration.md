@@ -245,8 +245,14 @@ per-host profile creation.
   name. It is the **fallback envelope** — every job without `runner.resources` runs in it — and it
   is implicitly available to every team (never grant-gated). A `default` profile with `slots > 1`
   warns: every job that omits `resources` consumes that baseline. Before an operator saves a
-  catalog, a built-in floor (`2g` / `2` cpu / `256` pids / `1` slot) guarantees the fallback
-  exists.
+  catalog, a built-in floor ships a standard ladder sized for common CI workloads — `small`
+  (`2g` / 2 cpu / 256 pids / 1 slot), `medium` (`4g` / 4 / 512 / 2), `large` (`8g` / 8 / 1024 / 4),
+  each dimension doubling — with `default` seeded as an **alias of `small`**: jobs without
+  `runner.resources` run in the small envelope. The floor applies only until an operator saves
+  their own catalog; there `default` and `small` are mandatory (`small` cannot be removed or
+  renamed — it carries the `default` alias, and catalogs saved before it was mandatory gain it
+  automatically on load), while the remaining entries can be renumbered, renamed, added, or
+  deleted.
 - **A host selects from the catalog; it does not define into it.** Every catalog profile is
   offered on a host unless the host's document names it in `exclude_profiles` — the machine-level
   opt-out for envelopes the machine cannot serve (a small VM excluding `gpu-8`). Excluding

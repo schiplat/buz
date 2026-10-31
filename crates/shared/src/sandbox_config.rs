@@ -13,6 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 /// its values but no other profile may take the name.
 pub const DEFAULT_PROFILE: &str = "default";
 
+/// The standard small profile — second mandatory catalog entry. It seeds the
+/// `default` alias (same numbers) and, unlike `medium`/`large`, cannot be
+/// removed from the platform catalog.
+pub const SMALL_PROFILE: &str = "small";
+
 /// Upper bound for `slots`, mirroring the `max_concurrent_jobs` clamp range.
 pub const MAX_SLOTS: u32 = 32;
 
@@ -129,6 +134,11 @@ pub fn validate_default_profiles(profiles: &BTreeMap<String, ResourceProfile>) -
     if !profiles.contains_key(DEFAULT_PROFILE) {
         problems.push(format!(
             "default profiles must define the reserved '{DEFAULT_PROFILE}' profile"
+        ));
+    }
+    if !profiles.contains_key(SMALL_PROFILE) {
+        problems.push(format!(
+            "default profiles must define the standard '{SMALL_PROFILE}' profile"
         ));
     }
     for (name, profile) in profiles {
