@@ -1213,21 +1213,23 @@ async function rotateToken(host: SandboxHost) {
           >
             <div class="flex items-center justify-between gap-2">
               <p class="truncate text-sm font-medium">{{ host.host_id }} / {{ host.instance_id }}</p>
-              <span
-                class="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/50 px-2 py-0.5 text-[11px] font-medium"
-                :class="host.live ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'"
-              >
-                <span class="h-1.5 w-1.5 rounded-full" :class="host.live ? 'bg-emerald-500' : 'bg-muted-foreground/40'" />
-                {{ host.live ? 'online' : 'offline' }}
-              </span>
+              <div class="flex shrink-0 items-center gap-2">
+                <span v-if="host.pushed" class="text-[11px] tabular-nums text-muted-foreground">v{{ host.applied_version }}<span v-if="host.applied_at"> · {{ formatDateTime(host.applied_at) }}</span></span>
+                <span v-else-if="host.desired_version > 0" class="text-[11px] font-medium tabular-nums text-amber-600">v{{ host.applied_version }} → v{{ host.desired_version }}</span>
+                <span
+                  class="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/50 px-2 py-0.5 text-[11px] font-medium"
+                  :class="host.live ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'"
+                >
+                  <span class="h-1.5 w-1.5 rounded-full" :class="host.live ? 'bg-emerald-500' : 'bg-muted-foreground/40'" />
+                  {{ host.live ? 'online' : 'offline' }}
+                </span>
+              </div>
             </div>
             <p class="text-xs text-muted-foreground">
               <span v-if="host.pushed" class="font-medium text-emerald-600 dark:text-emerald-400">synced</span>
               <span v-else-if="host.desired_version > 0" class="font-medium text-amber-600">drift</span>
               <span v-else class="font-medium">no config</span>
-              <span v-if="host.pushed">v{{ host.applied_version }}<span v-if="host.applied_at"> · {{ formatDateTime(host.applied_at) }}</span></span>
-              <span v-else-if="host.desired_version > 0">v{{ host.applied_version }} → v{{ host.desired_version }}</span>
-              <span>· budget {{ host.max_resource_slots || '∞' }} slots<template v-if="!host.max_resource_slots"> (platform default)</template></span>
+              <span> · budget {{ host.max_resource_slots || '∞' }} slots<template v-if="!host.max_resource_slots"> <span class="text-muted-foreground/60">(platform default)</span></template></span>
             </p>
             <div class="flex flex-wrap items-baseline gap-1.5">
               <span class="mr-0.5 text-[11px] uppercase tracking-wide text-muted-foreground">offers</span>
