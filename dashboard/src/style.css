@@ -304,3 +304,17 @@
     @apply align-middle;
   }
 }
+
+/*
+ * xterm's DOM renderer paints selection in an absolutely positioned overlay
+ * (z-index 1) while row text spans are not stacked. At the left edge of a
+ * selection the overlay can therefore cover the first character, making it
+ * look like the text is missing. Keep all terminal text above the selection
+ * layer (selected cells already opt into this via .xterm-decoration-top).
+ */
+@layer utilities {
+  .xterm .xterm-rows span {
+    position: relative;
+    z-index: 2;
+  }
+}
