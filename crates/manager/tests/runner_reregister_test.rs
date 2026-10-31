@@ -330,7 +330,11 @@ async fn admin_reissue_token_can_recover_runner_registration() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(stored_token, replacement_token);
+    // Hash-only at rest: the row carries SHA-256(replacement).
+    assert_eq!(
+        stored_token,
+        shared::api_token::hash_token(replacement_token)
+    );
 
     let (status, registration) = register(&app, "lab-runner-01", replacement_token, None).await;
     assert_eq!(status, StatusCode::OK, "{registration}");

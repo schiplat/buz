@@ -204,7 +204,11 @@ async fn create_runner_record_returns_register_token() {
             .fetch_one(&pool)
             .await
             .expect("fetch runner");
-    assert_eq!(token, created.register_token);
+    // Hash-only at rest: the row carries SHA-256(token), never the plaintext.
+    assert_eq!(
+        token,
+        shared::api_token::hash_token(&created.register_token)
+    );
     assert!(labels.contains("linux-x64"));
     assert!(labels.contains("docker"));
 }

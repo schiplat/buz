@@ -194,6 +194,16 @@ async fn trigger_job(app: &Router, jwt: &str, pipeline_id: &str, environment: &s
 
 /// Force a job into the given terminal state with sentinel values that a
 /// buggy Runner update would have to clobber for the test to fail.
+/// Simulate poll() dispatch: updates are only accepted from the runner the
+/// job was assigned to, so the tests must bind the job to runner-1 first.
+async fn dispatch_to(pool: &SqlitePool, job_id: &str) {
+    sqlx::query("UPDATE jobs SET runner_id = 'runner-1' WHERE id = ?")
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .expect("bind job to runner-1");
+}
+
 async fn force_terminal(pool: &SqlitePool, job_id: &str, terminal: &str) {
     sqlx::query(
         "UPDATE jobs SET status = ?, end_time = '2030-01-01 00:00:00', retry_times = 7,
@@ -225,6 +235,7 @@ async fn terminal_job_silently_ignores_runner_updates() {
         create_env(&app, &admin, "prod").await;
         let pid = create_pipeline(&app, &admin, "term-pipe", "prod").await;
         let job_id = trigger_job(&app, &admin, &pid, "prod").await;
+        dispatch_to(&pool, &job_id).await;
         force_terminal(&pool, &job_id, terminal).await;
 
         // Runner reports an overall status update — must be accepted (200) but
@@ -293,6 +304,7 @@ async fn non_terminal_job_still_accepts_runner_updates() {
     create_env(&app, &admin, "dev").await;
     let pid = create_pipeline(&app, &admin, "live-pipe", "dev").await;
     let job_id = trigger_job(&app, &admin, &pid, "dev").await;
+    dispatch_to(&pool, &job_id).await;
 
     // Per-step update while the job is pending → accepted and recorded.
     let step = json_req(
@@ -354,6 +366,7 @@ async fn failed_overall_report_sweeps_running_steps() {
     create_env(&app, &admin, "dev2").await;
     let pid = create_pipeline(&app, &admin, "sweep-pipe", "dev2").await;
     let job_id = trigger_job(&app, &admin, &pid, "dev2").await;
+    dispatch_to(&pool, &job_id).await;
 
     // Two steps: one finished, one still reported running.
     sqlx::query("UPDATE jobs SET step_statuses = ? WHERE id = ?")

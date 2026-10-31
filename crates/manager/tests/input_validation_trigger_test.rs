@@ -380,7 +380,7 @@ async fn invalid_input_never_creates_a_job() {
 
 #[tokio::test]
 async fn webhook_path_enforces_required() {
-    let (app, _pool) = test_app().await;
+    let (app, pool) = test_app().await;
     let payload = format!(
         r#"{{
             "name": "hook-validate",
@@ -411,14 +411,87 @@ async fn webhook_path_enforces_required() {
     let created = read_body(resp).await;
     let pid = created["data"]["id"].as_str().expect("pipeline id");
 
-    // Missing required `deploy_host` via the webhook path.
+    // on.webhook.secret is mandatory now: an unsigned, guessable path is
+    // refused (403) before any input validation happens.
+    let bare = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hooks/deploy-prod?tag=1.2.3")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        bare.status(),
+        StatusCode::FORBIDDEN,
+        "unprotected webhook refused: {:?}",
+        read_body(bare).await
+    );
+
+    // Declare the team secret this webhook now requires. The pipeline row
+    // carries the bare secret name; the API-created row has none yet.
+    sqlx::query("UPDATE pipelines SET webhook_secret = 'HOOK_SECRET' WHERE id = ?")
+        .bind(pid)
+        .execute(&pool)
+        .await
+        .expect("declare webhook secret on pipeline");
+    let seeded = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/secrets")
+                .header(AUTHORIZATION, bearer(&admin_jwt()))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"HOOK_SECRET","value":"hook-signing-secret","team_id":"team-1"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        seeded.status(),
+        StatusCode::OK,
+        "seed team secret: {:?}",
+        read_body(seeded).await
+    );
+
+    // Protected path: a request without the signature is rejected.
+    let unsigned = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hooks/deploy-prod?tag=1.2.3")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        unsigned.status(),
+        StatusCode::FORBIDDEN,
+        "signature required once the secret is declared"
+    );
+
+    // Missing required `deploy_host` via the webhook path (signed).
     let hook = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/hooks/deploy-prod?tag=1.2.3".to_string())
+                .uri("/api/v1/hooks/deploy-prod?tag=1.2.3")
                 .header("Content-Type", "application/json")
+                .header(
+                    "X-Buz-Signature",
+                    buzz_signature("hook-signing-secret", "{}"),
+                )
                 .body(Body::from(r#"{}"#))
                 .unwrap(),
         )
@@ -429,7 +502,7 @@ async fn webhook_path_enforces_required() {
     let message = body["message"].as_str().expect("message");
     assert!(message.contains("deploy_host"), "hook required enforced");
 
-    // Valid hook inputs pass.
+    // Valid hook inputs pass (signed).
     let ok = app
         .clone()
         .oneshot(
@@ -437,6 +510,10 @@ async fn webhook_path_enforces_required() {
                 .method("POST")
                 .uri("/api/v1/hooks/deploy-prod?tag=1.2.3&deploy_host=prod-01&environment=default")
                 .header("Content-Type", "application/json")
+                .header(
+                    "X-Buz-Signature",
+                    buzz_signature("hook-signing-secret", "{}"),
+                )
                 .body(Body::from(r#"{}"#))
                 .unwrap(),
         )
@@ -448,5 +525,14 @@ async fn webhook_path_enforces_required() {
         "hook with valid inputs: {:?}",
         read_body(ok).await
     );
-    let _ = pid;
+}
+
+/// Mirror the webhook signature scheme: `sha256=<hex HMAC-SHA256(body)>`.
+fn buzz_signature(secret: &str, body: &str) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes())
+        .expect("hmac accepts any key length");
+    mac.update(body.as_bytes());
+    format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
 }

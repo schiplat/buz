@@ -390,7 +390,9 @@ async fn profile_removed_from_desired_stops_dispatch_before_the_host_applies_it(
     let job = trigger(&app, &large).await;
     assert!(poll(&app, "runner-1").await.is_none());
     let (_, _, _, reason) = job_state(&pool, &job).await;
-    assert!(reason.contains("removed"), "reason: {reason}");
+    // Dispatch is refused while the host config is stale (desired ≠ applied),
+    // which also covers the removed-profile case before the host applies v2.
+    assert!(reason.contains("stale"), "reason: {reason}");
 }
 
 #[tokio::test]
