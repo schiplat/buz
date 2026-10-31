@@ -47,8 +47,9 @@ Manager and Runner):
 2. **Build from source** — `cargo build --release -p plugin-cli` produces
    `target/release/buz-plugin`.
 
-Verify with `buz-plugin --version`; `buz-plugin --help` lists the four
-commands below.
+Verify with `buz-plugin --version`; `buz-plugin --help` lists the commands
+below. For tab completion, see
+[Shell Completions](/docs/03-operations/shell-completions/).
 
 ## The `buz-plugin` CLI
 
@@ -58,6 +59,7 @@ commands below.
 | `buz-plugin validate <path…>` | Validate spec files/directories with the exact gate the Manager applies at save (`shared::plugin_spec`), including duplicate `(id, version)` detection |
 | `buz-plugin index` | Generate the source-root `plugins/index.json` (+ per-plugin `meta.json` + `revision.json` sentinel) — supersedes `gen_index.py`. `--check` verifies instead of writing |
 | `buz-plugin mirror <source> <mirror>` | Compare the revision sentinel between canonical origin and mirror (two tiny GETs); falls back to a full index byte-compare when a sentinel is missing — the same protocol the Manager's *Check mirror* action speaks |
+| `buz-plugin completions <shell>` | Print a tab-completion script to stdout (`bash`, `zsh`, `fish`, `powershell`, `elvish`) — see [Shell Completions](/docs/03-operations/shell-completions/) |
 
 Run `buz-plugin <command> --help` for the full flag list. Every command
 exits non-zero on failure, so they drop straight into `set -e` scripts.

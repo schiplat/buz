@@ -21,6 +21,18 @@
 /app/buz/data | pipelines | workspace
 ```
 
+## Shell completions
+
+The release binaries generate their own completion scripts
+(`bash`, `zsh`, `fish`, `powershell`, `elvish`):
+
+```bash
+./bin/buz-manager completions bash > /etc/bash_completion.d/buz-manager
+./bin/buz-runner  completions zsh  > ~/.zfunc/_buz-runner
+```
+
+Full per-shell instructions: docs → Operations → **Shell Completions**.
+
 ## Runner.toml shape
 
 ```toml

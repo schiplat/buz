@@ -1,5 +1,7 @@
 use clap::Parser;
+use clap::ValueEnum;
 use manager::cli::plugin_validate;
+use manager::cli::write_completions;
 use manager::cli::Cli;
 use manager::cli::Command;
 use manager::cli::PipelineCommand;
@@ -107,5 +109,39 @@ fn plugin_validate_rejects_direct_symlink_arguments() {
 
         let error = plugin_validate(&[link.to_string_lossy().into_owned()]).unwrap_err();
         assert!(error.to_string().contains("symlink"), "{error}");
+    }
+}
+
+#[test]
+fn completions_command_parses_known_shells_and_rejects_unknown_ones() {
+    let cli = Cli::try_parse_from(["buz-manager", "completions", "zsh"]).unwrap();
+    match cli.command.unwrap() {
+        Command::Completions { shell } => assert_eq!(shell, clap_complete::Shell::Zsh),
+        _ => panic!("expected the completions command"),
+    }
+
+    assert!(Cli::try_parse_from(["buz-manager", "completions", "tcsh"]).is_err());
+}
+
+#[test]
+fn writes_completion_scripts_for_every_supported_shell() {
+    for shell in clap_complete::Shell::value_variants() {
+        let mut script = Vec::new();
+        write_completions(*shell, &mut script).unwrap();
+        let script = String::from_utf8(script).expect("completion script is UTF-8");
+
+        assert!(!script.trim().is_empty(), "{shell}: empty script");
+        assert!(
+            script.contains("buz-manager"),
+            "{shell}: binary name missing"
+        );
+        for command in [
+            "gen-runner-token",
+            "plugin-validate",
+            "pipeline",
+            "completions",
+        ] {
+            assert!(script.contains(command), "{shell}: `{command}` missing");
+        }
     }
 }

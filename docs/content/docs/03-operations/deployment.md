@@ -63,6 +63,10 @@ tar -xzf buz-*-linux-x86_64.tar.gz && cd buz-*
 ./bin/buz-manager -c conf/manager.toml
 ```
 
+Optional: install tab completion for the packaged binaries with
+`./bin/buz-manager completions <shell>` / `./bin/buz-runner completions <shell>`
+— see [Shell Completions](/docs/03-operations/shell-completions/).
+
 Apple Silicon Mac: use `macos-aarch64`. Intel Mac (`macos-x86_64`) builds are temporarily disabled in CI.
 ## Docker (Aliyun ACR)
 

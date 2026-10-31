@@ -1,5 +1,7 @@
 use clap::Parser;
-use manager::cli::{gen_runner_token, plugin_validate, Cli, Command, PipelineCommand};
+use manager::cli::{
+    gen_runner_token, plugin_validate, print_completions, Cli, Command, PipelineCommand,
+};
 
 use axum::{routing::get, Router};
 use std::net::SocketAddr;
@@ -26,6 +28,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Command::PluginValidate { paths }) => {
             return plugin_validate(&paths);
+        }
+        Some(Command::Completions { shell }) => {
+            return print_completions(shell);
         }
         Some(Command::Pipeline {
             command:

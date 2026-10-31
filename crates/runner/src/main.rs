@@ -1,37 +1,22 @@
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
+use runner::cli::{print_completions, Cli, Command};
 use runner::{client, config, identity, policy, sysinfo};
-
-/// Buz Runner — lightweight cross‑network task execution agent.
-#[derive(Parser)]
-#[command(
-    name = "buz-runner",
-    version = shared::version::VERSION,
-    about = "Buz Runner — task execution agent"
-)]
-struct Cli {
-    /// Path to TOML configuration file
-    #[arg(short, long, global = true, default_value = "conf/runner.toml")]
-    config: String,
-
-    #[command(subcommand)]
-    command: Option<Command>,
-}
-
-#[derive(Subcommand)]
-enum Command {
-    /// Print version information and exit
-    Version,
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    if matches!(cli.command, Some(Command::Version)) {
-        println!("{}", shared::version::RUNNER_LONG_VERSION);
-        return Ok(());
+    match cli.command {
+        Some(Command::Version) => {
+            println!("{}", shared::version::RUNNER_LONG_VERSION);
+            return Ok(());
+        }
+        Some(Command::Completions { shell }) => {
+            return print_completions(shell);
+        }
+        None => {}
     }
 
     let config = config::load(Some(&cli.config)).context("failed to load config")?;
