@@ -122,6 +122,18 @@ pub fn normalize_max_concurrent(v: Option<u32>) -> Result<u32, AppError> {
     Ok(n)
 }
 
+/// Register-token check, constant-time. The DB stores SHA-256(token) for rows
+/// created after the hash-only change; legacy rows may still carry the
+/// plaintext UUID, so both forms are accepted (rows converge on re-issue).
+/// Timing on the comparison must not leak how much of the token matched.
+fn register_token_matches(stored: &str, provided: &str) -> bool {
+    if provided.is_empty() || stored.is_empty() {
+        return false;
+    }
+    shared::api_token::ct_eq(stored, &shared::api_token::hash_token(provided))
+        || shared::api_token::ct_eq(stored, provided)
+}
+
 /// Re-registration proof: a Bearer token that is a signature-valid runner JWT
 /// (expiry ignored — refresh semantics) whose `sub` matches the runner row.
 /// Knowing the runner name alone is never enough to obtain a fresh JWT.
@@ -343,7 +355,9 @@ pub async fn create_runner_record(
     )
     .bind(&id)
     .bind(&req.name)
-    .bind(&register_token)
+    // Hash-only at rest: the plaintext is returned exactly once in the API
+    // response and never stored (same discipline as buz_/buzsd_ tokens).
+    .bind(shared::api_token::hash_token(&register_token))
     .bind(&labels_json)
     .bind(&req.version)
     .bind(&team_id)
@@ -497,7 +511,7 @@ pub async fn register(
         if existing_token.as_ref().is_none_or(|t| t.is_empty()) {
             // First-time registration — must match the one-shot register_token.
             let stored_rt: String = row.get(1);
-            if stored_rt != register_token {
+            if !register_token_matches(&stored_rt, register_token) {
                 // Standalone + loopback + authorized name (row exists): allow
                 // tokenless / mismatched token. Production path unchanged.
                 if standalone && loopback {
@@ -531,7 +545,7 @@ pub async fn register(
             } else {
                 bearer_proves_runner(&headers, &state.config.auth.jwt_secret, &row_id) || {
                     let stored_rt: String = row.get(1);
-                    !register_token.is_empty() && stored_rt == register_token
+                    register_token_matches(&stored_rt, register_token)
                 }
             };
             if !authorized {
@@ -588,6 +602,9 @@ pub async fn register(
     let runner_instance_id =
         sanitized_instance_id(&req.runner_instance_id, "runner_instance_id", name);
 
+    // Hash-only at rest: the runner JWT is never stored in plaintext — only
+    // its SHA-256, kept for the "already holds a token" state. The JWT itself
+    // is stateless (signature-verified per request) and returned to the agent.
     sqlx::query(
         "UPDATE runners SET token = ?, register_token = '', status = 'online', \
          version = COALESCE(?, version), \
@@ -596,7 +613,7 @@ pub async fn register(
          last_seen = datetime('now'), updated_at = datetime('now'), \
          restart_requested = 0 WHERE id = ?",
     )
-    .bind(&runner_jwt)
+    .bind(shared::api_token::hash_token(&runner_jwt))
     .bind(version)
     .bind(&host_id)
     .bind(&runner_instance_id)
@@ -3364,7 +3381,8 @@ pub async fn reissue_register_token(
     let name: Option<String> = sqlx::query_scalar(
         "UPDATE runners SET register_token = ?, updated_at = datetime('now') WHERE id = ? RETURNING name",
     )
-    .bind(&register_token)
+    // Hash-only at rest — the plaintext is returned exactly once below.
+    .bind(shared::api_token::hash_token(&register_token))
     .bind(&id)
     .fetch_optional(&state.pool)
     .await?;

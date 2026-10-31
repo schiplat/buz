@@ -43,3 +43,14 @@ pub fn display_prefix(token: &str) -> String {
 pub fn is_api_token(token: &str) -> bool {
     token.starts_with(API_TOKEN_PREFIX)
 }
+
+/// Constant-time equality for secret material (register tokens and similar).
+/// Comparisons on raw secrets must never use `==` — timing leaks how many
+/// leading bytes match. Both sides are hashed and the fixed-size digests are
+/// compared via `subtle::ConstantTimeEq`.
+pub fn ct_eq(a: &str, b: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    let da = Sha256::digest(a.as_bytes());
+    let db = Sha256::digest(b.as_bytes());
+    bool::from(da.as_slice().ct_eq(db.as_slice()))
+}
