@@ -70,6 +70,10 @@ pub fn router(state: AppState) -> Router {
             "/ops/sandbox-hosts/{host_id}/{instance_id}/token/rotate",
             post(ops_sandbox::rotate_token),
         )
+        .route(
+            "/ops/sandbox-hosts/{host_id}/{instance_id}/budget",
+            put(ops_sandbox::update_budget),
+        )
         .route("/ops/images/resolve", post(ops_sandbox::resolve_image))
         .route(
             "/ops/sandbox-defaults",

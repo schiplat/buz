@@ -114,6 +114,7 @@ pub enum Action {
     SandboxHostEnroll,
     SandboxHostRollback,
     SandboxHostTokenRotate,
+    SandboxHostBudgetUpdate,
     ResourceGrantUpdate,
 
     // secret
@@ -223,6 +224,7 @@ impl Action {
             Action::SandboxHostEnroll => "sandbox_host.enroll",
             Action::SandboxHostRollback => "sandbox_host.rollback",
             Action::SandboxHostTokenRotate => "sandbox_host.token_rotate",
+            Action::SandboxHostBudgetUpdate => "sandbox_host.budget_update",
             Action::ResourceGrantUpdate => "resource_grant.update",
             Action::SecretCreate => "secret.create",
             Action::SecretDelete => "secret.delete",

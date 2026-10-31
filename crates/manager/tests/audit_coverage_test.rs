@@ -177,6 +177,10 @@ const AUDITED: &[(&str, &str)] = &[
         "POST /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/token/rotate",
         "sandbox_host.token_rotate",
     ),
+    (
+        "PUT /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/budget",
+        "sandbox_host.budget_update",
+    ),
     ("PUT /api/v1/ops/resource-grants", "resource_grant.update"),
     (
         "PUT /api/v1/ops/sandbox-defaults",

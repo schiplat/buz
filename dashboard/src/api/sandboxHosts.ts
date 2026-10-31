@@ -100,6 +100,13 @@ export const sandboxHostsApi = {
     await apiClient.delete(`/ops/sandbox-hosts/${hostId}/${instanceId}`)
   },
 
+  /** Update the host's slot budget; 0 = inherit the platform default. */
+  async setBudget(hostId: string, instanceId: string, maxResourceSlots: number): Promise<void> {
+    await apiClient.put(`/ops/sandbox-hosts/${hostId}/${instanceId}/budget`, {
+      max_resource_slots: maxResourceSlots,
+    })
+  },
+
   /** Whitelist a team for this host (zero bindings = open to every team). */
   async bindTeam(hostId: string, instanceId: string, teamId: string): Promise<void> {
     await apiClient.put(`/ops/sandbox-hosts/${hostId}/${instanceId}/teams/${teamId}`)

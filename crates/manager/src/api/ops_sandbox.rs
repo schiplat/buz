@@ -43,6 +43,13 @@ pub struct EnrollRequest {
 }
 
 #[derive(Deserialize)]
+pub struct BudgetRequest {
+    /// Host capacity in slots; 0 = inherit the platform default budget.
+    #[serde(default)]
+    pub max_resource_slots: i64,
+}
+
+#[derive(Deserialize)]
 pub struct ResolveImageRequest {
     pub image: String,
 }
@@ -789,6 +796,48 @@ pub async fn rotate_token(
     )
     .await;
     Ok(Json(ApiResponse::success(json!({ "token": token }))))
+}
+
+/// PUT /ops/sandbox-hosts/{host_id}/{instance_id}/budget — update the host's
+/// slot budget (0 = inherit the platform default). The scheduler reads the
+/// budget live per claim, so no config version bump or sandboxd wake needed.
+pub async fn update_budget(
+    auth: OpsAdmin,
+    Path((host_id, instance_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+    Json(req): Json<BudgetRequest>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    validate_pair(&host_id, &instance_id)?;
+    if !(0..=10_000).contains(&req.max_resource_slots) {
+        return Err(AppError::ValidationFailed(
+            "max_resource_slots must be between 0 and 10000 (0 = inherit the platform default)"
+                .into(),
+        ));
+    }
+    load_host(&state.pool, &host_id, &instance_id).await?;
+    sqlx::query(
+        "UPDATE sandbox_hosts SET max_resource_slots = ?, updated_at = datetime('now')
+         WHERE host_id = ? AND instance_id = ?",
+    )
+    .bind(req.max_resource_slots)
+    .bind(&host_id)
+    .bind(&instance_id)
+    .execute(&state.pool)
+    .await?;
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, Action::SandboxHostBudgetUpdate)
+            .on(Resource::sandbox_host(&host_id, &instance_id))
+            .after(Some(
+                json!({ "max_resource_slots": req.max_resource_slots }),
+            )),
+    )
+    .await;
+    Ok(Json(ApiResponse::success(json!({
+        "host_id": host_id,
+        "instance_id": instance_id,
+        "max_resource_slots": req.max_resource_slots,
+    }))))
 }
 
 /// GET /ops/sandbox-changes?status=pending — approval queue.

@@ -678,3 +678,75 @@ async fn delete_is_refused_while_runners_are_bound() {
     .await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn ops_can_update_the_host_slot_budget() {
+    let (app, pool) = test_app().await;
+    enrolled_host(&app).await;
+    let ops = jwt("ops-1", Role::Ops);
+
+    let (status, resp) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01/budget",
+        Some(&ops),
+        None,
+        Some(serde_json::json!({ "max_resource_slots": 16 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    let stored: i64 =
+        sqlx::query_scalar("SELECT max_resource_slots FROM sandbox_hosts WHERE host_id = 'host-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, 16);
+
+    // 0 = inherit the platform default budget again.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01/budget",
+        Some(&ops),
+        None,
+        Some(serde_json::json!({ "max_resource_slots": 0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let stored: i64 =
+        sqlx::query_scalar("SELECT max_resource_slots FROM sandbox_hosts WHERE host_id = 'host-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, 0);
+
+    // Out of range is rejected and leaves the stored value untouched.
+    let (status, resp) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01/budget",
+        Some(&ops),
+        None,
+        Some(serde_json::json!({ "max_resource_slots": 20_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{resp}");
+    let stored: i64 =
+        sqlx::query_scalar("SELECT max_resource_slots FROM sandbox_hosts WHERE host_id = 'host-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, 0);
+
+    // Unknown host pairs are 404, not silently created.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/sandbox-hosts/host-x/sandboxd-x/budget",
+        Some(&ops),
+        None,
+        Some(serde_json::json!({ "max_resource_slots": 4 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "unknown pair must be 404");
+}
