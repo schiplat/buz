@@ -42,23 +42,16 @@ const changes = ref<PendingChange[]>([])
 const teams = ref<Team[]>([])
 const grants = ref<ResourceGrant[]>([])
 
-// ── profile grants: profile-centric rules table (fleet-wide allowlist) ──
+// ── profile grants: team-centric rows (fleet-wide allowlist) ──
 const grantError = ref('')
 const grantSaving = ref(false)
-/** Inline "add team" panel state: which profile row is open, selected team. */
-const grantPanelProfile = ref('')
+/** Inline "grant profiles" panel: which team row is open, its pending
+ *  multi-select and the search text narrowing the checkbox list. */
 const grantPanelTeamId = ref('')
+const grantPanelPending = ref<Set<string>>(new Set())
+const grantPanelSearch = ref('')
 
 const PROFILE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
-
-/** One row per profile that appears in the grants table: granted profiles
- *  first (with their teams), then offered-but-ungranted ones (warning). */
-interface GrantProfileRow {
-  profile: string
-  teams: { teamId: string; teamName: string; grant: ResourceGrant }[]
-  /** host_ids whose effective document offers this profile */
-  offeredBy: string[]
-}
 
 /** Profiles offered by each host come straight from the list API, whose
  *  document is already the *effective* one (platform defaults merged) — a
@@ -67,86 +60,107 @@ function offeredProfilesFor(host: SandboxHost): Set<string> {
   return new Set(Object.keys(host.document?.profiles ?? {}))
 }
 
-const grantProfileRows = computed<GrantProfileRow[]>(() => {
-  const byProfile = new Map<string, GrantProfileRow>()
-  for (const g of grants.value) {
-    let row = byProfile.get(g.profile)
-    if (!row) {
-      row = { profile: g.profile, teams: [], offeredBy: [] }
-      byProfile.set(g.profile, row)
-    }
-    row.teams.push({ teamId: g.team_id, teamName: g.team_name, grant: g })
-  }
-  // Profiles offered by any host but absent from grants — the "exists here
-  // but no team can request it" warning rows.
-  for (const host of hosts.value) {
-    for (const name of offeredProfilesFor(host)) {
-      if (name === 'default') continue
-      if (!byProfile.has(name)) {
-        byProfile.set(name, { profile: name, teams: [], offeredBy: [] })
-      }
-    }
-  }
-  const rows = [...byProfile.values()]
-  for (const row of rows) {
-    row.teams.sort((a, b) => a.teamName.localeCompare(b.teamName))
-    row.offeredBy = hosts.value
-      .filter((h) => offeredProfilesFor(h).has(row.profile))
-      .map((h) => h.host_id)
-      .sort()
-  }
-  return rows.sort((a, b) => {
-    // granted first, then alphabetical
-    const aHas = a.teams.length > 0 ? 0 : 1
-    const bHas = b.teams.length > 0 ? 0 : 1
-    return aHas - bHas || a.profile.localeCompare(b.profile)
-  })
-})
-
-/** Teams that do not yet hold a grant for the given profile. */
-function grantableTeams(profile: string): Team[] {
-  const held = new Set(
-    grants.value.filter((g) => g.profile === profile).map((g) => g.team_id),
-  )
-  return teams.value.filter((t) => !held.has(t.id))
+/** host_ids whose effective document offers this profile. */
+function offeredByFor(profile: string): string[] {
+  return hosts.value
+    .filter((h) => offeredProfilesFor(h).has(profile))
+    .map((h) => h.host_id)
+    .sort()
 }
 
-function openGrantPanel(profile: string) {
-  grantPanelProfile.value = profile
-  grantPanelTeamId.value = ''
+function isTeamGranted(teamId: string, profile: string): boolean {
+  return grants.value.some((g) => g.team_id === teamId && g.profile === profile)
+}
+
+/** Grants grouped by team, profiles alphabetical inside each team. */
+const grantsByTeam = computed(() => {
+  const byTeam = new Map<string, ResourceGrant[]>()
+  for (const g of grants.value) {
+    const list = byTeam.get(g.team_id) ?? []
+    list.push(g)
+    byTeam.set(g.team_id, list)
+  }
+  for (const list of byTeam.values()) {
+    list.sort((a, b) => a.profile.localeCompare(b.profile))
+  }
+  return byTeam
+})
+
+function teamGrants(teamId: string): ResourceGrant[] {
+  return grantsByTeam.value.get(teamId) ?? []
+}
+
+/** Rows to render: every known team, plus any grant whose team no longer
+ *  resolves (name falls back) so orphaned grants stay visible and revocable. */
+const grantTeamRows = computed(() => {
+  const rows = teams.value.map((t) => ({ id: t.id, name: t.name }))
+  for (const g of grants.value) {
+    if (!rows.some((r) => r.id === g.team_id)) {
+      rows.push({ id: g.team_id, name: g.team_name || g.team_id })
+    }
+  }
+  return rows
+})
+
+/** Panel list narrowed by the search box; pending picks float to the top so
+ *  a multi-grant stays scannable while filtering. */
+const grantPanelChoices = computed(() => {
+  const q = grantPanelSearch.value.trim().toLowerCase()
+  const pending = grantPanelPending.value
+  return grantableProfileNames.value
+    .filter((name) => !q || name.toLowerCase().includes(q))
+    .sort((a, b) => {
+      const aPend = pending.has(a) ? 0 : 1
+      const bPend = pending.has(b) ? 0 : 1
+      return aPend - bPend || a.localeCompare(b)
+    })
+})
+
+function openGrantPanel(teamId: string) {
+  grantPanelTeamId.value = teamId
+  grantPanelPending.value = new Set()
+  grantPanelSearch.value = ''
   grantError.value = ''
 }
 
 function closeGrantPanel() {
-  grantPanelProfile.value = ''
   grantPanelTeamId.value = ''
+  grantPanelPending.value = new Set()
+  grantPanelSearch.value = ''
   grantError.value = ''
 }
 
-async function addGrant(profile: string) {
+function togglePanelPending(profile: string) {
+  const next = new Set(grantPanelPending.value)
+  if (next.has(profile)) next.delete(profile)
+  else next.add(profile)
+  grantPanelPending.value = next
+}
+
+/** One action, many grants: POST every pending (team, profile) pair in
+ *  order; stop at the first failure and keep the rest pending for retry. */
+async function applyPanelGrants() {
   grantError.value = ''
   const teamId = grantPanelTeamId.value
-  if (!teamId) return
-  if (profile === 'default') {
-    grantError.value = "'default' is implicitly available to every team — grant a non-default profile."
-    return
-  }
-  if (!PROFILE_RE.test(profile)) {
-    grantError.value = 'Profile name must match [a-z0-9][a-z0-9-]{0,31}.'
-    return
-  }
-  if (grants.value.some((g) => g.team_id === teamId && g.profile === profile)) {
-    grantError.value = `${teamName(teamId)} already has '${profile}'.`
-    return
-  }
+  if (!teamId || !grantPanelPending.value.size) return
   grantSaving.value = true
   try {
-    await sandboxHostsApi.grant(teamId, profile)
+    for (const profile of grantPanelPending.value) {
+      if (isTeamGranted(teamId, profile)) continue
+      if (!PROFILE_RE.test(profile)) {
+        grantError.value = `Profile name '${profile}' is invalid — expected [a-z0-9][a-z0-9-]{0,31}.`
+        return
+      }
+      try {
+        await sandboxHostsApi.grant(teamId, profile)
+      } catch (e) {
+        console.error(e)
+        grantError.value = `Failed to grant '${profile}' — remaining picks stay pending for retry.`
+        return
+      }
+    }
     closeGrantPanel()
     await load()
-  } catch (e) {
-    console.error(e)
-    await dialog.alert('Failed to add grant')
   } finally {
     grantSaving.value = false
   }
@@ -167,14 +181,9 @@ async function revokeGrant(grant: ResourceGrant) {
   }
 }
 
-/** New-profile grant (bottom row): pick an offered profile from a dropdown. */
-const newGrantTeamId = ref('')
-const newGrantProfile = ref('')
-
-/** Every non-default profile name any host effectively offers — the dropdown
+/** Every non-default profile name any host effectively offers — the panel's
  *  candidates (platform defaults + host overrides). Ones already fully listed
- *  in the table still appear so an operator can grant a second team from
- *  here without hunting the row. */
+ *  still appear so an operator can grant them to another team from there. */
 const grantableProfileNames = computed(() => {
   const names = new Set<string>()
   for (const host of hosts.value) {
@@ -186,35 +195,11 @@ const grantableProfileNames = computed(() => {
   return [...names].sort()
 })
 
-async function addNewProfileGrant() {
-  grantError.value = ''
-  const profile = newGrantProfile.value.trim()
-  const teamId = newGrantTeamId.value
-  if (!teamId || !profile) return
-  if (profile === 'default') {
-    grantError.value = "'default' is implicitly available to every team — grant a non-default profile."
-    return
-  }
-  if (!PROFILE_RE.test(profile)) {
-    grantError.value = 'Profile name must match [a-z0-9][a-z0-9-]{0,31}.'
-    return
-  }
-  if (grants.value.some((g) => g.team_id === teamId && g.profile === profile)) {
-    grantError.value = `${teamName(teamId)} already has '${profile}'.`
-    return
-  }
-  grantSaving.value = true
-  try {
-    await sandboxHostsApi.grant(teamId, profile)
-    newGrantProfile.value = ''
-    newGrantTeamId.value = ''
-    await load()
-  } catch (e) {
-    console.error(e)
-    await dialog.alert('Failed to add grant')
-  } finally {
-    grantSaving.value = false
-  }
+/** Deterministic per-team avatar tint (cycled palette). */
+const AVATAR_TINTS = ['#6366f1', '#0ea5e9', '#8b5cf6', '#f59e0b', '#10b981', '#f43f5e', '#06b6d4', '#a855f7']
+function teamTint(teamId: string): string {
+  const idx = teams.value.findIndex((t) => t.id === teamId)
+  return AVATAR_TINTS[(idx >= 0 ? idx : teamId.length) % AVATAR_TINTS.length]
 }
 
 /** Team display name; falls back to the raw id if teams failed to load. */
@@ -275,12 +260,73 @@ const bootstrapSnippet = computed(() =>
 
 // ── host detail dialog: config form ──
 const detailHost = ref<SandboxHost | null>(null)
+
+/** Capacity panel: the host's slot budget. 0 = inherit platform default;
+ *  dirty state surfaces explicit Save / Cancel buttons. */
+const budgetDraft = ref(0)
+const savingBudget = ref(false)
+watch(detailHost, (host) => {
+  budgetDraft.value = host?.max_resource_slots ?? 0
+})
+const budgetDirty = computed(() => {
+  const host = detailHost.value
+  if (!host) return false
+  return normalizedBudget() !== host.max_resource_slots
+})
+function normalizedBudget(): number {
+  return Math.max(0, Math.trunc(Number(budgetDraft.value) || 0))
+}
+
+async function saveBudget() {
+  const host = detailHost.value
+  if (!host || savingBudget.value || !budgetDirty.value) return
+  const next = normalizedBudget()
+  if (next > 10_000) {
+    await dialog.alert('Budget must be between 0 and 10000 (0 = inherit the platform default).')
+    budgetDraft.value = host.max_resource_slots
+    return
+  }
+  savingBudget.value = true
+  try {
+    await sandboxHostsApi.setBudget(host.host_id, host.instance_id, next)
+    await load()
+  } catch (e) {
+    console.error(e)
+    budgetDraft.value = host.max_resource_slots
+    await dialog.alert('Failed to update the slot budget')
+  } finally {
+    savingBudget.value = false
+  }
+}
+
+function cancelBudgetEdit() {
+  budgetDraft.value = detailHost.value?.max_resource_slots ?? 0
+}
 const savingConfig = ref(false)
 const configProblems = ref<string[]>([])
 const configWarnings = ref<string[]>([])
 const configValid = ref(false)
 const versions = ref<ConfigVersion[]>([])
 const versionsLoading = ref(false)
+
+/** Version history pagination — cut client-side: the API already returns
+ *  every version with its document (adjacent-version diffs depend on it),
+ *  so slicing the in-memory list changes nothing about the diff data. */
+const VERSIONS_PAGE_SIZE = 10
+const versionPage = ref(1)
+const versionPageCount = computed(() =>
+  Math.max(1, Math.ceil(versions.value.length / VERSIONS_PAGE_SIZE)),
+)
+const pagedVersions = computed(() =>
+  versions.value.slice(
+    (versionPage.value - 1) * VERSIONS_PAGE_SIZE,
+    versionPage.value * VERSIONS_PAGE_SIZE,
+  ),
+)
+
+function gotoVersionPage(page: number) {
+  versionPage.value = Math.min(Math.max(1, page), versionPageCount.value)
+}
 
 /** Structured form state — mirrors shared::sandbox_config::validate rules. */
 type ProfileRow = { name: string; memory: string; cpu: string; pids: number; slots: number }
@@ -291,6 +337,8 @@ const formNetwork = ref('')
 
 const showRawJson = ref(false)
 const rawJsonText = ref('')
+/** Version history disclosure (host detail 方案 A): reference material, folded by default. */
+const showVersionHistory = ref(false)
 const resolvingTier = ref<string | null>(null)
 
 const EMPTY_DOC: SandboxHostDocument = {
@@ -332,6 +380,17 @@ function sameAsCatalog(row: ProfileRow): boolean {
   )
 }
 
+/** A tier row identical to the platform catalog means "inherited" — the same
+ *  rule profiles follow. Publish strips catalog-identical rows, so their
+ *  presence in a pasted document marks inherited rows, never host pins.
+ *  A catalog tier with no image inherits nothing. */
+function sameTierAsCatalog(row: { name: string; image: string; runtime: string }): boolean {
+  const cat = platformDefaults.value[row.name]
+  const img = String(cat?.image ?? '').trim()
+  if (!cat || !img) return false
+  return row.image.trim() === img && row.runtime.trim() === String(cat.runtime ?? '').trim()
+}
+
 /** Load the editor from a host's *effective* document (platform catalog
  *  merged under its own rows). The form keeps only what the host document
  *  itself must say: legacy override/host-only profile rows and the exclusion
@@ -345,18 +404,25 @@ function loadFormFromDocument(doc: SandboxHostDocument) {
       pids: Number(p?.pids) || 0,
       slots: Number(p?.slots) || 0,
     }))
-    .filter((row) => row.name === 'default' || !sameAsCatalog(row))
+    // Catalog-identical rows (default included) mean "inherited", never a
+    // host pin: keeps the aliased default off the card wall.
+    .filter((row) => !sameAsCatalog(row))
   excludedSizes.value = new Set(
     Object.keys(platformDefaultProfiles.value).filter(
       (name) => name !== 'default' && !(name in (doc.profiles ?? {})),
     ),
   )
-  formTiers.value = Object.entries(doc.tiers ?? {}).map(([name, t]) => ({
-    name,
-    image: String(t?.image ?? ''),
-    runtime: String(t?.runtime ?? ''),
-  }))
-  formNetwork.value = String(doc.network ?? '')
+  formTiers.value = Object.entries(doc.tiers ?? {})
+    .map(([name, t]) => ({
+      name,
+      image: String(t?.image ?? ''),
+      runtime: String(t?.runtime ?? ''),
+    }))
+    .filter((row) => !sameTierAsCatalog(row))
+  const network = String(doc.network ?? '').trim()
+  // A pin equal to the platform default is behaviorally identical to
+  // inheriting it — keep the honest "inherit" form (empty) in the form.
+  formNetwork.value = network && network === platformDefaultNetwork.value.trim() ? '' : network
 }
 
 // A validation verdict only describes the values it ran on.
@@ -367,11 +433,46 @@ watch([formProfiles, formTiers, formNetwork], () => {
 // ── Job sizes: a selection surface over the platform catalog ──
 /** Catalog profiles (non-default) as toggleable chips: a host offers every
  *  catalog entry unless it explicitly excludes it (exclude_profiles). */
+/** "Smallest first" for every Job-sizes listing: slots weight ascending
+ *  (what the host budget deducts per job), memory as tie-breaker, then name.
+ *  Reorders automatically when an operator renumbers a profile. */
+function memoryBytes(raw: string): number {
+  const m = raw.trim().match(/^(\d+(?:\.\d+)?)\s*([kmgt]?)i?b?$/i)
+  if (!m) return 0
+  const mult = { k: 1024, m: 1024 ** 2, g: 1024 ** 3, t: 1024 ** 4 }[m[2].toLowerCase()] ?? 1
+  return Number(m[1]) * mult
+}
+
+function sizeAscending(a: string, b: string): number {
+  const pa = platformDefaultProfiles.value[a]
+  const pb = platformDefaultProfiles.value[b]
+  const bySlots = (Number(pa?.slots) || 1) - (Number(pb?.slots) || 1)
+  if (bySlots) return bySlots
+  const byMemory = memoryBytes(String(pa?.memory ?? '')) - memoryBytes(String(pb?.memory ?? ''))
+  if (byMemory) return byMemory
+  return a.localeCompare(b)
+}
+
 const catalogSizes = computed(() =>
   Object.keys(platformDefaultProfiles.value)
     .filter((name) => name !== 'default')
-    .sort(),
+    .sort(sizeAscending),
 )
+/** The catalog profile whose numbers equal `default`'s (small preferred).
+ *  `default` renders as a badge on it instead of a duplicate row/card; null
+ *  once an operator diverges the numbers — then default shows standalone. */
+const defaultAliasName = computed<string | null>(() => {
+  const d = platformDefaultProfiles.value['default']
+  if (!d) return null
+  const same = (p: ResourceProfile | undefined) =>
+    String(p?.memory ?? '').trim() === String(d.memory ?? '').trim() &&
+    String(p?.cpu ?? '').trim() === String(d.cpu ?? '').trim() &&
+    (Number(p?.pids) || 0) === (Number(d.pids) || 0) &&
+    (Number(p?.slots) || 1) === (Number(d.slots) || 1)
+  const matches = catalogSizes.value.filter((name) => same(platformDefaultProfiles.value[name]))
+  if (!matches.length) return null
+  return matches.includes('small') ? 'small' : matches[0]
+})
 /** Catalog profile names this host refuses — persisted as exclude_profiles. */
 const excludedSizes = ref<Set<string>>(new Set())
 
@@ -381,6 +482,18 @@ function toggleCatalogSize(name: string) {
   else next.add(name)
   excludedSizes.value = next
 }
+
+/** The card wall shows only what this host offers; exclusions are the
+ *  exception and live behind the manage panel instead of as cards. */
+const offeredCatalogSizes = computed(() =>
+  catalogSizes.value.filter((name) => !excludedSizes.value.has(name)),
+)
+const excludedCatalogSizes = computed(() =>
+  catalogSizes.value.filter((name) => excludedSizes.value.has(name)),
+)
+/** Inline "manage catalog profiles" panel state (same pattern as the grants
+ *  table's inline add-team panel). */
+const showCatalogPanel = ref(false)
 
 /** Legacy rows the host document still defines itself (host-only names, or
  *  numbers that differ from the catalog). Dropping one publishes without it;
@@ -443,6 +556,7 @@ function openDetail(host: SandboxHost) {
   configWarnings.value = []
   configValid.value = false
   showRawJson.value = false
+  showVersionHistory.value = false
   loadFormFromDocument(host.document ?? EMPTY_DOC)
   void loadVersions(host)
 }
@@ -526,7 +640,11 @@ function validateRows(): { doc: SandboxHostDocument; problems: string[] } {
   }
 }
 
-/** Loose dump for the raw-JSON escape hatch (no validation). */
+/** Loose dump for the raw-JSON escape hatch (no validation). Dumps the
+ *  *effective* document — the host's own rows plus the catalog rows this
+ *  host offers — mirroring what the list API serves and sandboxd fetches,
+ *  so the raw view matches the form's 1:1 instead of showing only the
+ *  host-owned subset. */
 function dumpDocumentLoose(): SandboxHostDocument {
   const profiles: Record<string, ResourceProfile> = {}
   formProfiles.value.forEach((row, i) => {
@@ -537,15 +655,42 @@ function dumpDocumentLoose(): SandboxHostDocument {
       slots: row.slots,
     }
   })
+  for (const name of offeredCatalogSizes.value) {
+    if (name in profiles) continue
+    const p = platformDefaultProfiles.value[name]
+    profiles[name] = {
+      memory: String(p?.memory ?? ''),
+      cpu: String(p?.cpu ?? ''),
+      pids: Number(p?.pids) || 0,
+      slots: Number(p?.slots) || 1,
+    }
+  }
+  if (!profiles.default) {
+    const d = platformDefaultProfiles.value.default
+    if (d) {
+      profiles.default = {
+        memory: String(d.memory ?? ''),
+        cpu: String(d.cpu ?? ''),
+        pids: Number(d.pids) || 0,
+        slots: Number(d.slots) || 1,
+      }
+    }
+  }
   const tiers: Record<string, { image: string; runtime: string }> = {}
   formTiers.value.forEach((row, i) => {
     tiers[row.name.trim() || `unnamed-${i + 1}`] = { image: row.image, runtime: row.runtime }
   })
+  // Catalog tiers this host inherits fill the rest — the effective merge.
+  for (const [name, t] of Object.entries(platformDefaults.value)) {
+    if (!(name in tiers)) {
+      tiers[name] = { image: String(t.image ?? ''), runtime: String(t.runtime ?? '') }
+    }
+  }
   return {
     profiles,
-    exclude_profiles: [...excludedSizes.value].sort(),
+    exclude_profiles: [...excludedSizes.value].filter((n) => n !== 'default').sort(),
     tiers,
-    network: formNetwork.value,
+    network: formNetwork.value.trim() || platformDefaultNetwork.value.trim(),
   }
 }
 
@@ -553,42 +698,72 @@ function toggleRawJson() {
   if (!showRawJson.value) {
     rawJsonText.value = JSON.stringify(dumpDocumentLoose(), null, 2)
     showRawJson.value = true
-  } else {
+  } else if (applyRawToForm()) {
     showRawJson.value = false
   }
+  // Invalid JSON: stay in the raw view — the shared problems list explains why.
 }
 
-/** Paste JSON → parse into the form; problems land in the red list. */
-function applyRawJson() {
+/** Parse the textarea into the form. Returns false when the JSON is invalid;
+ *  validation problems land in the shared red list either way. */
+function applyRawToForm(): boolean {
   let parsed: unknown
   try {
     parsed = JSON.parse(rawJsonText.value)
   } catch (e) {
     configProblems.value = [`invalid JSON: ${e instanceof Error ? e.message : String(e)}`]
-    return
+    return false
   }
   const obj = (parsed ?? {}) as Record<string, unknown>
   const profilesObj = (obj.profiles ?? {}) as Record<string, Record<string, unknown>>
   const tiersObj = (obj.tiers ?? {}) as Record<string, Record<string, unknown>>
-  excludedSizes.value = new Set(
-    ((obj.exclude_profiles ?? []) as unknown[]).map(String).filter((n) => n !== 'default'),
-  )
-  formProfiles.value = Object.entries(profilesObj).map(([name, p]) => ({
+  const rows = Object.entries(profilesObj).map(([name, p]) => ({
     name,
     memory: String(p?.memory ?? ''),
     cpu: String(p?.cpu ?? ''),
     pids: Number(p?.pids) || 0,
     slots: Number(p?.slots) || 0,
   }))
-  formTiers.value = Object.entries(tiersObj).map(([name, t]) => ({
-    name,
-    image: String(t?.image ?? ''),
-    runtime: String(t?.runtime ?? ''),
-  }))
-  formNetwork.value = String(obj.network ?? '')
-  showRawJson.value = false
+  // Format detection: a host-selection document never repeats catalog rows
+  // verbatim (publish strips them), so their presence marks the *effective*
+  // document — where a catalog name missing from `profiles` means excluded.
+  // In either format, catalog-identical rows mean "inherited", never
+  // host-pinned, and `default` always stays a host-visible row.
+  const effectiveFormat = rows.some((row) => row.name !== 'default' && sameAsCatalog(row))
+  formProfiles.value = rows.filter((row) => !sameAsCatalog(row))
+  const present = new Set(Object.keys(profilesObj))
+  const explicit = ((obj.exclude_profiles ?? []) as unknown[]).map(String)
+  excludedSizes.value = new Set(
+    (effectiveFormat
+      ? [
+          ...Object.keys(platformDefaultProfiles.value).filter(
+            (name) => name !== 'default' && !present.has(name),
+          ),
+          ...explicit,
+        ]
+      : explicit
+    ).filter((n) => n !== 'default'),
+  )
+  formTiers.value = Object.entries(tiersObj)
+    .map(([name, t]) => ({
+      name,
+      image: String(t?.image ?? ''),
+      runtime: String(t?.runtime ?? ''),
+    }))
+    .filter((row) => !sameTierAsCatalog(row))
+  const pastedNetwork = String(obj.network ?? '').trim()
+  formNetwork.value =
+    pastedNetwork && pastedNetwork === platformDefaultNetwork.value.trim()
+      ? ''
+      : pastedNetwork
   configValid.value = false
   configProblems.value = validateRows().problems
+  return true
+}
+
+/** Paste JSON → parse into the form without leaving the raw view. */
+function applyRawJson() {
+  applyRawToForm()
 }
 
 // ── platform default tiers + default profiles (inherited by hosts that leave
@@ -596,6 +771,12 @@ function applyRawJson() {
 const showDefaultsDialog = ref(false)
 const defaultsRows = ref<TierRow[]>([])
 const defaultsProblems = ref<string[]>([])
+/** Aliased-`default` presentation: when default's numbers equal one catalog
+ *  entry (the carrier, small by preference), one row carries a `default`
+ *  badge and edits feed both entries on save. Splitting materializes default
+ *  as its own row; the state resets every time the dialog opens. */
+const defaultsAliasCarrier = ref<string | null>(null)
+const defaultsAliasSplit = ref(false)
 const savingDefaults = ref(false)
 const platformDefaults = ref<Record<string, { image: string; runtime: string }>>({})
 const platformDefaultProfiles = ref<Record<string, ResourceProfile>>({})
@@ -628,22 +809,54 @@ function openDefaultsDialog() {
       runtime: existing?.runtime ?? '',
     }
   })
-  // Default profile rows: 'default' first (required), then the catalog.
+  // Profile rows: when `default` shares a catalog entry's numbers (small by
+  // preference) the entry carries a `default` badge instead of a duplicate
+  // row; diverged numbers keep default as its own row.
   const catalog = { ...platformDefaultProfiles.value }
   const defaultProfile = catalog.default ?? { memory: '2g', cpu: '2', pids: 256, slots: 1 }
   delete catalog.default
-  defaultProfileRows.value = [
-    { name: 'default', ...defaultProfile },
-    ...Object.entries(catalog).map(([name, p]) => ({
-      name,
-      memory: p.memory,
-      cpu: p.cpu,
-      pids: Number(p.pids) || 0,
-      slots: Number(p.slots) || 1,
-    })),
-  ]
+  const same = (p: ResourceProfile | undefined) =>
+    String(p?.memory ?? '').trim() === String(defaultProfile.memory ?? '').trim() &&
+    String(p?.cpu ?? '').trim() === String(defaultProfile.cpu ?? '').trim() &&
+    (Number(p?.pids) || 0) === (Number(defaultProfile.pids) || 0) &&
+    (Number(p?.slots) || 1) === (Number(defaultProfile.slots) || 1)
+  const names = Object.keys(catalog).sort(sizeAscending)
+  const matches = names.filter((name) => same(catalog[name]))
+  defaultsAliasCarrier.value = matches.length
+    ? matches.includes('small')
+      ? 'small'
+      : matches[0]
+    : null
+  defaultsAliasSplit.value = false
+  defaultProfileRows.value = names.map((name) => ({
+    name,
+    memory: catalog[name].memory,
+    cpu: catalog[name].cpu,
+    pids: Number(catalog[name].pids) || 0,
+    slots: Number(catalog[name].slots) || 1,
+  }))
+  if (!defaultsAliasCarrier.value) {
+    defaultProfileRows.value.unshift({ name: 'default', ...defaultProfile })
+  }
   defaultsProblems.value = []
   showDefaultsDialog.value = true
+}
+
+/** Break the alias: default materializes as its own editable row. */
+function splitDefaultAlias() {
+  const carrier = defaultProfileRows.value.find(
+    (row) => row.name === defaultsAliasCarrier.value,
+  )
+  const d = platformDefaultProfiles.value['default']
+  defaultProfileRows.value.unshift({
+    name: 'default',
+    memory: String(d?.memory ?? carrier?.memory ?? '2g'),
+    cpu: String(d?.cpu ?? carrier?.cpu ?? '2'),
+    pids: Number(d?.pids) || 256,
+    slots: Number(d?.slots) || 1,
+  })
+  defaultsAliasCarrier.value = null
+  defaultsAliasSplit.value = true
 }
 
 function addDefaultProfileRow() {
@@ -652,7 +865,12 @@ function addDefaultProfileRow() {
 
 function removeDefaultProfileRow(index: number) {
   const row = defaultProfileRows.value[index]
-  if (row?.name === 'default') return
+  if (row?.name === 'default' || row?.name === 'small') return
+  // Deleting a non-small alias carrier breaks the alias — default
+  // materializes first so its numbers stay in the catalog.
+  if (row && row.name === defaultsAliasCarrier.value && !defaultsAliasSplit.value) {
+    splitDefaultAlias()
+  }
   defaultProfileRows.value.splice(index, 1)
 }
 
@@ -724,7 +942,22 @@ async function saveDefaults() {
       slots: Math.trunc(row.slots) || 0,
     }
   }
-  if (!seenNames.has('default')) {
+  // Aliased mode: the carrier row stands for both entries — save writes
+  // `default` with the carrier's numbers so they stay in lockstep. A renamed
+  // carrier breaks the alias and falls back to the default-row requirement.
+  const carrierRow = defaultProfileRows.value.find(
+    (row) => row.name.trim() === defaultsAliasCarrier.value,
+  )
+  const aliased = !!defaultsAliasCarrier.value && !defaultsAliasSplit.value && !!carrierRow
+  if (aliased && carrierRow) {
+    profiles['default'] = {
+      memory: carrierRow.memory.trim(),
+      cpu: carrierRow.cpu.trim(),
+      pids: Math.trunc(carrierRow.pids) || 0,
+      slots: Math.trunc(carrierRow.slots) || 0,
+    }
+  }
+  if (!seenNames.has('default') && !aliased) {
     profileProblems.unshift("profiles must define the reserved 'default' profile")
   }
   if (profileProblems.length) {
@@ -865,6 +1098,7 @@ async function removeHost(host: SandboxHost) {
 
 async function loadVersions(host: SandboxHost) {
   versionsLoading.value = true
+  versionPage.value = 1
   try {
     versions.value = await sandboxHostsApi.versions(host.host_id, host.instance_id)
   } catch {
@@ -946,19 +1180,69 @@ async function saveConfig() {
   }
 }
 
-/** One-line "event" text for a stored config version, derived from the
- *  document itself (the history table keeps no description column):
- *  which tiers it offers, which profiles, and the network. */
-function versionEvent(v: ConfigVersion): string {
-  const doc = v.document
-  if (!doc || typeof doc !== 'object') return 'empty document'
-  const tierNames = Object.keys(doc.tiers ?? {})
-  const profileNames = Object.keys(doc.profiles ?? {})
+/** One-line change description for a stored config version, diffed against
+ *  the previous version's document (the history table keeps no description
+ *  column, and the versions API returns every document). Describing the raw
+ *  selection doc instead read as "no tiers · profiles: default" — misleading,
+ *  since catalog-inherited rows never appear in it. The first version (or an
+ *  adjacency gap) describes the initial publication. */
+function versionEvent(v: ConfigVersion, prev?: ConfigVersion): string {
+  const cur = v.document
+  if (!cur || typeof cur !== 'object') return 'empty document'
+  const hasPrev = !!prev && prev.version === v.version - 1 && !!prev.document
+  const before = (hasPrev ? prev!.document : {}) as Partial<SandboxHostDocument>
   const parts: string[] = []
-  parts.push(tierNames.length ? `tiers: ${tierNames.join(', ')}` : 'no tiers')
-  parts.push(profileNames.length ? `profiles: ${profileNames.join(', ')}` : 'no profiles')
-  if (doc.network) parts.push(`network ${doc.network}`)
-  return parts.join(' · ')
+
+  // Exclusions — what this host stopped / started offering from the catalog.
+  const curEx = new Set((cur.exclude_profiles ?? []).filter((n) => n !== 'default'))
+  const prevEx = new Set((before.exclude_profiles ?? []).filter((n) => n !== 'default'))
+  for (const name of [...curEx].filter((n) => !prevEx.has(n)).sort()) {
+    parts.push(hasPrev ? `stop offering '${name}'` : `excludes '${name}'`)
+  }
+  for (const name of [...prevEx].filter((n) => !curEx.has(n)).sort()) {
+    parts.push(`offer '${name}' again`)
+  }
+
+  // Host-defined profile rows (overrides over the catalog).
+  const curP = cur.profiles ?? {}
+  const prevP = before.profiles ?? {}
+  for (const name of Object.keys(curP).sort()) {
+    const b = curP[name]
+    if (!prevP[name]) parts.push(`host override '${name}': ${b.memory} · ${b.cpu} cpu`)
+    else if (JSON.stringify(prevP[name]) !== JSON.stringify(b)) {
+      parts.push(`host override '${name}' updated`)
+    }
+  }
+  for (const name of Object.keys(prevP).sort()) {
+    if (!curP[name]) parts.push(`host override '${name}' dropped — inherits catalog`)
+  }
+
+  // Tier pins.
+  const curT = cur.tiers ?? {}
+  const prevT = before.tiers ?? {}
+  for (const name of Object.keys(curT).sort()) {
+    if (!prevT[name]) parts.push(`tier pin '${name}' added`)
+    else if (JSON.stringify(prevT[name]) !== JSON.stringify(curT[name])) {
+      parts.push(`tier pin '${name}' updated`)
+    }
+  }
+  for (const name of Object.keys(prevT).sort()) {
+    if (!curT[name]) parts.push(`tier pin '${name}' dropped — inherits catalog`)
+  }
+
+  // Network pin.
+  const curNet = (cur.network ?? '').trim()
+  const prevNet = (before.network ?? '').trim()
+  if (curNet !== prevNet) {
+    parts.push(curNet ? `network pinned to '${curNet}'` : 'network set to inherit')
+  }
+
+  if (!parts.length) {
+    return hasPrev ? 'no content change — republished' : 'initial publication — catalog defaults only'
+  }
+  return parts.length > 4
+    ? `${parts.slice(0, 4).join(' · ')} · +${parts.length - 4} more`
+    : parts.join(' · ')
 }
 
 async function rollbackTo(version: number) {
@@ -1017,7 +1301,6 @@ async function rotateToken(host: SandboxHost) {
           <RefreshCw class="h-4 w-4" />
         </UiButton>
         <UiButton size="sm" variant="outline" @click="openDefaultsDialog">Platform defaults</UiButton>
-        <UiButton size="sm" @click="openEnroll"><Plus class="h-4 w-4" /> Enroll host</UiButton>
       </div>
     </div>
 
@@ -1037,150 +1320,115 @@ async function rotateToken(host: SandboxHost) {
           <code class="mono">default</code> is implicit for every team.
         </p>
       </div>
-      <table class="w-full text-[12px]">
-        <thead>
-          <tr class="border-y border-border/40 bg-muted/10">
-            <th class="px-5 py-2 text-left text-[9.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Profile</th>
-            <th class="px-4 py-2 text-left text-[9.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Granted teams</th>
-            <th class="px-4 py-2 text-left text-[9.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Offered by</th>
-            <th class="w-10"></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in grantProfileRows" :key="row.profile" class="border-b border-border/30 last:border-b-0">
-            <td class="px-5 py-2.5 align-top">
-              <span class="font-mono text-[11.5px] font-medium text-foreground">{{ row.profile }}</span>
-              <span
-                class="mt-0.5 block text-[9.5px]"
-                :class="row.teams.length ? 'text-muted-foreground' : 'text-amber-600'"
-              >
-                {{ row.teams.length
-                  ? `offered by ${row.offeredBy.length || 'no'} host${row.offeredBy.length === 1 ? '' : 's'}`
-                  : 'no grant — no team can request this profile' }}
-              </span>
-            </td>
-            <td class="px-4 py-2.5 align-top">
-              <div class="flex flex-wrap items-center gap-1.5">
-                <span
-                  v-for="t in row.teams"
-                  :key="t.teamId"
-                  class="inline-flex items-center gap-1 rounded-full bg-muted py-0.5 pl-2.5 pr-1 text-[11px] text-foreground/80"
-                >
-                  {{ t.teamName }}
-                  <button
-                    type="button"
-                    class="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-red-500/20 hover:text-red-500"
-                    :title="`Revoke ${row.profile} from ${t.teamName}`"
-                    @click="revokeGrant(t.grant)"
-                  >
-                    <X class="h-2.5 w-2.5" />
-                  </button>
-                </span>
-                <button
-                  v-if="grantPanelProfile !== row.profile"
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded-full border border-dashed border-border/70 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground"
-                  :title="grantableTeams(row.profile).length ? `Grant ${row.profile} to a team` : 'All teams already hold this grant'"
-                  :disabled="!grantableTeams(row.profile).length"
-                  @click="openGrantPanel(row.profile)"
-                >
-                  <Plus class="h-2.5 w-2.5" /> team
-                </button>
-                <div
-                  v-else
-                  class="flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5"
-                >
-                  <select
-                    v-model="grantPanelTeamId"
-                    class="max-w-[110px] border-0 bg-transparent text-[11px] text-foreground outline-hidden"
-                    aria-label="Team"
-                  >
-                    <option value="" disabled>team…</option>
-                    <option v-for="t in grantableTeams(row.profile)" :key="t.id" :value="t.id">{{ t.name }}</option>
-                  </select>
-                  <button
-                    type="button"
-                    class="inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity"
-                    :class="!grantPanelTeamId && 'opacity-40'"
-                    :disabled="!grantPanelTeamId || grantSaving"
-                    title="Add grant"
-                    @click="addGrant(row.profile)"
-                  >
-                    <Check class="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted"
-                    title="Cancel"
-                    @click="closeGrantPanel"
-                  >
-                    <X class="h-3 w-3" />
-                  </button>
-                </div>
+      <div class="divide-y divide-border/30 border-y border-border/40">
+        <div
+          v-for="team in grantTeamRows"
+          :key="team.id"
+          class="px-5 py-3"
+          :class="!teamGrants(team.id).length && 'bg-muted/10'"
+        >
+          <div class="flex items-center gap-2.5">
+            <span
+              class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-medium"
+              :style="{ background: teamTint(team.id) + '22', color: teamTint(team.id) }"
+              aria-hidden="true"
+            >{{ team.name.charAt(0).toUpperCase() }}</span>
+            <div class="min-w-0">
+              <div class="truncate text-[12.5px] font-medium leading-tight">{{ team.name }}</div>
+              <div class="text-[10.5px] text-muted-foreground">
+                {{ teamGrants(team.id).length
+                  ? `${teamGrants(team.id).length} profile${teamGrants(team.id).length > 1 ? 's' : ''}`
+                  : 'no profiles yet' }}
               </div>
-              <p v-if="grantError && grantPanelProfile === row.profile" class="mt-1 text-[10px] text-destructive">{{ grantError }}</p>
-            </td>
-            <td class="px-4 py-2.5 align-top">
-              <div v-if="row.offeredBy.length" class="flex max-w-[220px] flex-wrap gap-1">
-                <span
-                  v-for="h in row.offeredBy"
-                  :key="h"
-                  class="inline-flex items-center rounded bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] leading-snug text-emerald-700 dark:text-emerald-400"
-                >{{ h }}</span>
-              </div>
-              <span v-else class="font-mono text-[10px] italic leading-snug text-muted-foreground/60">no host offers it</span>
-            </td>
-            <td class="px-2 py-2.5 align-top">
+            </div>
+            <div class="ml-auto">
               <UiButton
-                v-if="row.teams.length"
                 size="sm"
                 variant="ghost"
-                class="float-right"
-                :title="`Revoke every grant for ${row.profile}`"
-                @click="row.teams.forEach((t) => revokeGrant(t.grant))"
-              ><Trash2 class="h-3.5 w-3.5" /></UiButton>
-            </td>
-          </tr>
-          <tr class="border-t border-border/40 bg-muted/20">
-            <td colspan="4" class="px-5 py-2.5">
-              <div class="flex flex-wrap items-center gap-2">
-                <select
-                  v-model="newGrantTeamId"
-                  class="rounded-md border border-border/60 bg-background px-2 py-1 text-[11px] text-foreground outline-hidden focus:border-primary/50"
-                  aria-label="Team"
-                >
-                  <option value="" disabled>team…</option>
-                  <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }}</option>
-                </select>
-                <span class="text-[10px] text-muted-foreground">may request</span>
-                <select
-                  v-model="newGrantProfile"
-                  class="w-36 rounded-md border border-border/60 bg-background px-2 py-1 font-mono text-[11px] text-foreground outline-hidden focus:border-primary/50"
-                  aria-label="Profile name"
-                  @change="grantError = ''"
-                >
-                  <option value="" disabled>profile…</option>
-                  <option v-for="name in grantableProfileNames" :key="name" :value="name">{{ name }}</option>
-                </select>
-                <span
-                  v-if="!grantableProfileNames.length"
-                  class="text-[10px] italic text-muted-foreground/70"
-                >no profiles offered yet — configure one on a host first</span>
-                <UiButton
-                  size="sm"
-                  variant="outline"
-                  :loading="grantSaving"
-                  :disabled="!newGrantTeamId || !newGrantProfile.trim()"
-                  @click="addNewProfileGrant"
-                >
-                  <Plus class="h-3.5 w-3.5" /> Grant
-                </UiButton>
-                <p v-if="grantError && !grantPanelProfile" class="text-[10px] text-destructive">{{ grantError }}</p>
+                class="-mr-2"
+                @click="grantPanelTeamId === team.id ? closeGrantPanel() : openGrantPanel(team.id)"
+              >
+                <Plus class="h-3.5 w-3.5" /> {{ grantPanelTeamId === team.id ? 'Close' : 'Grant profiles' }}
+              </UiButton>
+            </div>
+          </div>
+          <div v-if="teamGrants(team.id).length" class="mt-2 flex flex-wrap gap-1.5 pl-[34px]">
+            <span
+              v-for="g in teamGrants(team.id)"
+              :key="g.team_id + '/' + g.profile"
+              class="inline-flex items-center gap-1 rounded-full bg-muted py-0.5 pl-2.5 pr-1 font-mono text-[11px] text-foreground/80"
+              :title="offeredByFor(g.profile).length
+                ? `offered by ${offeredByFor(g.profile).join(', ')}`
+                : 'not offered on any host yet'"
+            >
+              {{ g.profile }}
+              <button
+                type="button"
+                class="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-red-500/20 hover:text-red-500"
+                :title="`Revoke ${g.profile} from ${team.name}`"
+                :aria-label="`Revoke ${g.profile} from ${team.name}`"
+                @click="revokeGrant(g)"
+              ><X class="h-2.5 w-2.5" /></button>
+            </span>
+          </div>
+
+          <!-- inline multi-grant panel: search + multi-select, one action grants all -->
+          <div v-if="grantPanelTeamId === team.id" class="ml-[34px] mt-2.5 rounded-lg border border-border/60 bg-muted/25 p-2">
+            <div class="flex flex-wrap items-center gap-2 px-1 pb-2">
+              <div class="relative max-w-[240px] flex-1">
+                <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  v-model="grantPanelSearch"
+                  type="search"
+                  placeholder="Search profiles…"
+                  aria-label="Search profiles"
+                  class="w-full rounded-md border border-border/60 bg-background py-1 pl-7 pr-2 text-[11px] outline-hidden focus:border-primary/50"
+                />
               </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+              <span class="text-[10px] text-muted-foreground">pick any number — one action grants all</span>
+            </div>
+            <div v-if="grantPanelChoices.length" class="max-h-52 space-y-px overflow-y-auto">
+              <label
+                v-for="name in grantPanelChoices"
+                :key="name"
+                class="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 transition-colors hover:bg-muted/50"
+                :class="!offeredByFor(name).length && 'opacity-55'"
+              >
+                <input
+                  type="checkbox"
+                  class="h-3.5 w-3.5 shrink-0 accent-primary"
+                  :checked="grantPanelPending.has(name) || isTeamGranted(team.id, name)"
+                  :disabled="isTeamGranted(team.id, name)"
+                  :aria-label="`Grant ${name} to ${team.name}`"
+                  @change="togglePanelPending(name)"
+                />
+                <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] font-medium">{{ name }}</span>
+                <span
+                  v-if="isTeamGranted(team.id, name)"
+                  class="shrink-0 rounded bg-muted px-1 py-px text-[9px] text-muted-foreground"
+                >granted</span>
+                <span class="flex shrink-0 flex-wrap gap-0.5">
+                  <span
+                    v-for="h in offeredByFor(name)"
+                    :key="h"
+                    class="rounded bg-emerald-500/10 px-1 py-px font-mono text-[9.5px] leading-snug text-emerald-700 dark:text-emerald-400"
+                  >{{ h }}</span>
+                </span>
+              </label>
+            </div>
+            <p v-else class="px-1.5 py-2 text-[11px] italic text-muted-foreground/70">no profiles match “{{ grantPanelSearch }}”</p>
+            <div class="flex items-center gap-2 px-1 pt-2">
+              <UiButton
+                size="sm"
+                :loading="grantSaving"
+                :disabled="!grantPanelPending.size"
+                @click="applyPanelGrants"
+              >Grant{{ grantPanelPending.size ? ` (${grantPanelPending.size})` : '' }}</UiButton>
+              <p v-if="grantError" class="text-[10px] text-destructive">{{ grantError }}</p>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="flex flex-wrap items-center gap-2 border-t border-border/40 px-5 py-2 text-[10px] text-muted-foreground/80">
         <span>Revoking stops the team's pipelines requesting that profile at trigger (4xx) and again at claim.</span>
         <span class="ml-auto"><code class="mono">default</code> is implicit for every team — not listed.</span>
@@ -1188,20 +1436,22 @@ async function rotateToken(host: SandboxHost) {
     </div>
 
     <!-- ── Machines: enrolled sandboxd instances ── -->
-    <div class="mb-3 mt-6">
-      <div class="flex items-center gap-3">
-        <h2 class="text-sm font-semibold tracking-tight">Enrolled hosts</h2>
-        <span class="h-px flex-1 bg-border/50"></span>
-      </div>
-      <p class="mt-0.5 text-[10.5px] text-muted-foreground">buz-sandboxd instances by host — each offers the platform catalog unless overridden.</p>
-    </div>
-    <div :class="changes.length ? 'grid grid-cols-1 items-start gap-4 xl:grid-cols-[3fr_1fr]' : ''">
+    <div :class="changes.length ? 'mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-[3fr_1fr]' : 'mt-6'">
       <div class="min-w-0 space-y-4">
+        <div>
+          <div class="flex items-center gap-3">
+            <h2 class="text-sm font-semibold tracking-tight">Enrolled hosts</h2>
+            <span class="h-px flex-1 bg-border/50"></span>
+            <UiButton size="sm" @click="openEnroll"><Plus class="h-4 w-4" /> Enroll host</UiButton>
+          </div>
+          <p class="mt-0.5 text-[10.5px] text-muted-foreground">buz-sandboxd instances by host — each offers the platform catalog unless overridden.</p>
+        </div>
         <div v-if="loading" class="surface-card p-8 text-center type-meta">Loading…</div>
         <div v-else-if="hosts.length === 0" class="rounded-xl border border-border/50 bg-card p-16 text-center text-muted-foreground">
           <Boxes class="h-10 w-10 mx-auto mb-3 text-muted-foreground/20" />
           <p class="text-sm">No sandbox hosts enrolled</p>
           <p class="text-xs mt-1">Enroll a (host_id, instance_id) pair, then point buz-sandboxd's BUZ_MANAGER_URL + token file at this Manager.</p>
+          <UiButton size="sm" class="mt-4" @click="openEnroll"><Plus class="h-4 w-4" /> Enroll host</UiButton>
         </div>
         <div v-else class="grid gap-4 lg:grid-cols-2">
           <div
@@ -1289,311 +1539,456 @@ async function rotateToken(host: SandboxHost) {
       </div>
     </div>
 
-    <!-- ── host detail dialog: config document ── -->
+    <!-- ── host detail dialog: desired configuration ── -->
     <div v-if="detailHost" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="detailHost = null">
-      <div class="bg-card rounded-xl border border-border/60 p-6 w-full max-w-3xl max-h-[85vh] overflow-y-auto space-y-5 shadow-lg">
-        <div class="flex items-start justify-between gap-2">
-          <div class="min-w-0">
-            <h3 class="text-sm font-medium truncate">{{ detailHost.host_id }} / {{ detailHost.instance_id }}</h3>
-            <p class="type-meta">
-              budget {{ detailHost.max_resource_slots || '∞' }} slots · applied v{{ detailHost.applied_version }} of desired v{{ detailHost.desired_version }} (next = max + 1)<span v-if="detailHost.pushed && detailHost.applied_at"> · pushed {{ detailHost.applied_at }}</span>
-            </p>
+      <div class="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border/60 bg-card shadow-lg">
+        <div class="shrink-0 border-b border-border/50 px-6 py-4">
+          <div class="flex items-start justify-between gap-3">
+            <h3 class="min-w-0 truncate text-base font-semibold tracking-tight">
+              {{ detailHost.host_id }} <span class="font-normal text-muted-foreground">/ {{ detailHost.instance_id }}</span>
+            </h3>
+            <div class="flex items-center gap-2 shrink-0">
+              <span
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide"
+                :class="detailHost.pushed ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-amber-500/12 text-amber-600'"
+                :title="detailHost.pushed
+                  ? `Applied version ${detailHost.applied_version}${detailHost.applied_at ? ` on ${formatDateTime(detailHost.applied_at)}` : ''}`
+                  : `Version ${detailHost.desired_version} published but not yet fetched/applied`"
+              >{{ detailHost.pushed ? 'pushed' : 'not pushed' }}</span>
+              <span
+                class="inline-flex items-center gap-1.5 rounded-full border border-border/50 px-2 py-0.5 text-[11px] font-medium"
+                :class="detailHost.live ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'"
+                :title="detailHost.last_fetch_at ? `Last config fetch ${formatDateTime(detailHost.last_fetch_at)}` : 'sandboxd has never fetched config from this Manager'"
+              >
+                <span class="h-1.5 w-1.5 rounded-full" :class="detailHost.live ? 'bg-emerald-500' : 'bg-muted-foreground/40'" />
+                {{ detailHost.live ? 'online' : 'offline' }}
+              </span>
+              <UiButton size="sm" variant="ghost" @click="detailHost = null"><X class="h-4 w-4" /></UiButton>
+            </div>
           </div>
-          <div class="flex items-center gap-2 shrink-0">
+          <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
             <span
-              class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide"
-              :class="detailHost.pushed ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-amber-500/12 text-amber-600'"
+              class="inline-flex items-baseline gap-1.5 rounded-lg px-2 py-0.5 text-[10.5px] tabular-nums"
+              :class="detailHost.pushed ? 'border border-border/60' : 'bg-amber-500/12 text-amber-600'"
               :title="detailHost.pushed
-                ? `Applied version ${detailHost.applied_version}${detailHost.applied_at ? ` on ${detailHost.applied_at}` : ''}`
+                ? `Applied version ${detailHost.applied_version}${detailHost.applied_at ? ` on ${formatDateTime(detailHost.applied_at)}` : ''}`
                 : `Version ${detailHost.desired_version} published but not yet fetched/applied`"
-            >{{ detailHost.pushed ? 'pushed' : 'not pushed' }}</span>
+            >
+              <span :class="detailHost.pushed ? 'text-muted-foreground' : 'text-amber-600/80'">applied</span>
+              <span class="font-medium">v{{ detailHost.applied_version }} / v{{ detailHost.desired_version }}</span>
+            </span>
             <span
-              class="inline-flex items-center gap-1.5 rounded-full border border-border/50 px-2 py-0.5 text-[11px] font-medium"
-              :class="detailHost.live ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'"
+              class="inline-flex items-baseline gap-1.5 rounded-lg border border-border/60 px-2 py-0.5 text-[10.5px] tabular-nums"
               :title="detailHost.last_fetch_at ? `Last config fetch ${formatDateTime(detailHost.last_fetch_at)}` : 'sandboxd has never fetched config from this Manager'"
             >
-              <span class="h-1.5 w-1.5 rounded-full" :class="detailHost.live ? 'bg-emerald-500' : 'bg-muted-foreground/40'" />
-              {{ detailHost.live ? 'online' : 'offline' }}
+              <span class="text-muted-foreground">last fetch</span>
+              <span class="font-medium">{{ detailHost.last_fetch_at ? formatDateTime(detailHost.last_fetch_at) : '—' }}</span>
             </span>
-            <UiButton size="sm" variant="ghost" @click="detailHost = null"><X class="h-4 w-4" /></UiButton>
           </div>
         </div>
 
-        <!-- 1. config document — Job sizes cards + isolation switches -->
-        <section class="space-y-5">
-          <div class="flex items-center justify-between gap-2">
-            <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Config document</h4>
-            <button
-              type="button"
-              class="text-xs text-muted-foreground transition-colors hover:text-foreground"
-              @click="toggleRawJson"
-            >
-              {{ showRawJson ? '← Use form' : 'Raw JSON' }}
-            </button>
-          </div>
-
-          <template v-if="!showRawJson">
-            <!-- Job sizes: a selection surface over the platform catalog -->
-            <div class="space-y-2">
-              <h4 class="text-sm font-semibold">Job sizes <span class="text-xs font-normal text-muted-foreground">(resource profiles)</span></h4>
-              <p class="type-meta">
-                The catalog lives in <button type="button" class="text-primary underline underline-offset-2" @click="openDefaultsDialog">Platform defaults</button> — every entry is offered here unless you drop its chip; a dropped chip is stored as an exclusion on this machine. Names and numbers are edited only in the catalog.
+        <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5">
+          <!-- ── capacity: the host's slot budget ── -->
+          <section class="space-y-2">
+            <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Capacity</h4>
+            <div class="rounded-xl border border-border/50 p-3">
+              <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+                <span class="text-[12px] font-medium">Slot budget</span>
+                <input
+                  v-model.number="budgetDraft"
+                  type="number"
+                  min="0"
+                  class="w-20 rounded-md border border-border/60 bg-background px-2 py-1 text-right text-xs tabular-nums outline-hidden focus:border-primary/50"
+                  aria-label="Slot budget in slots (0 = inherit the platform default)"
+                  @keydown.enter.prevent="saveBudget"
+                />
+                <span class="text-[11px] text-muted-foreground">slots</span>
+                <span
+                  v-if="normalizedBudget()"
+                  class="rounded bg-emerald-500/10 px-1.5 py-px text-[9.5px] text-emerald-600 dark:text-emerald-400"
+                >set on this host</span>
+                <span v-else class="rounded bg-muted px-1.5 py-px text-[9.5px] text-muted-foreground">
+                  inherits platform default · {{ platformDefaultSlots || 'unlimited' }}
+                </span>
+                <span class="ml-auto flex items-center gap-1.5">
+                  <button
+                    v-if="budgetDirty"
+                    type="button"
+                    class="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                    @click="cancelBudgetEdit"
+                  >Cancel</button>
+                  <UiButton v-if="budgetDirty" size="sm" :loading="savingBudget" @click="saveBudget">Save</UiButton>
+                </span>
+              </div>
+              <p class="mt-1.5 text-[10px] leading-relaxed text-muted-foreground/60">
+                Running jobs deduct their profile's <code class="mono">slots</code> here — <span class="font-mono">8</span> fits 8 small or 2 large jobs. <span class="font-mono">0</span> = platform default ({{ platformDefaultSlots || 'unlimited' }}) · effective immediately.
               </p>
-              <div class="flex flex-wrap gap-2.5">
-                <!-- catalog profiles: offered unless excluded -->
-                <div
-                  v-for="name in catalogSizes"
-                  :key="name"
-                  class="relative w-44 cursor-pointer rounded-xl border px-3 py-2.5 transition-colors"
-                  :class="excludedSizes.has(name)
-                    ? 'border-dashed border-border/70 opacity-75 hover:opacity-100'
-                    : sizeGrantLabel(name).granted ? 'border-border/60 hover:border-border' : 'border-red-500/35'"
-                  role="button"
-                  tabindex="0"
-                  :aria-pressed="!excludedSizes.has(name)"
-                  :title="excludedSizes.has(name)
-                    ? `Excluded on this host — click to offer '${name}' from the catalog`
-                    : `Offering '${name}' — click to exclude it from this host`"
-                  @click="toggleCatalogSize(name)"
-                  @keydown.enter.prevent="toggleCatalogSize(name)"
-                >
+            </div>
+          </section>
+
+          <!-- ── desired configuration ── -->
+          <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Desired configuration</h4>
+
+          <div class="space-y-3 rounded-xl border border-border/50 p-4">
+            <div class="flex items-baseline justify-between gap-2">
+              <h5 class="text-[13px] font-semibold">Job sizes <span class="text-[11px] font-normal text-muted-foreground">(resource profiles)</span></h5>
+              <button
+                type="button"
+                class="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                @click="toggleRawJson"
+              >
+                {{ showRawJson ? '← Use form' : 'Raw JSON' }}
+              </button>
+            </div>
+
+            <template v-if="!showRawJson">
+              <div class="space-y-2">
+                  <p class="type-meta">
+                    Cards are what this host serves; the catalog (a standard ladder ships by default; <code class="mono-chip text-[10px]">default</code> and <code class="mono-chip text-[10px]">small</code> are fixed, the rest editable) lives in <button type="button" class="text-primary underline underline-offset-2" @click="openDefaultsDialog">Platform defaults</button>. Exclusions are per-machine — manage them below.
+                  </p>
+                  <div class="flex flex-wrap gap-2.5">
+                    <!-- host-defined rows first: they override/diverge from the catalog -->
+                    <div
+                      v-for="row in formProfiles"
+                      :key="'legacy-' + row.name"
+                      class="relative w-44 cursor-pointer rounded-xl border border-amber-500/40 px-3 py-2.5 transition-colors hover:border-amber-500/70"
+                      role="button"
+                      tabindex="0"
+                      :title="`Host-defined '${row.name}' (${row.name === 'default' ? 'fallback override' : 'not in the catalog'}) — click to stop defining it here`"
+                      @click="dropLegacyRow(row)"
+                      @keydown.enter.prevent="dropLegacyRow(row)"
+                    >
+                      <span class="flex items-center gap-1.5 text-[12px] font-semibold">
+                        {{ row.name }}
+                        <span class="rounded bg-amber-500/12 px-1 py-px text-[8.5px] font-medium text-amber-600">host-defined</span>
+                      </span>
+                      <span class="mt-0.5 block font-mono text-[9.5px] text-muted-foreground">{{ specLine(row) }}</span>
+                      <span class="mt-1 block text-[9.5px] text-muted-foreground/70">click to drop the host definition</span>
+                    </div>
+                    <!-- offered catalog profiles: solid card + check = on; click excludes -->
+                    <div
+                      v-for="name in offeredCatalogSizes"
+                      :key="name"
+                      class="relative w-44 cursor-pointer rounded-xl border border-border bg-background px-3 py-2.5 transition-colors hover:border-primary/50"
+                      role="button"
+                      tabindex="0"
+                      :title="`Offering '${name}' — click to exclude it from this host`"
+                      @click="toggleCatalogSize(name)"
+                      @keydown.enter.prevent="toggleCatalogSize(name)"
+                    >
                   <span class="flex items-center gap-1.5 text-[12px] font-semibold">
+                    <Check class="h-3 w-3 shrink-0 text-primary" aria-hidden="true" />
                     {{ name }}
                     <span
                       class="rounded px-1 py-px text-[8.5px] font-medium"
-                      :class="excludedSizes.has(name)
-                        ? 'bg-muted text-muted-foreground'
-                        : sizeGrantLabel(name).granted ? 'bg-emerald-500/12 text-emerald-600' : 'bg-red-500/12 text-red-600'"
-                    >{{ excludedSizes.has(name) ? 'excluded' : sizeGrantLabel(name).text }}</span>
+                      :class="sizeGrantLabel(name).granted ? 'bg-emerald-500/12 text-emerald-600' : 'bg-amber-500/12 text-amber-600'"
+                    >{{ sizeGrantLabel(name).text }}</span>
                   </span>
+                  <span
+                    v-if="name === defaultAliasName"
+                    class="mt-0.5 inline-flex items-center rounded bg-primary/10 px-1 py-px text-[8.5px] font-medium text-primary"
+                    title="'default' shares this envelope — jobs without runner.resources run here"
+                  >default</span>
                   <span class="mt-0.5 block font-mono text-[9.5px] text-muted-foreground">{{ specLine(catalogSizeRow(name)) }}</span>
-                  <span class="mt-1 block text-[9.5px] text-muted-foreground/70">{{ excludedSizes.has(name) ? 'click to offer' : sizeGrantLabel(name).granted ? `grant: ${sizeGrantLabel(name).text}` : 'no team may request it yet' }}</span>
+                      <span class="mt-1 block text-[9.5px] text-muted-foreground/70">{{ sizeGrantLabel(name).granted ? `grant: ${sizeGrantLabel(name).text}` : 'no team may request it yet' }}</span>
+                    </div>
+                  </div>
+                  <p v-if="!offeredCatalogSizes.length && !formProfiles.length" class="text-[10px] leading-relaxed text-amber-600">
+                    This host excludes every catalog entry — only the <code class="mono">default</code> fallback applies to jobs here. Re-offer entries under <strong>Manage catalog profiles</strong>.
+                  </p>
+                  <!-- catalog exclusions: the exception list lives behind one manage entry -->
+                  <div>
+                    <UiButton size="sm" variant="ghost" class="-ml-2" @click="showCatalogPanel = !showCatalogPanel">
+                      <ChevronRight class="h-3.5 w-3.5 transition-transform" :class="showCatalogPanel && 'rotate-90'" />
+                      Manage catalog profiles
+                      <span v-if="excludedCatalogSizes.length" class="font-normal text-muted-foreground">— {{ excludedCatalogSizes.length }} excluded</span>
+                    </UiButton>
+                    <div v-if="showCatalogPanel" class="mt-1.5 space-y-0.5 rounded-lg border border-border/50 p-1.5">
+                      <p class="type-meta px-1 pt-0.5">Checked = offered. Uncheck to exclude; excluded entries sit dimmed at the bottom until re-checked.</p>
+                      <label
+                        v-for="name in [...offeredCatalogSizes, ...excludedCatalogSizes]"
+                        :key="name"
+                        class="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-muted/40"
+                        :class="excludedSizes.has(name) && 'opacity-60'"
+                      >
+                        <input
+                          type="checkbox"
+                          class="h-3.5 w-3.5 shrink-0 accent-primary"
+                          :checked="!excludedSizes.has(name)"
+                          @change="toggleCatalogSize(name)"
+                        />
+                        <span class="min-w-0 flex-1">
+                          <span class="flex items-center gap-1.5 text-[12px] font-medium">
+                            {{ name }}
+                            <span
+                              class="rounded px-1 py-px text-[8.5px] font-medium"
+                              :class="sizeGrantLabel(name).granted ? 'bg-emerald-500/12 text-emerald-600' : 'bg-amber-500/12 text-amber-600'"
+                            >{{ sizeGrantLabel(name).text }}</span>
+                          </span>
+                          <span
+                            v-if="name === defaultAliasName"
+                            class="mt-0.5 inline-flex items-center rounded bg-primary/10 px-1 py-px text-[8.5px] font-medium text-primary"
+                          >default</span>
+                          <span class="block font-mono text-[9.5px] text-muted-foreground">{{ specLine(catalogSizeRow(name)) }}</span>
+                        </span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
-                <!-- legacy rows the host document still defines itself -->
-                <div
-                  v-for="row in formProfiles"
-                  :key="'legacy-' + row.name"
-                  class="relative w-44 cursor-pointer rounded-xl border border-amber-500/40 px-3 py-2.5 transition-colors hover:border-amber-500/70"
-                  role="button"
-                  tabindex="0"
-                  :title="`Host-defined '${row.name}' (${row.name === 'default' ? 'fallback override' : 'not in the catalog'}) — click to stop defining it here`"
-                  @click="dropLegacyRow(row)"
-                  @keydown.enter.prevent="dropLegacyRow(row)"
-                >
-                  <span class="flex items-center gap-1.5 text-[12px] font-semibold">
-                    {{ row.name }}
-                    <span class="rounded bg-amber-500/12 px-1 py-px text-[8.5px] font-medium text-amber-600">host-defined</span>
-                  </span>
-                  <span class="mt-0.5 block font-mono text-[9.5px] text-muted-foreground">{{ specLine(row) }}</span>
-                  <span class="mt-1 block text-[9.5px] text-muted-foreground/70">click to drop the host definition</span>
+
+                <!-- footnotes: grouped, separated from the editable surface -->
+                <div class="space-y-1 border-t border-border/40 pt-2.5">
+                  <p v-if="fallbackSize" class="text-[10px] leading-relaxed text-muted-foreground">
+                    Fallback envelope <code class="mono">default</code><template v-if="defaultAliasName"> (= <code class="mono">{{ defaultAliasName }}</code>)</template> — <span class="font-mono">{{ specLine(fallbackSize) }}</span> — runs implicitly for every job without <code class="mono">runner.resources</code>; every team may use it.
+                  </p>
+                  <p class="text-[10px] leading-relaxed text-muted-foreground">
+                    “no grant” = the profile is offered here but no team may request it — grant it under <strong>Profile grants</strong> on the page above. Disk is a fixed tmpfs and GPU passthrough is not yet supported — those follow platform evolution.
+                  </p>
                 </div>
-              </div>
-              <p v-if="fallbackSize" class="text-[10px] leading-relaxed text-muted-foreground">
-                Fallback envelope <code class="mono">default</code> — <span class="font-mono">{{ specLine(fallbackSize) }}</span> — runs implicitly for every job without <code class="mono">runner.resources</code>; every team may use it. Its numbers are edited in <button type="button" class="text-primary underline underline-offset-2" @click="openDefaultsDialog">Platform defaults</button>.
-              </p>
-              <p class="text-[10px] leading-relaxed text-muted-foreground">
-                “no grant” = the profile exists here but no team may request it — grant it under <strong>Profile grants</strong> above. Disk is a fixed tmpfs and GPU passthrough is not yet supported — those follow platform evolution.
-              </p>
+            </template>
+
+            <template v-else>
+              <p class="type-meta">The effective document — the host's own rows plus the catalog rows it offers, exactly what sandboxd fetches. Applying treats catalog-identical rows as inherited (not host-pinned); switching back to the form applies it (validated there before you can publish), “Apply to form” does the same without leaving this view.</p>
+              <textarea
+                v-model="rawJsonText"
+                rows="14"
+                spellcheck="false"
+                class="w-full font-mono text-[11px] rounded-lg border border-border/60 bg-background p-2"
+              ></textarea>
+              <UiButton size="sm" variant="ghost" @click="applyRawJson"><Check class="h-3.5 w-3.5" /> Apply to form</UiButton>
+            </template>
+          </div>
+
+          <!-- ── version history: reference material, folded by default ── -->
+          <div v-if="versionsLoading || versions.length" class="overflow-hidden rounded-xl border border-border/50">
+            <button
+              type="button"
+              class="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[12px] font-medium transition-colors hover:bg-muted/50"
+              :aria-expanded="showVersionHistory"
+              @click="showVersionHistory = !showVersionHistory"
+            >
+              <ChevronRight class="h-3.5 w-3.5 transition-transform" :class="showVersionHistory && 'rotate-90'" />
+              Version history
+              <span class="font-normal text-muted-foreground">· {{ versionsLoading ? '…' : versions.length }}</span>
+              <span class="ml-auto text-[10px] font-normal tabular-nums text-muted-foreground">v{{ detailHost.desired_version }} desired · v{{ detailHost.applied_version }} applied</span>
+            </button>
+            <div v-if="showVersionHistory" class="border-t border-border/50">
+              <div v-if="versionsLoading" class="px-3 py-2 type-meta">Loading…</div>
+              <template v-else>
+                <ul class="divide-y divide-border/40 text-xs">
+                  <li
+                    v-for="(v, i) in pagedVersions"
+                    :key="v.version"
+                    class="grid grid-cols-[2.5rem_minmax(0,1fr)_6.25rem_10rem_4.5rem] items-baseline gap-x-2 px-3 py-1.5"
+                  >
+                    <span class="font-mono text-[11px] text-muted-foreground">v{{ v.version }}</span>
+                    <span class="min-w-0 break-words">{{ versionEvent(v, versions[(versionPage - 1) * VERSIONS_PAGE_SIZE + i + 1]) }}</span>
+                    <span class="type-meta whitespace-nowrap">{{ formatDateTime(v.created_at) }}</span>
+                    <span class="min-w-0 break-words type-meta">{{ v.created_by }}</span>
+                    <span v-if="v.version === detailHost.desired_version" class="justify-self-end rounded bg-muted px-1 py-px text-[9px] text-muted-foreground">current</span>
+                    <UiButton v-else size="sm" variant="ghost" class="justify-self-end" @click="rollbackTo(v.version)">Restore</UiButton>
+                  </li>
+                </ul>
+                <div v-if="versionPageCount > 1" class="flex items-center justify-between border-t border-border/40 px-3 py-2">
+                  <UiButton size="sm" variant="ghost" class="-ml-2" :disabled="versionPage <= 1" @click="gotoVersionPage(versionPage - 1)">
+                    <ChevronRight class="h-3.5 w-3.5 rotate-180" /> Prev
+                  </UiButton>
+                  <span class="type-meta">Page {{ versionPage }} of {{ versionPageCount }}</span>
+                  <UiButton size="sm" variant="ghost" class="-mr-2" :disabled="versionPage >= versionPageCount" @click="gotoVersionPage(versionPage + 1)">
+                    Next <ChevronRight class="h-3.5 w-3.5" />
+                  </UiButton>
+                </div>
+              </template>
             </div>
-
-          </template>
-
-          <template v-else>
-            <p class="type-meta">Paste a document and apply it to the form — it is validated there before you can publish.</p>
-            <textarea
-              v-model="rawJsonText"
-              rows="14"
-              spellcheck="false"
-              class="w-full font-mono text-[11px] rounded-lg border border-border/60 bg-background p-2"
-            ></textarea>
-            <UiButton size="sm" variant="ghost" @click="applyRawJson"><Check class="h-3.5 w-3.5" /> Apply to form</UiButton>
-          </template>
-
-          <ul v-if="configProblems.length" class="text-xs text-destructive list-disc list-inside space-y-0.5">
-            <li v-for="p in configProblems" :key="p">{{ p }}</li>
-          </ul>
-          <ul v-if="configWarnings.length" class="text-xs text-amber-600 list-disc list-inside">
-            <li v-for="w in configWarnings" :key="w">{{ w }}</li>
-          </ul>
-          <p v-if="configValid && !configProblems.length" class="flex items-start gap-1 text-xs text-emerald-600">
-            <Check class="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <span>
-              Checks passed — profiles, tier images (digest-pinned) and network are accepted. Publish stages this as the next desired version; sandboxd picks it up on its next fetch.
-            </span>
-          </p>
-          <div class="flex gap-2">
-            <UiButton size="sm" variant="ghost" :disabled="savingConfig" @click="validateConfig">
-              <ShieldCheck class="h-3.5 w-3.5" /> Validate
-            </UiButton>
-            <UiButton size="sm" :loading="savingConfig" @click="saveConfig">Publish</UiButton>
           </div>
+        </div>
 
-          <div v-if="versionsLoading || versions.length" class="pt-1">
-            <h4 class="text-xs font-medium text-muted-foreground mb-1">Version history</h4>
-            <div v-if="versionsLoading" class="type-meta">Loading…</div>
-            <ul v-else class="divide-y divide-border/60 text-xs">
-              <li
-                v-for="v in versions"
-                :key="v.version"
-                class="grid grid-cols-[2.5rem_minmax(0,1fr)_6.25rem_10rem_4.5rem] items-baseline gap-x-2 py-1.5"
-              >
-                <span class="font-mono text-[11px] text-muted-foreground">v{{ v.version }}</span>
-                <span class="min-w-0 break-words">{{ versionEvent(v) }}</span>
-                <span class="type-meta whitespace-nowrap">{{ formatDateTime(v.created_at) }}</span>
-                <span class="min-w-0 break-words type-meta">{{ v.created_by }}</span>
-                <span v-if="v.version === detailHost.desired_version" class="justify-self-end rounded bg-muted px-1 py-px text-[9px] text-muted-foreground">current</span>
-                <UiButton v-else size="sm" variant="ghost" class="justify-self-end" @click="rollbackTo(v.version)">Restore</UiButton>
-              </li>
-            </ul>
+        <!-- ── dock: feedback + actions stay visible while the body scrolls ── -->
+        <div class="shrink-0 border-t border-border/50 px-6 py-3">
+          <div class="flex items-center gap-3">
+            <div class="min-w-0 flex-1">
+              <div v-if="configProblems.length || configWarnings.length || configValid" class="max-h-24 space-y-1 overflow-y-auto">
+                <ul v-if="configProblems.length" class="list-inside list-disc space-y-0.5 text-xs text-destructive">
+                  <li v-for="p in configProblems" :key="p">{{ p }}</li>
+                </ul>
+                <ul v-if="configWarnings.length" class="list-inside list-disc text-xs text-amber-600">
+                  <li v-for="w in configWarnings" :key="w">{{ w }}</li>
+                </ul>
+                <p v-if="configValid && !configProblems.length" class="flex items-start gap-1 text-xs text-emerald-600">
+                  <Check class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    Checks passed — profiles, tier images (digest-pinned) and network are accepted. Publish stages this as the next desired version; sandboxd picks it up on its next fetch.
+                  </span>
+                </p>
+              </div>
+              <p v-else class="type-meta truncate">Validate checks profiles, tier images and network before publishing.</p>
+            </div>
+            <div class="flex shrink-0 gap-2">
+              <UiButton size="sm" variant="ghost" :disabled="savingConfig" @click="validateConfig">
+                <ShieldCheck class="h-3.5 w-3.5" /> Validate
+              </UiButton>
+              <UiButton size="sm" :loading="savingConfig" @click="saveConfig">Publish</UiButton>
+            </div>
           </div>
-        </section>
-
-        
+        </div>
       </div>
     </div>
 
-    <!-- ── platform default tiers dialog ── -->
+    <!-- ── platform defaults dialog ── -->
     <div v-if="showDefaultsDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="showDefaultsDialog = false">
-      <div class="bg-card rounded-xl border border-border/60 p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto space-y-4 shadow-lg">
-        <div class="flex items-start justify-between gap-2">
+      <div class="bg-card rounded-xl border border-border/60 w-full max-w-2xl max-h-[85vh] overflow-y-auto shadow-lg">
+        <div class="flex items-start justify-between gap-3 border-b border-border/50 px-6 py-4">
           <div class="min-w-0">
-            <h3 class="text-sm font-medium">Platform defaults</h3>
-            <p class="type-meta">
-              Values every host inherits unless its own document overrides them. Saving bumps the desired version of each host whose effective document changes, so hosts re-fetch.
+            <h3 class="text-base font-semibold tracking-tight">Platform defaults</h3>
+            <p class="mt-0.5 type-meta">
+              Saving bumps the desired version of every host whose effective document changes, so hosts re-fetch.
             </p>
           </div>
           <UiButton size="sm" variant="ghost" @click="showDefaultsDialog = false"><X class="h-4 w-4" /></UiButton>
         </div>
 
-        <!-- ── Section 1: Isolation levels ── -->
-        <div class="space-y-1">
-          <h4 class="text-sm font-semibold">Isolation levels</h4>
-          <p class="type-meta">
-            The envelope image each isolation level runs in. Leave a row empty to provide no default for that level (jobs selecting it fail closed until an image exists).
-          </p>
-        </div>
-        <div class="space-y-2">
-          <div
-            v-for="(row, i) in defaultsRows"
-            :key="row.name"
-            class="grid grid-cols-2 gap-2 rounded-lg border border-border/40 p-2.5 sm:grid-cols-7 sm:items-end"
-          >
-            <span class="block col-span-1">
-              <span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Tier</span>
-              <span class="block rounded-md border border-border/40 bg-muted/30 px-2 py-1 font-mono text-xs">{{ row.name }}</span>
-            </span>
-            <div class="block col-span-2 sm:col-span-4">
-              <span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Image — tag or digest</span>
-              <div class="flex gap-1">
+        <div class="space-y-3 px-6 py-5">
+          <!-- ── isolation levels: tier envelope images ── -->
+          <div class="rounded-lg border border-border/60 p-3.5">
+            <div class="mb-2.5">
+              <div class="text-[12.5px] font-semibold">Isolation levels</div>
+              <p class="mt-0.5 text-[10.5px] text-muted-foreground/80">
+                The envelope image each level runs in — leave a row empty to provide no default for that level (jobs selecting it fail closed until an image exists).
+              </p>
+            </div>
+            <div class="grid grid-cols-[92px_minmax(0,1fr)_130px_32px] gap-2 pb-1 text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <span>Tier</span><span>Envelope image</span><span>Runtime</span><span></span>
+            </div>
+            <div class="divide-y divide-border/40">
+              <div
+                v-for="row in defaultsRows"
+                :key="row.name"
+                class="grid grid-cols-[92px_minmax(0,1fr)_130px_32px] items-center gap-2 py-1.5"
+              >
+                <span class="justify-self-start rounded-md bg-muted px-2 py-1 font-mono text-[11px] font-medium">{{ row.name }}</span>
+                <div class="flex min-w-0 items-center gap-1.5">
+                  <input
+                    v-model="row.image"
+                    :placeholder="TIER_IMAGE_HINTS[row.name] ?? `no default for ${row.name}`"
+                    class="min-w-0 flex-1 rounded-md border border-border/60 bg-background px-2 py-1 font-mono text-xs outline-hidden focus:border-primary/50"
+                  />
+                  <span v-if="isPinnedImage(row.image)" class="inline-flex shrink-0 items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9.5px] text-emerald-600 dark:text-emerald-400">
+                    <Check class="h-2.5 w-2.5" /> digest pinned
+                  </span>
+                </div>
                 <input
-                  v-model="row.image"
-                  :placeholder="TIER_IMAGE_HINTS[row.name] ?? `no default for ${row.name}`"
-                  class="min-w-0 flex-1 rounded-md border border-border/60 bg-background px-2 py-1 font-mono text-xs outline-hidden focus:border-primary/50"
+                  v-model="row.runtime"
+                  list="oci-runtime-options"
+                  placeholder="default (runc)"
+                  class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50"
                 />
                 <UiButton
                   size="sm"
                   variant="ghost"
+                  class="h-8 w-8 justify-self-start"
                   :loading="resolvingTier === row.image.trim()"
                   :disabled="!row.image.trim() || isPinnedImage(row.image) || resolvingTier !== null"
                   title="Resolve this tag to a digest now (Save also does this)"
                   @click="resolveDefaultsRow(row)"
-                ><RefreshCw class="h-3.5 w-3.5" /></UiButton>
+                ><RefreshCw class="h-4 w-4" /></UiButton>
               </div>
-              <span v-if="isPinnedImage(row.image)" class="mt-0.5 flex items-center gap-1 text-[10px] text-emerald-600">
-                <Check class="h-3 w-3" /> digest pinned
-              </span>
             </div>
-            <label class="block col-span-2 sm:col-span-2">
-              <span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Runtime</span>
-              <input
-                v-model="row.runtime"
-                list="oci-runtime-options"
-                placeholder="default (runc)"
-                class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50"
-              />
-              <span class="mt-0.5 block text-[9.5px] text-muted-foreground">Empty = daemon default (runc)</span>
-            </label>
-            <label class="block max-w-56">
-              <span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Docker network</span>
-              <input
-                v-model="platformDefaultNetwork"
-                placeholder="bridge"
-                class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50"
-              />
-              <span class="mt-0.5 block text-[9.5px] text-muted-foreground">Inherited by hosts whose document leaves it unset.</span>
-            </label>
+            <p class="mt-1.5 text-[9.5px] text-muted-foreground/70">Runtime empty = daemon default (runc).</p>
           </div>
-        </div>
 
-        <!-- ── Section 2: Job sizes ── -->
-        <div class="space-y-1 border-t border-border/40 pt-3">
-          <h4 class="text-sm font-semibold">Job sizes</h4>
-          <p class="type-meta">
-            The resource-profile catalog — the single place where names and numbers are defined. Every host offers all of it unless the host's page excludes entries it cannot serve; a name means the same envelope on every machine. Pipelines request one via <code class="mono-chip text-[10px]">runner.resources: &lt;name&gt;</code>; <code class="mono-chip text-[10px]">default</code> is required and applies to jobs without <code class="mono-chip text-[10px]">resources</code>.
-          </p>
-        </div>
-        <div class="space-y-1.5">
-          <div class="space-y-1.5">
-            <div
-              v-for="(row, i) in defaultProfileRows"
-              :key="i"
-              class="grid grid-cols-2 gap-2 rounded-lg border p-2.5 sm:grid-cols-6 sm:items-end"
-              :class="row.name === 'default' ? 'border-primary/30 bg-primary/5' : 'border-border/40'"
-            >
-              <label class="block col-span-2 sm:col-span-1">
-                <span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Name</span>
-                <input
-                  v-model="row.name"
-                  :disabled="row.name === 'default'"
-                  placeholder="large"
-                  class="w-full rounded-md border border-border/60 bg-background px-2 py-1 font-mono text-xs outline-hidden focus:border-primary/50 disabled:opacity-70"
-                />
-              </label>
-              <label class="block">
-                <span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Memory</span>
+          <!-- ── job sizes: the resource-profile catalog ── -->
+          <div class="rounded-lg border border-border/60 p-3.5">
+            <div class="mb-2.5">
+              <div class="text-[12.5px] font-semibold">Job sizes</div>
+              <p class="mt-0.5 text-[10.5px] text-muted-foreground/80">
+                The resource-profile catalog — it ships with a standard ladder (small / medium / large, each doubling the last; <code class="mono-chip text-[10px]">default</code> is seeded as small's alias, shown as a badge on it). <code class="mono-chip text-[10px]">default</code> and <code class="mono-chip text-[10px]">small</code> are mandatory; the rest of the ladder is editable — add, renumber, or delete freely. Every host offers all of it unless it excludes entries on its own page; pipelines request one via <code class="mono-chip text-[10px]">runner.resources: &lt;name&gt;</code>.
+              </p>
+            </div>
+            <div class="grid grid-cols-[92px_repeat(4,minmax(0,1fr))_32px] gap-2 pb-1 text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <span>Name</span><span>Memory</span><span>CPU</span><span>Pids</span><span>Slots</span><span></span>
+            </div>
+            <div class="divide-y divide-border/40">
+              <div
+                v-for="(row, i) in defaultProfileRows"
+                :key="i"
+                class="grid grid-cols-[92px_repeat(4,minmax(0,1fr))_32px] items-center gap-2 py-1.5"
+                :class="row.name === 'default' && 'rounded-md bg-primary/5'"
+              >
+                <div class="flex min-w-0 flex-col">
+                  <input
+                    v-model="row.name"
+                    :disabled="row.name === 'default' || row.name === 'small'"
+                    placeholder="large"
+                    class="w-full rounded-md border border-border/60 bg-background px-2 py-1 font-mono text-xs outline-hidden focus:border-primary/50 disabled:opacity-70"
+                  />
+                  <button
+                    v-if="row.name === defaultsAliasCarrier && !defaultsAliasSplit"
+                    type="button"
+                    class="mt-0.5 inline-flex h-[15px] items-center self-start rounded bg-primary/10 px-1 py-px text-[8.5px] font-medium text-primary transition-opacity hover:opacity-75"
+                    title="'default' shares this envelope — click to edit it separately"
+                    @click="splitDefaultAlias"
+                  >default</button>
+                  <!-- uniform row height: non-carrier rows reserve the badge line -->
+                  <span v-else class="mt-0.5 h-[15px]" aria-hidden="true"></span>
+                </div>
                 <input v-model="row.memory" placeholder="2g" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
-              </label>
-              <label class="block">
-                <span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">CPU</span>
                 <input v-model="row.cpu" placeholder="2" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
-              </label>
-              <label class="block">
-                <span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Pids</span>
                 <input v-model.number="row.pids" type="number" min="1" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
-              </label>
-              <label class="block">
-                <span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Slots</span>
                 <input v-model.number="row.slots" type="number" min="1" max="32" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
-              </label>
-              <div class="flex items-end col-span-2 sm:col-span-1">
                 <UiButton
                   size="sm"
                   variant="ghost"
-                  :disabled="row.name === 'default'"
-                  :title="row.name === 'default' ? 'The default profile cannot be removed' : `Remove ${row.name || '(unnamed)'}`"
+                  class="h-8 w-8 text-muted-foreground hover:bg-red-500/10 hover:text-red-500"
+                  :disabled="row.name === 'default' || row.name === 'small'"
+                  :title="row.name === 'default'
+                    ? 'The default profile cannot be removed'
+                    : row.name === 'small'
+                      ? 'The small profile is mandatory and cannot be removed'
+                      : `Remove ${row.name || '(unnamed)'}`"
                   @click="removeDefaultProfileRow(i)"
-                ><Trash2 class="h-3.5 w-3.5" /></UiButton>
+                ><Trash2 class="h-4 w-4" /></UiButton>
               </div>
             </div>
-            <UiButton size="sm" variant="ghost" @click="addDefaultProfileRow"><Plus class="h-3.5 w-3.5" /> Add job size</UiButton>
+            <UiButton size="sm" variant="ghost" class="-ml-2 mt-1" @click="addDefaultProfileRow"><Plus class="h-3.5 w-3.5" /> Add job size</UiButton>
           </div>
 
-          <label class="block max-w-56">
-            <span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Host slot budget</span>
-            <input
-              v-model.number="platformDefaultSlots"
-              type="number"
-              min="0"
-              class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50"
-              title="Max slots across every runner on a host that hasn't set its own; 0 = unlimited"
-            />
-            <span class="mt-0.5 block text-[9.5px] text-muted-foreground">Fleet-wide cap for hosts without their own budget; 0 = unlimited.</span>
-          </label>
-        </div>
+          <!-- ── platform-wide values hosts inherit ── -->
+          <div class="rounded-lg border border-border/60 p-3.5">
+            <div class="mb-2.5">
+              <div class="text-[12.5px] font-semibold">Inherited by every host</div>
+              <p class="mt-0.5 text-[10.5px] text-muted-foreground/80">
+                Platform-wide values — each host's own document overrides them.
+              </p>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              <label class="block">
+                <span class="mb-1 block text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">Docker network</span>
+                <input
+                  v-model="platformDefaultNetwork"
+                  list="docker-network-options"
+                  placeholder="bridge"
+                  class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50"
+                />
+                <span class="mt-1 block text-[9.5px] text-muted-foreground/70">Inherited by hosts whose document leaves it unset — custom host networks can be typed.</span>
+              </label>
+              <label class="block">
+                <span class="mb-1 block text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">Host slot budget <span class="font-normal normal-case tracking-normal">· 0 = unlimited</span></span>
+                <input
+                  v-model.number="platformDefaultSlots"
+                  type="number"
+                  min="0"
+                  class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50"
+                  title="Max slots across every runner on a host that hasn't set its own; 0 = unlimited"
+                />
+                <span class="mt-1 block text-[9.5px] text-muted-foreground/70">Fleet-wide cap for hosts without their own budget.</span>
+              </label>
+            </div>
+          </div>
 
-        <ul v-if="defaultsProblems.length" class="text-xs text-destructive list-disc list-inside space-y-0.5">
-          <li v-for="p in defaultsProblems" :key="p">{{ p }}</li>
-        </ul>
+          <ul v-if="defaultsProblems.length" class="text-xs text-destructive list-disc list-inside space-y-0.5">
+            <li v-for="p in defaultsProblems" :key="p">{{ p }}</li>
+          </ul>
+        </div>
 
         <datalist id="oci-runtime-options">
           <option value="runc">runc — standard OCI runtime</option>
@@ -1604,7 +1999,13 @@ async function rotateToken(host: SandboxHost) {
           <option value="sysbox-runc">sysbox-runc — Sysbox container sandbox</option>
         </datalist>
 
-        <div class="flex justify-end gap-2">
+        <datalist id="docker-network-options">
+          <option value="bridge">bridge — default NAT network</option>
+          <option value="host">host — share the host's network stack</option>
+          <option value="none">none — no networking</option>
+        </datalist>
+
+        <div class="flex justify-end gap-2 border-t border-border/50 px-6 py-3.5">
           <UiButton size="sm" variant="ghost" @click="showDefaultsDialog = false">Cancel</UiButton>
           <UiButton size="sm" :loading="savingDefaults" @click="saveDefaults">Save defaults</UiButton>
         </div>
@@ -1613,52 +2014,128 @@ async function rotateToken(host: SandboxHost) {
 
     <!-- ── enroll / token dialog ── -->
     <div v-if="showEnroll" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="showEnroll = false">
-      <div class="bg-card rounded-xl border border-border/60 p-6 w-full max-w-md space-y-4 shadow-lg">
+      <div class="bg-card rounded-xl border border-border/60 p-5 w-full max-w-md space-y-3 shadow-lg">
         <template v-if="!issuedToken">
-          <h3 class="text-sm font-medium">Enroll sandbox host</h3>
+          <div class="flex items-center gap-2">
+            <h3 class="min-w-0 truncate text-[13.5px] font-medium">Enroll sandbox host</h3>
+            <UiButton size="sm" variant="ghost" class="-mr-2 ml-auto" @click="showEnroll = false"><X class="h-4 w-4" /></UiButton>
+          </div>
+          <p class="text-[11px] leading-relaxed text-muted-foreground">
+            This reserves an identity for a <strong class="font-medium text-foreground">buz-sandboxd</strong> daemon so it can fetch its configuration from this Manager.
+            Enrolling mints a <strong class="font-medium text-foreground">one-time token</strong> — you'll paste a small env block on that machine next.
+          </p>
+
           <label class="block">
-            <span class="mb-1 block text-xs font-medium">Host</span>
+            <span class="mb-1 block text-xs font-medium">Host ID</span>
             <input v-model="enrollHostId" list="known-host-ids" placeholder="web-1" class="w-full text-sm rounded-lg border border-border/60 bg-background px-3 py-2" @input="enrollError = ''" />
           </label>
+          <p class="text-[10.5px] leading-relaxed text-muted-foreground">
+            A name for the <span class="text-foreground">machine running Docker</span> — your choice (hostname, inventory name…), just keep it consistent. A daemon identity <span class="font-mono text-foreground">sandboxd-&lt;host&gt;</span> is derived from it.
+          </p>
           <p v-if="enrollHostId.trim() && !knownHostIds.includes(enrollHostId.trim())" class="type-meta">
-            New host <span class="font-mono">{{ enrollHostId.trim() }}</span> — instance ID is generated automatically.
+            New host <span class="font-mono">{{ enrollHostId.trim() }}</span> — its identity is reserved now; nothing is installed yet.
           </p>
-          <p v-else-if="instancesOnHost.length" class="type-meta">
-            Existing host — {{ instancesOnHost.length }} instance(s) enrolled.
+          <p v-else-if="enrollHostId.trim() && instancesOnHost.length" class="type-meta">
+            <span class="font-mono">{{ enrollHostId.trim() }}</span> already has {{ instancesOnHost.length }} instance(s) — this adds another daemon on it.
           </p>
+          <div v-if="knownHostIds.length" class="flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
+            Existing hosts:
+            <button
+              v-for="h in knownHostIds"
+              :key="h"
+              type="button"
+              class="rounded-full border border-border/60 px-2 py-px font-mono text-[10px] transition-colors hover:bg-muted"
+              :title="`Use ${h}`"
+              @click="enrollHostId = h"
+            >{{ h }}</button>
+          </div>
           <datalist id="known-host-ids">
             <option v-for="h in knownHostIds" :key="h" :value="h" />
           </datalist>
-          <button type="button" class="inline-flex items-center gap-1 self-start text-xs text-muted-foreground transition-colors hover:text-foreground" @click="showAdvanced = !showAdvanced">
-            <ChevronRight class="h-3.5 w-3.5 transition-transform" :class="showAdvanced && 'rotate-90'" />
-            Advanced
-          </button>
-          <div v-if="showAdvanced" class="space-y-3 border-l border-border/40 pl-3">
-            <label class="block">
-              <span class="mb-1 block text-xs font-medium">Instance ID</span>
-              <input v-model="enrollInstanceId" placeholder="sandboxd-web-1" class="w-full text-sm rounded-lg border border-border/60 bg-background px-3 py-2" @input="instanceEdited = true; enrollError = ''" />
-            </label>
-            <p class="type-meta">Instance ID and host slot budget can also be adjusted later in the host's config sheet.</p>
+
+          <label class="block">
+            <span class="mb-1 flex items-center justify-between text-xs font-medium">
+              Slot budget
+              <span class="font-normal text-[10px] text-muted-foreground">0 = inherit platform default ({{ platformDefaultSlots || 'unlimited' }})</span>
+            </span>
+            <div class="flex items-center gap-2">
+              <input v-model.number="enrollSlots" type="number" min="0" class="w-24 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm tabular-nums outline-hidden focus:border-primary/50" />
+              <span class="text-[11px] text-muted-foreground">slots</span>
+            </div>
+            <span class="mt-1 block text-[10.5px] leading-relaxed text-muted-foreground">
+              Concurrent capacity of this machine — running jobs deduct their profile's slots from it. Adjustable later in the host's Capacity panel.
+            </span>
+          </label>
+
+          <div class="pt-1">
+            <button type="button" class="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground" @click="showAdvanced = !showAdvanced">
+              <ChevronRight class="h-3.5 w-3.5 transition-transform" :class="showAdvanced && 'rotate-90'" />
+              Advanced
+            </button>
+            <span class="ml-1 text-[10px] italic text-muted-foreground/70">instance ID defaults to sandboxd-&lt;host&gt;</span>
+            <div v-if="showAdvanced" class="mt-2 space-y-3 border-l border-border/40 pl-3">
+              <label class="block">
+                <span class="mb-1 block text-xs font-medium">Instance ID</span>
+                <input v-model="enrollInstanceId" placeholder="sandboxd-web-1" class="w-full text-sm rounded-lg border border-border/60 bg-background px-3 py-2" @input="instanceEdited = true; enrollError = ''" />
+              </label>
+              <p class="type-meta">One machine can run several daemons (rootful + rootless Docker, canary…) — each gets its own instance ID and token. Adjustable later in the host's detail dialog too.</p>
+            </div>
           </div>
           <p v-if="enrollError" class="text-xs text-red-500">{{ enrollError }}</p>
-          <div class="flex justify-end gap-2">
+          <div class="flex justify-end gap-2 pt-1">
             <UiButton size="sm" variant="ghost" @click="showEnroll = false">Cancel</UiButton>
-            <UiButton size="sm" :loading="creating" :disabled="!enrollHostId.trim() || !enrollInstanceId.trim()" @click="handleEnroll">Enroll</UiButton>
+            <UiButton size="sm" :loading="creating" :disabled="!enrollHostId.trim() || !enrollInstanceId.trim()" @click="handleEnroll">Enroll &amp; get token</UiButton>
           </div>
         </template>
         <template v-else>
-          <h3 class="text-sm font-medium flex items-center gap-2"><KeyRound class="h-4 w-4" /> Bootstrap env (shown once)</h3>
-          <p class="type-meta">
-            Paste on the sandboxd machine — shown once, only the token's SHA-256 is stored. Prefer a token file (mode 0400, <code class="mono-chip text-[10px]">BUZ_SANDBOXD_TOKEN_FILE</code>) when possible.
+          <div class="flex items-center gap-2">
+            <h3 class="min-w-0 truncate text-[13.5px] font-medium"><KeyRound class="mr-1 inline h-4 w-4" />One-time token — deploy on {{ enrollHostId.trim() || 'the machine' }}</h3>
+            <UiButton size="sm" variant="ghost" class="-mr-2 ml-auto" @click="showEnroll = false"><X class="h-4 w-4" /></UiButton>
+          </div>
+          <div class="flex items-start gap-2 rounded-lg bg-amber-500/12 px-2.5 py-2 text-[10.5px] leading-relaxed text-amber-600">
+            <AlertTriangle class="mt-0.5 h-3 w-3 shrink-0" />
+            <span>Shown <strong class="font-medium">only now</strong> — the Manager stores just its SHA-256. Lost it? <strong class="font-medium">Rotate token</strong> on the host card re-issues one.</span>
+          </div>
+          <ol class="list-none space-y-1.5 text-[11px] leading-relaxed">
+            <li class="flex items-baseline gap-2">
+              <span class="inline-flex h-4 w-4 shrink-0 translate-y-0.5 items-center justify-center rounded-full bg-muted text-[9px] text-muted-foreground">1</span>
+              <span class="min-w-0">Copy the env block below and run <strong class="font-medium">buz-sandboxd</strong> on {{ enrollHostId.trim() || 'the machine' }} with it
+                <UiButton size="sm" variant="ghost" class="-ml-1" @click="copySnippet"><Copy class="h-3 w-3" /> {{ snippetCopied ? 'Copied' : 'Copy env' }}</UiButton>
+                <UiButton size="sm" variant="ghost" @click="copyToken"><Copy class="h-3 w-3" /> {{ tokenCopied ? 'Copied' : 'Token only' }}</UiButton>
+              </span>
+            </li>
+            <li class="flex items-baseline gap-2">
+              <span class="inline-flex h-4 w-4 shrink-0 translate-y-0.5 items-center justify-center rounded-full bg-muted text-[9px] text-muted-foreground">2</span>
+              <span>It fetches config from this Manager on startup — no other setup needed.</span>
+            </li>
+            <li class="flex items-baseline gap-2">
+              <span class="inline-flex h-4 w-4 shrink-0 translate-y-0.5 items-center justify-center rounded-full bg-muted text-[9px] text-muted-foreground">3</span>
+              <span>The host card turns <span class="font-medium text-emerald-600 dark:text-emerald-400">online</span> here within seconds; until then it shows as enrolled.</span>
+            </li>
+          </ol>
+          <pre class="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-border/60 bg-background p-3 font-mono text-[10.5px] leading-relaxed">{{ bootstrapSnippet }}</pre>
+          <div class="space-y-0.5">
+            <div class="grid grid-cols-[10.5rem_1fr] items-baseline gap-2">
+              <span class="truncate font-mono text-[9px] text-muted-foreground">BUZ_HOST_ID</span>
+              <span class="text-[10px] text-muted-foreground">the machine's identity — what you just enrolled</span>
+            </div>
+            <div class="grid grid-cols-[10.5rem_1fr] items-baseline gap-2">
+              <span class="truncate font-mono text-[9px] text-muted-foreground">BUZ_SANDBOXD_INSTANCE_ID</span>
+              <span class="text-[10px] text-muted-foreground">which daemon on that machine (one per Docker daemon)</span>
+            </div>
+            <div class="grid grid-cols-[10.5rem_1fr] items-baseline gap-2">
+              <span class="truncate font-mono text-[9px] text-muted-foreground">BUZ_SANDBOXD_TOKEN</span>
+              <span class="text-[10px] text-muted-foreground">its one-time credential for this Manager</span>
+            </div>
+            <div class="grid grid-cols-[10.5rem_1fr] items-baseline gap-2">
+              <span class="truncate font-mono text-[9px] text-muted-foreground">BUZ_MANAGER_URL</span>
+              <span class="text-[10px] text-muted-foreground">this Manager's address</span>
+            </div>
+          </div>
+          <p class="text-[10px] leading-relaxed text-muted-foreground">
+            Production tip: keep the token out of <code class="mono">docker inspect</code> — write it to a root-owned file and point <code class="mono">BUZ_SANDBOXD_TOKEN_FILE</code> at it (mode 0400). The env var above is the quick start.
           </p>
-          <pre class="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/40 p-3 text-xs">{{ bootstrapSnippet }}</pre>
-          <div class="flex justify-end gap-2">
-            <UiButton size="sm" variant="ghost" @click="copySnippet">
-              <Copy class="h-3.5 w-3.5" /> {{ snippetCopied ? 'Copied' : 'Copy env' }}
-            </UiButton>
-            <UiButton size="sm" variant="ghost" @click="copyToken">
-              <Copy class="h-3.5 w-3.5" /> {{ tokenCopied ? 'Copied' : 'Token only' }}
-            </UiButton>
+          <div class="flex justify-end pt-1">
             <UiButton size="sm" @click="showEnroll = false">Done</UiButton>
           </div>
         </template>
