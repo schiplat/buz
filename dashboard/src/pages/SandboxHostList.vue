@@ -51,13 +51,39 @@ const grantPanelTeamId = ref('')
 const grantPanelPending = ref<Set<string>>(new Set())
 const grantPanelSearch = ref('')
 
+/** Grants table keeps one line per team: the first CHIP_PREVIEW chips, then a
+ *  "+N more" expander that unfolds the rest in place. */
+const CHIP_PREVIEW = 3
+const expandedGrantTeams = ref<Set<string>>(new Set())
+
+function toggleGrantsExpanded(teamId: string) {
+  const next = new Set(expandedGrantTeams.value)
+  if (next.has(teamId)) next.delete(teamId)
+  else next.add(teamId)
+  expandedGrantTeams.value = next
+}
+
+/** Chips visible in a team row: preview slice unless the row is expanded. */
+function visibleGrants(teamId: string): ResourceGrant[] {
+  const list = teamGrants(teamId)
+  return expandedGrantTeams.value.has(teamId) ? list : list.slice(0, CHIP_PREVIEW)
+}
+
 const PROFILE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
 
 /** Profiles offered by each host come straight from the list API, whose
  *  document is already the *effective* one (platform defaults merged) — a
- *  single source of truth shared with dispatch. */
+ *  single source of truth shared with dispatch. `default` is the implicit
+ *  fallback (alias of `small`) and is never surfaced as an offer. */
 function offeredProfilesFor(host: SandboxHost): Set<string> {
-  return new Set(Object.keys(host.document?.profiles ?? {}))
+  return new Set(
+    Object.keys(host.document?.profiles ?? {}).filter((name) => name !== 'default'),
+  )
+}
+
+/** Size names a host offers, smallest first (slots weight, then memory). */
+function offeredProfileNames(host: SandboxHost): string[] {
+  return [...offeredProfilesFor(host)].sort(sizeAscending)
 }
 
 /** host_ids whose effective document offers this profile. */
@@ -81,7 +107,7 @@ const grantsByTeam = computed(() => {
     byTeam.set(g.team_id, list)
   }
   for (const list of byTeam.values()) {
-    list.sort((a, b) => a.profile.localeCompare(b.profile))
+    list.sort((a, b) => sizeAscending(a.profile, b.profile))
   }
   return byTeam
 })
@@ -90,17 +116,41 @@ function teamGrants(teamId: string): ResourceGrant[] {
   return grantsByTeam.value.get(teamId) ?? []
 }
 
-/** Rows to render: every known team, plus any grant whose team no longer
- *  resolves (name falls back) so orphaned grants stay visible and revocable. */
+/** Team picked in the "grant to team" strip — its row opens with the panel. */
+const newBindingTeamId = ref('')
+
+/** Binding rows: only teams that currently hold at least one grant, plus any
+ *  grant whose team no longer resolves (name falls back) so orphaned grants
+ *  stay visible and revocable. Unbound teams live in the grant-to-team picker
+ *  instead of occupying rows; the currently-picked team joins so its grant
+ *  panel has a row to live in. */
 const grantTeamRows = computed(() => {
-  const rows = teams.value.map((t) => ({ id: t.id, name: t.name }))
-  for (const g of grants.value) {
-    if (!rows.some((r) => r.id === g.team_id)) {
-      rows.push({ id: g.team_id, name: g.team_name || g.team_id })
-    }
+  const rows = new Map<string, string>()
+  const track = (id: string, name: string) => {
+    if (!rows.has(id)) rows.set(id, name)
   }
-  return rows
+  for (const g of grants.value) {
+    const t = teams.value.find((x) => x.id === g.team_id)
+    track(g.team_id, t?.name ?? (g.team_name || g.team_id))
+  }
+  if (newBindingTeamId.value) {
+    const t = teams.value.find((x) => x.id === newBindingTeamId.value)
+    if (t) track(t.id, t.name)
+  }
+  return [...rows.entries()]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name))
 })
+
+/** Teams without bindings — the grant-to-team picker's candidates. */
+const unboundTeams = computed(() => {
+  const bound = new Set(grantTeamRows.value.map((r) => r.id))
+  return teams.value.filter((t) => !bound.has(t.id))
+})
+
+function pickNewBindingTeam() {
+  if (newBindingTeamId.value) openGrantPanel(newBindingTeamId.value)
+}
 
 /** Panel list narrowed by the search box; pending picks float to the top so
  *  a multi-grant stays scannable while filtering. */
@@ -128,6 +178,7 @@ function closeGrantPanel() {
   grantPanelPending.value = new Set()
   grantPanelSearch.value = ''
   grantError.value = ''
+  newBindingTeamId.value = ''
 }
 
 function togglePanelPending(profile: string) {
@@ -178,6 +229,34 @@ async function revokeGrant(grant: ResourceGrant) {
   } catch (e) {
     console.error(e)
     await dialog.alert('Revoke failed')
+  }
+}
+
+/** Row-level "remove binding": revoke every profile the team holds, one API
+ *  call each — same sequential, partial-failure semantics as multi-grant. */
+const revokingTeamId = ref('')
+async function revokeTeamGrants(team: { id: string; name: string }) {
+  const list = teamGrants(team.id)
+  if (!list.length || revokingTeamId.value) return
+  const ok = await dialog.confirm(
+    `Remove all ${list.length} profile grant${list.length > 1 ? 's' : ''} from ${team.name}? Pipelines of this team requesting any of them stop dispatching to sandbox hosts.`,
+    { title: 'Remove binding', confirmLabel: 'Remove all', danger: true },
+  )
+  if (!ok) return
+  revokingTeamId.value = team.id
+  try {
+    for (const g of list) {
+      try {
+        await sandboxHostsApi.revokeGrant(g.team_id, g.profile)
+      } catch (e) {
+        console.error(e)
+        await dialog.alert(`Failed to revoke '${g.profile}' — remaining grants stay in place for retry.`)
+        return
+      }
+    }
+    await load()
+  } finally {
+    revokingTeamId.value = ''
   }
 }
 
@@ -771,12 +850,6 @@ function applyRawJson() {
 const showDefaultsDialog = ref(false)
 const defaultsRows = ref<TierRow[]>([])
 const defaultsProblems = ref<string[]>([])
-/** Aliased-`default` presentation: when default's numbers equal one catalog
- *  entry (the carrier, small by preference), one row carries a `default`
- *  badge and edits feed both entries on save. Splitting materializes default
- *  as its own row; the state resets every time the dialog opens. */
-const defaultsAliasCarrier = ref<string | null>(null)
-const defaultsAliasSplit = ref(false)
 const savingDefaults = ref(false)
 const platformDefaults = ref<Record<string, { image: string; runtime: string }>>({})
 const platformDefaultProfiles = ref<Record<string, ResourceProfile>>({})
@@ -809,54 +882,21 @@ function openDefaultsDialog() {
       runtime: existing?.runtime ?? '',
     }
   })
-  // Profile rows: when `default` shares a catalog entry's numbers (small by
-  // preference) the entry carries a `default` badge instead of a duplicate
-  // row; diverged numbers keep default as its own row.
+  // Profile rows: `default` is not listed — it is an implicit alias of
+  // `small` and is written in lockstep on save.
   const catalog = { ...platformDefaultProfiles.value }
-  const defaultProfile = catalog.default ?? { memory: '2g', cpu: '2', pids: 256, slots: 1 }
   delete catalog.default
-  const same = (p: ResourceProfile | undefined) =>
-    String(p?.memory ?? '').trim() === String(defaultProfile.memory ?? '').trim() &&
-    String(p?.cpu ?? '').trim() === String(defaultProfile.cpu ?? '').trim() &&
-    (Number(p?.pids) || 0) === (Number(defaultProfile.pids) || 0) &&
-    (Number(p?.slots) || 1) === (Number(defaultProfile.slots) || 1)
-  const names = Object.keys(catalog).sort(sizeAscending)
-  const matches = names.filter((name) => same(catalog[name]))
-  defaultsAliasCarrier.value = matches.length
-    ? matches.includes('small')
-      ? 'small'
-      : matches[0]
-    : null
-  defaultsAliasSplit.value = false
-  defaultProfileRows.value = names.map((name) => ({
-    name,
-    memory: catalog[name].memory,
-    cpu: catalog[name].cpu,
-    pids: Number(catalog[name].pids) || 0,
-    slots: Number(catalog[name].slots) || 1,
-  }))
-  if (!defaultsAliasCarrier.value) {
-    defaultProfileRows.value.unshift({ name: 'default', ...defaultProfile })
-  }
+  defaultProfileRows.value = Object.keys(catalog)
+    .sort(sizeAscending)
+    .map((name) => ({
+      name,
+      memory: catalog[name].memory,
+      cpu: catalog[name].cpu,
+      pids: Number(catalog[name].pids) || 0,
+      slots: Number(catalog[name].slots) || 1,
+    }))
   defaultsProblems.value = []
   showDefaultsDialog.value = true
-}
-
-/** Break the alias: default materializes as its own editable row. */
-function splitDefaultAlias() {
-  const carrier = defaultProfileRows.value.find(
-    (row) => row.name === defaultsAliasCarrier.value,
-  )
-  const d = platformDefaultProfiles.value['default']
-  defaultProfileRows.value.unshift({
-    name: 'default',
-    memory: String(d?.memory ?? carrier?.memory ?? '2g'),
-    cpu: String(d?.cpu ?? carrier?.cpu ?? '2'),
-    pids: Number(d?.pids) || 256,
-    slots: Number(d?.slots) || 1,
-  })
-  defaultsAliasCarrier.value = null
-  defaultsAliasSplit.value = true
 }
 
 function addDefaultProfileRow() {
@@ -865,12 +905,7 @@ function addDefaultProfileRow() {
 
 function removeDefaultProfileRow(index: number) {
   const row = defaultProfileRows.value[index]
-  if (row?.name === 'default' || row?.name === 'small') return
-  // Deleting a non-small alias carrier breaks the alias — default
-  // materializes first so its numbers stay in the catalog.
-  if (row && row.name === defaultsAliasCarrier.value && !defaultsAliasSplit.value) {
-    splitDefaultAlias()
-  }
+  if (row?.name === 'small') return
   defaultProfileRows.value.splice(index, 1)
 }
 
@@ -921,7 +956,7 @@ async function saveDefaults() {
       continue
     }
     seenNames.add(name)
-    if (name !== 'default' && !PROFILE_NAME_RE.test(name)) {
+    if (!PROFILE_NAME_RE.test(name)) {
       profileProblems.push(`profile '${name}' name must match [a-z0-9][a-z0-9-]{0,31}`)
     }
     if (!MEMORY_RE.test(row.memory.trim())) {
@@ -942,23 +977,19 @@ async function saveDefaults() {
       slots: Math.trunc(row.slots) || 0,
     }
   }
-  // Aliased mode: the carrier row stands for both entries — save writes
-  // `default` with the carrier's numbers so they stay in lockstep. A renamed
-  // carrier breaks the alias and falls back to the default-row requirement.
-  const carrierRow = defaultProfileRows.value.find(
-    (row) => row.name.trim() === defaultsAliasCarrier.value,
-  )
-  const aliased = !!defaultsAliasCarrier.value && !defaultsAliasSplit.value && !!carrierRow
-  if (aliased && carrierRow) {
+  // 'default' is an implicit alias of 'small': the row is not listed but the
+  // backend requires the entry — save writes it with small's numbers so the
+  // fallback envelope and the small size stay in lockstep.
+  const smallRow = defaultProfileRows.value.find((row) => row.name.trim() === 'small')
+  if (smallRow) {
     profiles['default'] = {
-      memory: carrierRow.memory.trim(),
-      cpu: carrierRow.cpu.trim(),
-      pids: Math.trunc(carrierRow.pids) || 0,
-      slots: Math.trunc(carrierRow.slots) || 0,
+      memory: smallRow.memory.trim(),
+      cpu: smallRow.cpu.trim(),
+      pids: Math.trunc(smallRow.pids) || 0,
+      slots: Math.trunc(smallRow.slots) || 0,
     }
-  }
-  if (!seenNames.has('default') && !aliased) {
-    profileProblems.unshift("profiles must define the reserved 'default' profile")
+  } else {
+    profileProblems.unshift("profiles must include the mandatory 'small' job size")
   }
   if (profileProblems.length) {
     defaultsProblems.value = [...defaultsProblems.value, ...profileProblems]
@@ -1304,134 +1335,159 @@ async function rotateToken(host: SandboxHost) {
       </div>
     </div>
 
-    <!-- ── Fleet policy: profile grants ── -->
-    <div class="mb-3">
-      <div class="flex items-center gap-3">
-        <h2 class="text-sm font-semibold tracking-tight">Fleet policy</h2>
-        <span class="h-px flex-1 bg-border/50"></span>
+    <!-- ── Fleet policy: profile grants (one line per team) ── -->
+    <div>
+      <div class="flex items-end justify-between gap-3">
+        <div>
+          <h2 class="text-[13px] font-semibold tracking-tight">Fleet policy · Profile grants</h2>
+          <p class="mt-0.5 text-[10.5px] text-muted-foreground">
+            Which teams may request each non-default profile, fleet-wide — <code class="mono">default</code> is implicit for every team.
+          </p>
+        </div>
+        <span class="pb-0.5 text-[10px] tabular-nums text-muted-foreground">{{ grants.length }} grants · {{ grantTeamRows.length }} teams</span>
       </div>
-      <p class="mt-0.5 text-[10.5px] text-muted-foreground">Team-level authorization applied across every sandbox host.</p>
-    </div>
-    <div class="rounded-xl border border-border/50 bg-card overflow-hidden">
-      <div class="px-5 pt-3.5 pb-3">
-        <h2 class="text-[13px] font-semibold tracking-tight">Profile grants</h2>
-        <p class="mt-0.5 text-[10.5px] text-muted-foreground">
-          Which teams may request each non-default resource profile, and where that profile is offered — fleet-wide.
-          <code class="mono">default</code> is implicit for every team.
-        </p>
-      </div>
-      <div class="divide-y divide-border/30 border-y border-border/40">
-        <div
-          v-for="team in grantTeamRows"
-          :key="team.id"
-          class="px-5 py-3"
-          :class="!teamGrants(team.id).length && 'bg-muted/10'"
-        >
-          <div class="flex items-center gap-2.5">
-            <span
-              class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-medium"
-              :style="{ background: teamTint(team.id) + '22', color: teamTint(team.id) }"
-              aria-hidden="true"
-            >{{ team.name.charAt(0).toUpperCase() }}</span>
-            <div class="min-w-0">
-              <div class="truncate text-[12.5px] font-medium leading-tight">{{ team.name }}</div>
-              <div class="text-[10.5px] text-muted-foreground">
-                {{ teamGrants(team.id).length
-                  ? `${teamGrants(team.id).length} profile${teamGrants(team.id).length > 1 ? 's' : ''}`
-                  : 'no profiles yet' }}
-              </div>
+      <div class="mt-2 rounded-xl border border-border/50 bg-card overflow-hidden">
+        <div class="data-table-scroll">
+          <div class="min-w-[560px]">
+            <div class="grid grid-cols-[190px_minmax(0,1fr)_120px] gap-2 border-b border-border/40 px-5 py-2 text-[9.5px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
+              <span>Team</span>
+              <span>Granted profiles</span>
+              <span></span>
             </div>
-            <div class="ml-auto">
-              <UiButton
-                size="sm"
-                variant="ghost"
-                class="-mr-2"
-                @click="grantPanelTeamId === team.id ? closeGrantPanel() : openGrantPanel(team.id)"
-              >
-                <Plus class="h-3.5 w-3.5" /> {{ grantPanelTeamId === team.id ? 'Close' : 'Grant profiles' }}
-              </UiButton>
-            </div>
-          </div>
-          <div v-if="teamGrants(team.id).length" class="mt-2 flex flex-wrap gap-1.5 pl-[34px]">
-            <span
-              v-for="g in teamGrants(team.id)"
-              :key="g.team_id + '/' + g.profile"
-              class="inline-flex items-center gap-1 rounded-full bg-muted py-0.5 pl-2.5 pr-1 font-mono text-[11px] text-foreground/80"
-              :title="offeredByFor(g.profile).length
-                ? `offered by ${offeredByFor(g.profile).join(', ')}`
-                : 'not offered on any host yet'"
-            >
-              {{ g.profile }}
-              <button
-                type="button"
-                class="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-red-500/20 hover:text-red-500"
-                :title="`Revoke ${g.profile} from ${team.name}`"
-                :aria-label="`Revoke ${g.profile} from ${team.name}`"
-                @click="revokeGrant(g)"
-              ><X class="h-2.5 w-2.5" /></button>
-            </span>
-          </div>
+            <div class="divide-y divide-border/30">
+              <div v-for="team in grantTeamRows" :key="team.id" class="px-5 py-2">
+                <div class="grid grid-cols-[190px_minmax(0,1fr)_120px] items-center gap-2">
+                  <div class="flex min-w-0 items-center gap-2">
+                    <span
+                      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-medium"
+                      :style="{ background: teamTint(team.id) + '22', color: teamTint(team.id) }"
+                      aria-hidden="true"
+                    >{{ team.name.charAt(0).toUpperCase() }}</span>
+                    <span class="truncate text-[12.5px] font-medium">{{ team.name }}</span>
+                  </div>
+                  <div
+                    class="flex min-w-0 items-center gap-1.5"
+                    :class="expandedGrantTeams.has(team.id) ? 'flex-wrap' : 'flex-nowrap overflow-hidden'"
+                  >
+                    <span
+                      v-for="g in visibleGrants(team.id)"
+                      :key="g.team_id + '/' + g.profile"
+                      class="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted py-0.5 pl-2.5 pr-1 font-mono text-[11px] text-foreground/80"
+                      :title="offeredByFor(g.profile).length
+                        ? `offered by ${offeredByFor(g.profile).join(', ')}`
+                        : 'not offered on any host yet'"
+                    >
+                      {{ g.profile }}
+                      <button
+                        type="button"
+                        class="inline-flex h-[18px] w-[18px] items-center justify-center rounded-full bg-foreground/15 text-foreground/70 transition-colors hover:bg-red-500/20 hover:text-red-500"
+                        :title="`Revoke ${g.profile} from ${team.name} — stops requests at trigger & claim`"
+                        :aria-label="`Revoke ${g.profile} from ${team.name}`"
+                        @click="revokeGrant(g)"
+                      ><X class="h-3 w-3" /></button>
+                    </span>
+                    <button
+                      v-if="teamGrants(team.id).length > CHIP_PREVIEW"
+                      type="button"
+                      class="shrink-0 rounded-full border border-dashed border-border px-2.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:border-muted-foreground/60 hover:text-foreground"
+                      :title="expandedGrantTeams.has(team.id) ? 'Collapse' : 'Show all profiles'"
+                      @click="toggleGrantsExpanded(team.id)"
+                    >{{ expandedGrantTeams.has(team.id) ? 'less' : `+${teamGrants(team.id).length - CHIP_PREVIEW} more` }}</button>
+                  </div>
+                  <div class="flex justify-end gap-1">
+                    <UiButton
+                      size="sm"
+                      variant="ghost"
+                      @click="grantPanelTeamId === team.id ? closeGrantPanel() : openGrantPanel(team.id)"
+                    >
+                      <Plus class="h-3.5 w-3.5" /> {{ grantPanelTeamId === team.id ? 'Close' : 'Grant' }}
+                    </UiButton>
+                    <UiButton
+                      size="sm"
+                      variant="ghost"
+                      class="-mr-2"
+                      :loading="revokingTeamId === team.id"
+                      :title="`Remove all ${teamGrants(team.id).length} grants from ${team.name}`"
+                      :aria-label="`Remove all grants from ${team.name}`"
+                      @click="revokeTeamGrants(team)"
+                    ><Trash2 class="h-3.5 w-3.5" /></UiButton>
+                  </div>
+                </div>
 
-          <!-- inline multi-grant panel: search + multi-select, one action grants all -->
-          <div v-if="grantPanelTeamId === team.id" class="ml-[34px] mt-2.5 rounded-lg border border-border/60 bg-muted/25 p-2">
-            <div class="flex flex-wrap items-center gap-2 px-1 pb-2">
-              <div class="relative max-w-[240px] flex-1">
-                <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  v-model="grantPanelSearch"
-                  type="search"
-                  placeholder="Search profiles…"
-                  aria-label="Search profiles"
-                  class="w-full rounded-md border border-border/60 bg-background py-1 pl-7 pr-2 text-[11px] outline-hidden focus:border-primary/50"
-                />
+                <!-- inline multi-grant panel: search + multi-select, one action grants all -->
+                <div v-if="grantPanelTeamId === team.id" class="mt-2 rounded-lg border border-border/60 bg-muted/25 p-2">
+                  <div class="flex flex-wrap items-center gap-2 px-1 pb-2">
+                    <div class="relative max-w-[240px] flex-1">
+                      <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                      <input
+                        v-model="grantPanelSearch"
+                        type="search"
+                        placeholder="Search profiles…"
+                        aria-label="Search profiles"
+                        class="w-full rounded-md border border-border/60 bg-background py-1 pl-7 pr-2 text-[11px] outline-hidden focus:border-primary/50"
+                      />
+                    </div>
+                    <span class="text-[10px] text-muted-foreground">pick any number — one action grants all</span>
+                  </div>
+                  <div v-if="grantPanelChoices.length" class="max-h-52 space-y-px overflow-y-auto">
+                    <label
+                      v-for="name in grantPanelChoices"
+                      :key="name"
+                      class="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 transition-colors hover:bg-muted/50"
+                      :class="!offeredByFor(name).length && 'opacity-55'"
+                    >
+                      <input
+                        type="checkbox"
+                        class="h-3.5 w-3.5 shrink-0 accent-primary"
+                        :checked="grantPanelPending.has(name) || isTeamGranted(team.id, name)"
+                        :disabled="isTeamGranted(team.id, name)"
+                        :aria-label="`Grant ${name} to ${team.name}`"
+                        @change="togglePanelPending(name)"
+                      />
+                      <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] font-medium">{{ name }}</span>
+                      <span
+                        v-if="isTeamGranted(team.id, name)"
+                        class="shrink-0 rounded bg-muted px-1 py-px text-[9px] text-muted-foreground"
+                      >granted</span>
+                      <span class="flex shrink-0 flex-wrap gap-0.5">
+                        <span
+                          v-for="h in offeredByFor(name)"
+                          :key="h"
+                          class="rounded bg-emerald-500/10 px-1 py-px font-mono text-[9.5px] leading-snug text-emerald-700 dark:text-emerald-400"
+                        >{{ h }}</span>
+                      </span>
+                    </label>
+                  </div>
+                  <p v-else class="px-1.5 py-2 text-[11px] italic text-muted-foreground/70">no profiles match “{{ grantPanelSearch }}”</p>
+                  <div class="flex items-center gap-2 px-1 pt-2">
+                    <UiButton
+                      size="sm"
+                      :loading="grantSaving"
+                      :disabled="!grantPanelPending.size"
+                      @click="applyPanelGrants"
+                    >Grant{{ grantPanelPending.size ? ` (${grantPanelPending.size})` : '' }}</UiButton>
+                    <p v-if="grantError" class="text-[10px] text-destructive">{{ grantError }}</p>
+                  </div>
+                </div>
               </div>
-              <span class="text-[10px] text-muted-foreground">pick any number — one action grants all</span>
-            </div>
-            <div v-if="grantPanelChoices.length" class="max-h-52 space-y-px overflow-y-auto">
-              <label
-                v-for="name in grantPanelChoices"
-                :key="name"
-                class="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 transition-colors hover:bg-muted/50"
-                :class="!offeredByFor(name).length && 'opacity-55'"
-              >
-                <input
-                  type="checkbox"
-                  class="h-3.5 w-3.5 shrink-0 accent-primary"
-                  :checked="grantPanelPending.has(name) || isTeamGranted(team.id, name)"
-                  :disabled="isTeamGranted(team.id, name)"
-                  :aria-label="`Grant ${name} to ${team.name}`"
-                  @change="togglePanelPending(name)"
-                />
-                <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] font-medium">{{ name }}</span>
-                <span
-                  v-if="isTeamGranted(team.id, name)"
-                  class="shrink-0 rounded bg-muted px-1 py-px text-[9px] text-muted-foreground"
-                >granted</span>
-                <span class="flex shrink-0 flex-wrap gap-0.5">
-                  <span
-                    v-for="h in offeredByFor(name)"
-                    :key="h"
-                    class="rounded bg-emerald-500/10 px-1 py-px font-mono text-[9.5px] leading-snug text-emerald-700 dark:text-emerald-400"
-                  >{{ h }}</span>
-                </span>
-              </label>
-            </div>
-            <p v-else class="px-1.5 py-2 text-[11px] italic text-muted-foreground/70">no profiles match “{{ grantPanelSearch }}”</p>
-            <div class="flex items-center gap-2 px-1 pt-2">
-              <UiButton
-                size="sm"
-                :loading="grantSaving"
-                :disabled="!grantPanelPending.size"
-                @click="applyPanelGrants"
-              >Grant{{ grantPanelPending.size ? ` (${grantPanelPending.size})` : '' }}</UiButton>
-              <p v-if="grantError" class="text-[10px] text-destructive">{{ grantError }}</p>
+
+              <!-- new binding: pick an unbound team; its row opens with the grant panel -->
+              <div class="flex items-center gap-2 px-5 py-2">
+                <span class="text-[11px] text-muted-foreground">Grant to team</span>
+                <select
+                  v-model="newBindingTeamId"
+                  class="rounded-md border border-border/60 bg-background px-2 py-1 text-[11.5px] outline-hidden focus:border-primary/50"
+                  aria-label="Pick a team to grant profiles"
+                  @change="pickNewBindingTeam"
+                >
+                  <option value="" disabled>Pick a team…</option>
+                  <option v-for="t in unboundTeams" :key="t.id" :value="t.id">{{ t.name }}</option>
+                </select>
+                <span v-if="!unboundTeams.length" class="text-[10.5px] text-muted-foreground/60">every team already holds bindings</span>
+              </div>
             </div>
           </div>
         </div>
-      </div>
-      <div class="flex flex-wrap items-center gap-2 border-t border-border/40 px-5 py-2 text-[10px] text-muted-foreground/80">
-        <span>Revoking stops the team's pipelines requesting that profile at trigger (4xx) and again at claim.</span>
-        <span class="ml-auto"><code class="mono">default</code> is implicit for every team — not listed.</span>
       </div>
     </div>
 
@@ -1490,7 +1546,7 @@ async function rotateToken(host: SandboxHost) {
                 :class="host.desired_version > 0 ? '' : 'opacity-55'"
               >{{ t }}</span>
               <span
-                v-for="p in offeredProfilesFor(host)"
+                v-for="p in offeredProfileNames(host)"
                 :key="'size-' + p"
                 class="rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium"
                 :class="host.desired_version > 0 ? '' : 'opacity-55'"
@@ -1901,7 +1957,7 @@ async function rotateToken(host: SandboxHost) {
             <div class="mb-2.5">
               <div class="text-[12.5px] font-semibold">Job sizes</div>
               <p class="mt-0.5 text-[10.5px] text-muted-foreground/80">
-                The resource-profile catalog — it ships with a standard ladder (small / medium / large, each doubling the last; <code class="mono-chip text-[10px]">default</code> is seeded as small's alias, shown as a badge on it). <code class="mono-chip text-[10px]">default</code> and <code class="mono-chip text-[10px]">small</code> are mandatory; the rest of the ladder is editable — add, renumber, or delete freely. Every host offers all of it unless it excludes entries on its own page; pipelines request one via <code class="mono-chip text-[10px]">runner.resources: &lt;name&gt;</code>.
+                The resource-profile catalog — it ships with a standard ladder (small / medium / large, each doubling the last). <code class="mono-chip text-[10px]">small</code> is mandatory and doubles as <code class="mono-chip text-[10px]">default</code> — requests for the fallback envelope run with small's numbers, kept in lockstep on save; the rest of the ladder is editable — add, renumber, or delete freely. Every host offers all of it unless it excludes entries on its own page; pipelines request one via <code class="mono-chip text-[10px]">runner.resources: &lt;name&gt;</code>.
               </p>
             </div>
             <div class="grid grid-cols-[92px_repeat(4,minmax(0,1fr))_32px] gap-2 pb-1 text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -1912,41 +1968,29 @@ async function rotateToken(host: SandboxHost) {
                 v-for="(row, i) in defaultProfileRows"
                 :key="i"
                 class="grid grid-cols-[92px_repeat(4,minmax(0,1fr))_32px] items-center gap-2 py-1.5"
-                :class="row.name === 'default' && 'rounded-md bg-primary/5'"
               >
                 <div class="flex min-w-0 flex-col">
                   <input
                     v-model="row.name"
-                    :disabled="row.name === 'default' || row.name === 'small'"
+                    :disabled="row.name === 'small'"
                     placeholder="large"
                     class="w-full rounded-md border border-border/60 bg-background px-2 py-1 font-mono text-xs outline-hidden focus:border-primary/50 disabled:opacity-70"
                   />
-                  <button
-                    v-if="row.name === defaultsAliasCarrier && !defaultsAliasSplit"
-                    type="button"
-                    class="mt-0.5 inline-flex h-[15px] items-center self-start rounded bg-primary/10 px-1 py-px text-[8.5px] font-medium text-primary transition-opacity hover:opacity-75"
-                    title="'default' shares this envelope — click to edit it separately"
-                    @click="splitDefaultAlias"
-                  >default</button>
-                  <!-- uniform row height: non-carrier rows reserve the badge line -->
-                  <span v-else class="mt-0.5 h-[15px]" aria-hidden="true"></span>
                 </div>
                 <input v-model="row.memory" placeholder="2g" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
                 <input v-model="row.cpu" placeholder="2" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
                 <input v-model.number="row.pids" type="number" min="1" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
                 <input v-model.number="row.slots" type="number" min="1" max="32" class="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs outline-hidden focus:border-primary/50" />
                 <UiButton
+                  v-if="row.name !== 'small'"
                   size="sm"
                   variant="ghost"
                   class="h-8 w-8 text-muted-foreground hover:bg-red-500/10 hover:text-red-500"
-                  :disabled="row.name === 'default' || row.name === 'small'"
-                  :title="row.name === 'default'
-                    ? 'The default profile cannot be removed'
-                    : row.name === 'small'
-                      ? 'The small profile is mandatory and cannot be removed'
-                      : `Remove ${row.name || '(unnamed)'}`"
+                  :title="`Remove ${row.name || '(unnamed)'}`"
                   @click="removeDefaultProfileRow(i)"
                 ><Trash2 class="h-4 w-4" /></UiButton>
+                <!-- small is mandatory: reserve the delete-button cell -->
+                <span v-else class="h-8 w-8" aria-hidden="true"></span>
               </div>
             </div>
             <UiButton size="sm" variant="ghost" class="-ml-2 mt-1" @click="addDefaultProfileRow"><Plus class="h-3.5 w-3.5" /> Add job size</UiButton>
