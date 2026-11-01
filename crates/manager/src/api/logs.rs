@@ -5,7 +5,7 @@ use axum::Json;
 use futures_util::SinkExt;
 use futures_util::StreamExt;
 use serde::Deserialize;
-use shared::auth::{Role, TokenManager};
+
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::protocol::{LogChunk, LogLevel};
@@ -15,7 +15,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::middleware::{AuthUser, RunnerClaims};
-use crate::rbac::{load_auth_user, pipeline_team_id};
+use crate::rbac::{self, pipeline_team_id};
 use crate::services::log_broadcast::LogBroadcaster;
 use crate::state::AppState;
 
@@ -35,7 +35,7 @@ async fn assert_job_team_view(
     // Debug (no-redaction) jobs contain plaintext secrets in the logs; only
     // platform admins may read them, regardless of team membership.
     if debug_unredact != 0 && !auth.is_platform_admin {
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "this job was run in debug mode (unredacted logs) — only platform admins can view it"
                 .into(),
         ));
@@ -46,11 +46,26 @@ async fn assert_job_team_view(
 }
 
 pub async fn upload(
-    _auth: RunnerClaims,
+    auth: RunnerClaims,
     State(state): State<AppState>,
     Path(job_id): Path<String>,
     Json(chunk): Json<LogChunk>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
+    // Runner↔job binding: log chunks are accepted only for jobs poll()
+    // dispatched to this runner — otherwise any runner JWT could forge any
+    // job's logs.
+    let row = sqlx::query("SELECT runner_id FROM jobs WHERE id = ?")
+        .bind(&job_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let owner: Option<String> = row.get(0);
+    if owner.as_deref() != Some(auth.runner_id.as_str()) {
+        return Err(AppError::Forbidden(
+            "job is not assigned to this runner".into(),
+        ));
+    }
+
     sqlx::query(
         "INSERT OR REPLACE INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
          VALUES (?, ?, ?, ?, ?, 1, ?)",
@@ -119,16 +134,11 @@ async fn auth_user_from_query_token(
     token: Option<&str>,
 ) -> Result<AuthUser, AppError> {
     let token_str = token.unwrap_or("");
-    let token_mgr = TokenManager::new(&state.config.auth.jwt_secret);
-    let claims = token_mgr
-        .verify(token_str)
-        .map_err(|_| AppError::AuthFailed("invalid or missing token".into()))?;
-
-    if !matches!(claims.role, Role::Admin | Role::User) {
-        return Err(AppError::AuthFailed("user role required".into()));
+    if token_str.is_empty() {
+        return Err(AppError::AuthFailed("invalid or missing token".into()));
     }
-
-    load_auth_user(&state.pool, &claims.sub).await
+    // Shared entry point: JWT **or** API token; both then load a live user.
+    rbac::authenticate_user_token(&state.pool, &state.config.auth.jwt_secret, token_str).await
 }
 
 pub async fn stream_logs(

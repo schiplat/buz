@@ -133,6 +133,8 @@ pub async fn register_with_center(
         // Labels are configured in Manager UI; agent must not overwrite them.
         labels: Vec::new(),
         version: Some(config.runner.version().into()),
+        host_id: config.runner.host_id.clone(),
+        runner_instance_id: config.runner.instance_id.clone(),
     };
 
     // Present the previous JWT (if any) so re-registration passes the identity

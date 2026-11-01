@@ -98,22 +98,42 @@ async fn read_body(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&body).expect("json body")
 }
 
-/// Unauthenticated webhook hook request (POST /api/v1/hooks/{path}?query).
+const HOOK_TEST_SECRET_NAME: &str = "HOOK_TEST_SECRET";
+const HOOK_TEST_SECRET_VALUE: &str = "hook-test-signing-secret";
+
+/// Signed webhook hook request (POST /api/v1/hooks/{path}?query) —
+/// on.webhook.secret is mandatory, so every hook request carries the
+/// X-Buz-Signature header over the exact body bytes.
 async fn hook_req(
     app: &Router,
     uri: &str,
     body: Option<serde_json::Value>,
 ) -> axum::response::Response {
-    let builder = Request::builder().method("POST").uri(uri);
-    let req_body = if let Some(b) = body {
-        builder
-            .header("Content-Type", "application/json")
-            .body(Body::from(serde_json::to_vec(&b).unwrap()))
-            .unwrap()
-    } else {
-        builder.body(Body::empty()).unwrap()
+    let body_bytes: Vec<u8> = match &body {
+        Some(b) => serde_json::to_vec(b).unwrap(),
+        None => Vec::new(),
     };
+    let req_body = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(
+            "X-Buz-Signature",
+            buzz_signature(HOOK_TEST_SECRET_VALUE, &body_bytes),
+        )
+        .header("Content-Type", "application/json")
+        .body(Body::from(body_bytes))
+        .unwrap();
     app.clone().oneshot(req_body).await.unwrap()
+}
+
+/// Mirror the webhook signature scheme: `sha256=<hex HMAC-SHA256(body)>`.
+fn buzz_signature(secret: &str, body: &[u8]) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes())
+        .expect("hmac accepts any key length");
+    mac.update(body);
+    format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
 }
 
 async fn create_env(app: &Router, jwt: &str, slug: &str) {
@@ -157,7 +177,28 @@ async fn json_req(
 
 /// Webhook pipeline declaring several environments, with an optional `version`
 /// input so business inputs can be told apart from the reserved selector.
-async fn create_webhook_pipeline(app: &Router, jwt: &str, environments: &[&str]) -> String {
+/// Seeds the team secret first, then binds it via the API's `webhook_secret`
+/// field — create() rejects webhook pipelines whose secret is missing or
+/// unknown, so the order matters.
+async fn create_webhook_pipeline(
+    app: &Router,
+    _pool: &SqlitePool,
+    jwt: &str,
+    environments: &[&str],
+) -> String {
+    let seeded = json_req(
+        app,
+        "POST",
+        "/api/v1/secrets",
+        jwt,
+        Some(serde_json::json!({
+            "name": HOOK_TEST_SECRET_NAME,
+            "value": HOOK_TEST_SECRET_VALUE,
+            "team_id": "team-1",
+        })),
+    )
+    .await;
+    assert_eq!(seeded.status(), StatusCode::OK, "seed webhook team secret");
     let pipe = json_req(
         app,
         "POST",
@@ -167,6 +208,7 @@ async fn create_webhook_pipeline(app: &Router, jwt: &str, environments: &[&str])
             "name": "hook-pipe",
             "trigger_type": "webhook",
             "webhook_path": "deploy-app",
+            "webhook_secret": HOOK_TEST_SECRET_NAME,
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
             "environments": environments,
@@ -218,7 +260,7 @@ async fn hook_query_selector_wins_over_body() {
     for slug in ["staging", "production"] {
         create_env(&app, &admin, slug).await;
     }
-    let pid = create_webhook_pipeline(&app, &admin, &["staging", "production"]).await;
+    let pid = create_webhook_pipeline(&app, &pool, &admin, &["staging", "production"]).await;
 
     let resp = hook_req(
         &app,
@@ -251,7 +293,7 @@ async fn hook_body_selector_used_when_query_has_none() {
     for slug in ["staging", "production"] {
         create_env(&app, &admin, slug).await;
     }
-    let pid = create_webhook_pipeline(&app, &admin, &["staging", "production"]).await;
+    let pid = create_webhook_pipeline(&app, &pool, &admin, &["staging", "production"]).await;
 
     let resp = hook_req(
         &app,
@@ -274,7 +316,7 @@ async fn hook_body_inputs_environment_selector_used() {
     for slug in ["staging", "production"] {
         create_env(&app, &admin, slug).await;
     }
-    let pid = create_webhook_pipeline(&app, &admin, &["staging", "production"]).await;
+    let pid = create_webhook_pipeline(&app, &pool, &admin, &["staging", "production"]).await;
 
     let resp = hook_req(
         &app,
@@ -298,7 +340,7 @@ async fn hook_yaml_default_environment_used_when_no_selector() {
     for slug in ["staging", "yaml-default"] {
         create_env(&app, &admin, slug).await;
     }
-    let pid = create_webhook_pipeline(&app, &admin, &["staging", "yaml-default"]).await;
+    let pid = create_webhook_pipeline(&app, &pool, &admin, &["staging", "yaml-default"]).await;
     set_webhook_environment(&pool, &pid, "yaml-default").await;
 
     let resp = hook_req(
@@ -319,7 +361,7 @@ async fn hook_query_selector_overrides_yaml_default() {
     for slug in ["staging", "yaml-default"] {
         create_env(&app, &admin, slug).await;
     }
-    let pid = create_webhook_pipeline(&app, &admin, &["staging", "yaml-default"]).await;
+    let pid = create_webhook_pipeline(&app, &pool, &admin, &["staging", "yaml-default"]).await;
     set_webhook_environment(&pool, &pid, "yaml-default").await;
 
     let resp = hook_req(
@@ -340,7 +382,7 @@ async fn hook_without_selector_never_falls_back_to_first_declared() {
     for slug in ["staging", "production"] {
         create_env(&app, &admin, slug).await;
     }
-    let pid = create_webhook_pipeline(&app, &admin, &["staging", "production"]).await;
+    let pid = create_webhook_pipeline(&app, &pool, &admin, &["staging", "production"]).await;
     set_webhook_environment(&pool, &pid, "").await;
 
     let resp = hook_req(

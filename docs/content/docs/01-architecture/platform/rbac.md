@@ -163,7 +163,7 @@ Empty `owner_group` rows from Phase 1 must be assigned a team during upgrade (op
 |---------|--------|
 | Password | **Argon2id** PHC string in `users.password_hash` (not AES — that is only for Secrets/Hosts) |
 | JWT `sub` | `user_id` (not username) |
-| JWT `role` | Extend shared enum: `admin` (platform_admin) \| `user` \| `runner` |
+| JWT `role` | Shared enum: `admin` (platform_admin) \| `user` \| `ops` (platform-ops, sandbox hosts only) \| `runner`. Authorization failures return `AppError::Forbidden` (HTTP 403, code 1003); authentication failures are 401 (`AuthFailed` 1001, expired/invalid token 1002). The super-admin tier (`is_super_admin`) gates cross-admin visibility: all API tokens, all audit events, granting the super flag. |
 | Team list in JWT? | **No** — load `team_members` per request (short TTL cache optional) so membership changes apply immediately |
 | Runner tokens | Unchanged (`Role::Runner`) |
 | **API tokens** | `Authorization: Bearer buz_…` → SHA-256 lookup in `api_tokens`, then load the owning user. Full API-equivalent of a user JWT. Stored hashed; plaintext shown once at creation |

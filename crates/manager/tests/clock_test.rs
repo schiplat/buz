@@ -369,8 +369,11 @@ async fn probe_does_not_follow_redirects() {
 
 #[tokio::test]
 async fn sample_uses_remote_date_header() {
-    let (url, hits) = spawn_probe_server(Some(http_date(120)), "403 Forbidden").await;
+    // Build the guard first: on macOS `reqwest::Client` construction can stall
+    // for seconds in SystemConfiguration proxy lookup, which would otherwise
+    // decay the injected date offset before the probe ever runs.
     let guard = guard(true, 300);
+    let (url, hits) = spawn_probe_server(Some(http_date(120)), "403 Forbidden").await;
 
     let sample = guard.sample(&url).await.expect("probe succeeds on 403");
 
@@ -437,8 +440,9 @@ async fn sample_fails_without_date_header_and_caches_the_failure() {
 
 #[tokio::test]
 async fn latest_tracks_successful_samples() {
-    let (url, _) = spawn_probe_server(Some(http_date(30)), "200 OK").await;
+    // Guard first — see the note in sample_uses_remote_date_header.
     let guard = guard(true, 300);
+    let (url, _) = spawn_probe_server(Some(http_date(30)), "200 OK").await;
 
     assert_eq!(guard.latest(), None);
     guard.sample(&url).await.expect("probe");

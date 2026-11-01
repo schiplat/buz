@@ -1963,3 +1963,73 @@ steps:
         .iter()
         .any(|e| e.message.contains("more than once")));
 }
+
+// ── runner.resources (resource profile request) ─────────────────────────
+
+#[test]
+fn runner_resources_is_a_profile_name_projected_into_runner_config() {
+    let yaml = r#"
+name: Build
+environments: [default]
+runner:
+  labels: [linux-x64]
+  resources: large
+steps:
+  - name: build
+    run: make
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(r.valid, "errors: {:?}", r.errors);
+    // `parsed` is the frontend projection (PipelineYamlData → RunnerConfig).
+    let projection = r.parsed.unwrap();
+    assert_eq!(
+        projection
+            .runner
+            .as_ref()
+            .and_then(|r| r.resources.as_deref()),
+        Some("large")
+    );
+}
+
+#[test]
+fn runner_resources_rejects_non_profile_names() {
+    // Note: "8g" IS a legal name (lowercase alphanumerics) — operators may
+    // name a profile after its size; the name is still just a name.
+    for bad in [
+        "Large",
+        "memory=8g",
+        "a".repeat(33).as_str(),
+        "-lead",
+        "with space",
+    ] {
+        let yaml = format!(
+            "name: Build\nenvironments: [default]\nrunner:\n  resources: {bad:?}\nsteps:\n  - name: b\n    run: make\n"
+        );
+        let r = shared::pipeline_yaml::parse_and_validate(&yaml);
+        assert!(!r.valid, "{bad:?} must be rejected");
+        assert!(
+            r.errors.iter().any(|e| e.field == "runner.resources"),
+            "{bad:?}: {:?}",
+            r.errors
+        );
+    }
+    // A mapping is never a name: `resources: {memory: 8g}` is the shape this
+    // feature deliberately does not accept (numbers come from the Manager).
+    let yaml = "name: Build\nenvironments: [default]\nrunner:\n  resources:\n    memory: 8g\nsteps:\n  - name: b\n    run: make\n";
+    assert!(!shared::pipeline_yaml::parse_and_validate(yaml).valid);
+}
+
+#[test]
+fn step_level_resources_is_rejected_by_the_step_schema() {
+    // The sandbox is created once per job; a per-step envelope would be a lie.
+    let yaml = r#"
+name: Build
+environments: [default]
+steps:
+  - name: build
+    run: make
+    resources: large
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(!r.valid, "step-level resources must not parse");
+}

@@ -8,6 +8,7 @@
 //! The `buz-plugin` binary (`src/main.rs`) is a thin shell over these modules,
 //! which keeps them reachable from the integration tests under `tests/`.
 
+pub mod cli;
 pub mod indexgen;
 pub mod layout;
 pub mod mirror;

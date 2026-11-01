@@ -13,9 +13,16 @@ const TOKEN_RANDOM_BYTES: usize = 32;
 
 /// Generate a new random API token, e.g. `buz_a1b2c3…`.
 pub fn generate_token() -> String {
+    generate_with_prefix(API_TOKEN_PREFIX)
+}
+
+/// Generate a random bearer token with a custom prefix (used for sandboxd
+/// instance tokens, `buzsd_…`, so the credential type is recognizable in
+/// logs and token lists).
+pub fn generate_with_prefix(prefix: &str) -> String {
     let mut bytes = [0u8; TOKEN_RANDOM_BYTES];
     getrandom::getrandom(&mut bytes).expect("os random for api token");
-    format!("{API_TOKEN_PREFIX}{}", hex::encode(bytes))
+    format!("{prefix}{}", hex::encode(bytes))
 }
 
 /// SHA-256 hex digest of a token, used as the stored credential.
@@ -35,4 +42,15 @@ pub fn display_prefix(token: &str) -> String {
 #[allow(dead_code)]
 pub fn is_api_token(token: &str) -> bool {
     token.starts_with(API_TOKEN_PREFIX)
+}
+
+/// Constant-time equality for secret material (register tokens and similar).
+/// Comparisons on raw secrets must never use `==` — timing leaks how many
+/// leading bytes match. Both sides are hashed and the fixed-size digests are
+/// compared via `subtle::ConstantTimeEq`.
+pub fn ct_eq(a: &str, b: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    let da = Sha256::digest(a.as_bytes());
+    let db = Sha256::digest(b.as_bytes());
+    bool::from(da.as_slice().ct_eq(db.as_slice()))
 }

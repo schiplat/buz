@@ -1036,6 +1036,7 @@ async fn runner_execution_mode_requires_fresh_supported_capability() {
             runtimes: Default::default(),
             checked_at: Some(chrono::Utc::now().to_rfc3339()),
         }),
+        sandboxd: None,
     };
     let heartbeat = json_req(
         &app,

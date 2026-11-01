@@ -24,8 +24,10 @@ pub mod hosts;
 pub mod jobs;
 pub mod logs;
 pub mod openapi;
+pub mod ops_sandbox;
 pub mod plugin_sources;
 pub mod plugins;
+pub mod sandboxd_config;
 pub mod secrets;
 pub mod settings;
 pub mod teams;
@@ -37,6 +39,66 @@ pub mod webhook;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        // Control-plane identity (public — IDs are public identifiers)
+        .route("/meta", get(version::meta))
+        // Ops namespace: sandbox host administration (OpsAdmin = admin | ops)
+        .route(
+            "/ops/sandbox-hosts",
+            get(ops_sandbox::list_hosts).post(ops_sandbox::enroll_host),
+        )
+        .route(
+            "/ops/sandbox-hosts/{host_id}/{instance_id}",
+            get(ops_sandbox::get_host).delete(ops_sandbox::delete_host),
+        )
+        .route(
+            "/ops/sandbox-hosts/{host_id}/{instance_id}/config",
+            put(ops_sandbox::put_config),
+        )
+        .route(
+            "/ops/sandbox-hosts/{host_id}/{instance_id}/validate",
+            post(ops_sandbox::validate_config),
+        )
+        .route(
+            "/ops/sandbox-hosts/{host_id}/{instance_id}/versions",
+            get(ops_sandbox::list_versions),
+        )
+        .route(
+            "/ops/sandbox-hosts/{host_id}/{instance_id}/rollback",
+            post(ops_sandbox::rollback),
+        )
+        .route(
+            "/ops/sandbox-hosts/{host_id}/{instance_id}/token/rotate",
+            post(ops_sandbox::rotate_token),
+        )
+        .route(
+            "/ops/sandbox-hosts/{host_id}/{instance_id}/budget",
+            put(ops_sandbox::update_budget),
+        )
+        .route("/ops/images/resolve", post(ops_sandbox::resolve_image))
+        .route(
+            "/ops/sandbox-defaults",
+            get(ops_sandbox::get_defaults).put(ops_sandbox::put_defaults),
+        )
+        .route("/ops/sandbox-changes", get(ops_sandbox::list_changes))
+        .route(
+            "/ops/sandbox-changes/{id}/approve",
+            post(ops_sandbox::approve_change),
+        )
+        .route(
+            "/ops/sandbox-changes/{id}/reject",
+            post(ops_sandbox::reject_change),
+        )
+        .route(
+            "/ops/resource-grants",
+            get(ops_sandbox::list_grants).put(ops_sandbox::upsert_grant),
+        )
+        .route(
+            "/ops/resource-grants/{team_id}/{profile}",
+            delete(ops_sandbox::delete_grant),
+        )
+        // sandboxd-facing (per-instance buzsd_ token): long-poll config + status
+        .route("/sandboxd/config", get(sandboxd_config::get_config))
+        .route("/sandboxd/status", post(sandboxd_config::report_status))
         // Auth (public)
         .route("/auth/login", post(auth::login))
         .route("/auth/setup-status", get(auth::setup_status))
@@ -278,6 +340,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/runners/{id}/freeze", patch(runners::toggle_freeze))
         .route("/runners/{id}/restart", post(runners::restart))
+        .route(
+            "/runners/{id}/reprobe-capabilities",
+            post(runners::reprobe_capabilities),
+        )
         .route(
             "/runners/{id}/register-token/reissue",
             post(runners::reissue_register_token),

@@ -247,7 +247,7 @@ onMounted(async () => {
 <template>
   <div class="space-y-6">
     <PageHeader
-      title="Hosts"
+      title="SSH Targets"
       description="SSH targets for pipeline steps. Reference by name or labels (uses: ssh + host / host_labels). Auth: SSH Key / Password / Agent — verify with Test connection."
     >
       <template #actions>

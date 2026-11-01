@@ -416,7 +416,11 @@ async fn dropping_pull_future_kills_child() {
         )
         .await
     });
-    tokio::time::timeout(Duration::from_secs(1), async {
+    // Wait for the fake docker's pid file. The timeout bounds only a broken
+    // fake (the loop exits as soon as the file appears); it must tolerate
+    // process-spawn latency under a fully parallel `cargo test --all` run,
+    // where 1s was observed to elapse on loaded machines.
+    tokio::time::timeout(Duration::from_secs(10), async {
         while !pid_file.exists() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

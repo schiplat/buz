@@ -230,6 +230,19 @@ pub async fn upsert_from_yaml(
         .and_then(|s| shared::pipeline_yaml::parse_duration_seconds(s).ok())
         .unwrap_or(3600);
 
+    // `runner.resources`: a profile name; '' means the implicit default. The
+    // YAML validator already checked the syntax; authorization happens at
+    // trigger (team grant) so an unauthorized pipeline can still be saved and
+    // fixed, but never run.
+    let resource_profile = parsed
+        .runner
+        .as_ref()
+        .and_then(|r| r.resources.as_deref())
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && *name != shared::sandbox_config::DEFAULT_PROFILE)
+        .map(str::to_string)
+        .unwrap_or_default();
+
     let concurrency_group: Option<String> = parsed.concurrency.as_ref().map(|c| match c {
         ConcurrencyDef::Simple(s) => s.clone(),
         ConcurrencyDef::Full(f) => f.group.clone(),
@@ -340,6 +353,7 @@ pub async fn upsert_from_yaml(
         sqlx::query(
             "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?,
              webhook_path = ?, webhook_secret = ?, webhook_environment = ?, cron_expr = ?, cron_environment = ?, runner_labels = ?, timeout_seconds = ?,
+             resource_profile = ?,
              concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
              concurrency_queue_timeout_seconds = ?,
              owner_group = ?, team_id = ?, input_defs = ?, environments = ?,
@@ -356,6 +370,7 @@ pub async fn upsert_from_yaml(
         .bind(cron_environment.as_deref().unwrap_or(""))
         .bind(&labels_json)
         .bind(timeout_seconds)
+        .bind(&resource_profile)
         .bind(&concurrency_group)
         .bind(concurrency_mode.as_deref().unwrap_or(""))
         .bind(concurrency_max_queue.map(|v| v as i64).unwrap_or(3))
@@ -469,10 +484,10 @@ pub async fn upsert_from_yaml(
 
         sqlx::query(
             "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path,
-             webhook_secret, webhook_environment, cron_expr, cron_environment, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
+             webhook_secret, webhook_environment, cron_expr, cron_environment, runner_labels, timeout_seconds, resource_profile, concurrency_group, concurrency_mode,
              concurrency_max_queue, concurrency_queue_timeout_seconds,
             owner_group, team_id, source, yaml_path, yaml_sha256, input_defs, environments, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, 1)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, 1)",
         )
         .bind(&id)
         .bind(pipeline_name)
@@ -485,6 +500,7 @@ pub async fn upsert_from_yaml(
         .bind(cron_environment.as_deref().unwrap_or(""))
         .bind(&labels_json)
         .bind(timeout_seconds)
+        .bind(&resource_profile)
         .bind(&concurrency_group)
         .bind(concurrency_mode.as_deref().unwrap_or(""))
         .bind(concurrency_max_queue.map(|v| v as i64).unwrap_or(3))

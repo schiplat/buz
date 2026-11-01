@@ -56,6 +56,34 @@ impl FromRequestParts<AppState> for PlatformAdmin {
     }
 }
 
+/// Platform administrator **or** platform-ops user. Gates the ops API
+/// namespace (sandbox host administration); grants nothing else — every other
+/// namespace keeps its own extractor.
+#[derive(Debug, Clone)]
+pub struct OpsAdmin(pub AuthUser);
+
+impl std::ops::Deref for OpsAdmin {
+    type Target = AuthUser;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl FromRequestParts<AppState> for OpsAdmin {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        if !user.is_ops {
+            return Err(forbidden_err("ops or platform admin required"));
+        }
+        Ok(OpsAdmin(user))
+    }
+}
+
 /// Authenticated runner identity extracted from a Runner JWT.
 #[derive(Debug, Clone)]
 pub struct RunnerClaims {
@@ -81,6 +109,48 @@ impl FromRequestParts<AppState> for RunnerClaims {
 
         Ok(RunnerClaims {
             runner_id: claims.sub,
+        })
+    }
+}
+
+/// Authenticated sandboxd instance, resolved from its opaque `buzsd_…` bearer
+/// token (SHA-256 looked up in `sandbox_hosts.token_hash`). Scoped to exactly
+/// one `(host_id, instance_id)`: the token can fetch that host's configuration
+/// and report its status — nothing else. It is never a user and never a Runner.
+#[derive(Debug, Clone)]
+pub struct SandboxdClaims {
+    pub host_id: String,
+    pub instance_id: String,
+}
+
+impl FromRequestParts<AppState> for SandboxdClaims {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let token = extract_bearer(parts)?;
+        if !token.starts_with("buzsd_") {
+            return Err(forbidden_err("sandboxd token required"));
+        }
+        let token_hash = shared::api_token::hash_token(token);
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT host_id, instance_id FROM sandbox_hosts WHERE token_hash = ? AND token_hash != ''",
+        )
+        .bind(&token_hash)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("sandboxd token lookup failed: {e}");
+            auth_err("invalid or revoked token")
+        })?;
+        let Some((host_id, instance_id)) = row else {
+            return Err(auth_err("invalid or revoked token"));
+        };
+        Ok(SandboxdClaims {
+            host_id,
+            instance_id,
         })
     }
 }

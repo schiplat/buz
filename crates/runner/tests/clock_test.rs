@@ -108,8 +108,11 @@ fn startup_error_message_handles_runner_clock_ahead() {
 
 #[tokio::test]
 async fn probe_reads_manager_date_header() {
-    let (url, _) = spawn_server(Some(http_date(45)), "200 OK").await;
+    // Build the client first: on macOS `reqwest::Client` construction can
+    // stall for seconds in SystemConfiguration proxy lookup, which would
+    // otherwise decay the injected date offset before the probe ever runs.
     let client = reqwest::Client::new();
+    let (url, _) = spawn_server(Some(http_date(45)), "200 OK").await;
 
     let sample = probe(&client, &url).await.expect("probe succeeds");
     assert_eq!(sample.source, format!("{url}/health"));
@@ -124,8 +127,9 @@ async fn probe_reads_manager_date_header() {
 
 #[tokio::test]
 async fn probe_survives_non_success_status() {
-    let (url, _) = spawn_server(Some(http_date(10)), "403 Forbidden").await;
+    // Client first — see the note in probe_reads_manager_date_header.
     let client = reqwest::Client::new();
+    let (url, _) = spawn_server(Some(http_date(10)), "403 Forbidden").await;
 
     let sample = probe(&client, &url).await.expect("403 still carries Date");
     assert!(
@@ -170,8 +174,9 @@ async fn startup_fails_when_skew_exceeds_limit() {
 
 #[tokio::test]
 async fn startup_continues_when_fail_on_skew_is_disabled() {
-    let (url, _) = spawn_server(Some(http_date(4000)), "200 OK").await;
+    // Client first — see the note in probe_reads_manager_date_header.
     let client = reqwest::Client::new();
+    let (url, _) = spawn_server(Some(http_date(4000)), "200 OK").await;
     let clock = ClockSection {
         fail_on_skew: false,
         ..clock_config()
@@ -187,8 +192,9 @@ async fn startup_continues_when_fail_on_skew_is_disabled() {
 
 #[tokio::test]
 async fn startup_passes_for_small_skew() {
-    let (url, _) = spawn_server(Some(http_date(30)), "200 OK").await;
+    // Client first — see the note in probe_reads_manager_date_header.
     let client = reqwest::Client::new();
+    let (url, _) = spawn_server(Some(http_date(30)), "200 OK").await;
     let config = test_config(clock_config(), &url);
 
     let sample = runner::client::clock::verify_at_startup(&client, &config)

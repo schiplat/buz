@@ -19,6 +19,9 @@ const tone = computed(() => {
     case 'pending'   : return 'bg-muted text-muted-foreground'
     case 'queued'    : return 'bg-info/12 text-info'
     case 'waiting_approval': return 'bg-warning/12 text-warning'
+    case 'insync'    : return 'bg-success/12 text-success'
+    case 'syncing'   : return 'bg-info/12 text-info'
+    case 'degraded'  : return 'bg-destructive/12 text-destructive'
     default: return 'bg-muted text-muted-foreground'
   }
 })

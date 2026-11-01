@@ -69,14 +69,24 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.sandboxd
     user: "0:0"
+    # Policy (profiles, tier images, network) comes from the Manager: enroll
+    # the host via the ops API (`POST /api/v1/ops/sandbox-hosts`), save the
+    # one-time token to a root-owned file on the host, and set
+    # BUZ_SANDBOXD_TOKEN_HOST_PATH to its path below. See
+    # docs/03-operations/configuration.md → "Sandbox host configuration".
     environment:
-      BUZ_SANDBOXD_WORKSPACE_VOLUME: ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}
+      BUZ_MANAGER_URL: ${BUZ_MANAGER_URL:-http://manager:8080}
+      BUZ_MANAGER_INSTANCE_ID: ${BUZ_MANAGER_INSTANCE_ID:-}
+      BUZ_SANDBOXD_TOKEN_FILE: /run/secrets/sandboxd-token
+      BUZ_HOST_ID: ${BUZ_HOST_ID:-compose-host}
       BUZ_SANDBOXD_INSTANCE_ID: ${BUZ_SANDBOXD_INSTANCE_ID:-compose-sandboxd}
+      BUZ_SANDBOXD_WORKSPACE_VOLUME: ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}
+      BUZ_SANDBOXD_STATE_DIR: /app/buz/state
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${BUZ_RUNNER_WS_VOLUME:-buz-runner-ws}:/app/buz/workspace
       - buz-sandboxd-socket:/run/buz-sandboxd
-      - ../deploy/conf/sandboxd.toml:/app/buz/conf/sandboxd.toml:ro
+      - ${BUZ_SANDBOXD_TOKEN_HOST_PATH:?set BUZ_SANDBOXD_TOKEN_HOST_PATH to the enrolled token file (0400)}:/run/secrets/sandboxd-token:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/buz-sandboxd", "--healthcheck"]
       interval: 10s

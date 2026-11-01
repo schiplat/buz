@@ -19,6 +19,8 @@ const props = withDefaults(
     environmentSlugs?: string[]
     /** Live plugin refs (`id@version`) for `uses:` completions. */
     pluginRefs?: Array<{ uses: string; reviewed?: boolean; description?: string }>
+    /** Render-only viewer: no edits, no validation requests. */
+    readonly?: boolean
     placeholder?: string
     /** Debounce for remote validate lint (ms). */
     lintDebounceMs?: number
@@ -28,6 +30,7 @@ const props = withDefaults(
     variableNames: () => [],
     environmentSlugs: () => [],
     pluginRefs: () => [],
+    readonly: false,
     placeholder: 'name: hello-world\nsteps:\n  - name: greet\n    run: echo Hello',
     lintDebounceMs: 550,
   },
@@ -210,6 +213,9 @@ function buildExtensions() {
       }
     }),
     EditorView.lineWrapping,
+    ...(props.readonly
+      ? [EditorState.readOnly.of(true), EditorView.editable.of(false)]
+      : []),
   ]
 }
 
@@ -223,7 +229,7 @@ onMounted(() => {
     state,
     parent: hostRef.value,
   })
-  if (props.modelValue.trim()) scheduleLint(props.modelValue)
+  if (props.modelValue.trim() && !props.readonly) scheduleLint(props.modelValue)
 })
 
 onBeforeUnmount(() => {
@@ -266,6 +272,19 @@ function focus() {
   view?.focus()
 }
 
+/** Move the viewport (and caret) to a 1-based line, e.g. from a source outline. */
+function scrollToLine(line: number) {
+  if (!view) return
+  const doc = view.state.doc
+  const target = Math.min(Math.max(1, line), doc.lines)
+  const pos = doc.line(target).from
+  view.dispatch({
+    selection: { anchor: pos },
+    effects: EditorView.scrollIntoView(pos, { y: 'center' }),
+  })
+  view.focus()
+}
+
 /**
  * Reveal the document position for a diagnostic (field + message) and focus
  * the editor. Used by the float panel to jump to the offending YAML line.
@@ -282,7 +301,7 @@ function revealDiagnostic(field: string, message: string) {
   view.focus()
 }
 
-defineExpose({ validateNow, focus, revealDiagnostic })
+defineExpose({ validateNow, focus, revealDiagnostic, scrollToLine })
 </script>
 
 <template>

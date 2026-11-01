@@ -393,9 +393,21 @@ pub async fn execute_job(
             config.execution_mode.as_str(),
             unsupported.join(", ")
         );
+        // The Manager froze `runner.resources` into the claim payload after the
+        // team-grant check; sandboxd resolves the envelope from its applied
+        // document (empty = default; unknown = error, never a downgrade).
+        let resource_profile = task
+            .get("resource_profile")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
         Some(
-            crate::client::sandbox_client::create_job(config, job_id, &config.runner.workspace_dir)
-                .await?,
+            crate::client::sandbox_client::create_job(
+                config,
+                job_id,
+                &config.runner.workspace_dir,
+                resource_profile,
+            )
+            .await?,
         )
     };
     let mut prefetch = crate::client::image_prefetch::ImagePrefetch::start(tasks, config, job_id);
@@ -1379,6 +1391,9 @@ async fn run_shell_step(
     if let Some(handle) = run.sandbox_handle {
         let mut sandbox_env = run.env.clone();
         sandbox_env.insert("BUZ_STEP_ENGINE".into(), exec_type.to_string());
+        // Let build scripts size themselves (e.g. make -j) by the effective
+        // envelope the supervisor applied, not the one the pipeline asked for.
+        sandbox_env.insert("BUZ_RESOURCE_PROFILE".into(), handle.profile().to_string());
         sandbox_env.insert(
             "BUZ_ENV".into(),
             format!("{}/.buz/env", engine::docker::CONTAINER_WORKSPACE),

@@ -20,6 +20,7 @@ fn apply_to_config_overwrites_strategy_keeps_paths() {
         docker_enabled: true,
         wasm_enabled: true,
         ssh_host_key_policy: "known_hosts".into(),
+        claim_strategy: "backfill".into(),
     };
     policy::apply_to_config(&mut cfg, &policy_config);
 

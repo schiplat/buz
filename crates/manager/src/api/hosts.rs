@@ -77,6 +77,9 @@ pub async fn list(
             .fetch_all(&state.pool)
             .await?
         } else {
+            // Hosts have a "shared" tier (NULL/'' team = visible to everyone,
+            // manageable by admins only — see assert_host_visible), so this is
+            // an OR-filter that rbac::team_in_clause (pure AND) can't express.
             let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!(
                 "SELECT id, name, host, port, username, credential_type, credential_data, labels,
@@ -453,8 +456,9 @@ pub async fn test_connection(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
+        // Probing pulls stored (decryptable) credentials — manage tier, not view.
         let team_id = host_team_id(&state.pool, host_id).await?;
-        assert_host_visible(&auth, &team_id).await?;
+        assert_host_manage(&auth, &team_id).await?;
 
         let row = sqlx::query(
             "SELECT credential_type, credential_data, credential_passphrase FROM hosts WHERE id = ?",
@@ -497,6 +501,13 @@ pub async fn test_connection(
                 }
             }
         }
+    } else if !auth.is_platform_admin {
+        // Ad-hoc probes reach arbitrary host:port values — an SSRF-style
+        // primitive no regular user needs. Save the host first, then test
+        // from its card (manage-tier check above).
+        return Err(AppError::Forbidden(
+            "ad-hoc connection tests are restricted to platform admins — save the host first and test from its card".into(),
+        ));
     }
 
     if host.is_empty() || username.is_empty() {

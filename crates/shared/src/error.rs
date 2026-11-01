@@ -4,7 +4,8 @@ use std::fmt;
 pub enum AppError {
     AuthFailed(String),
     TokenExpired,
-    Unauthorized(String),
+    /// Authorization denied (authenticated caller lacks the permission).
+    Forbidden(String),
     NotFound(String),
     Conflict(String),
     ValidationFailed(String),
@@ -17,7 +18,7 @@ impl fmt::Display for AppError {
         match self {
             AppError::AuthFailed(msg) => write!(f, "AuthFailed: {msg}"),
             AppError::TokenExpired => write!(f, "TokenExpired"),
-            AppError::Unauthorized(msg) => write!(f, "Unauthorized: {msg}"),
+            AppError::Forbidden(msg) => write!(f, "Forbidden: {msg}"),
             AppError::NotFound(msg) => write!(f, "NotFound: {msg}"),
             AppError::Conflict(msg) => write!(f, "Conflict: {msg}"),
             AppError::ValidationFailed(msg) => write!(f, "ValidationFailed: {msg}"),
@@ -34,7 +35,7 @@ impl AppError {
         match self {
             AppError::AuthFailed(_) => 1001,
             AppError::TokenExpired => 1002,
-            AppError::Unauthorized(_) => 1003,
+            AppError::Forbidden(_) => 1003,
             AppError::NotFound(_) => 2001,
             AppError::Conflict(_) => 2002,
             AppError::ValidationFailed(_) => 3001,
@@ -59,7 +60,7 @@ mod web_impl {
 
             let status = match &self {
                 AppError::AuthFailed(_) | AppError::TokenExpired => StatusCode::UNAUTHORIZED,
-                AppError::Unauthorized(_) => StatusCode::FORBIDDEN,
+                AppError::Forbidden(_) => StatusCode::FORBIDDEN,
                 AppError::NotFound(_) => StatusCode::NOT_FOUND,
                 AppError::Conflict(_) => StatusCode::CONFLICT,
                 AppError::ValidationFailed(_) => StatusCode::UNPROCESSABLE_ENTITY,

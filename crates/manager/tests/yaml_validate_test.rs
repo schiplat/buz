@@ -12,6 +12,7 @@ fn member_with_default_team() -> AuthUser {
         username: "dev".into(),
         is_platform_admin: false,
         is_super_admin: false,
+        is_ops: false,
         memberships: vec![TeamMembership {
             team_id: "t1".into(),
             team_slug: "default".into(),
@@ -242,6 +243,7 @@ async fn viewer_without_team_access_gets_generic_error_no_secret_oracle() {
         username: "dev".into(),
         is_platform_admin: false,
         is_super_admin: false,
+        is_ops: false,
         memberships: vec![TeamMembership {
             team_id: "t1".into(),
             team_slug: "default".into(),
@@ -292,6 +294,7 @@ async fn viewer_with_team_access_sees_secret_errors() {
         username: "dev".into(),
         is_platform_admin: false,
         is_super_admin: false,
+        is_ops: false,
         memberships: vec![TeamMembership {
             team_id: "t1".into(),
             team_slug: "default".into(),

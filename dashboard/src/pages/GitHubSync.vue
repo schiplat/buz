@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, Pencil, Trash2, RefreshCw, PlugZap, GitBranch, Cable, ExternalLink } from '@lucide/vue'
@@ -345,17 +344,18 @@ onMounted(loadAll)
 
 <template>
   <div class="space-y-6">
-    <PageHeader
-      title="GitHub Sync"
-      description="Pre-record GitHub connections (PAT) and repos, then bind secrets / variables to repos and push their values into GitHub Actions."
-    >
-      <template #actions>
+    <!-- Toolbar (no PageHeader — the tab bar above is the page header) -->
+    <div class="flex items-center gap-3 flex-wrap">
+      <p class="type-meta min-w-0 basis-full sm:basis-auto sm:max-w-xl">
+        Pre-record GitHub connections (PAT) and repos, then bind secrets / variables to repos and push their values into GitHub Actions.
+      </p>
+      <div class="sm:ml-auto flex items-center gap-2 flex-wrap">
         <UiButton size="sm" variant="outline" @click="openTest"><PlugZap class="h-4 w-4" /> Test</UiButton>
         <UiButton size="sm" variant="outline" @click="openFetch"><RefreshCw class="h-4 w-4" /> Fetch Repos</UiButton>
         <UiButton size="sm" @click="openCreateRepo"><Plus class="h-4 w-4" /> Add Repo</UiButton>
         <UiButton size="sm" @click="openCreateConn"><Plus class="h-4 w-4" /> Add Connection</UiButton>
-      </template>
-    </PageHeader>
+      </div>
+    </div>
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
 

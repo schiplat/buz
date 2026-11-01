@@ -10,7 +10,7 @@ use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::rbac::AuthUser;
+use crate::rbac::{self, AuthUser};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Default)]
@@ -256,11 +256,7 @@ pub async fn list(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id: String = sqlx::query_scalar("SELECT team_id FROM pipelines WHERE id = ?")
-        .bind(&pipeline_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+    let team_id = rbac::pipeline_team_id(&state.pool, &pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let page = q.page.max(1);

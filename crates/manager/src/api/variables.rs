@@ -13,7 +13,7 @@ use crate::middleware::{AuthUser, PlatformAdmin};
 use crate::state::AppState;
 
 pub async fn list(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let rows =
@@ -28,10 +28,17 @@ pub async fn list(
         .into_iter()
         .map(|r| {
             let id: String = r.get(0);
+            // Values are frequently credentials — only platform admins read
+            // them; everyone else gets metadata (names drive autocomplete).
+            let value = if auth.is_platform_admin {
+                serde_json::json!(r.get::<String, _>(2))
+            } else {
+                serde_json::Value::Null
+            };
             serde_json::json!({
                 "id": id,
                 "name": r.get::<String, _>(1),
-                "value": r.get::<String, _>(2),
+                "value": value,
                 "updated_at": r.get::<Option<String>, _>(3),
                 "github_binds": binds_map.get(&id).cloned().unwrap_or_default(),
             })
@@ -89,7 +96,7 @@ pub async fn create(
 }
 
 pub async fn get_one(
-    _auth: AuthUser,
+    auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -99,10 +106,17 @@ pub async fn get_one(
         .await?
         .ok_or_else(|| AppError::NotFound("variable not found".into()))?;
 
+    // Same confidentiality rule as list(): values are admin-only.
+    let value = if auth.is_platform_admin {
+        serde_json::json!(r.get::<String, _>(2))
+    } else {
+        serde_json::Value::Null
+    };
+
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": r.get::<String, _>(0),
         "name": r.get::<String, _>(1),
-        "value": r.get::<String, _>(2),
+        "value": value,
         "updated_at": r.get::<Option<String>, _>(3),
     }))))
 }

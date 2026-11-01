@@ -13,6 +13,8 @@ use shared::rbac::Perm;
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::rbac;
+
 use crate::audit::{self, Action, AuditEvent};
 use crate::crypto;
 use crate::rbac::AuthUser;
@@ -25,11 +27,8 @@ fn random_hex(nbytes: usize) -> String {
 }
 
 async fn pipeline_team(pool: &sqlx::SqlitePool, pipeline_id: &str) -> Result<String, AppError> {
-    sqlx::query_scalar("SELECT team_id FROM pipelines WHERE id = ?")
-        .bind(pipeline_id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))
+    // Shared resolver (same semantics, incl. the empty-team_id guard).
+    rbac::pipeline_team_id(pool, pipeline_id).await
 }
 
 #[allow(clippy::too_many_arguments)] // handler context: state, path, body, headers, auth

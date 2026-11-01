@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
 import { Plus, Pencil, Trash2, SlidersHorizontal, GitBranch } from '@lucide/vue'
@@ -160,14 +159,13 @@ onMounted(loadVars)
 
 <template>
   <div class="space-y-6">
-    <PageHeader
-      title="Variables"
-      description="Non-sensitive shared config as $NAME in steps. Override via Environments or GitHub Sync. Do not store secrets here."
-    >
-      <template #actions>
-        <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> Add Variable</UiButton>
-      </template>
-    </PageHeader>
+    <!-- Toolbar (no PageHeader — the tab bar above is the page header) -->
+    <div class="flex items-center gap-3 flex-wrap">
+      <p class="type-meta min-w-0 basis-full sm:basis-auto sm:max-w-xl">
+        Non-sensitive shared config as <code class="mono-chip text-[10px]">$NAME</code> in steps. Override via Environments or GitHub Sync. Do not store secrets here.
+      </p>
+      <UiButton size="sm" class="sm:ml-auto" @click="openCreate"><Plus class="h-4 w-4" /> Add Variable</UiButton>
+    </div>
 
     <div v-if="loading" class="text-center py-12 text-muted-foreground text-sm">Loading…</div>
     <div v-else class="rounded-xl border border-border/50 bg-card overflow-hidden shadow-xs">
@@ -236,7 +234,7 @@ onMounted(loadVars)
                   >{{ v.name }}</span>
                 </td>
                 <td class="px-5 py-3">
-                  <code class="mono-chip text-xs">{{ v.value }}</code>
+                  <code class="mono-chip text-xs">{{ v.value ?? '••••••' }}</code>
                 </td>
                 <td v-if="auth.isPlatformAdmin" class="px-5 py-3">
                   <GitHubBindChips

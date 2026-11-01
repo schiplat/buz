@@ -101,6 +101,26 @@ All sandbox modes currently fail closed if the supervisor/backend is unavailable
 
 **Tier model:** execution modes are isolation-strength tiers — `host` (L0) < `container` (L1) < `sandbox` (L2, userspace-kernel runtime such as gVisor `runsc`, no KVM required) < `vm` (L3) — with a pluggable per-tier OCI-runtime backend. Design, cloud KVM availability matrix, and rollout history: [Sandbox Isolation Tiers](/docs/01-architecture/execution/sandbox-isolation-tiers/).
 
+### Who decides what: the authoring boundary
+
+Isolation tiers are platform policy, not pipeline syntax. `execution_mode` never appears in pipeline YAML: it is selected per Runner by a platform admin in Runner Policy, and a job inherits the mode of whichever Runner claims it. The pipeline states what its code **needs**; the platform decides **how** — and how safely — it runs.
+
+| Declared by | Where | Field | Question answered |
+|-------------|-------|-------|-------------------|
+| Pipeline author | pipeline YAML | `runner.labels` | Which capabilities does my job need? (`linux-x64`, `gpu`, …) |
+| Pipeline author | pipeline YAML | `runner.resources` | How much compute does my job need? |
+| Platform admin | Runner Policy (UI) | `execution_mode` | How are jobs on this machine isolated? |
+| Platform admin | Runner Policy (UI) | Runner `labels` | Which capabilities does this machine provide? |
+| Platform admin | Runner Policy (UI) | Team binding, profile grants | Whose jobs may land here, and with which resource envelope? |
+
+**Labels carry capability vocabulary, never mechanism vocabulary.** Name Runners by what they offer (`linux-x64`, `gpu`, `arm64`), never by how they are isolated (`sandbox`). An author asks "is there a `linux-x64` machine?" without knowing or caring that gVisor sits behind it. Two Runners can share the label `linux-x64` while one runs `host` mode and the other `sandbox` mode; which one serves a job is an ops decision invisible to the pipeline. Once labels are named after tiers, `execution_mode` has effectively leaked into the pipeline through the back door.
+
+Governance requirements — "this team's jobs must never run below L2" — are likewise not a pipeline field. They belong to the same admin-managed layer as profile grants, as a team-level minimum-tier check at dispatch. This check is not implemented yet; labels and team binding are today's only dispatch gates.
+
+**Planned: pipeline-selected rootfs.** Today a sandboxed job's filesystem is the tier image declared in the host document, so that image must carry every toolchain any pipeline on the host may use — a pattern that scales poorly as toolchains accumulate. The planned direction: let the pipeline declare its own rootfs (e.g. `runner.image: node:20`) and keep the tier image as the fallback for pipelines that do not. The tier continues to own the isolation boundary; the image owns only the filesystem. Toolchain choice becomes an authoring concern; isolation stays a platform concern. The registry-auth constraint for sandboxed tiers applies unchanged: pipeline-supplied images must be publicly pullable or pre-pulled on the host.
+
+The platform-side view of the same model — tiers, profiles, and what the host actually offers — is in [Sandbox Host Configuration — How tiers, profiles, and host offers interact](/docs/01-architecture/execution/sandbox-host-configuration/#how-tiers-profiles-and-host-offers-interact).
+
 ### Cleanup: workspace vs Docker containers
 
 | What | How |

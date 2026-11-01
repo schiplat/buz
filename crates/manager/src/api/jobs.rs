@@ -348,7 +348,9 @@ pub async fn get_one(
         "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
                 j.status, j.trigger_by, j.trigger_params, j.snapshot, j.step_statuses, j.retry_times,
                 j.start_time, j.end_time, j.created_at, j.updated_at, j.debug_unredact, j.verbose_logs,
-                j.trigger_user_id, j.run_number, j.run_attempt
+                j.trigger_user_id, j.run_number, j.run_attempt,
+                j.resource_profile, j.resource_slots, j.resource_spec, j.sandbox_instance_id,
+                j.dispatch_reason
          FROM jobs j
          LEFT JOIN pipelines p ON j.pipeline_id = p.id
          WHERE j.id = ?",
@@ -405,6 +407,15 @@ pub async fn get_one(
         "run_attempt": r.get::<i64, _>(18),
         "team_id": team_id,
         "approvals": approvals,
+        // Requested profile ('' = default) frozen at trigger; slots/spec and
+        // the dispatching sandbox instance are filled at claim.
+        "resource_profile": r.get::<String, _>(19),
+        "resource_slots": r.get::<i64, _>(20),
+        "resource_spec": serde_json::from_str::<serde_json::Value>(&r.get::<String, _>(21))
+            .unwrap_or(serde_json::json!({})),
+        "sandbox_instance_id": r.get::<String, _>(22),
+        // Why the last poller skipped this job while pending ('' once claimed).
+        "dispatch_reason": r.get::<String, _>(23),
     }))))
 }
 
@@ -729,7 +740,7 @@ pub async fn approve(
         && protection_forbid_self_approve(&snapshot)
         && trigger_user_id.as_deref() == Some(auth.id.as_str())
     {
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "self-approval is forbidden for this environment".into(),
         ));
     }
@@ -939,7 +950,7 @@ pub async fn reject(
         && protection_forbid_self_approve(&snapshot)
         && trigger_user_id.as_deref() == Some(auth.id.as_str())
     {
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "self-approval is forbidden for this environment".into(),
         ));
     }
@@ -1101,15 +1112,23 @@ pub async fn delete(
 /// Runner calls this between steps to check if the job has been cancelled.
 /// Returns the current status — if "cancelled" the runner should bail immediately.
 pub async fn status_check(
-    _auth: RunnerClaims,
+    auth: RunnerClaims,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query("SELECT status FROM jobs WHERE id = ?")
+    let row = sqlx::query("SELECT status, runner_id FROM jobs WHERE id = ?")
         .bind(&id)
         .fetch_optional(&state.pool)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+
+    // Runner↔job binding: a runner may only poll jobs poll() dispatched to it.
+    let owner: Option<String> = row.get(1);
+    if owner.as_deref() != Some(auth.runner_id.as_str()) {
+        return Err(AppError::Forbidden(
+            "job is not assigned to this runner".into(),
+        ));
+    }
 
     let status: String = row.get(0);
     Ok(Json(ApiResponse::success(serde_json::json!({
@@ -1132,7 +1151,7 @@ pub async fn claim(
 }
 
 pub async fn update_status(
-    _auth: RunnerClaims,
+    auth: RunnerClaims,
     Path(job_id): Path<String>,
     State(state): State<AppState>,
     Json(req): Json<shared::protocol::UpdateJobStatusRequest>,
@@ -1140,11 +1159,21 @@ pub async fn update_status(
     // If the job has been manually cancelled via the UI, silently ignore
     // Runner status updates so the cancellation sticks.
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    let row = sqlx::query("SELECT status FROM jobs WHERE id = ?")
+    let row = sqlx::query("SELECT status, runner_id FROM jobs WHERE id = ?")
         .bind(&job_id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+
+    // Runner↔job binding: only the runner poll() dispatched the job to may
+    // update it — a leaked runner JWT must not be able to touch other jobs.
+    let owner: Option<String> = row.get(1);
+    if owner.as_deref() != Some(auth.runner_id.as_str()) {
+        tx.rollback().await?;
+        return Err(AppError::Forbidden(
+            "job is not assigned to this runner".into(),
+        ));
+    }
 
     let current_status: String = row.get(0);
 

@@ -3,9 +3,8 @@ import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
-import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { ArrowLeft, RefreshCw, ChevronDown, ChevronRight, XCircle, Trash2, Loader2, MinusCircle, AlertTriangle, Info, Lock, CircleHelp, Clock, CheckCircle2, ScrollText } from '@lucide/vue'
-import { jobsApi, type Job, type JobApprovalRecord, type LogChunk } from '@/api/jobs'
+import { ArrowLeft, RefreshCw, ChevronRight, XCircle, Trash2, Loader2, MinusCircle, AlertTriangle, Info, Lock, Clock, CheckCircle2, ScrollText, Copy, Check, Server, List, Sliders, FileCode2 } from '@lucide/vue'
+import { jobsApi, type Job, type JobApprovalRecord, type LogChunk, type SnapshotTask } from '@/api/jobs'
 import { parseUtc, formatLogClock, formatLocalDateTime } from '@/utils/time'
 import { formatLogChunkForTerminal } from '@/utils/logFormat'
 import { createManagedWebSocket, type ManagedWebSocket } from '@/utils/ws'
@@ -16,6 +15,7 @@ import '@xterm/xterm/css/xterm.css'
 import { useAuthStore } from '@/stores/auth'
 import { useAppDialog } from '@/composables/useAppDialog'
 import { formatApiError } from '@/utils/error'
+import { copyText } from '@/utils/copyText'
 
 const route = useRoute()
 const router = useRouter()
@@ -43,6 +43,7 @@ interface StepTerminal {
 
 const stepTerminals = ref<StepTerminal[]>([])
 const expandedSteps = ref<Set<number>>(new Set())
+const copiedLogStep = ref<number | null>(null)
 let managedWs: ManagedWebSocket | null = null
 const targetStep = ref<number | null>(null)
 
@@ -80,7 +81,6 @@ function isJobLive(): boolean {
   return s === 'running' || s === 'pending' || s === 'waiting_approval' || s === 'queued'
 }
 
-const showConcurrencyHelp = ref(false)
 
 /**
  * Concurrency panel — always shown when a job is loaded.
@@ -287,15 +287,6 @@ function displayInputValue(key: string, val: unknown): string {
   return String(val)
 }
 
-function fmtStepDuration(stepOrder: number): string {
-  if (!job.value?.step_statuses) return '\u2014'
-  const found = job.value.step_statuses.find((s: any) => Number(s.step_order) === stepOrder)
-  if (!found?.started_at) return '\u2014'
-  const a = parseUtc(found.started_at)
-  const b = found.finished_at ? parseUtc(found.finished_at) : Date.now()
-  const ms = Math.max(0, b - a)
-  return (ms / 1000).toFixed(3) + 's'
-}
 
 function nowTimeStr(): string {
   const n = new Date()
@@ -327,6 +318,16 @@ onMounted(async () => {
     if (activeIdx != null) {
       targetStep.value = activeIdx
       router.replace({ query: { step: activeIdx } })
+    } else if (job.value?.status === 'failed') {
+      // A finished failure should open on its error instead of a metadata wall.
+      const failed = firstFailedStep()
+      const step = failed != null && failed >= 0
+        ? failed
+        : (logs.value.length > 0 ? resolveGlobalChunkStep() : null)
+      if (step != null && step >= 0 && (job.value?.snapshot?.tasks || []).length > 0) {
+        targetStep.value = step
+        router.replace({ query: { step } })
+      }
     }
   }
   await nextTick()
@@ -437,9 +438,39 @@ function clearRefreshTimer() {
   pollInFlight = false
 }
 
+/**
+ * Snap the selection end back by one cell when the mouse is released inside
+ * the RIGHT half of the last intended character.
+ *
+ * xterm computes the drag endpoint as ceil((x + cellWidth/2) / cellWidth):
+ * releasing in the right half of char N pushes the selection end to cell N+1,
+ * so a copy carries one character past the released char (both drag
+ * directions — the reported repro). On mouseup we detect that half-cell grab
+ * from the release pixel and move the model's end back to the release cell,
+ * keeping highlight and copy consistent.
+ */
+function attachSelectionSnap(term: Terminal, el: HTMLElement) {
+  const onMouseUp = (event: MouseEvent) => {
+    if (event.button !== 0 || !term.hasSelection()) return
+    const core = (term as any)._core
+    const cellWidth: number | undefined = core?._renderService?.dimensions?.css?.cell?.width
+    const selectionService = core?.selectionService
+    const model = selectionService?._model
+    const modelEnd = model?.selectionEnd as [number, number] | undefined
+    if (typeof cellWidth !== 'number' || cellWidth <= 0 || !modelEnd) return
+    const rect = el.getBoundingClientRect()
+    const releaseX = event.clientX - rect.left
+    const releaseCol = Math.floor(releaseX / cellWidth)
+    // Half-cell grab: model end advanced one cell past the released char.
+    if (modelEnd[0] === releaseCol + 1 && releaseX - releaseCol * cellWidth > cellWidth / 2) {
+      model.selectionEnd = [releaseCol, modelEnd[1]]
+      selectionService.refresh(true)
+    }
+  }
+  el.addEventListener('mouseup', onMouseUp)
+}
+
 function initSingleTerminal(stepOrder: number) {
-  // Skip if already created
-  if (stepTerminals.value.find(t => t.stepOrder === stepOrder)) return
 
   const el = document.getElementById('terminal-el-' + stepOrder) as HTMLDivElement | null
   if (!el) return
@@ -449,10 +480,14 @@ function initSingleTerminal(stepOrder: number) {
   const fitAddon = new FitAddon()
   const term = new Terminal({
     cursorBlink: false, disableStdin: true, fontSize: TERM_FONT_SIZE,
+    cursorStyle: 'bar',
+    cursorInactiveStyle: 'none',
     fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
     theme: {
       background: '#0d1117', foreground: '#c9d1d9',
-      cursor: '#c9d1d9', selectionBackground: '#264f78',
+      cursor: '#0d1117', cursorAccent: '#c9d1d9',
+      selectionBackground: '#264f78', selectionForeground: '#f0f6fc',
+      selectionInactiveBackground: '#264f78',
       black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
       blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39c5cf', white: '#b1bac4',
       brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364',
@@ -462,6 +497,7 @@ function initSingleTerminal(stepOrder: number) {
     allowProposedApi: true,
     scrollback: 5000,
   })
+  attachSelectionSnap(term, el)
   term.loadAddon(fitAddon)
   term.open(el)
   fitAddon.fit()
@@ -546,6 +582,21 @@ function handleWsMessage(raw: string) {
             fitTerminalHeight(activeIdx)
           })
         }
+        if (newStatus.status === 'failed') {
+          const failed = firstFailedStep()
+          if (failed != null && failed >= 0) {
+            targetStep.value = failed
+            router.replace({ query: { step: failed } })
+            if (!expandedSteps.value.has(failed)) {
+              expandedSteps.value.add(failed)
+              nextTick(() => {
+                if (!alive) return
+                initSingleTerminal(failed)
+                fitTerminalHeight(failed)
+              })
+            }
+          }
+        }
       }
       return
     }
@@ -595,8 +646,8 @@ function startWebSocket() {
 }
 
 function toggleStep(stepOrder: number) {
-  // Prevent expanding pending steps (no logs to show yet)
-  if (getStepStatus(stepOrder) === 'pending') return
+  // Pending steps have no logs yet — unless a prepare-stage error was attached.
+  if (getStepStatus(stepOrder) === 'pending' && !stepLogs.value.has(stepOrder)) return
   // Update the active highlight
   targetStep.value = stepOrder
   // Update URL without full navigation
@@ -683,6 +734,250 @@ const showApprovalSidebar = computed(
   () => approvalList.value.length > 0 || job.value?.status === 'waiting_approval',
 )
 
+function formatDurationMs(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const seconds = total % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
+}
+
+const jobDuration = computed(() => {
+  const j = job.value
+  if (!j?.start_time) return '—'
+  const start = parseUtc(j.start_time)
+  const end = j.end_time ? parseUtc(j.end_time) : Date.now()
+  return formatDurationMs(end - start)
+})
+
+const JOB_STATUS_META: Record<string, { label: string; tile: string; labelClass: string }> = {
+  success: { label: 'Succeeded', tile: 'bg-emerald-500/10 text-emerald-600', labelClass: 'text-emerald-600' },
+  failed: { label: 'Failed', tile: 'bg-red-500/10 text-red-600', labelClass: 'text-red-600' },
+  running: { label: 'Running', tile: 'bg-amber-500/10 text-amber-600', labelClass: 'text-amber-600' },
+  waiting_approval: { label: 'Waiting approval', tile: 'bg-amber-500/10 text-amber-700', labelClass: 'text-amber-700' },
+  queued: { label: 'Queued', tile: 'bg-purple-500/10 text-purple-600', labelClass: 'text-purple-600' },
+  cancelled: { label: 'Cancelled', tile: 'bg-slate-500/10 text-slate-500', labelClass: 'text-slate-500' },
+  pending: { label: 'Pending', tile: 'bg-muted text-muted-foreground', labelClass: 'text-muted-foreground' },
+}
+
+const jobStatusMeta = computed(
+  () =>
+    JOB_STATUS_META[job.value?.status || 'pending'] || {
+      label: job.value?.status || 'Unknown',
+      tile: 'bg-muted text-muted-foreground',
+      labelClass: 'text-foreground',
+    },
+)
+
+const shortRunnerId = computed(() =>
+  job.value?.runner_id ? `${String(job.value.runner_id).slice(0, 8)}…` : '—',
+)
+
+const runnerDisplay = computed(() => {
+  const labels = job.value?.snapshot?.runner_labels || []
+  if (labels.length) return labels.join(' · ')
+  return shortRunnerId.value
+})
+
+const profileDisplay = computed(() => {
+  const j = job.value
+  if (!j?.resource_profile) return 'default'
+  return j.resource_slots
+    ? `${j.resource_profile} · ${j.resource_slots} slot${j.resource_slots > 1 ? 's' : ''}`
+    : j.resource_profile
+})
+
+const stepStatusList = computed<string[]>(() =>
+  (job.value?.snapshot?.tasks || []).map((task) =>
+    getStepStatus(Number(task.step_order)),
+  ),
+)
+
+const stepCounts = computed(() => {
+  const counts: Record<string, number> = {
+    success: 0,
+    failed: 0,
+    running: 0,
+    cancelled: 0,
+    pending: 0,
+  }
+  for (const status of stepStatusList.value) {
+    counts[status] = (counts[status] || 0) + 1
+  }
+  return counts
+})
+
+const failedStepInfo = computed(() => {
+  const j = job.value
+  if (!j || j.status !== 'failed') return null
+  const tasks = (j.snapshot?.tasks || []) as SnapshotTask[]
+  const order = firstFailedStep()
+  if (order != null && order >= 0) {
+    const task = tasks.find((item) => Number(item.step_order) === order)
+    return {
+      title: `Failed at step ${String(order + 1).padStart(2, '0')}${task ? ` · ${task.name}` : ''}`,
+      detail: 'Open the failed step to inspect the error output.',
+      jump: Boolean(task),
+    }
+  }
+  if (order === -1) {
+    return {
+      title: 'Failed during job preparation',
+      detail: 'The Runner failed before the first step; the error is attached to the job log.',
+      jump: tasks.length > 0,
+    }
+  }
+  return {
+    title: 'Job failed',
+    detail: 'Inspect the logs below for the error output.',
+    jump: tasks.length > 0,
+  }
+})
+
+const inputEntries = computed(() =>
+  Object.entries(job.value?.snapshot?.inputs || {}),
+)
+
+const concurrencySummary = computed(() => {
+  const c = concurrencyInfo.value
+  if (!c) return '—'
+  if (!c.configured) return 'not configured'
+  return `${c.group} · ${concurrencyModeLabel(c.mode)}`
+})
+
+function progressClass(status: string): string {
+  switch (status) {
+    case 'success': return 'bg-emerald-500'
+    case 'failed': return 'bg-red-500'
+    case 'running': return 'bg-amber-400'
+    case 'cancelled': return 'bg-slate-400'
+    default: return 'bg-border'
+  }
+}
+
+function stepDotClass(status: string): string {
+  switch (status) {
+    case 'success': return 'bg-emerald-500'
+    case 'failed': return 'bg-red-500'
+    case 'running': return 'bg-amber-400'
+    case 'cancelled': return 'bg-slate-400'
+    default: return 'bg-border'
+  }
+}
+
+function stepWrapperClass(task: SnapshotTask): string {
+  const order = Number(task.step_order)
+  const status = getStepStatus(order)
+  if (status === 'pending') return 'border-border/40 bg-muted/20 opacity-50'
+  if (status === 'failed') return 'border-red-400/30 bg-red-500/5 shadow-xs hover:border-red-400/40'
+  if (targetStep.value === order) return 'border-primary/30 bg-primary/5 shadow-xs'
+  if (expandedSteps.value.has(order)) return 'border-border bg-muted/30'
+  return 'border-border/40 hover:border-border'
+}
+
+function stepDurationLabel(stepOrder: number): string {
+  const found = job.value?.step_statuses?.find(
+    (status: any) => Number(status.step_order) === stepOrder,
+  )
+  if (!found?.started_at) return '—'
+  const start = parseUtc(found.started_at)
+  const end = found.finished_at ? parseUtc(found.finished_at) : Date.now()
+  return formatDurationMs(end - start)
+}
+
+function snapshotStepSubLabel(task: SnapshotTask): string {
+  const uses = task.marketplace?.uses_ref || ''
+  if (uses) return task.host_id ? `${uses} · ${task.host_id}` : uses
+  const engine = execLabel(task.exec_type)
+  if (task.host_id) return `${engine} · ${task.host_id}`
+  const command = String(task.command_template || '').trim().split('\n')[0]
+  return command ? `${engine} · ${command}` : engine
+}
+
+function marketplaceInputList(
+  task: SnapshotTask,
+): Array<{ name: string; description?: string | null; required?: boolean | null }> {
+  const inputs = task.marketplace?.inputs
+  if (Array.isArray(inputs)) return inputs as any
+  if (inputs && typeof inputs === 'object') {
+    return Object.entries(inputs).map(([name, value]) => ({
+      name,
+      ...(value && typeof value === 'object' ? value : {}),
+    }))
+  }
+  return []
+}
+
+function ensureStepOpen(stepOrder: number) {
+  const order = Number(stepOrder)
+  if (getStepStatus(order) === 'pending' && !stepLogs.value.has(order)) return
+  targetStep.value = order
+  router.replace({ query: { step: order } })
+  if (!expandedSteps.value.has(order)) {
+    expandedSteps.value.add(order)
+    nextTick(() => {
+      initSingleTerminal(order)
+      fitTerminalHeight(order)
+    })
+  }
+  nextTick(() => {
+    document.getElementById('step-' + order)?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center',
+    })
+  })
+}
+
+function expandAllSteps() {
+  const tasks = (job.value?.snapshot?.tasks || []) as SnapshotTask[]
+  for (const task of tasks) {
+    const order = Number(task.step_order)
+    if (getStepStatus(order) === 'pending' && !stepLogs.value.has(order)) continue
+    expandedSteps.value.add(order)
+  }
+  nextTick(() => {
+    for (const task of tasks) {
+      const order = Number(task.step_order)
+      if (!expandedSteps.value.has(order)) continue
+      initSingleTerminal(order)
+      fitTerminalHeight(order)
+    }
+  })
+}
+
+function collapseAllSteps() {
+  for (const order of Array.from(expandedSteps.value)) {
+    expandedSteps.value.delete(order)
+    const index = stepTerminals.value.findIndex((item) => item.stepOrder === order)
+    if (index !== -1) {
+      stepTerminals.value[index].term.dispose()
+      stepTerminals.value.splice(index, 1)
+    }
+  }
+}
+
+function jumpToFailedStep() {
+  const order = firstFailedStep()
+  const target = order != null && order >= 0 ? Number(order) : resolveGlobalChunkStep()
+  if (target == null || target < 0) return
+  ensureStepOpen(target)
+}
+
+async function copyStepLogs(stepOrder: number) {
+  const text = (stepLogs.value.get(stepOrder) || [])
+    .map((chunk) => chunk.content)
+    .join('')
+  if (!text) return
+  const ok = await copyText(text)
+  if (!ok) return
+  copiedLogStep.value = stepOrder
+  window.setTimeout(() => {
+    if (copiedLogStep.value === stepOrder) copiedLogStep.value = null
+  }, 1500)
+}
+
 function approvalActionClass(action: string): string {
   switch (action) {
     case 'approve':
@@ -757,27 +1052,6 @@ function execLabel(t: string): string {
   return { local: 'Runner', ssh: 'SSH', docker: 'Docker', wasm: 'Wasm' }[t] ?? t
 }
 
-function stepStatusColor(status: string): string {
-  switch (status) {
-    case 'success': return 'border-emerald-400/40 bg-emerald-500/4 text-emerald-500'
-    case 'failed': return 'border-red-400/40 bg-red-500/4 text-red-500'
-    case 'running': return 'border-amber-400/40 bg-amber-500/4 text-amber-500'
-    case 'cancelled': return 'border-slate-400/30 bg-slate-500/3 text-slate-400'
-    default: return 'border-border/50 bg-muted/30 text-muted-foreground'
-  }
-}
-
-/** Step number color — the ordinal is always shown as a large standalone
- *  numeral, tinted by status (no badge background, no separate status icon). */
-function stepNumberClass(status: string): string {
-  switch (status) {
-    case 'success': return 'text-emerald-600'
-    case 'failed': return 'text-red-600'
-    case 'running': return 'text-amber-600'
-    case 'cancelled': return 'text-slate-400'
-    default: return 'text-muted-foreground/50'
-  }
-}
 
 function terminalTitleStatus(status: string): { dot: string; label: string } {
   switch (status) {
@@ -820,464 +1094,640 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
     </div>
 
     <template v-else-if="job">
-      <div class="flex flex-col lg:flex-row gap-5 items-start">
-        <div class="min-w-0 flex-1">
-      <!-- Environment used for Variable overrides -->
-      <div
-        v-if="job.snapshot?.environment"
-        class="mb-4 flex items-start gap-2 rounded-xl border border-border/60 bg-muted/30 px-4 py-3 text-sm"
-      >
-        <span class="text-muted-foreground">
-          <span class="font-semibold text-foreground">Environment</span>
-          —
-          <code class="mono-chip text-xs">{{ job.snapshot.environment }}</code>
-          (Variable / Secret defaults overlaid for this run)
-        </span>
-      </div>
-
-      <!-- Verbose-mode notice: extra detail, redaction intact -->
-      <div
-        v-if="job.verbose_logs"
-        class="mb-4 flex items-start gap-2 rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm"
-      >
-        <Info class="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
-        <span class="text-sky-800">
-          <span class="font-semibold">Verbose mode</span> — this run includes extra per-step detail
-          (duration, exit code, full step config, stage progress). Secrets remain redacted.
-        </span>
-      </div>
-
-      <!-- Debug-mode banner: unredacted logs, admin-only, 24h retention -->
-      <div
-        v-if="job.debug_unredact"
-        class="mb-4 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm"
-      >
-        <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-        <span class="text-amber-800">
-          <span class="font-semibold">Debug mode</span> — this run's logs were not redacted (plaintext
-          secret values may appear). They are visible to platform admins only and are
-          <span class="font-semibold">automatically purged 24 hours</span> after the job was created.
-        </span>
-      </div>
-
-      <!-- Waiting for environment approval -->
-      <div
-        v-if="job.status === 'waiting_approval'"
-        class="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm"
-      >
-        <div class="flex items-start gap-2">
-          <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-          <div class="flex-1 min-w-0">
-            <p class="text-amber-900 dark:text-amber-200">
-              <span class="font-semibold">Waiting for approval</span>
-              —
-              environment
-              <code class="mono-chip text-xs mx-0.5">{{ job.snapshot?.environment || '—' }}</code>
-              requires
-              <span class="font-semibold tabular-nums">{{ approvalsReceived }} / {{ approvalsRequired }}</span>
-              approval(s) before this job can run.
-              <template v-if="job.snapshot?.protection?.min_approve_role">
-                Min approve role:
-                <span class="font-medium">{{ job.snapshot.protection.min_approve_role }}</span>.
-              </template>
-            </p>
-            <div v-if="canApprove" class="mt-3 flex flex-wrap gap-2">
-              <UiButton
-                size="sm"
-                class="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-600/90 text-white"
-                :disabled="approvalBusy"
-                @click="handleApprove"
-              >
-                <CheckCircle2 class="h-3.5 w-3.5" />
-                {{ approvalBusy ? 'Working…' : 'Approve' }}
-              </UiButton>
-              <UiButton
-                variant="outline"
-                size="sm"
-                class="border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs px-3 py-1.5"
-                :disabled="approvalBusy"
-                @click="handleReject"
-              >
-                <XCircle class="h-3.5 w-3.5" /> Reject
-              </UiButton>
+      <div class="space-y-4">
+        <!-- Run summary -->
+        <section class="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-xs">
+          <div class="flex flex-wrap items-start gap-5 px-5 py-4">
+            <div class="flex min-w-0 items-center gap-3">
+              <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" :class="jobStatusMeta.tile">
+                <CheckCircle2 v-if="job.status === 'success'" class="h-5 w-5" />
+                <XCircle v-else-if="job.status === 'failed' || job.status === 'cancelled'" class="h-5 w-5" />
+                <Loader2 v-else-if="job.status === 'running'" class="h-5 w-5 animate-spin" />
+                <Clock v-else class="h-5 w-5" />
+              </span>
+              <div class="min-w-0">
+                <div class="text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">Run status</div>
+                <div class="text-[20px] font-semibold leading-tight tracking-tight" :class="jobStatusMeta.labelClass">{{ jobStatusMeta.label }}</div>
+              </div>
             </div>
-            <p
-              v-else
-              class="mt-2 text-[12px] text-amber-800/80 dark:text-amber-300/80"
-            >
-              You do not have permission to approve this job
-              <template v-if="!auth.isPlatformAdmin && job.snapshot?.protection?.forbid_self_approve !== false && job.trigger_user_id === auth.userId">
-                (self-approve is forbidden)
-              </template>.
-            </p>
+            <div class="border-l border-border/50 pl-5">
+              <div class="text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">Duration</div>
+              <div class="text-[19px] font-semibold leading-tight tracking-tight">{{ jobDuration }}</div>
+              <div class="mt-0.5 font-mono text-[9.5px] text-muted-foreground">
+                {{ formatLocalDateTime(job.start_time) }} → {{ formatLocalDateTime(job.end_time) }}
+              </div>
+            </div>
+            <div class="grid min-w-[24rem] flex-1 grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+              <div class="min-w-0">
+                <div class="text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">Runner</div>
+                <div class="mt-0.5 break-words font-mono text-[10.5px] text-foreground/80">{{ runnerDisplay }}</div>
+              </div>
+              <div class="min-w-0">
+                <div class="text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">Triggered by</div>
+                <div class="mt-0.5 text-[11.5px] text-foreground/80">{{ job.trigger_by || '—' }}</div>
+              </div>
+              <div class="min-w-0">
+                <div class="text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">Environment</div>
+                <div class="mt-0.5">
+                  <span v-if="job.snapshot?.environment" class="mono-chip text-[10px]">{{ job.snapshot.environment }}</span>
+                  <span v-else class="text-[11.5px] text-muted-foreground">—</span>
+                </div>
+              </div>
+              <div class="min-w-0">
+                <div class="text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">Profile</div>
+                <div class="mt-0.5 break-words font-mono text-[10.5px] text-foreground/80">{{ profileDisplay }}</div>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
 
-      <!-- Queued: waiting for an earlier job in the concurrency group -->
-      <div
-        v-if="job.status === 'queued'"
-        class="mb-4 flex items-start gap-2 rounded-xl border border-purple-500/30 bg-purple-500/10 px-4 py-3 text-sm"
-      >
-        <Clock class="mt-0.5 h-4 w-4 shrink-0 text-purple-600" />
-        <span class="text-purple-900 dark:text-purple-200">
-          <span class="font-semibold">Queued</span> — waiting for an earlier job of this pipeline
-          to finish. Only one job in the concurrency group runs at a time; this run starts when
-          the active job completes
-          <template v-if="concurrencyInfo?.configured">
-            (group <code class="font-mono text-xs">{{ concurrencyInfo.group }}</code><template v-if="concurrencyInfo.mode">, mode <code class="font-mono text-xs">{{ concurrencyInfo.mode }}</code></template>).
-          </template>
-          <template v-else>.</template>
-        </span>
-      </div>
+          <div v-if="stepStatusList.length" class="flex flex-wrap items-center gap-3 px-5 pb-3">
+            <div class="flex min-w-[12rem] flex-1 gap-1" aria-hidden="true">
+              <span
+                v-for="(status, index) in stepStatusList"
+                :key="index"
+                class="h-1.5 flex-1 rounded-full"
+                :class="progressClass(status)"
+              ></span>
+            </div>
+            <div class="flex flex-wrap items-center gap-3 text-[10px] text-muted-foreground">
+              <span class="inline-flex items-center gap-1 text-emerald-600">
+                <CheckCircle2 class="h-3 w-3" />{{ stepCounts.success }} passed
+              </span>
+              <span v-if="stepCounts.failed" class="inline-flex items-center gap-1 text-red-600">
+                <XCircle class="h-3 w-3" />{{ stepCounts.failed }} failed
+              </span>
+              <span v-if="stepCounts.running" class="inline-flex items-center gap-1 text-amber-600">
+                <Loader2 class="h-3 w-3 animate-spin" />{{ stepCounts.running }} running
+              </span>
+              <span>{{ stepStatusList.length }} steps</span>
+            </div>
+          </div>
 
-      <!-- Job Info -->
-      <div class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-xs p-6">
-        <h3 class="text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground/70 mb-5">Job Info</h3>
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-8 gap-y-4">
-          <div>
-            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Status</div>
-            <StatusBadge :status="job.status" />
-          </div>
-          <div>
-            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Pipeline</div>
-            <div class="text-sm font-medium text-foreground/90">{{ job.pipeline_name || job.pipeline_id }}<span v-if="job.run_number" class="ml-1 text-xs text-muted-foreground">#{{ job.run_number }}</span></div>
-          </div>
-          <div>
-            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Runner</div>
-            <div class="font-mono text-xs text-muted-foreground">{{ job.runner_id ? String(job.runner_id).slice(0, 8) + '...' : '\u2014' }}</div>
-          </div>
-          <div>
-            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Trigger</div>
-            <div class="font-mono text-xs text-muted-foreground">{{ job.trigger_by }}</div>
-          </div>
-          <div>
-            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Retry</div>
-            <div class="font-mono text-sm tabular-nums text-foreground/80">{{ job.retry_times }}</div>
-          </div>
-          <div>
-            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Started</div>
-            <div class="text-xs text-muted-foreground">{{ formatLocalDateTime(job.start_time) }}</div>
-          </div>
-          <div>
-            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Ended</div>
-            <div class="text-xs text-muted-foreground">{{ formatLocalDateTime(job.end_time) }}</div>
-          </div>
-          <div>
-            <div class="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-1.5 font-medium">Created</div>
-            <div class="text-xs text-muted-foreground">{{ formatLocalDateTime(job.created_at) }}</div>
-          </div>
-        </div>
-
-        <!-- Concurrency: always show — configured policy or "not set" + knobs -->
-        <div v-if="concurrencyInfo" class="mt-5 pt-5 border-t border-border/30">
-          <div class="flex items-center gap-2 mb-3">
-            <h4 class="text-[10px] uppercase tracking-widest text-muted-foreground/50 font-medium">Concurrency</h4>
+          <div
+            v-if="failedStepInfo"
+            class="flex flex-wrap items-center gap-2 border-t border-red-500/15 bg-red-500/5 px-5 py-2.5 text-red-600"
+          >
+            <AlertTriangle class="h-3.5 w-3.5 shrink-0" />
+            <div class="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]">
+              <strong class="font-semibold">{{ failedStepInfo.title }}</strong>
+              <span class="text-red-600/80">{{ failedStepInfo.detail }}</span>
+            </div>
             <button
+              v-if="failedStepInfo.jump"
               type="button"
-              class="inline-flex items-center text-muted-foreground/50 hover:text-foreground transition-colors"
-              :aria-expanded="showConcurrencyHelp"
-              aria-label="Concurrency policy help"
-              @click="showConcurrencyHelp = !showConcurrencyHelp"
+              class="ml-auto inline-flex items-center gap-1 text-[10.5px] font-medium hover:underline"
+              @click="jumpToFailedStep"
             >
-              <CircleHelp class="h-3.5 w-3.5" />
+              View failed step <ChevronRight class="h-3 w-3" />
             </button>
           </div>
+        </section>
 
-          <template v-if="concurrencyInfo.configured">
-            <div class="flex flex-wrap items-center gap-2 text-sm">
-              <span class="text-xs text-muted-foreground">Group</span>
-              <code class="text-[11px] font-mono bg-muted rounded-md px-2 py-0.5 text-foreground/80">{{ concurrencyInfo.group }}</code>
-              <span class="text-xs text-muted-foreground ml-1">Mode</span>
-              <span
-                class="text-[11px] font-semibold rounded-md px-2 py-0.5 border"
-                :class="{
-                  'bg-amber-500/10 text-amber-700 border-amber-500/20': concurrencyInfo.mode === 'queue',
-                  'bg-blue-500/10 text-blue-700 border-blue-500/20': concurrencyInfo.mode === 'discard-new',
-                  'bg-emerald-500/10 text-emerald-700 border-emerald-500/20': concurrencyInfo.mode === 'discard-old',
-                  'bg-muted text-muted-foreground border-border/50': !concurrencyInfo.mode,
-                }"
-              >{{ concurrencyModeLabel(concurrencyInfo.mode) }}</span>
-              <template v-if="concurrencyInfo.mode === 'queue'">
-                <span class="text-xs text-muted-foreground ml-1">Max queue</span>
-                <span class="text-[11px] font-mono tabular-nums text-foreground/80">{{ concurrencyInfo.maxQueue ?? '—' }}</span>
-                <span class="text-xs text-muted-foreground ml-1">Queue timeout</span>
-                <span class="text-[11px] font-mono tabular-nums text-foreground/80">{{ formatQueueTimeout(concurrencyInfo.queueTimeoutSec) }}</span>
-              </template>
-            </div>
-          </template>
-          <template v-else>
-            <div class="flex flex-wrap items-center gap-2 text-sm">
-              <span class="text-xs text-muted-foreground">Status</span>
-              <span class="text-[11px] font-semibold rounded-md px-2 py-0.5 border bg-muted text-muted-foreground border-border/50">not configured</span>
-              <span class="text-xs text-muted-foreground ml-1">Default mode if enabled</span>
-              <span class="text-[11px] font-mono rounded-md px-2 py-0.5 border bg-emerald-500/10 text-emerald-700 border-emerald-500/20">discard-old</span>
-              <span class="text-xs text-muted-foreground ml-1">Max queue</span>
-              <span class="text-[11px] font-mono tabular-nums text-foreground/80">3</span>
-              <span class="text-xs text-muted-foreground ml-1">Queue timeout</span>
-              <span class="text-[11px] font-mono tabular-nums text-foreground/80">30m</span>
-            </div>
-          </template>
-
-          <p class="mt-2 text-xs text-muted-foreground leading-relaxed">
-            {{ concurrencyModeHint(concurrencyInfo.configured, concurrencyInfo.mode) }}
-          </p>
-          <div
-            v-if="showConcurrencyHelp"
-            class="mt-3 rounded-lg border border-border/50 bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground leading-relaxed space-y-2"
-          >
-            <p class="font-medium text-foreground/80">
-              {{ concurrencyInfo.configured ? 'What you can adjust (future triggers only)' : 'How to enable concurrency' }}
-            </p>
-            <ul class="list-disc pl-4 space-y-1">
-              <li><code class="font-mono text-[10px]">concurrency.group</code> — required to enable; shared lock name for this pipeline</li>
-              <li><code class="font-mono text-[10px]">mode</code> — <code class="font-mono text-[10px]">discard-old</code> (YAML default), <code class="font-mono text-[10px]">queue</code>, or <code class="font-mono text-[10px]">discard-new</code></li>
-              <li><code class="font-mono text-[10px]">max-queue</code> (1–100, default 3) — only when mode is <code class="font-mono text-[10px]">queue</code></li>
-              <li><code class="font-mono text-[10px]">queue-timeout</code> (default 30m) — auto-cancel queued jobs after this; only for <code class="font-mono text-[10px]">queue</code></li>
-            </ul>
-            <p>
-              Set these on the pipeline
-              <router-link
-                :to="'/pipelines/' + job.pipeline_id + '/definition'"
-                class="text-primary underline underline-offset-2 hover:text-primary/80"
-              >Definition → Edit (Concurrency)</router-link>
-              <template v-if="concurrencyInfo.configured">
-                . This job keeps the policy frozen above; edits apply to new runs only.
-              </template>
-              <template v-else>
-                , or in YAML under <code class="font-mono text-[10px]">concurrency:</code>. Applies to new runs only.
-              </template>
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Pipeline Snapshot + Steps with embedded terminals -->
-      <div v-if="job.snapshot && job.snapshot.tasks && job.snapshot.tasks.length > 0" class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-xs">
-        <!-- Section header -->
-        <div class="flex items-center justify-between px-6 py-4 border-b border-border/30">
-          <div class="flex items-center gap-3">
-            <h3 class="text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground/70">Steps</h3>
-            <span class="text-[10px] font-mono tabular-nums bg-muted rounded-md px-2 py-0.5 text-muted-foreground">{{ job.snapshot.tasks.length }}</span>
-            <span class="text-[10px] font-mono bg-slate-100 dark:bg-slate-800 rounded-md px-2 py-0.5 text-muted-foreground">Snapshot</span>
-            <span v-if="job.snapshot.triggered_at" class="text-[11px] text-muted-foreground/60 font-mono">{{ job.snapshot.triggered_at.slice(0, 19).replace('T', ' ') }}</span>
-          </div>
-          <router-link
-            :to="'/pipelines/' + job.pipeline_id + '/definition'"
-            class="text-[11px] text-muted-foreground/60 hover:text-foreground transition-colors underline underline-offset-2"
-          >View pipeline definition</router-link>
-        </div>
-
-        <div class="px-6 py-5 space-y-4">
-          <!-- Runner Labels -->
-          <div v-if="job.snapshot.runner_labels && job.snapshot.runner_labels.length > 0" class="flex items-center gap-2">
-            <span class="text-[10px] uppercase tracking-widest text-muted-foreground/50 font-medium">Runner</span>
-            <div class="flex flex-wrap gap-1.5">
-              <span v-for="l in job.snapshot.runner_labels" :key="l" class="text-[10px] font-mono bg-muted rounded-md px-2 py-0.5 text-muted-foreground">{{ l }}</span>
-            </div>
-          </div>
-
-          <!-- Step cards with inline terminals -->
-          <div class="space-y-1.5">
-            <div v-for="t in job.snapshot.tasks" :key="t.step_order" :id="'step-' + t.step_order">
-              <!-- Step row -->
-              <div
-                class="group flex items-center gap-3 rounded-xl border px-4 py-3 transition-all duration-150"
-                :class="[
-                  getStepStatus(t.step_order) === 'pending'
-                    ? 'border-border/40 bg-muted/20 opacity-50 cursor-not-allowed'
-                    : 'cursor-pointer',
-                  targetStep === t.step_order
-                    ? 'border-primary/30 bg-primary/3 shadow-xs'
-                    : (getStepStatus(t.step_order) === 'pending'
-                      ? ''
-                      : 'border-border/40 bg-transparent hover:bg-muted/40 hover:border-border')
-                ]"
-                @click="getStepStatus(t.step_order) !== 'pending' && toggleStep(t.step_order)"
-              >
-                <!-- Step number (large standalone numeral, tinted by status) -->
-                <div class="shrink-0 w-8 flex items-center justify-center">
-                  <span
-                    class="text-xl font-semibold tabular-nums leading-none"
-                    :class="stepNumberClass(getStepStatus(t.step_order))"
-                  >{{ t.step_order + 1 }}</span>
-                </div>
-
-                <!-- Step main content -->
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-center gap-2 flex-wrap">
-                    <span class="text-[13px] font-semibold text-foreground/90 truncate max-w-[280px]">{{ t.name }}</span>
-                    <span class="text-[9px] font-mono uppercase tracking-wider rounded-md border border-border/40 px-1.5 py-0 text-muted-foreground/60">{{ execLabel(t.exec_type) }}</span>
-                    <span v-if="t.host_id" class="text-[9px] font-mono rounded-md bg-muted px-1.5 py-0 text-muted-foreground/60 truncate max-w-[120px]">{{ t.host_id }}</span>
-                  </div>
-                  <div class="font-mono text-[11px] text-muted-foreground/60 whitespace-pre-wrap break-all leading-relaxed mt-1">{{ t.command_template }}</div>
-                  <div v-if="t.marketplace" class="mt-2 rounded-lg border border-border/40 bg-muted/20 px-2.5 py-2 text-[10px] font-mono text-muted-foreground/70 space-y-1">
-                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span class="font-semibold text-foreground/70">{{ t.marketplace.uses_ref }}</span>
-                      <span>v{{ t.marketplace.resolved_version }}</span>
-                      <span :class="t.marketplace.reviewed ? 'text-emerald-600' : 'text-amber-600'">{{ t.marketplace.reviewed ? 'reviewed' : 'unreviewed' }}</span>
-                    </div>
-                    <div class="break-all">sha256:{{ t.marketplace.content_sha256 }}</div>
-                    <div class="break-all">source: {{ t.marketplace.source }}</div>
-                    <div v-if="t.capabilities?.length" class="font-semibold text-red-600" title="Runner admins authorize capabilities separately in local Runner configuration.">Requests (not grants): {{ t.capabilities.join(', ') }}</div>
-                    <div v-if="t.capabilities?.includes('docker-socket')" class="text-amber-700">High privilege: Docker socket access gives root-equivalent control of the Runner's Docker host. A Runner administrator must enable <code>docker_socket_allowed = true</code> locally.</div>
-                    <div v-if="t.marketplace.requires_buz" class="text-muted-foreground/60">Requires Buz {{ t.marketplace.requires_buz }}</div>
-                    <div v-if="t.marketplace.inputs?.length" class="space-y-0.5">
-                      <div class="text-[9px] uppercase tracking-wide text-muted-foreground/60">Plugin inputs</div>
-                      <div v-for="input in t.marketplace.inputs" :key="input.name" class="break-all">{{ input.name }}<span v-if="input.required"> (required)</span><span v-if="input.description"> — {{ input.description }}</span></div>
-                    </div>
-                  </div>
-                  <div v-else-if="t.capabilities?.length" class="mt-2 rounded-lg border border-red-500/25 bg-red-500/5 px-2.5 py-2 text-[10px] font-mono font-semibold text-red-600" title="Execution capabilities are requests only; the Runner authorizes them locally.">High privilege request (not grant): {{ t.capabilities.join(', ') }}<div v-if="t.capabilities.includes('docker-socket')" class="mt-1 font-normal text-amber-700">Docker socket access gives root-equivalent control of the Runner's Docker host; Runner-admin local authorization is required.</div></div>
-                  <div v-if="t.fail_strategy === 'continue'" class="mt-1.5">
-                    <span class="inline-flex items-center gap-1 text-[10px] text-amber-600 bg-amber-500/6 border border-amber-500/20 rounded-md px-2 py-0 font-medium">continue-on-error</span>
-                  </div>
-                </div>
-
-                <!-- Right: duration + toggle -->
-                <div class="flex items-center gap-3 shrink-0">
-                  <span
-                    class="text-[11px] font-mono tabular-nums"
-                    :class="getStepStatus(t.step_order) === 'running'
-                      ? 'text-amber-500 font-medium'
-                      : getStepStatus(t.step_order) === 'pending'
-                        ? 'text-muted-foreground/30'
-                        : 'text-muted-foreground/50'"
-                  >{{ fmtStepDuration(t.step_order) }}</span>
-                  <template v-if="getStepStatus(t.step_order) !== 'pending'">
-                    <div class="h-5 w-5 flex items-center justify-center rounded-md text-muted-foreground/40 group-hover:text-muted-foreground transition-colors">
-                      <ChevronDown v-if="expandedSteps.has(t.step_order)" class="h-3.5 w-3.5" />
-                      <ChevronRight v-else class="h-3.5 w-3.5" />
-                    </div>
-                  </template>
-                </div>
-              </div>
-
-              <!-- Step log panel -->
-              <div
-                v-if="expandedSteps.has(t.step_order)"
-                class="mt-1.5 overflow-hidden rounded-xl border border-border bg-muted/30"
-              >
-                <div class="flex items-center gap-2 h-8 px-3 border-b border-border/60 bg-muted/40 select-none">
-                  <span class="text-[11px] font-medium text-muted-foreground truncate">{{ t.name }}</span>
-                  <span class="text-[9px] font-mono uppercase rounded-sm px-1.5 py-0 border border-border/50 text-muted-foreground/70 leading-normal">{{ execLabel(t.exec_type) }}</span>
-                  <div class="flex-1" />
-                  <div class="flex items-center gap-1.5 shrink-0">
-                    <span class="inline-block w-1.5 h-1.5 rounded-full" :class="terminalTitleStatus(getStepStatus(t.step_order)).dot" />
-                    <span class="text-[10px] text-muted-foreground/70 font-medium">{{ terminalTitleStatus(getStepStatus(t.step_order)).label }}</span>
-                  </div>
-                </div>
-                <div class="relative w-full bg-[#0d1117] px-3 py-3">
-                  <div :id="'terminal-el-' + t.step_order" class="w-full" />
-                  <div
-                    v-if="(stepLogs.get(t.step_order) || []).length === 0"
-                    class="absolute inset-0 flex items-center justify-center pointer-events-none"
-                  >
-                    <div v-if="logsError" class="text-center space-y-1.5">
-                      <Lock class="h-3.5 w-3.5 mx-auto text-amber-600" />
-                      <p class="text-[11px] text-amber-700/80">Logs are admin-only — this run used Debug mode</p>
-                    </div>
-                    <div v-else class="text-center space-y-1.5">
-                      <Loader2 v-if="job.status === 'running'" class="h-3.5 w-3.5 mx-auto text-muted-foreground/50 animate-spin" />
-                      <MinusCircle v-else class="h-3.5 w-3.5 mx-auto text-muted-foreground/40" />
-                      <p class="text-[11px] text-muted-foreground/50">{{ job.status === 'running' ? 'Waiting for output...' : 'No output recorded' }}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Trigger Inputs -->
-          <div v-if="job.snapshot.inputs && Object.keys(job.snapshot.inputs).length > 0" class="pt-1 border-t border-border/20">
-            <span class="text-[10px] uppercase tracking-widest text-muted-foreground/50 font-medium">Trigger Inputs</span>
-            <div class="flex flex-wrap gap-1.5 mt-2">
-              <span
-                v-for="(val, key) in job.snapshot.inputs" :key="key"
-                class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-mono"
-                :class="isMaskedInput(String(key))
-                  ? 'border-violet-500/20 bg-violet-500/4 text-violet-700/90'
-                  : 'border-primary/15 bg-primary/3'"
-              >
-                <span class="text-muted-foreground/70">{{ key }}</span>
-                <span
-                  v-if="isMaskedInput(String(key))"
-                  class="text-[9px] uppercase tracking-wide font-sans font-medium text-violet-600/80"
-                >masking</span>
-                <span class="text-foreground/70 font-medium">{{ displayInputValue(String(key), val) }}</span>
-              </span>
-            </div>
-          </div>
-
-          <!-- Env & Secrets -->
-          <div v-if="job.snapshot.env && job.snapshot.env.length > 0" class="pt-1 border-t border-border/20">
-            <span class="text-[10px] uppercase tracking-widest text-muted-foreground/50 font-medium">Environment &amp; Secrets</span>
-            <div class="flex flex-wrap gap-1.5 mt-2">
-              <span
-                v-for="e in job.snapshot.env" :key="e.name"
-                class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-mono"
-                :class="e.is_secret
-                  ? 'border-amber-400/15 bg-amber-400/3 text-amber-500/80'
-                  : 'border-border/40 bg-muted/30 text-foreground/70'"
-              >
-                <span v-if="e.is_secret" class="text-[10px]">&#x1f512;</span>
-                <span>{{ e.name }}</span>
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div v-else class="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-xs p-12 text-center">
-        <p class="text-sm text-muted-foreground">No snapshot data</p>
-      </div>
-        </div>
-
-        <!-- Approval history — right sidebar (no pagination: few events per job) -->
-        <aside
-          v-if="showApprovalSidebar"
-          class="w-full lg:w-88 xl:w-96 shrink-0 lg:sticky lg:top-4 rounded-2xl border border-border/50 bg-card shadow-xs overflow-hidden flex flex-col max-h-[min(70vh,40rem)]"
+        <!-- Run notices -->
+        <div
+          v-if="job.verbose_logs"
+          class="flex items-start gap-2 rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm"
         >
-          <div class="px-4 py-3 border-b border-border/30 shrink-0">
-            <div class="flex items-center gap-2">
+          <Info class="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
+          <span class="text-sky-800">
+            <span class="font-semibold">Verbose mode</span> — this run includes extra per-step detail
+            (duration, exit code, full step config, stage progress). Secrets remain redacted.
+          </span>
+        </div>
+
+        <div
+          v-if="job.debug_unredact"
+          class="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm"
+        >
+          <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+          <span class="text-amber-800">
+            <span class="font-semibold">Debug mode</span> — this run's logs were not redacted (plaintext
+            secret values may appear). They are visible to platform admins only and are
+            <span class="font-semibold">automatically purged 24 hours</span> after the job was created.
+          </span>
+        </div>
+
+        <div
+          v-if="job.status === 'waiting_approval'"
+          class="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm"
+        >
+          <div class="flex items-start gap-2">
+            <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div class="flex-1 min-w-0">
+              <p class="text-amber-900 dark:text-amber-200">
+                <span class="font-semibold">Waiting for approval</span>
+                —
+                environment
+                <code class="mono-chip text-xs mx-0.5">{{ job.snapshot?.environment || '—' }}</code>
+                requires
+                <span class="font-semibold tabular-nums">{{ approvalsReceived }} / {{ approvalsRequired }}</span>
+                approval(s) before this job can run.
+                <template v-if="job.snapshot?.protection?.min_approve_role">
+                  Min approve role:
+                  <span class="font-medium">{{ job.snapshot.protection.min_approve_role }}</span>.
+                </template>
+              </p>
+              <div v-if="canApprove" class="mt-3 flex flex-wrap gap-2">
+                <UiButton
+                  size="sm"
+                  class="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-600/90 text-white"
+                  :disabled="approvalBusy"
+                  @click="handleApprove"
+                >
+                  <CheckCircle2 class="h-3.5 w-3.5" />
+                  {{ approvalBusy ? 'Working…' : 'Approve' }}
+                </UiButton>
+                <UiButton
+                  variant="outline"
+                  size="sm"
+                  class="border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs px-3 py-1.5"
+                  :disabled="approvalBusy"
+                  @click="handleReject"
+                >
+                  <XCircle class="h-3.5 w-3.5" /> Reject
+                </UiButton>
+              </div>
+              <p
+                v-else
+                class="mt-2 text-[12px] text-amber-800/80 dark:text-amber-300/80"
+              >
+                You do not have permission to approve this job
+                <template
+                  v-if="!auth.isPlatformAdmin && job.snapshot?.protection?.forbid_self_approve !== false && job.trigger_user_id === auth.userId"
+                >
+                  (self-approve is forbidden)
+                </template>.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div
+          v-if="job.status === 'queued'"
+          class="flex items-start gap-2 rounded-xl border border-purple-500/30 bg-purple-500/10 px-4 py-3 text-sm"
+        >
+          <Clock class="mt-0.5 h-4 w-4 shrink-0 text-purple-600" />
+          <span class="text-purple-900 dark:text-purple-200">
+            <span class="font-semibold">Queued</span> — waiting for an earlier job of this pipeline
+            to finish. Only one job in the concurrency group runs at a time; this run starts when
+            the active job completes
+            <template v-if="concurrencyInfo?.configured">
+              (group <code class="font-mono text-xs">{{ concurrencyInfo.group }}</code><template v-if="concurrencyInfo.mode">, mode <code class="font-mono text-xs">{{ concurrencyInfo.mode }}</code></template>).
+            </template>
+            <template v-else>.</template>
+          </span>
+        </div>
+
+        <!-- Secondary information: Run details (3/4) + Approval history (1/4) -->
+        <div
+          class="grid grid-cols-1 gap-4"
+          :class="showApprovalSidebar ? 'lg:grid-cols-[minmax(0,3fr)_minmax(0,1fr)]' : ''"
+        >
+          <section class="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-xs">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border/30 px-4 py-3">
+              <div class="text-[12.5px] font-semibold tracking-tight">Run details</div>
+              <span class="text-[10px] text-muted-foreground/60">Metadata, policy, inputs, environment</span>
+            </div>
+
+            <details class="job-details border-b border-border/30 last:border-b-0">
+              <summary class="flex cursor-pointer list-none items-center gap-2.5 px-4 py-2.5 hover:bg-muted/40 [&::-webkit-details-marker]:hidden">
+                <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <Server class="h-3.5 w-3.5" />
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-[11px] font-medium">Job info</span>
+                  <span class="block truncate text-[9.5px] text-muted-foreground">
+                    runner {{ shortRunnerId }} · retry {{ job.retry_times }} · {{ profileDisplay }}
+                  </span>
+                </span>
+                <ChevronRight class="job-details-chevron h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              </summary>
+              <div class="border-t border-border/30 bg-muted/20 px-4 py-3">
+                <div class="grid grid-cols-1 gap-x-5 gap-y-2 sm:grid-cols-2">
+                  <div class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Runner ID</div>
+                    <div class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ job.runner_id || '—' }}</div>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Triggered by</div>
+                    <div class="mt-0.5 text-[10.5px] text-foreground/80">{{ job.trigger_by || '—' }}</div>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Retry</div>
+                    <div class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ job.retry_times }}</div>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Profile</div>
+                    <div class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ profileDisplay }}</div>
+                  </div>
+                  <div v-if="job.dispatch_reason" class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Dispatch</div>
+                    <div class="mt-0.5 text-[10.5px] text-amber-600">{{ job.dispatch_reason }}</div>
+                  </div>
+                  <div v-if="job.resource_spec" class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Resource envelope</div>
+                    <div class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">
+                      {{ job.resource_spec?.memory || '—' }} · {{ job.resource_spec?.cpu || '—' }} cpu · pids {{ job.resource_spec?.pids ?? '—' }}
+                    </div>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Created</div>
+                    <div class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ formatLocalDateTime(job.created_at) }}</div>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Started</div>
+                    <div class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ formatLocalDateTime(job.start_time) }}</div>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Ended</div>
+                    <div class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ formatLocalDateTime(job.end_time) }}</div>
+                  </div>
+                </div>
+              </div>
+            </details>
+
+            <details class="job-details border-b border-border/30 last:border-b-0">
+              <summary class="flex cursor-pointer list-none items-center gap-2.5 px-4 py-2.5 hover:bg-muted/40 [&::-webkit-details-marker]:hidden">
+                <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <List class="h-3.5 w-3.5" />
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-[11px] font-medium">Concurrency</span>
+                  <span class="block truncate text-[9.5px] text-muted-foreground">{{ concurrencySummary }}</span>
+                </span>
+                <ChevronRight class="job-details-chevron h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              </summary>
+              <div class="border-t border-border/30 bg-muted/20 px-4 py-3">
+                <template v-if="concurrencyInfo">
+                  <div class="flex flex-wrap gap-1.5">
+                    <template v-if="concurrencyInfo.configured">
+                      <span class="mono-chip text-[10px]"><span class="text-muted-foreground/60">group </span>{{ concurrencyInfo.group }}</span>
+                      <span class="rounded-md border border-border/50 bg-card px-1.5 py-0.5 text-[10px] font-medium">{{ concurrencyModeLabel(concurrencyInfo.mode) }}</span>
+                      <template v-if="concurrencyInfo.mode === 'queue'">
+                        <span class="mono-chip text-[10px]"><span class="text-muted-foreground/60">max queue </span>{{ concurrencyInfo.maxQueue ?? '—' }}</span>
+                        <span class="mono-chip text-[10px]"><span class="text-muted-foreground/60">timeout </span>{{ formatQueueTimeout(concurrencyInfo.queueTimeoutSec) }}</span>
+                      </template>
+                    </template>
+                    <span v-else class="rounded-md border border-border/50 bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">not configured</span>
+                  </div>
+                  <p class="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+                    {{ concurrencyModeHint(concurrencyInfo.configured, concurrencyInfo.mode) }}
+                  </p>
+                </template>
+              </div>
+            </details>
+
+            <details class="job-details border-b border-border/30 last:border-b-0">
+              <summary class="flex cursor-pointer list-none items-center gap-2.5 px-4 py-2.5 hover:bg-muted/40 [&::-webkit-details-marker]:hidden">
+                <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <Sliders class="h-3.5 w-3.5" />
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-[11px] font-medium">Trigger inputs</span>
+                  <span class="block truncate text-[9.5px] text-muted-foreground">
+                    {{ inputEntries.length }} input{{ inputEntries.length === 1 ? '' : 's' }}
+                  </span>
+                </span>
+                <ChevronRight class="job-details-chevron h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              </summary>
+              <div class="border-t border-border/30 bg-muted/20 px-4 py-3">
+                <div v-if="inputEntries.length" class="flex flex-wrap gap-1.5">
+                  <span
+                    v-for="[key, value] in inputEntries"
+                    :key="key"
+                    class="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px]"
+                    :class="isMaskedInput(String(key)) ? 'border-violet-500/20 bg-violet-500/5 text-violet-700' : 'border-border/50 bg-card text-foreground/75'"
+                  >
+                    <span class="text-muted-foreground/70">{{ key }}</span>
+                    <span v-if="isMaskedInput(String(key))" class="font-sans text-[8.5px] font-medium uppercase tracking-wide text-violet-600">masking</span>
+                    <span class="font-medium">{{ displayInputValue(String(key), value) }}</span>
+                  </span>
+                </div>
+                <p v-else class="text-[10.5px] text-muted-foreground">No inputs recorded for this run.</p>
+              </div>
+            </details>
+
+            <details class="job-details border-b border-border/30 last:border-b-0">
+              <summary class="flex cursor-pointer list-none items-center gap-2.5 px-4 py-2.5 hover:bg-muted/40 [&::-webkit-details-marker]:hidden">
+                <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <Lock class="h-3.5 w-3.5" />
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-[11px] font-medium">Environment &amp; secrets</span>
+                  <span class="block truncate text-[9.5px] text-muted-foreground">
+                    {{ job.snapshot?.environment || 'no environment' }} · {{ (job.snapshot?.env || []).length }} entries
+                  </span>
+                </span>
+                <ChevronRight class="job-details-chevron h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              </summary>
+              <div class="border-t border-border/30 bg-muted/20 px-4 py-3">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="text-[10px] text-muted-foreground">Environment</span>
+                  <span v-if="job.snapshot?.environment" class="mono-chip text-[10px]">{{ job.snapshot.environment }}</span>
+                  <span v-else class="text-[10.5px] text-muted-foreground">—</span>
+                </div>
+                <div v-if="(job.snapshot?.env || []).length" class="mt-2 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="entry in job.snapshot?.env || []"
+                    :key="entry.name"
+                    class="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-[10px]"
+                    :class="entry.is_secret ? 'border-amber-400/20 bg-amber-400/5 text-amber-700' : 'border-border/50 bg-card text-foreground/70'"
+                  >
+                    <Lock v-if="entry.is_secret" class="h-2.5 w-2.5" />
+                    {{ entry.name }}
+                  </span>
+                </div>
+                <p v-else class="mt-2 text-[10.5px] text-muted-foreground">No environment or env entries recorded.</p>
+                <p class="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+                  Environment Variable / Secret defaults are overlaid for this run; pipeline <code class="font-mono">env:</code> still wins.
+                </p>
+              </div>
+            </details>
+
+            <details class="job-details border-b border-border/30 last:border-b-0">
+              <summary class="flex cursor-pointer list-none items-center gap-2.5 px-4 py-2.5 hover:bg-muted/40 [&::-webkit-details-marker]:hidden">
+                <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <FileCode2 class="h-3.5 w-3.5" />
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-[11px] font-medium">Snapshot</span>
+                  <span class="block truncate text-[9.5px] text-muted-foreground">
+                    captured {{ job.snapshot?.triggered_at ? job.snapshot.triggered_at.slice(0, 19).replace('T', ' ') : '—' }}
+                    · {{ (job.snapshot?.tasks || []).length }} tasks
+                  </span>
+                </span>
+                <ChevronRight class="job-details-chevron h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              </summary>
+              <div class="border-t border-border/30 bg-muted/20 px-4 py-3">
+                <div class="grid grid-cols-1 gap-x-5 gap-y-2 sm:grid-cols-2">
+                  <div class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Captured</div>
+                    <div class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ formatLocalDateTime(job.snapshot?.triggered_at) }}</div>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Tasks</div>
+                    <div class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ (job.snapshot?.tasks || []).length }}</div>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Runner labels</div>
+                    <div class="mt-0.5 break-words font-mono text-[10.5px] text-foreground/80">{{ (job.snapshot?.runner_labels || []).join(' · ') || '—' }}</div>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Pipeline</div>
+                    <router-link
+                      :to="'/pipelines/' + job.pipeline_id + '/definition'"
+                      class="mt-0.5 inline-block text-[10.5px] text-primary underline underline-offset-2 hover:text-primary/80"
+                    >{{ job.pipeline_name || job.pipeline_id }}</router-link>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <aside
+            v-if="showApprovalSidebar"
+            class="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-xs"
+          >
+            <div class="flex items-center gap-2 border-b border-border/30 px-4 py-3">
               <ScrollText class="h-3.5 w-3.5 text-muted-foreground" />
-              <p class="text-[12px] font-medium">Approval history</p>
+              <span class="text-[12.5px] font-semibold">Approval history</span>
               <span
                 v-if="approvalList.length > 0"
-                class="ml-auto text-[10px] font-mono tabular-nums text-muted-foreground bg-muted rounded-md px-1.5 py-0.5"
+                class="ml-auto rounded-md bg-muted px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground"
               >{{ approvalList.length }}</span>
             </div>
-            <p class="text-[11px] text-muted-foreground mt-1">
+            <p class="px-4 pt-2 text-[10px] leading-relaxed text-muted-foreground">
               Append-only trail (approve / reject / cancel / timeout).
             </p>
-          </div>
-          <div class="scrollbar-sidebar flex-1 overflow-y-auto min-h-0">
-            <div v-if="approvalList.length === 0" class="px-4 py-8 text-center text-[12px] text-muted-foreground">
+            <div v-if="approvalList.length === 0" class="px-4 py-8 text-center text-[11px] text-muted-foreground">
               No approval events yet.
             </div>
             <ul v-else class="divide-y divide-border/20">
-              <li
-                v-for="a in approvalList"
-                :key="a.id"
-                class="px-4 py-3 hover:bg-muted/5"
-              >
-                <div class="flex items-center gap-2 flex-wrap">
+              <li v-for="item in approvalList" :key="item.id" class="px-4 py-3">
+                <div class="flex flex-wrap items-center gap-2">
                   <span
-                    class="inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-                    :class="approvalActionClass(a.action)"
-                  >{{ a.action }}</span>
-                  <span class="text-[12px] font-medium truncate">{{ a.username || a.user_id || '—' }}</span>
-                  <span class="ml-auto text-[10px] font-mono text-muted-foreground whitespace-nowrap">
-                    {{ a.created_at ? formatLocalDateTime(a.created_at) : '—' }}
+                    class="inline-flex items-center rounded-md border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+                    :class="approvalActionClass(item.action)"
+                  >{{ item.action }}</span>
+                  <span class="truncate text-[11px] font-medium">{{ item.username || item.user_id || '—' }}</span>
+                  <span class="ml-auto whitespace-nowrap font-mono text-[9px] text-muted-foreground">
+                    {{ item.created_at ? formatLocalDateTime(item.created_at) : '—' }}
                   </span>
                 </div>
-                <p
-                  v-if="a.comment"
-                  class="mt-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap wrap-break-word"
-                >{{ a.comment }}</p>
+                <p v-if="item.comment" class="mt-1.5 whitespace-pre-wrap break-words text-[10px] text-muted-foreground">{{ item.comment }}</p>
               </li>
             </ul>
+          </aside>
+        </div>
+
+        <!-- Steps (full width) -->
+        <section
+          v-if="job.snapshot && job.snapshot.tasks && job.snapshot.tasks.length > 0"
+          class="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-xs"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border/30 px-5 py-3.5">
+            <div class="flex flex-wrap items-center gap-2.5">
+              <h2 class="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">Steps</h2>
+              <span class="rounded-full border border-border/50 bg-muted px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground">{{ job.snapshot.tasks.length }}</span>
+              <span class="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground">Snapshot</span>
+              <span v-if="job.snapshot.triggered_at" class="font-mono text-[10px] text-muted-foreground/60">
+                {{ job.snapshot.triggered_at.slice(0, 19).replace('T', ' ') }}
+              </span>
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+              <router-link
+                :to="'/pipelines/' + job.pipeline_id + '/definition'"
+                class="text-[10.5px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >View pipeline definition</router-link>
+              <button type="button" class="text-[10.5px] text-muted-foreground transition-colors hover:text-foreground" @click="expandAllSteps">Expand all</button>
+              <button type="button" class="text-[10.5px] text-muted-foreground transition-colors hover:text-foreground" @click="collapseAllSteps">Collapse all</button>
+            </div>
           </div>
-        </aside>
+
+          <div class="flex flex-wrap gap-1 border-b border-border/30 bg-muted/30 px-5 py-2">
+            <button
+              v-for="task in job.snapshot.tasks"
+              :key="task.step_order"
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-mono text-[9.5px] transition-colors"
+              :class="targetStep === task.step_order ? 'border border-border bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:bg-card/60 hover:text-foreground'"
+              :disabled="getStepStatus(task.step_order) === 'pending' && !stepLogs.has(task.step_order)"
+              @click="ensureStepOpen(task.step_order)"
+            >
+              <span class="h-1.5 w-1.5 rounded-full" :class="stepDotClass(getStepStatus(task.step_order))"></span>
+              {{ String(task.step_order + 1).padStart(2, '0') }}
+              <span class="hidden font-sans text-[10px] sm:inline">{{ task.name }}</span>
+            </button>
+          </div>
+
+          <div class="space-y-1.5 px-4 py-3">
+            <div
+              v-for="task in job.snapshot.tasks"
+              :id="'step-' + task.step_order"
+              :key="task.step_order"
+              class="overflow-hidden rounded-xl border transition-colors"
+              :class="stepWrapperClass(task)"
+            >
+              <button
+                type="button"
+                class="flex w-full items-center gap-2.5 px-3 py-3 text-left"
+                :disabled="getStepStatus(task.step_order) === 'pending' && !stepLogs.has(task.step_order)"
+                @click="toggleStep(task.step_order)"
+              >
+                <span class="shrink-0">
+                  <CheckCircle2 v-if="getStepStatus(task.step_order) === 'success'" class="h-4 w-4 text-emerald-600" />
+                  <XCircle v-else-if="getStepStatus(task.step_order) === 'failed'" class="h-4 w-4 text-red-600" />
+                  <Loader2 v-else-if="getStepStatus(task.step_order) === 'running'" class="h-4 w-4 animate-spin text-amber-600" />
+                  <XCircle v-else-if="getStepStatus(task.step_order) === 'cancelled'" class="h-4 w-4 text-slate-400" />
+                  <Clock v-else class="h-4 w-4 text-muted-foreground/40" />
+                </span>
+                <span class="shrink-0 font-mono text-[9px] text-muted-foreground/60">
+                  {{ String(task.step_order + 1).padStart(2, '0') }}
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-[12.5px] font-semibold text-foreground">{{ task.name }}</span>
+                  <span class="mt-0.5 flex flex-wrap items-center gap-1 font-mono text-[9px] text-muted-foreground">
+                    <span class="truncate">{{ snapshotStepSubLabel(task) }}</span>
+                    <span
+                      v-if="task.marketplace?.reviewed != null"
+                      :class="task.marketplace.reviewed ? 'text-emerald-600' : 'text-amber-600'"
+                    >· {{ task.marketplace.reviewed ? 'reviewed' : 'unreviewed' }}</span>
+                    <span v-if="task.fail_strategy === 'continue'" class="text-amber-600">· continue-on-error</span>
+                    <span
+                      v-if="task.capabilities?.length"
+                      class="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1 text-[8.5px] text-amber-700"
+                      :title="'Requests (not grants): ' + task.capabilities.join(', ') + ' — a Runner admin must authorize locally.'"
+                    >
+                      <AlertTriangle class="h-2.5 w-2.5" />{{ task.capabilities.join(', ') }}
+                    </span>
+                  </span>
+                </span>
+                <span class="shrink-0 font-mono text-[9.5px] text-muted-foreground">{{ stepDurationLabel(task.step_order) }}</span>
+                <ChevronRight
+                  class="job-details-chevron h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                  :class="{ 'rotate-90': expandedSteps.has(task.step_order) }"
+                />
+              </button>
+
+              <div v-if="expandedSteps.has(task.step_order)" class="px-3 pb-3">
+                <div class="overflow-hidden rounded-lg border border-border bg-[#0d1117]">
+                  <div class="flex h-8 items-center gap-2 border-b border-white/10 bg-[#161b22] px-3 select-none">
+                    <span class="truncate text-[10px] font-medium text-slate-200">{{ task.name }}</span>
+                    <span class="rounded-sm border border-white/15 px-1 font-mono text-[8.5px] text-slate-400">{{ execLabel(task.exec_type) }}</span>
+                    <div class="flex-1" />
+                    <span
+                      class="inline-flex items-center gap-1 text-[9.5px]"
+                      :class="getStepStatus(task.step_order) === 'failed' ? 'text-red-400' : 'text-slate-400'"
+                    >
+                      <span class="h-1.5 w-1.5 rounded-full" :class="terminalTitleStatus(getStepStatus(task.step_order)).dot"></span>
+                      {{ terminalTitleStatus(getStepStatus(task.step_order)).label }}
+                    </span>
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9.5px] text-slate-400 transition-colors hover:bg-white/10 hover:text-slate-200"
+                      @click.stop="copyStepLogs(task.step_order)"
+                    >
+                      <Check v-if="copiedLogStep === task.step_order" class="h-3 w-3" />
+                      <Copy v-else class="h-3 w-3" />
+                      {{ copiedLogStep === task.step_order ? 'Copied' : 'Copy' }}
+                    </button>
+                  </div>
+                  <div class="relative w-full bg-[#0d1117] px-3 py-3">
+                    <div :id="'terminal-el-' + task.step_order" class="w-full" />
+                    <div
+                      v-if="(stepLogs.get(task.step_order) || []).length === 0"
+                      class="absolute inset-0 flex items-center justify-center pointer-events-none"
+                    >
+                      <div v-if="logsError" class="text-center space-y-1.5">
+                        <Lock class="h-3.5 w-3.5 mx-auto text-amber-600" />
+                        <p class="text-[11px] text-amber-700/80">Logs are admin-only — this run used Debug mode</p>
+                      </div>
+                      <div v-else class="text-center space-y-1.5">
+                        <Loader2 v-if="job.status === 'running'" class="h-3.5 w-3.5 mx-auto text-muted-foreground/50 animate-spin" />
+                        <MinusCircle v-else class="h-3.5 w-3.5 mx-auto text-muted-foreground/40" />
+                        <p class="text-[11px] text-muted-foreground/50">{{ job.status === 'running' ? 'Waiting for output...' : 'No output recorded' }}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <details class="job-details mt-2">
+                  <summary class="inline-flex cursor-pointer list-none items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+                    Step details <ChevronRight class="job-details-chevron h-3 w-3" />
+                  </summary>
+                  <div class="mt-2 rounded-lg border border-border/50 bg-card px-3 py-2.5">
+                    <div class="grid grid-cols-1 gap-x-5 gap-y-2 sm:grid-cols-2">
+                      <div class="min-w-0">
+                        <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Engine</div>
+                        <div class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ task.exec_type }}</div>
+                      </div>
+                      <div v-if="task.host_id" class="min-w-0">
+                        <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Host</div>
+                        <div class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ task.host_id }}</div>
+                      </div>
+                      <div v-if="task.work_dir" class="min-w-0">
+                        <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Work dir</div>
+                        <div class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ task.work_dir }}</div>
+                      </div>
+                      <div v-if="task.timeout_seconds > 0" class="min-w-0">
+                        <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Timeout</div>
+                        <div class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ formatDurationMs(task.timeout_seconds * 1000) }}</div>
+                      </div>
+                      <div v-if="task.retry_count > 0" class="min-w-0">
+                        <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Retry</div>
+                        <div class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ task.retry_count }}</div>
+                      </div>
+                      <div class="min-w-0">
+                        <div class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Failure</div>
+                        <div class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ task.fail_strategy === 'continue' ? 'continue-on-error' : 'stop' }}</div>
+                      </div>
+                    </div>
+
+                    <div
+                      v-if="task.marketplace"
+                      class="mt-2 rounded-md border border-border/50 bg-muted/20 px-2.5 py-2 font-mono text-[9.5px] leading-relaxed text-muted-foreground/80"
+                    >
+                      <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span class="font-semibold text-foreground/70">{{ task.marketplace.uses_ref }}</span>
+                        <span v-if="task.marketplace.resolved_version">v{{ task.marketplace.resolved_version }}</span>
+                        <span :class="task.marketplace.reviewed ? 'text-emerald-600' : 'text-amber-600'">{{ task.marketplace.reviewed ? 'reviewed' : 'unreviewed' }}</span>
+                      </div>
+                      <div v-if="task.marketplace.content_sha256" class="mt-1 break-all">sha256:{{ task.marketplace.content_sha256 }}</div>
+                      <div v-if="task.marketplace.source" class="break-all">source: {{ task.marketplace.source }}</div>
+                      <div v-if="task.marketplace.requires_buz" class="text-muted-foreground/60">Requires Buz {{ task.marketplace.requires_buz }}</div>
+                      <div v-if="marketplaceInputList(task).length" class="mt-1 space-y-0.5">
+                        <div class="text-[8.5px] uppercase tracking-wide text-muted-foreground/60">Declared plugin inputs</div>
+                        <div v-for="input in marketplaceInputList(task)" :key="input.name" class="break-all">
+                          {{ input.name }}<span v-if="input.required"> (required)</span><span v-if="input.description"> — {{ input.description }}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      v-if="task.capabilities?.length"
+                      class="mt-2 rounded-md border border-red-500/20 bg-red-500/5 px-2.5 py-1.5 text-[10px] leading-relaxed text-red-600"
+                    >
+                      <span class="font-semibold">Requests (not grants):</span>
+                      {{ task.capabilities.join(', ') }} — a Runner administrator must authorize it locally.
+                    </div>
+
+                    <div
+                      v-if="task.command_template"
+                      class="mt-2 whitespace-pre-wrap break-words rounded-md border border-border/50 bg-muted/20 px-2.5 py-2 font-mono text-[10px] leading-relaxed text-foreground/80"
+                    >{{ task.command_template }}</div>
+                  </div>
+                </details>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div
+          v-else
+          class="rounded-2xl border border-border/50 bg-card/60 p-12 text-center text-sm text-muted-foreground"
+        >
+          No snapshot data
+        </div>
       </div>
     </template>
 
@@ -1286,3 +1736,12 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
     </div>
   </div>
 </template>
+
+<style scoped>
+.job-details-chevron {
+  transition: transform 0.15s ease;
+}
+details[open] > summary .job-details-chevron {
+  transform: rotate(90deg);
+}
+</style>

@@ -34,6 +34,7 @@ async fn test_pool() -> sqlx::SqlitePool {
             docker_enabled INTEGER NOT NULL DEFAULT 0,
             wasm_enabled INTEGER NOT NULL DEFAULT 0,
             ssh_host_key_policy TEXT NOT NULL DEFAULT 'known_hosts',
+            claim_strategy TEXT NOT NULL DEFAULT 'backfill',
             last_seen TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -74,6 +75,7 @@ async fn create_runner_record_defaults_execution_mode_to_host() {
         docker_enabled: None,
         wasm_enabled: None,
         ssh_host_key_policy: None,
+        claim_strategy: None,
     };
     let created = create_runner_record(&pool, &req).await.unwrap();
     let mode: String = sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id = ?")
@@ -101,6 +103,7 @@ async fn create_runner_record_rejects_non_host_execution_mode() {
         docker_enabled: None,
         wasm_enabled: None,
         ssh_host_key_policy: None,
+        claim_strategy: None,
     };
     let error = match create_runner_record(&pool, &req).await {
         Ok(_) => panic!("Container mode must wait for reported host capability"),
@@ -129,6 +132,7 @@ async fn create_runner_record_binds_valid_team() {
         docker_enabled: None,
         wasm_enabled: None,
         ssh_host_key_policy: None,
+        claim_strategy: None,
     };
 
     let created = create_runner_record(&pool, &req)
@@ -158,6 +162,7 @@ async fn create_runner_record_rejects_unknown_team() {
         docker_enabled: None,
         wasm_enabled: None,
         ssh_host_key_policy: None,
+        claim_strategy: None,
     };
 
     let error = match create_runner_record(&pool, &req).await {
@@ -183,6 +188,7 @@ async fn create_runner_record_returns_register_token() {
         docker_enabled: None,
         wasm_enabled: None,
         ssh_host_key_policy: None,
+        claim_strategy: None,
     };
 
     let created = create_runner_record(&pool, &req).await.expect("create");
@@ -198,7 +204,11 @@ async fn create_runner_record_returns_register_token() {
             .fetch_one(&pool)
             .await
             .expect("fetch runner");
-    assert_eq!(token, created.register_token);
+    // Hash-only at rest: the row carries SHA-256(token), never the plaintext.
+    assert_eq!(
+        token,
+        shared::api_token::hash_token(&created.register_token)
+    );
     assert!(labels.contains("linux-x64"));
     assert!(labels.contains("docker"));
 }
@@ -219,6 +229,7 @@ async fn create_runner_record_rejects_duplicate_name() {
         docker_enabled: None,
         wasm_enabled: None,
         ssh_host_key_policy: None,
+        claim_strategy: None,
     };
 
     create_runner_record(&pool, &req)

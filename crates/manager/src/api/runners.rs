@@ -49,6 +49,33 @@ pub fn runner_satisfies_labels(runner_labels: &[String], required: &[String]) ->
         .all(|need| runner_labels.iter().any(|have| have == need))
 }
 
+/// Best-effort note of why a poller skipped a pending job (slot wait,
+/// profile not offered, host mode). Display-only; cleared on claim.
+async fn record_dispatch_reason(pool: &sqlx::SqlitePool, job_id: &str, reason: &str) {
+    let _ = sqlx::query("UPDATE jobs SET dispatch_reason = ? WHERE id = ? AND status = 'pending'")
+        .bind(reason)
+        .bind(job_id)
+        .execute(pool)
+        .await;
+}
+
+/// `(resource_profile, team_id)` frozen into the job snapshot at trigger.
+/// An empty profile means the implicit `default`.
+fn job_resource_request(snapshot_raw: &str) -> (String, Option<String>) {
+    let snapshot: serde_json::Value = serde_json::from_str(snapshot_raw).unwrap_or_default();
+    let profile = snapshot
+        .get("resource_profile")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let team = snapshot
+        .get("team_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    (profile, team)
+}
+
 /// Prefer frozen job snapshot `runner_labels`; fall back to live pipeline labels JSON.
 pub fn required_labels_for_job(snapshot_json: &str, pipeline_labels_json: &str) -> Vec<String> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(snapshot_json) {
@@ -95,6 +122,18 @@ pub fn normalize_max_concurrent(v: Option<u32>) -> Result<u32, AppError> {
     Ok(n)
 }
 
+/// Register-token check, constant-time. The DB stores SHA-256(token) for rows
+/// created after the hash-only change; legacy rows may still carry the
+/// plaintext UUID, so both forms are accepted (rows converge on re-issue).
+/// Timing on the comparison must not leak how much of the token matched.
+fn register_token_matches(stored: &str, provided: &str) -> bool {
+    if provided.is_empty() || stored.is_empty() {
+        return false;
+    }
+    shared::api_token::ct_eq(stored, &shared::api_token::hash_token(provided))
+        || shared::api_token::ct_eq(stored, provided)
+}
+
 /// Re-registration proof: a Bearer token that is a signature-valid runner JWT
 /// (expiry ignored — refresh semantics) whose `sub` matches the runner row.
 /// Knowing the runner name alone is never enough to obtain a fresh JWT.
@@ -116,6 +155,16 @@ fn bearer_proves_runner(
         Ok(claims) => claims.role == shared::auth::Role::Runner && claims.sub == runner_id,
         Err(_) => false,
     }
+}
+
+/// Validate and default the claim strategy (`backfill` | `fifo`).
+pub fn normalize_claim_strategy(v: Option<String>) -> Result<String, AppError> {
+    let raw = v.unwrap_or_default();
+    crate::services::slot_scheduler::ClaimStrategy::parse(&raw)
+        .map(|s| s.as_str().to_string())
+        .ok_or_else(|| {
+            AppError::ValidationFailed("claim_strategy must be 'backfill' or 'fifo'".into())
+        })
 }
 
 pub fn normalize_ssh_host_key_policy(v: Option<String>) -> Result<String, AppError> {
@@ -169,6 +218,19 @@ async fn validate_runner_team(
     Ok(Some(team_id.to_string()))
 }
 
+/// Accept a runner-reported deployment identity only when it validates;
+/// otherwise return empty so the stored value is kept (COALESCE pattern) and
+/// the report is logged. A malformed id must not fail a register/heartbeat.
+fn sanitized_instance_id(raw: &str, what: &str, runner: &str) -> String {
+    match shared::instance::validate(raw) {
+        Ok(id) => id,
+        Err(error) => {
+            tracing::warn!(%error, what, runner, "runner reported an invalid instance id; ignoring");
+            String::new()
+        }
+    }
+}
+
 /// Load UI policy columns for a runner.
 async fn load_runner_policy(
     pool: &sqlx::SqlitePool,
@@ -177,7 +239,7 @@ async fn load_runner_policy(
     let row = sqlx::query(
         "SELECT max_concurrent_jobs, clean_workspace_after_job,
                 shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy,
-                execution_mode
+                execution_mode, claim_strategy
          FROM runners WHERE id = ?",
     )
     .bind(runner_id)
@@ -201,6 +263,8 @@ async fn load_runner_policy(
             }
         },
         execution_mode: parse_execution_mode(row.get::<String, _>(7))?,
+        claim_strategy: normalize_claim_strategy(Some(row.get::<String, _>(8)))
+            .unwrap_or_else(|_| "backfill".into()),
     })
 }
 
@@ -214,6 +278,7 @@ fn policy_json(p: &RunnerPolicyConfig) -> serde_json::Value {
         "docker_enabled": p.docker_enabled,
         "wasm_enabled": p.wasm_enabled,
         "ssh_host_key_policy": p.ssh_host_key_policy,
+        "claim_strategy": p.claim_strategy,
     })
 }
 
@@ -267,6 +332,7 @@ pub async fn create_runner_record(
         .unwrap_or_else(|_| "[]".into());
     let max_concurrent = normalize_max_concurrent(req.max_concurrent_jobs)?;
     let ssh_policy = normalize_ssh_host_key_policy(req.ssh_host_key_policy.clone())?;
+    let claim_strategy = normalize_claim_strategy(req.claim_strategy.clone())?;
     let clean = bool_i64(req.clean_workspace_after_job, false);
     let shell = bool_i64(req.shell_enabled, true);
     let ssh = bool_i64(req.ssh_enabled, true);
@@ -284,12 +350,14 @@ pub async fn create_runner_record(
     sqlx::query(
         "INSERT INTO runners (id, name, register_token, labels, status, version, team_id, execution_mode,
          max_concurrent_jobs, clean_workspace_after_job,
-         shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy)
-         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy, claim_strategy)
+         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&req.name)
-    .bind(&register_token)
+    // Hash-only at rest: the plaintext is returned exactly once in the API
+    // response and never stored (same discipline as buz_/buzsd_ tokens).
+    .bind(shared::api_token::hash_token(&register_token))
     .bind(&labels_json)
     .bind(&req.version)
     .bind(&team_id)
@@ -301,6 +369,7 @@ pub async fn create_runner_record(
     .bind(docker)
     .bind(wasm)
     .bind(&ssh_policy)
+    .bind(&claim_strategy)
     .execute(pool)
     .await?;
 
@@ -377,6 +446,7 @@ pub async fn ensure_standalone_auto_approve(
             docker_enabled: None,
             wasm_enabled: None,
             ssh_host_key_policy: None,
+            claim_strategy: None,
         };
         match create_runner_record(pool, &req).await {
             Ok(created) => {
@@ -421,7 +491,7 @@ pub async fn register(
             ?peer,
             "standalone mode rejected non-loopback runner registration"
         );
-        return Err(AppError::Unauthorized(
+        return Err(AppError::Forbidden(
             "standalone mode rejects non-loopback runner registration".into(),
         ));
     }
@@ -441,7 +511,7 @@ pub async fn register(
         if existing_token.as_ref().is_none_or(|t| t.is_empty()) {
             // First-time registration — must match the one-shot register_token.
             let stored_rt: String = row.get(1);
-            if stored_rt != register_token {
+            if !register_token_matches(&stored_rt, register_token) {
                 // Standalone + loopback + authorized name (row exists): allow
                 // tokenless / mismatched token. Production path unchanged.
                 if standalone && loopback {
@@ -475,7 +545,7 @@ pub async fn register(
             } else {
                 bearer_proves_runner(&headers, &state.config.auth.jwt_secret, &row_id) || {
                     let stored_rt: String = row.get(1);
-                    !register_token.is_empty() && stored_rt == register_token
+                    register_token_matches(&stored_rt, register_token)
                 }
             };
             if !authorized {
@@ -497,7 +567,7 @@ pub async fn register(
                 runner = %name,
                 "standalone register rejected: runner not authorized (create in UI or auto_approve)"
             );
-            return Err(AppError::Unauthorized(
+            return Err(AppError::Forbidden(
                 "standalone: runner not authorized — create it in Manager UI (New Runner) \
                  or add the name to standalone.auto_approve"
                     .into(),
@@ -525,19 +595,33 @@ pub async fn register(
 
     // Labels are UI-managed — do not overwrite from the agent register payload.
     let version = req.version.as_deref().filter(|v| !v.is_empty());
+    // Deployment identities are stored when reported (older Runners omit them);
+    // malformed values are dropped with a warning rather than rejecting the
+    // registration — identity is correlation data, not an auth input.
+    let host_id = sanitized_instance_id(&req.host_id, "host_id", name);
+    let runner_instance_id =
+        sanitized_instance_id(&req.runner_instance_id, "runner_instance_id", name);
 
+    // Hash-only at rest: the runner JWT is never stored in plaintext — only
+    // its SHA-256, kept for the "already holds a token" state. The JWT itself
+    // is stateless (signature-verified per request) and returned to the agent.
     sqlx::query(
         "UPDATE runners SET token = ?, register_token = '', status = 'online', \
-         version = COALESCE(?, version), last_seen = datetime('now'), updated_at = datetime('now'), \
+         version = COALESCE(?, version), \
+         host_id = COALESCE(NULLIF(?, ''), host_id), \
+         runner_instance_id = COALESCE(NULLIF(?, ''), runner_instance_id), \
+         last_seen = datetime('now'), updated_at = datetime('now'), \
          restart_requested = 0 WHERE id = ?",
     )
-    .bind(&runner_jwt)
+    .bind(shared::api_token::hash_token(&runner_jwt))
     .bind(version)
+    .bind(&host_id)
+    .bind(&runner_instance_id)
     .bind(&runner_id)
     .execute(&state.pool)
     .await?;
 
-    tracing::info!("Runner registered: {} ({runner_id})", name);
+    tracing::info!(runner = %name, host_id = %host_id, instance = %runner_instance_id, "Runner registered: {} ({runner_id})", name);
 
     let policy = load_runner_policy(&state.pool, &runner_id).await?;
     let labels_db: String = sqlx::query_scalar("SELECT labels FROM runners WHERE id = ?")
@@ -581,13 +665,38 @@ pub async fn heartbeat(
         .map(|si| si.runner_version.as_str())
         .filter(|v| !v.is_empty());
 
+    // Keep the last reported deployment identities; empty/malformed values
+    // leave the stored ones untouched.
+    let host_id = sanitized_instance_id(&req.host_id, "host_id", &auth.runner_id);
+    let runner_instance_id = sanitized_instance_id(
+        &req.runner_instance_id,
+        "runner_instance_id",
+        &auth.runner_id,
+    );
+    // The sandboxd instance this Runner is attached to, derived from the
+    // heartbeat's sandbox block so the claim path can group slot usage by host
+    // without parsing the system_info blob.
+    let sandbox_instance_id = req
+        .system_info
+        .as_ref()
+        .and_then(|si| si.sandboxd.as_ref())
+        .and_then(|b| b.get("instance_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(|raw| sanitized_instance_id(raw, "sandbox_instance_id", &auth.runner_id))
+        .unwrap_or_default();
     sqlx::query(
         "UPDATE runners SET status = ?, system_info = ?, version = COALESCE(?, version), \
+         host_id = COALESCE(NULLIF(?, ''), host_id), \
+         runner_instance_id = COALESCE(NULLIF(?, ''), runner_instance_id), \
+         sandbox_instance_id = COALESCE(NULLIF(?, ''), sandbox_instance_id), \
          last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&req.status)
     .bind(&system_info_json)
     .bind(version)
+    .bind(&host_id)
+    .bind(&runner_instance_id)
+    .bind(&sandbox_instance_id)
     .bind(&auth.runner_id)
     .execute(&state.pool)
     .await?;
@@ -618,11 +727,38 @@ pub async fn heartbeat(
         .await;
     }
 
+    // Serve a pending one-shot capability re-probe command, then clear it
+    // (serve-and-consume). Like restart, the Runner sees it on its next
+    // heartbeat (≤30s) and probes immediately instead of idling.
+    let reprobe_requested: bool =
+        sqlx::query_scalar("SELECT capability_reprobe_requested FROM runners WHERE id = ?")
+            .bind(&auth.runner_id)
+            .fetch_one(&state.pool)
+            .await
+            .map(|v: i64| v != 0)
+            .unwrap_or(false);
+
+    if reprobe_requested {
+        tracing::info!(runner = %auth.runner_id, "Serving capability re-probe command via heartbeat");
+        sqlx::query("UPDATE runners SET capability_reprobe_requested = 0 WHERE id = ?")
+            .bind(&auth.runner_id)
+            .execute(&state.pool)
+            .await?;
+        log_runner_event(
+            &state.pool,
+            &auth.runner_id,
+            "capability_reprobe_served",
+            "Capability re-probe command delivered to runner",
+        )
+        .await;
+    }
+
     Ok((
         StatusCode::OK,
         Json(ApiResponse::success(HeartbeatResponse {
             policy,
             restart: restart_requested,
+            reprobe: reprobe_requested,
         })),
     ))
 }
@@ -794,6 +930,35 @@ async fn poll_once(
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
 
+    // Slot-aware dispatch context: execution mode, attached sandbox host,
+    // queue-walk strategy, and the staleness threshold (see slot_scheduler).
+    let dispatch = {
+        let row: (String, String, String, String) = sqlx::query_as(
+            "SELECT execution_mode, host_id, sandbox_instance_id, claim_strategy
+             FROM runners WHERE id = ?",
+        )
+        .bind(&auth.runner_id)
+        .fetch_one(&state.pool)
+        .await?;
+        let stale_after_seconds: i64 = crate::services::platform_settings::effective(
+            &state.pool,
+            crate::services::platform_settings::KEY_SANDBOX_CONFIG_STALE_SECONDS,
+            &crate::services::platform_settings::DEFAULT_SANDBOX_CONFIG_STALE_SECONDS.to_string(),
+        )
+        .await
+        .trim()
+        .parse()
+        .unwrap_or(crate::services::platform_settings::DEFAULT_SANDBOX_CONFIG_STALE_SECONDS as i64);
+        crate::services::slot_scheduler::RunnerDispatchContext {
+            execution_mode: parse_execution_mode(row.0)?,
+            host_id: row.1,
+            sandbox_instance_id: row.2,
+            strategy: crate::services::slot_scheduler::ClaimStrategy::parse(&row.3)
+                .unwrap_or_default(),
+            stale_after_seconds,
+        }
+    };
+
     // Candidates: oldest pending jobs with pipeline (+ snapshot) labels.
     // Claim only if runner has ALL required labels (see runner_satisfies_labels).
     let candidates = sqlx::query(
@@ -841,6 +1006,44 @@ async fn poll_once(
             continue;
         }
 
+        // Re-check the resource-profile grant at claim: it may have been
+        // revoked while the job was queued. Revocation fails the job
+        // terminally rather than leaving it pending forever — and it is a
+        // different failure from "no host offers this profile" (which queues).
+        let (job_profile, job_team) = job_resource_request(&snapshot_raw);
+        if let Some(profile) = crate::services::resource_grants::requested_profile(&job_profile) {
+            if let Err(error) = crate::services::resource_grants::ensure_team_may_use(
+                &state.pool,
+                job_team.as_deref().unwrap_or_default(),
+                profile,
+            )
+            .await
+            {
+                tracing::warn!(
+                    job = %job_id,
+                    profile,
+                    team = ?job_team,
+                    %error,
+                    "resource profile grant revoked while queued; failing job"
+                );
+                let _ = sqlx::query(
+                    "UPDATE jobs SET status = 'failed', end_time = datetime('now'),
+                     updated_at = datetime('now') WHERE id = ? AND status = 'pending'",
+                )
+                .bind(&job_id)
+                .execute(&state.pool)
+                .await;
+                crate::services::notify::spawn_job_notify(
+                    state.pool.clone(),
+                    state.config.auth.jwt_secret.clone(),
+                    state.config.server.public_base_url.clone(),
+                    job_id.clone(),
+                    "failed".to_string(),
+                );
+                continue;
+            }
+        }
+
         // Serialize environment gate evaluation with the claim. SQLite's
         // immediate transaction reserves the writer before checking blockers,
         // so another poller must re-evaluate after this transaction commits.
@@ -867,6 +1070,37 @@ async fn poll_once(
             tx.rollback().await?;
             continue;
         }
+
+        // Slot gate — inside the IMMEDIATE transaction so two concurrent
+        // polls cannot both see "fits" and oversell the host budget.
+        let (slots, resource_spec, sandbox_key) = match crate::services::slot_scheduler::decide(
+            &mut tx,
+            &dispatch,
+            &job_profile,
+        )
+        .await?
+        {
+            crate::services::slot_scheduler::Decision::Dispatch {
+                slots,
+                spec,
+                sandbox_key,
+            } => (slots, spec, sandbox_key),
+            crate::services::slot_scheduler::Decision::WaitForCapacity { reason } => {
+                tx.rollback().await?;
+                record_dispatch_reason(&state.pool, &job_id, &reason).await;
+                match dispatch.strategy {
+                    // Strict order within this Runner's eligible set: the
+                    // oldest fitting-in-principle job blocks the round.
+                    crate::services::slot_scheduler::ClaimStrategy::Fifo => break,
+                    crate::services::slot_scheduler::ClaimStrategy::Backfill => continue,
+                }
+            }
+            crate::services::slot_scheduler::Decision::NotEligible { reason } => {
+                tx.rollback().await?;
+                record_dispatch_reason(&state.pool, &job_id, &reason).await;
+                continue;
+            }
+        };
         let mut superseded_ids: Vec<String> = Vec::new();
 
         if let Some(env_id) = candidate_environment_id.as_deref() {
@@ -995,11 +1229,15 @@ async fn poll_once(
 
         let got = sqlx::query(
             "UPDATE jobs SET status = 'running', runner_id = ?, start_time = datetime('now'),
+             resource_slots = ?, resource_spec = ?, sandbox_instance_id = ?, dispatch_reason = '',
              updated_at = datetime('now')
              WHERE id = ? AND status = 'pending'
              RETURNING id, pipeline_id, trigger_params, environment_id, run_number, run_attempt",
         )
         .bind(&auth.runner_id)
+        .bind(slots)
+        .bind(resource_spec.to_string())
+        .bind(&sandbox_key)
         .bind(&job_id)
         .fetch_optional(&mut *tx)
         .await?;
@@ -2200,6 +2438,7 @@ async fn poll_once(
         "tasks": tasks,
         "inputs": trigger_params,
         "masking_input_keys": masking_input_keys,
+        "resource_profile": job_resource_request(&snapshot_raw).0,
         "env": env,
         "secret_env_keys": secret_env_keys,
         "secrets": secrets,
@@ -2503,7 +2742,7 @@ pub async fn list_runners(
                 r.shell_enabled, r.ssh_enabled, r.docker_enabled, r.wasm_enabled, r.ssh_host_key_policy,
                 r.created_at, r.updated_at, r.team_id,
                 (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs,
-                r.execution_mode
+                r.execution_mode, r.host_id, r.runner_instance_id, r.claim_strategy
          FROM runners r ORDER BY r.created_at DESC",
     )
     .fetch_all(&state.pool)
@@ -2531,6 +2770,8 @@ pub async fn list_runners(
                     }
                 },
                 execution_mode: parse_execution_mode(r.get::<String, _>(19))?,
+                claim_strategy: normalize_claim_strategy(Some(r.get::<String, _>(22)))
+                    .unwrap_or_else(|_| "backfill".into()),
             };
             Ok(serde_json::json!({
                 "id": r.get::<String, _>(0),
@@ -2548,11 +2789,14 @@ pub async fn list_runners(
                 "docker_enabled": policy.docker_enabled,
                 "wasm_enabled": policy.wasm_enabled,
                 "ssh_host_key_policy": policy.ssh_host_key_policy,
+                "claim_strategy": policy.claim_strategy,
                 "execution_mode": policy.execution_mode.as_str(),
                 "team_id": r.get::<Option<String>, _>(17),
                 "created_at": r.get::<Option<String>, _>(15),
                 "updated_at": r.get::<Option<String>, _>(16),
                 "running_jobs": r.get::<i64, _>(18),
+                "host_id": r.get::<String, _>(20),
+                "runner_instance_id": r.get::<String, _>(21),
             }))
         })
         .collect::<Result<Vec<_>, AppError>>()?;
@@ -2567,7 +2811,8 @@ pub async fn get_runner(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let r = sqlx::query(
         "SELECT id, name, labels, status, version, system_info, last_seen,
-                created_at, updated_at, team_id FROM runners WHERE id = ?",
+                created_at, updated_at, team_id, host_id, runner_instance_id
+         FROM runners WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.pool)
@@ -2596,6 +2841,8 @@ pub async fn get_runner(
         "created_at": r.get::<Option<String>, _>(7),
         "updated_at": r.get::<Option<String>, _>(8),
         "team_id": r.get::<Option<String>, _>(9),
+        "host_id": r.get::<String, _>(10),
+        "runner_instance_id": r.get::<String, _>(11),
         "running_jobs": running_jobs,
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,
@@ -2605,6 +2852,7 @@ pub async fn get_runner(
         "wasm_enabled": policy.wasm_enabled,
         "ssh_host_key_policy": policy.ssh_host_key_policy,
         "execution_mode": policy.execution_mode.as_str(),
+        "claim_strategy": policy.claim_strategy,
     }))))
 }
 
@@ -2844,6 +3092,16 @@ pub async fn update_runner(
         .execute(&state.pool)
         .await?;
     }
+    if req.claim_strategy.is_some() {
+        let strategy = normalize_claim_strategy(req.claim_strategy.clone())?;
+        sqlx::query(
+            "UPDATE runners SET claim_strategy = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&strategy)
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    }
 
     log_runner_event(&state.pool, &id, "updated", "Runner policy updated from UI").await;
 
@@ -2908,6 +3166,7 @@ pub async fn update_runner(
         "wasm_enabled": policy.wasm_enabled,
         "ssh_host_key_policy": policy.ssh_host_key_policy,
         "execution_mode": policy.execution_mode.as_str(),
+        "claim_strategy": policy.claim_strategy,
     }))))
 }
 
@@ -3059,6 +3318,49 @@ pub async fn restart(
     }))))
 }
 
+/// Request an on-demand sandbox capability re-probe: sets a one-shot flag the
+/// Runner's next heartbeat (≤30s) serves; the Runner then probes its backends
+/// immediately and reports fresh results on the following heartbeat. Unlike
+/// restart this does not block dispatch — probing is observational and safe
+/// while jobs run.
+pub async fn reprobe_capabilities(
+    auth: PlatformAdmin,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let row = sqlx::query("SELECT name FROM runners WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
+    let name: String = row.get(0);
+
+    sqlx::query(
+        "UPDATE runners SET capability_reprobe_requested = 1, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(&id)
+    .execute(&state.pool)
+    .await?;
+
+    tracing::info!("Runner {name} ({id}) capability re-probe requested");
+    log_runner_event(
+        &state.pool,
+        &id,
+        "capability_reprobe_requested",
+        "Capability re-probe requested — fresh results on next heartbeat",
+    )
+    .await;
+    audit::record(
+        &state.pool,
+        AuditEvent::new(Action::RunnerReprobeCapabilities, &auth).on(Resource::runner(&id, &name)),
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "reprobe_requested": true
+    }))))
+}
+
 /// Re-issue the one-shot register_token for an existing runner — the admin
 /// recovery path for re-registration. Use when a runner lost its cached JWT
 /// (pre-1.6 restart, wiped workspace) or after a jwt_secret rotation: update
@@ -3079,7 +3381,8 @@ pub async fn reissue_register_token(
     let name: Option<String> = sqlx::query_scalar(
         "UPDATE runners SET register_token = ?, updated_at = datetime('now') WHERE id = ? RETURNING name",
     )
-    .bind(&register_token)
+    // Hash-only at rest — the plaintext is returned exactly once below.
+    .bind(shared::api_token::hash_token(&register_token))
     .bind(&id)
     .fetch_optional(&state.pool)
     .await?;

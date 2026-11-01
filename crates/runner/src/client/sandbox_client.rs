@@ -18,17 +18,12 @@ use tokio::time::Duration;
 use crate::config::{Config, SandboxSection};
 use shared::protocol::RunnerExecutionMode;
 
-/// One tier's backend as this Runner has it configured, sent so the supervisor
-/// can confirm both halves agree before anything runs.
-#[derive(Debug, Serialize, PartialEq, Eq)]
-pub struct WireBackend<'a> {
-    pub mode: RunnerExecutionMode,
-    pub image: &'a str,
-    pub oci_runtime: &'a str,
-}
-
 /// Runner → supervisor wire contract (newline-delimited JSON). Public so the
 /// crate's integration tests can pin the exact shape the supervisor parses.
+///
+/// The Runner names a **tier** and a **resource profile**; the image, OCI
+/// runtime, and envelope come from the sandboxd's applied Manager document.
+/// The Runner never carries images, so the two halves cannot disagree.
 #[derive(Debug, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request<'a> {
@@ -36,8 +31,8 @@ pub enum Request<'a> {
         job_id: &'a str,
         mode: RunnerExecutionMode,
         workspace: &'a str,
-        image: &'a str,
-        oci_runtime: &'a str,
+        /// Resource profile name; empty selects `default`.
+        profile: &'a str,
     },
     ExecStep {
         handle: &'a str,
@@ -53,9 +48,12 @@ pub enum Request<'a> {
     DestroyJob {
         handle: &'a str,
     },
-    ProbeCapabilities {
-        backends: Vec<WireBackend<'a>>,
-    },
+    /// Probe every tier in the supervisor's applied document.
+    ProbeCapabilities {},
+    /// Cheap applied-config/version view (30 s heartbeat cadence).
+    Status {},
+    /// Full applied document (fetched only when the hash changes).
+    GetConfig {},
 }
 
 /// Supervisor → Runner wire contract.
@@ -70,17 +68,35 @@ pub struct Response {
     pub error: String,
     #[serde(default)]
     pub capabilities: Option<shared::protocol::RunnerExecutionCapabilities>,
+    /// Applied Manager document version (probe/status/get_config/create_job).
+    #[serde(default)]
+    pub config_version: i64,
+    /// Effective profile name for a created job.
+    #[serde(default)]
+    pub profile: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct SandboxHandle {
     id: String,
     mode: RunnerExecutionMode,
+    profile: String,
+    config_version: i64,
 }
 
 impl SandboxHandle {
     pub fn mode(&self) -> RunnerExecutionMode {
         self.mode
+    }
+
+    /// Effective resource profile the supervisor applied to this job.
+    pub fn profile(&self) -> &str {
+        &self.profile
+    }
+
+    /// Manager document version the job container was created under.
+    pub fn config_version(&self) -> i64 {
+        self.config_version
     }
 }
 
@@ -122,6 +138,7 @@ pub async fn create_job(
     config: &Config,
     job_id: &str,
     workspace: &str,
+    profile: &str,
 ) -> anyhow::Result<SandboxHandle> {
     let mode = config.execution_mode;
     anyhow::ensure!(mode.is_sandboxed(), "sandbox create requested in Host mode");
@@ -138,24 +155,13 @@ pub async fn create_job(
         "job workspace is outside configured sandbox workspace_root"
     );
     let workspace = workspace_path.to_string_lossy().into_owned();
-    let backends = config.sandbox.backends();
-    let backend = backends
-        .get(mode)
-        .filter(|backend| backend.is_configured())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "sandbox image is not configured for '{}' tier on this Runner",
-                mode.as_str()
-            )
-        })?;
     let response = request(
         &config.sandbox,
         Request::CreateJob {
             job_id,
             mode,
             workspace: &workspace,
-            image: &backend.image,
-            oci_runtime: &backend.oci_runtime,
+            profile,
         },
     )
     .await?;
@@ -166,6 +172,8 @@ pub async fn create_job(
     Ok(SandboxHandle {
         id: response.handle,
         mode,
+        profile: response.profile,
+        config_version: response.config_version,
     })
 }
 
@@ -246,24 +254,30 @@ pub async fn exec_step(
 pub async fn probe_capabilities(
     config: &SandboxSection,
 ) -> anyhow::Result<shared::protocol::RunnerExecutionCapabilities> {
-    let backends = config.backends();
-    let response = request(
-        config,
-        Request::ProbeCapabilities {
-            backends: backends
-                .configured()
-                .map(|backend| WireBackend {
-                    mode: backend.mode,
-                    image: &backend.image,
-                    oci_runtime: &backend.oci_runtime,
-                })
-                .collect(),
-        },
-    )
-    .await?;
+    let response = request(config, Request::ProbeCapabilities {}).await?;
     response
         .capabilities
         .ok_or_else(|| anyhow::anyhow!("sandbox supervisor omitted execution capabilities"))
+}
+
+/// Supervisor status block (identity, applied version/hash, profiles, load).
+pub async fn status(config: &SandboxSection) -> anyhow::Result<Value> {
+    request_raw(
+        config,
+        Request::Status {},
+        Duration::from_secs(config.request_timeout_seconds.max(1)),
+    )
+    .await
+}
+
+/// Full applied document plus version/hash metadata.
+pub async fn get_config(config: &SandboxSection) -> anyhow::Result<Value> {
+    request_raw(
+        config,
+        Request::GetConfig {},
+        Duration::from_secs(config.request_timeout_seconds.max(1)),
+    )
+    .await
 }
 
 pub async fn read_job_file(
@@ -302,6 +316,19 @@ async fn request_with_timeout(
     request: Request<'_>,
     timeout: Duration,
 ) -> anyhow::Result<Response> {
+    let raw = request_raw(config, request, timeout).await?;
+    let response: Response = serde_json::from_value(raw)?;
+    Ok(response)
+}
+
+/// One request/response round trip returning the raw JSON object. Used for
+/// `status` / `get_config`, whose shape the supervisor owns and the Runner
+/// forwards verbatim (heartbeat block, snapshot).
+async fn request_raw(
+    config: &SandboxSection,
+    request: Request<'_>,
+    timeout: Duration,
+) -> anyhow::Result<Value> {
     #[cfg(not(unix))]
     anyhow::bail!("sandbox supervisor Unix socket is only supported on Unix hosts");
 
@@ -323,8 +350,12 @@ async fn request_with_timeout(
             !line.is_empty(),
             "sandbox supervisor closed without a response"
         );
-        let response: Response = serde_json::from_str(&line)?;
-        anyhow::ensure!(response.ok, "sandbox supervisor: {}", response.error);
-        Ok(response)
+        let raw: Value = serde_json::from_str(&line)?;
+        anyhow::ensure!(
+            raw["ok"].as_bool() == Some(true),
+            "sandbox supervisor: {}",
+            raw["error"].as_str().unwrap_or("request failed")
+        );
+        Ok(raw)
     }
 }

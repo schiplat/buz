@@ -20,6 +20,7 @@ async fn test_pool() -> sqlx::SqlitePool {
             display_name TEXT NOT NULL DEFAULT '',
             is_platform_admin INTEGER NOT NULL DEFAULT 0,
             is_super_admin INTEGER NOT NULL DEFAULT 0,
+            is_ops INTEGER NOT NULL DEFAULT 0,
             is_active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -126,7 +127,7 @@ async fn rejects_non_admin_user() {
     let err = verify_cli_admin_token(&pool, JWT_SECRET, &token)
         .await
         .unwrap_err();
-    assert!(matches!(err, AppError::Unauthorized(_)), "{err:?}");
+    assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
 }
 
 #[tokio::test]
@@ -257,7 +258,7 @@ async fn rejects_api_token_of_non_admin_user() {
     let err = verify_cli_admin_token(&pool, JWT_SECRET, &raw)
         .await
         .unwrap_err();
-    assert!(matches!(err, AppError::Unauthorized(_)), "{err:?}");
+    assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
 }
 
 #[tokio::test]

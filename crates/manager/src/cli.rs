@@ -3,7 +3,7 @@
 //! The types and subcommand implementations live in the library so they can be
 //! exercised from `tests/`; `main` only wires them up.
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::api;
 use crate::config;
@@ -19,11 +19,17 @@ use crate::rbac;
 )]
 pub struct Cli {
     /// Path to TOML configuration file
-    #[arg(short, long, global = true, default_value = "conf/manager.toml")]
+    #[arg(
+        short,
+        long,
+        global = true,
+        default_value = "conf/manager.toml",
+        value_hint = clap::ValueHint::FilePath
+    )]
     pub config: String,
 
     /// Optional disk UI override (default: assets embedded in this binary).
-    #[arg(short = 'f', long, env = "BUZ_FRONTEND_DIR")]
+    #[arg(short = 'f', long, env = "BUZ_FRONTEND_DIR", value_hint = clap::ValueHint::DirPath)]
     pub frontend: Option<String>,
 
     #[command(subcommand)]
@@ -69,6 +75,15 @@ pub enum Command {
         #[command(subcommand)]
         command: PipelineCommand,
     },
+
+    /// Print a shell completion script for `buz-manager` to stdout.
+    ///
+    /// Example: `buz-manager completions zsh > ~/.zfunc/_buz-manager`
+    Completions {
+        /// Shell the script is generated for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -76,13 +91,13 @@ pub enum PipelineCommand {
     /// Resolve marketplace steps and print a non-executing plan.
     Plan {
         /// Pipeline YAML file to inspect
-        #[arg(value_name = "PIPELINE")]
+        #[arg(value_name = "PIPELINE", value_hint = clap::ValueHint::FilePath)]
         pipeline: std::path::PathBuf,
         /// Directory containing local step-template YAML files
-        #[arg(long, value_name = "DIR")]
+        #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
         plugin_index: std::path::PathBuf,
         /// Optional reviewed-template manifest (reviews.json)
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         reviews: Option<std::path::PathBuf>,
         /// Fail if any resolved template is absent from --reviews
         #[arg(long)]
@@ -91,6 +106,31 @@ pub enum PipelineCommand {
         #[arg(long)]
         offline: bool,
     },
+}
+
+/// Write a completion script for `buz-manager` to `out`.
+///
+/// Generated from the same `Cli` definition the binary parses, so the script
+/// cannot drift from the real flags and subcommands.
+pub fn write_completions(
+    shell: clap_complete::Shell,
+    out: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    let mut script = Vec::new();
+    let mut command = Cli::command();
+    let bin_name = command.get_name().to_string();
+    clap_complete::generate(shell, &mut command, bin_name, &mut script);
+    out.write_all(&script)
+}
+
+/// Write a completion script to stdout, treating a closed pipe (`… | head`)
+/// as a normal end of output rather than an error.
+pub fn print_completions(shell: clap_complete::Shell) -> anyhow::Result<()> {
+    let mut out = std::io::stdout().lock();
+    match write_completions(shell, &mut out) {
+        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(error.into()),
+        _ => Ok(()),
+    }
 }
 
 /// `plugin-validate` — validate plugin spec YAML files against the
@@ -227,6 +267,7 @@ pub async fn gen_runner_token(
         docker_enabled: None,
         wasm_enabled: None,
         ssh_host_key_policy: None,
+        claim_strategy: None,
     };
 
     let created = match api::runners::create_runner_record(&pool, &req).await {

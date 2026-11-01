@@ -8,11 +8,11 @@ RUN apt-get update -qq \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --gid 10001 buz \
- && mkdir -p /app/buz/conf /app/buz/workspace /run/buz-sandboxd
+ && mkdir -p /app/buz/workspace /app/buz/state /run/buz-sandboxd
 
+# Bootstrap via env (compose sets the rest); policy arrives from the Manager.
+ENV BUZ_SANDBOXD_STATE_DIR=/app/buz/state
 COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY bin/buz-sandboxd /usr/local/bin/buz-sandboxd
-COPY conf/sandboxd.toml /app/buz/conf/sandboxd.toml
 
 ENTRYPOINT ["/usr/local/bin/buz-sandboxd"]
-CMD ["--config", "/app/buz/conf/sandboxd.toml"]

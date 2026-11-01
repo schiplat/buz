@@ -18,6 +18,8 @@ pub enum Role {
     Admin,
     /// Regular human user (team-scoped).
     User,
+    /// Platform operations: sandbox host administration (implies nothing else).
+    Ops,
     /// Runner agent.
     Runner,
 }

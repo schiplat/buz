@@ -144,3 +144,13 @@ describe('plugin-first pipeline YAML completions', () => {
     expect(complete('steps:\n  - name: deploy\n    ', false)).toBeNull()
   })
 })
+
+describe('runner.resources completion', () => {
+  it('suggests resources as a profile-name field with host-owned envelope guidance', () => {
+    const options = labels('runner:\n  ')
+    expect(options).toEqual(expect.arrayContaining(['labels', 'timeout', 'resources']))
+    const resources = complete('runner:\n  ')!.options.find((option) => option.label === 'resources')!
+    expect(resources.info).toContain('profile NAME')
+    expect(resources.info).toMatch(/sandbox host/i)
+  })
+})

@@ -26,12 +26,25 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: '', redirect: '/dashboard' },
       { path: 'dashboard', name: 'dashboard', component: () => import('@/pages/Overview.vue'), meta: { title: 'Overview' } },
-      { path: 'runners', name: 'runners', component: () => import('@/pages/Runners.vue'), meta: { title: 'Runners', adminOnly: true } },
+      {
+        path: 'runners',
+        name: 'runners',
+        component: () => import('@/pages/RunnersFleet.vue'),
+        meta: { title: 'Runners', adminOnly: true },
+        children: [
+          { path: '', redirect: { name: 'runners-list' } },
+          { path: 'list', name: 'runners-list', component: () => import('@/pages/Runners.vue'), meta: { title: 'Runners', adminOnly: true } },
+          { path: 'sandbox-hosts', name: 'sandbox-hosts', component: () => import('@/pages/SandboxHostList.vue'), meta: { title: 'Sandbox hosts', opsOnly: true } },
+        ],
+      },
+      // Backwards-compatible alias for the standalone Sandbox Fleet page.
+      { path: 'sandbox-hosts', redirect: { name: 'sandbox-hosts' } },
+      { path: 'sandbox-grants', redirect: { name: 'sandbox-hosts' } },
       { path: 'pipelines', name: 'pipelines', component: () => import('@/pages/Pipelines.vue'), meta: { title: 'Pipelines' } },
       { path: 'pipelines/:id/:tab(stage|history|definition|trigger-events)?', name: 'pipeline-detail', component: () => import('@/pages/PipelineDetail.vue'), meta: { title: 'Pipeline Detail' } },
       { path: 'jobs', name: 'jobs', component: () => import('@/pages/Jobs.vue'), meta: { title: 'Jobs' } },
       { path: 'jobs/:id', name: 'job-detail', component: () => import('@/pages/JobDetail.vue'), meta: { title: 'Job Detail' } },
-      { path: 'hosts', name: 'hosts', component: () => import('@/pages/Hosts.vue'), meta: { title: 'Hosts' } },
+      { path: 'hosts', name: 'hosts', component: () => import('@/pages/Hosts.vue'), meta: { title: 'SSH Targets' } },
       { path: 'environments', name: 'environments', component: () => import('@/pages/Environments.vue'), meta: { title: 'Environments' } },
       {
         path: 'environments/:id',
@@ -146,6 +159,9 @@ router.beforeEach(async (to, from) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.meta.adminOnly && !auth.isPlatformAdmin) {
+    return { name: 'dashboard' }
+  }
+  if (to.meta.opsOnly && !auth.isOps && !auth.isPlatformAdmin) {
     return { name: 'dashboard' }
   }
   return true

@@ -71,6 +71,14 @@ const AUDITED: &[(&str, &str)] = &[
         "variable.github_bind.remove",
     ),
     (
+        "DELETE /api/v1/ops/resource-grants/{team_id}/{profile}",
+        "resource_grant.update",
+    ),
+    (
+        "DELETE /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}",
+        "sandbox_host.delete",
+    ),
+    (
         "PATCH /api/v1/pipelines/{id}/toggle-active",
         "pipeline.toggle_active",
     ),
@@ -128,6 +136,10 @@ const AUDITED: &[(&str, &str)] = &[
         "runner.register_token_reissued",
     ),
     ("POST /api/v1/runners/{id}/restart", "runner.restart"),
+    (
+        "POST /api/v1/runners/{id}/reprobe-capabilities",
+        "runner.reprobe_capabilities",
+    ),
     ("POST /api/v1/secrets", "secret.create"),
     (
         "POST /api/v1/secrets/{id}/github-binds",
@@ -147,6 +159,36 @@ const AUDITED: &[(&str, &str)] = &[
     (
         "POST /api/v1/variables/{id}/github-binds/push",
         "variable.github_push",
+    ),
+    (
+        "POST /api/v1/ops/sandbox-changes/{id}/approve",
+        "sandbox_host.config_approved",
+    ),
+    (
+        "POST /api/v1/ops/sandbox-changes/{id}/reject",
+        "sandbox_host.config_rejected",
+    ),
+    ("POST /api/v1/ops/sandbox-hosts", "sandbox_host.enroll"),
+    (
+        "POST /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/rollback",
+        "sandbox_host.rollback",
+    ),
+    (
+        "POST /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/token/rotate",
+        "sandbox_host.token_rotate",
+    ),
+    (
+        "PUT /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/budget",
+        "sandbox_host.budget_update",
+    ),
+    ("PUT /api/v1/ops/resource-grants", "resource_grant.update"),
+    (
+        "PUT /api/v1/ops/sandbox-defaults",
+        "sandbox_host.defaults_update",
+    ),
+    (
+        "PUT /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/config",
+        "sandbox_host.config_update",
     ),
     ("PUT /api/v1/admin/settings/{key}", "setting.update"),
     (
@@ -192,6 +234,18 @@ const INTENTIONALLY_UNAUDITED: &[(&str, &str)] = &[
     (
         "POST /api/v1/admin/plugin-sources/{id}/mirror-check",
         "read-only probe: compares sentinels, writes nothing",
+    ),
+    (
+        "POST /api/v1/ops/sandbox-hosts/{host_id}/{instance_id}/validate",
+        "dry-run config validation: mutates nothing (results come back in the response)",
+    ),
+    (
+        "POST /api/v1/ops/images/resolve",
+        "read-only registry probe: resolves a tag to its digest, writes nothing",
+    ),
+    (
+        "POST /api/v1/sandboxd/status",
+        "sandboxd-reported applied version/health: machine telemetry on every poll",
     ),
     (
         "POST /api/v1/hooks/git/{provider}/{hook_key}",

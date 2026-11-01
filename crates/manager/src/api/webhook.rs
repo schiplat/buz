@@ -25,9 +25,11 @@ pub struct HookQuery {
 /// - JSON body:        POST /api/v1/hooks/deploy-prod {"environment":"staging","inputs":{"version":"1.2"}}
 /// - Both (query selector wins over body selector; body inputs override query inputs)
 ///
-/// When the pipeline declares `on.webhook.secret: <NAME>`, requests must also carry
-/// `X-Buz-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. The secret value is
-/// resolved from the pipeline's team at trigger time (only the name is stored).
+/// The pipeline MUST declare `on.webhook.secret: <NAME>` — an unprotected
+/// webhook would be triggerable by anyone who can guess the path. Requests
+/// carry `X-Buz-Signature: sha256=<hex HMAC-SHA256 of the raw body>`; the
+/// secret value is resolved from the pipeline's team at trigger time (only
+/// the name is stored).
 pub async fn handle(
     Path(webhook_path): Path<String>,
     State(state): State<AppState>,
@@ -64,6 +66,17 @@ pub async fn handle(
     }
 
     // Signature gate — verified before the body is parsed or acted on.
+    // A webhook without a secret is triggerable by anyone who can guess the
+    // path, so configuring `on.webhook.secret` is mandatory.
+    if webhook_secret_name.is_empty() {
+        tracing::warn!(
+            "Webhook rejected: pipeline '{pipeline_name}' has no on.webhook.secret configured"
+        );
+        return Err(AppError::Forbidden(
+            "this webhook is unprotected — set `on.webhook.secret: <secret name>` on the pipeline, then sign requests with X-Buz-Signature"
+                .into(),
+        ));
+    }
     if !webhook_secret_name.is_empty() {
         let ciphertext: Option<String> =
             sqlx::query("SELECT value FROM secrets WHERE team_id = ? AND name = ?")
@@ -81,7 +94,7 @@ pub async fn handle(
                     "Webhook rejected: secret '{webhook_secret_name}' missing or undecryptable \
                      for pipeline '{pipeline_name}'"
                 );
-                return Err(AppError::Unauthorized(
+                return Err(AppError::Forbidden(
                     "webhook secret is configured on this pipeline but could not be resolved \
                      — ask an admin to check the team secret"
                         .into(),
@@ -98,7 +111,7 @@ pub async fn handle(
                 tracing::warn!(
                     "Webhook rejected: invalid or missing X-Buz-Signature for pipeline '{pipeline_name}'"
                 );
-                return Err(AppError::Unauthorized(
+                return Err(AppError::Forbidden(
                     "invalid or missing X-Buz-Signature header".into(),
                 ));
             }

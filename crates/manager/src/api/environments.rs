@@ -343,7 +343,7 @@ pub async fn list(
 
 /// GET /environments/{id}
 pub async fn get_one(
-    _auth: AuthUser,
+    auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -365,7 +365,13 @@ pub async fn get_one(
         row.get(9),
         row.get(10),
     );
-    let overrides = list_overrides_json(&state.pool, &id).await?;
+    // Variable overrides carry plaintext values (defaults + overrides) —
+    // platform-admin only; everyone else gets the environment shell.
+    let overrides = if auth.is_platform_admin {
+        list_overrides_json(&state.pool, &id).await?
+    } else {
+        Vec::new()
+    };
     let secret_overrides = list_secret_overrides_json(&state.pool, &id).await?;
     let mut obj = serde_json::json!({
         "id": row.get::<String, _>(0),
@@ -819,7 +825,7 @@ pub async fn delete(
 
 /// GET /environments/{id}/overrides
 pub async fn list_overrides(
-    _auth: AuthUser,
+    _auth: PlatformAdmin,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {

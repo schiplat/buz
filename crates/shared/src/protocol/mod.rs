@@ -95,6 +95,9 @@ pub struct CreateUserRequest {
     /// Super admin can view all audit logs and all API tokens.
     #[serde(default)]
     pub is_super_admin: Option<bool>,
+    /// Platform-ops user: sandbox host administration via the ops API.
+    #[serde(default)]
+    pub is_ops: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -109,6 +112,8 @@ pub struct UpdateUserRequest {
     pub is_active: Option<bool>,
     #[serde(default)]
     pub is_super_admin: Option<bool>,
+    #[serde(default)]
+    pub is_ops: Option<bool>,
 }
 
 // --- API tokens ---
@@ -163,6 +168,12 @@ pub struct RegisterRequest {
     #[serde(default)]
     pub labels: Vec<String>,
     pub version: Option<String>,
+    /// Host machine identity (env-pinned or machine-id derived); older Runners omit it.
+    #[serde(default)]
+    pub host_id: String,
+    /// Deployment identity of this Runner installation; survives re-registration.
+    #[serde(default)]
+    pub runner_instance_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -179,6 +190,12 @@ pub struct HeartbeatRequest {
     pub status: String,
     #[serde(default)]
     pub system_info: Option<SystemInfo>,
+    /// Host machine identity; empty on older Runners (stored value kept).
+    #[serde(default)]
+    pub host_id: String,
+    /// Deployment identity of this Runner installation; empty on older Runners.
+    #[serde(default)]
+    pub runner_instance_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -192,6 +209,11 @@ pub struct HeartbeatResponse {
     /// DB flag once it has been served.
     #[serde(default)]
     pub restart: bool,
+    /// One-shot capability re-probe command: the Runner re-probes its sandbox
+    /// backends immediately and reports fresh results on the next heartbeat.
+    /// `false` is the steady state; the Manager clears the DB flag once served.
+    #[serde(default)]
+    pub reprobe: bool,
 }
 
 /// Job-wide execution isolation selected by the Runner's Manager policy.
@@ -266,6 +288,11 @@ pub struct RunnerPolicyConfig {
     /// `insecure` | `known_hosts`
     #[serde(default = "default_ssh_host_key_policy")]
     pub ssh_host_key_policy: String,
+    /// How this Runner walks its candidate queue when a job does not fit the
+    /// sandbox host's slot budget: `backfill` (default) skips it and keeps
+    /// looking; `fifo` claims nothing this round. Hot-reloaded on heartbeat.
+    #[serde(default = "default_claim_strategy")]
+    pub claim_strategy: String,
 }
 
 impl Default for RunnerPolicyConfig {
@@ -279,8 +306,13 @@ impl Default for RunnerPolicyConfig {
             docker_enabled: false,
             wasm_enabled: false,
             ssh_host_key_policy: default_ssh_host_key_policy(),
+            claim_strategy: default_claim_strategy(),
         }
     }
+}
+
+fn default_claim_strategy() -> String {
+    "backfill".into()
 }
 
 fn default_max_concurrent_jobs() -> u32 {
@@ -392,6 +424,12 @@ pub struct SystemInfo {
     /// Host-verified support for job-wide sandbox backends. Absent on older Runners.
     #[serde(default)]
     pub execution_capabilities: Option<RunnerExecutionCapabilities>,
+    /// Sandbox supervisor status block (identity, applied config version/hash,
+    /// profiles, manager reachability, snapshot state). Present only when the
+    /// Runner runs a sandboxed tier; the shape is owned by the Runner and kept
+    /// as JSON so adding a field never breaks older Managers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandboxd: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -430,6 +468,9 @@ pub struct CreateRunnerRequest {
     /// `insecure` | `known_hosts`
     #[serde(default)]
     pub ssh_host_key_policy: Option<String>,
+    /// `backfill` (default) | `fifo`
+    #[serde(default)]
+    pub claim_strategy: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -454,6 +495,8 @@ pub struct UpdateRunnerRequest {
     #[serde(default)]
     pub execution_mode: Option<RunnerExecutionMode>,
     pub ssh_host_key_policy: Option<String>,
+    #[serde(default)]
+    pub claim_strategy: Option<String>,
 }
 
 // --- Job ---
@@ -559,6 +602,11 @@ pub struct CreatePipelineRequest {
     pub webhook_path: Option<String>,
     #[serde(default)]
     pub webhook_environment: Option<String>,
+    /// NAME of the team secret whose value signs webhook requests
+    /// (`X-Buz-Signature`). Required for trigger_type=webhook — an
+    /// unprotected webhook is triggerable by anyone who can guess the path.
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
     pub cron_expr: Option<String>,
     #[serde(default)]
     pub cron_environment: Option<String>,

@@ -6,6 +6,8 @@ Lightweight Cross-Network Orchestration Platform.
 
 Check the installed version any time: `buz-manager --version` / `buz-runner --version` — also shown in the Web UI (sidebar footer / login page) and via `GET /health`.
 
+Tab completion for `buz-manager` / `buz-runner` / `buz-plugin`: `buz-manager completions <bash|zsh|fish|powershell|elvish>` (see [Shell Completions](docs/content/docs/03-operations/shell-completions.md)).
+
 ## Quick Start
 
 ```bash

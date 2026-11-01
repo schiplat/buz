@@ -61,6 +61,59 @@ pub async fn init(config: &Config) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
+/// Read one Manager-local fact from `manager_meta`.
+pub async fn manager_meta_get(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT value FROM manager_meta WHERE key = ?")
+            .bind(key)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// Persist one Manager-local fact in `manager_meta` (upsert).
+pub async fn manager_meta_set(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Result<()> {
+    sqlx::query("INSERT INTO manager_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(key)
+        .bind(value)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// `manager_meta` key holding the persistent Manager control-plane identity.
+pub const META_KEY_MANAGER_INSTANCE_ID: &str = "manager_instance_id";
+
+/// Resolve the Manager instance identity: `BUZ_MANAGER_INSTANCE_ID` (env,
+/// pinned by the operator) > the value persisted in `manager_meta` on a
+/// previous boot > generate `mgr-<uuid>` once and persist it.
+///
+/// Multiple Managers on different devices are independent control planes (the
+/// SQLite database is local to one device); this identity binds ownership and
+/// log/audit correlation — it is not an HA coordinator.
+pub async fn ensure_manager_instance_id(pool: &SqlitePool) -> anyhow::Result<String> {
+    const ENV_VAR: &str = "BUZ_MANAGER_INSTANCE_ID";
+    match shared::instance::from_env(ENV_VAR) {
+        Ok(Some(id)) => {
+            manager_meta_set(pool, META_KEY_MANAGER_INSTANCE_ID, &id).await?;
+            Ok(id)
+        }
+        Ok(None) => {
+            if let Some(existing) = manager_meta_get(pool, META_KEY_MANAGER_INSTANCE_ID).await? {
+                if let Ok(id) = shared::instance::validate(&existing) {
+                    return Ok(id);
+                }
+                tracing::warn!(stored = %existing, "persisted manager_instance_id is invalid; regenerating");
+            }
+            let id = shared::instance::validate(&format!("mgr-{}", uuid::Uuid::new_v4()))
+                .map_err(anyhow::Error::msg)?;
+            manager_meta_set(pool, META_KEY_MANAGER_INSTANCE_ID, &id).await?;
+            Ok(id)
+        }
+        Err(error) => Err(anyhow::anyhow!("invalid {ENV_VAR}: {error}")),
+    }
+}
+
 /// Add a column unless it already exists. `ALTER TABLE ... ADD COLUMN` has no
 /// `IF NOT EXISTS` in SQLite, so migrations are written idempotently by
 /// ignoring the duplicate-column error — but ONLY that error: a wrong table
@@ -124,10 +177,110 @@ async fn rename_column_if_present(pool: &SqlitePool, table: &str, from: &str, to
     }
 }
 
+/// One-time data migration behind the whitelist retirement (2026-10): tenant
+/// policy moved from the per-host `sandbox_host_teams` whitelist onto the
+/// machine's Runner team bindings (`runners.team_id`). For each host instance
+/// whose whitelist holds exactly one still-existing team, every attached
+/// runner without a team binding adopts it. Multi-team whitelists are
+/// ambiguous (a machine maps to one runner team) and are dropped — affected
+/// hosts become open and the operator reconciles via runner bindings. Finally
+/// the table is removed. Idempotent: a no-op once the table is gone.
+async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
+    let table_exists: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sandbox_host_teams'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
+        != 0;
+    if !table_exists {
+        return;
+    }
+
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT host_id, instance_id, team_id FROM sandbox_host_teams ORDER BY team_id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let mut by_pair: std::collections::HashMap<(String, String), Vec<String>> =
+        std::collections::HashMap::new();
+    for (host_id, instance_id, team_id) in rows {
+        by_pair
+            .entry((host_id, instance_id))
+            .or_default()
+            .push(team_id);
+    }
+
+    let mut migrated: u64 = 0;
+    for ((host_id, instance_id), teams) in &by_pair {
+        // Exactly one team (that still exists) can map onto runner bindings.
+        if teams.len() != 1 {
+            tracing::warn!(
+                host = %host_id,
+                instance = %instance_id,
+                teams = teams.len(),
+                "host whitelist had multiple teams — dropped; bind runners manually"
+            );
+            continue;
+        }
+        let team_id = &teams[0];
+        let team_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM teams WHERE id = ?)")
+                .bind(team_id)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(false);
+        if !team_exists {
+            tracing::warn!(host = %host_id, team = %team_id, "whitelist team no longer exists — dropped");
+            continue;
+        }
+        let result = sqlx::query(
+            "UPDATE runners SET team_id = ?, updated_at = datetime('now')
+             WHERE host_id = ? AND sandbox_instance_id = ? AND team_id IS NULL",
+        )
+        .bind(team_id)
+        .bind(host_id)
+        .bind(instance_id)
+        .execute(pool)
+        .await;
+        match result {
+            Ok(res) if res.rows_affected() > 0 => {
+                migrated += res.rows_affected();
+                tracing::info!(host = %host_id, instance = %instance_id, team = %team_id,
+                    "migrated host whitelist onto runner team bindings");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, host = %host_id, "whitelist migration update failed")
+            }
+        }
+    }
+
+    if let Err(error) = sqlx::query("DROP TABLE IF EXISTS sandbox_host_teams")
+        .execute(pool)
+        .await
+    {
+        tracing::warn!(%error, "failed to drop sandbox_host_teams");
+    }
+    if migrated > 0 {
+        tracing::info!(
+            migrated,
+            "host whitelists retired onto runner team bindings"
+        );
+    }
+}
+
 pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Result<()> {
+    // NOTE: the per-host team whitelist (sandbox_host_teams) is retired before
+    // it ever shipped — tenant policy lives on runner team bindings. Dev
+    // databases that still hold the table are migrated and the table dropped
+    // by migrate_host_whitelists_to_runners below; fresh installs never create it.
     for path in [
         include_str!("migrations/001_init.sql"),
         include_str!("migrations/002_step_resolutions.sql"),
+        include_str!("migrations/003_sandbox_hosts.sql"),
     ] {
         // Split by ; and execute each statement
         for statement in path.split(';') {
@@ -146,6 +299,60 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
 
     // Add system_info column to runners table (safe to fail if already present)
     add_column_if_missing(pool, "runners", "system_info TEXT NOT NULL DEFAULT '{}'").await;
+
+    // Runner-reported deployment identities (see shared::instance): the host
+    // machine id and this Runner installation's instance id. Empty on runners
+    // that have not reported yet; both are public identifiers, never secrets.
+    add_column_if_missing(pool, "runners", "host_id TEXT NOT NULL DEFAULT ''").await;
+    add_column_if_missing(
+        pool,
+        "runners",
+        "runner_instance_id TEXT NOT NULL DEFAULT ''",
+    )
+    .await;
+
+    // Resource profile requests (sandbox-host-configuration design record).
+    // pipelines.resource_profile: the YAML `runner.resources` name ('' = default).
+    // jobs.resource_profile: frozen at trigger after the team grant check;
+    // jobs.resource_slots / resource_spec / sandbox_instance_id: filled at
+    // claim from the dispatching host's applied document (scheduling PR).
+    add_column_if_missing(
+        pool,
+        "pipelines",
+        "resource_profile TEXT NOT NULL DEFAULT ''",
+    )
+    .await;
+    add_column_if_missing(pool, "jobs", "resource_profile TEXT NOT NULL DEFAULT ''").await;
+    add_column_if_missing(pool, "jobs", "resource_slots INTEGER NOT NULL DEFAULT 1").await;
+    add_column_if_missing(pool, "jobs", "resource_spec TEXT NOT NULL DEFAULT '{}'").await;
+    add_column_if_missing(pool, "jobs", "sandbox_instance_id TEXT NOT NULL DEFAULT ''").await;
+    // Why a pending job was last skipped by a poller (slot wait, profile not
+    // offered, host mode); cleared on claim. Display-only.
+    add_column_if_missing(pool, "jobs", "dispatch_reason TEXT NOT NULL DEFAULT ''").await;
+    // Slot-aware claim: UI-managed walk strategy and the heartbeat-derived
+    // sandboxd instance this Runner is attached to.
+    add_column_if_missing(
+        pool,
+        "runners",
+        "claim_strategy TEXT NOT NULL DEFAULT 'backfill'",
+    )
+    .await;
+    add_column_if_missing(
+        pool,
+        "runners",
+        "sandbox_instance_id TEXT NOT NULL DEFAULT ''",
+    )
+    .await;
+
+    // ── Retire the per-host team whitelist (sandbox_host_teams) ──
+    // Tenant policy lives on the Runner (runners.team_id, enforced in the
+    // poll loop). For each host instance whose whitelist holds exactly one
+    // still-existing team, bind every attached runner (team_id IS NULL) to
+    // that team; multi-team whitelists cannot map to one runner team and are
+    // dropped — affected hosts become open and the operator reconciles via
+    // runner bindings. Then the table is removed. Runs after the
+    // sandbox_instance_id column is ensured (the mapping needs it).
+    migrate_host_whitelists_to_runners(pool).await;
 
     // Add privileged column to tasks table (safe to fail if already present)
     add_column_if_missing(pool, "tasks", "privileged INTEGER NOT NULL DEFAULT 0").await;
@@ -171,6 +378,16 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         sqlx::query("ALTER TABLE runners ADD COLUMN restart_requested INTEGER NOT NULL DEFAULT 0")
             .execute(pool)
             .await;
+
+    // One-shot capability re-probe flag: set by
+    // POST /runners/{id}/reprobe-capabilities, served via the next heartbeat,
+    // then cleared. Unlike restart it does not block dispatch — probing is
+    // observational.
+    let _ = sqlx::query(
+        "ALTER TABLE runners ADD COLUMN capability_reprobe_requested INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(pool)
+    .await;
 
     // Max parallel jobs per runner (UI-controlled; default 1 = serial)
     let _ = sqlx::query(
@@ -866,6 +1083,11 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     // Super admin sees all audit logs and all API tokens; regular platform
     // admins see only their own. Safe to fail when the column already exists.
     add_column_if_missing(pool, "users", "is_super_admin INTEGER NOT NULL DEFAULT 0").await;
+
+    // Platform-ops flag: sandbox host administration (ops API namespace).
+    // Implies nothing else — admins keep full access; ops users are scoped to
+    // the ops namespace and read-only elsewhere.
+    add_column_if_missing(pool, "users", "is_ops INTEGER NOT NULL DEFAULT 0").await;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS api_tokens (

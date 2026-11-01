@@ -142,7 +142,7 @@ pub async fn login(
     }
 
     let row = sqlx::query(
-        "SELECT id, username, password_hash, is_platform_admin, is_active
+        "SELECT id, username, password_hash, is_platform_admin, is_active, is_ops
          FROM users WHERE username = ?",
     )
     .bind(username)
@@ -168,8 +168,11 @@ pub async fn login(
     let user_id: String = row.get(0);
     let username: String = row.get(1);
     let is_platform_admin: i64 = row.get(3);
+    let is_ops: i64 = row.get(5);
     let role = if is_platform_admin != 0 {
         Role::Admin
+    } else if is_ops != 0 {
+        Role::Ops
     } else {
         Role::User
     };
@@ -222,6 +225,7 @@ pub async fn me(auth: AuthUser) -> Result<Json<ApiResponse<serde_json::Value>>, 
         "username": auth.username,
         "is_platform_admin": auth.is_platform_admin,
         "is_super_admin": auth.is_super_admin,
+        "is_ops": auth.is_ops,
         "teams": teams,
     }))))
 }

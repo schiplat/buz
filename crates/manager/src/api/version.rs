@@ -19,6 +19,23 @@ pub const DEFAULT_MARKETPLACE_URL: &str = "https://plugins.buz.schiplat.com";
 /// Wall-clock process start time, recorded once the manager boots.
 static STARTED_AT: OnceLock<chrono::DateTime<chrono::Utc>> = OnceLock::new();
 
+/// Manager control-plane identity, resolved once at startup by `main`
+/// (`db::ensure_manager_instance_id`). A global rather than an `AppState`
+/// field: it is immutable for the process lifetime and lets the response
+/// header middleware read it without threading it through every extractor.
+static MANAGER_INSTANCE_ID: OnceLock<String> = OnceLock::new();
+
+/// Record the Manager instance identity — call from `main` right after it is
+/// resolved. The first call wins; later calls are ignored.
+pub fn set_instance_id(id: String) {
+    let _ = MANAGER_INSTANCE_ID.set(id);
+}
+
+/// The Manager instance identity, or `None` before `main` sets it (tests).
+pub fn instance_id() -> Option<&'static str> {
+    MANAGER_INSTANCE_ID.get().map(String::as_str)
+}
+
 /// Record the process start time — call from `main` right after startup.
 pub fn mark_started() {
     STARTED_AT.get_or_init(chrono::Utc::now);
@@ -185,6 +202,7 @@ pub async fn health(
         "name": PRODUCT_NAME,
         "version": VERSION,
         "component": "manager",
+        "manager_instance_id": instance_id(),
         "marketplace_url": marketplace_url,
         "uptime_seconds": uptime_seconds,
         "started_at": started.map(|s| s.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
@@ -212,4 +230,22 @@ pub async fn health(
         StatusCode::OK
     };
     (code, body)
+}
+
+/// Public control-plane identity probe (no auth). Returns the persistent
+/// `manager_instance_id` so Runners, sandboxd hosts, and operators can confirm
+/// which control plane they are talking to. IDs are public identifiers.
+#[utoipa::path(
+    get,
+    path = "/meta",
+    tag = "system",
+    responses((status = 200, description = "Control-plane identity"))
+)]
+pub async fn meta() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "name": PRODUCT_NAME,
+        "version": VERSION,
+        "component": "manager",
+        "manager_instance_id": instance_id().unwrap_or("unknown"),
+    }))
 }

@@ -132,6 +132,7 @@ async fn production_mode_rejects_empty_token() {
             docker_enabled: None,
             wasm_enabled: None,
             ssh_host_key_policy: None,
+            claim_strategy: None,
         },
     )
     .await

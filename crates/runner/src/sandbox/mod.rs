@@ -7,6 +7,8 @@
 //! never receives daemon, root, or KVM access itself.
 
 pub mod backend;
+pub mod config;
+pub mod manager_fetch;
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -14,15 +16,16 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use backend::{validate_prerequisites, BackendDescriptor, TierBackends};
+use backend::{validate_prerequisites, BackendDescriptor};
+pub use config::{AppliedConfig, Bootstrap, ConfigState};
 use shared::protocol::{RunnerExecutionCapabilities, RunnerExecutionMode};
+use shared::sandbox_config::ResourceProfile;
 
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_EXEC_SECONDS: u64 = 24 * 60 * 60;
@@ -50,7 +53,7 @@ impl Default for HostFacts {
     }
 }
 
-pub async fn cleanup_stale_containers(config: &SandboxdConfig) -> anyhow::Result<()> {
+pub async fn cleanup_stale_containers(config: &Bootstrap) -> anyhow::Result<()> {
     let output = Command::new(&config.docker_cli)
         .args([
             "ps",
@@ -92,96 +95,12 @@ pub async fn cleanup_stale_containers(config: &SandboxdConfig) -> anyhow::Result
     Ok(())
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct SandboxdConfig {
-    #[serde(default = "default_instance_id")]
-    pub instance_id: String,
-    #[serde(default = "default_socket")]
-    pub socket: String,
-    #[serde(default = "default_workspace_root")]
-    pub workspace_root: String,
-    #[serde(default = "default_docker_cli")]
-    pub docker_cli: String,
-    #[serde(default)]
-    pub container_image: String,
-    /// OCI runtime for the Container tier; empty uses the daemon default (runc).
-    #[serde(default)]
-    pub container_runtime: String,
-    #[serde(default)]
-    pub sandbox_image: String,
-    /// OCI runtime delivering the Sandbox tier, e.g. `runsc`.
-    #[serde(default)]
-    pub sandbox_runtime: String,
-    #[serde(default)]
-    pub firecracker_guest_image: String,
-    #[serde(default)]
-    pub firecracker_runtime: String,
-    #[serde(default = "default_socket_gid")]
-    pub socket_gid: u32,
-    #[serde(default)]
-    pub workspace_volume: Option<String>,
-    #[serde(default)]
-    pub allowed_runner_uid: Option<u32>,
-    #[serde(default = "default_container_network")]
-    pub container_network: String,
-    #[serde(default = "default_memory_limit")]
-    pub memory_limit: String,
-    #[serde(default = "default_cpu_limit")]
-    pub cpu_limit: String,
-}
-
-impl SandboxdConfig {
-    /// Per-tier backend table for this supervisor's pinned policy.
-    pub fn backends(&self) -> TierBackends {
-        TierBackends::from_tiers([
-            (
-                RunnerExecutionMode::Container,
-                &self.container_image,
-                &self.container_runtime,
-            ),
-            (
-                RunnerExecutionMode::Sandbox,
-                &self.sandbox_image,
-                &self.sandbox_runtime,
-            ),
-            (
-                RunnerExecutionMode::Vm,
-                &self.firecracker_guest_image,
-                &self.firecracker_runtime,
-            ),
-        ])
-    }
-}
-
-fn default_instance_id() -> String {
-    "default".into()
-}
-
-fn default_socket() -> String {
-    "/run/buz-sandboxd/sandboxd.sock".into()
-}
-fn default_workspace_root() -> String {
-    "/var/lib/buz/workspaces".into()
-}
-fn default_docker_cli() -> String {
-    "/usr/bin/docker".into()
-}
-fn default_socket_gid() -> u32 {
-    10001
-}
-fn default_container_network() -> String {
-    "bridge".into()
-}
-fn default_memory_limit() -> String {
-    "2g".into()
-}
-fn default_cpu_limit() -> String {
-    "2".into()
-}
-
+/// Per-connection view of the supervisor: immutable bootstrap, the
+/// atomically replaceable Manager policy, live jobs, and host facts.
 #[derive(Clone)]
 pub struct Service {
-    pub config: Arc<SandboxdConfig>,
+    pub bootstrap: Arc<Bootstrap>,
+    pub config: ConfigState,
     pub jobs: Arc<Mutex<HashMap<String, JobRuntime>>>,
     pub host: HostFacts,
 }
@@ -220,19 +139,19 @@ pub async fn healthcheck(socket: &str) -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("sandboxd healthcheck connect timed out"))??;
     health_response(stream).await
 }
-pub async fn serve(config: SandboxdConfig) -> anyhow::Result<()> {
+pub async fn serve(bootstrap: Bootstrap, initial: ConfigState) -> anyhow::Result<()> {
     anyhow::ensure!(
-        config.allowed_runner_uid.is_some(),
+        bootstrap.allowed_runner_uid.is_some(),
         "sandboxd allowed_runner_uid must be configured"
     );
-    let workspace_root = Path::new(&config.workspace_root);
-    std::fs::create_dir_all(workspace_root)?;
-    let root = std::fs::canonicalize(workspace_root)?;
     anyhow::ensure!(
-        !config.instance_id.trim().is_empty(),
+        !bootstrap.instance_id.trim().is_empty(),
         "sandboxd instance_id cannot be empty"
     );
-    let socket = Path::new(&config.socket);
+    let workspace_root = Path::new(&bootstrap.workspace_root);
+    std::fs::create_dir_all(workspace_root)?;
+    let root = std::fs::canonicalize(workspace_root)?;
+    let socket = Path::new(&bootstrap.socket);
     std::fs::create_dir_all(socket.parent().unwrap_or(Path::new("/run")))?;
     if std::fs::symlink_metadata(socket).is_ok() {
         match UnixStream::connect(socket).await {
@@ -246,27 +165,35 @@ pub async fn serve(config: SandboxdConfig) -> anyhow::Result<()> {
             Err(_) => std::fs::remove_file(socket)?,
         }
     }
-    cleanup_stale_containers(&config).await?;
+    cleanup_stale_containers(&bootstrap).await?;
     let listener = UnixListener::bind(socket)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{chown, PermissionsExt};
         if let Some(parent) = socket.parent() {
-            chown(parent, Some(0), Some(config.socket_gid))?;
+            chown(parent, Some(0), Some(bootstrap.socket_gid))?;
             std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o2770))?;
         }
-        chown(socket, Some(0), Some(config.socket_gid))?;
+        chown(socket, Some(0), Some(bootstrap.socket_gid))?;
         std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))?;
     }
-    tracing::info!(socket = %config.socket, workspace_root = %root.display(), "sandbox supervisor listening");
+    tracing::info!(socket = %bootstrap.socket, workspace_root = %root.display(), "sandbox supervisor listening");
     let service = Service {
-        config: Arc::new(SandboxdConfig {
-            workspace_root: root.to_string_lossy().into_owned(),
-            ..config
-        }),
+        config: initial,
         jobs: Arc::new(Mutex::new(HashMap::new())),
         host: HostFacts::detect(),
+        bootstrap: Arc::new(Bootstrap {
+            workspace_root: root.to_string_lossy().into_owned(),
+            ..bootstrap
+        }),
     };
+    // Deliver Manager policy only when a Manager URL is configured; tests and
+    // air-gapped debugging run offline against the (empty) state.
+    if !service.bootstrap.manager_url.trim().is_empty() {
+        let fetch_bootstrap = (*service.bootstrap).clone();
+        let fetch_state = service.config.clone();
+        tokio::spawn(manager_fetch::run_fetch_loop(fetch_bootstrap, fetch_state));
+    }
     loop {
         let (stream, _) = listener.accept().await?;
         let service = service.clone();
@@ -281,7 +208,7 @@ pub async fn serve(config: SandboxdConfig) -> anyhow::Result<()> {
 async fn handle_connection(service: Service, mut stream: UnixStream) -> anyhow::Result<()> {
     let (uid, gid) = peer_identity(&stream)?;
     if service
-        .config
+        .bootstrap
         .allowed_runner_uid
         .is_some_and(|allowed| allowed != uid)
     {
@@ -365,60 +292,39 @@ async fn process_request(
         .unwrap_or_default()
     {
         "health" => Ok(json!({"ok": true})),
+        "status" => Ok(status(service)),
+        "get_config" => Ok(get_config(service)),
         "create_job" => create_job(service, &request, uid, gid).await,
-        "probe_capabilities" => probe_capabilities(service, &request).await,
+        "probe_capabilities" => probe_capabilities(service).await,
         "read_file" => read_file(service, &request).await,
         "destroy_job" => destroy_job(service, &request).await,
         _ => anyhow::bail!("unsupported sandbox operation"),
     }
 }
 
-/// One tier's backend as the Runner believes it to be configured.
-#[derive(Debug, Clone, Default)]
-struct RequestedBackend {
-    image: String,
-    oci_runtime: String,
-}
-
-fn requested_backends(request: &Value) -> HashMap<RunnerExecutionMode, RequestedBackend> {
-    request
-        .get("backends")
-        .and_then(Value::as_array)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|entry| {
-                    let mode =
-                        RunnerExecutionMode::parse(entry.get("mode").and_then(Value::as_str)?)?;
-                    let field = |key: &str| {
-                        entry
-                            .get(key)
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string()
-                    };
-                    Some((
-                        mode,
-                        RequestedBackend {
-                            image: field("image"),
-                            oci_runtime: field("oci_runtime"),
-                        },
-                    ))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Probes every sandboxed tier the supervisor knows about — independent of
-/// the mode currently selected for this Runner — so a mode switch never waits
-/// on a first probe and operators see why an unavailable tier is unavailable.
-pub async fn probe_capabilities(service: &Service, request: &Value) -> anyhow::Result<Value> {
-    let requested = requested_backends(request);
-    let backends = service.config.backends();
+/// Probes every sandboxed tier the applied Manager document configures —
+/// independent of the mode currently selected for any Runner — so a mode
+/// switch never waits on a first probe and operators see why an unavailable
+/// tier is unavailable. Without an applied document every tier is reported
+/// unsupported with the reason.
+pub async fn probe_capabilities(service: &Service) -> anyhow::Result<Value> {
     let mut capabilities = RunnerExecutionCapabilities::default();
     let checked_at = chrono::Utc::now().to_rfc3339();
-
+    let Some(applied) = service.config.snapshot() else {
+        for mode in RunnerExecutionMode::ALL
+            .into_iter()
+            .filter(|m| m.is_sandboxed())
+        {
+            capabilities.set_backend(
+                mode,
+                shared::protocol::ExecutionBackendStatus::Unsupported,
+                Some("sandbox host has no applied configuration yet".into()),
+            );
+        }
+        capabilities.checked_at = Some(checked_at);
+        return Ok(json!({"ok": true, "capabilities": capabilities, "config_version": 0}));
+    };
+    let backends = applied.backends();
     for mode in RunnerExecutionMode::ALL
         .into_iter()
         .filter(|m| m.is_sandboxed())
@@ -428,25 +334,68 @@ pub async fn probe_capabilities(service: &Service, request: &Value) -> anyhow::R
         };
         let outcome = if !descriptor.is_configured() {
             Err(anyhow::anyhow!(
-                "'{}' tier is not configured on this supervisor",
+                "'{}' tier is not configured on this sandbox host",
                 mode.as_str()
             ))
         } else {
-            let wanted = requested.get(&mode).cloned().unwrap_or_default();
             match validate_prerequisites(
                 descriptor,
                 &service.host.os,
                 &service.host.kvm_path,
-                &wanted.oci_runtime,
+                &descriptor.oci_runtime,
             ) {
-                Ok(()) => probe_backend(service, descriptor, &wanted.image).await,
+                Ok(()) => probe_backend(service, &applied, descriptor).await,
                 Err(error) => Err(error),
             }
         };
         backend::record_probe(&mut capabilities, descriptor, outcome);
     }
     capabilities.checked_at = Some(checked_at);
-    Ok(json!({"ok": true, "capabilities": capabilities}))
+    Ok(json!({
+        "ok": true,
+        "capabilities": capabilities,
+        "config_version": applied.version,
+        "config_sha256": applied.sha256,
+    }))
+}
+
+/// `status`: cheap, 30 s-cadence view for the Runner's heartbeat block.
+pub fn status(service: &Service) -> Value {
+    let applied = service.config.snapshot();
+    json!({
+        "ok": true,
+        "instance_id": service.bootstrap.instance_id,
+        "host_id": service.bootstrap.host_id,
+        "socket": service.bootstrap.socket,
+        "workspace_root": service.bootstrap.workspace_root,
+        "workspace_volume": service.bootstrap.workspace_volume,
+        "allowed_runner_uid": service.bootstrap.allowed_runner_uid,
+        "manager_url": service.bootstrap.manager_url,
+        "configured": applied.is_some(),
+        "config_version": applied.as_ref().map(|c| c.version).unwrap_or(0),
+        "config_sha256": applied.as_ref().map(|c| c.sha256.clone()).unwrap_or_default(),
+        "applied_at": applied.as_ref().map(|c| c.applied_at.clone()),
+        "manager_instance_id": applied.as_ref().map(|c| c.manager_instance_id.clone()),
+        "profiles": applied.as_ref().map(|c| c.document.profiles.clone()),
+        "active_jobs": service.jobs.try_lock().map(|j| j.len()).unwrap_or(0),
+    })
+}
+
+/// `get_config`: the full applied document (Runner writes its observational
+/// `sandboxd.snapshot.json` from this only when the hash changes).
+pub fn get_config(service: &Service) -> Value {
+    match service.config.snapshot() {
+        Some(applied) => json!({
+            "ok": true,
+            "configured": true,
+            "version": applied.version,
+            "sha256": applied.sha256,
+            "applied_at": applied.applied_at,
+            "manager_instance_id": applied.manager_instance_id,
+            "config": shared::sandbox_config::canonical_json(&applied.document),
+        }),
+        None => json!({"ok": true, "configured": false, "version": 0}),
+    }
 }
 
 /// Parameters for building a hardened `docker create` command for a sandbox
@@ -461,10 +410,13 @@ struct SandboxCreateSpec<'a> {
     mount: Option<&'a str>,
     probe: bool,
     entrypoint_command: &'a str,
+    /// Resource envelope for this container (profile resolved by the caller).
+    limits: &'a ResourceProfile,
+    network: &'a str,
 }
 
 fn sandbox_create_command(service: &Service, spec: SandboxCreateSpec<'_>) -> Command {
-    let mut command = Command::new(&service.config.docker_cli);
+    let mut command = Command::new(&service.bootstrap.docker_cli);
     command.args(["create", "--name", spec.container]);
     if spec.probe {
         command.args(["--label", "buz.sandboxd.probe=true"]);
@@ -473,7 +425,7 @@ fn sandbox_create_command(service: &Service, spec: SandboxCreateSpec<'_>) -> Com
         "--label",
         "buz.sandboxd.managed=true",
         "--label",
-        &format!("buz.sandboxd.instance={}", service.config.instance_id),
+        &format!("buz.sandboxd.instance={}", service.bootstrap.instance_id),
         "--user",
         spec.user,
         "--workdir",
@@ -491,13 +443,13 @@ fn sandbox_create_command(service: &Service, spec: SandboxCreateSpec<'_>) -> Com
         "--security-opt",
         "no-new-privileges",
         "--pids-limit",
-        "256",
+        &spec.limits.pids.to_string(),
         "--memory",
-        &service.config.memory_limit,
+        &spec.limits.memory,
         "--cpus",
-        &service.config.cpu_limit,
+        &spec.limits.cpu,
         "--network",
-        &service.config.container_network,
+        spec.network,
     ]);
     if let Some(runtime) = spec.runtime {
         command.arg("--runtime").arg(runtime);
@@ -514,17 +466,17 @@ fn sandbox_create_command(service: &Service, spec: SandboxCreateSpec<'_>) -> Com
 
 pub async fn probe_backend(
     service: &Service,
+    applied: &AppliedConfig,
     descriptor: &BackendDescriptor,
-    image: &str,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        image == descriptor.image,
-        "sandbox image does not match sandboxd configuration"
-    );
-    anyhow::ensure!(
-        image.contains("@sha256:"),
+        descriptor.image.contains("@sha256:"),
         "sandbox image must be pinned by sha256 digest"
     );
+    // Probes exercise the default envelope: a profile is a cgroup setting,
+    // not a capability, so probing every profile would multiply cost for
+    // no additional signal.
+    let (_, limits) = applied.profile("")?;
 
     let probe_name = format!("buz-sandbox-probe-{}", uuid::Uuid::new_v4());
     let create_result = async {
@@ -532,12 +484,14 @@ pub async fn probe_backend(
             service,
             SandboxCreateSpec {
                 container: &probe_name,
-                image,
+                image: &descriptor.image,
                 runtime: descriptor.runtime(),
                 user: "10001:10001",
                 mount: None,
                 probe: true,
                 entrypoint_command: "sleep 30",
+                limits,
+                network: applied.network(),
             },
         );
         create
@@ -552,7 +506,7 @@ pub async fn probe_backend(
             "sandbox runtime create failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
-        let mut start = Command::new(&service.config.docker_cli);
+        let mut start = Command::new(&service.bootstrap.docker_cli);
         start
             .args(["start", &probe_name])
             .stdin(Stdio::null())
@@ -566,7 +520,7 @@ pub async fn probe_backend(
             "sandbox runtime start failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
-        let mut exec = Command::new(&service.config.docker_cli);
+        let mut exec = Command::new(&service.bootstrap.docker_cli);
         exec.args([
             "exec",
             &probe_name,
@@ -588,7 +542,7 @@ pub async fn probe_backend(
         Ok(())
     }
     .await;
-    let cleanup_result = destroy_container(&service.config.docker_cli, &probe_name).await;
+    let cleanup_result = destroy_container(&service.bootstrap.docker_cli, &probe_name).await;
     create_result?;
     cleanup_result?;
     Ok(())
@@ -600,6 +554,9 @@ pub async fn create_job(
     uid: u32,
     gid: u32,
 ) -> anyhow::Result<Value> {
+    // Fail closed without an applied Manager document: there is no built-in
+    // default image or envelope to fall back to.
+    let applied = service.config.require()?;
     let mode = RunnerExecutionMode::parse(
         request
             .get("mode")
@@ -608,13 +565,13 @@ pub async fn create_job(
     )
     .filter(|mode| mode.is_sandboxed())
     .ok_or_else(|| anyhow::anyhow!("unsupported sandbox mode"))?;
-    let backends = service.config.backends();
+    let backends = applied.backends();
     let descriptor = backends
         .get(mode)
         .ok_or_else(|| anyhow::anyhow!("no backend for '{}' tier", mode.as_str()))?;
     anyhow::ensure!(
         descriptor.is_configured(),
-        "'{}' tier is not configured on this supervisor",
+        "'{}' tier is not configured on this sandbox host",
         mode.as_str()
     );
     let workspace = request
@@ -622,48 +579,33 @@ pub async fn create_job(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let workspace = std::fs::canonicalize(workspace)?;
-    let root = Path::new(&service.config.workspace_root);
+    let root = Path::new(&service.bootstrap.workspace_root);
     anyhow::ensure!(
         workspace.starts_with(root),
         "job workspace is outside the configured workspace root"
     );
     anyhow::ensure!(workspace.is_dir(), "job workspace is not a directory");
-    let requested_image = request
-        .get("image")
+    // The Runner names a profile; the envelope (and the image/runtime) come
+    // from the applied document. An unknown profile is an error, never a
+    // silent downgrade to `default`.
+    let requested_profile = request
+        .get("profile")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    anyhow::ensure!(
-        requested_image == descriptor.image,
-        "requested sandbox image does not match host policy"
-    );
-    let requested_runtime = request
-        .get("oci_runtime")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let (profile_name, limits) = applied.profile(requested_profile)?;
     // Re-check host prerequisites at job start: the host may have drifted
     // since the last capability probe.
     validate_prerequisites(
         descriptor,
         &service.host.os,
         &service.host.kvm_path,
-        requested_runtime,
+        &descriptor.oci_runtime,
     )?;
     let runtime = descriptor.runtime();
-    anyhow::ensure!(
-        !service.config.container_network.trim().is_empty(),
-        "sandbox network policy is empty"
-    );
-    anyhow::ensure!(
-        !service.config.memory_limit.trim().is_empty(),
-        "sandbox memory_limit is empty"
-    );
-    anyhow::ensure!(
-        !service.config.cpu_limit.trim().is_empty(),
-        "sandbox cpu_limit is empty"
-    );
+    let image = descriptor.image.as_str();
     let handle = uuid::Uuid::new_v4().to_string();
     let container = format!("buz-sandbox-{handle}");
-    let workspace_arg = if let Some(volume) = service.config.workspace_volume.as_deref() {
+    let workspace_arg = if let Some(volume) = service.bootstrap.workspace_volume.as_deref() {
         let relative = workspace
             .strip_prefix(root)
             .map_err(|_| anyhow::anyhow!("job workspace escaped its volume root"))?;
@@ -682,12 +624,14 @@ pub async fn create_job(
         service,
         SandboxCreateSpec {
             container: &container,
-            image: requested_image,
+            image,
             runtime,
             user: &user,
             mount: Some(&workspace_arg),
             probe: false,
             entrypoint_command: "while :; do sleep 3600; done",
+            limits,
+            network: applied.network(),
         },
     );
     command
@@ -701,10 +645,10 @@ pub async fn create_job(
     )
     .await;
     if let Err(error) = create_result {
-        let _ = destroy_container(&service.config.docker_cli, &container).await;
+        let _ = destroy_container(&service.bootstrap.docker_cli, &container).await;
         return Err(error);
     }
-    let mut start = Command::new(&service.config.docker_cli);
+    let mut start = Command::new(&service.bootstrap.docker_cli);
     start
         .args(["start", &container])
         .stdin(Stdio::null())
@@ -712,10 +656,10 @@ pub async fn create_job(
         .stderr(Stdio::null());
     if let Err(error) = run_status(start, Duration::from_secs(60), "start sandbox container").await
     {
-        let _ = destroy_container(&service.config.docker_cli, &container).await;
+        let _ = destroy_container(&service.bootstrap.docker_cli, &container).await;
         return Err(error);
     }
-    let mut verify_image = Command::new(&service.config.docker_cli);
+    let mut verify_image = Command::new(&service.bootstrap.docker_cli);
     verify_image
         .args([
             "exec",
@@ -734,7 +678,7 @@ pub async fn create_job(
     )
     .await
     {
-        let _ = destroy_container(&service.config.docker_cli, &container).await;
+        let _ = destroy_container(&service.bootstrap.docker_cli, &container).await;
         return Err(anyhow::anyhow!(
             "sandbox image must provide sh and the timeout utility: {error}"
         ));
@@ -746,7 +690,13 @@ pub async fn create_job(
             workspace,
         },
     );
-    Ok(json!({"ok": true, "handle": handle}))
+    Ok(json!({
+        "ok": true,
+        "handle": handle,
+        "profile": profile_name,
+        "limits": limits,
+        "config_version": applied.version,
+    }))
 }
 
 async fn kill_exec_and_container(
@@ -806,7 +756,7 @@ pub async fn exec_step_stream(
         .cloned()
         .unwrap_or_default();
 
-    let mut child = Command::new(&service.config.docker_cli);
+    let mut child = Command::new(&service.bootstrap.docker_cli);
     child.args(["exec", "--workdir", &container_workdir]);
     for (key, value) in env {
         if !valid_env_key(&key) {
@@ -879,21 +829,21 @@ pub async fn exec_step_stream(
                                 match result {
                                     Ok(Ok(())) => {}
                                     Ok(Err(error)) => {
-                                        kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                                        kill_exec_and_container(&mut child, &job.container, &service.bootstrap.docker_cli, &out_reader, &err_reader).await;
                                         return Err(error);
                                     }
                                     Err(_) => {
-                                        kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                                        kill_exec_and_container(&mut child, &job.container, &service.bootstrap.docker_cli, &out_reader, &err_reader).await;
                                         return Err(anyhow::anyhow!("sandbox output write timed out; job container was removed"));
                                     }
                                 }
                             }
                             _ = async { tokio::time::sleep_until(deadline.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(MAX_EXEC_SECONDS + 10))).await }, if deadline.is_some() && status.is_none() => {
-                                kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                                kill_exec_and_container(&mut child, &job.container, &service.bootstrap.docker_cli, &out_reader, &err_reader).await;
                                 return Err(anyhow::anyhow!("sandbox exec watchdog exceeded the step timeout; job container was removed"));
                             }
                             _ = disconnect_reader.read_u8() => {
-                                kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                                kill_exec_and_container(&mut child, &job.container, &service.bootstrap.docker_cli, &out_reader, &err_reader).await;
                                 return Ok(());
                             }
                         }
@@ -902,11 +852,11 @@ pub async fn exec_step_stream(
                 }
             }
             _ = async { tokio::time::sleep_until(deadline.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(MAX_EXEC_SECONDS + 10))).await }, if deadline.is_some() && status.is_none() => {
-                kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                kill_exec_and_container(&mut child, &job.container, &service.bootstrap.docker_cli, &out_reader, &err_reader).await;
                 return Err(anyhow::anyhow!("sandbox exec watchdog exceeded the step timeout; job container was removed"));
             }
             _result = disconnect_reader.read_u8() => {
-                kill_exec_and_container(&mut child, &job.container, &service.config.docker_cli, &out_reader, &err_reader).await;
+                kill_exec_and_container(&mut child, &job.container, &service.bootstrap.docker_cli, &out_reader, &err_reader).await;
                 return Ok(());
             }
         }
@@ -1000,7 +950,7 @@ pub async fn destroy_job(service: &Service, request: &Value) -> anyhow::Result<V
     let Some(job) = job else {
         return Ok(json!({"ok": true}));
     };
-    destroy_container(&service.config.docker_cli, &job.container).await?;
+    destroy_container(&service.bootstrap.docker_cli, &job.container).await?;
     service.jobs.lock().await.remove(handle);
     Ok(json!({"ok": true}))
 }

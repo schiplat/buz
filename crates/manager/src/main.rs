@@ -1,5 +1,7 @@
 use clap::Parser;
-use manager::cli::{gen_runner_token, plugin_validate, Cli, Command, PipelineCommand};
+use manager::cli::{
+    gen_runner_token, plugin_validate, print_completions, Cli, Command, PipelineCommand,
+};
 
 use axum::{routing::get, Router};
 use std::net::SocketAddr;
@@ -26,6 +28,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Command::PluginValidate { paths }) => {
             return plugin_validate(&paths);
+        }
+        Some(Command::Completions { shell }) => {
+            return print_completions(shell);
         }
         Some(Command::Pipeline {
             command:
@@ -57,6 +62,13 @@ async fn main() -> anyhow::Result<()> {
     rbac::bootstrap(&db_pool).await?;
     api::runners::ensure_standalone_auto_approve(&db_pool, &config).await?;
     api::version::mark_started();
+
+    // Control-plane identity: env-pinned (BUZ_MANAGER_INSTANCE_ID) or generated
+    // once and persisted in manager_meta. Reported via /api/v1/meta, /health,
+    // and the X-Buz-Manager-Instance response header.
+    let manager_instance_id = db::ensure_manager_instance_id(&db_pool).await?;
+    api::version::set_instance_id(manager_instance_id.clone());
+    tracing::info!(manager_instance_id = %manager_instance_id, "manager identity resolved");
 
     tracing::info!(
         host = %config.server.host,
@@ -243,6 +255,23 @@ async fn main() -> anyhow::Result<()> {
     services::github_fetch_scheduler::spawn_fetch_scheduler(app_state.clone(), 60);
     services::scheduler::start_scheduler(db_pool.clone());
 
+    // Every response announces the control plane that produced it, so a
+    // Runner/sandboxd pointed at the wrong Manager is visible in a tcpdump.
+    async fn add_instance_header(
+        request: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> axum::response::Response {
+        let mut response = next.run(request).await;
+        if let Some(id) = api::version::instance_id() {
+            if let Ok(value) = axum::http::HeaderValue::from_str(id) {
+                response
+                    .headers_mut()
+                    .insert("x-buz-manager-instance", value);
+            }
+        }
+        response
+    }
+
     let app = match cli
         .frontend
         .as_deref()
@@ -257,6 +286,7 @@ async fn main() -> anyhow::Result<()> {
                 .with_state(app_state.clone())
                 .nest("/api/v1", api::router(app_state.clone()))
                 .fallback_service(frontend::disk_fallback(dir))
+                .layer(axum::middleware::from_fn(add_instance_header))
                 .layer(TraceLayer::new_for_http())
                 .layer(cors)
         }
@@ -271,6 +301,7 @@ async fn main() -> anyhow::Result<()> {
                 .with_state(app_state.clone())
                 .nest("/api/v1", api::router(app_state.clone()))
                 .fallback(frontend::embedded_handler)
+                .layer(axum::middleware::from_fn(add_instance_header))
                 .layer(TraceLayer::new_for_http())
                 .layer(cors)
         }

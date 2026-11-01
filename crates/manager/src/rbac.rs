@@ -20,6 +20,9 @@ pub struct AuthUser {
     pub is_platform_admin: bool,
     /// Super admins see all audit logs and all API tokens.
     pub is_super_admin: bool,
+    /// Platform-ops user: sandbox host administration via the ops API
+    /// namespace. Grants no other platform-admin power.
+    pub is_ops: bool,
     pub memberships: Vec<TeamMembership>,
 }
 
@@ -40,12 +43,12 @@ impl AuthUser {
             return Ok(());
         }
         let Some(role) = self.role_in(team_id) else {
-            return Err(AppError::Unauthorized("not a member of this team".into()));
+            return Err(AppError::Forbidden("not a member of this team".into()));
         };
         if role.at_least(perm.min_role()) {
             Ok(())
         } else {
-            Err(AppError::Unauthorized(format!(
+            Err(AppError::Forbidden(format!(
                 "insufficient team role for {:?}",
                 perm
             )))
@@ -58,12 +61,12 @@ impl AuthUser {
             return Ok(());
         }
         let Some(role) = self.role_in(team_id) else {
-            return Err(AppError::Unauthorized("not a member of this team".into()));
+            return Err(AppError::Forbidden("not a member of this team".into()));
         };
         if role.at_least(required) {
             Ok(())
         } else {
-            Err(AppError::Unauthorized(format!(
+            Err(AppError::Forbidden(format!(
                 "requires team role >= {}",
                 required.as_str()
             )))
@@ -74,7 +77,7 @@ impl AuthUser {
         if self.is_platform_admin {
             Ok(())
         } else {
-            Err(AppError::Unauthorized("platform admin required".into()))
+            Err(AppError::Forbidden("platform admin required".into()))
         }
     }
 
@@ -90,7 +93,8 @@ impl AuthUser {
 
 pub async fn load_auth_user(pool: &SqlitePool, user_id: &str) -> Result<AuthUser, AppError> {
     let row = sqlx::query(
-        "SELECT id, username, is_platform_admin, is_super_admin, is_active FROM users WHERE id = ?",
+        "SELECT id, username, is_platform_admin, is_super_admin, is_active, is_ops
+         FROM users WHERE id = ?",
     )
     .bind(user_id)
     .fetch_optional(pool)
@@ -111,6 +115,7 @@ pub async fn load_auth_user(pool: &SqlitePool, user_id: &str) -> Result<AuthUser
         username: row.get(1),
         is_platform_admin: is_platform_admin != 0,
         is_super_admin: is_super_admin != 0,
+        is_ops: is_platform_admin != 0 || row.get::<i64, _>(5) != 0,
         memberships,
     })
 }
@@ -126,7 +131,7 @@ pub async fn authenticate_user_token(
 ) -> Result<AuthUser, AppError> {
     let tm = TokenManager::new(jwt_secret);
     if let Ok(claims) = tm.verify(token) {
-        if !matches!(claims.role, Role::Admin | Role::User) {
+        if !matches!(claims.role, Role::Admin | Role::Ops | Role::User) {
             return Err(AppError::AuthFailed("user role required".into()));
         }
         return load_auth_user(pool, &claims.sub).await;
@@ -200,7 +205,7 @@ pub async fn verify_cli_admin_token(
 ) -> Result<AuthUser, AppError> {
     let user = authenticate_user_token(pool, jwt_secret, token).await?;
     if !user.is_platform_admin {
-        return Err(AppError::Unauthorized("platform admin required".into()));
+        return Err(AppError::Forbidden("platform admin required".into()));
     }
     Ok(user)
 }

@@ -22,16 +22,7 @@ function go(tab: Tab) {
 
 <template>
   <div class="flex flex-col gap-5">
-    <div>
-      <h1 class="text-lg font-semibold tracking-tight">Plugin library</h1>
-      <p class="mt-0.5 text-sm text-muted-foreground">
-        Templates pipeline authors may reference with
-        <code class="font-mono text-[13px]">uses:</code>. Official and community sources share the
-        same pipeline — curating the pool is the only gate.
-      </p>
-    </div>
-
-    <!-- Tab bar -->
+    <!-- Tab bar (page title lives in the TopNav; tabs stay the first row) -->
     <div class="inline-flex w-fit items-center gap-0.5 rounded-lg bg-muted/70 p-0.5">
       <button
         type="button"
