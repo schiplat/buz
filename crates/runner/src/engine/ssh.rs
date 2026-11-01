@@ -9,8 +9,8 @@ use russh::keys::agent::AgentIdentity;
 use russh::keys::check_known_hosts_path;
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::load_secret_key;
-use russh::keys::ssh_key;
 use russh::keys::HashAlg;
+use russh::keys::{ssh_key, PublicKeyOrCertificate};
 use russh::ChannelMsg;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::timeout;
@@ -989,22 +989,25 @@ impl client::Handler for HostKeyHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &ssh_key::PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // russh 0.65 hands the handler a key-or-certificate; reduce to the
+        // public key this policy verifies (known_hosts holds plain keys).
+        let public_key = server_public_key.public_key();
         match self.policy {
             SshHostKeyPolicy::Insecure => {
                 tracing::warn!(
                     "SSH host key check disabled (policy=insecure) for {}:{}; accepting {}",
                     self.host,
                     self.port,
-                    server_public_key.fingerprint(HashAlg::Sha256),
+                    public_key.fingerprint(HashAlg::Sha256),
                 );
                 Ok(true)
             }
             SshHostKeyPolicy::KnownHosts => verify_against_known_hosts(
                 &self.host,
                 self.port,
-                server_public_key,
+                &public_key,
                 self.known_hosts_path.as_deref(),
             ),
         }
