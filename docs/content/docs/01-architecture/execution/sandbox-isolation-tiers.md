@@ -71,7 +71,7 @@ Three concerns stay separated on purpose:
 | Concern | Owner | Vocabulary |
 |---------|-------|------------|
 | Job-facing contract | Platform admin (Runner Policy) | Tier id: `host` \| `container` \| `sandbox` \| `vm` |
-| Host configuration | Operator (`runner.toml` `[sandbox]`, `sandboxd.toml`) | Which OCI runtime + digest-pinned image delivers each tier |
+| Host configuration | Ops, Manager-managed: platform defaults + per-host document (see [Sandbox host configuration](sandbox-host-configuration.md)) | Which OCI runtime + digest-pinned image delivers each tier |
 | Capability report | Runner probes → Manager → UI | Per-tier Supported/Unsupported/Unknown + reason + delivering runtime name (e.g. `sandbox (runsc)`) |
 
 Implementation-named modes would leak host details into job semantics and force renames when implementations change (Kata alone ships QEMU/CLH/Firecracker backends). With tiers, swapping `kata-fc` for another L3 runtime is a host-ops change with zero job-facing impact — the same argument that motivated introducing L2: gVisor is not "a container flavor", it is a distinct boundary that deserves its own rung.
@@ -94,16 +94,16 @@ BackendDescriptor {
 - The `--runtime` Docker flag is passed whenever `oci_runtime` is non-empty, so today's container and vm behavior is byte-identical after the refactor.
 - The five-minute probe (create → start → exec → remove a short-lived workload per backend) extends to every configured tier; results ride the heartbeat as today, now with per-tier status, reason, and runtime name.
 
-Target configuration sketch (`runner.toml`; `sandboxd.toml` mirrors the same keys, and the generic `BUZ__…` env overrides keep working):
+Tier delivery is configured in the Manager-managed host document — the `tiers` map, edited under Platform defaults (fleet-wide) or per host on the Sandbox hosts page — and sandboxd fetches it from the Manager (see [Sandbox host configuration](sandbox-host-configuration.md)). The earlier sketch of `runner.toml` `[sandbox]` keys mirrored by `sandboxd.toml` is retired: `sandboxd.toml` no longer exists (sandboxd bootstraps from env: `BUZ_MANAGER_URL` + `BUZ_SANDBOXD_TOKEN` / `BUZ_SANDBOXD_TOKEN_FILE`), and legacy `[sandbox]` tier keys in `runner.toml` are ignored on load.
 
-```toml
-[sandbox]
-container_image = "…@sha256:…"          # L1 (unchanged)
-container_runtime = ""                   # default runc
-sandbox_image = "…@sha256:…"             # L2 (gVisor)
-sandbox_runtime = "runsc"
-firecracker_guest_image = "…@sha256:…"   # L3 (field names unchanged)
-firecracker_runtime = "kata-fc"
+```json
+{
+  "tiers": {
+    "container": { "image": "…@sha256:…", "runtime": "" },        // L1 — empty runtime → runc
+    "sandbox":   { "image": "…@sha256:…", "runtime": "runsc" },   // L2 — gVisor
+    "vm":        { "image": "…@sha256:…", "runtime": "kata-fc" }  // L3 — Firecracker-compatible
+  }
+}
 ```
 
 ## Fail-closed inheritance

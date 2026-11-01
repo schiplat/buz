@@ -8,6 +8,8 @@ Check the installed version any time: `buz-manager --version` / `buz-runner --ve
 
 Tab completion for `buz-manager` / `buz-runner` / `buz-plugin`: `buz-manager completions <bash|zsh|fish|powershell|elvish>` (see [Shell Completions](docs/content/docs/03-operations/shell-completions.md)).
 
+![Buz overview](docs/static/image/buz_overview.png)
+
 ## Quick Start
 
 ```bash
@@ -43,6 +45,8 @@ Buz follows three core principles:
 
 Docs layout: **Quick Start → Architecture** (Authoring / Execution / Platform) → **Development** → **Operations**.
 
+![Buz pipeline steps](docs/static/image/buz_steps.png)
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -55,12 +59,13 @@ Docs layout: **Quick Start → Architecture** (Authoring / Execution / Platform)
 
 ```
 buz/
-├── Cargo.toml                 # Workspace (shared / manager / runner)
+├── Cargo.toml                 # Workspace (shared / manager / runner / plugin-cli)
 ├── Makefile
 ├── crates/
 │   ├── shared/                # Protocol, pipeline YAML schema, shared types
 │   ├── manager/               # Control plane → buz-manager
-│   └── runner/                # Execution agent → buz-runner
+│   ├── runner/                # Execution agent → buz-runner, buz-sandboxd
+│   └── plugin-cli/            # Plugin authoring tool → buz-plugin
 ├── dashboard/                 # Vue 3 SPA (embedded into buz-manager at build)
 ├── docs/                      # Hugo + Hextra documentation site
 ├── example/                   # Local run scaffold
@@ -70,12 +75,12 @@ buz/
 │   ├── conf/                  # Docker / release config templates
 │   ├── standalone/            # buz-standalone Compose
 │   └── nginx/                 # Reverse-proxy examples
-├── scripts/                   # Release packaging, e2e helpers
+├── scripts/                   # Release packaging, e2e helpers, test.sh (feature-grouped test runner)
 ├── docker/
 │   ├── Dockerfile             # buz-manager image
 │   ├── Dockerfile.runner      # buz-runner image
 │   ├── Dockerfile.standalone  # Manager + Runner (arm64 lab image)
-│   ├── Dockerfile.sandboxd    # buz-sandboxd image (container/VM execution modes)
+│   ├── Dockerfile.sandboxd    # buz-sandboxd image (container / sandbox / vm isolation tiers)
 │   ├── docker-compose.yml     # `make up` / `docker compose -f docker/docker-compose.yml up -d`
 │   └── docker-compose.vm.yml  # sandbox (VM mode) compose overlay
 └── .github/workflows/         # CI, Docker, release
