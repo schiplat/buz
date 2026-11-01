@@ -13,8 +13,8 @@ use russh::client;
 use russh::client::AuthResult;
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::load_secret_key;
-use russh::keys::ssh_key;
 use russh::keys::HashAlg;
+use russh::keys::PublicKeyOrCertificate;
 use tokio::time::timeout;
 
 #[derive(Debug, Clone)]
@@ -197,13 +197,15 @@ impl client::Handler for AcceptAllHostKeys {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &ssh_key::PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // russh 0.65 hands the handler a key-or-certificate; log the key either way.
+        let public_key = server_public_key.public_key();
         tracing::info!(
             "host probe accepting host key for {}:{} ({})",
             self.host,
             self.port,
-            server_public_key.fingerprint(HashAlg::Sha256)
+            public_key.fingerprint(HashAlg::Sha256)
         );
         Ok(true)
     }

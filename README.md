@@ -94,13 +94,13 @@ Use [Private vulnerability reporting](https://github.com/schiplat/buz/security/a
 
 **请勿通过公开 issue 报告安全漏洞。** 请使用上方"私有漏洞报告"私下提交（7 天内首次响应）。社区插件的疑似恶意内容同样走 [buz-plugins 私有举报](https://github.com/schiplat/buz-plugins/security/advisories/new)。
 
-### Security posture / 安全状态（2026-10-22）
+### Security posture / 安全状态（2026-11-01）
 
 | Scope | Status |
 |-------|--------|
-| Rust (`cargo audit`) | No known highs · 2 known mediums: RUSTSEC-2023-0071 (`rsa` Marvin Attack, via `russh`, no upstream fix — accepted & documented) |
-| Frontend (`npm audit`, incl. `--omit=dev`) | 0 vulnerabilities |
+| Rust (`cargo audit`) | No known highs — the two `russh` highs (GHSA-vp5q-ff62-jwqv, GHSA-47hw-gvq5-r2gm) are fixed by `russh` 0.65. Accepted & documented in [SECURITY.md](SECURITY.md): RUSTSEC-2023-0071 (`rsa` Marvin Attack via `russh`, no upstream fix) and RUSTSEC-2026-0386 (`tokio` pinned at 1.53.1, `AsyncFd` unreachable). GitHub Dependabot counts each advisory per manifest, so its headline totals are ~3× the unique set. |
+| Frontend (`npm audit`, incl. `--omit=dev`) | 0 vulnerabilities — `follow-redirects` 1.16.2 (GHSA-mrwp-f3q8-3g9p fixed) |
 
-Recent dependency-security fixes (rustls-webpki, follow-redirects, vite, Tailwind v4 chain) ship with the latest release — **deploy the newest tag**. The full policy, safe-harbor terms, and the complete known-limitations list (rate limiting, JWT secret handling, debug mode, CORS, WebSocket auth) live in [SECURITY.md](SECURITY.md).
+Recent dependency-security fixes (`russh` 0.65, follow-redirects 1.16.2, rustls-webpki, vite, Tailwind v4 chain) ship with the latest release — **deploy the newest tag**. The full policy, safe-harbor terms, and the complete known-limitations list (rate limiting, JWT secret handling, debug mode, CORS, WebSocket auth) live in [SECURITY.md](SECURITY.md).
 
 依赖漏洞随每个版本发布修复，请部署最新 tag；完整安全策略、安全港条款与已知限制清单见 [SECURITY.md](SECURITY.md)。

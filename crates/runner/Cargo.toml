@@ -40,7 +40,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 libc = "0.2"
 
 # SSH execution (key handling comes from russh's built-in `keys` module)
-russh = "0.61"
+russh = "0.65"
 async-trait = "0.1"
 
 # Error handling
