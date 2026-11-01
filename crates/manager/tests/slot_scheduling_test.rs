@@ -462,3 +462,81 @@ async fn claim_strategy_is_a_validated_runner_policy_field() {
     assert_eq!(status, StatusCode::OK, "{hb}");
     assert_eq!(hb["data"]["policy"]["claim_strategy"], "fifo");
 }
+
+/// The platform catalog as `platform_settings.sandbox_default_profiles` stores it.
+fn catalog_json() -> String {
+    serde_json::json!({
+        "default": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 },
+        "large":   { "memory": "8g", "cpu": "4", "pids": 512, "slots": 4 }
+    })
+    .to_string()
+}
+
+async fn seed_catalog(pool: &SqlitePool) {
+    sqlx::query(
+        "INSERT INTO platform_settings (key, value) VALUES ('sandbox_default_profiles', ?)",
+    )
+    .bind(catalog_json())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn bare_host_document_dispatches_inherited_catalog_profiles() {
+    let (app, pool) = test_app().await;
+    seed_runner(&pool, "runner-1", "container", "backfill").await;
+    // Host document carries only `default` — `large` arrives via the platform
+    // catalog (what a defaults publish delivers to every host).
+    seed_host(&pool, 8, (1, &document(false)), None).await;
+    seed_catalog(&pool).await;
+    let large = create_pipeline(&app, &pool, "p-large", "large").await;
+    let job = trigger(&app, &large).await;
+    assert_eq!(
+        poll(&app, "runner-1").await.as_deref(),
+        Some(job.as_str()),
+        "an inherited catalog profile must dispatch without a host-document save"
+    );
+}
+
+#[tokio::test]
+async fn host_exclusions_stop_inherited_catalog_profiles_at_dispatch() {
+    let (app, pool) = test_app().await;
+    seed_runner(&pool, "runner-1", "container", "backfill").await;
+    // Host explicitly excludes `large` from its inherited catalog; desired ==
+    // applied, so the applied-side effective document must honor the exclusion.
+    let excluded = serde_json::json!({
+        "profiles": { "default": { "memory": "2g", "cpu": "2", "pids": 256, "slots": 1 } },
+        "tiers": { "container": { "image": "repo@sha256:abc", "runtime": "" } },
+        "network": "bridge",
+        "exclude_profiles": ["large"]
+    })
+    .to_string();
+    seed_host(&pool, 8, (1, &excluded), None).await;
+    seed_catalog(&pool).await;
+    let large = create_pipeline(&app, &pool, "p-large", "large").await;
+    let job = trigger(&app, &large).await;
+    assert!(poll(&app, "runner-1").await.is_none());
+    let (_, _, _, reason) = job_state(&pool, &job).await;
+    assert!(
+        reason.contains("does not offer resource profile 'large'"),
+        "reason: {reason}"
+    );
+}
+
+#[tokio::test]
+async fn defaults_only_host_dispatches_the_default_profile() {
+    let (app, pool) = test_app().await;
+    seed_runner(&pool, "runner-1", "container", "backfill").await;
+    // What a defaults publish leaves behind: a config version whose document
+    // carries no profiles at all (pure inheritance).
+    seed_host(&pool, 8, (1, r#"{"network":""}"#), None).await;
+    seed_catalog(&pool).await;
+    let plain = create_pipeline(&app, &pool, "p-plain", "").await;
+    let job = trigger(&app, &plain).await;
+    assert_eq!(
+        poll(&app, "runner-1").await.as_deref(),
+        Some(job.as_str()),
+        "the implicit default must dispatch on a bare, catalog-inheriting host"
+    );
+}

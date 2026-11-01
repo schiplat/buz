@@ -219,16 +219,28 @@ pub async fn decide(
         });
     };
 
+    // Effective documents: host documents inherit the platform catalog, so
+    // both sides resolve against raw doc ∪ catalog, minus host exclusions —
+    // exactly what the sandboxd fetch layer serves. A bare host doc (only
+    // overrides, catalog delivered by a defaults publish) therefore dispatches
+    // catalog profiles without a manual host-document save.
+    let stored: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM platform_settings WHERE key = 'sandbox_default_profiles'",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let catalog = catalog_from_stored(stored.as_deref());
+
     let name = if is_default { DEFAULT_PROFILE } else { profile };
-    let Some(spec) = applied.profiles.get(name) else {
+    let applied_effective = apply_profile_exclusions(merge_missing_profiles(&applied, &catalog));
+    let Some(spec) = applied_effective.profiles.get(name) else {
         return Ok(Decision::NotEligible {
             reason: format!("sandbox host {key} does not offer resource profile '{name}'"),
         });
     };
     // desired ∩ applied: a profile ops removed or excluded stops dispatching
-    // immediately. Compared on the *effective* desired document — host
-    // documents inherit the platform catalog, so a profile's absence from the
-    // raw document is inheritance, not removal.
+    // immediately. Compared on the *effective* desired document — a profile's
+    // absence from the raw document is inheritance, not removal.
     if !is_default && desired_version != applied_version {
         let desired = load_document(
             tx,
@@ -238,15 +250,8 @@ pub async fn decide(
         )
         .await?;
         if let Some(desired) = desired {
-            let stored: Option<String> = sqlx::query_scalar(
-                "SELECT value FROM platform_settings WHERE key = 'sandbox_default_profiles'",
-            )
-            .fetch_optional(&mut *tx)
-            .await?;
-            let desired_effective = apply_profile_exclusions(merge_missing_profiles(
-                &desired,
-                &catalog_from_stored(stored.as_deref()),
-            ));
+            let desired_effective =
+                apply_profile_exclusions(merge_missing_profiles(&desired, &catalog));
             if !desired_effective.profiles.contains_key(name) {
                 return Ok(Decision::NotEligible {
                     reason: format!(

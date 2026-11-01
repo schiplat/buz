@@ -121,22 +121,8 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
         "the enrolled host must be bumped to a new desired version: {resp}"
     );
 
-    // ── 3. Ops saves the host's config document — what the host detail
-    //       editor writes: the full catalog lives in the host document. ──
-    let (status, resp) = app
-        .put(
-            "/api/v1/ops/sandbox-hosts/host-a/sandboxd-01/config",
-            Some(&ops),
-            json!({
-                "profiles": ladder_profiles(),
-                "tiers": { "container": { "image": "repo@sha256:abc", "runtime": "" } },
-                "network": "bridge"
-            }),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "put host config: {resp}");
-
-    // ── 4. sandboxd fetch: the effective document carries the ladder, and a
+    // ── 3. sandboxd fetch: the effective document carries the ladder — the
+    //       host document stays bare and inherits the catalog — and a
     //       caught-up long-poll reports unchanged. ──
     let (status, resp) = app
         .get("/api/v1/sandboxd/config", Some(&device_token))
@@ -144,10 +130,7 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
     assert_eq!(status, StatusCode::OK, "sandboxd fetch: {resp}");
     let fetched = data(&resp);
     let version = fetched["version"].as_i64().unwrap();
-    assert!(
-        version >= 2,
-        "defaults bump + host config = v2+, got {version}"
-    );
+    assert!(version >= 1);
     assert_eq!(fetched["changed"], true);
     assert!(fetched["config"]["profiles"]["small"].is_object());
     assert!(fetched["config"]["profiles"]["default"].is_object());
@@ -201,7 +184,7 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
         .unwrap();
     assert_eq!(jobs, 0, "an unauthorized request must not create a job");
 
-    // ── 5. Grant: the trigger passes, the profile is frozen into the job and
+    // ── 4. Grant: the trigger passes, the profile is frozen into the job and
     //       dispatched to the sandboxed runner on the enrolled host. ──
     let (status, resp) = app
         .put(
@@ -238,7 +221,7 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
     assert_eq!(data(&resp)["job_id"], job1);
     assert_eq!(data(&resp)["resource_profile"], "medium");
 
-    // ── 6. Revoke while queued: the claim refuses and the job fails terminally.
+    // ── 5. Revoke while queued: the claim refuses and the job fails terminally.
     //       A second pipeline keeps job2 clear of the same-pipeline running
     //       gate (job1 is still running on journey-main). ──
     let pipeline_b = pipeline_with_profile(&app, "journey-second", "medium").await;
@@ -266,7 +249,7 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
         .unwrap();
     assert_eq!(job2_status, "failed", "revocation is terminal");
 
-    // ── 7. Audit trail records the whole journey. ──
+    // ── 6. Audit trail records the whole journey. ──
     let actions: Vec<String> = sqlx::query_scalar("SELECT action FROM audit_logs ORDER BY rowid")
         .fetch_all(&app.pool)
         .await
@@ -274,7 +257,6 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
     for expected in [
         "sandbox_host.enroll",
         "sandbox_host.defaults_update",
-        "sandbox_host.config_update",
         "resource_grant.update",
     ] {
         assert!(
