@@ -1,0 +1,7 @@
+# Single source of truth for the local toolchain (rustup honors this file).
+# CI passes the same version explicitly via `toolchain:` inputs in
+# ci.yml / release.yml — bump both places together.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

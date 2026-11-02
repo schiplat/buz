@@ -28,6 +28,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # Kept in sync with rust-toolchain.toml — bump both together.
+  RUST_TOOLCHAIN: "1.99.1"
   # The tag assets attach to: the pushed tag, or the `tag` input when an
   # existing release is rebuilt by hand (e.g. after a runner-image fix).
   # Empty on branch dispatches, which then only verify the build compiles.
@@ -46,8 +48,9 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG || github.ref }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy, rustfmt
 
       - name: Install Linux build deps
@@ -172,8 +175,9 @@ jobs:
           echo "archive=buz-${VER}-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
           echo "plugin=buz-plugin-${VER}-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
 
       # Swatinem/rust-cache removed: one entry (~500MB) alone exceeds the org free-plan storage quota (500MB).
