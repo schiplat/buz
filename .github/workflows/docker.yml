@@ -61,6 +61,7 @@ jobs:
     outputs:
       primary: ${{ steps.resolve.outputs.primary }}
       version: ${{ steps.resolve.outputs.version }}
+      skip: ${{ steps.resolve.outputs.skip }}
     steps:
       - name: Resolve image tag
         id: resolve
@@ -68,10 +69,19 @@ jobs:
           INPUT_TAG: ${{ github.event.inputs.tag }}
           RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
           RELEASE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RELEASE_EVENT: ${{ github.event.workflow_run.event }}
         run: |
           set -euo pipefail
           if [[ -n "${INPUT_TAG}" ]]; then
             PRIMARY="${INPUT_TAG}"
+          elif [[ "${RELEASE_EVENT}" == "workflow_dispatch" ]]; then
+            # A hand-dispatched Release (an existing tag rebuilt after a
+            # pipeline fix) carries a branch, not a tag, in head_branch —
+            # images for that tag come from dispatching this workflow with
+            # tag=<vX.Y.Z> instead of guessing here.
+            echo "Release was dispatched by hand — dispatch this workflow with tag=<vX.Y.Z> to (re)build images"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           elif [[ -n "${RELEASE_BRANCH}" ]]; then
             if [[ "${RELEASE_CONCLUSION}" != "success" ]]; then
               echo "Release workflow concluded '${RELEASE_CONCLUSION}' — nothing to package" >&2
@@ -90,6 +100,7 @@ jobs:
   push:
     name: Build & push (${{ matrix.name }})
     needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ${{ matrix.runs-on }}
     permissions:
       contents: read
@@ -278,6 +289,7 @@ jobs:
   merge:
     name: Merge multi-arch manifests
     needs: [prepare, push]
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
