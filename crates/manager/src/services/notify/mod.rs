@@ -43,6 +43,10 @@ pub enum NotifyError {
     Http(#[from] reqwest::Error),
 }
 
+// clippy 1.99 (`double_must_use`): async_trait wraps `send` in a boxed future
+// it marks `#[must_use]`, on top of the `Result` the signature already carries.
+// The duplication lives in the macro expansion, not in our code.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait NotifyChannel: Send + Sync {
     async fn send(&self, event: &NotifyEvent) -> Result<(), NotifyError>;
