@@ -7,7 +7,7 @@
 #   scripts/test.sh list              show groups and their test targets
 #   scripts/test.sh <group>           run a named group (see GROUPS below)
 #   scripts/test.sh <regex>           run every test target matching a regex
-#   scripts/test.sh all               CI-equivalent: fmt + cargo test --all + dashboard
+#   scripts/test.sh all               CI-equivalent: fmt + clippy + cargo test --all + dashboard
 #   scripts/test.sh <regex> -- <args> trailing args are passed to `cargo test`
 #
 # Examples:
@@ -117,7 +117,11 @@ case "$cmd" in
     ;;
   all)
     # CI-equivalent gate (.github/workflows/ci.yml) — required before push.
+    # CI runs the same suites through cargo-nextest on Linux (parallel test
+    # binaries); locally `cargo test --all` covers the identical set and is
+    # the known-good runner on macOS, where nextest has been seen to hang.
     cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
     cargo test --all
     (cd dashboard && npm test && npm run build)
     ;;

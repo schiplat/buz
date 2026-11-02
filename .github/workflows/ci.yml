@@ -30,6 +30,8 @@ jobs:
   backend:
     name: Rust test
     runs-on: ubuntu-latest
+    # nextest is new here; a hang must not burn the 6h default.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -54,13 +56,29 @@ jobs:
           echo "::endgroup::"
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       # Bounded cache (prunes workspace crates / incremental before save).
-      # Swatinem/rust-cache removed: one entry (~500MB) alone exceeds the org free-plan storage quota (500MB); see KNOWN_ISSUES.md
+      # Swatinem/rust-cache removed: one entry (~500MB) alone exceeds the org free-plan storage quota (500MB).
 
-      # `cargo test --all` typechecks + builds; no separate `cargo check`.
+      # Lints are a gate here too, so a release preflight never finds them first.
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # nextest runs the ~130 test binaries in parallel; `cargo test` runs them
+      # one after another, and the Manager suites carry many long-poll waits.
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: nextest
+
+      # `cargo nextest run` typechecks + builds; no separate `cargo check`.
+      # Doc-tests are outside nextest's scope, so they keep their own step.
       - name: Run tests
-        run: cargo test --all
+        run: cargo nextest run --workspace --no-fail-fast
+
+      - name: Run doc-tests
+        run: cargo test --doc --workspace
 
   # ── Dashboard ───────────────────────────────────────
   dashboard:
