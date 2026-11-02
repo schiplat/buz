@@ -406,6 +406,13 @@ pub async fn bump_hosts_for_defaults(
         .bind(&instance_id)
         .execute(pool)
         .await?;
+        tracing::debug!(
+            host = %host_id,
+            instance = %instance_id,
+            from = desired_version,
+            to = version,
+            "sandbox host bumped by a platform defaults change"
+        );
         bumped.push(format!("{host_id}/{instance_id}"));
     }
     Ok(bumped)

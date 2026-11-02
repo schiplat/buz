@@ -50,13 +50,28 @@ pub fn runner_satisfies_labels(runner_labels: &[String], required: &[String]) ->
 }
 
 /// Best-effort note of why a poller skipped a pending job (slot wait,
-/// profile not offered, host mode). Display-only; cleared on claim.
+/// profile not offered, host mode). Display-only; cleared on claim. Logged
+/// only when the reason changes, so a job parked on one reason does not
+/// repeat itself on every poll round.
 async fn record_dispatch_reason(pool: &sqlx::SqlitePool, job_id: &str, reason: &str) {
-    let _ = sqlx::query("UPDATE jobs SET dispatch_reason = ? WHERE id = ? AND status = 'pending'")
-        .bind(reason)
-        .bind(job_id)
-        .execute(pool)
-        .await;
+    match sqlx::query(
+        "UPDATE jobs SET dispatch_reason = ? WHERE id = ? AND status = 'pending'
+         AND COALESCE(dispatch_reason, '') != ?",
+    )
+    .bind(reason)
+    .bind(job_id)
+    .bind(reason)
+    .execute(pool)
+    .await
+    {
+        Ok(done) if done.rows_affected() > 0 => {
+            tracing::info!(job = %job_id, reason, "job not dispatched");
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(job = %job_id, error = %e, "failed to record dispatch reason");
+        }
+    }
 }
 
 /// `(resource_profile, team_id)` frozen into the job snapshot at trigger.

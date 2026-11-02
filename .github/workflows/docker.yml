@@ -70,6 +70,8 @@ jobs:
           RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
           RELEASE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RELEASE_EVENT: ${{ github.event.workflow_run.event }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [[ -n "${INPUT_TAG}" ]]; then
@@ -84,8 +86,18 @@ jobs:
             exit 0
           elif [[ -n "${RELEASE_BRANCH}" ]]; then
             if [[ "${RELEASE_CONCLUSION}" != "success" ]]; then
-              echo "Release workflow concluded '${RELEASE_CONCLUSION}' — nothing to package" >&2
-              exit 1
+              # Images only consume the Linux archives. A release whose other
+              # platform jobs died (macOS brownout, cancelled runner) can still
+              # ship images as long as both Linux archives are attached.
+              VER="${RELEASE_BRANCH#v}"
+              ASSETS="$(gh release view "${RELEASE_BRANCH}" --json assets -q '.assets[].name' 2>/dev/null || true)"
+              for want in "buz-${VER}-linux-x86_64.tar.gz" "buz-${VER}-linux-aarch64.tar.gz"; do
+                if ! grep -qx "${want}" <<<"${ASSETS}"; then
+                  echo "Release workflow concluded '${RELEASE_CONCLUSION}' and ${want} is not attached — nothing to package" >&2
+                  exit 1
+                fi
+              done
+              echo "Release workflow concluded '${RELEASE_CONCLUSION}', but both Linux archives are attached — packaging"
             fi
             PRIMARY="${RELEASE_BRANCH}"
           elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
