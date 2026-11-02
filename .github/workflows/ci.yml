@@ -10,6 +10,8 @@ env:
   CARGO_TERM_COLOR: always
   # Fail on warnings; skip debuginfo in CI — faster links + less disk than default test/dev profiles.
   RUSTFLAGS: "-D warnings -C debuginfo=0"
+  # Kept in sync with rust-toolchain.toml — bump both together.
+  RUST_TOOLCHAIN: "1.99.1"
   CARGO_INCREMENTAL: "0"
 
 jobs:
@@ -20,8 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -55,8 +58,9 @@ jobs:
           df -h /
           echo "::endgroup::"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
 
       # Bounded cache (prunes workspace crates / incremental before save).
