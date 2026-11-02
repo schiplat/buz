@@ -1238,16 +1238,14 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             // time against its declared `engines` ("shell/ssh unsupported
             // override" errors). `run:` is appended after the template run
             // block (template = environment, call site = commands).
-            for (field, value) in [("image", step.image.as_deref().unwrap_or("").trim())] {
-                if !value.is_empty() {
-                    errors.push(YamlValidationError {
-                        field: format!("steps[{i}].{field}"),
-                        message: format!(
-                            "'uses:' steps cannot declare '{field}:' — it comes from the \
-                             referenced step template"
-                        ),
-                    });
-                }
+            let image = step.image.as_deref().unwrap_or("").trim();
+            if !image.is_empty() {
+                errors.push(YamlValidationError {
+                    field: format!("steps[{i}].image"),
+                    message: "'uses:' steps cannot declare 'image:' — it comes from the \
+                              referenced step template"
+                        .to_string(),
+                });
             }
         } else if run.is_empty() {
             errors.push(YamlValidationError {
