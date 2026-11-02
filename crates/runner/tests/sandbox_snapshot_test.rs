@@ -101,10 +101,7 @@ async fn snapshot_is_written_once_per_hash_and_skipped_when_unchanged() {
 
     // Round 1: new hash → status + get_config + snapshot write.
     let observation = observer.observe(&config).await;
-    assert_eq!(
-        observation.config_changed, false,
-        "first round is not a change"
-    );
+    assert!(!observation.config_changed, "first round is not a change");
     assert_eq!(observation.block["reachable"], true);
     assert_eq!(observation.block["config_version"], 1);
     assert_eq!(observation.block["config_sha256"], "sha-1");

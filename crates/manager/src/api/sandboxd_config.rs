@@ -284,6 +284,14 @@ pub async fn get_config(
     let changed = q
         .applied_version
         .is_none_or(|applied| applied != outcome.desired_version);
+    tracing::debug!(
+        host = %host_id,
+        instance = %instance_id,
+        applied = ?q.applied_version,
+        desired = outcome.desired_version,
+        changed,
+        "sandboxd config fetch served"
+    );
     let body = json!({
         "manager_instance_id": crate::api::version::instance_id(),
         "host_id": host_id,
@@ -318,6 +326,17 @@ pub async fn report_status(
     let host_id = &claims.host_id;
     let instance_id = &claims.instance_id;
     reconcile_db_restore(&state.pool, host_id, instance_id, report.applied_version).await?;
+
+    // Snapshot before the update so the log can tell a fresh apply (version
+    // moved) from a routine heartbeat (same version again).
+    let before: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT applied_version, desired_version FROM sandbox_hosts
+         WHERE host_id = ? AND instance_id = ?",
+    )
+    .bind(host_id)
+    .bind(instance_id)
+    .fetch_optional(&state.pool)
+    .await?;
 
     let error = report.last_error.trim().to_string();
     sqlx::query(
@@ -354,5 +373,44 @@ pub async fn report_status(
     .bind(instance_id)
     .execute(&state.pool)
     .await?;
+
+    // Mirror the status CASE above for the log line (no second read).
+    let (previous_applied, desired) = before.unwrap_or((0, 0));
+    let status = if report.applied_version <= 0 {
+        "unchanged"
+    } else if desired == report.applied_version {
+        "insync"
+    } else {
+        "pending"
+    };
+    if !error.is_empty() {
+        tracing::warn!(
+            host = %host_id,
+            instance = %instance_id,
+            applied = report.applied_version,
+            desired,
+            consecutive_failures = report.consecutive_failures,
+            error = %error,
+            "sandboxd reported a config apply error"
+        );
+    } else if previous_applied != report.applied_version {
+        tracing::info!(
+            host = %host_id,
+            instance = %instance_id,
+            applied = report.applied_version,
+            desired,
+            status,
+            "sandboxd applied a new config version"
+        );
+    } else {
+        tracing::debug!(
+            host = %host_id,
+            instance = %instance_id,
+            applied = report.applied_version,
+            desired,
+            status,
+            "sandboxd status report"
+        );
+    }
     Ok(Json(ApiResponse::success(Value::Null)))
 }

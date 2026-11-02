@@ -640,6 +640,13 @@ pub async fn put_config(
                 .after(Some(json!({ "pending_change": change_id }))),
         )
         .await;
+        tracing::info!(
+            host = %host_id,
+            instance = %instance_id,
+            change = %change_id,
+            by = %auth.username,
+            "sandbox host config change queued for approval"
+        );
         return Ok(Json(ApiResponse::success(json!({
             "pending": true,
             "change_id": change_id,
@@ -655,6 +662,13 @@ pub async fn put_config(
         &auth.username,
     )
     .await?;
+    tracing::info!(
+        host = %host_id,
+        instance = %instance_id,
+        version,
+        by = %auth.username,
+        "sandbox host config published"
+    );
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::SandboxHostConfigUpdate)
@@ -754,6 +768,14 @@ pub async fn rollback(
         &auth.username,
     )
     .await?;
+    tracing::info!(
+        host = %host_id,
+        instance = %instance_id,
+        restored_from = req.version,
+        version,
+        by = %auth.username,
+        "sandbox host config rolled back"
+    );
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::SandboxHostRollback)
@@ -789,6 +811,13 @@ pub async fn rotate_token(
     .bind(&instance_id)
     .execute(&state.pool)
     .await?;
+    // The token itself never reaches the log — only the fact of rotation.
+    tracing::info!(
+        host = %host_id,
+        instance = %instance_id,
+        by = %auth.username,
+        "sandbox host token rotated"
+    );
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::SandboxHostTokenRotate)
@@ -824,6 +853,13 @@ pub async fn update_budget(
     .bind(&instance_id)
     .execute(&state.pool)
     .await?;
+    tracing::info!(
+        host = %host_id,
+        instance = %instance_id,
+        max_resource_slots = req.max_resource_slots,
+        by = %auth.username,
+        "sandbox host slot budget updated"
+    );
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::SandboxHostBudgetUpdate)
@@ -840,6 +876,20 @@ pub async fn update_budget(
     }))))
 }
 
+/// One `sandbox_config_changes` row as the approval queue lists it:
+/// (id, host_id, instance_id, status, requested_by, after_document,
+/// created_at, decided_at).
+type ChangeRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
 /// GET /ops/sandbox-changes?status=pending — approval queue.
 pub async fn list_changes(
     _auth: OpsAdmin,
@@ -847,7 +897,7 @@ pub async fn list_changes(
     Query(q): Query<ChangesQuery>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let status = q.status.unwrap_or_else(|| "pending".into());
-    let rows: Vec<(String, String, String, String, String, String, Option<String>, Option<String>)> =
+    let rows: Vec<ChangeRow> =
         sqlx::query_as(
             "SELECT id, host_id, instance_id, status, requested_by, after_document, created_at, decided_at
              FROM sandbox_config_changes WHERE status = ? ORDER BY created_at DESC",
@@ -941,6 +991,13 @@ pub async fn approve_change(
         .bind(&change_id)
         .execute(&state.pool)
         .await?;
+        tracing::info!(
+            change = %change_id,
+            requested_by = %requested_by,
+            approved_by = %auth.username,
+            bumped_hosts = version,
+            "platform defaults change approved"
+        );
         audit::record(
             &state.pool,
             AuditEvent::from_auth(&auth, Action::SandboxHostConfigApproved).after(Some(json!({
@@ -974,6 +1031,15 @@ pub async fn approve_change(
     .bind(&change_id)
     .execute(&state.pool)
     .await?;
+    tracing::info!(
+        change = %change_id,
+        host = %host_id,
+        instance = %instance_id,
+        version,
+        requested_by = %requested_by,
+        approved_by = %auth.username,
+        "sandbox host config change approved and published"
+    );
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::SandboxHostConfigApproved)
@@ -1017,6 +1083,15 @@ pub async fn reject_change(
     .bind(&change_id)
     .execute(&state.pool)
     .await?;
+    tracing::info!(
+        change = %change_id,
+        host = %host_id,
+        instance = %instance_id,
+        requested_by = %requested_by,
+        rejected_by = %auth.username,
+        comment = ?req.comment,
+        "sandbox config change rejected"
+    );
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::SandboxHostConfigRejected)
@@ -1102,6 +1177,12 @@ pub async fn upsert_grant(
     .bind(&auth.username)
     .execute(&state.pool)
     .await?;
+    tracing::info!(
+        team = %team_id,
+        profile = %profile,
+        by = %auth.username,
+        "resource profile granted"
+    );
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::ResourceGrantUpdate)
@@ -1132,6 +1213,14 @@ pub async fn delete_grant(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("grant not found".into()));
     }
+    // Revocation bites at the next trigger and again at claim (queued jobs
+    // fail terminally) — worth a line when tracing why a job stopped.
+    tracing::info!(
+        team = %team_id,
+        profile = %profile,
+        by = %auth.username,
+        "resource profile grant revoked"
+    );
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::ResourceGrantUpdate)

@@ -1178,7 +1178,16 @@ pub async fn do_trigger(
     // runner binding). Unauthorized → fail fast before anything is scheduled.
     let resource_profile: String = pipeline.get::<String, _>(11).trim().to_string();
     crate::services::resource_grants::ensure_team_may_use(&state.pool, &team_id, &resource_profile)
-        .await?;
+        .await
+        .inspect_err(|error| {
+            tracing::warn!(
+                pipeline = %pipeline_id,
+                team = %team_id,
+                profile = %resource_profile,
+                %error,
+                "trigger refused: team is not granted the requested resource profile"
+            )
+        })?;
     let input_defs: Vec<PipelineInputDef> =
         serde_json::from_str(&input_defs_raw).unwrap_or_default();
     let masking_keys = masking_input_names(&input_defs);
@@ -1654,6 +1663,10 @@ async fn validate_webhook_secret_binding(
     }
     let name = webhook_secret.unwrap_or("").trim();
     if name.is_empty() {
+        tracing::warn!(
+            team = %team_id,
+            "webhook pipeline rejected: webhook_secret is mandatory"
+        );
         return Err(AppError::ValidationFailed(
             "webhook pipelines require `webhook_secret` — the name of a team secret whose value signs hook requests (X-Buz-Signature)"
                 .into(),
@@ -1666,6 +1679,11 @@ async fn validate_webhook_secret_binding(
             .fetch_optional(pool)
             .await?;
     if exists.is_none() {
+        tracing::warn!(
+            team = %team_id,
+            secret = %name,
+            "webhook pipeline rejected: webhook_secret names no secret in this team"
+        );
         return Err(AppError::ValidationFailed(format!(
             "webhook_secret '{name}' does not match any secret in this team — create the secret first"
         )));
