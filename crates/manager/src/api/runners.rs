@@ -755,10 +755,13 @@ pub async fn heartbeat(
 
     if reprobe_requested {
         tracing::info!(runner = %auth.runner_id, "Serving capability re-probe command via heartbeat");
-        sqlx::query("UPDATE runners SET capability_reprobe_requested = 0 WHERE id = ?")
-            .bind(&auth.runner_id)
-            .execute(&state.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE runners SET capability_reprobe_requested = 0,
+                capability_reprobe_served_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&auth.runner_id)
+        .execute(&state.pool)
+        .await?;
         log_runner_event(
             &state.pool,
             &auth.runner_id,
@@ -2757,7 +2760,9 @@ pub async fn list_runners(
                 r.shell_enabled, r.ssh_enabled, r.docker_enabled, r.wasm_enabled, r.ssh_host_key_policy,
                 r.created_at, r.updated_at, r.team_id,
                 (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs,
-                r.execution_mode, r.host_id, r.runner_instance_id, r.claim_strategy
+                r.execution_mode, r.host_id, r.runner_instance_id, r.claim_strategy,
+                r.capability_reprobe_requested, r.capability_reprobe_requested_at,
+                r.capability_reprobe_served_at
          FROM runners r ORDER BY r.created_at DESC",
     )
     .fetch_all(&state.pool)
@@ -2797,6 +2802,9 @@ pub async fn list_runners(
                 "system_info": system_info,
                 "last_seen": r.get::<Option<String>, _>(6),
                 "is_frozen": r.get::<i64, _>(7) != 0,
+                "capability_reprobe_requested": r.get::<i64, _>("capability_reprobe_requested") != 0,
+                "capability_reprobe_requested_at": r.get::<Option<String>, _>("capability_reprobe_requested_at"),
+                "capability_reprobe_served_at": r.get::<Option<String>, _>("capability_reprobe_served_at"),
                 "max_concurrent_jobs": policy.max_concurrent_jobs,
                 "clean_workspace_after_job": policy.clean_workspace_after_job,
                 "shell_enabled": policy.shell_enabled,
@@ -2826,7 +2834,9 @@ pub async fn get_runner(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let r = sqlx::query(
         "SELECT id, name, labels, status, version, system_info, last_seen,
-                created_at, updated_at, team_id, host_id, runner_instance_id
+                created_at, updated_at, team_id, host_id, runner_instance_id,
+                capability_reprobe_requested, capability_reprobe_requested_at,
+                capability_reprobe_served_at
          FROM runners WHERE id = ?",
     )
     .bind(&id)
@@ -2858,6 +2868,9 @@ pub async fn get_runner(
         "team_id": r.get::<Option<String>, _>(9),
         "host_id": r.get::<String, _>(10),
         "runner_instance_id": r.get::<String, _>(11),
+        "capability_reprobe_requested": r.get::<i64, _>("capability_reprobe_requested") != 0,
+        "capability_reprobe_requested_at": r.get::<Option<String>, _>("capability_reprobe_requested_at"),
+        "capability_reprobe_served_at": r.get::<Option<String>, _>("capability_reprobe_served_at"),
         "running_jobs": running_jobs,
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,
@@ -3351,7 +3364,10 @@ pub async fn reprobe_capabilities(
     let name: String = row.get(0);
 
     sqlx::query(
-        "UPDATE runners SET capability_reprobe_requested = 1, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE runners SET capability_reprobe_requested = 1,
+            capability_reprobe_requested_at = datetime('now'),
+            capability_reprobe_served_at = NULL,
+            updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&id)
     .execute(&state.pool)
