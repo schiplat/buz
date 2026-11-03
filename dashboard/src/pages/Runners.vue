@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, type ComputedRef } from 'vue'
+import { ref, computed, onMounted, onUnmounted, type ComputedRef } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
@@ -207,6 +207,8 @@ function formatCapabilityTime(value?: string | null) {
   const time = Date.parse(value)
   return Number.isFinite(time) ? formatLocalDateTime(new Date(time).toISOString()) : value
 }
+
+onUnmounted(() => { stopReprobePolling() })
 
 onMounted(async () => {
   await Promise.all([loadRunners(), loadTeams()])
