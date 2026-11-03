@@ -11,6 +11,7 @@ description: "Configuration, deployment, and operations guides"
   {{< card link="standalone/" title="Standalone" subtitle="Single-image first run & upgrade (arm64)" >}}
   {{< card link="tls/" title="HTTPS" subtitle="Manager TLS, Runner client, reverse proxy, commands" >}}
   {{< card link="runner-restart/" title="Runner Restart" subtitle="Remotely restart a Runner from the UI" >}}
+  {{< card link="runner-reprobe/" title="Runner Capability Re-probe" subtitle="On-demand sandbox capability re-probe and its lifecycle" >}}
   {{< card link="shell-completions/" title="Shell Completions" subtitle="Tab completion for the Buz CLIs" >}}
 {{< /cards >}}
 
