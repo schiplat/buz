@@ -388,6 +388,15 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     )
     .execute(pool)
     .await;
+    // UI state machine: requested_at marks the queue moment, served_at the
+    // moment the Runner's heartbeat picked the command up (results land in a
+    // later heartbeat; the dashboard compares against capabilities.checked_at).
+    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN capability_reprobe_requested_at TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE runners ADD COLUMN capability_reprobe_served_at TEXT")
+        .execute(pool)
+        .await;
 
     // Max parallel jobs per runner (UI-controlled; default 1 = serial)
     let _ = sqlx::query(

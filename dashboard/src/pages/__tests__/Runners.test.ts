@@ -11,6 +11,7 @@ const { dialog } = vi.hoisted(() => ({
 vi.mock('@/api/runners', () => ({
   runnersApi: {
     list: vi.fn(),
+    get: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
     events: vi.fn(),
@@ -209,19 +210,27 @@ describe('Runner team binding', () => {
     expect(checks).toContain('the system never picks one for you')
   })
 
-  it('requests a capability re-probe from the environment checks panel', async () => {
-    // Offline runner: the Re-probe button is disabled, with an inline reason.
+  it('requests a capability re-probe and walks the queued → done lifecycle', async () => {
+    // Offline runner: the request may still be queued — it runs on reconnect.
+    vi.mocked(runnersApi.get).mockResolvedValue(runner())
     await mountPage([runner()])
     document.querySelector<HTMLButtonElement>('button[title="Open runner-one"]')!.click()
     await nextTick()
-    expect(button('Re-probe').disabled).toBe(true)
-    expect(document.body.textContent).toContain('Runner is offline — re-probe unavailable')
+    expect(button('Re-probe').disabled).toBe(false)
+    expect(document.body.textContent).not.toContain('re-probe unavailable')
 
-    // Online runner: clicking asks the Manager to re-probe and shows the hint.
+    // Online runner: clicking queues the request; the queued banner shows and
+    // polling starts against the single-runner endpoint.
     app?.unmount()
     app = undefined
     document.body.innerHTML = ''
     vi.mocked(runnersApi.reprobeCapabilities).mockResolvedValue({ reprobe_requested: true })
+    vi.mocked(runnersApi.get).mockResolvedValue(runner({
+      status: 'online', last_seen: new Date().toISOString(),
+      capability_reprobe_requested: true,
+      capability_reprobe_requested_at: new Date().toISOString(),
+      capability_reprobe_served_at: null,
+    }))
     await mountPage([runner({ status: 'online', last_seen: new Date().toISOString() })])
     document.querySelector<HTMLButtonElement>('button[title="Open runner-one"]')!.click()
     await nextTick()
@@ -231,8 +240,31 @@ describe('Runner team binding', () => {
     await flush()
 
     expect(runnersApi.reprobeCapabilities).toHaveBeenCalledWith('runner-1')
-    expect(document.body.textContent).toContain('Re-probe requested')
-  })
+    expect(document.body.textContent).toContain('Queued — waiting for the Runner\'s next heartbeat')
+
+    // A fresh capability report (checked_at after the request) closes the loop.
+    const servedAt = new Date(Date.now() - 60_000).toISOString()
+    const checkedAt = new Date().toISOString()
+    vi.mocked(runnersApi.get).mockResolvedValue(runner({
+      status: 'online', last_seen: new Date().toISOString(),
+      capability_reprobe_requested: false,
+      capability_reprobe_requested_at: new Date(Date.now() - 90_000).toISOString(),
+      capability_reprobe_served_at: servedAt,
+      system_info: {
+        ...(runner().system_info as NonNullable<Runner['system_info']>),
+        execution_capabilities: {
+          container: 'supported', sandbox: 'unsupported', vm: 'unsupported',
+          container_reason: null, sandbox_reason: 'runsc not found on PATH', vm_reason: '/dev/kvm missing',
+          runtimes: {}, checked_at: checkedAt,
+        },
+      },
+    } as Runner))
+    // advance past one poll interval
+    await new Promise((r) => setTimeout(r, 5_100))
+    await flush()
+
+    expect(document.body.textContent).toContain('Done — results refreshed')
+  }, 15_000)
 
   it('create dialog backdrop scrolls when the form exceeds the viewport', async () => {
     await mountPage()

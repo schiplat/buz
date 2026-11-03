@@ -4,7 +4,7 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TablePagination from '@/components/ui/TablePagination.vue'
-import { Plus, X, Copy, Check, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw, KeyRound, ChevronRight, RefreshCw } from '@lucide/vue'
+import { Plus, X, Copy, Check, Monitor, Server, Snowflake, Trash2, ScrollText, RotateCcw, KeyRound, ChevronRight, RefreshCw, LoaderCircle, AlertTriangle } from '@lucide/vue'
 import { runnersApi, type Runner, type RunnerExecutionMode } from '@/api/runners'
 import { teamsApi, type Team } from '@/api/teams'
 import { formatLocalDateTime } from '@/utils/time'
@@ -108,7 +108,65 @@ const editTeamId = ref('shared')
 const editExecutionMode = ref<RunnerExecutionMode>('host')
 const savingPolicy = ref(false)
 const reprobeSaving = ref(false)
-const reprobeRequested = ref(false)
+
+/** Re-probe lifecycle: queued = flag saved, waiting for a heartbeat;
+ *  probing = heartbeat served it, fresh results still outstanding;
+ *  done = capabilities.checked_at newer than the request. Polling runs
+ *  while queued/probing and stops on done. */
+type ReprobePhase = 'idle' | 'queued' | 'probing' | 'done'
+const REPROBE_TIMEOUT_MS = 180_000
+const reprobePhase = ref<ReprobePhase>('idle')
+let reprobePoll: ReturnType<typeof setInterval> | null = null
+let reprobeWatchdog: ReturnType<typeof setTimeout> | null = null
+
+/** Derive the drawer phase from the runner row itself, so a drawer opened
+ *  mid-flight shows the right state without local bookkeeping. */
+function reprobePhaseOf(r: Runner | null): ReprobePhase {
+  if (!r?.capability_reprobe_requested_at) return 'idle'
+  if (r.capability_reprobe_requested) return 'queued'
+  const servedAt = r.capability_reprobe_served_at ? Date.parse(r.capability_reprobe_served_at) : Number.NaN
+  const checkedAt = r.system_info?.execution_capabilities?.checked_at
+    ? Date.parse(r.system_info!.execution_capabilities!.checked_at!) : Number.NaN
+  const requestedAt = Date.parse(r.capability_reprobe_requested_at)
+  if (Number.isFinite(servedAt) && (!Number.isFinite(checkedAt) || checkedAt < requestedAt)) return 'probing'
+  return 'done'
+}
+
+const reprobeTimedOut = ref(false)
+
+function stopReprobePolling() {
+  if (reprobePoll) { clearInterval(reprobePoll); reprobePoll = null }
+  if (reprobeWatchdog) { clearTimeout(reprobeWatchdog); reprobeWatchdog = null }
+}
+
+/** Poll the single runner while queued/probing; after 3 min stop polling and
+ *  surface a hint — the banner stays so the operator can see where it stuck. */
+function startReprobePolling(runnerId: string) {
+  stopReprobePolling()
+  reprobeTimedOut.value = false
+  reprobeWatchdog = setTimeout(() => {
+    stopReprobePolling()
+    reprobeTimedOut.value = true
+  }, REPROBE_TIMEOUT_MS)
+  reprobePoll = setInterval(async () => {
+    if (!drawerOpen.value) return stopReprobePolling()
+    try {
+      const fresh = await runnersApi.get(runnerId)
+      activeRunner.value = { ...activeRunner.value, ...fresh }
+      reprobePhase.value = reprobePhaseOf(fresh)
+      if (reprobePhase.value === 'done' || reprobePhase.value === 'idle') stopReprobePolling()
+    } catch (e) { console.error(e) }
+  }, 5_000)
+}
+
+const reprobeStep2Text = computed(() => {
+  if (reprobePhase.value === 'queued') {
+    return activeRunner.value?.status !== 'online'
+      ? 'Runner is offline — the request runs on its first heartbeat after reconnecting.'
+      : 'Waiting for the Runner\'s next heartbeat to pick it up (≤30s).'
+  }
+  return 'Runner picked the request up — fresh results land with the next heartbeat (≤30s).'
+})
 
 function backendSupport(runner: Runner | null, mode: Exclude<RunnerExecutionMode, 'host'>) {
   const caps = runner?.system_info?.execution_capabilities
@@ -179,11 +237,17 @@ function openDetail(r: Runner) {
   editExecutionMode.value = r.execution_mode ?? 'host'
   openFolds.value = { loopback: false, bridge: false, tunnel: false, virtual: false }
   copiedNetValue.value = null
-  reprobeRequested.value = false
+  reprobePhase.value = reprobePhaseOf(r)
+  reprobeTimedOut.value = false
+  if (reprobePhase.value === 'queued' || reprobePhase.value === 'probing') startReprobePolling(r.id)
   drawerOpen.value = true
   loadRunnerEvents(r.id)
 }
-function closeDetail() { drawerOpen.value = false; setTimeout(() => { if (!drawerOpen.value) activeRunner.value = null }, 300) }
+function closeDetail() {
+  drawerOpen.value = false
+  stopReprobePolling()
+  setTimeout(() => { if (!drawerOpen.value) activeRunner.value = null }, 300)
+}
 
 // ── Runner events log ──
 interface RunnerEvent { id: string; event_type: string; message: string; created_at: string }
@@ -358,7 +422,9 @@ async function handleReprobe() {
   reprobeSaving.value = true
   try {
     await runnersApi.reprobeCapabilities(activeRunner.value.id)
-    reprobeRequested.value = true
+    reprobePhase.value = 'queued'
+    reprobeTimedOut.value = false
+    startReprobePolling(activeRunner.value.id)
   } catch (e: any) {
     console.error(e)
     const detail = e?.response?.data?.message || e?.message || 'Failed to request capability re-probe'
@@ -873,18 +939,52 @@ const eventBadge = (t: string) => {
                 <div class="flex items-center justify-between gap-2">
                   <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Sandbox environment checks</div>
                   <div class="flex shrink-0 items-center gap-2">
-                    <span v-if="activeRunner && activeRunner.status !== 'online'" class="text-[10px] text-muted-foreground/70">Runner is offline — re-probe unavailable</span>
                     <UiButton
                       size="sm"
                       variant="ghost"
                       :loading="reprobeSaving"
-                      :disabled="activeRunner?.status !== 'online'"
-                      title="Ask the Runner to re-probe its sandbox backends now — fresh results arrive with its next heartbeat (≤30s)"
+                      :disabled="reprobePhase === 'queued' || reprobePhase === 'probing'"
+                      :title="activeRunner?.status !== 'online'
+                        ? 'The Runner is offline — the request is saved and runs on its first heartbeat after reconnecting'
+                        : 'Ask the Runner to re-probe its sandbox backends now; fresh results usually land within 1–2 min'"
                       @click="handleReprobe"
                     ><RefreshCw class="h-4 w-4" /> Re-probe</UiButton>
                   </div>
                 </div>
-                <p v-if="reprobeRequested" class="text-[10px] text-muted-foreground">Re-probe requested — fresh results arrive with the Runner's next heartbeat (≤30s).</p>
+                <!-- re-probe lifecycle: vertical stepper sized for this drawer -->
+                <div v-if="reprobePhase !== 'idle'" class="mb-2 space-y-1">
+                  <div
+                    class="flex items-center gap-2.5 rounded-lg border px-3 py-2 text-[11px]"
+                    :class="reprobePhase === 'probing' ? 'border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-400'
+                      : reprobePhase === 'queued' ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                      : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'"
+                  >
+                    <span
+                      class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-white"
+                      :class="reprobePhase === 'probing' ? 'bg-blue-600' : reprobePhase === 'queued' ? 'bg-amber-600' : 'bg-emerald-600'"
+                    >
+                      <Check v-if="reprobePhase === 'done'" class="h-2.5 w-2.5" />
+                      <LoaderCircle v-else class="h-2.5 w-2.5 animate-spin" />
+                    </span>
+                    <span class="min-w-0 flex-1 font-medium">
+                      <template v-if="reprobePhase === 'queued'">Queued — waiting for the Runner's next heartbeat (≤30s)</template>
+                      <template v-else-if="reprobePhase === 'probing'">Probing on the Runner — each tier starts a short-lived workload</template>
+                      <template v-else>Done — results refreshed</template>
+                    </span>
+                  </div>
+                  <!-- step 2: heartbeat pickup, only between request and fresh results -->
+                  <div
+                    v-if="reprobePhase !== 'done'"
+                    class="ml-3 flex items-center gap-2.5 border-l border-dashed border-border pl-3 text-[10.5px] text-muted-foreground"
+                  >
+                    <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="activeRunner?.status !== 'online' ? 'bg-muted-foreground/40' : 'bg-emerald-500'" />
+                    <span class="min-w-0 flex-1">{{ reprobeStep2Text }}</span>
+                  </div>
+                  <p v-if="reprobeTimedOut" class="ml-3 flex items-start gap-1.5 pl-3 text-[10px] text-amber-600">
+                    <AlertTriangle class="mt-0.5 h-3 w-3 shrink-0" />
+                    <span>Taking longer than expected — check the Runner's log (probes run create → exec → remove per tier), or request again.</span>
+                  </p>
+                </div>
                 <div v-for="item in [
                   { key: 'container', label: 'L1 Container (hardened, host kernel)', support: containerSupport },
                   { key: 'sandbox', label: 'L2 Sandbox (userspace kernel, no KVM)', support: sandboxSupport },

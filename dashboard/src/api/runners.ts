@@ -76,6 +76,10 @@ export interface Runner {
   version: string | null
   system_info: SystemInfo | null
   is_frozen: boolean
+  /** One-shot re-probe command state, for the drawer's progress UI. */
+  capability_reprobe_requested?: boolean
+  capability_reprobe_requested_at?: string | null
+  capability_reprobe_served_at?: string | null
   /** Max parallel jobs (1–32). */
   max_concurrent_jobs: number
   clean_workspace_after_job?: boolean
@@ -132,6 +136,11 @@ export type UpdateRunnerPayload = Partial<Omit<RunnerPolicy, never>> & {
 export const runnersApi = {
   async list(): Promise<Runner[]> {
     const resp = await apiClient.get('/runners')
+    return resp.data
+  },
+
+  async get(id: string): Promise<Runner> {
+    const resp = await apiClient.get(`/runners/${id}`)
     return resp.data
   },
 
