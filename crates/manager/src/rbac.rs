@@ -24,6 +24,10 @@ pub struct AuthUser {
     /// namespace. Grants no other platform-admin power.
     pub is_ops: bool,
     pub memberships: Vec<TeamMembership>,
+    /// Set only when the request was authenticated with an API token (`buz_…`)
+    /// rather than a user JWT. Bounds where the credential may go — see
+    /// [`AuthUser::assert_api_token_allowed`].
+    pub api_token_scope: Option<shared::api_token::ApiTokenScope>,
 }
 
 impl AuthUser {
@@ -89,6 +93,69 @@ impl AuthUser {
             Some(self.team_ids())
         }
     }
+
+    /// Enforce the API-token authority bands on an incoming request.
+    ///
+    /// JWT sessions pass through untouched (`api_token_scope == None`). API
+    /// tokens are operations-plane credentials, so regardless of scope they
+    /// may never reach:
+    /// - the **identity plane** — user management, token management (no
+    ///   self-perpetuation), password change;
+    /// - the **governance plane** — platform settings, plugin sources/pool
+    ///   curation.
+    ///
+    /// Within the operations plane, the `read` band is limited to safe
+    /// methods (GET/HEAD/OPTIONS); `ops` and the legacy `full` band may use
+    /// any method.
+    pub fn assert_api_token_allowed(&self, method: &str, path: &str) -> Result<(), AppError> {
+        let Some(scope) = self.api_token_scope else {
+            return Ok(());
+        };
+
+        // Compare the route relative to the API mount (`/api/v1/...`), so the
+        // deny list below reads exactly like the router table.
+        let rel = path
+            .trim_start_matches('/')
+            .strip_prefix("api/v1/")
+            .unwrap_or_else(|| path.trim_start_matches('/'));
+
+        const IDENTITY_PREFIXES: &[&str] = &["users", "api-tokens", "auth/change-password"];
+        const GOVERNANCE_PREFIXES: &[&str] = &[
+            "admin/settings",
+            "admin/plugin-sources",
+            "admin/plugin-pool",
+        ];
+
+        let denied = |prefixes: &[&str]| {
+            prefixes
+                .iter()
+                .any(|p| rel == *p || rel.starts_with(&format!("{p}/")))
+        };
+        if denied(IDENTITY_PREFIXES) {
+            return Err(AppError::Forbidden(
+                "api tokens cannot access identity endpoints (users, api-tokens, password change) \
+                 — use a browser session"
+                    .into(),
+            ));
+        }
+        if denied(GOVERNANCE_PREFIXES) {
+            return Err(AppError::Forbidden(
+                "api tokens cannot access platform governance endpoints (settings, plugin \
+                 sources/pool) — use a browser session"
+                    .into(),
+            ));
+        }
+
+        if scope == shared::api_token::ApiTokenScope::Read
+            && !matches!(method, "GET" | "HEAD" | "OPTIONS")
+        {
+            return Err(AppError::Forbidden(
+                "read-only api token — create an 'ops' token for write access".into(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 pub async fn load_auth_user(pool: &SqlitePool, user_id: &str) -> Result<AuthUser, AppError> {
@@ -117,6 +184,7 @@ pub async fn load_auth_user(pool: &SqlitePool, user_id: &str) -> Result<AuthUser
         is_super_admin: is_super_admin != 0,
         is_ops: is_platform_admin != 0 || row.get::<i64, _>(5) != 0,
         memberships,
+        api_token_scope: None,
     })
 }
 
@@ -139,8 +207,8 @@ pub async fn authenticate_user_token(
 
     // API token authentication: SHA-256 lookup, then load the owning user.
     let token_hash = shared::api_token::hash_token(token);
-    let user_id = sqlx::query_scalar::<_, String>(
-        "SELECT user_id FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL",
+    let row = sqlx::query_as::<_, (String, String)>(
+        "SELECT user_id, scope FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL",
     )
     .bind(&token_hash)
     .fetch_optional(pool)
@@ -150,6 +218,7 @@ pub async fn authenticate_user_token(
         AppError::AuthFailed("invalid or expired token".into())
     })?
     .ok_or_else(|| AppError::AuthFailed("invalid or expired token".into()))?;
+    let (user_id, scope_str) = row;
 
     // Touch last_used_at (best-effort, non-fatal).
     let _ =
@@ -158,7 +227,19 @@ pub async fn authenticate_user_token(
             .execute(pool)
             .await;
 
-    load_auth_user(pool, &user_id).await
+    let scope = match shared::api_token::ApiTokenScope::parse(&scope_str) {
+        Some(scope) => Some(scope),
+        None => {
+            tracing::warn!(
+                "api token for user {user_id} has unknown scope {scope_str:?} — treating as legacy 'full'"
+            );
+            Some(shared::api_token::ApiTokenScope::Full)
+        }
+    };
+
+    let mut user = load_auth_user(pool, &user_id).await?;
+    user.api_token_scope = scope;
+    Ok(user)
 }
 
 pub async fn load_memberships(

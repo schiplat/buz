@@ -129,6 +129,11 @@ pub struct StreamQuery {
     token: Option<String>,
 }
 
+/// Shared entry point for query-param auth: JWT **or** API token; both then
+/// load a live user. Both current callers are GET endpoints on the
+/// operations plane (job/pipeline log streams), so every token scope may use
+/// them — call `AuthUser::assert_api_token_allowed` here if a future
+/// query-token route leaves that envelope.
 async fn auth_user_from_query_token(
     state: &AppState,
     token: Option<&str>,
@@ -137,7 +142,6 @@ async fn auth_user_from_query_token(
     if token_str.is_empty() {
         return Err(AppError::AuthFailed("invalid or missing token".into()));
     }
-    // Shared entry point: JWT **or** API token; both then load a live user.
     rbac::authenticate_user_token(&state.pool, &state.config.auth.jwt_secret, token_str).await
 }
 

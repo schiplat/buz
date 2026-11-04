@@ -54,3 +54,43 @@ pub fn ct_eq(a: &str, b: &str) -> bool {
     let db = Sha256::digest(b.as_bytes());
     bool::from(da.as_slice().ct_eq(db.as_slice()))
 }
+
+/// Authority band of an API token.
+///
+/// API tokens are operations-plane credentials: they never reach the identity
+/// plane (users, token management, password change) or the governance plane
+/// (platform settings, plugin sources/pool curation) — those require a browser
+/// session JWT. Within the operations plane the band bounds the HTTP methods:
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiTokenScope {
+    /// Safe methods only (GET/HEAD/OPTIONS) on the operations plane.
+    Read,
+    /// Any method on the operations plane (pipelines, jobs, runners, hosts,
+    /// secrets, variables, webhooks, teams, audit logs, …).
+    Ops,
+    /// Legacy creator-equivalent band. Pre-scope tokens keep it so their
+    /// operations-plane behavior is unchanged; new tokens cannot select it.
+    Full,
+}
+
+impl ApiTokenScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ApiTokenScope::Read => "read",
+            ApiTokenScope::Ops => "ops",
+            ApiTokenScope::Full => "full",
+        }
+    }
+
+    /// Parse the stored/requested scope string. Unrecognized values map to
+    /// [`ApiTokenScope::Full`] (the historical behavior of pre-scope rows) —
+    /// the manager warns when that happens on read.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "read" => Some(ApiTokenScope::Read),
+            "ops" => Some(ApiTokenScope::Ops),
+            "full" => Some(ApiTokenScope::Full),
+            _ => None,
+        }
+    }
+}

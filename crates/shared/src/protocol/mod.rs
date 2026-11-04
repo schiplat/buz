@@ -122,6 +122,11 @@ pub struct UpdateUserRequest {
 pub struct CreateApiTokenRequest {
     /// Human-friendly label, e.g. "ci-script".
     pub name: String,
+    /// Authority band: `"read"` (safe methods only) or `"ops"` (read/write on
+    /// the operations plane). Defaults to `"read"`. The legacy `"full"` band
+    /// is closed to new tokens — pre-scope tokens keep it until revoked.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -133,6 +138,8 @@ pub struct CreateApiTokenResponse {
     /// Display prefix (e.g. `buz_ab12…`) shown in list views.
     pub prefix: String,
     pub created_at: String,
+    /// The authority band actually stored (`"read"` / `"ops"`).
+    pub scope: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

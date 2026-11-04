@@ -1,17 +1,22 @@
 //! API token management (platform admins).
 //!
 //! Tiers:
-//! - Super admin: create tokens for any admin, list/revoke every token.
+//! - Super admin: list/revoke every token.
 //! - Regular platform admin: create/list/revoke only their own tokens.
 //!
-//! Tokens authenticate like a user JWT (`Authorization: Bearer <token>`).
-//! Only the SHA-256 hash is stored; the plaintext is shown exactly once.
+//! Tokens authenticate like a user JWT (`Authorization: Bearer <token>`) but
+//! are operations-plane credentials: every scope is denied the identity plane
+//! (users, api-tokens, password change) and the governance plane (settings,
+//! plugin sources/pool). New tokens pick a band — `read` (safe methods only)
+//! or `ops` (read/write); the creator-equivalent `full` band is closed to new
+//! tokens and only exists on pre-scope rows until revoked. Only the SHA-256
+//! hash is stored; the plaintext is shown exactly once.
 
 use axum::{
     extract::{Path, State},
     Json,
 };
-use shared::api_token;
+use shared::api_token::{self, ApiTokenScope};
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::protocol::{CreateApiTokenRequest, CreateApiTokenResponse};
@@ -44,20 +49,39 @@ pub async fn create(
         ));
     }
 
+    // Scope band: default `read` (least privilege), `ops` for read/write
+    // automation. `full` is the legacy band of pre-scope tokens — closed to
+    // new tokens.
+    let scope = match req.scope.as_deref().unwrap_or("read") {
+        "read" => ApiTokenScope::Read,
+        "ops" => ApiTokenScope::Ops,
+        "full" => {
+            return Err(AppError::ValidationFailed(
+                "scope 'full' is legacy-only and closed to new tokens — use 'read' or 'ops'".into(),
+            ));
+        }
+        other => {
+            return Err(AppError::ValidationFailed(format!(
+                "unknown api token scope {other:?} — use 'read' or 'ops'"
+            )));
+        }
+    };
+
     let id = Uuid::new_v4().to_string();
     let token = api_token::generate_token();
     let hash = api_token::hash_token(&token);
     let prefix = api_token::display_prefix(&token);
 
     sqlx::query(
-        "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, scope)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&auth.id)
     .bind(name)
     .bind(&hash)
     .bind(&prefix)
+    .bind(scope.as_str())
     .execute(&state.pool)
     .await?;
 
@@ -67,12 +91,13 @@ pub async fn create(
             .resource("api_token", &id, name)
             .after(Some(serde_json::json!({
                 "prefix": prefix,
+                "scope": scope.as_str(),
                 "created_by": auth.username,
             }))),
     )
     .await;
 
-    tracing::info!(user = %auth.username, token_id = %id, "api token created");
+    tracing::info!(user = %auth.username, token_id = %id, scope = %scope.as_str(), "api token created");
 
     Ok(Json(ApiResponse::success(CreateApiTokenResponse {
         id,
@@ -80,6 +105,7 @@ pub async fn create(
         token,
         prefix,
         created_at: chrono::Utc::now().to_rfc3339(),
+        scope: scope.as_str().to_string(),
     })))
 }
 
@@ -92,7 +118,7 @@ pub async fn list(
     let rows = if auth.is_super_admin {
         sqlx::query(
             "SELECT t.id, t.user_id, u.username, t.name, t.token_prefix,
-                    t.created_at, t.last_used_at, t.revoked_at
+                    t.created_at, t.last_used_at, t.revoked_at, t.scope
              FROM api_tokens t
              LEFT JOIN users u ON u.id = t.user_id
              ORDER BY t.created_at DESC",
@@ -102,7 +128,7 @@ pub async fn list(
     } else {
         sqlx::query(
             "SELECT t.id, t.user_id, u.username, t.name, t.token_prefix,
-                    t.created_at, t.last_used_at, t.revoked_at
+                    t.created_at, t.last_used_at, t.revoked_at, t.scope
              FROM api_tokens t
              LEFT JOIN users u ON u.id = t.user_id
              WHERE t.user_id = ?
@@ -126,6 +152,7 @@ pub async fn list(
                 "last_used_at": r.get::<Option<String>, _>(6),
                 "revoked_at": r.get::<Option<String>, _>(7),
                 "revoked": r.get::<Option<String>, _>(7).is_some(),
+                "scope": r.get::<String, _>(8),
             })
         })
         .collect();

@@ -1122,6 +1122,11 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
         .execute(pool)
         .await?;
 
+    // Token authority band (`read` / `ops`; `full` = legacy creator-equivalent
+    // band, closed to new tokens). Pre-scope rows keep `full` so their
+    // operations-plane behavior is unchanged; see rbac.rs for the plane policy.
+    add_column_if_missing(pool, "api_tokens", "scope TEXT NOT NULL DEFAULT 'full'").await;
+
     // ── GitHub Actions sync (connections / repos / secret & var binds) ──
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS github_connections (

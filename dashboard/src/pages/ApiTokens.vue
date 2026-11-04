@@ -17,6 +17,7 @@ const loading = ref(true)
 const tokens = ref<ApiToken[]>([])
 const showCreate = ref(false)
 const newName = ref('')
+const newScope = ref<'read' | 'ops'>('read')
 const creating = ref(false)
 const createdToken = ref('')
 const createdTokenName = ref('')
@@ -40,6 +41,7 @@ async function load() {
 
 function openCreate() {
   newName.value = ''
+  newScope.value = 'read'
   createdToken.value = ''
   copied.value = false
   showCreate.value = true
@@ -49,7 +51,7 @@ async function handleCreate() {
   if (!newName.value.trim()) return
   creating.value = true
   try {
-    const res = await apiTokensApi.create(newName.value.trim())
+    const res = await apiTokensApi.create(newName.value.trim(), newScope.value)
     createdTokenName.value = res.name
     createdToken.value = res.token
   } finally {
@@ -87,7 +89,7 @@ onMounted(load)
   <div class="space-y-6">
     <PageHeader
       title="API tokens"
-      description="Long-lived credentials for scripts and tooling. Each token acts as the creating admin for API access; super admins can see all tokens."
+      description="Long-lived credentials for scripts and tooling. Tokens are operations-plane credentials: they cannot manage users, other tokens, passwords, or platform governance. Super admins can see all tokens."
     >
       <template #actions>
         <UiButton size="sm" @click="openCreate"><Plus class="h-4 w-4" /> New Token</UiButton>
@@ -112,6 +114,7 @@ onMounted(load)
                 <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Name</th>
                 <th v-if="auth.isSuperAdmin" class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Owner</th>
                 <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Token</th>
+                <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Scope</th>
                 <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Created</th>
                 <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Last used</th>
                 <th class="text-left px-5 py-2.5 text-[11px] uppercase text-muted-foreground">Status</th>
@@ -128,6 +131,23 @@ onMounted(load)
                 </td>
                 <td v-if="auth.isSuperAdmin" class="px-5 py-3 text-xs text-muted-foreground">{{ t.username || '—' }}</td>
                 <td class="px-5 py-3 font-mono text-xs text-muted-foreground">{{ t.prefix }}</td>
+                <td class="px-5 py-3">
+                  <span
+                    v-if="t.scope === 'full'"
+                    class="inline-flex w-fit items-center rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400"
+                    title="Legacy creator-equivalent band (pre-scope token). Still full operations-plane access, but identity and governance endpoints are denied; it retires when revoked."
+                  >Full (legacy)</span>
+                  <span
+                    v-else-if="t.scope === 'ops'"
+                    class="inline-flex w-fit items-center rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
+                    title="Read/write on the operations plane (pipelines, jobs, runners, hosts, secrets, variables, …)"
+                  >Ops</span>
+                  <span
+                    v-else
+                    class="inline-flex w-fit items-center rounded-md bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                    title="Safe methods (GET) only on the operations plane"
+                  >Read-only</span>
+                </td>
                 <td class="px-5 py-3 text-xs">{{ t.created_at?.slice(0, 19) || '—' }}</td>
                 <td class="px-5 py-3 text-xs text-muted-foreground">{{ t.last_used_at?.slice(0, 19) || 'never' }}</td>
                 <td class="px-5 py-3 text-xs">
@@ -165,7 +185,32 @@ onMounted(load)
                 class="w-full rounded-xl border border-border bg-input px-3 py-2 text-sm outline-hidden transition-colors focus:border-ring/40 focus:ring-2 focus:ring-ring/15"
                 @keyup.enter="handleCreate"
               />
-              <p class="text-xs text-muted-foreground mt-1.5">The token is shown only once after creation. Store it somewhere safe.</p>
+            </div>
+            <div>
+              <label class="type-label block mb-1.5">Scope</label>
+              <div class="space-y-2">
+                <label
+                  class="flex cursor-pointer items-start gap-2.5 rounded-xl border px-3 py-2.5 transition-colors"
+                  :class="newScope === 'read' ? 'border-ring/40 bg-ring/5' : 'border-border hover:bg-muted/30'"
+                >
+                  <input v-model="newScope" type="radio" value="read" name="token-scope" class="mt-0.5 accent-[var(--ring)]" />
+                  <span class="text-xs leading-relaxed">
+                    <span class="font-medium text-foreground">Read-only</span>
+                    <span class="block text-muted-foreground">GET requests only — dashboards, status checks, log downloads.</span>
+                  </span>
+                </label>
+                <label
+                  class="flex cursor-pointer items-start gap-2.5 rounded-xl border px-3 py-2.5 transition-colors"
+                  :class="newScope === 'ops' ? 'border-ring/40 bg-ring/5' : 'border-border hover:bg-muted/30'"
+                >
+                  <input v-model="newScope" type="radio" value="ops" name="token-scope" class="mt-0.5 accent-[var(--ring)]" />
+                  <span class="text-xs leading-relaxed">
+                    <span class="font-medium text-foreground">Read-write (ops)</span>
+                    <span class="block text-muted-foreground">Trigger pipelines, manage runners/hosts/secrets — the full operations plane.</span>
+                  </span>
+                </label>
+              </div>
+              <p class="text-xs text-muted-foreground mt-2.5">Every scope is denied user management, token management, password change, and platform settings. The token is shown only once after creation — store it somewhere safe.</p>
             </div>
             <div class="flex justify-end gap-3">
               <UiButton variant="outline" @click="closeCreate">Cancel</UiButton>

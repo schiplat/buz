@@ -166,7 +166,7 @@ Empty `owner_group` rows from Phase 1 must be assigned a team during upgrade (op
 | JWT `role` | Shared enum: `admin` (platform_admin) \| `user` \| `ops` (platform-ops, sandbox hosts only) \| `runner`. Authorization failures return `AppError::Forbidden` (HTTP 403, code 1003); authentication failures are 401 (`AuthFailed` 1001, expired/invalid token 1002). The super-admin tier (`is_super_admin`) gates cross-admin visibility: all API tokens, all audit events, granting the super flag. |
 | Team list in JWT? | **No** — load `team_members` per request (short TTL cache optional) so membership changes apply immediately |
 | Runner tokens | Unchanged (`Role::Runner`) |
-| **API tokens** | `Authorization: Bearer buz_…` → SHA-256 lookup in `api_tokens`, then load the owning user. Full API-equivalent of a user JWT. Stored hashed; plaintext shown once at creation |
+| **API tokens** | `Authorization: Bearer buz_…` → SHA-256 lookup in `api_tokens`, then load the owning user plus the token's scope band. Tokens are **operations-plane credentials**: every scope is denied the identity plane (users, api-tokens, password change) and the governance plane (settings, plugin sources/pool) — those need a browser session. Scopes: `read` (default; safe methods only) and `ops` (read/write) for new tokens; legacy `full` (creator-equivalent operations-plane access) only on pre-scope rows until revoked. Stored hashed; plaintext shown once at creation |
 
 Config: first platform admin is **not** created from toml. On empty `users`, open the Web UI `/setup` (or `POST /auth/setup`).
 
