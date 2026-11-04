@@ -397,6 +397,10 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     let _ = sqlx::query("ALTER TABLE runners ADD COLUMN capability_reprobe_served_at TEXT")
         .execute(pool)
         .await;
+    // Decision notes recorded at approve/reject time (shown in the queue history).
+    let _ = sqlx::query("ALTER TABLE sandbox_config_changes ADD COLUMN decision_comment TEXT")
+        .execute(pool)
+        .await;
 
     // Max parallel jobs per runner (UI-controlled; default 1 = serial)
     let _ = sqlx::query(

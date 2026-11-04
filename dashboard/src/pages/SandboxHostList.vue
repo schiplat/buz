@@ -190,6 +190,24 @@ function togglePanelPending(profile: string) {
 
 /** One action, many grants: POST every pending (team, profile) pair in
  *  order; stop at the first failure and keep the rest pending for retry. */
+/** Approvals inbox state: Pending tab = the live queue; History tab =
+ *  approved/rejected rows re-fetched on every switch. */
+const approvalsTab = ref<'pending' | 'history'>('pending')
+const historyRows = ref<PendingChange[]>([])
+
+async function switchHistory() {
+  approvalsTab.value = 'history'
+  try {
+    const [approved, rejected] = await Promise.all([
+      sandboxHostsApi.changes('approved'),
+      sandboxHostsApi.changes('rejected'),
+    ])
+    historyRows.value = [...rejected, ...approved].sort((a, b) =>
+      (b.decided_at || b.created_at).localeCompare(a.decided_at || a.created_at),
+    )
+  } catch (e) { console.error(e) }
+}
+
 /** Grant pending changes use host_id='resource-grants' + a grant payload
  *  instead of a host document — surface them as human text in the queue. */
 function changeGrantInfo(change: PendingChange): { team_id: string; profile: string; granted: boolean; pipelines?: number; queued_jobs?: number } {
@@ -1522,43 +1540,82 @@ async function rotateToken(host: SandboxHost) {
     </div>
 
     <!-- ── Machines: enrolled sandboxd instances ── -->
-        <!-- Pending approvals: promoted above the host grid so a second
-         person sees them first thing on this page. -->
-    <div v-if="changes.length" class="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4 space-y-3">
-        <div class="flex items-center gap-2">
-          <h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pending changes</h3>
-          <span class="rounded-full bg-amber-500/15 px-1.5 text-xs text-amber-600">{{ changes.length }}</span>
+        <!-- Grants/host approval inbox: Pending + History tabs -->
+    <div v-if="changes.length || historyRows.length" class="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4 space-y-2">
+      <div class="flex items-center justify-between gap-2">
+        <h3 class="text-sm font-semibold tracking-tight">Grants 审批</h3>
+        <div class="inline-flex rounded-lg bg-muted p-0.5">
+          <button
+            type="button"
+            class="rounded-md px-3 py-1 text-[11.5px] font-medium"
+            :class="approvalsTab === 'pending' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'"
+            @click="approvalsTab = 'pending'"
+          >Pending <span class="mono text-[10px]">{{ changes.length }}</span></button>
+          <button
+            type="button"
+            class="rounded-md px-3 py-1 text-[11.5px] font-medium"
+            :class="approvalsTab === 'history' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'"
+            @click="switchHistory"
+          >History <span class="mono text-[10px]">{{ historyRows.length }}</span></button>
         </div>
-        <div v-for="change in changes" :key="change.id" class="rounded-lg border border-border/50 bg-card p-3 space-y-2">
-          <!-- grant/revoke rows (approval switch on): human-readable summary -->
-          <div v-if="change.host_id === 'resource-grants'" class="min-w-0 space-y-0.5">
-            <p class="text-xs font-medium break-words">
-              {{ change.instance_id === 'grant' ? 'Grant' : 'Revoke' }}
+      </div>
+
+      <div class="space-y-0.5">
+        <p v-if="approvalsTab === 'pending' && !changes.length" class="rounded-lg px-2 py-3 text-[11.5px] text-muted-foreground">队列已清空 — 新的授权/撤销会出现在这里等待批准</p>
+        <p v-if="approvalsTab === 'history' && !historyRows.length" class="rounded-lg px-2 py-3 text-[11.5px] text-muted-foreground">暂无已决策的记录</p>
+
+        <div
+          v-for="(change, i) in approvalsTab === 'pending' ? changes : []"
+          :key="'p-' + change.id"
+          class="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 hover:bg-muted/60 text-[11.5px]"
+        >
+          <span
+            class="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-medium"
+            :class="change.instance_id === 'grant' ? 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-400' : 'bg-red-500/12 text-red-700 dark:text-red-400'"
+          >{{ i + 1 }}</span>
+          <div class="min-w-0 flex-1">
+            <span v-if="change.host_id === 'resource-grants'" class="inline-flex items-center gap-1.5 flex-wrap">
+              <span class="font-medium" :class="changeGrantInfo(change).granted ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'">{{ change.instance_id === 'grant' ? 'Grant' : 'Revoke' }}</span>
               <span class="mono">{{ changeGrantInfo(change).profile }}</span>
-              {{ change.instance_id === 'grant' ? '→' : 'from' }}
+              <span class="text-muted-foreground">{{ change.instance_id === 'grant' ? '→' : 'from' }}</span>
               <span class="font-medium">{{ changeGrantInfo(change).team_id }}</span>
-            </p>
-            <p class="type-meta break-words">requested by {{ change.requested_by }} · {{ change.created_at }}</p>
-            <p
-              v-if="changeGrantInfo(change).pipelines != null || changeGrantInfo(change).queued_jobs != null"
-              class="type-meta break-words"
-            >
-              <template v-if="changeGrantInfo(change).pipelines != null">unlocks {{ changeGrantInfo(change).pipelines }} pipeline(s)</template>
-              <template v-if="changeGrantInfo(change).pipelines != null && changeGrantInfo(change).queued_jobs != null"> · </template>
-              <template v-if="changeGrantInfo(change).queued_jobs != null">{{ changeGrantInfo(change).queued_jobs }} queued job(s) would fail at claim</template>
-            </p>
+              <span class="text-muted-foreground">· by {{ change.requested_by }} · {{ formatDateTime(change.created_at) }}</span>
+              <span v-if="change.instance_id === 'revoke' && changeGrantInfo(change).queued_jobs" class="text-red-600 dark:text-red-400">· {{ changeGrantInfo(change).queued_jobs }} queued job(s) would fail at claim</span>
+              <span v-if="change.instance_id === 'grant' && changeGrantInfo(change).pipelines != null" class="text-amber-600">· unlocks {{ changeGrantInfo(change).pipelines }} pipeline(s)</span>
+            </span>
+            <span v-else class="inline-flex items-center gap-1.5">
+              <span class="mono">host config</span>
+              <span class="text-muted-foreground">{{ change.host_id }}/{{ change.instance_id }}</span>
+              <span class="text-muted-foreground">· by {{ change.requested_by }} · {{ formatDateTime(change.created_at) }}</span>
+            </span>
           </div>
-          <template v-else>
-          <div class="min-w-0">
-            <p class="text-xs font-medium truncate">{{ change.host_id }}/{{ change.instance_id }}</p>
-            <p class="type-meta truncate">requested by {{ change.requested_by }} · {{ change.created_at }}</p>
-          </div>
-          <pre class="text-[10px] bg-muted/40 rounded-lg p-2 overflow-auto max-h-32">{{ JSON.stringify(change.after_document, null, 2) }}</pre>
-          </template>
-          <div class="flex justify-end gap-1.5">
+          <div class="flex shrink-0 gap-1.5">
             <UiButton size="sm" @click="decide(change, true)"><Check class="h-3 w-3" /> Approve</UiButton>
             <UiButton size="sm" variant="ghost" @click="decide(change, false)"><X class="h-3 w-3" /> Reject</UiButton>
           </div>
+        </div>
+
+        <div
+          v-for="h in approvalsTab === 'history' ? historyRows : []"
+          :key="'h-' + h.id"
+          class="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[11.5px]"
+        >
+          <span class="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-muted font-mono text-[10px] text-muted-foreground">·</span>
+          <div class="min-w-0 flex-1">
+            <span v-if="h.host_id === 'resource-grants'" class="inline-flex items-center gap-1.5 flex-wrap">
+              <span class="font-medium" :class="changeGrantInfo(h).granted ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'">{{ h.instance_id === 'grant' ? 'Grant' : 'Revoke' }}</span>
+              <span class="mono">{{ changeGrantInfo(h).profile }}</span>
+              <span class="text-muted-foreground">{{ h.instance_id === 'grant' ? '→' : 'from' }}</span>
+              <span class="font-medium">{{ changeGrantInfo(h).team_id }}</span>
+            </span>
+            <span v-else class="inline-flex items-center gap-1.5">
+              <span class="mono">host config</span>
+              <span class="text-muted-foreground">{{ h.host_id }}/{{ h.instance_id }}</span>
+            </span>
+            <span v-if="h.decision_comment" class="text-muted-foreground">“{{ h.decision_comment }}”</span>
+          </div>
+          <span class="inline-flex shrink-0 items-center rounded px-1.5 text-[10px] font-medium uppercase tracking-wide" :class="h.status === 'approved' ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-red-500/12 text-red-600 dark:text-red-400'">{{ h.status }}</span>
+          <span class="shrink-0 text-muted-foreground">by {{ h.requested_by }} · decided by {{ h.approved_by || '—' }} · {{ formatDateTime(h.decided_at || h.created_at) }}</span>
         </div>
       </div>
     </div>
@@ -2239,5 +2296,6 @@ async function rotateToken(host: SandboxHost) {
         </template>
       </div>
     </div>
+  </div>
   </div>
 </template>
