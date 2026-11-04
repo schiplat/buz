@@ -46,10 +46,11 @@ on:
         default: ""
 
 concurrency:
-  # Only the latest run per branch/tag matters — superseded runs are the
-  # norm on rapid pushes, so cancel the older ones instead of queueing.
+  # Serialize image builds. workflow_run-triggered runs always execute on the
+  # default branch ref, so every tag's build would share one group here —
+  # cancel-in-progress would let a newer release's build kill the previous
+  # tag's in-flight images. Queue instead of cancel.
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 env:
   # Workflow-level so step `if:` conditions and shell scripts can both probe it.
