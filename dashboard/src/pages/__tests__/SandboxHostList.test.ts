@@ -29,6 +29,7 @@ vi.mock('@/api/sandboxHosts', () => ({
   },
 }))
 vi.mock('@/api/teams', () => ({ teamsApi: { list: vi.fn() } }))
+vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
 vi.mock('@/composables/useAppDialog', () => ({ useAppDialog: () => dialog }))
 
 let app: App | undefined

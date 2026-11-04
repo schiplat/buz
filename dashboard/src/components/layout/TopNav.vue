@@ -4,6 +4,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import UiButton from '@/components/ui/UiButton.vue'
 import TeamSwitcher from '@/components/layout/TeamSwitcher.vue'
+import NotificationBell from '@/components/layout/NotificationBell.vue'
 import { authApi } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
@@ -133,6 +134,7 @@ onUnmounted(() => {
     </div>
 
     <div v-if="auth.isAuthenticated" class="flex items-center gap-2.5">
+      <NotificationBell />
       <TeamSwitcher />
       <div ref="menuRoot" class="relative">
         <button
