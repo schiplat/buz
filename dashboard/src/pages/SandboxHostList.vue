@@ -1615,17 +1615,21 @@ async function rotateToken(host: SandboxHost) {
         </div>
         <div v-for="change in changes" :key="change.id" class="rounded-xl border border-border/50 bg-card p-3 space-y-2">
           <!-- grant/revoke rows (approval switch on): human-readable summary -->
-          <div v-if="change.host_id === 'resource-grants'" class="min-w-0">
-            <p class="text-xs font-medium truncate">
+          <div v-if="change.host_id === 'resource-grants'" class="min-w-0 space-y-0.5">
+            <p class="text-xs font-medium break-words">
               {{ change.instance_id === 'grant' ? 'Grant' : 'Revoke' }}
               <span class="mono">{{ changeGrantInfo(change).profile }}</span>
               {{ change.instance_id === 'grant' ? '→' : 'from' }}
               <span class="font-medium">{{ changeGrantInfo(change).team_id }}</span>
             </p>
-            <p class="type-meta truncate">
-              requested by {{ change.requested_by }} · {{ change.created_at }}
-              <template v-if="changeGrantInfo(change).pipelines != null"> · unlocks {{ changeGrantInfo(change).pipelines }} pipeline(s)</template>
-              <template v-if="changeGrantInfo(change).queued_jobs != null"> · {{ changeGrantInfo(change).queued_jobs }} queued job(s) would fail at claim</template>
+            <p class="type-meta break-words">requested by {{ change.requested_by }} · {{ change.created_at }}</p>
+            <p
+              v-if="changeGrantInfo(change).pipelines != null || changeGrantInfo(change).queued_jobs != null"
+              class="type-meta break-words"
+            >
+              <template v-if="changeGrantInfo(change).pipelines != null">unlocks {{ changeGrantInfo(change).pipelines }} pipeline(s)</template>
+              <template v-if="changeGrantInfo(change).pipelines != null && changeGrantInfo(change).queued_jobs != null"> · </template>
+              <template v-if="changeGrantInfo(change).queued_jobs != null">{{ changeGrantInfo(change).queued_jobs }} queued job(s) would fail at claim</template>
             </p>
           </div>
           <template v-else>
