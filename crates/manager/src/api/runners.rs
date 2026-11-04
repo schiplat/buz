@@ -977,13 +977,27 @@ async fn poll_once(
         }
     };
 
+    // Aging: past this wait a backfill runner stops overtaking the job
+    // (0 disables). Read per poll, next to staleness — same cadence, same
+    // settings source.
+    let starvation_seconds: i64 = crate::services::platform_settings::effective(
+        &state.pool,
+        crate::services::platform_settings::KEY_SCHEDULER_STARVATION_SECONDS,
+        &crate::services::platform_settings::DEFAULT_SCHEDULER_STARVATION_SECONDS.to_string(),
+    )
+    .await
+    .trim()
+    .parse()
+    .unwrap_or(crate::services::platform_settings::DEFAULT_SCHEDULER_STARVATION_SECONDS as i64);
+
     // Candidates: oldest pending jobs with pipeline (+ snapshot) labels.
     // Claim only if runner has ALL required labels (see runner_satisfies_labels).
     let candidates = sqlx::query(
         "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
                 j.debug_unredact, j.verbose_logs, j.trigger_by, p.name,
                 COALESCE(json_extract(j.snapshot, '$.team_id'), p.team_id), p.trigger_type,
-                j.environment_id, j.run_number, j.run_attempt
+                j.environment_id, j.run_number, j.run_attempt,
+                CAST(strftime('%s', 'now') - strftime('%s', j.created_at) AS INTEGER) AS waited_seconds
          FROM jobs j
          JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.status = 'pending'
@@ -1110,7 +1124,23 @@ async fn poll_once(
                     // Strict order within this Runner's eligible set: the
                     // oldest fitting-in-principle job blocks the round.
                     crate::services::slot_scheduler::ClaimStrategy::Fifo => break,
-                    crate::services::slot_scheduler::ClaimStrategy::Backfill => continue,
+                    crate::services::slot_scheduler::ClaimStrategy::Backfill => {
+                        // Aging: once a job has waited past the starvation
+                        // threshold, stop letting later candidates overtake
+                        // it — end the round so the next freed capacity goes
+                        // to it instead of another small job.
+                        let waited: i64 = row.get("waited_seconds");
+                        if starvation_seconds > 0 && waited >= starvation_seconds {
+                            tracing::info!(
+                                job = %job_id,
+                                waited_seconds = waited,
+                                threshold = starvation_seconds,
+                                "backfill suspended: job passed the starvation threshold"
+                            );
+                            break;
+                        }
+                        continue;
+                    }
                 }
             }
             crate::services::slot_scheduler::Decision::NotEligible { reason } => {
