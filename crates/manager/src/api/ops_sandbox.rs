@@ -220,6 +220,19 @@ async fn require_approval_enabled(pool: &sqlx::SqlitePool) -> Result<bool, AppEr
     Ok(raw == "true")
 }
 
+/// Grants have their own approval switch: they are high-frequency ops
+/// actions, and teams may want the two-person flow here without turning it
+/// on for host-config changes (or vice versa).
+async fn grants_require_approval_enabled(pool: &sqlx::SqlitePool) -> Result<bool, AppError> {
+    let raw = platform_settings::effective(
+        pool,
+        platform_settings::KEY_GRANTS_REQUIRE_APPROVAL,
+        "false",
+    )
+    .await;
+    Ok(raw == "true")
+}
+
 // ── handlers ────────────────────────────────────────────────────────
 
 /// GET /ops/sandbox-hosts — every enrolled host with desired/applied state.
@@ -952,6 +965,85 @@ pub async fn approve_change(
             "the requesting user cannot approve their own change".into(),
         ));
     }
+    // Grant/revoke rows: apply the team_resource_grants mutation, with the
+    // blast radius (pipelines unlocked / queued jobs failed at claim)
+    // surfaced in the response and the audit entry.
+    if host_id == "resource-grants" {
+        let after: Value = serde_json::from_str(&after_document)
+            .map_err(|e| AppError::Internal(format!("grant change unreadable: {e}")))?;
+        let team_id = after["team_id"].as_str().unwrap_or_default().to_string();
+        let profile = after["profile"].as_str().unwrap_or_default().to_string();
+        let granted = after["granted"].as_bool().unwrap_or(false);
+        let pipelines: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pipelines WHERE team_id = ? AND resource_profile = ?",
+        )
+        .bind(&team_id)
+        .bind(&profile)
+        .fetch_one(&state.pool)
+        .await?;
+        let queued_jobs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM jobs WHERE status = 'pending'
+               AND COALESCE(json_extract(snapshot, '$.team_id'), '') = ?
+               AND COALESCE(json_extract(snapshot, '$.resource_profile'), '') = ?",
+        )
+        .bind(&team_id)
+        .bind(&profile)
+        .fetch_one(&state.pool)
+        .await?;
+        if granted {
+            sqlx::query(
+                "INSERT OR REPLACE INTO team_resource_grants (team_id, profile, granted_by)
+                 VALUES (?, ?, ?)",
+            )
+            .bind(&team_id)
+            .bind(&profile)
+            .bind(&requested_by)
+            .execute(&state.pool)
+            .await?;
+        } else {
+            sqlx::query("DELETE FROM team_resource_grants WHERE team_id = ? AND profile = ?")
+                .bind(&team_id)
+                .bind(&profile)
+                .execute(&state.pool)
+                .await?;
+        }
+        sqlx::query(
+            "UPDATE sandbox_config_changes SET status = 'approved', approved_by = ?, decided_at = datetime('now')
+             WHERE id = ?",
+        )
+        .bind(&auth.username)
+        .bind(&change_id)
+        .execute(&state.pool)
+        .await?;
+        tracing::info!(
+            change = %change_id,
+            team = %team_id,
+            profile = %profile,
+            granted,
+            pipelines = pipelines,
+            queued_jobs = queued_jobs,
+            approved_by = %auth.username,
+            "resource grant change approved"
+        );
+        audit::record(
+            &state.pool,
+            AuditEvent::from_auth(&auth, Action::ResourceGrantUpdate)
+                .on(Resource::resource_grant(&team_id, &profile))
+                .after(Some(json!({
+                    "team_id": team_id, "profile": profile, "granted": granted,
+                    "pipelines": pipelines, "queued_jobs": queued_jobs,
+                    "approved_by": auth.username,
+                }))),
+        )
+        .await;
+        return Ok(Json(ApiResponse::success(json!({
+            "team_id": team_id,
+            "profile": profile,
+            "granted": granted,
+            "pipelines": pipelines,
+            "queued_jobs": queued_jobs,
+        }))));
+    }
     // Platform-defaults rows carry the full defaults catalog (tiers,
     // profiles, network, budget) rather than a per-host document; approving
     // saves the catalog and bumps affected hosts.
@@ -1062,19 +1154,50 @@ pub async fn reject_change(
     State(state): State<AppState>,
     Json(req): Json<ChangeDecisionRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let row: Option<(String, String, String, String)> = sqlx::query_as(
-        "SELECT status, requested_by, host_id, instance_id
+    let row: Option<(String, String, String, String, String)> = sqlx::query_as(
+        "SELECT status, requested_by, host_id, instance_id, after_document
          FROM sandbox_config_changes WHERE id = ?",
     )
     .bind(&change_id)
     .fetch_optional(&state.pool)
     .await?;
-    let Some((status, requested_by, host_id, instance_id)) = row else {
+    let Some((status, requested_by, host_id, instance_id, after_document)) = row else {
         return Err(AppError::NotFound("change not found".into()));
     };
     if status != "pending" {
         return Err(AppError::Conflict(format!("change is already {status}")));
     }
+
+    // Grant rows: the revoke was applied at request time — rejecting restores
+    // the grant row so the paperwork never changes the outcome.
+    let mut grant_restored = false;
+    if host_id == "resource-grants" {
+        let after: Value = serde_json::from_str(&after_document)
+            .map_err(|e| AppError::Internal(format!("grant change unreadable: {e}")))?;
+        let team_id = after["team_id"].as_str().unwrap_or_default().to_string();
+        let profile = after["profile"].as_str().unwrap_or_default().to_string();
+        let granted = after["granted"].as_bool().unwrap_or(false);
+        if !granted {
+            sqlx::query(
+                "INSERT OR REPLACE INTO team_resource_grants (team_id, profile, granted_by)
+                 VALUES (?, ?, ?)",
+            )
+            .bind(&team_id)
+            .bind(&profile)
+            .bind(&requested_by)
+            .execute(&state.pool)
+            .await?;
+            grant_restored = true;
+            tracing::info!(
+                change = %change_id,
+                team = %team_id,
+                profile = %profile,
+                restored_by = %auth.username,
+                "rejected revocation — resource grant restored"
+            );
+        }
+    }
+
     sqlx::query(
         "UPDATE sandbox_config_changes SET status = 'rejected', approved_by = ?, decided_at = datetime('now')
          WHERE id = ?",
@@ -1089,6 +1212,7 @@ pub async fn reject_change(
         instance = %instance_id,
         requested_by = %requested_by,
         rejected_by = %auth.username,
+        grant_restored,
         comment = ?req.comment,
         "sandbox config change rejected"
     );
@@ -1099,6 +1223,7 @@ pub async fn reject_change(
             .after(Some(json!({
                 "change_id": change_id,
                 "requested_by": requested_by,
+                "grant_restored": grant_restored,
                 "comment": req.comment,
             }))),
     )
@@ -1167,6 +1292,57 @@ pub async fn upsert_grant(
             "team '{team_id}' does not exist"
         )));
     }
+    // Request-time blast radius: the requester (and later the approver) should
+    // see how many pipelines this unlocks before the change is approved.
+    let pipeline_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pipelines WHERE team_id = ? AND resource_profile = ?",
+    )
+    .bind(&team_id)
+    .bind(&profile)
+    .fetch_one(&state.pool)
+    .await?;
+
+    if grants_require_approval_enabled(&state.pool).await? {
+        let change_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sandbox_config_changes
+             (id, host_id, instance_id, status, requested_by, before_document, after_document)
+             VALUES (?, 'resource-grants', 'grant', 'pending', ?, '{}', ?)",
+        )
+        .bind(&change_id)
+        .bind(&auth.username)
+        .bind(
+            serde_json::to_string(&json!({
+                "team_id": team_id, "profile": profile, "granted": true,
+                "pipelines": pipeline_count,
+            }))
+            .map_err(|e| AppError::Internal(e.to_string()))?,
+        )
+        .execute(&state.pool)
+        .await?;
+        tracing::info!(
+            team = %team_id,
+            profile = %profile,
+            by = %auth.username,
+            change = %change_id,
+            "resource grant queued for approval"
+        );
+        audit::record(
+            &state.pool,
+            AuditEvent::from_auth(&auth, Action::ResourceGrantUpdate)
+                .on(Resource::resource_grant(&team_id, &profile))
+                .after(Some(
+                    json!({ "team_id": team_id, "profile": profile, "granted": true,
+                            "pending": true, "change_id": change_id }),
+                )),
+        )
+        .await;
+        return Ok(Json(ApiResponse::success(json!({
+            "pending": true,
+            "change_id": change_id,
+            "pipelines": pipeline_count,
+        }))));
+    }
     sqlx::query(
         "INSERT INTO team_resource_grants (team_id, profile, granted_by)
          VALUES (?, ?, ?)
@@ -1204,7 +1380,7 @@ pub async fn delete_grant(
     auth: OpsAdmin,
     Path((team_id, profile)): Path<(String, String)>,
     State(state): State<AppState>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
+) -> Result<Json<ApiResponse<Value>>, AppError> {
     let result = sqlx::query("DELETE FROM team_resource_grants WHERE team_id = ? AND profile = ?")
         .bind(&team_id)
         .bind(&profile)
@@ -1213,6 +1389,68 @@ pub async fn delete_grant(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("grant not found".into()));
     }
+
+    // Revocation impact: queued jobs with this (team, profile) fail terminally
+    // at claim — the approver should see that number before deciding.
+    let queued_jobs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM jobs WHERE status = 'pending'
+           AND COALESCE(json_extract(snapshot, '$.team_id'), '') = ?
+           AND COALESCE(json_extract(snapshot, '$.resource_profile'), '') = ?",
+    )
+    .bind(&team_id)
+    .bind(&profile)
+    .fetch_one(&state.pool)
+    .await?;
+
+    if grants_require_approval_enabled(&state.pool).await? {
+        let change_id = Uuid::new_v4().to_string();
+        // The revoke already removed the row above — approval is what it
+        // stays removed for; a reject restores it. That keeps the revocation
+        // effective-immediately semantics the operator asked for while the
+        // paperwork catches up.
+        sqlx::query(
+            "INSERT INTO sandbox_config_changes
+             (id, host_id, instance_id, status, requested_by, before_document, after_document)
+             VALUES (?, 'resource-grants', 'revoke', 'pending', ?, ?, ?)",
+        )
+        .bind(&change_id)
+        .bind(&auth.username)
+        .bind(
+            serde_json::to_string(&json!({ "team_id": team_id, "profile": profile }))
+                .map_err(|e| AppError::Internal(e.to_string()))?,
+        )
+        .bind(
+            serde_json::to_string(&json!({ "team_id": team_id, "profile": profile,
+                                           "granted": false, "queued_jobs": queued_jobs }))
+            .map_err(|e| AppError::Internal(e.to_string()))?,
+        )
+        .execute(&state.pool)
+        .await?;
+        tracing::info!(
+            team = %team_id,
+            profile = %profile,
+            by = %auth.username,
+            change = %change_id,
+            queued_jobs,
+            "resource grant revocation queued for approval"
+        );
+        audit::record(
+            &state.pool,
+            AuditEvent::from_auth(&auth, Action::ResourceGrantUpdate)
+                .on(Resource::resource_grant(&team_id, &profile))
+                .after(Some(
+                    json!({ "team_id": team_id, "profile": profile, "granted": false,
+                            "pending": true, "change_id": change_id, "queued_jobs": queued_jobs }),
+                )),
+        )
+        .await;
+        return Ok(Json(ApiResponse::success(json!({
+            "pending": true,
+            "change_id": change_id,
+            "queued_jobs": queued_jobs,
+        }))));
+    }
+
     // Revocation bites at the next trigger and again at claim (queued jobs
     // fail terminally) — worth a line when tracing why a job stopped.
     tracing::info!(
@@ -1230,5 +1468,8 @@ pub async fn delete_grant(
             )),
     )
     .await;
-    Ok(Json(ApiResponse::success(())))
+    Ok(Json(ApiResponse::success(json!({
+        "pending": false,
+        "queued_jobs": queued_jobs,
+    }))))
 }

@@ -750,3 +750,185 @@ async fn ops_can_update_the_host_slot_budget() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "unknown pair must be 404");
 }
+
+// ── grants approval flow ────────────────────────────────────────────
+
+async fn set_grants_approval(pool: &sqlx::SqlitePool, on: bool) {
+    sqlx::query(
+        "INSERT INTO platform_settings (key, value, updated_by)
+         VALUES ('grants_require_approval', ?, 'boss')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(if on { "true" } else { "false" })
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Approval on: a grant lands as a pending change (nothing applied), and
+/// approving it applies the row — with blast radius surfaced. A different
+/// approver is required; the requester cannot self-approve.
+#[tokio::test]
+async fn grants_require_approval_and_approve_applies_them() {
+    let (app, pool) = test_app().await;
+    set_grants_approval(&pool, true).await;
+    let ops1 = jwt("ops-1", Role::Ops);
+    let ops2 = jwt("ops-2", Role::Ops);
+
+    // PUT grant: pending, not applied.
+    let (status, resp) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/resource-grants",
+        Some(&ops1),
+        None,
+        Some(serde_json::json!({ "team_id": "team-1", "profile": "large" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert_eq!(resp["data"]["pending"], true, "{resp}");
+    let change_id = resp["data"]["change_id"].as_str().unwrap().to_string();
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM team_resource_grants WHERE team_id = 'team-1' AND profile = 'large'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(applied, 0, "grant must not apply before approval");
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sandbox_config_changes WHERE id = ? AND status = 'pending'",
+    )
+    .bind(&change_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(pending, 1);
+
+    // The requester cannot self-approve; a different ops user can.
+    let (status, resp) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/ops/sandbox-changes/{change_id}/approve"),
+        Some(&ops1),
+        None,
+        Some(serde_json::json!({ "comment": "self" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "self-approval: {resp}");
+
+    let (status, resp) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/ops/sandbox-changes/{change_id}/approve"),
+        Some(&ops2),
+        None,
+        Some(serde_json::json!({ "comment": "ok" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "approve: {resp}");
+    assert_eq!(resp["data"]["granted"], true, "{resp}");
+
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM team_resource_grants WHERE team_id = 'team-1' AND profile = 'large'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(applied, 1, "approved grant must exist");
+
+    let audit_actions: Vec<String> = sqlx::query_scalar(
+        "SELECT action FROM audit_logs WHERE action = 'resource_grant.update' ORDER BY rowid",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(!audit_actions.is_empty());
+}
+
+/// Approval on: revoke takes effect immediately (fail-closed direction) but
+/// leaves a pending record; rejecting that record restores the grant.
+#[tokio::test]
+async fn revocation_applies_immediately_and_rejection_restores_the_grant() {
+    let (app, pool) = test_app().await;
+    set_grants_approval(&pool, true).await;
+    let ops1 = jwt("ops-1", Role::Ops);
+    let ops2 = jwt("ops-2", Role::Ops);
+
+    // Seed a grant directly (approval was off when it was granted).
+    sqlx::query(
+        "INSERT INTO team_resource_grants (team_id, profile, granted_by) VALUES ('team-1', 'large', 'boss')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, resp) = call(
+        &app,
+        "DELETE",
+        "/api/v1/ops/resource-grants/team-1/large",
+        Some(&ops1),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert_eq!(resp["data"]["pending"], true, "{resp}");
+    let change_id = resp["data"]["change_id"].as_str().unwrap().to_string();
+
+    // Fail-closed: the revoke itself already bit.
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM team_resource_grants WHERE team_id = 'team-1' AND profile = 'large'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(applied, 0, "revocation must apply immediately");
+
+    // Rejecting the paperwork restores the grant.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/ops/sandbox-changes/{change_id}/reject"),
+        Some(&ops2),
+        None,
+        Some(serde_json::json!({ "comment": "was urgent, fine" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let restored: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM team_resource_grants WHERE team_id = 'team-1' AND profile = 'large'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(restored, 1, "rejection restores the grant row");
+}
+
+/// Approval off (default): grants apply directly as before.
+#[tokio::test]
+async fn grants_apply_directly_when_approval_is_off() {
+    let (app, pool) = test_app().await;
+    let ops1 = jwt("ops-1", Role::Ops);
+    let (status, resp) = call(
+        &app,
+        "PUT",
+        "/api/v1/ops/resource-grants",
+        Some(&ops1),
+        None,
+        Some(serde_json::json!({ "team_id": "team-1", "profile": "large" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert_eq!(
+        resp["data"].get("pending"),
+        None,
+        "no pending in direct mode"
+    );
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM team_resource_grants WHERE team_id = 'team-1' AND profile = 'large'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(applied, 1);
+}
