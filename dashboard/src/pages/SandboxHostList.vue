@@ -26,6 +26,9 @@ import {
   type SandboxHostDocument,
 } from '@/api/sandboxHosts'
 import { teamsApi, type Team } from '@/api/teams'
+import { useRoute } from 'vue-router'
+
+const route = useRoute()
 import { type ResourceGrant } from '@/api/sandboxHosts'
 import { formatLocalShort } from '@/utils/time'
 
@@ -1113,6 +1116,9 @@ async function load() {
 }
 
 onMounted(load)
+
+// Deep link from the top-nav bell: land on the approvals queue.
+if (route.query.approvals === '1') approvalsTab.value = 'pending'
 
 function openEnroll() {
   enrollHostId.value = ''
