@@ -14,6 +14,11 @@ env:
   RUST_TOOLCHAIN: "1.99.1"
   CARGO_INCREMENTAL: "0"
 
+concurrency:
+  # Only the latest run per branch/tag matters — superseded runs are the
+  # norm on rapid pushes, so cancel the older ones instead of queueing.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   # Lightweight + parallel with backend/dashboard: fail-fast on style without waiting
   # for disk cleanup or a full compile.

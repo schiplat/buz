@@ -45,6 +45,12 @@ on:
         required: false
         default: ""
 
+concurrency:
+  # Only the latest run per branch/tag matters — superseded runs are the
+  # norm on rapid pushes, so cancel the older ones instead of queueing.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Workflow-level so step `if:` conditions and shell scripts can both probe it.
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
