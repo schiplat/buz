@@ -30,10 +30,16 @@ pub const KEY_SANDBOX_CONFIG_POLL_SECONDS: &str = "sandbox_config_poll_seconds";
 /// How long a host may lag behind the desired version before non-default
 /// profile dispatch is paused.
 pub const KEY_SANDBOX_CONFIG_STALE_SECONDS: &str = "sandbox_config_dispatch_stale_after_seconds";
+/// How long a pending job may be overtaken by smaller ones (backfill) before
+/// the runner stops filling gaps and waits for it. 0 disables aging.
+pub const KEY_SCHEDULER_STARVATION_SECONDS: &str = "scheduler_starvation_seconds";
 
 pub const DEFAULT_SANDBOX_CONFIG_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_SANDBOX_CONFIG_POLL_SECONDS: u64 = 30;
 pub const DEFAULT_SANDBOX_CONFIG_STALE_SECONDS: u64 = 300;
+/// 10 minutes: long enough that bursty small-job streams still backfill,
+/// short enough that a genuinely starved large job gets the next capacity.
+pub const DEFAULT_SCHEDULER_STARVATION_SECONDS: u64 = 600;
 
 /// Default source-sync timeout (seconds) — the single source of truth: the
 /// manager.toml serde default, the settings API default, and the HTTP client
@@ -63,6 +69,7 @@ pub fn setting_kind(key: &str) -> Option<SettingKind> {
         KEY_SANDBOX_CONFIG_RETENTION_DAYS => Some(SettingKind::Number),
         KEY_SANDBOX_CONFIG_POLL_SECONDS => Some(SettingKind::Number),
         KEY_SANDBOX_CONFIG_STALE_SECONDS => Some(SettingKind::Number),
+        KEY_SCHEDULER_STARVATION_SECONDS => Some(SettingKind::Number),
         _ => None,
     }
 }
@@ -162,6 +169,16 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
                         )
                     }
                 }
+                KEY_SCHEDULER_STARVATION_SECONDS => {
+                    if parsed == 0 || (60..=86400).contains(&parsed) {
+                        Ok(())
+                    } else {
+                        Err(
+                            "scheduler_starvation_seconds must be 0 (disabled) or between 60 and 86400"
+                                .into(),
+                        )
+                    }
+                }
                 _ => Err(format!("unknown numeric setting '{key}'")),
             }
         }
@@ -172,7 +189,7 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
 /// compatibility with older Managers).
 pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(KEY_MARKETPLACE_URL)
     .bind(KEY_PLUGIN_REVIEW_REQUIRED)
@@ -185,6 +202,7 @@ pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
     .bind(KEY_SANDBOX_CONFIG_RETENTION_DAYS)
     .bind(KEY_SANDBOX_CONFIG_POLL_SECONDS)
     .bind(KEY_SANDBOX_CONFIG_STALE_SECONDS)
+    .bind(KEY_SCHEDULER_STARVATION_SECONDS)
     .fetch_all(pool)
     .await
     .unwrap_or_default();

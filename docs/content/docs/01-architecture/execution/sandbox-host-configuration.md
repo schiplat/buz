@@ -522,7 +522,12 @@ runner:
   - `fifo`: among jobs this Runner is eligible to run, if the oldest does not fit, claim nothing this
     round.
   - `fifo` is FIFO within the Runner's eligible set (labels/team/env/profile availability), not a
-    global queue order. Aging/starvation control is future work.
+    global queue order.
+  - **Starvation aging** bounds how long backfill may overtake a waiting job: once a pending job has
+    waited `scheduler_starvation_seconds` (platform setting, default 600s, `0` = disabled), the
+    runner's backfill walk ends at it — the round claims nothing further, so the next freed capacity
+    goes to the starved job instead of another small one. The reservation never shrinks (the job
+    still occupies its full slots), so the host budget cannot be oversold.
 - A `fifo` Runner can idle capacity; a `backfill` Runner can make large jobs wait longer. The setting
   is intentionally adjustable without a restart.
 

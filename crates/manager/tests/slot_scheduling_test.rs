@@ -540,3 +540,123 @@ async fn defaults_only_host_dispatches_the_default_profile() {
         "the implicit default must dispatch on a bare, catalog-inheriting host"
     );
 }
+
+// ── starvation aging: backfill stops overtaking a job past the threshold ──
+
+async fn set_starvation(pool: &SqlitePool, seconds: i64) {
+    sqlx::query(
+        "INSERT INTO platform_settings (key, value) VALUES ('scheduler_starvation_seconds', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(seconds.to_string())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn backdate_job(pool: &SqlitePool, job_id: &str, seconds_ago: i64) {
+    sqlx::query("UPDATE jobs SET created_at = datetime('now', ? || ' seconds') WHERE id = ?")
+        .bind(format!("-{seconds_ago}"))
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Budget 8; 4 slots in use → a large job (4) waits while a small one (1)
+/// fits. Backfill normally claims the small job; once the large one has
+/// waited past the threshold the round ends without claiming anything, so
+/// the next freed capacity goes to the large job first.
+#[tokio::test]
+async fn backfill_stops_overtaking_once_a_job_passes_the_starvation_threshold() {
+    let (app, pool) = test_app().await;
+    seed_runner(&pool, "runner-1", "container", "backfill").await;
+    seed_host(&pool, 6, (1, &document(true)), None).await;
+    set_starvation(&pool, 600).await;
+
+    // Occupy 4 of 6 slots: a large job (4) no longer fits, a small one (1) does.
+    let holder = job(&app, &pool, "p-large-0", "large").await;
+    assert_eq!(
+        poll(&app, "runner-1").await.as_deref(),
+        Some(holder.as_str())
+    );
+
+    // The starved-to-be large job, backdated past the threshold.
+    let large = job(&app, &pool, "p-large-1", "large").await;
+    backdate_job(&pool, &large, 700).await;
+    // A fresh small job, created after the large one.
+    let small = job(&app, &pool, "p-small-1", "").await;
+
+    // Without aging this poll claims the small job; with it, nothing is
+    // claimed — the large job blocks the round.
+    assert!(
+        poll(&app, "runner-1").await.is_none(),
+        "aging must suspend backfill"
+    );
+    let (status, _, _, reason) = job_state(&pool, &small).await;
+    assert_eq!(status, "pending", "small job must not overtake: {reason}");
+    assert!(
+        reason.is_empty(),
+        "the small job was never walked: {reason:?}"
+    );
+    let (status, _, _, reason) = job_state(&pool, &large).await;
+    assert_eq!(status, "pending");
+    assert!(reason.contains("waiting for 4 slot"), "reason: {reason}");
+
+    // Capacity frees → the large job claims first (it is oldest).
+    finish(&pool, &holder).await;
+    assert_eq!(
+        poll(&app, "runner-1").await.as_deref(),
+        Some(large.as_str())
+    );
+}
+
+/// threshold = 0 disables aging: the small job overtakes as before.
+#[tokio::test]
+async fn starvation_disabled_keeps_pure_backfill() {
+    let (app, pool) = test_app().await;
+    seed_runner(&pool, "runner-1", "container", "backfill").await;
+    seed_host(&pool, 6, (1, &document(true)), None).await;
+    set_starvation(&pool, 0).await;
+
+    let holder = job(&app, &pool, "p-large-0", "large").await;
+    assert_eq!(
+        poll(&app, "runner-1").await.as_deref(),
+        Some(holder.as_str())
+    );
+    let large = job(&app, &pool, "p-large-1", "large").await;
+    backdate_job(&pool, &large, 700).await;
+    let small = job(&app, &pool, "p-small-1", "").await;
+
+    assert_eq!(
+        poll(&app, "runner-1").await.as_deref(),
+        Some(small.as_str()),
+        "with aging disabled backfill claims the fitting small job"
+    );
+    let (status, _, _, _) = job_state(&pool, &large).await;
+    assert_eq!(status, "pending");
+}
+
+/// A job younger than the threshold does not suspend backfill.
+#[tokio::test]
+async fn backfill_keeps_overtaking_jobs_below_the_threshold() {
+    let (app, pool) = test_app().await;
+    seed_runner(&pool, "runner-1", "container", "backfill").await;
+    seed_host(&pool, 6, (1, &document(true)), None).await;
+    set_starvation(&pool, 600).await;
+
+    let holder = job(&app, &pool, "p-large-0", "large").await;
+    assert_eq!(
+        poll(&app, "runner-1").await.as_deref(),
+        Some(holder.as_str())
+    );
+    let large = job(&app, &pool, "p-large-1", "large").await;
+    backdate_job(&pool, &large, 60).await; // waited 1 min < 10 min threshold
+    let small = job(&app, &pool, "p-small-1", "").await;
+
+    assert_eq!(
+        poll(&app, "runner-1").await.as_deref(),
+        Some(small.as_str()),
+        "below the threshold backfill still fills gaps"
+    );
+}

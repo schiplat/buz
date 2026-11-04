@@ -22,11 +22,11 @@ Re-verify after nextest/rustc upgrades.
 
 ## Deferred designs (roadmap, by priority)
 
-### 1. Scheduler starvation control — **in progress (this release)**
+### 1. Scheduler starvation control — **done (2.0.3)**
 
-`backfill` lets small jobs overtake a waiting large one indefinitely;
-`fifo` can idle capacity. Design record:
-`sandbox-host-configuration.md` ("Aging/starvation control is future work").
+`backfill` now stops overtaking a pending job once it has waited
+`scheduler_starvation_seconds` (default 600s, `0` disables). See the
+"Starvation aging" note in `sandbox-host-configuration.md`.
 
 ### 2. Grants approval flow
 
