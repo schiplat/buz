@@ -65,6 +65,8 @@ export interface PendingChange {
   after_document: SandboxHostDocument
   created_at: string
   decided_at: string | null
+  approved_by?: string | null
+  decision_comment?: string | null
 }
 
 export interface GrantChangeResponse {

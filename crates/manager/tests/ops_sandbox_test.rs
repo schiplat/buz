@@ -836,6 +836,26 @@ async fn grants_require_approval_and_approve_applies_them() {
     .unwrap();
     assert_eq!(applied, 1, "approved grant must exist");
 
+    // History view: the decided row carries approver + comment.
+    let (status, resp) = call(
+        &app,
+        "GET",
+        "/api/v1/ops/sandbox-changes?status=decided",
+        Some(&ops2),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    let decided = resp["data"]["changes"].as_array().unwrap();
+    let row = decided
+        .iter()
+        .find(|c| c["id"].as_str() == Some(change_id.as_str()))
+        .expect("decided change in history");
+    assert_eq!(row["status"], "approved");
+    assert_eq!(row["approved_by"], "opstwo");
+    assert_eq!(row["decision_comment"], "ok");
+
     let audit_actions: Vec<String> = sqlx::query_scalar(
         "SELECT action FROM audit_logs WHERE action = 'resource_grant.update' ORDER BY rowid",
     )
@@ -902,6 +922,15 @@ async fn revocation_applies_immediately_and_rejection_restores_the_grant() {
     .await
     .unwrap();
     assert_eq!(restored, 1, "rejection restores the grant row");
+    let (comment, decided_by): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT decision_comment, approved_by FROM sandbox_config_changes WHERE id = ?",
+    )
+    .bind(&change_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(comment.as_deref(), Some("was urgent, fine"));
+    assert_eq!(decided_by.as_deref(), Some("opstwo"));
 }
 
 /// Approval off (default): grants apply directly as before.

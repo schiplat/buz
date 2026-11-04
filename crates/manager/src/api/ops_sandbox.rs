@@ -893,14 +893,16 @@ pub async fn update_budget(
 /// (id, host_id, instance_id, status, requested_by, after_document,
 /// created_at, decided_at).
 type ChangeRow = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
+    String,         // id
+    String,         // host_id
+    String,         // instance_id
+    String,         // status
+    String,         // requested_by
+    String,         // after_document
+    Option<String>, // created_at
+    Option<String>, // decided_at
+    Option<String>, // approved_by
+    Option<String>, // decision_comment
 );
 
 /// GET /ops/sandbox-changes?status=pending — approval queue.
@@ -910,18 +912,29 @@ pub async fn list_changes(
     Query(q): Query<ChangesQuery>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let status = q.status.unwrap_or_else(|| "pending".into());
-    let rows: Vec<ChangeRow> =
-        sqlx::query_as(
-            "SELECT id, host_id, instance_id, status, requested_by, after_document, created_at, decided_at
-             FROM sandbox_config_changes WHERE status = ? ORDER BY created_at DESC",
+    // `decided` = approved + rejected merged (the queue's History tab).
+    let (where_clause, status_filter): (String, Vec<String>) = if status == "decided" {
+        (
+            "WHERE status IN ('approved', 'rejected')".to_string(),
+            vec![],
         )
-        .bind(&status)
+    } else {
+        ("WHERE status = ?".to_string(), vec![status.clone()])
+    };
+    let sql = format!(
+        "SELECT id, host_id, instance_id, status, requested_by, after_document, created_at, decided_at,
+                approved_by, decision_comment
+         FROM sandbox_config_changes {where_clause}
+         ORDER BY CASE WHEN status = 'pending' THEN created_at ELSE decided_at END DESC"
+    );
+    let rows: Vec<ChangeRow> = sqlx::query_as(&sql)
+        .bind(status_filter.first())
         .fetch_all(&state.pool)
         .await?;
     let changes: Vec<Value> = rows
         .into_iter()
         .map(
-            |(id, host, instance, status, by, after, created, decided)| {
+            |(id, host, instance, status, by, after, created, decided, approved_by, comment)| {
                 let parsed: Value = serde_json::from_str(&after).unwrap_or(Value::Null);
                 json!({
                     "id": id,
@@ -932,6 +945,8 @@ pub async fn list_changes(
                     "after_document": parsed,
                     "created_at": created,
                     "decided_at": decided,
+                    "approved_by": approved_by,
+                    "decision_comment": comment,
                 })
             },
         )
@@ -1008,10 +1023,11 @@ pub async fn approve_change(
                 .await?;
         }
         sqlx::query(
-            "UPDATE sandbox_config_changes SET status = 'approved', approved_by = ?, decided_at = datetime('now')
-             WHERE id = ?",
+            "UPDATE sandbox_config_changes SET status = 'approved', approved_by = ?,
+                decision_comment = ?, decided_at = datetime('now') WHERE id = ?",
         )
         .bind(&auth.username)
+        .bind(req.comment.clone())
         .bind(&change_id)
         .execute(&state.pool)
         .await?;
@@ -1076,10 +1092,11 @@ pub async fn approve_change(
         crate::services::sandbox_config_events::wake_all();
         let version = bumped.len() as i64;
         sqlx::query(
-            "UPDATE sandbox_config_changes SET status = 'approved', approved_by = ?, decided_at = datetime('now')
-             WHERE id = ?",
+            "UPDATE sandbox_config_changes SET status = 'approved', approved_by = ?,
+                decision_comment = ?, decided_at = datetime('now') WHERE id = ?",
         )
         .bind(&auth.username)
+        .bind(req.comment.clone())
         .bind(&change_id)
         .execute(&state.pool)
         .await?;
@@ -1116,10 +1133,11 @@ pub async fn approve_change(
     )
     .await?;
     sqlx::query(
-        "UPDATE sandbox_config_changes SET status = 'approved', approved_by = ?, decided_at = datetime('now')
-         WHERE id = ?",
+        "UPDATE sandbox_config_changes SET status = 'approved', approved_by = ?,
+                decision_comment = ?, decided_at = datetime('now') WHERE id = ?",
     )
     .bind(&auth.username)
+    .bind(req.comment.clone())
     .bind(&change_id)
     .execute(&state.pool)
     .await?;
@@ -1199,10 +1217,11 @@ pub async fn reject_change(
     }
 
     sqlx::query(
-        "UPDATE sandbox_config_changes SET status = 'rejected', approved_by = ?, decided_at = datetime('now')
-         WHERE id = ?",
+        "UPDATE sandbox_config_changes SET status = 'rejected', approved_by = ?,
+            decision_comment = ?, decided_at = datetime('now') WHERE id = ?",
     )
     .bind(&auth.username)
+    .bind(req.comment.clone())
     .bind(&change_id)
     .execute(&state.pool)
     .await?;
