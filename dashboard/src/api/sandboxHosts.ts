@@ -67,6 +67,13 @@ export interface PendingChange {
   decided_at: string | null
 }
 
+export interface GrantChangeResponse {
+  pending?: boolean
+  change_id?: string
+  pipelines?: number
+  queued_jobs?: number
+}
+
 export interface ResourceGrant {
   team_id: string
   team_name: string
@@ -216,11 +223,17 @@ export const sandboxHostsApi = {
     return (resp.data as { grants: ResourceGrant[] }).grants ?? []
   },
 
-  async grant(teamId: string, profile: string): Promise<void> {
-    await apiClient.put('/ops/resource-grants', { team_id: teamId, profile })
+  /** When the grants approval switch is on, the response is
+   *  `{ pending: true, change_id, pipelines }` and nothing is applied yet. */
+  async grant(teamId: string, profile: string): Promise<GrantChangeResponse> {
+    const resp = await apiClient.put('/ops/resource-grants', { team_id: teamId, profile })
+    return resp.data
   },
 
-  async revokeGrant(teamId: string, profile: string): Promise<void> {
-    await apiClient.delete(`/ops/resource-grants/${teamId}/${profile}`)
+  /** Approval-on revocations already applied server-side (fail-closed); the
+   *  pending change is the paper trail a reject can use to restore. */
+  async revokeGrant(teamId: string, profile: string): Promise<GrantChangeResponse> {
+    const resp = await apiClient.delete(`/ops/resource-grants/${teamId}/${profile}`)
+    return resp.data
   },
 }

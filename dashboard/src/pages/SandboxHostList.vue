@@ -190,11 +190,35 @@ function togglePanelPending(profile: string) {
 
 /** One action, many grants: POST every pending (team, profile) pair in
  *  order; stop at the first failure and keep the rest pending for retry. */
+/** Grant pending changes use host_id='resource-grants' + a grant payload
+ *  instead of a host document — surface them as human text in the queue. */
+function changeGrantInfo(change: PendingChange): { team_id: string; profile: string; granted: boolean; pipelines?: number; queued_jobs?: number } {
+  const doc = change.after_document as unknown as Record<string, unknown>
+  return {
+    team_id: String(doc?.team_id ?? ''),
+    profile: String(doc?.profile ?? ''),
+    granted: doc?.granted === true,
+    pipelines: typeof doc?.pipelines === 'number' ? doc.pipelines : undefined,
+    queued_jobs: typeof doc?.queued_jobs === 'number' ? doc.queued_jobs : undefined,
+  }
+}
+
+/** Grants awaiting a second-person approval (approval switch on). The
+ *  pending change itself appears in the Pending changes panel. */
+const grantsPendingHint = ref('')
+function noteGrantPending(count: number) {
+  if (count > 0) {
+    grantsPendingHint.value =
+      `${count} grant change${count > 1 ? 's' : ''} queued for approval — see Pending changes.`
+  }
+}
+
 async function applyPanelGrants() {
   grantError.value = ''
   const teamId = grantPanelTeamId.value
   if (!teamId || !grantPanelPending.value.size) return
   grantSaving.value = true
+  let queued = 0
   try {
     for (const profile of grantPanelPending.value) {
       if (isTeamGranted(teamId, profile)) continue
@@ -203,7 +227,8 @@ async function applyPanelGrants() {
         return
       }
       try {
-        await sandboxHostsApi.grant(teamId, profile)
+        const resp = await sandboxHostsApi.grant(teamId, profile)
+        if (resp?.pending) queued += 1
       } catch (e) {
         console.error(e)
         grantError.value = `Failed to grant '${profile}' — remaining picks stay pending for retry.`
@@ -212,6 +237,7 @@ async function applyPanelGrants() {
     }
     closeGrantPanel()
     await load()
+    noteGrantPending(queued)
   } finally {
     grantSaving.value = false
   }
@@ -224,8 +250,9 @@ async function revokeGrant(grant: ResourceGrant) {
   )
   if (!ok) return
   try {
-    await sandboxHostsApi.revokeGrant(grant.team_id, grant.profile)
+    const resp = await sandboxHostsApi.revokeGrant(grant.team_id, grant.profile)
     await load()
+    noteGrantPending(resp?.pending ? 1 : 0)
   } catch (e) {
     console.error(e)
     await dialog.alert('Revoke failed')
@@ -244,10 +271,12 @@ async function revokeTeamGrants(team: { id: string; name: string }) {
   )
   if (!ok) return
   revokingTeamId.value = team.id
+  let queued = 0
   try {
     for (const g of list) {
       try {
-        await sandboxHostsApi.revokeGrant(g.team_id, g.profile)
+        const resp = await sandboxHostsApi.revokeGrant(g.team_id, g.profile)
+        if (resp?.pending) queued += 1
       } catch (e) {
         console.error(e)
         await dialog.alert(`Failed to revoke '${g.profile}' — remaining grants stay in place for retry.`)
@@ -255,6 +284,7 @@ async function revokeTeamGrants(team: { id: string; name: string }) {
       }
     }
     await load()
+    noteGrantPending(queued)
   } finally {
     revokingTeamId.value = ''
   }
@@ -1576,17 +1606,35 @@ async function rotateToken(host: SandboxHost) {
         </div>
       </div>
 
-      <div v-if="changes.length" class="min-w-0 space-y-2">
+      <p v-if="grantsPendingHint" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-400">{{ grantsPendingHint }}</p>
+
+    <div v-if="changes.length" class="min-w-0 space-y-2">
         <div class="flex items-center gap-2">
           <h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pending changes</h3>
           <span class="rounded-full bg-amber-500/15 px-1.5 text-xs text-amber-600">{{ changes.length }}</span>
         </div>
         <div v-for="change in changes" :key="change.id" class="rounded-xl border border-border/50 bg-card p-3 space-y-2">
+          <!-- grant/revoke rows (approval switch on): human-readable summary -->
+          <div v-if="change.host_id === 'resource-grants'" class="min-w-0">
+            <p class="text-xs font-medium truncate">
+              {{ change.instance_id === 'grant' ? 'Grant' : 'Revoke' }}
+              <span class="mono">{{ changeGrantInfo(change).profile }}</span>
+              {{ change.instance_id === 'grant' ? '→' : 'from' }}
+              <span class="font-medium">{{ changeGrantInfo(change).team_id }}</span>
+            </p>
+            <p class="type-meta truncate">
+              requested by {{ change.requested_by }} · {{ change.created_at }}
+              <template v-if="changeGrantInfo(change).pipelines != null"> · unlocks {{ changeGrantInfo(change).pipelines }} pipeline(s)</template>
+              <template v-if="changeGrantInfo(change).queued_jobs != null"> · {{ changeGrantInfo(change).queued_jobs }} queued job(s) would fail at claim</template>
+            </p>
+          </div>
+          <template v-else>
           <div class="min-w-0">
             <p class="text-xs font-medium truncate">{{ change.host_id }}/{{ change.instance_id }}</p>
             <p class="type-meta truncate">requested by {{ change.requested_by }} · {{ change.created_at }}</p>
           </div>
           <pre class="text-[10px] bg-muted/40 rounded-lg p-2 overflow-auto max-h-32">{{ JSON.stringify(change.after_document, null, 2) }}</pre>
+          </template>
           <div class="flex justify-end gap-1.5">
             <UiButton size="sm" @click="decide(change, true)"><Check class="h-3 w-3" /> Approve</UiButton>
             <UiButton size="sm" variant="ghost" @click="decide(change, false)"><X class="h-3 w-3" /> Reject</UiButton>

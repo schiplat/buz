@@ -33,6 +33,9 @@ pub const KEY_SANDBOX_CONFIG_STALE_SECONDS: &str = "sandbox_config_dispatch_stal
 /// How long a pending job may be overtaken by smaller ones (backfill) before
 /// the runner stops filling gaps and waits for it. 0 disables aging.
 pub const KEY_SCHEDULER_STARVATION_SECONDS: &str = "scheduler_starvation_seconds";
+/// When on, resource-profile grant/revoke requests create a pending change
+/// (two-person flow) instead of applying directly.
+pub const KEY_GRANTS_REQUIRE_APPROVAL: &str = "grants_require_approval";
 
 pub const DEFAULT_SANDBOX_CONFIG_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_SANDBOX_CONFIG_POLL_SECONDS: u64 = 30;
@@ -70,6 +73,7 @@ pub fn setting_kind(key: &str) -> Option<SettingKind> {
         KEY_SANDBOX_CONFIG_POLL_SECONDS => Some(SettingKind::Number),
         KEY_SANDBOX_CONFIG_STALE_SECONDS => Some(SettingKind::Number),
         KEY_SCHEDULER_STARVATION_SECONDS => Some(SettingKind::Number),
+        KEY_GRANTS_REQUIRE_APPROVAL => Some(SettingKind::Bool),
         _ => None,
     }
 }
@@ -189,7 +193,7 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
 /// compatibility with older Managers).
 pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(KEY_MARKETPLACE_URL)
     .bind(KEY_PLUGIN_REVIEW_REQUIRED)
@@ -203,6 +207,7 @@ pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
     .bind(KEY_SANDBOX_CONFIG_POLL_SECONDS)
     .bind(KEY_SANDBOX_CONFIG_STALE_SECONDS)
     .bind(KEY_SCHEDULER_STARVATION_SECONDS)
+    .bind(KEY_GRANTS_REQUIRE_APPROVAL)
     .fetch_all(pool)
     .await
     .unwrap_or_default();
