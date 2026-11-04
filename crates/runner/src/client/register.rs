@@ -135,6 +135,12 @@ pub async fn register_with_center(
         version: Some(config.runner.version().into()),
         host_id: config.runner.host_id.clone(),
         runner_instance_id: config.runner.instance_id.clone(),
+        // Optional pin: BUZ_RUNNER_ID declares which runner row this
+        // deployment expects to register as. The Manager rejects a mismatch.
+        runner_id: std::env::var("BUZ_RUNNER_ID")
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
     };
 
     // Present the previous JWT (if any) so re-registration passes the identity

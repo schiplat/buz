@@ -174,6 +174,12 @@ pub struct RegisterRequest {
     /// Deployment identity of this Runner installation; survives re-registration.
     #[serde(default)]
     pub runner_instance_id: String,
+    /// Pre-declared runner row this deployment intends to register as
+    /// (`BUZ_RUNNER_ID`). Correlation only, never an auth input: a mismatch
+    /// rejects the registration (config drift) instead of silently binding to
+    /// another row. Older Runners omit it.
+    #[serde(default)]
+    pub runner_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

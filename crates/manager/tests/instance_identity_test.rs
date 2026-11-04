@@ -345,3 +345,40 @@ async fn runner_dto_carries_the_instance_ids() {
     .await;
     assert_eq!(status, StatusCode::OK, "heartbeat failed: {resp}");
 }
+
+#[tokio::test]
+async fn registration_rejects_a_mismatched_buz_runner_id_pin() {
+    let (app, _pool, runner_id, register_token) = app_with_runner().await;
+
+    // Wrong pin: config drift — reject rather than silently binding.
+    let (status, resp) = post_json(
+        &app,
+        "/api/v1/runners/register",
+        None,
+        serde_json::json!({
+            "name": "id-runner-01",
+            "register_token": register_token,
+            "runner_id": "some-other-row"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{resp}");
+    assert!(
+        resp["message"].as_str().unwrap().contains("BUZ_RUNNER_ID"),
+        "{resp}"
+    );
+
+    // Matching pin: registered normally, the row is adopted.
+    let (status, resp) = post_json(
+        &app,
+        "/api/v1/runners/register",
+        None,
+        serde_json::json!({
+            "name": "id-runner-01",
+            "register_token": register_token,
+            "runner_id": runner_id
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "register failed: {resp}");
+}

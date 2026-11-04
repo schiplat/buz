@@ -206,6 +206,7 @@ envelope). Design record: [Sandbox Host Configuration & Resource Profiles](/docs
 | `BUZ_MANAGER_INSTANCE_ID` | — | Pin the owning control plane (`GET /api/v1/meta`); a response from another Manager is rejected. Recommended in production. |
 | `BUZ_SANDBOXD_TOKEN_FILE` | — | File (`0400`) holding the enrollment token (`buzsd_…`). Preferred over `BUZ_SANDBOXD_TOKEN`. |
 | `BUZ_HOST_ID` | machine-id → hostname | Host identity shared with the Runner on this machine. Set it explicitly in containers/VM templates (clones share machine-ids). |
+| `BUZ_RUNNER_ID` | — | Pin the Runner to a pre-declared runner row (IaC / batch registration). A mismatch with the row rejects the registration instead of binding to another. Correlation only — not an auth credential. |
 | `BUZ_SANDBOXD_INSTANCE_ID` | `sandboxd-<host_id>` | Unique per Docker daemon; labels containers for stale cleanup. |
 | `BUZ_SANDBOXD_SOCKET` | `/run/buz-sandboxd/sandboxd.sock` | Unix socket the Runner connects to. |
 | `BUZ_SANDBOXD_WORKSPACE_ROOT` / `_WORKSPACE_VOLUME` | `/var/lib/buz/workspaces` / — | Job workspace root; the named volume in Compose. |

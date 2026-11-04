@@ -157,8 +157,9 @@ Notes:
 - **Runner has two IDs on purpose.** `runner_id` is the Manager-issued identity used in the token
   `sub` and foreign keys. `runner_instance_id` is the deployment identity read from the environment
   and survives re-registration, so UI and logs can correlate the same installation. Pre-provisioning
-  a Runner with an externally chosen `BUZ_RUNNER_ID` is a possible later addition; it is not required
-  for this design.
+  is supported: a deployment may set `BUZ_RUNNER_ID` to pin registration to a specific runner row —
+  a mismatch (config drift) rejects the registration instead of silently binding to another row.
+  The pin is correlation data, never an auth input.
 - **Host ID must be assigned explicitly in containers and VM templates.** Cloned VMs often share
   `/etc/machine-id`; set `BUZ_HOST_ID` in the compose file or VM template instead of relying on the
   fallback.
@@ -674,7 +675,7 @@ These are the defaults chosen for items not separately decided; change them deli
 | Approval | Off by default; configurable; approver must differ from requester. |
 | History/audit retention | 30 days by default; configurable; JSON export. |
 | Roles | `ops` for sandbox host administration; `sandboxd` for read-only config fetch; admin implicit. |
-| Runner IDs | Manager-issued `runner_id` for auth plus env-driven `runner_instance_id`; pre-provisioned `BUZ_RUNNER_ID` is a later option. |
+| Runner IDs | Manager-issued `runner_id` for auth plus env-driven `runner_instance_id`; `BUZ_RUNNER_ID` pins registration to a pre-declared row (mismatch rejects). |
 | `default` profile | Implicit for every team; warn when `slots > 1`. |
 | Profile contents | `memory`, `cpu`, `pids`, `slots`; `/tmp` tmpfs stays fixed. |
 | Staleness | ~60s pending, 5 minutes degraded (stop non-default dispatch); configurable. |

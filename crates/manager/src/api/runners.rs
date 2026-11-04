@@ -599,6 +599,25 @@ pub async fn register(
         ));
     }
 
+    // BUZ_RUNNER_ID pinning: a deployment can pre-declare which runner row it
+    // intends to register as. A mismatch is config drift — reject rather than
+    // binding to the wrong row. The pin is correlation data, not an auth
+    // input: authorization still flows through name + register token / bearer
+    // JWT exactly as before.
+    let pinned_id = req.runner_id.trim();
+    if !pinned_id.is_empty() && pinned_id != runner_id {
+        tracing::warn!(
+            runner = %name,
+            pinned = %pinned_id,
+            actual = %runner_id,
+            ?peer,
+            "Runner registration rejected: BUZ_RUNNER_ID does not match this runner"
+        );
+        return Err(AppError::Conflict(format!(
+            "BUZ_RUNNER_ID '{pinned_id}' does not match this runner ('{runner_id}')"
+        )));
+    }
+
     let token_mgr = TokenManager::new(&state.config.auth.jwt_secret);
     let runner_jwt = token_mgr
         .create_token(
