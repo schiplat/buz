@@ -1522,7 +1522,48 @@ async function rotateToken(host: SandboxHost) {
     </div>
 
     <!-- ── Machines: enrolled sandboxd instances ── -->
-    <div :class="changes.length ? 'mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-[3fr_1fr]' : 'mt-6'">
+        <!-- Pending approvals: promoted above the host grid so a second
+         person sees them first thing on this page. -->
+    <div v-if="changes.length" class="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4 space-y-3">
+        <div class="flex items-center gap-2">
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pending changes</h3>
+          <span class="rounded-full bg-amber-500/15 px-1.5 text-xs text-amber-600">{{ changes.length }}</span>
+        </div>
+        <div v-for="change in changes" :key="change.id" class="rounded-lg border border-border/50 bg-card p-3 space-y-2">
+          <!-- grant/revoke rows (approval switch on): human-readable summary -->
+          <div v-if="change.host_id === 'resource-grants'" class="min-w-0 space-y-0.5">
+            <p class="text-xs font-medium break-words">
+              {{ change.instance_id === 'grant' ? 'Grant' : 'Revoke' }}
+              <span class="mono">{{ changeGrantInfo(change).profile }}</span>
+              {{ change.instance_id === 'grant' ? '→' : 'from' }}
+              <span class="font-medium">{{ changeGrantInfo(change).team_id }}</span>
+            </p>
+            <p class="type-meta break-words">requested by {{ change.requested_by }} · {{ change.created_at }}</p>
+            <p
+              v-if="changeGrantInfo(change).pipelines != null || changeGrantInfo(change).queued_jobs != null"
+              class="type-meta break-words"
+            >
+              <template v-if="changeGrantInfo(change).pipelines != null">unlocks {{ changeGrantInfo(change).pipelines }} pipeline(s)</template>
+              <template v-if="changeGrantInfo(change).pipelines != null && changeGrantInfo(change).queued_jobs != null"> · </template>
+              <template v-if="changeGrantInfo(change).queued_jobs != null">{{ changeGrantInfo(change).queued_jobs }} queued job(s) would fail at claim</template>
+            </p>
+          </div>
+          <template v-else>
+          <div class="min-w-0">
+            <p class="text-xs font-medium truncate">{{ change.host_id }}/{{ change.instance_id }}</p>
+            <p class="type-meta truncate">requested by {{ change.requested_by }} · {{ change.created_at }}</p>
+          </div>
+          <pre class="text-[10px] bg-muted/40 rounded-lg p-2 overflow-auto max-h-32">{{ JSON.stringify(change.after_document, null, 2) }}</pre>
+          </template>
+          <div class="flex justify-end gap-1.5">
+            <UiButton size="sm" @click="decide(change, true)"><Check class="h-3 w-3" /> Approve</UiButton>
+            <UiButton size="sm" variant="ghost" @click="decide(change, false)"><X class="h-3 w-3" /> Reject</UiButton>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-6">
       <div class="min-w-0 space-y-4">
         <div>
           <div class="flex items-center gap-3">
@@ -1607,45 +1648,6 @@ async function rotateToken(host: SandboxHost) {
       </div>
 
       <p v-if="grantsPendingHint" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-400">{{ grantsPendingHint }}</p>
-
-    <div v-if="changes.length" class="min-w-0 space-y-2">
-        <div class="flex items-center gap-2">
-          <h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pending changes</h3>
-          <span class="rounded-full bg-amber-500/15 px-1.5 text-xs text-amber-600">{{ changes.length }}</span>
-        </div>
-        <div v-for="change in changes" :key="change.id" class="rounded-xl border border-border/50 bg-card p-3 space-y-2">
-          <!-- grant/revoke rows (approval switch on): human-readable summary -->
-          <div v-if="change.host_id === 'resource-grants'" class="min-w-0 space-y-0.5">
-            <p class="text-xs font-medium break-words">
-              {{ change.instance_id === 'grant' ? 'Grant' : 'Revoke' }}
-              <span class="mono">{{ changeGrantInfo(change).profile }}</span>
-              {{ change.instance_id === 'grant' ? '→' : 'from' }}
-              <span class="font-medium">{{ changeGrantInfo(change).team_id }}</span>
-            </p>
-            <p class="type-meta break-words">requested by {{ change.requested_by }} · {{ change.created_at }}</p>
-            <p
-              v-if="changeGrantInfo(change).pipelines != null || changeGrantInfo(change).queued_jobs != null"
-              class="type-meta break-words"
-            >
-              <template v-if="changeGrantInfo(change).pipelines != null">unlocks {{ changeGrantInfo(change).pipelines }} pipeline(s)</template>
-              <template v-if="changeGrantInfo(change).pipelines != null && changeGrantInfo(change).queued_jobs != null"> · </template>
-              <template v-if="changeGrantInfo(change).queued_jobs != null">{{ changeGrantInfo(change).queued_jobs }} queued job(s) would fail at claim</template>
-            </p>
-          </div>
-          <template v-else>
-          <div class="min-w-0">
-            <p class="text-xs font-medium truncate">{{ change.host_id }}/{{ change.instance_id }}</p>
-            <p class="type-meta truncate">requested by {{ change.requested_by }} · {{ change.created_at }}</p>
-          </div>
-          <pre class="text-[10px] bg-muted/40 rounded-lg p-2 overflow-auto max-h-32">{{ JSON.stringify(change.after_document, null, 2) }}</pre>
-          </template>
-          <div class="flex justify-end gap-1.5">
-            <UiButton size="sm" @click="decide(change, true)"><Check class="h-3 w-3" /> Approve</UiButton>
-            <UiButton size="sm" variant="ghost" @click="decide(change, false)"><X class="h-3 w-3" /> Reject</UiButton>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- ── host detail dialog: desired configuration ── -->
     <div v-if="detailHost" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="detailHost = null">
