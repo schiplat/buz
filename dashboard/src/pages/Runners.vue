@@ -139,23 +139,41 @@ function stopReprobePolling() {
   if (reprobeWatchdog) { clearTimeout(reprobeWatchdog); reprobeWatchdog = null }
 }
 
+/** Pull the freshest row for the drawer and settle the re-probe phase from
+ *  it — the runners list may be stale (the list only refreshes on demand). */
+async function refreshActiveRunner() {
+  const id = activeRunner.value?.id
+  if (!id || !drawerOpen.value) return
+  try {
+    const fresh = await runnersApi.get(id)
+    activeRunner.value = { ...activeRunner.value, ...fresh }
+    syncReprobeState(fresh)
+  } catch (e) { console.error(e) }
+}
+
+/** Settle the re-probe phase for a row and keep polling alive only while
+ *  the lifecycle is in flight. */
+function syncReprobeState(r: Runner) {
+  reprobePhase.value = reprobePhaseOf(r)
+  if (reprobePhase.value === 'queued' || reprobePhase.value === 'probing') {
+    startReprobePolling(r.id)
+  } else {
+    stopReprobePolling()
+  }
+}
+
 /** Poll the single runner while queued/probing; after 3 min stop polling and
  *  surface a hint — the banner stays so the operator can see where it stuck. */
 function startReprobePolling(runnerId: string) {
   stopReprobePolling()
-  reprobeTimedOut.value = false
   reprobeWatchdog = setTimeout(() => {
     stopReprobePolling()
     reprobeTimedOut.value = true
   }, REPROBE_TIMEOUT_MS)
   reprobePoll = setInterval(async () => {
     if (!drawerOpen.value) return stopReprobePolling()
-    try {
-      const fresh = await runnersApi.get(runnerId)
-      activeRunner.value = { ...activeRunner.value, ...fresh }
-      reprobePhase.value = reprobePhaseOf(fresh)
-      if (reprobePhase.value === 'done' || reprobePhase.value === 'idle') stopReprobePolling()
-    } catch (e) { console.error(e) }
+    await refreshActiveRunner()
+    if (reprobePhase.value === 'done' || reprobePhase.value === 'idle') stopReprobePolling()
   }, 5_000)
 }
 
@@ -239,9 +257,11 @@ function openDetail(r: Runner) {
   editExecutionMode.value = r.execution_mode ?? 'host'
   openFolds.value = { loopback: false, bridge: false, tunnel: false, virtual: false }
   copiedNetValue.value = null
+  // The list row may be stale (the list refreshes on demand) — pull the
+  // freshest row for this runner before settling the re-probe banner.
   reprobePhase.value = reprobePhaseOf(r)
   reprobeTimedOut.value = false
-  if (reprobePhase.value === 'queued' || reprobePhase.value === 'probing') startReprobePolling(r.id)
+  void refreshActiveRunner()
   drawerOpen.value = true
   loadRunnerEvents(r.id)
 }

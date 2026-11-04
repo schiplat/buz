@@ -242,6 +242,13 @@ describe('Runner team binding', () => {
     expect(runnersApi.reprobeCapabilities).toHaveBeenCalledWith('runner-1')
     expect(document.body.textContent).toContain('Queued — waiting for the Runner\'s next heartbeat')
 
+    // Closing and reopening the drawer must not lose the in-flight phase:
+    // reopening uses the (stale) list row, then the drawer re-syncs from the
+    // server and the queued banner comes back.
+    document.querySelector<HTMLButtonElement>('button[title="Open runner-one"]')!.click()
+    await flush()
+    expect(document.body.textContent).toContain('Queued — waiting for the Runner\'s next heartbeat')
+
     // A fresh capability report (checked_at after the request) closes the loop.
     const servedAt = new Date(Date.now() - 60_000).toISOString()
     const checkedAt = new Date().toISOString()
