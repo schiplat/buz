@@ -218,7 +218,7 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 | 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution as shell/SSH. **Log masking**: Infrastructure Secrets, registry passwords, and trigger inputs with `masking: true` are redacted — pipeline `env:` and Variables stay readable. Claim payload splits `env` vs `secrets` and includes `masking_input_keys` — see [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) |
 | 7 | **Gate**: Runner UI `docker_enabled` must be `true`; otherwise step fails with a clear error (do not fall back to shell) |
 | 8 | **Scheduling**: pipelines that need Docker should set `runner.labels` to include `docker`; Manager dispatches only to runners that have **all** required labels |
-| 9 | **Private registry auth**: YAML/form stores only a **Secret name** (`registry_secret`) — never the password. Encrypted at rest; Manager sends `registry_auth` to the Runner. **Docker**: login before pull/run. **Shell / SSH**: login before `run` (SSH login happens on the remote host) so `docker push` works; then logout. Target: ACR Personal Edition; optional JSON `provider`. |
+| 9 | **Private registry auth**: YAML/form stores only a **Secret name** (`registry_secret`, deprecated → `buz/docker-login`) — never the password. Encrypted at rest; Manager sends `registry_auth` to the Runner. **Docker**: login before pull/run. **Shell / SSH**: login before `run` (SSH login happens on the remote host) so `docker push` works; then logout. Target: ACR Personal Edition; optional JSON `provider`. |
 | 10 | **Security defaults**: no host network, no arbitrary CLI options; `privileged` is opt-in for DinD only |
 
 ---
@@ -240,13 +240,13 @@ steps:
   - name: Private ACR image
     engine: docker
     image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
-    registry_secret: acr_personal  # Secret *name* only — password lives in Infrastructure → Secrets
+    registry_secret: acr_personal  # deprecated → buz/docker-login; Secret *name* only — password lives in Infrastructure → Secrets
     run: echo ok
 
-  # Shell / SSH also support registry_secret (e.g. docker push):
+  # Shell / SSH also support registry_secret (deprecated → buz/docker-login; e.g. docker push):
   # - name: Push
   #   engine: shell
-  #   registry_secret: acr_personal
+  #   registry_secret: acr_personal  # deprecated → buz/docker-login
   #   run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
 ```
 
@@ -254,7 +254,7 @@ steps:
 |-------|:--------:|-------------|
 | `engine: docker` | ✓ | Selects Docker engine |
 | `image` | ✓ | Image reference (`name:tag` or digest). Pulled if missing (`docker pull` / run pull behavior TBD in impl) |
-| `registry_secret` | | **Name** of a Manager Secret with **`kind=registry`** (not the password). JSON credentials, encrypted at rest. Also valid on **shell** / **SSH** for push. |
+| `registry_secret` | | **Deprecated → `buz/docker-login`.** Name of a Manager Secret with **`kind=registry`** (not the password). JSON credentials, encrypted at rest. Also valid on **shell** / **SSH** for push. |
 | `run` | ✓ | Command(s) inside the container |
 | `work_dir` / `dir` | | Container-side subdirectory under `/buz/workspace` (runner workspace always mounted at root) |
 | `timeout` / `continue-on-error` | | Same semantics as other engines (`retry` is parsed but not executed yet) |
@@ -273,7 +273,7 @@ entrypoint: /bin/bash
 # Supported ✅
 volumes: ["/host/path:/container/path"]
 privileged: true              # opt-in DinD only
-registry_secret: acr_personal # docker / shell / SSH
+registry_secret: acr_personal # deprecated → buz/docker-login (docker / shell / SSH)
 ```
 
 ---
@@ -463,6 +463,8 @@ Do **not** expand product surface for these until ACR Personal Edition path is p
 
 ## Appendix: Alibaba Cloud ACR Personal Edition
 
+> **Deprecated:** the `registry_secret` wiring below is deprecated — prefer the `buz/docker-login` plugin template. It still works but retires in a future major release.
+
 Personal Edition login uses a **fixed password** from the ACR console (not temporary STS tokens):
 
 ```bash
@@ -479,6 +481,8 @@ Registry hosts:
 
 ### Buz wiring (password never in YAML)
 
+> **Deprecated:** this `registry_secret` wiring is deprecated → use the `buz/docker-login` plugin template (retires in a future major release).
+
 1. Create Infrastructure → Secrets with name e.g. `acr_personal`. Leave **Team share OFF** (default) so unrelated pipelines never receive the JSON as env. Value is **AES-256-GCM encrypted at rest**:
 
 ```json
@@ -493,7 +497,7 @@ Registry hosts:
 - `provider` (optional): `acr_personal` | `generic`
 - `registry`: required for **shell / SSH** (no step `image` to infer from); optional on **docker** when `image` already includes the host
 
-2. Set the Secret **Kind** to **Registry** in Infrastructure → Secrets, then reference **only the secret name** with `registry_secret:` (there is no `image_pull_secret` field).
+2. Set the Secret **Kind** to **Registry** in Infrastructure → Secrets, then reference **only the secret name** with `registry_secret:` — deprecated → `buz/docker-login` (there is no `image_pull_secret` field).
 
 | Engine | Behavior |
 |--------|----------|
@@ -508,4 +512,4 @@ Examples:
 - Pull (docker engine): `example/pipelines/acr-personal-pull.yml`
 - Push only (shell): `example/pipelines/acr-personal-push.yml`
 - Build + push orchestration: `example/pipelines/acr-personal-build-push.yml`
-  (`Prepare` → `Build` → `Push` with `registry_secret` → `Verify pull`)
+  (`Prepare` → `Build` → `Push` with `registry_secret` (deprecated) → `Verify pull`)

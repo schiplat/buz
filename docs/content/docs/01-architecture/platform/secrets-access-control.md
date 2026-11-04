@@ -46,7 +46,7 @@ This is **Scheme B** — chosen over “any pipeline can use any secret” to pr
 |-------------|-------------------|----------------------|
 | Shared CI token used by many pipelines | `kind: generic`, `team_shared: true` | `env: TOKEN: ${secrets.TOKEN}` (no per-pipeline bind) |
 | Prod DB password, deploy key | `kind: generic`, `team_shared: false` | Explicit bind + `env: …: ${secrets.NAME}` |
-| Registry login JSON (ACR, etc.) | `kind: registry`, `team_shared: false` | `registry_secret: ${secrets.NAME}` |
+| Registry login JSON (ACR, etc.) | `kind: registry`, `team_shared: false` | `registry_secret: ${secrets.NAME}` (deprecated → `buz/docker-login`) |
 
 ---
 
@@ -231,8 +231,10 @@ Prefer YAML `secrets:` + `env: KEY: ${secrets.NAME}` (see [Secrets Access](./sec
 
 ## Registry credentials (`registry_secret`)
 
+> **Deprecated:** use the `buz/docker-login` plugin template.
+
 ```yaml
-registry_secret: acr-personal
+registry_secret: acr-personal  # deprecated → buz/docker-login
 ```
 
 ```json
@@ -252,7 +254,7 @@ registry_secret: acr-personal
 1. **Default deny auto-inject** — leave Team share off unless many pipelines truly need the same `$NAME`
 2. **Use Authorized Secrets / YAML `secrets:`** for pipeline-wide non-shared secrets
 3. **Use step `secrets:`** for keys needed in one step (e.g. checkout)
-4. **Set Kind = Registry** for private registry JSON, then use `registry_secret` — do not enable Team share for ACR personal credentials
+4. **Set Kind = Registry** for private registry JSON, then use `registry_secret` (deprecated → `buz/docker-login`) — do not enable Team share for ACR personal credentials
 5. **Keep team slugs consistent** — `team:` in YAML must match Infrastructure Teams
 6. **Create Secrets in Infrastructure first**, then bind or reference by name
 

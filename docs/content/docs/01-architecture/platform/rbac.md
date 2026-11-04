@@ -193,7 +193,7 @@ Credentials remain encrypted server-side; UI never receives plaintext (unchanged
 
 1. **Team auto-access (opt-in)**: `secret.team_id == pipeline.team_id` **and** `secret.team_shared == true`
 2. **Explicit binding**: `pipeline_secrets` / YAML `secrets:` (bind requires Maintainer+; same team only)
-3. **Step / registry name reference**: step `secrets:` or `registry_secret:` resolved at dispatch only if `secret.team_id == pipeline.team_id`
+3. **Step / registry name reference**: step `secrets:` or `registry_secret:` (deprecated) resolved at dispatch only if `secret.team_id == pipeline.team_id`
 
 New secrets default to `team_shared = false` (no auto-inject). See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
 

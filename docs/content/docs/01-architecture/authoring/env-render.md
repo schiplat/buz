@@ -305,10 +305,11 @@ already reflected in the DSL / render-rules / ValueMap sections above.
 ## Compatibility
 
 - Existing secret delivery (`secrets:` list, `team_shared` auto-inject, step
-  `secrets:`, `registry_secret`, `config.source`) is unchanged. Rendering is an
+  `secrets:`, `registry_secret`, `config.source` — the last two deprecated →
+  `buz/docker-login` / `buz/config-fetch`) is unchanged. Rendering is an
   **additive** capability; the same secret can be injected as env **and**
   referenced by a template.
-- OSS deliver (`config.source` + `key_path` + `dest`) unpacks to
+- OSS deliver (`config.source` + `key_path` + `dest`; deprecated → `buz/config-fetch`) unpacks to
   `$BUZ_CONFIG_DIR`; without `config.render` it is download → unpack only.
   Render-only steps reuse `dest` without a second OSS download.
 - Secret names are UPPER_SNAKE_CASE (enforced at create, exact/case-sensitive
@@ -316,8 +317,8 @@ already reflected in the DSL / render-rules / ValueMap sections above.
   into `name`** via migration (backfill env_name → name when non-empty and
   collision-free), then dropped; existing pipelines that referenced the old
   env_name key must re-point at the merged name.
-- `registry` / `aliyun_oss_auth` secrets never participate in env rendering
-  (they are JSON handled by `registry_secret` / `config.source`).
+- `registry` / `aliyun_oss_auth` (deprecated) secrets never participate in env rendering
+  (they are JSON handled by `registry_secret` / `config.source`, both deprecated).
 - The unified `ValueMap::expand` keeps `ExpandMode::Lenient` for
   `config_key_path` / host resolution; `config.render` uses `Strict`.
 

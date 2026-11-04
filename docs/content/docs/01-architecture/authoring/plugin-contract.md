@@ -37,7 +37,7 @@ against incompatibility with `requires_buz` (see [Version gate](#version-gate)).
 - SSH engine: the `run:` block is executed on the target host with `INPUT_*`
   and secret values exported through the command prefix (`BUZ_REGISTRY_HOST`,
   `BUZ_REGISTRY_USER`, `BUZ_REGISTRY_PASSWORD` accompany a step-level
-  `registry_secret`).
+  `registry_secret`, deprecated; retires in Phase 3 → `buz/docker-login`).
 - `engines:` (optional, template spec) declares extra engines the run block
   supports; a call site may then set `engine:` to override (shell ↔ ssh).
   Incompatible overrides fail at claim time.
@@ -67,7 +67,7 @@ set):
 | `BUZ_RUN_NUMBER` / `BUZ_RUN_ATTEMPT` | Per-pipeline build number (1-based, like GHA `github.run_number`) and the re-run counter — useful for image tags like `app:$BUZ_RUN_NUMBER` and "build #N" messages |
 
 | `BUZ_GIT_SHA` / `BUZ_GIT_BRANCH` | Normalized from `GIT_SHA` / `GIT_BRANCH` inputs on webhook triggers |
-| `BUZ_CONFIG_URL` | Pre-signed config URL, when the step declares a `config.source` |
+| `BUZ_CONFIG_URL` | Pre-signed config URL, when the step declares a `config.source` (deprecated; retires in Phase 3 → `buz/config-fetch`) |
 | `BUZ_ENV_CHANGED`, `BUZ_ENV_CHANGED_KEYS` | Render results, when the step declares a `config.render` |
 
 ## Secrets
