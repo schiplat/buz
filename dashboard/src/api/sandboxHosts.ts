@@ -209,9 +209,13 @@ export const sandboxHostsApi = {
   },
 
 
-  async changes(status = 'pending'): Promise<PendingChange[]> {
-    const resp = await apiClient.get(`/ops/sandbox-changes?status=${encodeURIComponent(status)}`)
-    return (resp.data as { changes: PendingChange[] }).changes ?? []
+  async changes(status = 'pending', page?: number, pageSize?: number): Promise<{ changes: PendingChange[]; total: number }> {
+    const qs = new URLSearchParams({ status })
+    if (page != null) qs.set('page', String(page))
+    if (pageSize != null) qs.set('page_size', String(pageSize))
+    const resp = await apiClient.get(`/ops/sandbox-changes?${qs}`)
+    const body = resp.data as { data: { changes: PendingChange[]; total?: number } }
+    return { changes: body.data?.changes ?? [], total: body.data?.total ?? 0 }
   },
 
   async decideChange(id: string, approve: boolean, comment?: string): Promise<void> {

@@ -97,7 +97,7 @@ const host = (overrides: Partial<SandboxHost> = {}): SandboxHost => ({
 
 async function mountPage(opts: { grants: ResourceGrant[]; defaults?: unknown; hosts?: SandboxHost[] }) {
   vi.mocked(sandboxHostsApi.list).mockResolvedValue(opts.hosts ?? [])
-  vi.mocked(sandboxHostsApi.changes).mockResolvedValue([])
+  vi.mocked(sandboxHostsApi.changes).mockResolvedValue({ changes: [], total: 0 })
   vi.mocked(sandboxHostsApi.grants).mockResolvedValue(opts.grants)
   vi.mocked(sandboxHostsApi.getDefaults).mockResolvedValue(
     (opts.defaults ?? {

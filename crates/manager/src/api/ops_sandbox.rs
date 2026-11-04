@@ -82,6 +82,11 @@ pub struct GrantRequest {
 pub struct ChangesQuery {
     #[serde(default)]
     pub status: Option<String>,
+    /// History pagination (decided view only; 1-based).
+    #[serde(default)]
+    pub page: Option<i64>,
+    #[serde(default)]
+    pub page_size: Option<i64>,
 }
 
 // ── helpers ─────────────────────────────────────────────────────────
@@ -921,11 +926,32 @@ pub async fn list_changes(
     } else {
         ("WHERE status = ?".to_string(), vec![status.clone()])
     };
+    // History can grow unbounded — the inbox pages it (pending stays single-page).
+    let decided = status == "decided";
+    let page = if decided {
+        q.page.unwrap_or(1).max(1)
+    } else {
+        1
+    };
+    let page_size = if decided {
+        q.page_size.unwrap_or(20).clamp(1, 100)
+    } else {
+        20
+    };
+    let total: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM sandbox_config_changes {where_clause}"
+    ))
+    .bind(status_filter.first())
+    .fetch_one(&state.pool)
+    .await?;
     let sql = format!(
         "SELECT id, host_id, instance_id, status, requested_by, after_document, created_at, decided_at,
                 approved_by, decision_comment
          FROM sandbox_config_changes {where_clause}
-         ORDER BY CASE WHEN status = 'pending' THEN created_at ELSE decided_at END DESC"
+         ORDER BY CASE WHEN status = 'pending' THEN created_at ELSE decided_at END DESC
+         LIMIT {} OFFSET {}",
+        page_size,
+        (page - 1) * page_size,
     );
     let rows: Vec<ChangeRow> = sqlx::query_as(&sql)
         .bind(status_filter.first())
@@ -951,7 +977,12 @@ pub async fn list_changes(
             },
         )
         .collect();
-    Ok(Json(ApiResponse::success(json!({ "changes": changes }))))
+    Ok(Json(ApiResponse::success(json!({
+        "changes": changes,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+    }))))
 }
 
 /// POST /ops/sandbox-changes/{id}/approve — the approver must differ from the

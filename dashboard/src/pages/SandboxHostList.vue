@@ -194,18 +194,30 @@ function togglePanelPending(profile: string) {
  *  approved/rejected rows re-fetched on every switch. */
 const approvalsTab = ref<'pending' | 'history'>('pending')
 const historyRows = ref<PendingChange[]>([])
+const historyPage = ref(1)
+const historyPageSize = 20
+const historyTotal = ref(0)
+const historyLoading = ref(false)
+const historyTotalPages = computed(() => Math.max(1, Math.ceil(historyTotal.value / historyPageSize)))
+
+async function loadHistory(page = historyPage.value) {
+  historyLoading.value = true
+  try {
+    // The API pages the merged decided view directly; one call per page.
+    const res = await sandboxHostsApi.changes('decided', page, historyPageSize)
+    historyRows.value = res.changes
+    historyTotal.value = res.total
+    historyPage.value = page
+  } catch (e) { console.error(e) } finally {
+    historyLoading.value = false
+  }
+}
 
 async function switchHistory() {
   approvalsTab.value = 'history'
-  try {
-    const [approved, rejected] = await Promise.all([
-      sandboxHostsApi.changes('approved'),
-      sandboxHostsApi.changes('rejected'),
-    ])
-    historyRows.value = [...rejected, ...approved].sort((a, b) =>
-      (b.decided_at || b.created_at).localeCompare(a.decided_at || a.created_at),
-    )
-  } catch (e) { console.error(e) }
+  if (approvalsTab.value && historyPage.value === 1 && !historyRows.value.length) {
+    await loadHistory(1)
+  }
 }
 
 /** Grant pending changes use host_id='resource-grants' + a grant payload
@@ -1078,7 +1090,7 @@ async function load() {
   try {
     const [hostList, changeList, teamList, grantList] = await Promise.all([
       sandboxHostsApi.list(),
-      sandboxHostsApi.changes('pending'),
+      sandboxHostsApi.changes('pending').then((r) => r.changes),
       teamsApi.list().catch(() => [] as Team[]),
       sandboxHostsApi.grants().catch(() => [] as ResourceGrant[]),
     ])
@@ -1543,7 +1555,7 @@ async function rotateToken(host: SandboxHost) {
         <!-- Grants/host approval inbox: Pending + History tabs -->
     <div v-if="changes.length || historyRows.length" class="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4 space-y-2">
       <div class="flex items-center justify-between gap-2">
-        <h3 class="text-sm font-semibold tracking-tight">Grants 审批</h3>
+        <h3 class="text-sm font-semibold tracking-tight">Grant approvals</h3>
         <div class="inline-flex rounded-lg bg-muted p-0.5">
           <button
             type="button"
@@ -1556,13 +1568,13 @@ async function rotateToken(host: SandboxHost) {
             class="rounded-md px-3 py-1 text-[11.5px] font-medium"
             :class="approvalsTab === 'history' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'"
             @click="switchHistory"
-          >History <span class="mono text-[10px]">{{ historyRows.length }}</span></button>
+          >History <span class="mono text-[10px]">{{ historyTotal }}</span></button>
         </div>
       </div>
 
       <div class="space-y-0.5">
-        <p v-if="approvalsTab === 'pending' && !changes.length" class="rounded-lg px-2 py-3 text-[11.5px] text-muted-foreground">队列已清空 — 新的授权/撤销会出现在这里等待批准</p>
-        <p v-if="approvalsTab === 'history' && !historyRows.length" class="rounded-lg px-2 py-3 text-[11.5px] text-muted-foreground">暂无已决策的记录</p>
+        <p v-if="approvalsTab === 'pending' && !changes.length" class="rounded-lg px-2 py-3 text-[11.5px] text-muted-foreground">Queue is clear — new grant/revoke requests will appear here for approval</p>
+        <p v-if="approvalsTab === 'history' && !historyRows.length" class="rounded-lg px-2 py-3 text-[11.5px] text-muted-foreground">No decided records yet</p>
 
         <div
           v-for="(change, i) in approvalsTab === 'pending' ? changes : []"
@@ -1616,6 +1628,22 @@ async function rotateToken(host: SandboxHost) {
           </div>
           <span class="inline-flex shrink-0 items-center rounded px-1.5 text-[10px] font-medium uppercase tracking-wide" :class="h.status === 'approved' ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-red-500/12 text-red-600 dark:text-red-400'">{{ h.status }}</span>
           <span class="shrink-0 text-muted-foreground">by {{ h.requested_by }} · decided by {{ h.approved_by || '—' }} · {{ formatDateTime(h.decided_at || h.created_at) }}</span>
+        </div>
+
+        <div v-if="approvalsTab === 'history' && historyTotalPages > 1" class="flex items-center justify-end gap-2 pt-1.5 text-[11px] text-muted-foreground">
+          <UiButton
+            size="sm"
+            variant="ghost"
+            :disabled="historyPage <= 1 || historyLoading"
+            @click="loadHistory(historyPage - 1)"
+          >‹ Prev</UiButton>
+          <span class="tabular-nums">{{ historyPage }} / {{ historyTotalPages }}</span>
+          <UiButton
+            size="sm"
+            variant="ghost"
+            :disabled="historyPage >= historyTotalPages || historyLoading"
+            @click="loadHistory(historyPage + 1)"
+          >Next ›</UiButton>
         </div>
       </div>
     </div>
