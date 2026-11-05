@@ -173,12 +173,20 @@ impl ImageReference {
 }
 
 fn registry_client() -> Result<Client, String> {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(7))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| format!("cannot create registry client: {error}"))
+    // Built once: the config is static and `reqwest::Client` wraps a
+    // connection pool meant to be reused — the first build initializes the
+    // TLS backend, which on macOS can take many seconds.
+    static CLIENT: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
+    Ok(CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .connect_timeout(Duration::from_secs(3))
+                .timeout(Duration::from_secs(7))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("static registry client config")
+        })
+        .clone())
 }
 
 pub async fn check_image(raw: &str) -> ImageAvailability {
