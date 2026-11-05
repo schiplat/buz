@@ -1772,7 +1772,7 @@ pub fn http_client(timeout_secs: u64) -> reqwest::Client {
     cache
         .entry(timeout_secs)
         .or_insert_with(|| {
-            reqwest::Client::builder()
+            crate::http_util::client_builder()
                 .timeout(std::time::Duration::from_secs(timeout_secs))
                 .build()
                 .expect("static client config")

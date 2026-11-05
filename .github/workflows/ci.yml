@@ -13,6 +13,10 @@ env:
   # Kept in sync with rust-toolchain.toml — bump both together.
   RUST_TOOLCHAIN: "1.99.1"
   CARGO_INCREMENTAL: "0"
+  # Same setting as .cargo/config.toml: skip the OS-level proxy probe in
+  # reqwest client builds (stalls seconds on some macOS machines); proxy
+  # environment variables are still honored — see KNOWN_ISSUES.md.
+  BUZ_HTTP_NO_SYSTEM_PROXY: "1"
 
 concurrency:
   # Only the latest run per branch/tag matters — superseded runs are the

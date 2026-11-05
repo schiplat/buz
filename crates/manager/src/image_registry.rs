@@ -179,7 +179,7 @@ fn registry_client() -> Result<Client, String> {
     static CLIENT: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
     Ok(CLIENT
         .get_or_init(|| {
-            Client::builder()
+            crate::http_util::client_builder()
                 .connect_timeout(Duration::from_secs(3))
                 .timeout(Duration::from_secs(7))
                 .redirect(reqwest::redirect::Policy::none())

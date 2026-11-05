@@ -11,6 +11,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod frontend;
+pub mod http_util;
 pub mod image_registry;
 pub mod middleware;
 pub mod password;

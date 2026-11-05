@@ -39,26 +39,37 @@ hang.
 ### macOS system-proxy probe stalls the first reqwest client build (2026-11-05)
 
 The first `reqwest::Client::build()` in a process blocks 9–17s on this
-Mac: hyper-util's macOS proxy matcher calls
-`SCDynamicStoreCopyProxiesWithOptions` (SystemConfiguration), and this
-machine's configd answers pathologically slowly. Verified by sampling:
-TLS init is ~0.5 ms, `scutil --proxy` shows no proxy configured, repeat
-builds are ~100 µs (the matcher caches globally), and a `.no_proxy()`
-build never pays the tax. Every manager integration-test binary that
-saves a pipeline or syncs plugins builds a client once, which is why
-~25 binaries each ran 10–17s longer than their test bodies warrant;
-the full local suite spends ~8.4 of its 8.6 minutes of test execution
-in binaries >5s, most of it this tax. CI (Linux) is unaffected — Linux
-proxy detection reads environment variables only.
+Mac: hyper-util's macOS proxy matcher opens a SystemConfiguration store
+(`SCDynamicStoreCreateWithOptions` → `_SC_getApplicationBundleID` →
+`dispatch_once_callout`), and that one-time init takes 10s+ here —
+measured by sampling the blocked thread. Refined by probes: TLS init is
+~0.5 ms, `scutil --proxy` shows no proxy configured at all, restarting
+configd (`killall configd`) does **not** help, and Python's
+`urllib.request.getproxies()` — same SystemConfiguration path from a
+system binary — answers in 7 ms. So the SC framework is healthy and
+the stall is specific to unregistered dev binaries under
+`target/debug/deps/` resolving their bundle ID via LaunchServices —
+the same pathology family as the rustc startup hangs above. Repeat
+builds are ~100 µs (the matcher caches globally per process), and a
+`.no_proxy()` build never pays the tax because it skips the SC store
+entirely.
 
-Mitigations when this recurs, in order of preference:
-1. Restart configd (`sudo killall configd`) or reboot — zero code.
-2. A code opt-out (`BUZ_HTTP_NO_SYSTEM_PROXY=1` → `.no_proxy()`) was
-   considered and deliberately not implemented: it would change proxy
-   semantics for macOS/Windows deployments relying on system-level
-   proxies. Revisit if this ever blocks real work.
-3. HTTP clients are at least reused instead of rebuilt per request
-   (`4a4b1fe`), so repeat builds never pay it.
+Impact: every manager integration-test binary that saves a pipeline or
+syncs plugins builds a client once, so ~25 binaries each ran 10–17s
+longer than their test bodies warrant; the full local suite spent
+~8.4 of its 8.6 minutes of test execution in binaries >5s, most of it
+this tax. CI (Linux) was never affected — Linux proxy detection reads
+environment variables only.
+
+Fix: `BUZ_HTTP_NO_SYSTEM_PROXY=1` (set in `.cargo/config.toml [env]`
+and in the CI workflow env) makes all manager clients skip the OS
+probe and honor proxy environment variables explicitly
+(`http_proxy`/`https_proxy`/`all_proxy`/`no_proxy`, parsed in
+`http_util::client_builder`). Trade-off: deployments that rely on
+OS-level proxy settings (macOS/Windows system proxies) must switch to
+environment variables when the flag is set. Linux deployments are
+semantically identical either way. HTTP clients are also reused
+instead of rebuilt per request (`4a4b1fe`).
 
 ## Deferred designs (roadmap, by priority)
 
