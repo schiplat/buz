@@ -36,7 +36,47 @@ pipes (piped output is swallowed by `tail`/`grep` so a stuck build is
 invisible), and check `ps aux | grep cargo` for orphans before assuming a
 hang.
 
+### macOS system-proxy probe stalls the first reqwest client build (2026-11-05)
+
+The first `reqwest::Client::build()` in a process blocks 9–17s on this
+Mac: hyper-util's macOS proxy matcher calls
+`SCDynamicStoreCopyProxiesWithOptions` (SystemConfiguration), and this
+machine's configd answers pathologically slowly. Verified by sampling:
+TLS init is ~0.5 ms, `scutil --proxy` shows no proxy configured, repeat
+builds are ~100 µs (the matcher caches globally), and a `.no_proxy()`
+build never pays the tax. Every manager integration-test binary that
+saves a pipeline or syncs plugins builds a client once, which is why
+~25 binaries each ran 10–17s longer than their test bodies warrant;
+the full local suite spends ~8.4 of its 8.6 minutes of test execution
+in binaries >5s, most of it this tax. CI (Linux) is unaffected — Linux
+proxy detection reads environment variables only.
+
+Mitigations when this recurs, in order of preference:
+1. Restart configd (`sudo killall configd`) or reboot — zero code.
+2. A code opt-out (`BUZ_HTTP_NO_SYSTEM_PROXY=1` → `.no_proxy()`) was
+   considered and deliberately not implemented: it would change proxy
+   semantics for macOS/Windows deployments relying on system-level
+   proxies. Revisit if this ever blocks real work.
+3. HTTP clients are at least reused instead of rebuilt per request
+   (`4a4b1fe`), so repeat builds never pay it.
+
 ## Deferred designs (roadmap, by priority)
+
+### 0. Test-suite speed — measured, closed (2026-11-05)
+
+Baseline (`RUSTFLAGS="-D warnings" cargo test --all`, cold cache):
+132 binaries, 995 tests, all green in ~50 min wall — of which only
+8.6 min is test execution; the rest is the CI-equivalent full
+recompile. Follow-ups decided:
+
+- Template-DB harness **done** (`d994b21`): migrations run once per
+  process into a file-backed template, boots clone it in milliseconds
+  (17-test `ops_sandbox` binary: 1.21s total).
+- Long-poll test aggregation **not needed**: the poll helpers send no
+  `Prefer: wait` header, so the runner poll answers immediately; the
+  slow binaries were paying the proxy probe above, not long polls.
+- Repo split (manager/runner) **not needed**: its motivation was test
+  time, which the harness + measurements above resolved.
 
 ### 1. Scheduler starvation control — **done (2.0.3)**
 
