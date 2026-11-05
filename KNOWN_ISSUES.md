@@ -20,6 +20,22 @@ changes; until then CI pays full cold-compile time (~10 min release,
 Linux successfully; local gates use `cargo test --all` (see AGENTS.md).
 Re-verify after nextest/rustc upgrades.
 
+### Intermittent cargo/rustc child-process startup hangs (macOS, 2026-11-05)
+
+Beyond the nextest hang above, plain `cargo test` / `cargo fmt` was observed
+(2026-11-05) intermittently hanging with child processes stuck at startup:
+rustc at 0% CPU with a tiny (~18 MB) footprint for 30+ minutes, never
+producing diagnostics. Killing everything (`pkill -9 -f cargo; pkill -9 -f
+rustc`) and rerunning the same command completes normally. Two related
+quirks: a cargo run killed mid-build can leave an orphan process holding the
+`target/debug/.cargo-lock` (later runs then sit at 0% CPU "waiting"), and
+running two cargo builds concurrently (e.g. `-p manager` and `-p shared`
+tests) serializes on that lock and looks hung. Local practice: run cargo
+strictly one at a time, prefer direct file-redirected background runs over
+pipes (piped output is swallowed by `tail`/`grep` so a stuck build is
+invisible), and check `ps aux | grep cargo` for orphans before assuming a
+hang.
+
 ## Deferred designs (roadmap, by priority)
 
 ### 1. Scheduler starvation control — **done (2.0.3)**
@@ -28,22 +44,20 @@ Re-verify after nextest/rustc upgrades.
 `scheduler_starvation_seconds` (default 600s, `0` disables). See the
 "Starvation aging" note in `sandbox-host-configuration.md`.
 
-### 2. Grants approval flow
+### 2. Grants approval flow — **done (2.1.0)**
 
-Resource-profile grants (`PUT/DELETE /ops/resource-grants`) apply directly;
-host-config changes go through pending-changes + approval. Evolution: route
-grant/revoke through the same mechanism and show blast radius (pipelines
-referencing the profile, queued jobs affected) at approval time.
+Grant/revoke now route through the same pending-changes + approval
+mechanism as host-config changes, with blast radius (pipelines referencing
+the profile, queued jobs affected) shown at approval time.
 
-### 3. Pipeline-scoped resource grants
+### 3. Pipeline-scoped resource grants — **recorded, deferred (2026-11-04)**
 
 Grants are team-level ("this team may run `gpu-8x` anywhere"). A later
 option is per-pipeline restriction within an authorized team
 (`pipeline_resource_grants`, checked after `ensure_team_may_use` at
-trigger).
+trigger). Deliberately not scheduled — revisit on demand.
 
-### 4. Pre-provisioned `BUZ_RUNNER_ID`
+### 4. Pre-provisioned `BUZ_RUNNER_ID` — **done (2.1.0)**
 
-Runner IDs are Manager-issued. An externally chosen `BUZ_RUNNER_ID` for
-IaC / batch registration is a possible later addition (see design record,
-"Runner IDs").
+`BUZ_RUNNER_ID` pins a registration to a pre-declared runner row for
+IaC / batch registration; the row is claimed only by that secret.

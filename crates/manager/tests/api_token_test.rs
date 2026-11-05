@@ -7,7 +7,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use shared::auth::{Role, TokenManager};
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use tower::ServiceExt;
 
 use manager::api;
@@ -47,6 +47,12 @@ fn test_config() -> Config {
 }
 
 async fn test_app() -> Router {
+    test_app_with_pool().await.0
+}
+
+/// Returns the app plus its pool, for tests that need to seed rows directly
+/// (e.g. a legacy `full`-scope token that the API no longer creates).
+async fn test_app_with_pool() -> (Router, SqlitePool) {
     let pool = SqlitePoolOptions::new()
         .max_connections(4)
         .connect("sqlite::memory:")
@@ -75,11 +81,11 @@ async fn test_app() -> Router {
     }
 
     let state = AppState {
-        pool,
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
-    Router::new().nest("/api/v1", api::router(state))
+    (Router::new().nest("/api/v1", api::router(state)), pool)
 }
 
 fn bearer(token: &str) -> String {
@@ -124,13 +130,44 @@ async fn create_token_returns_plaintext_once_and_hashes_in_db() {
 
     let body = read_body(resp).await;
     assert_eq!(body["data"]["name"], "ci-script");
+    // Omitted scope defaults to the least-privilege band.
+    assert_eq!(body["data"]["scope"], "read");
     let token = body["data"]["token"].as_str().expect("plaintext token");
     assert!(token.starts_with("buz_"), "token prefix");
     assert!(body["data"]["prefix"].as_str().unwrap().ends_with('…'));
 }
 
 #[tokio::test]
-async fn api_token_authenticates_like_user_jwt() {
+async fn create_token_rejects_full_scope() {
+    let app = test_app().await;
+    let jwt = admin_jwt(Role::Admin, REGULAR_ADMIN_ID);
+
+    for scope in ["full", "nonsense"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/api-tokens")
+                    .header(AUTHORIZATION, bearer(&jwt))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"name":"ci-script","scope":"{scope}"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "scope {scope}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn ops_token_works_on_operations_plane() {
     let app = test_app().await;
     let jwt = admin_jwt(Role::Admin, REGULAR_ADMIN_ID);
 
@@ -142,15 +179,17 @@ async fn api_token_authenticates_like_user_jwt() {
                 .uri("/api/v1/api-tokens")
                 .header(AUTHORIZATION, bearer(&jwt))
                 .header("Content-Type", "application/json")
-                .body(Body::from(r#"{"name":"ci-script"}"#))
+                .body(Body::from(r#"{"name":"ci-script","scope":"ops"}"#))
                 .unwrap(),
         )
         .await
         .unwrap();
     let created = read_body(create).await;
+    assert_eq!(created["data"]["scope"], "ops");
     let token = created["data"]["token"].as_str().expect("plaintext token");
 
     let me = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/v1/auth/me")
@@ -165,6 +204,211 @@ async fn api_token_authenticates_like_user_jwt() {
     assert_eq!(me_body["data"]["username"], "ops");
     assert_eq!(me_body["data"]["is_platform_admin"], true);
     assert_eq!(me_body["data"]["is_super_admin"], false);
+
+    // Write on the operations plane (team management) is allowed.
+    let create_team = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/teams")
+                .header(AUTHORIZATION, bearer(token))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"name":"ci-team","slug":"ci-team"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_team.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn read_token_rejects_writes() {
+    let app = test_app().await;
+    let jwt = admin_jwt(Role::Admin, REGULAR_ADMIN_ID);
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/api-tokens")
+                .header(AUTHORIZATION, bearer(&jwt))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"name":"dashboard","scope":"read"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let created = read_body(create).await;
+    let token = created["data"]["token"].as_str().expect("plaintext token");
+
+    let list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/teams")
+                .header(AUTHORIZATION, bearer(token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK, "GET allowed for read scope");
+
+    let write = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/teams")
+                .header(AUTHORIZATION, bearer(token))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"name":"nope","slug":"nope"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(write.status(), StatusCode::FORBIDDEN);
+    let body = read_body(write).await;
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("read-only api token"),
+        "message points at the scope: {}",
+        body["message"]
+    );
+}
+
+#[tokio::test]
+async fn ops_token_denied_identity_and_governance_planes() {
+    let app = test_app().await;
+    let jwt = admin_jwt(Role::Admin, REGULAR_ADMIN_ID);
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/api-tokens")
+                .header(AUTHORIZATION, bearer(&jwt))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"name":"ci-script","scope":"ops"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let token = read_body(create).await["data"]["token"]
+        .as_str()
+        .expect("plaintext token")
+        .to_string();
+
+    // Identity plane — even though the owner IS a platform admin.
+    for (method, uri) in [
+        ("GET", "/api/v1/users"),
+        ("POST", "/api/v1/api-tokens"),
+        ("POST", "/api/v1/auth/change-password"),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(AUTHORIZATION, bearer(&token))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        let body = read_body(resp).await;
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("identity endpoints"),
+            "{method} {uri}: {}",
+            body["message"]
+        );
+    }
+
+    // Governance plane — platform settings and plugin curation.
+    for uri in [
+        "/api/v1/admin/settings",
+        "/api/v1/admin/plugin-sources",
+        "/api/v1/admin/plugin-pool",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(AUTHORIZATION, bearer(&token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "GET {uri}");
+        let body = read_body(resp).await;
+        assert!(
+            body["message"].as_str().unwrap().contains("governance"),
+            "GET {uri}: {}",
+            body["message"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn legacy_full_token_keeps_operations_plane_but_never_identity_plane() {
+    let (app, pool) = test_app_with_pool().await;
+
+    // Seed a pre-scope token row directly — the API no longer creates them.
+    let raw = shared::api_token::generate_token();
+    sqlx::query(
+        "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, scope)
+         VALUES ('tok-legacy', 'admin-2', 'legacy', ?, 'buz_ab…', 'full')",
+    )
+    .bind(shared::api_token::hash_token(&raw))
+    .execute(&pool)
+    .await
+    .expect("seed legacy token");
+
+    // Operations plane: still fully authorized (creator-equivalent).
+    let create_team = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/teams")
+                .header(AUTHORIZATION, bearer(&raw))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"name":"legacy-team","slug":"legacy-team"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_team.status(), StatusCode::OK);
+
+    // Identity plane: self-perpetuation and user management are closed even
+    // for the legacy band.
+    for (method, uri) in [("POST", "/api/v1/api-tokens"), ("GET", "/api/v1/users")] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(AUTHORIZATION, bearer(&raw))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+    }
 }
 
 #[tokio::test]

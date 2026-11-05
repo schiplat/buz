@@ -25,3 +25,17 @@ fn display_prefix_is_short() {
     assert!(p.ends_with('…'));
     assert!(p.len() < 15);
 }
+
+#[test]
+fn scope_roundtrips_and_defaults_unknown_to_full() {
+    for (s, expected) in [
+        ("read", ApiTokenScope::Read),
+        ("ops", ApiTokenScope::Ops),
+        ("full", ApiTokenScope::Full),
+    ] {
+        assert_eq!(ApiTokenScope::parse(s), Some(expected));
+        assert_eq!(expected.as_str(), s);
+    }
+    assert_eq!(ApiTokenScope::parse("nonsense"), None);
+    assert_ne!(ApiTokenScope::Read, ApiTokenScope::Ops);
+}

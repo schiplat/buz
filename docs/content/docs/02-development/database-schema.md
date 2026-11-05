@@ -74,7 +74,7 @@ Pipeline step definitions.
 | step_order | INT | Execution order |
 | exec_type | TEXT | `local`, `ssh`, or `docker` (`wasm` reserved — never dispatched) |
 | image | TEXT | Container image when `exec_type=docker` (empty otherwise) |
-| registry_secret | TEXT | Manager Secret name for `docker login` (shell / SSH / docker; empty otherwise) |
+| registry_secret | TEXT | Manager Secret name for `docker login` (shell / SSH / docker; empty otherwise) — deprecated → `buz/docker-login` |
 | fail_strategy | TEXT | `stop`, `continue`, or `ignore` |
 | hosts_strategy | TEXT | SSH multi-host fan-out: `chain` (default) or `parallel` |
 
@@ -125,7 +125,7 @@ Secret storage. Values are stored in the database and injected as environment va
 | owner_group | TEXT | Team slug mirror; Phase 2 ownership via `team_id` (required). See [RBAC](/docs/01-architecture/platform/rbac/) |
 | team_id | TEXT | Owning team (required after bootstrap) |
 | team_shared | INTEGER NOT NULL DEFAULT 0 | `1` = same-team pipelines auto-receive this secret at job claim; `0` = explicit bind/reference only. See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) |
-| kind | TEXT NOT NULL DEFAULT `'generic'` | `generic` = env inject; `registry` = JSON credentials for `registry_secret` / docker login. Backfill marks decryptable registry JSON as `registry`. |
+| kind | TEXT NOT NULL DEFAULT `'generic'` | `generic` = env inject; `registry` = JSON credentials for `registry_secret` (deprecated) / docker login. Backfill marks decryptable registry JSON as `registry`. |
 | created_at, updated_at | TEXT | Auto-managed |
 
 ### pipeline_secrets

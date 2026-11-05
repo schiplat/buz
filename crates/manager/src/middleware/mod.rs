@@ -18,15 +18,29 @@ impl FromRequestParts<AppState> for AuthUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let token = extract_bearer(parts)?;
-        crate::rbac::authenticate_user_token(&state.pool, &state.config.auth.jwt_secret, token)
-            .await
+        let user =
+            crate::rbac::authenticate_user_token(&state.pool, &state.config.auth.jwt_secret, token)
+                .await
+                .map_err(|e| match e {
+                    shared::error::AppError::AuthFailed(msg) => auth_err(&msg),
+                    other => {
+                        tracing::error!("authenticate_user_token failed: {other}");
+                        auth_err("invalid or expired token")
+                    }
+                })?;
+
+        // API-token authority bands (identity/governance planes + read
+        // method restriction). JWT sessions pass through.
+        user.assert_api_token_allowed(parts.method.as_str(), parts.uri.path())
             .map_err(|e| match e {
-                shared::error::AppError::AuthFailed(msg) => auth_err(&msg),
+                shared::error::AppError::Forbidden(msg) => forbidden_err(&msg),
                 other => {
-                    tracing::error!("authenticate_user_token failed: {other}");
-                    auth_err("invalid or expired token")
+                    tracing::error!("assert_api_token_allowed failed: {other}");
+                    forbidden_err("api token not allowed here")
                 }
-            })
+            })?;
+
+        Ok(user)
     }
 }
 

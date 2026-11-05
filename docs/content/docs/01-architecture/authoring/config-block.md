@@ -14,6 +14,8 @@ aliases:
 > **Not in 2b:** `config.git` (2c), auto `on_change`/`services` (2d).  
 > See also [Env Render](/docs/01-architecture/authoring/env-render/) (Phase 1 engine).
 
+> **Deprecated:** the **OSS deliver** mode of the config block (`config.source` / `config.key_path`) is deprecated — use the `buz/config-fetch` plugin template instead. **`config.render` (render-only) remains fully supported.** OSS deliver retires in a future major release (Phase 3).
+
 ## Goals
 
 1. Remove the `config_path` vs `config_dir` naming clash (OSS key vs host path).
@@ -33,7 +35,7 @@ aliases:
 
 | Mode | `config:` fields | Prepare | Phase |
 |------|------------------|---------|-------|
-| **OSS deliver** | `source` + `key_path` + `dest` | signed GET → unpack to `dest` | **2b** |
+| **OSS deliver** | `source` + `key_path` + `dest` | signed GET → unpack to `dest` | **2b** — deprecated → `buz/config-fetch` |
 | **render-only** | `dest` + `render` | templates already at `dest` → render | **2b** |
 | **OSS+render one-step** | all of the above | unpack then render | 2b sugar — **not** used in docs/examples |
 | **`config.git`** | `git` + `dest` (+ optional later render) | first-class clone | **2c** |
@@ -110,8 +112,8 @@ touching NTP.
 
 | YAML | DB column | Meaning |
 |------|-----------|---------|
-| `config.source` | `config_source` | OSS auth secret name |
-| `config.key_path` | `config_key_path` | OSS object-key **directory prefix** — e.g. `config_tpl/app/v1` or `config_tpl/app/v1/` (trailing `/` optional). Manager always builds `{prefix}/configs.tar.gz`; do **not** put `configs.tar.gz` in the value. |
+| `config.source` | `config_source` | OSS auth secret name — **deprecated → `buz/config-fetch`** |
+| `config.key_path` | `config_key_path` | OSS object-key **directory prefix** — e.g. `config_tpl/app/v1` or `config_tpl/app/v1/` (trailing `/` optional). Manager always builds `{prefix}/configs.tar.gz`; do **not** put `configs.tar.gz` in the value. **deprecated → `buz/config-fetch`** |
 | `config.dest` | `config_dest` | Unpack / working dir → `$BUZ_CONFIG_DIR` (one root per step) |
 | `config.render` | `config_render` (JSON array) | List (or single object → normalized to 1-element array) |
 
@@ -243,12 +245,12 @@ steps:
       echo "tag OK: $INPUT_TAG"
     timeout: 30s
 
-  # ── Deliver: OSS unpack only ──
+  # ── Deliver: OSS unpack only (deprecated → buz/config-fetch) ──
   - name: Deliver config
     engine: ssh
     host: $deploy_host
     config:
-      source: OSS_CONFIG
+      source: OSS_CONFIG          # deprecated → buz/config-fetch
       key_path: config_tpl/demo-app/$tag
       dest: /opt/manager
     run: |
@@ -276,7 +278,7 @@ steps:
   - name: Compose up
     engine: ssh
     host: $deploy_host
-    registry_secret: ACR_PERSONAL
+    registry_secret: ACR_PERSONAL  # deprecated → buz/docker-login
     run: |
       cd "$CONFIG_DIR"
       docker compose pull
@@ -407,6 +409,7 @@ No `config.git` yet — clone in `run`, then the same render-only step as OSS:
 ## Sample D — Minimal OSS smoke (deliver + list)
 
 ```yaml
+  # OSS deliver — deprecated → buz/config-fetch
   - name: Deliver demo bundle
     engine: shell
     config:

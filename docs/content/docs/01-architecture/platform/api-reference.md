@@ -108,7 +108,7 @@ backlog, WebSocket broadcast sink counts, and the step review-gate posture
 {
   "status": "ok",
   "name": "Buz",
-  "version": "1.9.0",
+  "version": "2.1.1",
   "component": "manager",
   "uptime_seconds": 3600,
   "started_at": "2026-08-30T12:00:00Z",
@@ -325,7 +325,7 @@ Response (with task):
 - `env` — platform Variables + pipeline inline `env:` (shown in clear in Job logs)
 - `secrets` — Infrastructure Secrets only (redacted as `***` in RUN banners and stream logs)
 - `inputs` — trigger params (also not redacted; Runner also exports `INPUT_<KEY>` uppercased)
-- Per-step `registry_auth` — resolved from `registry_secret` for `docker login` only (not injected as `$NAME`)
+- Per-step `registry_auth` — resolved from `registry_secret` (deprecated) for `docker login` only (not injected as `$NAME`)
 
 Empty response: `204 No Content`
 
@@ -480,9 +480,9 @@ Response:
 - List/get return a **partially redacted** preview (`ab****yz`, or JSON with `password`/`token` fields masked) — never full plaintext.
 - When ciphertext cannot be decrypted: `value` is `****` and `reencrypt_required: true`.
 - Empty `value` on PUT keeps the existing ciphertext.
-- `team_shared` (boolean, default `false` on create): when `true`, same-team pipelines auto-receive the secret at job claim; when `false`, use Authorized Secrets / YAML `secrets:` / step `secrets:` / `registry_secret`. See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
-- `kind` (`generic` \| `registry`, default `generic`): `registry` requires parseable JSON with `username`/`password` and is required for step `registry_secret` at claim. List/get return `kind`. Pipeline UI **Registry Secret** dropdown filters to `kind=registry`.
-- For private registries, set `kind: registry`, store JSON credentials, and reference the secret **name** via `registry_secret` (see [Docker Engine](/docs/01-architecture/execution/docker-engine/)). Prefer `team_shared: false`.
+- `team_shared` (boolean, default `false` on create): when `true`, same-team pipelines auto-receive the secret at job claim; when `false`, use Authorized Secrets / YAML `secrets:` / step `secrets:` / `registry_secret` (deprecated). See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
+- `kind` (`generic` \| `registry`, default `generic`): `registry` requires parseable JSON with `username`/`password` and is required for step `registry_secret` (deprecated) at claim. List/get return `kind`. Pipeline UI **Registry Secret** dropdown filters to `kind=registry`.
+- For private registries, set `kind: registry`, store JSON credentials, and reference the secret **name** via `registry_secret` (deprecated → `buz/docker-login`; see [Docker Engine](/docs/01-architecture/execution/docker-engine/)). Prefer `team_shared: false`.
 
 ## Variables
 
@@ -665,13 +665,28 @@ Response `data`: `{ items, total, page, page_size }`. Items include summary fiel
 
 ## API Tokens
 
-Long-lived bearer credentials that authenticate like a user JWT (`Authorization: Bearer <token>`). Created by platform admins for scripts and tooling. Only the SHA-256 hash is stored; the plaintext is returned exactly once at creation.
+Long-lived bearer credentials for scripts and tooling (`Authorization: Bearer <token>`), created by platform admins. Only the SHA-256 hash is stored; the plaintext is returned exactly once at creation.
+
+**Tokens are operations-plane credentials.** Regardless of scope, every API token is denied:
+
+- the **identity plane** — user management, token management (no self-perpetuation), password change;
+- the **governance plane** — platform settings, plugin sources/pool curation.
+
+Those endpoints require a browser session (user JWT). Within the operations plane (pipelines, jobs, runners, hosts, secrets, variables, teams, webhooks, audit logs, …), the token's scope bounds the HTTP methods:
+
+| Scope | Operations plane | Requested via |
+|-------|------------------|---------------|
+| `read` (default) | Safe methods only (GET/HEAD/OPTIONS) | New tokens |
+| `ops` | Any method | New tokens |
+| `full` | Any method (creator-equivalent band) | **Legacy only** — pre-scope tokens keep it until revoked; closed to new tokens |
+
+Out-of-scope requests fail with 403 and a message naming the denied plane or the read-only band.
 
 | Method | Path | Auth |
 |--------|------|------|
-| POST | `/api/v1/api-tokens` | JWT + PlatformAdmin |
-| GET | `/api/v1/api-tokens` | JWT + PlatformAdmin |
-| DELETE | `/api/v1/api-tokens/:id` | JWT + PlatformAdmin |
+| POST | `/api/v1/api-tokens` | Session JWT + PlatformAdmin |
+| GET | `/api/v1/api-tokens` | Session JWT + PlatformAdmin |
+| DELETE | `/api/v1/api-tokens/:id` | Session JWT + PlatformAdmin |
 
 **Tiered visibility**: super admins list and revoke every token platform-wide; regular platform admins only list/revoke their own.
 
@@ -679,10 +694,10 @@ Long-lived bearer credentials that authenticate like a user JWT (`Authorization:
 
 Request:
 ```json
-{ "name": "ci-script" }
+{ "name": "ci-script", "scope": "ops" }
 ```
 
-`name` must be 1–64 chars of `[A-Za-z0-9._-]`. Response `data`:
+`name` must be 1–64 chars of `[A-Za-z0-9._-]`. `scope` is `"read"` (default) or `"ops"`; the legacy `"full"` value is rejected for new tokens. Response `data`:
 
 ```json
 {
@@ -690,15 +705,16 @@ Request:
   "name": "ci-script",
   "token": "buz_a1b2c3…",
   "prefix": "buz_a1b2c3…",
-  "created_at": "…"
+  "created_at": "…",
+  "scope": "ops"
 }
 ```
 
-The `token` field is only present in this response. Store it before closing the dialog — it cannot be retrieved again. Creates an `api_token.create` audit event.
+The `token` field is only present in this response. Store it before closing the dialog — it cannot be retrieved again. Creates an `api_token.create` audit event (the scope is recorded in the event payload).
 
 ### GET /api-tokens — List
 
-Response `data`: `{ items: [{ id, user_id, username, name, prefix, created_at, last_used_at, revoked, revoked_at }] }`.
+Response `data`: `{ items: [{ id, user_id, username, name, prefix, created_at, last_used_at, revoked, revoked_at, scope }] }`.
 
 ### DELETE /api-tokens/:id — Revoke
 

@@ -88,7 +88,7 @@ level = "info"                 # error | warn | info | debug | trace
 | `runner` | `heartbeat_timeout_seconds` | Offline threshold for runners |
 | `pipeline` | `yaml_scan_*` | File/Git authority for pipeline YAML; scanner + UI online edit write here. **Flat directory only** (basename files; no private subdirs). See [YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/) |
 | `plugin_index` | `local_dir` | Local plugin specs used to resolve `uses:` references. Empty (the default) uses `<data_dir>/plugins`; Manager reads the selected directory and does not clone or sync it. |
-| `clock` | `enabled` | Default `true`. Probe the OSS endpoint's `Date` header before signing `config.source` URLs — see [Clock skew](#clock-skew) |
+| `clock` | `enabled` | Default `true`. Probe the OSS endpoint's `Date` header before signing `config.source` (deprecated) URLs — see [Clock skew](#clock-skew) |
 | `clock` | `warn_threshold_seconds` | Default `60`. Log a `warn` when the Manager clock is at least this far behind remote time. `0` disables the warning |
 | `clock` | `cache_ttl_seconds` | Default `300`. Reuse a probe result for this long; `0` probes on every dispatch |
 | `clock` | `allowed_hosts` | Default `["*.aliyuncs.com"]`. Hosts the guard may probe. The probe target is derived from a team-scoped `config_source` secret, so this is the **SSRF allowlist**: a host outside it is never contacted (the guard is skipped for that endpoint). Extend it for S3-compatible endpoints (MinIO etc.); name a port explicitly (`minio.internal:9000`) to allow a non-443 endpoint. An empty list disables probing. Redirects are never followed |

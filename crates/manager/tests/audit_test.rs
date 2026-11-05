@@ -44,6 +44,7 @@ fn changes_records_only_differing_keys() {
         is_platform_admin: true,
         is_super_admin: false,
         is_ops: false,
+        api_token_scope: None,
         memberships: vec![],
     };
     let event = AuditEvent::new(Action::RunnerUpdate, &auth)
@@ -84,6 +85,7 @@ fn plugin_pool_resource_composes_the_reference() {
         is_platform_admin: true,
         is_super_admin: false,
         is_ops: false,
+        api_token_scope: None,
         memberships: vec![],
     };
     let event = AuditEvent::new(Action::PluginPoolToggle, &auth).on(Resource::plugin_pool(

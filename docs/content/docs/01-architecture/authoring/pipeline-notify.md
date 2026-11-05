@@ -73,7 +73,7 @@ on: [success, failure, cancelled]
 
 ### Secrets & team scope
 
-- `webhook: ${secrets.FEISHU_WEBHOOK}` is collected into **effective secrets** (same as `env:` / `registry_secret` / `config.source`).
+- `webhook: ${secrets.FEISHU_WEBHOOK}` is collected into **effective secrets** (same as `env:`; the `registry_secret` / `config.source` slots are deprecated).
 - Validate / Save require the secret to exist in the **same team** as the pipeline (unless `team_shared`).
 - At send time Manager decrypts the secret and POSTs to the webhook. The plaintext URL is **never** written into the job snapshot — only the `${secrets.…}` expression is frozen at trigger.
 
