@@ -20,6 +20,22 @@ changes; until then CI pays full cold-compile time (~10 min release,
 Linux successfully; local gates use `cargo test --all` (see AGENTS.md).
 Re-verify after nextest/rustc upgrades.
 
+### Intermittent cargo/rustc child-process startup hangs (macOS, 2026-11-05)
+
+Beyond the nextest hang above, plain `cargo test` / `cargo fmt` was observed
+(2026-11-05) intermittently hanging with child processes stuck at startup:
+rustc at 0% CPU with a tiny (~18 MB) footprint for 30+ minutes, never
+producing diagnostics. Killing everything (`pkill -9 -f cargo; pkill -9 -f
+rustc`) and rerunning the same command completes normally. Two related
+quirks: a cargo run killed mid-build can leave an orphan process holding the
+`target/debug/.cargo-lock` (later runs then sit at 0% CPU "waiting"), and
+running two cargo builds concurrently (e.g. `-p manager` and `-p shared`
+tests) serializes on that lock and looks hung. Local practice: run cargo
+strictly one at a time, prefer direct file-redirected background runs over
+pipes (piped output is swallowed by `tail`/`grep` so a stuck build is
+invisible), and check `ps aux | grep cargo` for orphans before assuming a
+hang.
+
 ## Deferred designs (roadmap, by priority)
 
 ### 1. Scheduler starvation control — **done (2.0.3)**
