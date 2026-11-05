@@ -137,9 +137,11 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
     assert!(fetched["config"]["profiles"]["medium"].is_object());
     assert!(fetched["config"]["tiers"]["container"].is_object());
     let sha = fetched["sha256"].as_str().unwrap().to_string();
+    // An up-to-date fetch answers immediately (no `Prefer: wait` needed);
+    // the blocking long-poll paths are covered in sandboxd_config_test.
     let (status, resp) = app
         .get(
-            &format!("/api/v1/sandboxd/config?applied_version={version}&wait=1"),
+            &format!("/api/v1/sandboxd/config?applied_version={version}"),
             Some(&device_token),
         )
         .await;
