@@ -53,7 +53,7 @@ pub struct ClockGuard {
 
 impl ClockGuard {
     pub fn new(config: ClockConfig) -> Self {
-        let client = reqwest::Client::builder()
+        let client = crate::http_util::client_builder()
             .user_agent(concat!("buz-manager/", env!("CARGO_PKG_VERSION")))
             .timeout(PROBE_TIMEOUT)
             // Redirects are refused: the probe target is derived from a

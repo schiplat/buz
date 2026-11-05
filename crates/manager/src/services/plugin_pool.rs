@@ -1756,11 +1756,28 @@ async fn fetch_content(
 /// Build the source-sync HTTP client. The timeout is the single
 /// `plugin_sync_timeout` setting (manager.toml default + DB override) — every
 /// caller constructs through here so there is exactly one place it lives.
+///
+/// Clients are cached per timeout: `reqwest::Client` wraps a connection pool
+/// and is meant to be built once and cloned, not rebuilt per request — the
+/// first build initializes the TLS backend, which on macOS can take many
+/// seconds and was stalling every pipeline save / plugin sync.
 pub fn http_client(timeout_secs: u64) -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(timeout_secs))
-        .build()
-        .expect("static client config")
+    static CLIENTS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<u64, reqwest::Client>>,
+    > = std::sync::OnceLock::new();
+    let mut cache = CLIENTS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    cache
+        .entry(timeout_secs)
+        .or_insert_with(|| {
+            crate::http_util::client_builder()
+                .timeout(std::time::Duration::from_secs(timeout_secs))
+                .build()
+                .expect("static client config")
+        })
+        .clone()
 }
 
 async fn http_get_text(http: &reqwest::Client, url: &str) -> Result<String, anyhow::Error> {

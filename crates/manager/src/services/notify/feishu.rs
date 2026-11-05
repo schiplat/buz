@@ -14,7 +14,9 @@ impl FeishuChannel {
     pub fn from_webhook(webhook_url: String) -> Self {
         Self {
             webhook_url,
-            client: reqwest::Client::new(),
+            client: crate::http_util::client_builder()
+                .build()
+                .expect("reqwest client build cannot fail"),
         }
     }
 }

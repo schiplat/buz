@@ -82,7 +82,7 @@ impl GitHubClient {
         // reqwest's default client does NOT send one, so set it explicitly.
         // A request timeout prevents a hung endpoint from stalling the fetch
         // scheduler / handler tasks indefinitely.
-        let http = reqwest::Client::builder()
+        let http = crate::http_util::client_builder()
             .user_agent(concat!("buz-manager/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(30))
             .build()

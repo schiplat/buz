@@ -1,0 +1,9 @@
+# Workspace-wide cargo settings.
+
+[env]
+# Skip the OS-level proxy probe inside reqwest's first client build. On macOS
+# that probe (SCDynamicStoreCopyProxiesWithOptions) can stall 10s+ per process
+# on machines whose LaunchServices is unwell — see KNOWN_ISSUES.md. Proxy
+# environment variables (http_proxy/https_proxy/no_proxy) are still honored
+# via explicit parsing when this is set.
+BUZ_HTTP_NO_SYSTEM_PROXY = "1"

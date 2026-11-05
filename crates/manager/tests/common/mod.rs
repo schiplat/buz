@@ -34,6 +34,46 @@ pub struct TestApp {
     pub pool: SqlitePool,
 }
 
+/// Template-DB boot: run the 100+ migrations ONCE per test binary, snapshot
+/// the migrated schema with `VACUUM INTO`, then clone that file per test.
+/// Boot drops from ~8s per binary to ~milliseconds per test.
+static TEMPLATE_DB: tokio::sync::OnceCell<std::path::PathBuf> = tokio::sync::OnceCell::const_new();
+static CLONE_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+async fn template_db() -> std::path::PathBuf {
+    TEMPLATE_DB
+        .get_or_init(|| async {
+            // Migrate straight into a file-backed template: VACUUM INTO is a
+            // no-op on :memory: sources, so the template must be a real file.
+            let path =
+                std::env::temp_dir().join(format!("buz-test-template-{}.db", std::process::id()));
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect(&format!("sqlite://{}?mode=rwc", path.display()))
+                .await
+                .unwrap();
+            run_migrations(&pool, JWT_SECRET).await.unwrap();
+            pool.close().await;
+            path
+        })
+        .await
+        .clone()
+}
+
+/// A migrated SQLite pool backed by a private clone of the template file.
+/// Each caller gets a fully isolated database.
+pub async fn migrated_pool(max_connections: u32) -> SqlitePool {
+    let id = CLONE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("buz-test-{}-{id}.db", std::process::id()));
+    std::fs::copy(template_db().await, &path).expect("copy template db");
+    let pool = SqlitePoolOptions::new()
+        .max_connections(max_connections)
+        .connect(&format!("sqlite://{}", path.display()))
+        .await
+        .expect("open cloned test db");
+    pool
+}
+
 fn test_config() -> Config {
     Config {
         server: ServerConfig::default(),
@@ -60,11 +100,7 @@ fn test_config() -> Config {
 impl TestApp {
     /// Router + pool seeded with the standard cast (see module docs).
     pub async fn boot() -> Self {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(4)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = migrated_pool(4).await;
         run_migrations(&pool, JWT_SECRET).await.unwrap();
         for (id, username, admin, ops) in [
             (ADMIN, "boss", 1, 0),
