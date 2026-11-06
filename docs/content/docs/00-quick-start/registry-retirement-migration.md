@@ -1,10 +1,10 @@
 ---
-title: v3 Migration Guide
+title: Registry Retirement Migration Guide
 weight: 3
 description: "Migrating off the retired kernel registry_secret and config.source paths"
 ---
 
-Buz v3 removes two kernel features that were deprecated since 2.x:
+This release removes two kernel features that were deprecated since 2.x:
 
 1. **`registry_secret`** (kernel docker login/logout sandwich) →
    [`buz/docker-login`](https://github.com/schiplat/buz-plugins) plugin template

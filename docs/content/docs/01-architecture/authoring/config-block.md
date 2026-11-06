@@ -10,7 +10,7 @@ The step-level `config:` block is **render-only**: it renders template files
 that already exist under `dest`, injecting secret values and exporting
 `$BUZ_CONFIG_DIR` / `$BUZ_ENV_CHANGED` to the step.
 
-> **Removed in v3:** the kernel OSS-deliver mode (`config.source` /
+> **Removed in the 2.x retirement:** the kernel OSS-deliver mode (`config.source` /
 > `config.key_path`) is gone — pipelines using those keys fail validation.
 > Deliver config bundles with the [`buz/config-fetch`](https://github.com/schiplat/buz-plugins) plugin step
 > (presigned-URL mode) or [`buz/oss-download`](https://github.com/schiplat/buz-plugins)

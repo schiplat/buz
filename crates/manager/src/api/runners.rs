@@ -1800,7 +1800,7 @@ async fn poll_once(
         // pushing its value here; the Runner only consumes this list.
         //
         // Both former contributors (registry passwords, OSS signed URLs) were
-        // removed with their kernel paths in v3; the list stays as the hook for
+        // removed with their kernel paths in the 2.x retirement; the list stays as the hook for
         // plugin-injected sensitive values.
         let log_mask_values: Vec<String> = Vec::new();
 

@@ -1,5 +1,5 @@
 //! End-to-end test for the dispatch step payload's masking contract: after
-//! the v3 removal of the kernel `config.source` / signed-URL path, the claim
+//! the retirement removal of the kernel `config.source` / signed-URL path, the claim
 //! payload must NOT carry a `config_auth` block, and `log_mask_values` (the
 //! generic hook the Runner consumes to redact logs) stays empty for a
 //! pipeline that only used the retired purpose slot.

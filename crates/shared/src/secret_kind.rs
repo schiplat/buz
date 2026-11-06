@@ -1,7 +1,7 @@
 //! Secret kind classification (`generic`).
 //!
 //! The legacy kinds are gone: `registry` (JSON credentials for the removed
-//! `registry_secret` slot, v3) and `aliyun_oss_auth` (OSS deliver creds,
+//! `registry_secret` slot, retired) and `aliyun_oss_auth` (OSS deliver creds,
 //! removed in the 2.x retirement with the kernel config.source path). Existing rows keep
 //! their stored kind value and normalize to `generic`.
 
