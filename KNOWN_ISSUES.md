@@ -84,7 +84,7 @@ instead of rebuilt per request (`4a4b1fe`).
 
 ## Deferred designs (roadmap, by priority)
 
-### 0a. Kernel retirement — **done (v3.0.0)**
+### 0a. Kernel retirement — **done (unreleased; ships in the next 2.x release)**
 
 Phase 3 of `registry-auth-dual-track.md` / `object-store-config-source.md`
 shipped: `registry_secret`, `config.source`/`config.key_path` (OSS
@@ -101,7 +101,7 @@ once inside a full `cargo test --all` run ("override must reach the
 resolver") while passing consistently in isolation. `policy_from_settings()`
 reads process-global state that parallel test binaries in other suites
 may reset — a test-isolation defect, not a product bug. Not caused by
-the v3 work (plugin/settings code untouched). Fix candidate: make the
+the kernel-retirement work (plugin/settings code untouched). Fix candidate: make the
 resolver policy per-app-state instead of process-global.
 
 ### 0. Test-suite speed — measured, closed (2026-11-05)
@@ -167,10 +167,13 @@ steps (`buz/config-fetch` / `buz/docker-login` / `buz/docker-logout`):
    external templates — a deliberate difference from GHA (which has no
    external-template secret resolution and fails silently on typos;
    buz's `on_missing: fail` fails loudly per reference instead).
-3. Long-term (post-v3 candidate): extract render into a `buz/env-render`
-   plugin with explicit `with:` secret mapping — references become
-   scannable, the `render_env_secrets` side-channel and the `config:`
-   core block can be removed. Template-contract route: keep the
+3. Roadmap (plugin-first, 2.x era): extract render into a
+   `buz/env-render` plugin with explicit `with:` secret mapping —
+   references become scannable, and only then the `render_env_secrets`
+   side-channel and the `config:` core block get retired. **No major
+   version is planned** (product decision 2026-11-06): all changes
+   belong to the 2.x line; core cleanup starts only after the plugin
+   ships and existing pipelines migrate. Template-contract route: keep the
    `${secrets.X}` syntax (plugin performs the substitution from the
    mapping) — switching templates to INPUT-style placeholders would
    invalidate every published config bundle on OSS and break
