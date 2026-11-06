@@ -1360,6 +1360,38 @@ steps:
     assert_eq!(names, vec!["GIT_SSH_KEY".to_string()]);
 }
 
+/// `uses:` step inputs are part of the GHA-style reference surface: a
+/// pipeline whose only secret references live in `with:` maps binds them
+/// without any top-level `secrets:` declaration.
+#[test]
+fn collect_effective_secret_names_from_uses_with_inputs() {
+    use shared::pipeline_yaml::collect_effective_secret_names;
+
+    let yaml = r#"
+name: uses-with-secrets
+steps:
+  - name: login
+    uses: buz/docker-login@1.1.0
+    engine: ssh
+    host: $deploy_host
+    with:
+      registry: registry.example.com
+      username: ${secrets.REGISTRY_USERNAME}
+      password: ${secrets.REGISTRY_PASSWORD}
+  - name: plain
+    run: echo hi
+"#;
+    let parsed: shared::pipeline_yaml::PipelineYaml = serde_yaml::from_str(yaml).expect("parse");
+    let names = collect_effective_secret_names(&parsed);
+    assert_eq!(
+        names,
+        vec![
+            "REGISTRY_PASSWORD".to_string(),
+            "REGISTRY_USERNAME".to_string()
+        ]
+    );
+}
+
 #[test]
 fn notify_feishu_parses_and_defaults() {
     use shared::pipeline_yaml::collect_effective_secret_names;

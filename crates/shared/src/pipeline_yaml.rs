@@ -757,9 +757,9 @@ pub fn flatten_config(
 /// Collect secret names that this pipeline effectively allowlists.
 ///
 /// Includes optional top-level `secrets:`, step `secrets:`,
-/// `${secrets.NAME}` inside pipeline/step `env:`, and `notify[].webhook` —
-/// so production YAML may omit the top-level list (GHA-style) while Manager
-/// still binds `pipeline_secrets`.
+/// `${secrets.NAME}` inside pipeline/step `env:`, `uses:` steps' `with:`
+/// inputs, and `notify[].webhook` — so production YAML may omit the
+/// top-level list (GHA-style) while Manager still binds `pipeline_secrets`.
 pub fn collect_effective_secret_names(parsed: &PipelineYaml) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut names = BTreeSet::new();
@@ -790,6 +790,17 @@ pub fn collect_effective_secret_names(parsed: &PipelineYaml) -> Vec<String> {
         }
         if let Some(env) = &step.env {
             for v in env.values() {
+                for n in crate::secret_ref::collect_secrets_names(v) {
+                    names.insert(n);
+                }
+            }
+        }
+        // `uses:` step inputs carry `${secrets.X}` too (the plugin contract,
+        // e.g. buz/docker-login's password) — without this scan the
+        // references would neither validate at save nor bind at claim, and
+        // every uses-based pipeline would need a top-level declaration.
+        if let Some(with) = &step.with {
+            for v in with.values() {
                 for n in crate::secret_ref::collect_secrets_names(v) {
                     names.insert(n);
                 }
