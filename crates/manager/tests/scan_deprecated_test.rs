@@ -1,4 +1,4 @@
-//! Integration tests for the pre-v3 deprecated-key scan
+//! Integration tests for the pre-retirement deprecated-key scan
 //! (`services::deprecated_scan`) — Phase 3 precondition ①.
 
 use sqlx::sqlite::SqlitePoolOptions;

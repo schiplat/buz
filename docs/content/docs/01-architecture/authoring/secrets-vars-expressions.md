@@ -89,7 +89,7 @@ Platform Variables bound via `variables:` **are** injected as `$NAME` into every
 | `config.render` template files | ✅ | ✅ | Runner Strict mode; missing → fail |
 | **`run:` scripts** | ❌ | ❌ | **Not expanded** — use `$KEY` / `$INPUT_*` |
 
-The kernel purpose slots (`registry_secret`, `config.source`) were removed in v3 — use `env:` mappings; registry login/config delivery are plugin templates (`buz/docker-login`, `buz/config-fetch`).
+The kernel purpose slots (`registry_secret`, `config.source`) were removed in the 2.x retirement — use `env:` mappings; registry login/config delivery are plugin templates (`buz/docker-login`, `buz/config-fetch`).
 
 ### C. Shell / process consumption (`run:` and engines)
 

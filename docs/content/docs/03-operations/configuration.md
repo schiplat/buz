@@ -322,7 +322,7 @@ timedatectl status                              # System clock synchronized: yes
 ```
 
 > Note: the former `[clock]` config sections (Manager URL-signing probe,
-> Runner skew guard) were removed in v3 together with the kernel
+> Runner skew guard) were removed in the 2.x retirement together with the kernel
 > `config.source` delivery. A leftover `[clock]` section in a TOML file is
 > ignored.
 

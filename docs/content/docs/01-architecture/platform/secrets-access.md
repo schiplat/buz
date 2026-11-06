@@ -11,7 +11,7 @@ Buz uses the same **allowlist → explicit map → consume** flow as GitHub Acti
 ## Rules
 
 1. **Allowlist / reference ≠ inject.** Listing a name (or referencing `${secrets.NAME}`) does **not** put `$NAME` into the process environment by itself.
-2. **Map before use.** Put values into the environment with `env:`. Registry auth and config delivery both use plugin templates (`buz/docker-login`, `buz/config-fetch`) instead of purpose slots — the kernel purpose slots were removed in v3.
+2. **Map before use.** Put values into the environment with `env:`. Registry auth and config delivery both use plugin templates (`buz/docker-login`, `buz/config-fetch`) instead of purpose slots — the kernel purpose slots were removed in the 2.x retirement.
 3. **Scripts use shell vars.** After `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}`, `run` uses `$GIT_SSH_KEY`. Do not write `${secrets.…}` inside `run` — the engine does not expand secrets inside scripts.
 4. **Templates still use expressions.** `config.render` templates may contain `${secrets.X}` / `${vars.X}`; the runner expands them when generating files.
 5. **Team-shared secrets** are auto-**allowlisted** for expression resolution; they are still not auto-injected as env vars.
@@ -71,7 +71,7 @@ steps:
 |------|------|---------|
 
 
-The kernel purpose slots (`registry_secret`, `config.source`) were removed in v3. Registry login uses the `buz/docker-login` plugin template with two plain `generic` secrets; config delivery uses `buz/config-fetch` (presigned URL) or `buz/oss-download` (AK/SK) — both reference secrets the same way plugins always have.
+The kernel purpose slots (`registry_secret`, `config.source`) were removed in the 2.x retirement. Registry login uses the `buz/docker-login` plugin template with two plain `generic` secrets; config delivery uses `buz/config-fetch` (presigned URL) or `buz/oss-download` (AK/SK) — both reference secrets the same way plugins always have.
 
 ## Allowlist scope
 

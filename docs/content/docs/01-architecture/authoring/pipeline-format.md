@@ -786,7 +786,7 @@ Invalid on non-docker steps. Privileged containers can escape to the host — us
 
 #### Registry login / push
 
-Registry auth is no longer a step field (removed in v3) — use the `buz/docker-login` plugin template (login → push → logout). See [Docker Engine](/docs/01-architecture/execution/docker-engine/) and `example/pipelines/acr-personal-push.yml`.
+Registry auth is no longer a step field (removed in the 2.x retirement) — use the `buz/docker-login` plugin template (login → push → logout). See [Docker Engine](/docs/01-architecture/execution/docker-engine/) and `example/pipelines/acr-personal-push.yml`.
 
 ---
 

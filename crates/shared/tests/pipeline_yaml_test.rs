@@ -964,7 +964,7 @@ fn masking_input_demo_example_file() {
     assert!(version.masking.is_none() || version.masking == Some(false));
 }
 
-// ── Config block DSL v2 (render-only; kernel deliver removed in v3) ──
+// ── Config block DSL v2 (render-only; kernel deliver removed in the 2.x retirement) ──
 
 #[test]
 fn config_source_key_path_rejected_after_removal() {

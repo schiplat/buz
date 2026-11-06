@@ -60,7 +60,7 @@ This is **Scheme B** — chosen over “any pipeline can use any secret” to pr
 | `kind` | Meaning |
 |--------|---------|
 | `generic` | Env inject / Authorized Secrets / step `secrets:`. |
-| `registry` | Legacy: JSON registry credentials retained on existing rows. No longer creatable or validated; kernel support removed in v3. |
+| `registry` | Legacy: JSON registry credentials retained on existing rows. No longer creatable or validated; kernel support removed in the 2.x retirement. |
 
 Legacy note: earlier releases backfilled decryptable values that parse as registry JSON to `kind=registry`. Such rows keep their stored kind; the kernel no longer resolves registry auth.
 
@@ -220,14 +220,14 @@ Prefer YAML `secrets:` + `env: KEY: ${secrets.NAME}` (see [Secrets Access](./sec
 | `secrets: [GIT_SSH_KEY, …]` (optional top-level) | Allowlist overview; does **not** inject `$NAME` alone |
 | `env: KEY: ${secrets.NAME}` | Explicit map → process env |
 | `steps[].secrets: [GIT_SSH_KEY]` | Optional step allowlist narrowing |
-| Secrets UI → Kind | `generic` default; legacy `registry` rows render/edit-only (kernel support removed in v3) |
+| Secrets UI → Kind | `generic` default; legacy `registry` rows render/edit-only (kernel support removed in the 2.x retirement) |
 | Secrets UI → Team share | Tier‑1 auto-allowlist when enabled |
 
 ---
 
 ## Registry credentials
 
-Registry auth is no longer a secret/pipeline feature (kernel support removed in v3). Log in with the `buz/docker-login` plugin template using plain `generic` secrets (`username` / `password`) — see [Docker Engine](/docs/01-architecture/execution/docker-engine/). Legacy `kind=registry` rows keep their stored kind.
+Registry auth is no longer a secret/pipeline feature (kernel support removed in the 2.x retirement). Log in with the `buz/docker-login` plugin template using plain `generic` secrets (`username` / `password`) — see [Docker Engine](/docs/01-architecture/execution/docker-engine/). Legacy `kind=registry` rows keep their stored kind.
 
 ---
 

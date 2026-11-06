@@ -325,7 +325,7 @@ impl ConfigRender {
 ///
 /// Render-only (see docs/01-architecture/config-block.md): render templates
 /// that already live under `dest` in place. Object-store delivery moved to
-/// the `buz/config-fetch` plugin step (kernel OSS deliver removed in v3).
+/// the `buz/config-fetch` plugin step (kernel OSS deliver removed in the 2.x retirement).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ConfigBlock {

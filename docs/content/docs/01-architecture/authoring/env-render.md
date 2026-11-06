@@ -307,7 +307,7 @@ already reflected in the DSL / render-rules / ValueMap sections above.
 - Existing secret delivery (`secrets:` list, `team_shared` auto-inject, step
   `secrets:`) is unchanged. Rendering is an **additive** capability; the same
   secret can be injected as env **and** referenced by a template. The kernel
-  purpose slots (`registry_secret`, `config.source`) were removed in v3 —
+  purpose slots (`registry_secret`, `config.source`) were removed in the 2.x retirement —
   delivery is the `buz/config-fetch` plugin step now; a render-only
   `config:` block reads templates already under `dest`.
 - Secret names are UPPER_SNAKE_CASE (enforced at create, exact/case-sensitive
@@ -315,8 +315,8 @@ already reflected in the DSL / render-rules / ValueMap sections above.
   into `name`** via migration (backfill env_name → name when non-empty and
   collision-free), then dropped; existing pipelines that referenced the old
   env_name key must re-point at the merged name.
-- Legacy `registry` / `aliyun_oss_auth` secret rows (pre-v3 data) never participate in env
-  rendering; both kinds were removed in v3 and normalize to `generic`.
+- Legacy `registry` / `aliyun_oss_auth` secret rows (pre-retirement data) never participate in env
+  rendering; both kinds were removed in the 2.x retirement and normalize to `generic`.
 - The unified `ValueMap::expand` keeps `ExpandMode::Lenient` for
   `config_key_path` / host resolution; `config.render` uses `Strict`.
 

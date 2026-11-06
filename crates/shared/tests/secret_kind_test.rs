@@ -1,6 +1,6 @@
 //! Secret kind helpers and protocol fields (`generic` only).
 //!
-//! The legacy kinds were removed in v3: `registry` (with the
+//! The legacy kinds were removed in the 2.x retirement: `registry` (with the
 //! `registry_secret` kernel slot) and `aliyun_oss_auth` (with the kernel
 //! `config.source` delivery). Stored rows keep their value and normalize to
 //! `generic`; plugins use plain `generic` secrets instead.
@@ -13,7 +13,7 @@ fn normalize_secret_kind_always_generic() {
     assert_eq!(normalize_secret_kind(None), SECRET_KIND_GENERIC);
     assert_eq!(normalize_secret_kind(Some("")), SECRET_KIND_GENERIC);
     assert_eq!(normalize_secret_kind(Some("generic")), SECRET_KIND_GENERIC);
-    // Legacy kind values (pre-v3 rows) normalize to generic.
+    // Legacy kind values (pre-retirement rows) normalize to generic.
     assert_eq!(normalize_secret_kind(Some("registry")), SECRET_KIND_GENERIC);
     assert_eq!(
         normalize_secret_kind(Some("aliyun_oss_auth")),

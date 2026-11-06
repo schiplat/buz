@@ -2,7 +2,7 @@
 //!
 //! Preferred form: `${secrets.NAME}` (aligned with config.render). Bare
 //! `NAME` was accepted for migration on the retired kernel purpose slots
-//! (`registry_secret`, `config.source`) — both removed in v3; `resolve_
+//! (`registry_secret`, `config.source`) — both removed in the 2.x retirement; `resolve_
 //! secret_slot` remains for `notify[].webhook`.
 
 /// Extract `NAME` from `${secrets.NAME}` (trimmed). Returns `None` if the

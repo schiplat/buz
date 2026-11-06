@@ -36,7 +36,7 @@ the plugin-path migration for each. Nothing is modified.
 `buz/docker-login` step before the pull/push steps:
 
 ```yaml
-# Before (removed in v3)          # After
+# Before (removed in the 2.x retirement)          # After
 steps:                            steps:
   - name: deploy                    - name: Registry login
     engine: docker                    uses: buz/docker-login@1.1.0
@@ -58,7 +58,7 @@ optional `REGISTRY_HOST`).
 fetch step + a render-only block:
 
 ```yaml
-# Before (removed in v3)          # After
+# Before (removed in the 2.x retirement)          # After
 steps:                            steps:
   - name: deploy                    - name: Fetch config bundle
     engine: shell                     uses: buz/config-fetch@1.1.0
@@ -79,7 +79,7 @@ directly, use `buz/oss-download` (masked AK/SK, `engines: [docker, ssh]`).
 
 ## Step 3 — migrate secrets
 
-| Legacy kind (pre-v3 rows) | Action |
+| Legacy kind (pre-retirement rows) | Action |
 |---------------------------|--------|
 | `registry` (JSON creds) | Split into `REGISTRY_USERNAME` / `REGISTRY_PASSWORD` generic secrets (or delete) |
 | `aliyun_oss_auth` (JSON AK/SK) | Delete, or keep the AK/SK as a `generic` secret for `buz/oss-download` |

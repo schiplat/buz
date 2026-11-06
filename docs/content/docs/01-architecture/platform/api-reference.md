@@ -108,7 +108,7 @@ backlog, WebSocket broadcast sink counts, and the step review-gate posture
 {
   "status": "ok",
   "name": "Buz",
-  "version": "3.0.0",
+  "version": "2.1.1",
   "component": "manager",
   "uptime_seconds": 3600,
   "started_at": "2026-08-30T12:00:00Z",
@@ -478,7 +478,7 @@ Response:
 - When ciphertext cannot be decrypted: `value` is `****` and `reencrypt_required: true`.
 - Empty `value` on PUT keeps the existing ciphertext.
 - `team_shared` (boolean, default `false` on create): when `true`, same-team pipelines auto-receive the secret at job claim; when `false`, use Authorized Secrets / YAML `secrets:` / step `secrets:`. See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
-- `kind` (`generic` \| `registry`, default `generic`): `registry` is a legacy value retained on existing rows — no longer creatable or validated (kernel support removed in v3). List/get return `kind`.
+- `kind` (`generic` \| `registry`, default `generic`): `registry` is a legacy value retained on existing rows — no longer creatable or validated (kernel support removed in the 2.x retirement). List/get return `kind`.
 - For private registries, use the `buz/docker-login` plugin template with plain `generic` secrets (see [Docker Engine](/docs/01-architecture/execution/docker-engine/)). Prefer `team_shared: false` for registry credentials.
 
 ## Variables

@@ -101,7 +101,7 @@ async fn test_app() -> Router {
     .await
     .expect("seed task");
 
-    // A legacy pre-v3 OSS secret row (same team), value encrypted at rest
+    // A legacy pre-retirement OSS secret row (same team), value encrypted at rest
     // like production. The claim must ignore it entirely — no signing, no
     // mask registration, and the secret value must never appear.
     let oss_json = r#"{"endpoint":"oss.example.com","bucket":"buz-test","access_key_id":"akid-test","access_key_secret":"p4ssw0rd-secret"}"#;

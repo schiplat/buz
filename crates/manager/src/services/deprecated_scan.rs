@@ -5,7 +5,7 @@
 //! the database (`tasks.registry_secret`, `tasks.config_source` /
 //! `tasks.config_key_path` columns, secret kinds `registry` /
 //! `aliyun_oss_auth`). The kernel no longer consumes these columns — they are
-//! report-only until the next major version drops them. Pipeline YAML files
+//! report-only until the next release drops them. Pipeline YAML files
 //! with the retired keys (`registry_secret`, `config.source` /
 //! `config.key_path`) are rejected outright by the strict parser
 //! (`deny_unknown_fields`) and show up under `files_unreadable` — that is the
@@ -56,7 +56,7 @@ impl ScanReport {
     pub fn print(&self, out: &mut dyn Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "Buz deprecated-key scan (pre-v3 migration report; read-only)"
+            "Buz deprecated-key scan (pre-retirement migration report; read-only)"
         )?;
 
         let dir = if self.yaml_scan_dir.is_empty() {
@@ -115,7 +115,7 @@ pub async fn scan_pool(pool: &SqlitePool, yaml_scan_dir: Option<&Path>) -> ScanR
 
     // 1. Live task rows — covers form-authored and YAML-imported pipelines.
     // The kernel no longer reads these columns; they are report-only until the
-    // next major version drops them.
+    // next release drops them.
     let rows = sqlx::query(
         "SELECT p.name AS pipeline_name, t.name AS step_name,
                 t.registry_secret, t.config_source, t.config_key_path

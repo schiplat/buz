@@ -218,7 +218,7 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 | 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution as shell/SSH. **Log masking**: Infrastructure Secrets and trigger inputs with `masking: true` are redacted — pipeline `env:` and Variables stay readable. Claim payload splits `env` vs `secrets` and includes `masking_input_keys` — see [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) |
 | 7 | **Gate**: Runner UI `docker_enabled` must be `true`; otherwise step fails with a clear error (do not fall back to shell) |
 | 8 | **Scheduling**: pipelines that need Docker should set `runner.labels` to include `docker`; Manager dispatches only to runners that have **all** required labels |
-| 9 | **Registry auth**: not a step field (kernel support removed in v3) — use the `buz/docker-login` plugin template (login → pull/push → logout); see the appendix below. |
+| 9 | **Registry auth**: not a step field (kernel support removed in the 2.x retirement) — use the `buz/docker-login` plugin template (login → pull/push → logout); see the appendix below. |
 | 10 | **Security defaults**: no host network, no arbitrary CLI options; `privileged` is opt-in for DinD only |
 
 ---
@@ -238,7 +238,7 @@ steps:
       npm test
 ```
 
-Private registry images: login with the `buz/docker-login` plugin before the docker step — no step field (removed in v3); see the appendix below.
+Private registry images: login with the `buz/docker-login` plugin before the docker step — no step field (removed in the 2.x retirement); see the appendix below.
 
 | Field | Required | Description |
 |-------|:--------:|-------------|
@@ -437,4 +437,4 @@ These do **not** block MVP acceptance:
 
 ## Appendix: Private registry login (ACR Personal Edition and others)
 
-Kernel-side registry auth was removed in v3. For any registry that accepts a static username + password (or PAT) — including Alibaba Cloud ACR Personal Edition's fixed console password — log in with the `buz/docker-login` plugin template (login → pull/push → logout). See the `buz/docker-login` plugin README and `example/pipelines/acr-personal-*.yml`.
+Kernel-side registry auth was removed in the 2.x retirement. For any registry that accepts a static username + password (or PAT) — including Alibaba Cloud ACR Personal Edition's fixed console password — log in with the `buz/docker-login` plugin template (login → pull/push → logout). See the `buz/docker-login` plugin README and `example/pipelines/acr-personal-*.yml`.

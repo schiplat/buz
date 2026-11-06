@@ -74,7 +74,7 @@ Pipeline step definitions.
 | step_order | INT | Execution order |
 | exec_type | TEXT | `local`, `ssh`, or `docker` (`wasm` reserved — never dispatched) |
 | image | TEXT | Container image when `exec_type=docker` (empty otherwise) |
-| registry_secret | TEXT | Column retained (legacy data); kernel support removed in v3 — registry auth uses the `buz/docker-login` plugin template |
+| registry_secret | TEXT | Column retained (legacy data); kernel support removed in the 2.x retirement — registry auth uses the `buz/docker-login` plugin template |
 | fail_strategy | TEXT | `stop`, `continue`, or `ignore` |
 | hosts_strategy | TEXT | SSH multi-host fan-out: `chain` (default) or `parallel` |
 
@@ -125,7 +125,7 @@ Secret storage. Values are stored in the database and injected as environment va
 | owner_group | TEXT | Team slug mirror; Phase 2 ownership via `team_id` (required). See [RBAC](/docs/01-architecture/platform/rbac/) |
 | team_id | TEXT | Owning team (required after bootstrap) |
 | team_shared | INTEGER NOT NULL DEFAULT 0 | `1` = same-team pipelines auto-receive this secret at job claim; `0` = explicit bind/reference only. See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) |
-| kind | TEXT NOT NULL DEFAULT `'generic'` | `generic` = env inject; `registry` = legacy JSON credentials retained on existing rows (no longer creatable or validated; kernel support removed in v3). Historical backfill marked decryptable registry JSON as `registry`. |
+| kind | TEXT NOT NULL DEFAULT `'generic'` | `generic` = env inject; `registry` = legacy JSON credentials retained on existing rows (no longer creatable or validated; kernel support removed in the 2.x retirement). Historical backfill marked decryptable registry JSON as `registry`. |
 | created_at, updated_at | TEXT | Auto-managed |
 
 ### pipeline_secrets
