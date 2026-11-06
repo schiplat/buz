@@ -69,6 +69,14 @@ pub struct PluginSpec {
     /// Search keywords (zh/en mix), consumed by the static-site index.
     #[serde(default)]
     pub keywords: Option<Vec<String>>,
+    /// Template-processing opt-in: the run block matches placeholder text
+    /// like `${secrets.NAME}` inside EXTERNAL template files (render-class
+    /// plugins). The literal never consumes Buz-side values — those still
+    /// reach the script only via INPUT_* variables from declared inputs —
+    /// so with this flag set, the run-literal ban for `${secrets.` /
+    /// `${vars.` is lifted. Requires at least one `masking: true` input.
+    #[serde(default, rename = "processes_secret_placeholders")]
+    pub processes_secret_placeholders: Option<bool>,
     #[serde(default)]
     pub license: Option<String>,
     /// `>=X.Y.Z` or exact `X.Y.Z` — the only supported forms (2026-10-03).
@@ -558,14 +566,34 @@ pub fn validate_plugin_spec(spec: &PluginSpec, current_buz: &str) -> Result<(), 
     }
 
     let run = spec.run.as_deref().unwrap_or("").trim();
+    // Template-processing plugins (e.g. buz/env-render) match placeholder
+    // TEXT inside external template files, so the run block legitimately
+    // contains the `${secrets.` pattern — the opt-in lifts the literal ban
+    // but demands a masked input as the (only) values channel.
+    let processes_placeholders = spec.processes_secret_placeholders == Some(true);
+    if processes_placeholders {
+        let has_masked_input = spec
+            .inputs
+            .as_ref()
+            .is_some_and(|inputs| inputs.values().any(|i| i.masking == Some(true)));
+        if !has_masked_input {
+            errors.push(
+                "processes_secret_placeholders: true requires at least one `masking: true` \
+                 input (the values channel for the placeholders)"
+                    .into(),
+            );
+        }
+    }
     if run.is_empty() {
         errors.push("run: is required (the plugin's script/command)".into());
-    } else {
+    } else if !processes_placeholders {
         for banned in ["${secrets.", "${vars."] {
             if run.contains(banned) {
                 errors.push(format!(
                     "run: must not reference {banned}}} — input and secret values reach the \
-                     script only via INPUT_*/env variables"
+                     script only via INPUT_*/env variables. A plugin that matches such \
+                     placeholders in external template files can declare \
+                     `processes_secret_placeholders: true`"
                 ));
             }
         }
