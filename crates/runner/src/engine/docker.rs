@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
@@ -178,9 +178,7 @@ pub fn validate_step_policy(
         anyhow::bail!("privileged Docker containers are forbidden by strict local Runner policy");
     }
     if runner.docker_mount_policy == DockerMountPolicy::Strict && has_host_prepare {
-        anyhow::bail!(
-            "strict Docker policy forbids host-side config_source/config_render preparation"
-        );
+        anyhow::bail!("strict Docker policy forbids host-side config_render preparation");
     }
     Ok(socket_path)
 }
@@ -296,110 +294,6 @@ pub async fn pull_image_with_program_and_timeout(
             let _ = child.kill().await;
             anyhow::bail!("docker pull timed out after {}s", timeout.as_secs());
         }
-    }
-}
-
-/// `docker login --password-stdin` for a private registry.
-///
-/// `docker_config_dir` — when set, the CLI writes credentials into this
-/// job-scoped config dir (`DOCKER_CONFIG`) instead of the host-global
-/// `~/.docker/config.json`. The caller removes it when the job ends.
-pub async fn registry_login(
-    registry: &str,
-    username: &str,
-    password: &str,
-    docker_config_dir: Option<&str>,
-) -> anyhow::Result<()> {
-    let registry = registry.trim();
-    let username = username.trim();
-    if registry.is_empty() || username.is_empty() || password.is_empty() {
-        anyhow::bail!("registry_auth requires non-empty registry, username, and password");
-    }
-
-    let mut command = Command::new("docker");
-    if let Some(dir) = docker_config_dir {
-        command.env("DOCKER_CONFIG", dir);
-    }
-    let mut child = command
-        .args([
-            "login",
-            "--username",
-            username,
-            "--password-stdin",
-            registry,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            anyhow::anyhow!("failed to spawn docker login (is the Docker CLI installed?): {e}")
-        })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(password.as_bytes())
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to write password to docker login stdin: {e}"))?;
-        // Drop stdin to close the pipe (EOF for --password-stdin).
-        drop(stdin);
-    }
-
-    let output = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
-        .await
-        .map_err(|_| anyhow::anyhow!("docker login timed out after 60s"))?
-        .map_err(|e| anyhow::anyhow!("docker login failed: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!(
-            "docker login to '{registry}' failed (exit {}): {}{}",
-            output.status.code().unwrap_or(-1),
-            stderr.trim(),
-            if stdout.trim().is_empty() {
-                String::new()
-            } else {
-                format!(" {}", stdout.trim())
-            }
-        );
-    }
-    Ok(())
-}
-
-/// Best-effort `docker logout` so credentials do not linger across jobs on shared runners.
-///
-/// `docker_config_dir` — scope the logout to the same job-scoped config dir
-/// the login used (see [`registry_login`]); `None` for the host-global default.
-pub async fn registry_logout(registry: &str, docker_config_dir: Option<&str>) {
-    let registry = registry.trim();
-    if registry.is_empty() {
-        return;
-    }
-    let mut command = Command::new("docker");
-    if let Some(dir) = docker_config_dir {
-        command.env("DOCKER_CONFIG", dir);
-    }
-    let result = tokio::time::timeout(
-        Duration::from_secs(30),
-        command
-            .args(["logout", registry])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status(),
-    )
-    .await;
-    match result {
-        Ok(Ok(status)) if status.success() => {}
-        Ok(Ok(status)) => {
-            tracing::warn!(
-                "docker logout from '{registry}' exited {}",
-                status.code().unwrap_or(-1)
-            );
-        }
-        Ok(Err(e)) => tracing::warn!("docker logout from '{registry}' failed: {e}"),
-        Err(_) => tracing::warn!("docker logout from '{registry}' timed out"),
     }
 }
 

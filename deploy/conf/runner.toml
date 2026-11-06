@@ -28,24 +28,6 @@ token_cache_path = "./state/runner-token"
 # shared: legacy host-global ~/.docker/config.json (credential-store setups).
 # docker_config_isolation = "per_job"
 
-[clock]
-# The Runner must stay consistent with the Manager clock: it is validated on
-# startup against the Manager's Date header (and re-checked on every heartbeat).
-# A gross skew refuses to start — fix the host clock (NTP) rather than relaxing
-# these thresholds. Labs only: fail_on_skew = false.
-enabled = true
-warn_threshold_seconds = 60
-max_skew_seconds = 300
-# fail_on_skew = true
-
-# Job-wide execution tiers (host < container < sandbox < vm) are selected in
-# Manager UI → Runners; the Runner only probes and reports what this host can
-# deliver, the user picks the default tier. Manager permits a sandboxed tier
-# only after a fresh supported check.
-# Tier prerequisites: Container needs a Docker daemon; Sandbox (L2, e.g. gVisor
-# runsc) needs Linux but no /dev/kvm; VM (L3) needs Linux + /dev/kvm and an
-# installed Firecracker-compatible OCI runtime.
-# Sandboxed jobs reject SSH, per-step Docker, registry auth, and host config prep.
 [sandbox]
 # Host-local wiring only: WHERE to reach the supervisor. WHAT to run (tier
 # images, runtimes, resource profiles) is Manager-managed — enroll the sandbox

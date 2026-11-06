@@ -12,7 +12,7 @@ Buz controls secret delivery with a **team ownership boundary** plus an **opt-in
 
 1. **Team auto-allowlist** — only when the secret has `team_shared = true` and shares the pipeline’s `team_id`
 2. **Explicit per-pipeline bindings** — `pipeline_secrets` / YAML `secrets:`
-3. **Explicit step references** — step `secrets:` or purpose slots (`registry_secret`, `config.source`)
+3. **Explicit step references** — step `secrets:` allowlist
 
 **Getting a value into the process env** always requires an explicit map: `env: KEY: ${secrets.NAME}` (or a purpose slot). See [Secrets Access (GHA-style)](/docs/01-architecture/platform/secrets-access/).
 
@@ -46,24 +46,23 @@ This is **Scheme B** — chosen over “any pipeline can use any secret” to pr
 |-------------|-------------------|----------------------|
 | Shared CI token used by many pipelines | `kind: generic`, `team_shared: true` | `env: TOKEN: ${secrets.TOKEN}` (no per-pipeline bind) |
 | Prod DB password, deploy key | `kind: generic`, `team_shared: false` | Explicit bind + `env: …: ${secrets.NAME}` |
-| Registry login JSON (ACR, etc.) | `kind: registry`, `team_shared: false` | `registry_secret: ${secrets.NAME}` (deprecated → `buz/docker-login`) |
 
 ---
 
-## `kind` (`generic` | `registry`)
+## `kind` (`generic` | legacy `registry`)
 
 | | |
 |---|---|
 | Column | `secrets.kind` (`TEXT`, API string) |
-| Values | `generic` (default) · `registry` |
+| Values | `generic` (default) · `registry` (legacy) |
 | Who may set | Team role with `SecretManage` (Maintainer+) |
 
 | `kind` | Meaning |
 |--------|---------|
-| `generic` | Env inject / Authorized Secrets / step `secrets:`. **Not** listed in Pipeline **Registry Secret** dropdown. |
-| `registry` | JSON credentials (`username` + `password`, optional `registry` / `provider`). Required for `registry_secret` at claim; validated on create/update. |
+| `generic` | Env inject / Authorized Secrets / step `secrets:`. |
+| `registry` | Legacy: JSON registry credentials retained on existing rows. No longer creatable or validated; kernel support removed in v3. |
 
-Migration backfill: decryptable values that parse as registry JSON are set to `kind=registry`. Claim rejects `registry_secret` pointing at a non-registry secret.
+Legacy note: earlier releases backfilled decryptable values that parse as registry JSON to `kind=registry`. Such rows keep their stored kind; the kernel no longer resolves registry auth.
 
 ---
 
@@ -107,17 +106,16 @@ Bind-time auth: binder needs `SecretManage` on the pipeline’s team; secret mus
 
 **Use case:** Pipeline needs a non-shared secret for all steps as env vars.
 
-### Tier 3: Explicit name reference (step / registry)
+### Tier 3: Explicit name reference (step)
 
 | Reference | Injection |
 |-----------|-----------|
 | Step `secrets: [NAME]` | Explicit step allowlist (optional) |
-| Step `registry_secret` / `config.source: ${secrets.NAME}` | Purpose slot — **reference is allowlist**; not injected as `$NAME` |
 | Step / pipeline `env: KEY: ${secrets.NAME}` | Allowlists `NAME` and injects as `$KEY` |
 
 Resolution requires the secret to exist and `secret.team_id == pipeline.team_id`. Top-level `secrets:` is optional. Name-only lookup across teams is rejected.
 
-**Use case:** Git deploy key only on checkout; ACR JSON only for private pull/push.
+**Use case:** Git deploy key only on checkout; OSS config secret only for delivery.
 
 ### Resolution Order
 
@@ -129,7 +127,7 @@ Claim payload (Manager → Runner):
 {
   "job_id": "…",
   "pipeline_id": "…",
-  "tasks": [ { "step_secrets": {}, "registry_auth": null } ],
+  "tasks": [ { "step_secrets": {} } ],
   "inputs": { "tag": "1.0", "deploy_token": "…" },
   "masking_input_keys": ["deploy_token"],
   "env": {
@@ -142,15 +140,15 @@ Claim payload (Manager → Runner):
 }
 ```
 
-`secrets`, registry passwords / step secrets, and keys listed in `masking_input_keys` are redacted in logs. Plaintext `inputs` are still injected as env for execution. See [Resource Binding Map](#resource-binding-map).
+`secrets`, step secrets, and keys listed in `masking_input_keys` are redacted in logs. Plaintext `inputs` are still injected as env for execution. See [Resource Binding Map](#resource-binding-map).
 
 ### Unified log-masking entry point
 
 "Which values / keys are sensitive" is decided in **one** place (`shared::log_masking`), so adding a new sensitive field can't be missed:
 
-- **Manager (producer)** pushes every sensitive value into the step payload's `log_mask_values` (`SecretClass::RegistryPassword` for `registry_auth.password`, `SecretClass::ConfigUrl` for the signed OSS URL, …). Adding a new sensitive field = registering it here; the Runner needs no changes.
+- **Manager (producer)** pushes every sensitive value into the step payload's `log_mask_values` (`SecretClass::ConfigUrl` for the signed OSS URL, …). Adding a new sensitive field = registering it here; the Runner needs no changes.
 - **Runner (consumer)** builds a per-step `SecretCatalog` from `secrets` keys + `masking_input_keys` + step `secrets:` + `log_mask_values`, then calls the shared `mask_secrets` primitive. `==> RUN` echo masks by key (`catalog.is_secret_key`); streamed output is masked by value.
-- **`SecretClass`** is the category registry (`Secret` / `MaskingInput` / `RegistryPassword` / `ConfigUrl` / `SshKey`) — extend it and the producer registration when introducing a new secret kind.
+- **`SecretClass`** is the category registry (`Secret` / `MaskingInput` / `ConfigUrl` / `SshKey`) — extend it and the producer registration when introducing a new secret kind.
 ---
 
 ## Resource Binding Map
@@ -158,7 +156,6 @@ Claim payload (Manager → Runner):
 | Resource | Where created | How bound to a pipeline | Runtime injection |
 |----------|---------------|-------------------------|-------------------|
 | **Secrets** | Infrastructure → Secrets | (1) `team_shared` + same team, or (2) **Authorized Secrets** / YAML `secrets:`, or (3) step `secrets:` / purpose slots | Allowlist for `${secrets.NAME}`; process env only via `env: KEY: ${secrets.NAME}` (**masked**) |
-| **Registry credentials** | Same Secrets store (JSON) | Step `registry_secret: ${secrets.NAME}` (allowlisted) | `docker login` only |
 | **Variables** | Infrastructure → Variables | Advanced → Variables / YAML `variables:` | Env `$NAME` (**not masked**) |
 | **Hosts** | Infrastructure → Hosts | Step `host` / `host_labels` when `engine: ssh` | SSH params on runner |
 | **Inline Env** | Pipeline `env:` | Always scoped to that pipeline | Env for every step (**not masked**) |
@@ -223,29 +220,14 @@ Prefer YAML `secrets:` + `env: KEY: ${secrets.NAME}` (see [Secrets Access](./sec
 | `secrets: [GIT_SSH_KEY, …]` (optional top-level) | Allowlist overview; does **not** inject `$NAME` alone |
 | `env: KEY: ${secrets.NAME}` | Explicit map → process env |
 | `steps[].secrets: [GIT_SSH_KEY]` | Optional step allowlist narrowing |
-| `steps[].registry_secret` | Login purpose slot; same-team + **`kind=registry`** |
-| Secrets UI → Kind | `generic` vs `registry` (filter + claim check) |
+| Secrets UI → Kind | `generic` default; legacy `registry` rows render/edit-only (kernel support removed in v3) |
 | Secrets UI → Team share | Tier‑1 auto-allowlist when enabled |
 
 ---
 
-## Registry credentials (`registry_secret`)
+## Registry credentials
 
-> **Deprecated:** use the `buz/docker-login` plugin template.
-
-```yaml
-registry_secret: acr-personal  # deprecated → buz/docker-login
-```
-
-```json
-{"provider":"acr_personal","registry":"…","username":"…","password":"…"}
-```
-
-- Secret must have **`kind: registry`** (Infrastructure → Secrets → Kind = Registry).
-- Prefer **`team_shared: false`** so unrelated pipelines never receive the JSON as env.
-- Password encrypted at rest; API returns partial redaction only.
-- Pipeline form **Registry Secret** dropdown lists only `kind=registry` secrets.
-- See [Docker Engine — ACR Personal Edition](/docs/01-architecture/execution/docker-engine/).
+Registry auth is no longer a secret/pipeline feature (kernel support removed in v3). Log in with the `buz/docker-login` plugin template using plain `generic` secrets (`username` / `password`) — see [Docker Engine](/docs/01-architecture/execution/docker-engine/). Legacy `kind=registry` rows keep their stored kind.
 
 ---
 
@@ -254,7 +236,7 @@ registry_secret: acr-personal  # deprecated → buz/docker-login
 1. **Default deny auto-inject** — leave Team share off unless many pipelines truly need the same `$NAME`
 2. **Use Authorized Secrets / YAML `secrets:`** for pipeline-wide non-shared secrets
 3. **Use step `secrets:`** for keys needed in one step (e.g. checkout)
-4. **Set Kind = Registry** for private registry JSON, then use `registry_secret` (deprecated → `buz/docker-login`) — do not enable Team share for ACR personal credentials
+4. **Private registry auth** — use the `buz/docker-login` plugin template with plain username/password secrets; do not enable Team share for registry credentials
 5. **Keep team slugs consistent** — `team:` in YAML must match Infrastructure Teams
 6. **Create Secrets in Infrastructure first**, then bind or reference by name
 
@@ -272,15 +254,14 @@ For every user (member or admin), the trigger dialog offers **Verbose mode**: th
 | `POST /pipelines/{id}/trigger` | No admin check — `verbose` is honored for any caller; audit event records `verbose` |
 | `jobs.verbose_logs` | Persisted on the job (DB column, default `0`); distinct from `debug_unredact` |
 | Runner dispatch | `poll` returns `verbose` on the task payload |
-| Runner logs | Per step: `==> STAGE prepare / exec` markers, `==> STEP CONFIG` (exec type, timeout, fail strategy, work dir, image, `registry_secret` by name, `config_source`/`config_key_path`/`config_dest`/`config_render`, ssh hosts as `user@host:port` — **never credentials**), `==> SSH [user@host:port]` + remote `workspace` after login, `==> CONFIG PREP` when the step has `config_auth` (object_key / expires_in; signed URL as `***`), `==> STEP RESULT` (duration + exit code, including prepare-stage failures) |
+| Runner logs | Per step: `==> STAGE prepare / exec` markers, `==> STEP CONFIG` (exec type, timeout, fail strategy, work dir, image, `config_dest`/`config_render`, ssh hosts as `user@host:port` — **never credentials**), `==> SSH [user@host:port]` + remote `workspace` after login, `==> STEP RESULT` (duration + exit code, including prepare-stage failures) |
 
 ### What verbose adds
 
-- **Per-step duration** and **exit code** — `==> STEP RESULT` reports `duration` + `exit code` even on failure (including `config_source` prepare failures such as OSS 404).
+- **Per-step duration** and **exit code** — `==> STEP RESULT` reports `duration` + `exit code` even on failure (including config render prepare failures).
 - **Stage progress** — `==> STAGE prepare` / `==> STAGE exec` markers around each step. `STEP CONFIG` is emitted **before** prepare so a download failure still shows the step shape.
 - **Command shape** — `==> RUN` already shows the multi-line expanded command; verbose additionally renders `==> STEP CONFIG` with the full step shape (metadata only).
 - **Config prepare** — `==> CONFIG PREP` shows `object_key` / `expires_in` before the OSS download; the signed URL stays `***` unless Debug is also on.
-- **`BUZ_CONFIG_URL` "injected" hint** — the signed OSS URL is registered via `catalog.add_injected_key`, so the `==> RUN` env line shows `BUZ_CONFIG_URL=<injected>` instead of `BUZ_CONFIG_URL=***`. This applies to all jobs (not only verbose), since it reveals nothing: the URL value still participates in value-based redaction.
 
 ### Log display order (`chunk_index`)
 
@@ -293,7 +274,6 @@ Each step owns a window `step_idx * 10_000` (`step_log_base` in `crates/runner/s
 | 0 | `==> STAGE prepare` | Verbose |
 | 1 | `==> STEP CONFIG` | Verbose (before prepare work) |
 | 2 | `==> CONFIG PREP` | Verbose **or** Debug, when `config_auth` is present |
-| 3 | `==> LOGIN […]` | Registry login succeeded |
 | 4 | `==> STAGE exec` | Verbose |
 | 5 | `==> RUN […]` | Always (command echo) |
 | 6… | Streamed stdout/stderr | Always |
@@ -320,7 +300,7 @@ Expected terminal order for a successful Verbose shell step:
 
 1. **Verbose markers sorted after RUN** — Prep/config/exec used offsets `9990–9994` while `RUN` was `1` and stream started at `2`. Upload order was correct (prepare → RUN → result), but DB reload showed `RUN` + output first, then `STAGE prepare` / `STEP CONFIG` / `STAGE exec` at the bottom. Fix: assign prep/config/exec offsets **before** `LOG_ECHO` / `LOG_STREAM_START` as in the table above. Old jobs keep their stored indexes; only new runs (with an updated Runner) show the corrected order.
 
-2. **Prepare-only failures looked identical with/without Verbose** — For `config_source` steps that fail during download (e.g. OSS HTTP 404), there is no `==> RUN`. Previously `STEP CONFIG` / `STAGE exec` were uploaded only after a successful unpack, so Verbose added almost nothing. Fix: emit `STAGE prepare` + `STEP CONFIG` before prepare; emit `CONFIG PREP` before the download; on prepare failure upload `ERROR` + verbose `STEP RESULT` with `exit code -1`, all with that step’s `step_order` (not job-level `-1`).
+2. **Prepare-only failures looked identical with/without Verbose** — For steps that fail during config prepare, there is no `==> RUN`. `STEP CONFIG` / `STAGE exec` are uploaded before prepare, and on prepare failure `ERROR` + verbose `STEP RESULT` upload with `exit code -1`, all with that step’s `step_order` (not job-level `-1`).
 
 Constants and ordering tests live in `poll.rs` / `poll_tests.rs` (`verbose_chunk_order_matches_display_sequence`).
 
@@ -356,7 +336,7 @@ For troubleshooting, a **platform admin** can trigger a pipeline with **Debug mo
 
 ### Risk note
 
-Registry passwords, SSH keys, and other long-lived secrets become plaintext in `job_logs` permanently until the 24h purge. Prefer short-lived values (e.g. a throwaway OSS signed URL via `config_source`) when using Debug mode. After 24h the logs are deleted automatically and the job's `debug_unredact` flag is reset; the job record itself remains for audit.
+Long-lived secrets (SSH keys, passwords, deploy tokens) become plaintext in `job_logs` permanently until the 24h purge. Prefer short-lived throwaway values when using Debug mode. After 24h the logs are deleted automatically and the job's `debug_unredact` flag is reset; the job record itself remains for audit.
 
 ---
 

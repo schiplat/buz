@@ -54,7 +54,7 @@ describe('PipelineYamlEditorDialog', () => {
     const text = document.body.textContent || ''
     const reference = document.body.querySelector('pre')?.textContent || ''
     expect(text).toContain('Prefer a pinned uses: plugin')
-    for (const deprecated of ['registry_secret', 'config.source', 'key_path', 'purpose slot', 'Manager builds {prefix}']) {
+    for (const deprecated of ['config.source', 'key_path', 'purpose slot', 'Manager builds {prefix}']) {
       expect(reference).not.toContain(deprecated)
     }
     expect(reference).toContain('uses: buz/docker-login@1.1.0')

@@ -1,41 +1,22 @@
-//! Secret kind classification (`generic` | `registry` | `aliyun_oss_auth`).
+//! Secret kind classification (`generic`).
+//!
+//! The legacy kinds are gone: `registry` (JSON credentials for the removed
+//! `registry_secret` slot, v3) and `aliyun_oss_auth` (OSS deliver creds,
+//! removed in v3 with the kernel config.source path). Existing rows keep
+//! their stored kind value and normalize to `generic`.
 
 /// Plain / env-injected secret (SSH keys, tokens, passwords as `$NAME`).
 pub const SECRET_KIND_GENERIC: &str = "generic";
-/// JSON registry credentials for `registry_secret` / `docker login` only.
-pub const SECRET_KIND_REGISTRY: &str = "registry";
-/// JSON Aliyun OSS read-only credentials for `config_source` / signed-URL downloads.
-pub const SECRET_KIND_ALIYUN_OSS_AUTH: &str = "aliyun_oss_auth";
 
-/// Normalize API/DB kind string. Unknown values fall back to `generic`.
-pub fn normalize_secret_kind(raw: Option<&str>) -> &'static str {
-    match raw
-        .map(str::trim)
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        SECRET_KIND_REGISTRY => SECRET_KIND_REGISTRY,
-        SECRET_KIND_ALIYUN_OSS_AUTH => SECRET_KIND_ALIYUN_OSS_AUTH,
-        _ => SECRET_KIND_GENERIC,
-    }
-}
-
-/// True when `kind` is the registry credentials kind.
-pub fn is_registry_kind(kind: &str) -> bool {
-    normalize_secret_kind(Some(kind)) == SECRET_KIND_REGISTRY
-}
-
-/// True when `kind` is the Aliyun OSS read-only credentials kind (`config_source`).
-pub fn is_aliyun_oss_auth_kind(kind: &str) -> bool {
-    normalize_secret_kind(Some(kind)) == SECRET_KIND_ALIYUN_OSS_AUTH
+/// Normalize API/DB kind string. Every value (including the legacy
+/// `registry` / `aliyun_oss_auth` kinds on pre-v3 rows) resolves to `generic`.
+pub fn normalize_secret_kind(_raw: Option<&str>) -> &'static str {
+    SECRET_KIND_GENERIC
 }
 
 /// A secret `name` must be UPPER_SNAKE_CASE: it is both the injected env key
 /// (run block `$NAME`) and the `${secrets.NAME}` template reference, so it must
-/// be a valid POSIX env var name in uppercase. `registry` / `aliyun_oss_auth`
-/// secrets are referenced by name too (registry_secret / config_source), so the
-/// rule applies to every kind.
+/// be a valid POSIX env var name in uppercase.
 pub fn validate_secret_name(raw: &str) -> Result<(), String> {
     let name = raw.trim();
     let mut chars = name.chars();

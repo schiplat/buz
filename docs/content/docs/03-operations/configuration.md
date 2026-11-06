@@ -60,12 +60,6 @@ yaml_scan_interval_seconds = 30
 # reviewed_manifest = "/etc/buz/reviews.json"   # from the buz-plugins repo
 # require_reviewed = true    # strict: reject plugins absent from the manifest
 
-[clock]
-enabled = true                 # probe remote clock before signing config URLs
-warn_threshold_seconds = 60    # log-only warning threshold
-cache_ttl_seconds = 300        # reuse a probe result for this long
-# allowed_hosts = ["*.aliyuncs.com"]   # hosts the guard may probe (SSRF allowlist)
-
 # Dev / single-container only — leave disabled in production (default)
 # [standalone]
 # enabled = true
@@ -88,10 +82,6 @@ level = "info"                 # error | warn | info | debug | trace
 | `runner` | `heartbeat_timeout_seconds` | Offline threshold for runners |
 | `pipeline` | `yaml_scan_*` | File/Git authority for pipeline YAML; scanner + UI online edit write here. **Flat directory only** (basename files; no private subdirs). See [YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/) |
 | `plugin_index` | `local_dir` | Local plugin specs used to resolve `uses:` references. Empty (the default) uses `<data_dir>/plugins`; Manager reads the selected directory and does not clone or sync it. |
-| `clock` | `enabled` | Default `true`. Probe the OSS endpoint's `Date` header before signing `config.source` (deprecated) URLs — see [Clock skew](#clock-skew) |
-| `clock` | `warn_threshold_seconds` | Default `60`. Log a `warn` when the Manager clock is at least this far behind remote time. `0` disables the warning |
-| `clock` | `cache_ttl_seconds` | Default `300`. Reuse a probe result for this long; `0` probes on every dispatch |
-| `clock` | `allowed_hosts` | Default `["*.aliyuncs.com"]`. Hosts the guard may probe. The probe target is derived from a team-scoped `config_source` secret, so this is the **SSRF allowlist**: a host outside it is never contacted (the guard is skipped for that endpoint). Extend it for S3-compatible endpoints (MinIO etc.); name a port explicitly (`minio.internal:9000`) to allow a non-443 endpoint. An empty list disables probing. Redirects are never followed |
 | `standalone` | `enabled` | Default `false`. When `true`, allow **loopback** Runner register without `register_token` for names in `auto_approve` (or pre-created in UI). Non-loopback register is **rejected**. Dev / `buz-standalone` only — see [Standalone mode](#standalone-mode) |
 | `standalone` | `auto_approve` | Runner names created at Manager boot if missing. Default `["standalone-runner"]` |
 | `logging` | `level` | Default `info`. Overridden by `RUST_LOG` if set |
@@ -174,12 +164,6 @@ token_cache_path = "./state/runner-token" # durable Manager-issued JWT cache
 supervisor_socket = "/run/buz-sandboxd/sandboxd.sock"
 workspace_root = "/app/buz/workspace"
 # snapshot_path = "./state/sandboxd.snapshot.json"   # observational copy of the applied document
-
-[clock]
-enabled = true                 # validate this host's clock against the Manager
-warn_threshold_seconds = 60    # warn when this Runner drifts this far
-max_skew_seconds = 300         # gross skew → refuse to start (NTP required)
-# fail_on_skew = true          # false → log an error and start anyway (labs)
 
 [logging]
 level = "info"
@@ -274,19 +258,15 @@ This is a coordinated, breaking release: upgrade Manager, Runner, and sandboxd b
 
 `BUZ_SANDBOXD_INSTANCE_ID` must be unique per Docker daemon. On startup sandboxd refuses to take over a socket whose live peer answers a `health` probe, removes stale sockets only when nothing is listening, and force-removes leftover `buz.sandboxd.managed=true` containers carrying its own `buz.sandboxd.instance=<id>` label — it never touches other instances' containers. Compose exposes `/dev/kvm` to sandboxd only through the optional `docker-compose.vm.yml` override (`docker compose -f docker/docker-compose.yml -f docker/docker-compose.vm.yml --profile sandbox up -d`), because the default Compose path cannot reach the host KVM device. The container image ships a `buz-sandboxd --healthcheck` subcommand used as the Compose healthcheck; the Runner waits for it via an optional `depends_on` condition, so Host-only deployments are unaffected.
 
-All sandboxed tiers currently support local shell steps only: SSH, per-step Docker engine, registry-auth handoff, and host-side config preparation are rejected before the job starts. See [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes) for the full compatibility/security boundary and [Sandbox Isolation Tiers](/docs/01-architecture/execution/sandbox-isolation-tiers/) for the tier model.
+All sandboxed tiers currently support local shell steps only: SSH, per-step Docker engine, and host-side config preparation are rejected before the job starts. See [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes) for the full compatibility/security boundary and [Sandbox Isolation Tiers](/docs/01-architecture/execution/sandbox-isolation-tiers/) for the tier model.
 
 | Key | Notes |
 |-----|-------|
 | `register_token` | Required unless `standalone = true` (see [Standalone mode](#standalone-mode)) |
 | `standalone` | Default `false`. When `true`, Runner may start with an empty `register_token` and register over loopback against a Manager with `[standalone] enabled = true` |
 | `token_cache_path` | Default `./state/runner-token`. Writable, durable path for the Manager-issued JWT; created with Unix mode `0600`. `BUZ__RUNNER__TOKEN_CACHE_PATH` overrides it. The old `<workspace_dir>/runner-token` is read only when the new path is missing and removed after a successful cache write. |
-| `clock.enabled` | Default `true`. Validate the Runner clock against the Manager — see [Clock skew](#clock-skew) |
-| `clock.warn_threshold_seconds` | Default `60`. Log a `warn` once per drifted minute above this offset |
-| `clock.max_skew_seconds` | Default `300`. Skew at/above this is treated as a broken clock at startup |
-| `clock.fail_on_skew` | Default `true`. `true` → startup aborts with the skew and the NTP command; `false` → `error` log and continue (labs). Mid-run drift is always logged/reported, never fatal |
 
-> Obsolete `[manager]` section is **rejected** at startup with a migration hint.
+> Obsolete `[manager]` section is **rejected** at startup with a migration hint. A legacy `[clock]` section is ignored (harmless).
 
 ## Standalone mode
 
@@ -328,140 +308,23 @@ Checked-in template: `deploy/conf/runner.standalone.toml`.
 
 First-run Compose, volumes, and upgrade: **[Standalone (single image)](/docs/03-operations/standalone/)**.
 
-## Clock skew
+## Clocks
 
-**Keep every host clock synchronized (NTP): the Manager and every Runner.** Both sides validate the
-offset against the other and report it; neither ever changes the system clock itself.
-
-### Runner ↔ Manager (`[clock]` on the Runner)
-
-The Runner must stay consistent with the **Manager** clock, so it measures the offset against the
-Manager's `Date` header (the unauthenticated `GET /health` endpoint):
-
-| When | Behavior |
-|------|----------|
-| **Startup** (before registering) | Skew < `warn_threshold_seconds` → `info` log with the measured offset; ≥ threshold → `warn`; ≥ `max_skew_seconds` → **refuses to start** (`fail_on_skew = true`, the default) with the offset, the limit and the NTP command |
-| **Every heartbeat** (30s) | Same measurement taken **from the heartbeat response** — no extra request; a drift above the threshold logs once per minute bucket instead of every 30s |
-| Probe unavailable (Manager unreachable, no `Date`) | `warn`/`debug` log, Runner continues — the check is a guard, not a dependency |
-
-The measured skew is reported to the Manager in `system_info.clock_skew_seconds`
-(`Manager - Runner`; positive = the Runner is behind) and shown in **Runners → runner detail** as a
-`Clock +Ns vs Manager` chip, amber at ≥ 60s and red at ≥ 300s.
-
-```log
-# Healthy startup
-clock: Runner clock consistent with Manager  source=https://buz-api.example.com/health skew=+2s behind
-
-# Drifting host
-clock: Runner clock drifts from Manager — check NTP on this host  skew_secs=125
-
-# Broken clock → refused to start
-ERROR clock: Runner clock too far from Manager — refusing to start  skew_secs=9600 max_skew_seconds=300
-```
-
-Mid-run drift is **reported, not fatal**: a Runner that is already executing jobs keeps working
-(aborting mid-flight would be worse than off-timeline timestamps); the Manager UI and logs surface it.
-
-### Manager → OSS (`[clock]` on the Manager)
-
-`config.source` delivery hands the Runner a
-**pre-signed OSS URL** whose `Expires` is an absolute Unix timestamp computed from the Manager's own
-clock (`crates/shared/src/config_auth.rs`). If the Manager clock has drifted **behind** real time,
-the URL is already expired the moment it is signed and every config-delivery step fails with:
-
-```text
-ERROR config bundle download returned HTTP 403 Forbidden: AccessDenied: Request has expired.
-```
-
-A bare `403` like the above points at nothing — the URL looks valid, only OSS disagrees. Runner and DB
-host clocks do **not** affect this check (OSS validates against its own time).
-
-**The job log now names the cause itself**, so a `403` is not a dead end:
-
-```text
-==> CONFIG PREP
-  expires_in       3600s
-  signed_at        2026-09-20 10:14:35 UTC
-  url_age          2s
-  url_remaining    3598s
-```
-
-`signed_at` / `url_age` / `url_remaining` are stamped by the Manager at signing time
-(`signed_at_epoch` / `expires_epoch` in `config_auth`), and a URL that arrives **already expired**
-adds an explicit `url_warning`. Combined with the OSS `Date` header reported on download failure,
-the two possible causes are distinguishable without guessing:
-
-- `url_age` small (seconds) + expired → the **Manager clock lagged** at signing time;
-- `url_age` ≳ TTL → the **task waited too long** between claim and download (clocks may be fine).
-
-```text
-config bundle download returned HTTP 403 Forbidden: AccessDenied: Request has expired.
-  oss_time     2026-09-20 12:54:56 UTC
-  local_time   2026-09-20 11:14:37 UTC
-  clock_skew   6000s behind (this host is behind OSS — sync NTP on the runner host)
-```
-
-### Guard (`[clock]`)
-
-Before signing, the Manager issues a `HEAD` to `https://{bucket}.{endpoint}/` and reads the `Date`
-response header (present even on a `403`), then compares it with the local clock:
-
-| Situation | Behavior |
-|-----------|----------|
-| Skew below `warn_threshold_seconds` | `debug` log, URL signed |
-| Skew at/above `warn_threshold_seconds` | `warn` log naming the source, URL still signed |
-| Skew so large the URL would arrive expired (≈ TTL minus a 300s margin) | URL **not** signed; the step fails with an actionable `config_auth_error` naming the clock, the measured skew and the NTP command |
-| Probe fails (DNS/TLS/timeout) | `warn` log, URL signed (the guard never blocks dispatch on its own failure) |
-| Target host not in `clock.allowed_hosts` | Probe **not attempted** (`debug` log), URL signed — the guard is skipped |
-| Target port is neither 443 nor named in `clock.allowed_hosts` | Probe **not attempted**, URL signed — an allowlisted host must not become a port scanner |
-
-**The target host is attacker-influenced**, so the guard treats it as untrusted input: it comes from
-a team-scoped `config_source` secret (`https://{bucket}.{endpoint}/`), and any user who can manage a
-secret in their team could otherwise aim the Manager's HTTP client at an internal host or a cloud
-metadata endpoint. Therefore the guard dials **only** hosts matching `clock.allowed_hosts`
-(default `*.aliyuncs.com`), only on port 443 unless an entry names another port (e.g.
-`minio.internal:9000`), never follows redirects, and rejects a source carrying userinfo
-(`user@host`), a path or non-DNS characters before any request is made. Endpoints outside the
-allowlist simply lose the clock guard — add them to get it back.
-
-`/health` reports the last probe:
-
-```json
-"clock": { "status": "ok", "skew_seconds": 0, "behind_seconds": 0, "checked_at": "…", "probe_failed": false }
-```
-
-`status` is `ok` | `skewed` | `unknown` (`unknown` = no probe yet, e.g. nothing signed since boot).
-
-`/health` is **unauthenticated**, so this payload deliberately omits the probe source
-(`https://{bucket}.{endpoint}/`) and the raw probe error: both would disclose internal OSS endpoints
-and hostnames to anonymous callers. Operators get that detail from the Manager logs.
-
-### Fix
+**Keep every host clock synchronized (NTP): the Manager and every Runner.** Job
+logs, heartbeats, cron schedules and audit timestamps all compare timestamps
+across hosts — a drifted clock shows up as off-timeline logs and misfiring
+cron triggers. Neither process ever changes the system clock itself.
 
 ```bash
-# On the affected host (Manager and/or Runner)
 sudo timedatectl set-ntp true
 sudo systemctl enable --now systemd-timesyncd   # or: systemctl restart chrony && chronyc makestep
-sudo hwclock --systohc
 timedatectl status                              # System clock synchronized: yes
 ```
 
-Confirm the skew directly at any time:
-
-```bash
-# Manager ↔ OSS
-date -u
-curl -sI https://<bucket>.<endpoint>/ | grep -i '^date:'
-
-# Runner ↔ Manager
-date -u
-curl -sI https://<manager>/health | grep -i '^date:'
-```
-
-`GET /health` on the Manager also reports its own last OSS probe under `clock`.
-
-Disable the guard only if the probe is unusable in your environment (`[clock] enabled = false` or
-`BUZ__CLOCK__ENABLED=false`) — the underlying clock problem remains.
+> Note: the former `[clock]` config sections (Manager URL-signing probe,
+> Runner skew guard) were removed in v3 together with the kernel
+> `config.source` delivery. A leftover `[clock]` section in a TOML file is
+> ignored.
 
 ## Logging
 

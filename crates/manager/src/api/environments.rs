@@ -10,12 +10,10 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use shared::config_auth::parse_oss_secret_value;
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::rbac::TeamRole;
-use shared::registry_auth::parse_registry_secret_value;
-use shared::secret_kind::{is_aliyun_oss_auth_kind, is_registry_kind, normalize_secret_kind};
+use shared::secret_kind::normalize_secret_kind;
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -193,28 +191,11 @@ fn validate_slug(slug: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_secret_override_value(kind: &str, value: &str) -> Result<(), AppError> {
+fn validate_secret_override_value(value: &str) -> Result<(), AppError> {
     if value.is_empty() {
         return Err(AppError::ValidationFailed(
             "secret override value must be non-empty (delete the override to inherit)".into(),
         ));
-    }
-    if is_registry_kind(kind) {
-        parse_registry_secret_value(value, Some("registry.example.com/ns/img:tag")).map_err(
-            |e| {
-                AppError::ValidationFailed(format!(
-                    "kind=registry requires JSON with username/password \
-                     (optional registry, provider): {e}"
-                ))
-            },
-        )?;
-    } else if is_aliyun_oss_auth_kind(kind) {
-        parse_oss_secret_value(value).map_err(|e| {
-            AppError::ValidationFailed(format!(
-                "kind=aliyun_oss_auth requires JSON with endpoint/bucket/access_key_id/access_key_secret \
-                 (optional region, provider): {e}"
-            ))
-        })?;
     }
     Ok(())
 }
@@ -976,7 +957,7 @@ pub async fn upsert_secret_override(
         .ok_or_else(|| AppError::NotFound("secret not found".into()))?;
     let secret_name: String = secret.get(0);
     let kind = normalize_secret_kind(Some(&secret.get::<String, _>(1)));
-    validate_secret_override_value(kind, req.value.trim())?;
+    validate_secret_override_value(req.value.trim())?;
 
     let cipher = crypto::encrypt(req.value.trim(), &state.config.auth.jwt_secret)
         .map_err(|e| AppError::Internal(format!("encrypt secret override: {e}")))?;

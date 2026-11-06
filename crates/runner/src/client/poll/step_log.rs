@@ -279,11 +279,6 @@ pub fn build_step_echo(
     out
 }
 
-/// Banner for a successful local `docker login` before pull/run.
-pub fn build_login_banner(registry: &str) -> String {
-    format!("==> LOGIN [{registry}]\n")
-}
-
 /// Identity banner for the runner that executed this job (version + OS),
 /// uploaded once at job start so every job's logs are self-describing.
 pub fn build_runner_banner() -> String {
@@ -354,17 +349,13 @@ pub(super) fn build_verbose_stage(stage: &str) -> String {
 }
 
 /// Verbose-mode full step config — the execution shape the runner received.
-/// Renders only keys/metadata, never secret values (registry password, signed
-/// config URL, …), so it is safe for every user.
+/// Renders only keys/metadata, never secret values, so it is safe for every
+/// user.
 ///
-/// Uploaded **before** `config_source` prepare so a prepare-stage failure
-/// (e.g. OSS 404) still shows the step shape — previously STEP CONFIG only
-/// ran after a successful unpack, so Verbose looked identical to a normal run.
-pub fn build_verbose_step_config(
-    step: &serde_json::Value,
-    exec_type: &str,
-    registry_secret_ref: &str,
-) -> String {
+/// Uploaded **before** config prepare so a prepare-stage failure still shows
+/// the step shape — previously STEP CONFIG only ran after a successful
+/// prepare, so Verbose looked identical to a normal run.
+pub fn build_verbose_step_config(step: &serde_json::Value, exec_type: &str) -> String {
     let mut out = String::from("==> STEP CONFIG\n");
     let mut push_field = |label: &str, value: String| {
         if !value.is_empty() {
@@ -384,11 +375,6 @@ pub fn build_verbose_step_config(
         step["work_dir"].as_str().unwrap_or("").to_string(),
     );
     push_field("image", step["image"].as_str().unwrap_or("").to_string());
-    push_field("registry_secret", registry_secret_ref.to_string());
-    if let Some(cs) = step["config_source"].as_str().filter(|s| !s.is_empty()) {
-        let cp = step["config_key_path"].as_str().unwrap_or("");
-        push_field("config", format!("{cs} (key: {cp})"));
-    }
     if let Some(cd) = step["config_dest"].as_str().filter(|s| !s.is_empty()) {
         push_field("config_dest", cd.to_string());
     }
@@ -429,117 +415,26 @@ pub fn build_verbose_step_config(
     out
 }
 
-/// URL age / remaining lifetime of a Manager-signed config bundle URL.
-///
-/// Populated from the `signed_at_epoch` / `expires_epoch` fields the Manager
-/// stamps into `config_auth`; absent when talking to an older Manager.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigUrlAge {
-    pub signed_at_epoch: i64,
-    pub expires_epoch: i64,
-    pub age_secs: i64,
-    pub remaining_secs: i64,
-}
-
-impl ConfigUrlAge {
-    /// True once OSS would reject the URL for being expired.
-    pub fn is_expired(&self) -> bool {
-        self.remaining_secs <= 0
-    }
-
-    /// Effective lifetime granted at signing time.
-    pub fn ttl_secs(&self) -> i64 {
-        self.expires_epoch - self.signed_at_epoch
-    }
-
-    /// `3598s` while valid, `EXPIRED (61s ago)` once past the deadline.
-    pub fn remaining_label(&self) -> String {
-        if self.remaining_secs > 0 {
-            format!("{}s", self.remaining_secs)
-        } else {
-            format!("EXPIRED ({}s ago)", -self.remaining_secs)
-        }
-    }
-}
-
-/// Read the signed-URL window out of `config_auth` against a caller-supplied
-/// `now` (kept explicit so tests are deterministic).
-pub fn config_url_age(step: &serde_json::Value, now_epoch: i64) -> Option<ConfigUrlAge> {
-    let auth = step.get("config_auth")?;
-    let signed_at_epoch = auth.get("signed_at_epoch").and_then(|v| v.as_i64())?;
-    let expires_epoch = auth.get("expires_epoch").and_then(|v| v.as_i64())?;
-    Some(ConfigUrlAge {
-        signed_at_epoch,
-        expires_epoch,
-        age_secs: now_epoch - signed_at_epoch,
-        remaining_secs: expires_epoch - now_epoch,
-    })
-}
-
-/// Banner for the config prepare stage (OSS deliver and/or `config_render`).
-///
-/// Always safe for Verbose (URL redacted). In Debug mode the signed URL is
-/// printed in full — that is the main visible difference for prepare-only
-/// failures like OSS 404, where no RUN echo ever happens.
-pub fn build_config_prep_banner(step: &serde_json::Value, debug_unredact: bool) -> String {
+/// Banner for the config prepare stage (`config_render`, render-only).
+pub fn build_config_prep_banner(step: &serde_json::Value) -> String {
     let mut out = String::from("==> CONFIG PREP\n");
     let mut push_field = |label: &str, value: String| {
         if !value.is_empty() {
             out.push_str(&format!("  {label:<16} {value}\n"));
         }
     };
-    if let Some(cs) = step["config_source"].as_str().filter(|s| !s.is_empty()) {
-        push_field("source", cs.to_string());
-    }
     if let Some(dest) = step["config_dest"].as_str().filter(|s| !s.is_empty()) {
         push_field("dest", dest.to_string());
     }
-    if let Some(auth) = step.get("config_auth") {
-        if let Some(key) = auth.get("object_key").and_then(|v| v.as_str()) {
-            push_field("object_key", key.to_string());
-        }
-        if let Some(ttl) = auth.get("expires_in_secs").and_then(|v| v.as_u64()) {
-            push_field("expires_in", format!("{ttl}s"));
-        }
-        if let Some(url) = auth
-            .get("url")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            if debug_unredact {
-                push_field("url", url.to_string());
-            } else {
-                push_field("url", "***".into());
-            }
-        }
-        // Absolute URL window: makes a stale (or born-expired) URL visible in
-        // the job log instead of only as an opaque OSS 403 further down.
-        if let Some(age) = config_url_age(step, chrono::Utc::now().timestamp()) {
-            push_field("signed_at", shared::clock::format_utc(age.signed_at_epoch));
-            push_field("url_age", format!("{}s", age.age_secs.max(0)));
-            push_field("url_remaining", age.remaining_label());
-            if age.is_expired() {
-                push_field(
-                    "url_warning",
-                    format!(
-                        "signed {}s ago with a {}s TTL — already expired before download; \
-                         either the Manager clock lagged at signing time or the task waited too long",
-                        age.age_secs.max(0),
-                        age.ttl_secs()
-                    ),
-                );
-            }
-        }
-    } else if step.get("config_render").is_some_and(|v| !v.is_null()) {
+    if step.get("config_render").is_some_and(|v| !v.is_null()) {
         push_field("mode", "render-only".into());
     }
     out
 }
 
-/// Render config-prepare progress lines (download result, unpack listing,
-/// per-file render, readiness) for the `==> CONFIG PREP` chunk. Verbose-only
-/// lines are dropped unless `verbose` is set. Always safe — carries no secrets
-/// or signed URLs, only status, sizes and file/template names.
+/// Render config-prepare progress lines (per-file render, readiness) for the
+/// `==> CONFIG PREP` chunk. Verbose-only lines are dropped unless `verbose`
+/// is set. Always safe — carries no secrets, only status and template names.
 pub(crate) fn build_config_prep_progress(
     logs: &[crate::client::config_source::PrepLogLine],
     verbose: bool,
@@ -582,11 +477,12 @@ pub fn step_failure_hint(stderr: &str, exit_code: i32) -> String {
         || s.contains("authentication required")
         || s.contains("denied: requested access")
     {
-        return "registry pull denied — check registry_secret credentials and image name/permissions."
+        return "registry pull denied — check the image name/permissions; private images \
+                require credentials already configured on the runner host."
             .into();
     }
     if s.contains("docker login") && s.contains("failed") {
-        return "docker login failed — check registry_secret username/password and registry host."
+        return "docker login failed — check the registry host and credentials used by the command."
             .into();
     }
     if exit_code == 125 {

@@ -188,7 +188,8 @@ environments: [default]
 steps:
   - name: push
     engine: shell
-    registry_secret: ${secrets.ACR_PERSONAL}
+    env:
+      ACR_TOKEN: ${secrets.ACR_PERSONAL}
     run: echo hi
 "#;
     let r = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
@@ -198,6 +199,31 @@ steps:
             .iter()
             .any(|e| e.field == "secrets" && e.message.contains("ACR_PERSONAL")),
         "errors: {:?}",
+        r.errors
+    );
+}
+
+/// The retired `registry_secret` kernel slot is gone from the schema —
+/// `deny_unknown_fields` makes it a parse error instead of a purpose slot.
+#[tokio::test]
+async fn registry_secret_key_is_rejected() {
+    let pool = pool_with_default_team().await;
+    let yaml = r#"
+name: demo
+environments: [default]
+steps:
+  - name: push
+    engine: shell
+    registry_secret: ${secrets.ACR_PERSONAL}
+    run: echo hi
+"#;
+    let r = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    assert!(!r.valid);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.message.contains("registry_secret")),
+        "expected unknown-field error, got: {:?}",
         r.errors
     );
 }
@@ -311,7 +337,8 @@ environments: [default]
 steps:
   - name: push
     engine: shell
-    registry_secret: ${secrets.MISSING_ACR}
+    env:
+      ACR_TOKEN: ${secrets.MISSING_ACR}
     run: echo hi
 "#;
     let empty_index = tempfile::tempdir().unwrap();
@@ -349,7 +376,8 @@ environments: [default]
 steps:
   - name: push
     engine: shell
-    registry_secret: ${secrets.DEP_KEY}
+    env:
+      DEP_TOKEN: ${secrets.DEP_KEY}
     run: echo hi
 "#;
 

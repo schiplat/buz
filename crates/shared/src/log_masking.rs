@@ -20,10 +20,6 @@ pub enum SecretClass {
     Secret,
     /// 触发输入中标记 `masking: true` 的 key。
     MaskingInput,
-    /// Registry 密码（`registry_secret`）。
-    RegistryPassword,
-    /// OSS config 签名 URL（`config_source` → `BUZ_CONFIG_URL`）。
-    ConfigUrl,
     /// SSH 主机凭据。
     SshKey,
 }

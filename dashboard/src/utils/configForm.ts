@@ -1,4 +1,4 @@
-/** Helpers for nested `config:` form fields (flat API: config_source / key_path / dest / render). */
+/** Helpers for nested `config:` form fields (render-only: config_dest / config_render). */
 
 export interface ConfigRenderRow {
   template: string
@@ -8,7 +8,7 @@ export interface ConfigRenderRow {
   backup_keep: number
 }
 
-export type ConfigFormMode = 'none' | 'deliver' | 'render' | 'sugar'
+export type ConfigFormMode = 'none' | 'render'
 
 export function emptyRenderRow(): ConfigRenderRow {
   return {
@@ -67,33 +67,18 @@ export function stepAllowsConfigRender(engine: string | undefined | null): boole
   return u === 'shell' || u === 'local' || u === 'ssh'
 }
 
-export function stepAllowsConfigDeliver(engine: string | undefined | null): boolean {
-  const u = (engine || 'shell').trim() || 'shell'
-  return u === 'shell' || u === 'local' || u === 'ssh' || u === 'docker'
-}
-
 export function detectConfigMode(
   step: {
-    config_source?: string | null
-    config_key_path?: string | null
     config_dest?: string | null
     config_render?: unknown
   },
   allowRender = true,
 ): ConfigFormMode {
-  const source = trimStr(step.config_source)
-  const key = trimStr(step.config_key_path)
   const dest = trimStr(step.config_dest)
-  // Count rows (even blank) so the mode select stays on Render while editing.
+  // Count rows (even blank) so the mode stays on Render while editing.
   const renderRows = allowRender ? normalizeConfigRender(step.config_render) : []
-  const hasRenderRows = renderRows.length > 0
-  const hasDeliver = !!(source || key)
-
-  if (!hasDeliver && !hasRenderRows && !dest) return 'none'
-  if (hasDeliver && hasRenderRows) return 'sugar'
-  if (hasDeliver) return 'deliver'
-  if (hasRenderRows || (dest && !hasDeliver)) return allowRender ? 'render' : 'deliver'
-  return 'none'
+  if (renderRows.length === 0 && !dest) return 'none'
+  return allowRender ? 'render' : 'none'
 }
 
 /** Apply mode switch; mutates step fields in place. */
@@ -102,33 +87,11 @@ export function applyConfigMode(
   mode: ConfigFormMode,
   allowRender: boolean,
 ): void {
-  if (mode === 'none') {
-    step.config_source = ''
-    step.config_key_path = ''
+  if (mode === 'none' || !allowRender) {
     step.config_dest = ''
     step.config_render = []
     return
   }
-  if (mode === 'deliver') {
-    step.config_render = []
-    return
-  }
-  if (!allowRender) {
-    step.config_render = []
-    return
-  }
-  if (mode === 'render') {
-    step.config_source = ''
-    step.config_key_path = ''
-    if (!Array.isArray(step.config_render) || step.config_render.length === 0) {
-      step.config_render = [emptyRenderRow()]
-    } else {
-      step.config_render = normalizeConfigRender(step.config_render)
-      if (step.config_render.length === 0) step.config_render = [emptyRenderRow()]
-    }
-    return
-  }
-  // sugar
   if (!Array.isArray(step.config_render) || step.config_render.length === 0) {
     step.config_render = [emptyRenderRow()]
   } else {
@@ -139,66 +102,43 @@ export function applyConfigMode(
 
 /** Fields for create/update API from a form step. */
 export function serializeConfigForApi(step: {
-  config_source?: string | null
-  config_key_path?: string | null
   config_dest?: string | null
   config_render?: unknown
 }): {
-  config_source?: string
-  config_key_path?: string
   config_dest?: string
   config_render?: ConfigRenderRow[]
 } {
-  const config_source = trimStr(step.config_source) || undefined
-  const config_key_path = trimStr(step.config_key_path) || undefined
   const config_dest = trimStr(step.config_dest) || undefined
   const config_render = serializeConfigRender(step.config_render)
-  return { config_source, config_key_path, config_dest, config_render }
+  return { config_dest, config_render }
 }
 
 /**
  * Validate config fields for one step. Returns an English error message or null.
- * Mirrors shared pipeline_yaml rules for deliver / render-only / sugar.
+ * Mirrors shared pipeline_yaml rules for render-only config.
  */
 export function validateStepConfig(step: {
   name?: string
   engine?: string | null
-  config_source?: string | null
-  config_key_path?: string | null
   config_dest?: string | null
   config_render?: unknown
 }): string | null {
   const engine = (step.engine || 'shell').trim() || 'shell'
-  const source = trimStr(step.config_source)
-  const key = trimStr(step.config_key_path)
   const dest = trimStr(step.config_dest)
   const renders = normalizeConfigRender(step.config_render).filter((r) => r.template)
-  const hasDeliver = !!(source || key)
   const hasRender = renders.length > 0
 
-  if (!hasDeliver && !hasRender && !dest) return null
+  if (!hasRender && !dest) return null
 
-  if (!stepAllowsConfigDeliver(engine) && (hasDeliver || hasRender || dest)) {
-    return 'config is only valid for shell, local, ssh, or docker steps'
-  }
-
-  if (hasRender && !stepAllowsConfigRender(engine)) {
-    return "config.render is only valid for shell, local, or ssh steps"
-  }
-
-  if (!!source !== !!key) {
-    return 'config.source and config.key_path must be set together (OSS deliver)'
-  }
-
-  if (hasDeliver && !dest) {
-    return 'config.dest is required for OSS deliver'
+  if (!stepAllowsConfigRender(engine)) {
+    return 'config is only valid for shell, local, or ssh steps'
   }
 
   if (hasRender && !dest) {
     return "config.dest is required when config.render is set"
   }
 
-  if (!hasDeliver && !hasRender && dest) {
+  if (!hasRender && dest) {
     return 'config.dest alone is not enough — add config.render after fetching with buz/config-fetch'
   }
 

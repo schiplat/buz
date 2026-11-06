@@ -78,8 +78,7 @@ fn runtime_overrides() -> RuntimeOverrides {
         .unwrap_or_default()
 }
 
-/// Install startup settings (mirrors `services::clock::init`). No-op when
-/// already initialized.
+/// Install startup settings. No-op when already initialized.
 pub fn init(settings: PluginIndexSettings) {
     let _ = SETTINGS.set(settings);
 }
@@ -567,7 +566,7 @@ pub fn version_triple(v: &str) -> Option<(u64, u64, u64)> {
 /// (e.g. a `[shell, ssh]` template runs on the Runner host or on the
 /// pipeline's target hosts). The call site also keeps its own `name`, `env`,
 /// `timeout`, `retry`, `continue-on-error`, `secrets`, and deployment
-/// context (`host*`, `dir`, `volumes`, `privileged`, `registry_secret`).
+/// context (`host*`, `dir`, `volumes`, `privileged`).
 /// `with:` values become `INPUT_<UPPER_SNAKE>` step env entries — the same
 /// channel manual-trigger inputs use — and are validated against the
 /// template's declared inputs (unknown keys and missing required inputs are
@@ -739,11 +738,8 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedPlugin) -> Result<Ste
         continue_on_error: step.continue_on_error,
         secrets: step.secrets.clone(),
         env: if env.is_empty() { None } else { Some(env) },
-        registry_secret: step.registry_secret.clone(),
         config: step.config.clone(),
         privileged: step.privileged,
-        config_source: step.config_source.clone(),
-        config_key_path: step.config_key_path.clone(),
         config_dest: step.config_dest.clone(),
         config_render: step.config_render.clone(),
     })

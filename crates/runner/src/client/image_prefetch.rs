@@ -1,6 +1,6 @@
 //! Conservative, anonymous Docker image prefetching for immutable Docker Hub
-//! official-library images. Pipeline-supplied Docker credentials are never
-//! used here; private images retain their existing step-local login flow.
+//! official-library images. Only anonymous pulls are issued here; private
+//! images stay on the original step-time Docker path.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -116,8 +116,8 @@ impl ImagePrefetch {
 
 /// Return unique eligible images. Only canonical Docker Hub official-library
 /// references pinned to an explicit sha256 digest are safe for anonymous early
-/// pulls; all tags, private namespaces, other registries and auth-bearing steps
-/// remain on the original step-time Docker path.
+/// pulls; all tags, private namespaces and other registries remain on the
+/// original step-time Docker path.
 pub fn candidates(tasks: &[Value], config: &Config) -> Vec<String> {
     if !config.engine.docker_enabled {
         return Vec::new();
@@ -126,15 +126,7 @@ pub fn candidates(tasks: &[Value], config: &Config) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut images = Vec::new();
     for step in tasks {
-        if step.get("exec_type").and_then(Value::as_str) != Some("docker")
-            || step
-                .get("registry_auth")
-                .is_some_and(|auth| !auth.is_null())
-            || step
-                .get("registry_secret")
-                .and_then(Value::as_str)
-                .is_some_and(|secret| !secret.trim().is_empty())
-        {
+        if step.get("exec_type").and_then(Value::as_str) != Some("docker") {
             continue;
         }
         let image = step.get("image").and_then(Value::as_str).unwrap_or("");

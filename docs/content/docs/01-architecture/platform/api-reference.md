@@ -108,7 +108,7 @@ backlog, WebSocket broadcast sink counts, and the step review-gate posture
 {
   "status": "ok",
   "name": "Buz",
-  "version": "2.1.1",
+  "version": "3.0.0",
   "component": "manager",
   "uptime_seconds": 3600,
   "started_at": "2026-08-30T12:00:00Z",
@@ -305,9 +305,7 @@ Response (with task):
         "exec_type": "shell",
         "command_template": "npm run build",
         "work_dir": "",
-        "step_secrets": {},
-        "registry_secret": "",
-        "registry_auth": null
+        "step_secrets": {}
       }
     ],
     "inputs": { "tag": "1.0" },
@@ -325,7 +323,6 @@ Response (with task):
 - `env` — platform Variables + pipeline inline `env:` (shown in clear in Job logs)
 - `secrets` — Infrastructure Secrets only (redacted as `***` in RUN banners and stream logs)
 - `inputs` — trigger params (also not redacted; Runner also exports `INPUT_<KEY>` uppercased)
-- Per-step `registry_auth` — resolved from `registry_secret` (deprecated) for `docker login` only (not injected as `$NAME`)
 
 Empty response: `204 No Content`
 
@@ -480,9 +477,9 @@ Response:
 - List/get return a **partially redacted** preview (`ab****yz`, or JSON with `password`/`token` fields masked) — never full plaintext.
 - When ciphertext cannot be decrypted: `value` is `****` and `reencrypt_required: true`.
 - Empty `value` on PUT keeps the existing ciphertext.
-- `team_shared` (boolean, default `false` on create): when `true`, same-team pipelines auto-receive the secret at job claim; when `false`, use Authorized Secrets / YAML `secrets:` / step `secrets:` / `registry_secret` (deprecated). See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
-- `kind` (`generic` \| `registry`, default `generic`): `registry` requires parseable JSON with `username`/`password` and is required for step `registry_secret` (deprecated) at claim. List/get return `kind`. Pipeline UI **Registry Secret** dropdown filters to `kind=registry`.
-- For private registries, set `kind: registry`, store JSON credentials, and reference the secret **name** via `registry_secret` (deprecated → `buz/docker-login`; see [Docker Engine](/docs/01-architecture/execution/docker-engine/)). Prefer `team_shared: false`.
+- `team_shared` (boolean, default `false` on create): when `true`, same-team pipelines auto-receive the secret at job claim; when `false`, use Authorized Secrets / YAML `secrets:` / step `secrets:`. See [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
+- `kind` (`generic` \| `registry`, default `generic`): `registry` is a legacy value retained on existing rows — no longer creatable or validated (kernel support removed in v3). List/get return `kind`.
+- For private registries, use the `buz/docker-login` plugin template with plain `generic` secrets (see [Docker Engine](/docs/01-architecture/execution/docker-engine/)). Prefer `team_shared: false` for registry credentials.
 
 ## Variables
 

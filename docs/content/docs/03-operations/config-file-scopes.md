@@ -105,7 +105,7 @@ Precedence: **UI policy > `runner.toml` > built-in default** — but the UI poli
 | `max_concurrent_jobs` | UI policy | Parallel jobs on this Runner | — |
 | `clean_workspace_after_job` | UI policy | Whole-workspace cleanup at job end (**default false**) | — |
 
-`execution_mode=host` preserves current behavior. Sandboxed modes (`container`, `sandbox`, `vm`) require the local `[sandbox]` runtime for that tier and fail closed when it is unavailable; they currently reject SSH, per-step Docker, step registry auth, and host-side config preparation. The local socket/image/runtime paths constrain the UI-selected mode and are never weakened by Manager policy. See [Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes).
+`execution_mode=host` preserves current behavior. Sandboxed modes (`container`, `sandbox`, `vm`) require the local `[sandbox]` runtime for that tier and fail closed when it is unavailable; they currently reject SSH, per-step Docker, and host-side config preparation. The local socket/image/runtime paths constrain the UI-selected mode and are never weakened by Manager policy. See [Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes).
 
 Job-scoped Docker credentials (`.docker` in the job workspace) are removed **unconditionally** at job end regardless of `clean_workspace_after_job`.
 

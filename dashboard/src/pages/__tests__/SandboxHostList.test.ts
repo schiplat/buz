@@ -4,8 +4,10 @@ import SandboxHostList from '@/pages/SandboxHostList.vue'
 import { sandboxHostsApi, type ResourceGrant, type SandboxHost } from '@/api/sandboxHosts'
 import { teamsApi, type Team } from '@/api/teams'
 
-const { dialog } = vi.hoisted(() => ({
+const { dialog, adminSettingsApi, authState } = vi.hoisted(() => ({
   dialog: { alert: vi.fn(), confirm: vi.fn() },
+  adminSettingsApi: { list: vi.fn(), update: vi.fn(), reset: vi.fn() },
+  authState: { isPlatformAdmin: true, isOps: true },
 }))
 
 vi.mock('@/api/sandboxHosts', () => ({
@@ -29,6 +31,8 @@ vi.mock('@/api/sandboxHosts', () => ({
   },
 }))
 vi.mock('@/api/teams', () => ({ teamsApi: { list: vi.fn() } }))
+vi.mock('@/api/adminSettings', () => ({ adminSettingsApi }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => authState }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
 vi.mock('@/composables/useAppDialog', () => ({ useAppDialog: () => dialog }))
 
@@ -125,6 +129,13 @@ beforeEach(() => {
     team('t1', 'platform'),
     team('t2', 'infra'),
   ])
+  adminSettingsApi.list.mockResolvedValue({
+    items: [
+      { key: 'sandbox_config_require_approval', kind: 'bool', value: 'false', default: 'false', overridden: false },
+      { key: 'grants_require_approval', kind: 'bool', value: 'false', default: 'false', overridden: false },
+    ],
+  })
+  adminSettingsApi.update.mockImplementation(async (key: string, value: string) => ({ key, value }))
 })
 
 afterEach(() => {
@@ -405,5 +416,35 @@ describe('SandboxHostList — platform defaults dialog', () => {
     expect(payload.profiles.default.memory).toBe('3g')
     expect(payload.profiles.small.memory).toBe('3g')
     expect(payload.profiles.medium.memory).toBe('4g')
+  })
+
+  it('approvals switch reads ON when either backend key is on', async () => {
+    adminSettingsApi.list.mockResolvedValue({
+      items: [
+        { key: 'sandbox_config_require_approval', kind: 'bool', value: 'false', default: 'false', overridden: false },
+        { key: 'grants_require_approval', kind: 'bool', value: 'true', default: 'false', overridden: true },
+      ],
+    })
+    const view = await mountPage({ grants: [] })
+    const sw = view.querySelector<HTMLButtonElement>('[role="switch"]')
+    expect(sw, 'approvals switch renders for platform admin').toBeTruthy()
+    expect(sw!.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('approvals switch writes both keys together on toggle', async () => {
+    const view = await mountPage({ grants: [] })
+    const sw = view.querySelector<HTMLButtonElement>('[role="switch"]')
+    expect(sw!.getAttribute('aria-checked')).toBe('false')
+
+    sw!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+
+    const calls = vi.mocked(adminSettingsApi.update).mock.calls
+    expect(calls.map((c) => c[0])).toEqual([
+      'sandbox_config_require_approval',
+      'grants_require_approval',
+    ])
+    expect(calls.every((c) => c[1] === 'true')).toBe(true)
+    expect(sw!.getAttribute('aria-checked')).toBe('true')
   })
 })

@@ -335,25 +335,6 @@ fn build_args_empty_volumes_ignored() {
     assert_eq!(v_count, 1, "only the workspace -v, not empty volumes");
 }
 
-#[tokio::test]
-async fn registry_login_rejects_empty_fields() {
-    let err = runner::engine::docker::registry_login("", "u", "p", None)
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("registry_auth"), "{err}");
-    let err = runner::engine::docker::registry_login("reg.example", "", "p", None)
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("registry_auth"), "{err}");
-    let err = runner::engine::docker::registry_login("reg.example", "u", "", None)
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("registry_auth"), "{err}");
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn pull_image_uses_config_and_image_argument() {

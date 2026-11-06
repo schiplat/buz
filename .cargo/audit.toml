@@ -9,7 +9,6 @@ ignore = [
     # tokio: `AsyncFd::new` and related constructors violate I/O safety. This
     # workspace does not use AsyncFd and no dependency enables that feature
     # (`cargo tree -e features -i tokio`), so the unsound API is unreachable.
-    # tokio 1.54.1 also breaks the clock-probe tests; the upgrade needs its own
-    # investigation. See SECURITY.md.
+    # the upgrade needs its own regression pass rather than riding along. See SECURITY.md.
     "RUSTSEC-2026-0386",
 ]

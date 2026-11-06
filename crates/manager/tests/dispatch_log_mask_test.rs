@@ -1,6 +1,8 @@
-//! End-to-end test for the unified log-masking entry point: the Manager's
-//! dispatch must put every sensitive value (registry password, …) into the
-//! step payload's `log_mask_values`, which the Runner consumes to redact logs.
+//! End-to-end test for the dispatch step payload's masking contract: after
+//! the v3 removal of the kernel `config.source` / signed-URL path, the claim
+//! payload must NOT carry a `config_auth` block, and `log_mask_values` (the
+//! generic hook the Runner consumes to redact logs) stays empty for a
+//! pipeline that only used the retired purpose slot.
 
 use axum::{
     body::Body,
@@ -41,7 +43,6 @@ fn test_config() -> Config {
         standalone: Default::default(),
         plugin_index: Default::default(),
         storage: Default::default(),
-        clock: Default::default(),
         logging: Default::default(),
         marketplace_url: String::new(),
     }
@@ -81,7 +82,7 @@ async fn test_app() -> Router {
     .await
     .expect("seed runner");
 
-    // Pipeline with one shell step that references a registry secret.
+    // Pipeline with one shell step that uses the config.source purpose slot.
     sqlx::query(
         "INSERT INTO pipelines (id, name, trigger_type, runner_labels, input_defs, is_active, team_id)
          VALUES ('p1', 'dispatch-mask', 'manual', '[\"linux-x64\"]', '[]', 1, 'team-1')",
@@ -93,19 +94,20 @@ async fn test_app() -> Router {
     // No step_secrets / pipeline_secrets — purpose slot alone is the allowlist (GHA-style).
     sqlx::query(
         "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, command_template,
-                            step_secrets, registry_secret)
-         VALUES ('t1', 'p1', 0, 'echo', 'shell', 'echo hi', '', '${secrets.acr}')",
+                            step_secrets, config_source, config_key_path)
+         VALUES ('t1', 'p1', 0, 'echo', 'shell', 'echo hi', '', '${secrets.ossbox}', 'oss-cfg')",
     )
     .execute(&pool)
     .await
     .expect("seed task");
 
-    // Registry secret (same team), value encrypted at rest like production.
-    let registry_json =
-        r#"{"registry":"registry.example.com","username":"u1","password":"p4ssw0rd-secret"}"#;
-    let sealed = crypto::encrypt(registry_json, JWT_SECRET).expect("encrypt registry secret");
+    // A legacy pre-v3 OSS secret row (same team), value encrypted at rest
+    // like production. The claim must ignore it entirely — no signing, no
+    // mask registration, and the secret value must never appear.
+    let oss_json = r#"{"endpoint":"oss.example.com","bucket":"buz-test","access_key_id":"akid-test","access_key_secret":"p4ssw0rd-secret"}"#;
+    let sealed = crypto::encrypt(oss_json, JWT_SECRET).expect("encrypt oss secret");
     sqlx::query(
-        "INSERT INTO secrets (id, name, value, team_id, kind) VALUES ('s1', 'acr', ?, 'team-1', 'registry')",
+        "INSERT INTO secrets (id, name, value, team_id, kind) VALUES ('s1', 'ossbox', ?, 'team-1', 'aliyun_oss_auth')",
     )
     .bind(sealed)
     .execute(&pool)
@@ -147,7 +149,7 @@ async fn read_body(response: axum::response::Response) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn dispatch_puts_registry_password_in_log_mask_values() {
+async fn dispatch_puts_signed_config_url_in_log_mask_values() {
     let app = test_app().await;
 
     // Trigger the pipeline → creates a pending job.
@@ -189,16 +191,23 @@ async fn dispatch_puts_registry_password_in_log_mask_values() {
     assert_eq!(metadata["run_number"], 1, "first trigger of the pipeline");
     assert_eq!(metadata["run_attempt"], 1);
 
+    // Phase 3 lock: no signed-URL attachment, no config_auth block.
+    assert!(
+        tasks[0].get("config_auth").is_none(),
+        "config_auth must be absent after the OSS-delivery removal: {:?}",
+        tasks[0]
+    );
+
     let mask_values = tasks[0]["log_mask_values"]
         .as_array()
         .expect("log_mask_values");
     let values: Vec<&str> = mask_values.iter().filter_map(|v| v.as_str()).collect();
     assert!(
-        values.contains(&"p4ssw0rd-secret"),
-        "registry password registered for log masking: {values:?}"
+        values.is_empty(),
+        "no mask values are produced anymore (signed URLs are gone): {values:?}"
     );
     assert!(
-        values.iter().all(|v| *v != "u1"),
-        "username is not registered as sensitive: {values:?}"
+        !body.to_string().contains("p4ssw0rd-secret"),
+        "raw access key secret value never appears in the claim payload"
     );
 }

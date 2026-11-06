@@ -510,8 +510,6 @@ steps:
 
 Purpose slots use the same expression (no separate list required):
 
-- `registry_secret: ${secrets.ACR_PERSONAL}` **(deprecated → `buz/docker-login`)**
-- `config.source: ${secrets.OSS_CONFIG}` **(deprecated → `buz/config-fetch`)**
 
 Optional top-level / step `secrets: [NAME]` remains valid as an overview or narrowing. Manager collects effective names from lists + refs when upserting YAML.
 
@@ -622,9 +620,11 @@ steps:
       curl -X POST "$SLACK_WEBHOOK_URL"
 
   - name: Push image
-    engine: shell
-    secrets: [ACR_PERSONAL]
-    registry_secret: ${secrets.ACR_PERSONAL}  # deprecated → buz/docker-login
+    uses: buz/docker-login@1.1.0
+    with:
+      registry: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com
+      username: ${secrets.REGISTRY_USERNAME}
+      password: ${secrets.REGISTRY_PASSWORD}
     run: |
       docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:$INPUT_VERSION
 ```
@@ -636,9 +636,8 @@ steps:
 | `$SLACK_WEBHOOK_URL` | `env: SLACK_WEBHOOK_URL: ${secrets.SLACK_WEBHOOK_URL}` | Pipeline / Step |
 | `$GIT_SSH_KEY` | `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}` | Step |
 | `$INPUT_VERSION` | `on.manual.inputs:` | Trigger |
-| `registry_secret:` | Purpose slot `${secrets.NAME}` (or bare name) for `docker login` — **deprecated → `buz/docker-login`** | Step |
 
-> `registry_secret` is **deprecated → `buz/docker-login`** (still works, retires in a future major release) — prefer the plugin template over piping passwords into `docker login` in the script.
+> Registry login/push goes through the `buz/docker-login` plugin template (login → push → logout), not a step field.
 > **Note:** Parameter names from `on.manual.inputs` are **automatically uppercased** and prefixed with `INPUT_`. A parameter named `version` becomes `$INPUT_VERSION` inside commands.
 
 ---
@@ -659,7 +658,6 @@ Every registered key on `StepYaml` (`crates/shared/src/pipeline_yaml.rs`). Unkno
 | [`image`](#image) | if docker | docker | Container image |
 | [`volumes`](#volumes) | | docker | Extra `host:container` binds |
 | [`privileged`](#privileged) | | docker | `--privileged` (DinD opt-in) |
-| [`registry_secret`](#registry_secret) | | shell / ssh / docker | Secret name for `docker login` — **deprecated → `buz/docker-login`** |
 | [`config`](#config) | | shell / local / ssh | Nested OSS deliver / render block |
 | [`host`](#host--host_labels-ssh) / [`host_labels`](#host--host_labels-ssh) | ≥1 for ssh | ssh | Named hosts ∪ label matches |
 | [`hosts_strategy`](#hosts_strategy-ssh) | | ssh | Multi-host fan-out: `chain` (default) \| `parallel` |
@@ -786,45 +784,9 @@ Invalid on non-docker steps. Privileged containers can escape to the host — us
 
 ---
 
-#### `registry_secret`
+#### Registry login / push
 
-> **Deprecated:** `registry_secret` is deprecated — use the `buz/docker-login` plugin template instead. It still works but retires in a future major release.
-
-Name of a Manager Secret (not a password) for `docker login`. Valid on **shell**, **SSH**, and **docker** steps. The Secret value is JSON registry credentials, **encrypted at rest**:
-
-```json
-{
-  "provider": "acr_personal",
-  "registry": "crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com",
-  "username": "…",
-  "password": "…"
-}
-```
-
-- `provider` (optional): `acr_personal` | `generic` — reserved for multi-vendor auth.
-- `registry` may be omitted on docker steps when `image` already includes the registry host; **required** for shell/SSH (e.g. push) when there is no `image`.
-- Credentials are used for `docker login` only — they are **not** injected as step env (except transient `BUZ_REGISTRY_*` on SSH remotes, then logout).
-
-```yaml
-# Docker pull
-engine: docker
-image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
-registry_secret: acr_personal  # deprecated → buz/docker-login
-run: echo ok
-
-# Shell push
-engine: shell
-registry_secret: acr_personal  # deprecated → buz/docker-login
-run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
-```
-
-Full orchestration (prepare → build → push → verify): `example/pipelines/acr-personal-build-push.yml`.
-
-| | |
-|---|---|
-| YAML | `registry_secret: acr_personal` (deprecated → `buz/docker-login`) |
-| Form | Registry Secret |
-| See | [Docker Engine — ACR Personal Edition](/docs/01-architecture/execution/docker-engine/) |
+Registry auth is no longer a step field (removed in v3) — use the `buz/docker-login` plugin template (login → push → logout). See [Docker Engine](/docs/01-architecture/execution/docker-engine/) and `example/pipelines/acr-personal-push.yml`.
 
 ---
 
@@ -996,7 +958,7 @@ Pipeline-level [`env`](#env) applies to all steps; step `env` merges / overrides
 
 #### `secrets`
 
-Optional **step-level** secret name allowlist. Declaring a name does **not** inject `$NAME` into the environment — map via [`env`](#env-1) or purpose slots (`registry_secret` — deprecated → `buz/docker-login`; `config.source` — deprecated → `buz/config-fetch`). Use to narrow or document which secrets this step may reference.
+Optional **step-level** secret name allowlist. Declaring a name does **not** inject `$NAME` into the environment — map via [`env`](#env-1). Use to narrow or document which secrets this step may reference.
 
 ```yaml
 secrets: [GIT_SSH_KEY]
@@ -1025,7 +987,7 @@ Full rules: [pipeline `secrets`](#secrets) and [Secrets Access](/docs/01-archite
 
 ### Docker step fields
 
-When `engine: docker`, YAML requires `image`. Optional docker-only fields: [`volumes`](#volumes), [`privileged`](#privileged). [`registry_secret`](#registry_secret) (deprecated → `buz/docker-login`) also works on shell/SSH (for push). Workspace is bind-mounted to `/buz/workspace`. Full rules: [Docker Engine](/docs/01-architecture/execution/docker-engine/).
+When `engine: docker`, YAML requires `image`. Optional docker-only fields: [`volumes`](#volumes), [`privileged`](#privileged). Workspace is bind-mounted to `/buz/workspace`. Full rules: [Docker Engine](/docs/01-architecture/execution/docker-engine/).
 
 Examples: `example/pipelines/docker-engine-smoke.yml`, `example/pipelines/acr-personal-pull.yml`, `example/pipelines/acr-personal-push.yml`.
 
@@ -1051,6 +1013,5 @@ Authoring is YAML-only ([YAML-First](./yaml-first-authoring.md)). On Validate / 
 | `steps[].host` / `host_labels` / `hosts_strategy` | `tasks.*` | SSH; strategy default `chain` |
 | `steps[].env` / `secrets` | `step_env` / `step_secrets` | |
 | `steps[].continue-on-error` | `fail_strategy` | |
-| `steps[].registry_secret` | `tasks.registry_secret` | Purpose slot (deprecated → `buz/docker-login`) |
 
 New YAML keys must be [registered](#field-registration-required-before-use) before use.

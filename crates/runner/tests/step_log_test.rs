@@ -88,14 +88,6 @@ fn build_step_echo_uses_consistent_banner_and_fields() {
 }
 
 #[test]
-fn build_login_banner_matches_style() {
-    assert_eq!(
-        build_login_banner("registry.example.com"),
-        "==> LOGIN [registry.example.com]\n"
-    );
-}
-
-#[test]
 fn runner_banner_identifies_version_and_os() {
     let banner = build_runner_banner();
     assert!(banner.starts_with("==> RUNNER\n"), "{banner}");
@@ -170,7 +162,7 @@ fn verbose_step_config_prefers_resolved_host_objects() {
             "credential_value": "SECRET_KEY_MATERIAL"
         }
     });
-    let cfg = build_verbose_step_config(&step, "ssh", "");
+    let cfg = build_verbose_step_config(&step, "ssh");
     assert!(
         cfg.contains("  hosts            root@81.71.41.19:2424"),
         "{cfg}"
@@ -210,18 +202,18 @@ fn build_step_failure_message_is_structured() {
 fn build_step_echo_shows_injected_hint_for_injected_keys() {
     let mut env = HashMap::new();
     env.insert(
-        "BUZ_CONFIG_URL".into(),
-        "http://oss.example/signed?sig=abc".into(),
+        "BUZ_DYNAMIC_VAR".into(),
+        "http://internal.example/signed?sig=abc".into(),
     );
     env.insert("acr_personal".into(), "secret-json".into());
     let mut catalog = SecretCatalog::new();
-    catalog.add_injected_key("BUZ_CONFIG_URL");
+    catalog.add_injected_key("BUZ_DYNAMIC_VAR");
     catalog.add_key("acr_personal");
 
     let echo = build_step_echo("shell", "echo hi\n", &env, &catalog, None);
-    assert!(echo.contains("BUZ_CONFIG_URL=<injected>"), "{echo}");
+    assert!(echo.contains("BUZ_DYNAMIC_VAR=<injected>"), "{echo}");
     assert!(echo.contains("acr_personal=***"), "{echo}");
-    assert!(!echo.contains("http://oss.example"), "{echo}");
+    assert!(!echo.contains("http://internal.example"), "{echo}");
     assert!(!echo.contains("secret-json"), "{echo}");
 }
 
@@ -254,25 +246,17 @@ fn verbose_step_config_renders_shape_without_secrets() {
         "timeout_seconds": 3600,
         "fail_strategy": "stop",
         "work_dir": "/tmp/ws",
-        "registry_secret": "acr_hk",
-        "config_source": "demo-app",
-        "config_key_path": "v1.2.3",
         "config_dest": "/opt/manager",
         "config_render": [{ "template": "env.example", "output": ".env" }],
         "hosts": ["h1", "h2"],
         "image": "",
     });
-    let cfg = build_verbose_step_config(&step, "shell", "acr_hk");
+    let cfg = build_verbose_step_config(&step, "shell");
     assert!(cfg.starts_with("==> STEP CONFIG\n"), "{cfg}");
     assert!(cfg.contains("  exec_type        shell"), "{cfg}");
     assert!(cfg.contains("  timeout          3600s"), "{cfg}");
     assert!(cfg.contains("  fail_strategy    stop"), "{cfg}");
     assert!(cfg.contains("  work_dir         /tmp/ws"), "{cfg}");
-    assert!(cfg.contains("  registry_secret  acr_hk"), "{cfg}");
-    assert!(
-        cfg.contains("  config           demo-app (key: v1.2.3)"),
-        "{cfg}"
-    );
     assert!(cfg.contains("  config_dest      /opt/manager"), "{cfg}");
     assert!(
         cfg.contains("  config_render    env.example → .env"),
@@ -282,133 +266,12 @@ fn verbose_step_config_renders_shape_without_secrets() {
 }
 
 #[test]
-fn config_prep_banner_redacts_url_unless_debug() {
-    let step = serde_json::json!({
-        "config_source": "OSS_DEMO",
-        "config_dest": "/opt/manager",
-        "config_auth": {
-            "url": "https://bucket.oss.aliyuncs.com/config_tpl/demo/v1/configs.tar.gz?Signature=secret",
-            "object_key": "config_tpl/demo/v1/configs.tar.gz",
-            "expires_in_secs": 3600,
-        },
-    });
-    let redacted = build_config_prep_banner(&step, false);
-    assert!(redacted.starts_with("==> CONFIG PREP\n"), "{redacted}");
-    assert!(
-        redacted.contains("  source           OSS_DEMO"),
-        "{redacted}"
-    );
-    assert!(
-        redacted.contains("  dest             /opt/manager"),
-        "{redacted}"
-    );
-    assert!(
-        redacted.contains("  object_key       config_tpl/demo/v1/configs.tar.gz"),
-        "{redacted}"
-    );
-    assert!(redacted.contains("  expires_in       3600s"), "{redacted}");
-    assert!(redacted.contains("  url              ***"), "{redacted}");
-    assert!(
-        !redacted.contains("Signature=secret"),
-        "verbose must not leak signed URL: {redacted}"
-    );
-
-    let debug = build_config_prep_banner(&step, true);
-    assert!(
-        debug.contains("Signature=secret"),
-        "debug must show signed URL: {debug}"
-    );
-}
-
-#[test]
-fn config_url_age_reads_the_signed_window() {
-    let step = serde_json::json!({
-        "config_auth": {
-            "url": "https://bucket.oss.aliyuncs.com/a.tar.gz?Expires=1&Signature=s",
-            "expires_in_secs": 3600,
-            "signed_at_epoch": 1_000,
-            "expires_epoch": 4_600,
-        },
-    });
-
-    let age = config_url_age(&step, 1_102).expect("signed window present");
-    assert_eq!(age.signed_at_epoch, 1_000);
-    assert_eq!(age.expires_epoch, 4_600);
-    assert_eq!(age.age_secs, 102);
-    assert_eq!(age.remaining_secs, 3_498);
-    assert_eq!(age.ttl_secs(), 3_600);
-    assert!(!age.is_expired());
-    assert_eq!(age.remaining_label(), "3498s");
-
-    // Older Manager: no epoch fields → nothing to report.
-    let legacy = serde_json::json!({
-        "config_auth": { "url": "https://b/a.tar.gz", "expires_in_secs": 3600 },
-    });
-    assert!(config_url_age(&legacy, 1_102).is_none());
-    assert!(config_url_age(&serde_json::json!({}), 1_102).is_none());
-
-    // Past the deadline the label flips and the flag trips.
-    let expired = config_url_age(&step, 4_661).expect("still readable");
-    assert!(expired.is_expired());
-    assert_eq!(expired.remaining_label(), "EXPIRED (61s ago)");
-}
-
-#[test]
-fn config_prep_banner_reports_url_window_and_expiry() {
-    let step = serde_json::json!({
-        "config_source": "OSS_DEMO",
-        "config_auth": {
-            "url": "https://bucket.oss.aliyuncs.com/a.tar.gz?Signature=secret",
-            "object_key": "config_tpl/demo/v1/configs.tar.gz",
-            "expires_in_secs": 3600,
-            "signed_at_epoch": chrono::Utc::now().timestamp() - 30,
-            "expires_epoch": chrono::Utc::now().timestamp() + 3_570,
-        },
-    });
-    let fresh = build_config_prep_banner(&step, false);
-    assert!(fresh.contains("signed_at"), "{fresh}");
-    assert!(fresh.contains("url_age"), "{fresh}");
-    assert!(fresh.contains("url_remaining"), "{fresh}");
-    assert!(
-        fresh.contains(" UTC"),
-        "signed_at must carry an absolute UTC stamp: {fresh}"
-    );
-    assert!(
-        !fresh.contains("EXPIRED"),
-        "a fresh URL must not be flagged: {fresh}"
-    );
-    assert!(!fresh.contains("url_warning"), "{fresh}");
-
-    // Same step, but the Manager minted the URL an hour ago: already expired.
-    let stale_step = serde_json::json!({
-        "config_auth": {
-            "url": "https://bucket.oss.aliyuncs.com/a.tar.gz?Signature=secret",
-            "object_key": "config_tpl/demo/v1/configs.tar.gz",
-            "expires_in_secs": 3600,
-            "signed_at_epoch": chrono::Utc::now().timestamp() - 3_900,
-            "expires_epoch": chrono::Utc::now().timestamp() - 300,
-        },
-    });
-    let stale = build_config_prep_banner(&stale_step, false);
-    assert!(
-        stale.contains("url_remaining") && stale.contains("EXPIRED ("),
-        "expired URL must be visible in the banner: {stale}"
-    );
-    assert!(stale.contains("url_warning"), "{stale}");
-    assert!(stale.contains("already expired before download"), "{stale}");
-    assert!(
-        stale.contains("3600s TTL"),
-        "warning should name the granted TTL: {stale}"
-    );
-}
-
-#[test]
 fn config_prep_banner_render_only_mode() {
     let step = serde_json::json!({
         "config_dest": "/opt/manager",
         "config_render": [{ "template": "env.example", "output": ".env" }],
     });
-    let banner = build_config_prep_banner(&step, false);
+    let banner = build_config_prep_banner(&step);
     assert!(
         banner.contains("  dest             /opt/manager"),
         "{banner}"

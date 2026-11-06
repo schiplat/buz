@@ -36,9 +36,6 @@ export function yamlStepsToDefTasks(steps: YamlStepData[]) {
     retry_count: s.retry || 0,
     fail_strategy: s.continue_on_error ? 'continue' : 'fail',
     privileged: !!s.privileged,
-    registry_secret: s.registry_secret || '',
-    config_source: s.config_source || '',
-    config_key_path: s.config_key_path || '',
     config_dest: s.config_dest || '',
     config_render: s.config_render || null,
     step_secrets: Array.isArray(s.secrets) ? s.secrets.join(', ') : '',
@@ -88,12 +85,6 @@ export function collectSecretNamesFromYaml(parsed: YamlParsedData): string[] {
   const secretNames = new Set<string>(parsed.secrets || [])
   for (const s of parsed.steps || []) {
     for (const n of s.secrets || []) secretNames.add(n)
-    for (const field of [s.registry_secret, s.config_source]) {
-      if (!field) continue
-      const m = String(field).match(/\$\{secrets\.([^}]+)\}/)
-      if (m) secretNames.add(m[1])
-      else if (!String(field).includes('$')) secretNames.add(String(field))
-    }
   }
   for (const ch of parsed.notify || []) {
     const wh = ch.webhook

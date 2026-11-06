@@ -1502,9 +1502,6 @@ async fn poll_once(
                     COALESCE(json_extract(j.value, '$.step_env'), '{}'),
                     COALESCE(json_extract(j.value, '$.image'), ''),
                     COALESCE(json_extract(j.value, '$.volumes'), '[]'),
-                    COALESCE(json_extract(j.value, '$.registry_secret'), ''),
-                    COALESCE(json_extract(j.value, '$.config_source'), ''),
-                    COALESCE(json_extract(j.value, '$.config_key_path'), ''),
                     COALESCE(json_extract(j.value, '$.config_render'), 'null'),
                     COALESCE(json_extract(j.value, '$.config_dest'), ''),
                     COALESCE(json_extract(j.value, '$.hosts_strategy'), 'chain'),
@@ -1520,7 +1517,7 @@ async fn poll_once(
         sqlx::query(
             "SELECT id, step_order, name, exec_type, COALESCE(host_id, ''), host_names, host_labels, command_template,
                     work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
-                    registry_secret, config_source, config_key_path, config_render, config_dest, hosts_strategy,
+                    config_render, config_dest, hosts_strategy,
                     privileged, capabilities
              FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
         )
@@ -1534,7 +1531,6 @@ async fn poll_once(
     // values are NOT auto-injected as `$NAME`. Call sites must map explicitly:
     //   env:
     //     GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
-    // or purpose slots: `registry_secret: ${secrets.ACR_PERSONAL}`.
     //
     // Claim still sends `secrets` (name→value) for log masking + config.render.
     let mut secrets: serde_json::Value = serde_json::json!({});
@@ -1760,14 +1756,11 @@ async fn poll_once(
         let step_env_raw: String = t.get(13);
         let image: String = t.get(14);
         let volumes_raw: String = t.get(15);
-        let registry_secret_raw: String = t.get(16);
-        let config_source_raw: String = t.get(17);
-        let config_key_path_raw: String = t.get(18);
-        let config_render_raw: String = t.get(19);
-        let config_dest: String = t.get(20);
-        let hosts_strategy: String = t.get(21);
-        let privileged: i64 = t.get(22);
-        let capabilities_raw: String = t.get(23);
+        let config_render_raw: String = t.get(16);
+        let config_dest: String = t.get(17);
+        let hosts_strategy: String = t.get(18);
+        let privileged: i64 = t.get(19);
+        let capabilities_raw: String = t.get(20);
         let capabilities: Vec<String> = serde_json::from_str(&capabilities_raw).map_err(|_| {
             AppError::ValidationFailed(format!(
                 "task {} has invalid capabilities JSON",
@@ -1776,12 +1769,6 @@ async fn poll_once(
         })?;
         shared::plugin_spec::validate_plugin_capabilities(&capabilities, &exec_type)
             .map_err(AppError::ValidationFailed)?;
-
-        // Purpose slots accept `${secrets.NAME}` or bare NAME.
-        let registry_secret_name =
-            shared::secret_ref::resolve_secret_slot(&registry_secret_raw).unwrap_or_default();
-        let config_source_name =
-            shared::secret_ref::resolve_secret_slot(&config_source_raw).unwrap_or_default();
 
         let mut task_json = serde_json::json!({
             "id": t.get::<String, _>(0),
@@ -1796,9 +1783,6 @@ async fn poll_once(
             "image": &image,
             "volumes": serde_json::from_str::<serde_json::Value>(&volumes_raw)
                 .unwrap_or(serde_json::Value::Array(vec![])),
-            "registry_secret": &registry_secret_name,
-            "config_source": &config_source_name,
-            "config_key_path": &config_key_path_raw,
             "config_render": serde_json::from_str::<serde_json::Value>(&config_render_raw)
                 .unwrap_or(serde_json::Value::Null),
             "config_dest": &config_dest,
@@ -1814,18 +1798,11 @@ async fn poll_once(
         // single source of truth for "which values are sensitive" (see
         // `shared::log_masking::SecretClass`). Adding a new sensitive field means
         // pushing its value here; the Runner only consumes this list.
-        let mut log_mask_values: Vec<String> = Vec::new();
-
-        if !registry_secret_raw.trim().is_empty() && registry_secret_name.is_empty() {
-            task_json["registry_auth_error"] = serde_json::Value::String(format!(
-                "invalid registry_secret '{registry_secret_raw}' — use ${{secrets.NAME}} or a bare secret name"
-            ));
-        }
-        if !config_source_raw.trim().is_empty() && config_source_name.is_empty() {
-            task_json["config_auth_error"] = serde_json::Value::String(format!(
-                "invalid config.source '{config_source_raw}' — use ${{secrets.NAME}} or a bare secret name"
-            ));
-        }
+        //
+        // Both former contributors (registry passwords, OSS signed URLs) were
+        // removed with their kernel paths in v3; the list stays as the hook for
+        // plugin-injected sensitive values.
+        let log_mask_values: Vec<String> = Vec::new();
 
         if let Some(defs_raw) = resolutions_by_order.get(&t.get::<i64, _>(1)) {
             let defs: Vec<shared::protocol::PipelineInputDef> =
@@ -1863,12 +1840,6 @@ async fn poll_once(
         // Implicit allowlist from purpose slots + step env `${secrets.X}` (top-level optional).
         {
             let mut implied: Vec<String> = Vec::new();
-            if !registry_secret_name.trim().is_empty() {
-                implied.push(registry_secret_name.trim().to_string());
-            }
-            if !config_source_name.trim().is_empty() {
-                implied.push(config_source_name.trim().to_string());
-            }
             if !step_env_raw.trim().is_empty() {
                 if let Ok(raw_map) = serde_json::from_str::<
                     std::collections::BTreeMap<String, String>,
@@ -2123,293 +2094,8 @@ async fn poll_once(
             }
         }
 
-        // Resolve registry_secret → registry_auth (purpose slot — not env inject).
-        // Same-team + kind=registry; name must be allowlisted (pipeline/step/team_shared).
-        if !registry_secret_name.trim().is_empty() && task_json.get("registry_auth_error").is_none()
-        {
-            let allowed = secrets_by_name.get(registry_secret_name.trim()).is_some()
-                || step_secrets_map.get(registry_secret_name.trim()).is_some();
-            if !allowed {
-                task_json["registry_auth_error"] = serde_json::Value::String(format!(
-                    "registry_secret '{}' not found for this pipeline's team — create the secret \
-                     (same team), or enable Team share; reference via registry_secret: ${{secrets.{}}}",
-                    registry_secret_name.trim(),
-                    registry_secret_name.trim()
-                ));
-            }
-        }
-        if !registry_secret_name.trim().is_empty() && task_json.get("registry_auth_error").is_none()
-        {
-            match sqlx::query_as::<_, (String, String)>(
-                "SELECT s.value, s.kind FROM secrets s
-                 JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
-                 WHERE p.id = ? AND s.name = ?",
-            )
-            .bind(&pipeline_id)
-            .bind(registry_secret_name.trim())
-            .fetch_optional(&state.pool)
-            .await
-            {
-                Ok(Some((stored, kind))) => {
-                    if !shared::secret_kind::is_registry_kind(&kind) {
-                        task_json["registry_auth_error"] = serde_json::Value::String(format!(
-                            "secret '{}' has kind='{}' — set Kind to Registry credentials \
-                             in Infrastructure → Secrets (or create a registry secret)",
-                            registry_secret_name.trim(),
-                            shared::secret_kind::normalize_secret_kind(Some(&kind))
-                        ));
-                    } else {
-                        match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
-                            Ok(value) => {
-                                let image_opt = if image.trim().is_empty() {
-                                    None
-                                } else {
-                                    Some(image.as_str())
-                                };
-                                match shared::registry_auth::parse_registry_secret_value(
-                                    &value, image_opt,
-                                ) {
-                                    Ok(auth) => {
-                                        tracing::info!(
-                                            secret = %registry_secret_name.trim(),
-                                            registry = %auth.registry,
-                                            "Resolved registry_secret → registry_auth for job dispatch"
-                                        );
-                                        let mut auth_json = serde_json::json!({
-                                            "registry": auth.registry,
-                                            "username": auth.username,
-                                            "password": auth.password,
-                                        });
-                                        if let Some(p) = auth.provider {
-                                            auth_json["provider"] = serde_json::Value::String(p);
-                                        }
-                                        task_json["registry_auth"] = auth_json;
-                                        // SecretClass::RegistryPassword
-                                        log_mask_values.push(auth.password.clone());
-                                    }
-                                    Err(e) => {
-                                        task_json["registry_auth_error"] =
-                                            serde_json::Value::String(e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                task_json["registry_auth_error"] = serde_json::Value::String(
-                                    format!("failed to decrypt registry_secret: {e}"),
-                                );
-                            }
-                        }
-                    }
-                }
-                Ok(None) => {
-                    task_json["registry_auth_error"] = serde_json::Value::String(format!(
-                        "registry_secret '{}' not found for this pipeline's team (create it under the same team, or check the name)",
-                        registry_secret_name.trim()
-                    ));
-                }
-                Err(e) => {
-                    task_json["registry_auth_error"] = serde_json::Value::String(format!(
-                        "failed to load registry_secret '{}': {e}",
-                        registry_secret_name.trim()
-                    ));
-                }
-            }
-        }
-
-        // Resolve config_source → signed OSS GET URL (injected as $BUZ_CONFIG_URL).
-        // Same-team + kind=aliyun_oss_auth; name must be allowlisted.
-        if !config_source_name.trim().is_empty() && task_json.get("config_auth_error").is_none() {
-            let allowed = secrets_by_name.get(config_source_name.trim()).is_some()
-                || step_secrets_map.get(config_source_name.trim()).is_some();
-            if !allowed {
-                task_json["config_auth_error"] = serde_json::Value::String(format!(
-                    "config.source '{}' not found for this pipeline's team — create an OSS secret \
-                     (same team), or enable Team share; reference via source: ${{secrets.{}}}",
-                    config_source_name.trim(),
-                    config_source_name.trim()
-                ));
-            }
-        }
-
         // Attach step allowlist values for render/mask (Runner does not auto-inject `$NAME`).
         task_json["step_secrets"] = step_secrets_map.clone();
-
-        if !config_source_name.trim().is_empty() && task_json.get("config_auth_error").is_none() {
-            match sqlx::query_as::<_, (String, String)>(
-                "SELECT s.value, s.kind FROM secrets s
-                 JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
-                 WHERE p.id = ? AND s.name = ?",
-            )
-            .bind(&pipeline_id)
-            .bind(config_source_name.trim())
-            .fetch_optional(&state.pool)
-            .await
-            {
-                Ok(Some((stored, kind))) => {
-                    if !shared::secret_kind::is_aliyun_oss_auth_kind(&kind) {
-                        task_json["config_auth_error"] = serde_json::Value::String(format!(
-                            "config_source '{}' has kind='{}' — set Kind to Aliyun OSS auth \
-                             in Infrastructure → Secrets (or create an aliyun_oss_auth secret)",
-                            config_source_name.trim(),
-                            shared::secret_kind::normalize_secret_kind(Some(&kind))
-                        ));
-                    } else {
-                        // Expand `$VAR` / `${VAR}` in config_key_path (Lenient).
-                        let mut config_vars = serde_json::json!({});
-                        if let Some(obj) = env.as_object() {
-                            for (k, v) in obj {
-                                config_vars[k] = v.clone();
-                            }
-                        }
-                        if let Some(obj) = secrets_by_name.as_object() {
-                            for (k, v) in obj {
-                                config_vars[k] = v.clone();
-                            }
-                        }
-                        if let Some(obj) = trigger_params.as_object() {
-                            for (k, v) in obj {
-                                config_vars[k] = v.clone();
-                            }
-                        }
-                        let config_map = shared::value_source::ValueMap {
-                            vars: config_vars
-                                .as_object()
-                                .map(|o| {
-                                    o.iter()
-                                        .filter_map(|(k, v)| {
-                                            v.as_str().map(|s| (k.clone(), s.to_string()))
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
-                            secrets: std::collections::HashMap::new(),
-                        };
-                        let expanded_path = shared::value_source::expand(
-                            &config_key_path_raw,
-                            &config_map,
-                            shared::value_source::ExpandMode::Lenient,
-                            shared::value_source::MissingPolicy::Blank,
-                        )
-                        .map(|e| e.content)
-                        .unwrap_or_else(|_| config_key_path_raw.clone());
-                        let object_key = {
-                            let dir = expanded_path.trim().trim_matches('/');
-                            if dir.is_empty() {
-                                None
-                            } else {
-                                Some(format!("{dir}/configs.tar.gz"))
-                            }
-                        };
-                        match object_key {
-                            None => {
-                                task_json["config_auth_error"] = serde_json::Value::String(
-                                    "config_source requires a non-empty 'config_key_path' (e.g. config_tpl/demo-app/v1.4.0)"
-                                        .into(),
-                                );
-                            }
-                            Some(key) if key.contains('$') => {
-                                task_json["config_auth_error"] = serde_json::Value::String(
-                                    format!(
-                                        "config_key_path '{config_key_path_raw}' left unresolved variable(s) '${}' — inputs are: {}",
-                                        key.split('$').nth(1).unwrap_or(""),
-                                        trigger_params
-                                            .as_object()
-                                            .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
-                                            .unwrap_or_default()
-                                    ),
-                                );
-                            }
-                            Some(key) => {
-                                match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
-                                    Ok(value) => {
-                                        match shared::config_auth::parse_oss_secret_value(&value) {
-                                            Ok(auth) => {
-                                                let ttl =
-                                            shared::config_auth::DEFAULT_CONFIG_URL_TTL_SECS;
-                                                // The signed Expires is absolute: a Manager clock
-                                                // behind real time yields a URL that is already
-                                                // expired on arrival (OSS `403 Request has
-                                                // expired`). Refuse with an actionable error.
-                                                let clock_source =
-                                                    crate::services::clock::oss_source_url(
-                                                        &auth.bucket,
-                                                        &auth.endpoint,
-                                                    );
-                                                let clock_error =
-                                                    crate::services::clock::guard_signing(
-                                                        crate::services::clock::global(),
-                                                        &clock_source,
-                                                        ttl,
-                                                    )
-                                                    .await;
-                                                if let Some(err) = clock_error {
-                                                    task_json["config_auth_error"] =
-                                                        serde_json::Value::String(err);
-                                                } else {
-                                                    match shared::config_auth::sign_oss_get_url_meta(
-                                                        &auth, &key, ttl,
-                                                    ) {
-                                                        Ok(signed) => {
-                                                            tracing::info!(
-                                                                secret = %config_source_name.trim(),
-                                                                object_key = %key,
-                                                                ttl_secs = signed.ttl_secs(),
-                                                                signed_at = signed.signed_at_epoch,
-                                                                expires_at = signed.expires_epoch,
-                                                                signed_at_utc = %shared::clock::format_utc(signed.signed_at_epoch),
-                                                                expires_at_utc = %shared::clock::format_utc(signed.expires_epoch),
-                                                                "Resolved config_source → signed OSS URL for job dispatch"
-                                                            );
-                                                            // Mask the URL itself; the URL-age
-                                                            // fields are the diagnostic surface
-                                                            // when OSS later rejects the download.
-                                                            log_mask_values
-                                                                .push(signed.url.clone());
-                                                            task_json["config_auth"] = serde_json::json!({
-                                                                "url": signed.url,
-                                                                "object_key": key,
-                                                                "expires_in_secs": signed.ttl_secs(),
-                                                                "signed_at_epoch": signed.signed_at_epoch,
-                                                                "expires_epoch": signed.expires_epoch,
-                                                            });
-                                                        }
-                                                        Err(e) => {
-                                                            task_json["config_auth_error"] =
-                                                                serde_json::Value::String(e);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                task_json["config_auth_error"] =
-                                                    serde_json::Value::String(e);
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        task_json["config_auth_error"] = serde_json::Value::String(
-                                            format!("failed to decrypt config_source: {e}"),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(None) => {
-                    task_json["config_auth_error"] = serde_json::Value::String(format!(
-                        "config_source '{}' not found for this pipeline's team (create an OSS secret under the same team, or check the name)",
-                        config_source_name.trim()
-                    ));
-                }
-                Err(e) => {
-                    task_json["config_auth_error"] = serde_json::Value::String(format!(
-                        "failed to load config_source '{}': {e}",
-                        config_source_name.trim()
-                    ));
-                }
-            }
-        }
 
         // `config_render` resolves `${secrets.X}` by secret name — attach for
         // any step that opts into render (pipeline allowlist + step allowlist).

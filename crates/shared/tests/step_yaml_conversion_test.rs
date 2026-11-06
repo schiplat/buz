@@ -11,7 +11,6 @@ engine: docker
 image: example/image:1
 volumes: ["/tmp:/tmp"]
 privileged: true
-registry_secret: ${secrets.REGISTRY_AUTH}
 dir: /workspace
 timeout: 5m
 retry: 2
@@ -20,8 +19,6 @@ secrets: [UPLOAD_TOKEN]
 env:
   REGION: cn-hangzhou
 config:
-  source: ${secrets.OSS_AUTH}
-  key_path: releases/app
   dest: /opt/app
   render:
     template: app.env.tpl
@@ -40,10 +37,6 @@ config:
         Some(&["/tmp:/tmp".to_string()][..])
     );
     assert_eq!(step.privileged, Some(true));
-    assert_eq!(
-        step.registry_secret.as_deref(),
-        Some("${secrets.REGISTRY_AUTH}")
-    );
     assert_eq!(step.dir.as_deref(), Some("/workspace"));
     assert_eq!(step.timeout.as_deref(), Some("5m"));
     assert_eq!(step.retry, Some(2));
@@ -56,8 +49,6 @@ config:
         step.env.as_ref().unwrap().get("REGION").unwrap(),
         "cn-hangzhou"
     );
-    assert_eq!(step.config_source.as_deref(), Some("${secrets.OSS_AUTH}"));
-    assert_eq!(step.config_key_path.as_deref(), Some("releases/app"));
     assert_eq!(step.config_dest.as_deref(), Some("/opt/app"));
     let render = step.config_render.as_ref().unwrap();
     assert_eq!(render.len(), 1);

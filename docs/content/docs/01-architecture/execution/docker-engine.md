@@ -215,10 +215,10 @@ docker  → `docker run … <image>` on the runner; container executes `run`
 | 3 | **Required field**: `image` when `engine: docker` |
 | 4 | **Command model**: same as local/SSH — multi-line `run:` executed via container shell (`sh -lc` unless overridden later) |
 | 5 | **Workspace**: bind-mount runner step work directory into a fixed container path (default `/buz/workspace`); container cwd = that path |
-| 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution as shell/SSH. **Log masking**: Infrastructure Secrets, registry passwords, and trigger inputs with `masking: true` are redacted — pipeline `env:` and Variables stay readable. Claim payload splits `env` vs `secrets` and includes `masking_input_keys` — see [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) |
+| 6 | **Env / secrets / inputs**: inject as container env (`-e`), same resolution as shell/SSH. **Log masking**: Infrastructure Secrets and trigger inputs with `masking: true` are redacted — pipeline `env:` and Variables stay readable. Claim payload splits `env` vs `secrets` and includes `masking_input_keys` — see [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) |
 | 7 | **Gate**: Runner UI `docker_enabled` must be `true`; otherwise step fails with a clear error (do not fall back to shell) |
 | 8 | **Scheduling**: pipelines that need Docker should set `runner.labels` to include `docker`; Manager dispatches only to runners that have **all** required labels |
-| 9 | **Private registry auth**: YAML/form stores only a **Secret name** (`registry_secret`, deprecated → `buz/docker-login`) — never the password. Encrypted at rest; Manager sends `registry_auth` to the Runner. **Docker**: login before pull/run. **Shell / SSH**: login before `run` (SSH login happens on the remote host) so `docker push` works; then logout. Target: ACR Personal Edition; optional JSON `provider`. |
+| 9 | **Registry auth**: not a step field (kernel support removed in v3) — use the `buz/docker-login` plugin template (login → pull/push → logout); see the appendix below. |
 | 10 | **Security defaults**: no host network, no arbitrary CLI options; `privileged` is opt-in for DinD only |
 
 ---
@@ -236,25 +236,14 @@ steps:
     run: |
       npm ci
       npm test
-
-  - name: Private ACR image
-    engine: docker
-    image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
-    registry_secret: acr_personal  # deprecated → buz/docker-login; Secret *name* only — password lives in Infrastructure → Secrets
-    run: echo ok
-
-  # Shell / SSH also support registry_secret (deprecated → buz/docker-login; e.g. docker push):
-  # - name: Push
-  #   engine: shell
-  #   registry_secret: acr_personal  # deprecated → buz/docker-login
-  #   run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
 ```
+
+Private registry images: login with the `buz/docker-login` plugin before the docker step — no step field (removed in v3); see the appendix below.
 
 | Field | Required | Description |
 |-------|:--------:|-------------|
 | `engine: docker` | ✓ | Selects Docker engine |
 | `image` | ✓ | Image reference (`name:tag` or digest). Pulled if missing (`docker pull` / run pull behavior TBD in impl) |
-| `registry_secret` | | **Deprecated → `buz/docker-login`.** Name of a Manager Secret with **`kind=registry`** (not the password). JSON credentials, encrypted at rest. Also valid on **shell** / **SSH** for push. |
 | `run` | ✓ | Command(s) inside the container |
 | `work_dir` / `dir` | | Container-side subdirectory under `/buz/workspace` (runner workspace always mounted at root) |
 | `timeout` / `continue-on-error` | | Same semantics as other engines (`retry` is parsed but not executed yet) |
@@ -273,7 +262,6 @@ entrypoint: /bin/bash
 # Supported ✅
 volumes: ["/host/path:/container/path"]
 privileged: true              # opt-in DinD only
-registry_secret: acr_personal # deprecated → buz/docker-login (docker / shell / SSH)
 ```
 
 ---
@@ -443,73 +431,10 @@ Requires Docker CLI + daemon. Tests are `#[ignore]` so default `cargo test --all
 These do **not** block MVP acceptance:
 
 - Exact shell wrapper (`sh -lc` vs `bash -lc`) and Windows runner stance (MVP = Linux runners with Docker)
-- Typed Secrets UI for registry credentials (today: JSON string in existing Secrets; optional `provider` in JSON)
 - Full Manager↔Runner cancel e2e in CI (covered by engine kill + existing cancel wiring)
-
-### Secondary priority — other private registries
-
-**Supported today** only when the registry accepts static username + password (or PAT) via `docker login` — use `provider: "generic"` (or omit) with the same JSON schema. No first-class UI/docs beyond that.
-
-| Registry | Status | Notes |
-|---|---|---|
-| Alibaba Cloud **ACR Personal** | **P0 / supported** | Fixed password; `provider: "acr_personal"` |
-| Alibaba Cloud **ACR Enterprise** | P2 | Often temporary `GetAuthorizationToken` — needs token refresh |
-| Docker Hub private / ghcr.io / GitLab / Harbor / Quay | P2 | Static user+PAT usually works as `generic`; document-only for now |
-| AWS ECR / GCP Artifact Registry / Azure ACR (AAD) | P2 | Temporary cloud tokens — not implemented |
-
-Do **not** expand product surface for these until ACR Personal Edition path is proven in production.
 
 ---
 
-## Appendix: Alibaba Cloud ACR Personal Edition
+## Appendix: Private registry login (ACR Personal Edition and others)
 
-> **Deprecated:** the `registry_secret` wiring below is deprecated — prefer the `buz/docker-login` plugin template. It still works but retires in a future major release.
-
-Personal Edition login uses a **fixed password** from the ACR console (not temporary STS tokens):
-
-```bash
-docker login --username=<login-name> <registry-host>
-# password: fixed password from ACR console
-```
-
-Registry hosts:
-
-| Edition / era | Example host |
-|---|---|
-| Personal (new) | `crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com` |
-| Personal (legacy) | `registry.cn-hangzhou.aliyuncs.com` |
-
-### Buz wiring (password never in YAML)
-
-> **Deprecated:** this `registry_secret` wiring is deprecated → use the `buz/docker-login` plugin template (retires in a future major release).
-
-1. Create Infrastructure → Secrets with name e.g. `acr_personal`. Leave **Team share OFF** (default) so unrelated pipelines never receive the JSON as env. Value is **AES-256-GCM encrypted at rest**:
-
-```json
-{
-  "provider": "acr_personal",
-  "registry": "crpi-….personal.cr.aliyuncs.com",
-  "username": "…",
-  "password": "…"
-}
-```
-
-- `provider` (optional): `acr_personal` | `generic`
-- `registry`: required for **shell / SSH** (no step `image` to infer from); optional on **docker** when `image` already includes the host
-
-2. Set the Secret **Kind** to **Registry** in Infrastructure → Secrets, then reference **only the secret name** with `registry_secret:` — deprecated → `buz/docker-login` (there is no `image_pull_secret` field).
-
-| Engine | Behavior |
-|--------|----------|
-| **docker** | `docker login` on the runner → pull/`docker run` → `docker logout` |
-| **shell** | `docker login` on the runner → `run` (e.g. `docker push`) → `docker logout` |
-| **ssh** | Login on the **remote** host via transient `BUZ_REGISTRY_*` env → `run` → `docker logout` |
-
-3. API list/get never return full plaintext — partial redaction (JSON `password` / `token` fields masked). Corrupt/plaintext DB rows set `reencrypt_required: true` (re-save required).
-
-Examples:
-
-- Pull (docker engine): `example/pipelines/acr-personal-pull.yml`
-- Push only (shell): `example/pipelines/acr-personal-push.yml`
-- Build + push orchestration: `example/pipelines/acr-personal-build-push.yml`
-  (`Prepare` → `Build` → `Push` with `registry_secret` (deprecated) → `Verify pull`)
+Kernel-side registry auth was removed in v3. For any registry that accepts a static username + password (or PAT) — including Alibaba Cloud ACR Personal Edition's fixed console password — log in with the `buz/docker-login` plugin template (login → pull/push → logout). See the `buz/docker-login` plugin README and `example/pipelines/acr-personal-*.yml`.

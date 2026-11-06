@@ -39,33 +39,31 @@ describe('serializePipelineFormToYaml team', () => {
   })
 })
 
-describe('serializePipelineFormToYaml legacy compatibility', () => {
-  it('preserves existing registry and OSS delivery fields when editing', () => {
-    const yaml = serializePipelineFormToYaml({
-      ...base,
-      steps: [{
-        name: 'legacy', run: 'echo ready', registry_secret: '${secrets.REG}',
-        config_source: '${secrets.OSS}', config_key_path: 'app/prod', config_dest: '/opt/app',
-        config_render: [{ template: 'env.example', output: '.env', mode: '0600' }],
-      }],
-    })
-    expect(yaml).toContain('registry_secret: "${secrets.REG}"')
-    expect(yaml).toContain('source: "${secrets.OSS}"')
-    expect(yaml).toContain('key_path: app/prod')
-    expect(yaml).toContain('dest: /opt/app')
-    expect(yaml).toContain('render:\n        - template: env.example\n          output: .env\n          mode: 0600')
-  })
-
-  it('serializes render-only without adding legacy delivery fields', () => {
+describe('serializePipelineFormToYaml config block', () => {
+  it('serializes render-only without legacy delivery fields', () => {
     const yaml = serializePipelineFormToYaml({
       ...base,
       steps: [{ name: 'render', run: 'echo ready', config_dest: 'config',
         config_render: [{ template: 'env.example', output: '.env' }] }],
     })
     expect(yaml).toContain('config:\n      dest: config\n      render:')
-    expect(yaml).not.toContain('registry_secret:')
     expect(yaml).not.toContain('source:')
     expect(yaml).not.toContain('key_path:')
+  })
+
+  it('never emits config.source / config.key_path even when stale form state carries them', () => {
+    const yaml = serializePipelineFormToYaml({
+      ...base,
+      steps: [{
+        name: 'stale', run: 'echo ready',
+        config_source: '${secrets.OSS}', config_key_path: 'app/prod', config_dest: '/opt/app',
+        config_render: [{ template: 'env.example', output: '.env', mode: '0600' }],
+      }],
+    } as any)
+    expect(yaml).not.toContain('source:')
+    expect(yaml).not.toContain('key_path:')
+    expect(yaml).toContain('dest: /opt/app')
+    expect(yaml).toContain('render:\n        - template: env.example\n          output: .env\n          mode: 0600')
   })
 })
 

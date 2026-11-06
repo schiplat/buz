@@ -25,20 +25,13 @@ describe('parseDurationToSeconds', () => {
 })
 
 describe('yamlStepsToDefTasks', () => {
-  it('preserves legacy delivery and current render data in definition cards', () => {
+  it('preserves render-only config data in definition cards', () => {
     const render = [{ template: 'env.example', output: '.env', mode: '0600' }]
     const tasks = yamlStepsToDefTasks([{
-      name: 'legacy', registry_secret: '${secrets.REG}', config_source: '${secrets.OSS}',
-      config_key_path: 'app/prod', config_dest: '/opt/app', config_render: render,
-    }, {
       name: 'render-only', config_dest: 'config', config_render: render,
     }])
     expect(tasks[0]).toMatchObject({
-      registry_secret: '${secrets.REG}', config_source: '${secrets.OSS}',
-      config_key_path: 'app/prod', config_dest: '/opt/app', config_render: render,
-    })
-    expect(tasks[1]).toMatchObject({
-      registry_secret: '', config_source: '', config_key_path: '', config_dest: 'config', config_render: render,
+      config_dest: 'config', config_render: render,
     })
   })
 
@@ -91,7 +84,6 @@ describe('yamlStepsToDefTasks', () => {
         continue_on_error: true,
         privileged: true,
         secrets: ['TOKEN'],
-        registry_secret: '${secrets.REG}',
       },
     ])
     expect(tasks[0]).toMatchObject({
@@ -108,7 +100,6 @@ describe('yamlStepsToDefTasks', () => {
       fail_strategy: 'continue',
       privileged: true,
       step_secrets: 'TOKEN',
-      registry_secret: '${secrets.REG}',
     })
   })
 })
@@ -142,13 +133,11 @@ describe('concurrencyFromYaml / collectSecretNamesFromYaml', () => {
       steps: [
         {
           secrets: ['B'],
-          registry_secret: '${secrets.REG}',
-          config_source: 'OSS_SRC',
         },
       ],
       notify: [{ type: 'feishu', webhook: '${secrets.FEISHU_WEBHOOK}' }],
     })
-    expect(names.sort()).toEqual(['A', 'B', 'FEISHU_WEBHOOK', 'OSS_SRC', 'REG'])
+    expect(names.sort()).toEqual(['A', 'B', 'FEISHU_WEBHOOK'])
   })
 })
 

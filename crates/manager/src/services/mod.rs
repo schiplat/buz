@@ -1,6 +1,6 @@
-pub mod clock;
 pub mod cron_scheduler;
 pub mod debug_log_cleanup;
+pub mod deprecated_scan;
 pub mod github_actions_sync;
 pub mod github_fetch_scheduler;
 pub mod log_broadcast;

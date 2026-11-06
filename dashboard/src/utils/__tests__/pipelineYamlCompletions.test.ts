@@ -37,7 +37,7 @@ describe('plugin-first pipeline YAML completions', () => {
     for (const doc of ['steps:\n  - name: deploy\n    ', 'steps:\n  - name: deploy\n    config:\n      ']) {
       const options = labels(doc)
       expect(options).toEqual(expect.arrayContaining(['uses', 'with', 'config', 'dest', 'render', 'template', 'output']))
-      for (const field of ['registry_secret', 'source', 'key_path', 'capabilities']) expect(options).not.toContain(field)
+      for (const field of ['source', 'key_path', 'capabilities']) expect(options).not.toContain(field)
     }
     const config = complete('steps:\n  - name: deploy\n    ')!.options.find((option) => option.label === 'config')!
     expect(config.info).toContain('buz/config-fetch')

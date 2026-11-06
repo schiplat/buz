@@ -76,6 +76,12 @@ pub enum Command {
         command: PipelineCommand,
     },
 
+    /// Report pipelines and secrets still using deprecated kernel keys
+    /// (`registry_secret`, `config.source` / `config.key_path`, secret kinds
+    /// `registry` / `aliyun_oss_auth`). Read-only pre-migration report —
+    /// pipeline YAML carrying retired keys is already rejected by the parser.
+    ScanDeprecated,
+
     /// Print a shell completion script for `buz-manager` to stdout.
     ///
     /// Example: `buz-manager completions zsh > ~/.zfunc/_buz-manager`
