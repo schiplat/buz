@@ -29,6 +29,9 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::PluginValidate { paths }) => {
             return plugin_validate(&paths);
         }
+        Some(Command::ScanDeprecated) => {
+            return services::deprecated_scan::run(&cli.config).await;
+        }
         Some(Command::Completions { shell }) => {
             return print_completions(shell);
         }
@@ -76,10 +79,6 @@ async fn main() -> anyhow::Result<()> {
         "{} starting",
         shared::version::long_version("manager"),
     );
-
-    // Clock-skew guard for signed config URLs: a slow Manager clock produces
-    // URLs that are already expired when the Runner downloads them.
-    services::clock::init(&config.clock);
 
     // Step-index settings for `uses:` resolution (index dir + review gate).
     // Admin-edited overrides in platform_settings take precedence over
@@ -215,12 +214,6 @@ async fn main() -> anyhow::Result<()> {
              the reviewed manifest are rejected at resolution time"
         );
     }
-    tracing::info!(
-        enabled = config.clock.enabled,
-        warn_threshold_seconds = config.clock.warn_threshold_seconds,
-        cache_ttl_seconds = config.clock.cache_ttl_seconds,
-        "clock: skew guard configured (probes the OSS endpoint Date header before signing config URLs)"
-    );
 
     services::runner_monitor::spawn_monitor(db_pool.clone(), config.runner.clone());
 
@@ -291,10 +284,21 @@ async fn main() -> anyhow::Result<()> {
                 .layer(cors)
         }
         None => {
-            tracing::info!(
-                files = frontend::embedded_file_count(),
-                "serving UI from embedded assets"
-            );
+            // rust-embed reads `dashboard/dist` live from disk in debug builds
+            // (no manager recompile after `npm run build`) but embeds at
+            // compile time in release — say which one is serving, so a stale
+            // UI is diagnosable from the startup log alone.
+            if cfg!(debug_assertions) {
+                tracing::info!(
+                    files = frontend::embedded_file_count(),
+                    "serving UI via rust-embed — debug build reads dashboard/dist live from disk; `npm run build` + browser refresh is enough"
+                );
+            } else {
+                tracing::info!(
+                    files = frontend::embedded_file_count(),
+                    "serving UI embedded at compile time — release build; rebuild the manager after `npm run build` or set BUZ_FRONTEND_DIR"
+                );
+            }
             Router::new()
                 .route("/health", get(api::version::health))
                 .route("/api/v1/openapi.json", get(api::openapi::openapi_json))

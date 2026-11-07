@@ -108,7 +108,7 @@ Tier delivery is configured in the Manager-managed host document — the `tiers`
 
 ## Fail-closed inheritance
 
-The non-Host fail-closed set — SSH steps, per-step Docker engine, step registry-auth handoff, and Runner-host config preparation — is keyed on "the job runs with a sandbox handle", not on which tier delivered it. The `sandbox` tier inherits all of it automatically, including cancellation/teardown semantics and the no-Host-fallback rule.
+The non-Host fail-closed set — SSH steps, per-step Docker engine, and Runner-host config preparation — is keyed on "the job runs with a sandbox handle", not on which tier delivered it. The `sandbox` tier inherits all of it automatically, including cancellation/teardown semantics and the no-Host-fallback rule.
 
 ## Where each tier can run (cloud KVM matrix)
 

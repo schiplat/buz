@@ -743,20 +743,6 @@ function stepPreview(step: any): string {
   return ''
 }
 
-function stepDeprecatedFields(step: any): string[] {
-  const out: string[] = []
-  if (String(step?.registry_secret || '').trim()) {
-    out.push('registry_secret → use buz/docker-login')
-  }
-  if (String(step?.config_source || '').trim()) {
-    out.push('config.source → use buz/config-fetch')
-  }
-  if (String(step?.config_key_path || '').trim()) {
-    out.push('config_key_path → use buz/config-fetch')
-  }
-  return out
-}
-
 function stepEnvEntries(step: any): { name: string; value: string }[] {
   const env = step?.step_env
   if (!env || typeof env !== 'object' || Array.isArray(env)) return []
@@ -2379,13 +2365,6 @@ async function handleTrigger() {
                         <AlertTriangle class="mt-0.5 h-3 w-3 shrink-0" />
                         <span>Privileged container requested — high privilege.</span>
                       </div>
-                      <div
-                        v-if="stepDeprecatedFields(step).length"
-                        class="ml-[34px] mt-2 flex items-start gap-1.5 rounded-md border border-amber-500/25 bg-amber-500/5 px-2.5 py-1.5 text-[10px] leading-relaxed text-amber-700"
-                      >
-                        <AlertTriangle class="mt-0.5 h-3 w-3 shrink-0" />
-                        <span>Deprecated: {{ stepDeprecatedFields(step).join(' · ') }}</span>
-                      </div>
 
                       <div v-if="isDefStepOpen(idx)" class="ml-[34px] mt-2.5 rounded-lg border border-border/60 bg-muted/40 p-3">
                         <dl class="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2">
@@ -2424,18 +2403,6 @@ async function handleTrigger() {
                           <div v-if="step.volumes" class="min-w-0">
                             <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Volumes</dt>
                             <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ Array.isArray(step.volumes) ? step.volumes.join(', ') : step.volumes }}</dd>
-                          </div>
-                          <div v-if="step.registry_secret" class="min-w-0">
-                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Registry secret</dt>
-                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.registry_secret }}</dd>
-                          </div>
-                          <div v-if="step.config_source" class="min-w-0">
-                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">config.source</dt>
-                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.config_source }}</dd>
-                          </div>
-                          <div v-if="step.config_key_path" class="min-w-0">
-                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">config.key_path</dt>
-                            <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.config_key_path }}</dd>
                           </div>
                           <div v-if="step.config_dest" class="min-w-0">
                             <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">config.dest</dt>

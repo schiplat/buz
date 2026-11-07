@@ -3,7 +3,6 @@ use shared::protocol::{HeartbeatRequest, HeartbeatResponse};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::client::clock::ClockMonitor;
 use crate::config::Config;
 use crate::policy::{self, SharedPolicy};
 use shared::protocol::RunnerExecutionCapabilities;
@@ -15,7 +14,6 @@ pub async fn run_heartbeat_loop(
     started_at: std::time::Instant,
     shared_policy: SharedPolicy,
     restart_requested: Arc<AtomicBool>,
-    clock_monitor: Arc<ClockMonitor>,
 ) {
     let mut capabilities = probe_execution_capabilities(config).await;
     let mut last_capability_check = std::time::Instant::now();
@@ -52,21 +50,18 @@ pub async fn run_heartbeat_loop(
             capabilities = probe_execution_capabilities(config).await;
             last_capability_check = std::time::Instant::now();
         }
-        // Refresh system info on every heartbeat so CPU/mem/disk stay current;
-        // the clock skew measured on the previous heartbeat rides along so the
-        // Manager UI can show how far this Runner drifts.
+        // Refresh system info on every heartbeat so CPU/mem/disk stay current.
         let system_info = crate::sysinfo::collect_system_info(
             started_at,
             &crate::sysinfo::SysInfoOpts {
                 manager_url: config.runner.manager_url.clone(),
                 prefer_interfaces: config.runner.prefer_interfaces.clone(),
-                clock_skew_seconds: clock_monitor.skew_secs(),
                 execution_capabilities: Some(capabilities.clone()),
                 sandboxd: sandboxd_block,
             },
         );
 
-        match send_heartbeat(client, config, token, &system_info, &clock_monitor).await {
+        match send_heartbeat(client, config, token, &system_info).await {
             Ok(resp) => {
                 let next = resp.policy;
                 let prev = policy::store(&shared_policy, next.clone());
@@ -150,10 +145,8 @@ async fn send_heartbeat(
     config: &Config,
     token: &str,
     system_info: &shared::protocol::SystemInfo,
-    clock_monitor: &ClockMonitor,
 ) -> anyhow::Result<HeartbeatResponse> {
     let url = format!("{}/api/v1/runners/heartbeat", config.runner.manager_url);
-    let sent_at = chrono::Utc::now();
     let resp = client
         .post(&url)
         .header("Authorization", format!("Bearer {token}"))
@@ -168,9 +161,6 @@ async fn send_heartbeat(
         .map_err(|e| {
             super::friendly_reqwest_error(e, &config.runner.manager_url, "Heartbeat failed")
         })?;
-
-    // Free clock re-check: the Manager's `Date` header rides on every response.
-    clock_monitor.observe(sent_at, resp.headers());
 
     if !resp.status().is_success() {
         anyhow::bail!("heartbeat returned {}", resp.status());

@@ -428,12 +428,6 @@ pub struct SystemInfo {
     pub network_interfaces: Vec<NetworkInterfaceInfo>,
     pub ip_addresses: Vec<String>,
     pub uptime_seconds: u64,
-    /// Runner↔Manager clock skew in seconds (`Manager - Runner`); positive means
-    /// the Runner is behind. Measured against the Manager's `Date` header at
-    /// startup and refreshed on heartbeats — `None` when not measured yet or
-    /// when the check is disabled (`[clock] enabled = false`).
-    #[serde(default)]
-    pub clock_skew_seconds: Option<i64>,
     /// Host-verified support for job-wide sandbox backends. Absent on older Runners.
     #[serde(default)]
     pub execution_capabilities: Option<RunnerExecutionCapabilities>,
@@ -1073,18 +1067,9 @@ pub struct StepDef {
     /// Required for Docker-in-Docker. Has host-escaping security implications.
     #[serde(default)]
     pub privileged: Option<bool>,
-    /// Purpose slot: `${secrets.NAME}` or bare name for registry login JSON.
-    #[serde(default)]
-    pub registry_secret: Option<String>,
     /// Nested `config:` block (Phase 2b authoring shape).
     #[serde(default)]
     pub config: Option<crate::pipeline_yaml::ConfigBlock>,
-    /// Purpose slot: `${secrets.NAME}` or bare OSS auth secret name.
-    #[serde(default)]
-    pub config_source: Option<String>,
-    /// OSS object-key prefix (`config.key_path` / column `config_key_path`).
-    #[serde(default)]
-    pub config_key_path: Option<String>,
     /// Unpack directory (`config.dest` / column `config_dest`).
     #[serde(default)]
     pub config_dest: Option<String>,
@@ -1111,7 +1096,7 @@ pub struct CreateSecretRequest {
     /// Defaults to false (explicit bind / step reference / purpose slots).
     #[serde(default)]
     pub team_shared: Option<bool>,
-    /// `generic` (default) or `registry` (JSON credentials for `registry_secret`).
+    /// `generic` (default) or `aliyun_oss_auth` (legacy OSS credentials).
     #[serde(default)]
     pub kind: Option<String>,
 }
@@ -1126,7 +1111,7 @@ pub struct UpdateSecretRequest {
     /// When set, updates the opt-in team auto-inject flag.
     #[serde(default)]
     pub team_shared: Option<bool>,
-    /// When set, updates secret kind (`generic` | `registry`).
+    /// When set, updates secret kind (`generic` | `aliyun_oss_auth`).
     #[serde(default)]
     pub kind: Option<String>,
 }

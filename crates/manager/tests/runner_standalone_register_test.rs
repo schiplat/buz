@@ -44,7 +44,6 @@ fn base_config(standalone: bool) -> Config {
         },
         plugin_index: Default::default(),
         storage: Default::default(),
-        clock: Default::default(),
         logging: Default::default(),
         marketplace_url: String::new(),
     }

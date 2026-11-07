@@ -134,12 +134,6 @@ export interface PipelineStepInput {
   env?: Record<string, string>
   /** Run the Docker container in privileged mode (DinD). */
   privileged?: boolean
-  /** Purpose slot: `${secrets.NAME}` or bare name for docker login. */
-  registry_secret?: string
-  /** Purpose slot: `${secrets.NAME}` or bare OSS auth secret name. */
-  config_source?: string
-  /** OSS object-key prefix; Manager appends configs.tar.gz when signing. */
-  config_key_path?: string
   /** Unpack / working directory → $BUZ_CONFIG_DIR. */
   config_dest?: string
   /** Host-authorable form fields only; capability and uses metadata are server/plugin-owned. */
@@ -275,13 +269,7 @@ export interface YamlStepData {
   /** Step env map (`env:` under the step); values may be `${secrets.X}`. */
   env?: Record<string, string> | null
   /** Privileged mode for docker engine steps. */
-  privileged?: boolean | null
-  /** Purpose slot: `${secrets.NAME}` or bare name for docker login. */
-  registry_secret?: string | null
-  /** Purpose slot / flattened `config.source`. */
-  config_source?: string | null
-  /** OSS object-key prefix; Manager appends configs.tar.gz when signing. */
-  config_key_path?: string | null
+  privileged?: boolean
   /** Unpack / working directory → $BUZ_CONFIG_DIR. */
   config_dest?: string | null
   /** Render entries flattened from nested `config.render`. */

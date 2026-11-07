@@ -323,19 +323,12 @@ impl ConfigRender {
 
 /// Nested step `config:` block (Phase 2b).
 ///
-/// Modes (see docs/01-architecture/config-block.md):
-/// - **OSS deliver:** `source` + `key_path` + `dest`
-/// - **render-only:** `dest` + `render`
-/// - **sugar:** deliver fields + `render` in one step (allowed, not preferred)
+/// Render-only (see docs/01-architecture/config-block.md): render templates
+/// that already live under `dest` in place. Object-store delivery moved to
+/// the `buz/config-fetch` plugin step (kernel OSS deliver removed in the 2.x retirement).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ConfigBlock {
-    /// OSS auth secret name (`kind = aliyun_oss_auth`).
-    #[serde(default)]
-    pub source: Option<String>,
-    /// OSS object-key prefix; Manager appends `/configs.tar.gz`.
-    #[serde(default)]
-    pub key_path: Option<String>,
     /// Unpack / working directory → `$BUZ_CONFIG_DIR`.
     #[serde(default)]
     pub dest: Option<String>,
@@ -364,23 +357,9 @@ pub struct StepYaml {
     /// Only use on disposable runner VMs.
     #[serde(default)]
     pub privileged: Option<bool>,
-    /// Name of a Manager Secret whose value is JSON registry credentials
-    /// (`registry` optional when `image` has a host, `username`, `password`).
-    /// Used for `docker login` on docker / shell / SSH steps.
-    #[serde(default)]
-    pub registry_secret: Option<String>,
     /// Nested config delivery + render (Phase 2b). Required shape for YAML.
     #[serde(default)]
     pub config: Option<ConfigBlock>,
-    /// Legacy flat fields — if present, validation fails (use `config:` instead).
-    #[serde(default)]
-    pub config_source: Option<String>,
-    #[serde(default)]
-    pub config_path: Option<String>,
-    #[serde(default)]
-    pub config_dir: Option<String>,
-    #[serde(default)]
-    pub env_render: Option<serde_yaml::Value>,
     #[serde(default)]
     pub host: Option<OneOrMany>,
     #[serde(default, alias = "work_dir")]
@@ -407,7 +386,7 @@ pub struct StepYaml {
     #[serde(default, rename = "continue-on-error", alias = "continue_on_error")]
     pub continue_on_error: Option<bool>,
     /// Step secret allowlist (optional narrowing). Does **not** inject `$NAME`;
-    /// map via `env:` or purpose slots (`registry_secret`, `config.source`).
+    /// map via `env:`.
     #[serde(default)]
     pub secrets: Option<Vec<String>>,
     /// Step-level env map. Values may use `${secrets.X}` / `${vars.X}`;
@@ -418,8 +397,7 @@ pub struct StepYaml {
 
 impl From<&StepYaml> for crate::protocol::StepDef {
     fn from(step: &StepYaml) -> Self {
-        let (config_source, config_key_path, config_dest, config_render) =
-            flatten_config(step.config.as_ref());
+        let (config_dest, config_render) = flatten_config(step.config.as_ref());
         Self {
             name: step.name.clone().unwrap_or_else(|| "unnamed".into()),
             run: step.run.clone().unwrap_or_default(),
@@ -439,10 +417,7 @@ impl From<&StepYaml> for crate::protocol::StepDef {
             secrets: step.secrets.clone(),
             env: step.env.clone(),
             privileged: step.privileged,
-            registry_secret: step.registry_secret.clone(),
             config: step.config.clone(),
-            config_source,
-            config_key_path,
             config_dest,
             config_render,
         }
@@ -597,17 +572,10 @@ pub struct StepData {
     /// Privileged mode flag (only for docker steps).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub privileged: Option<bool>,
-    /// Purpose slot: `${secrets.NAME}` or bare secret name for registry login.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub registry_secret: Option<String>,
     /// Nested `config:` block (authoring / import shape).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigBlock>,
     /// Flattened from `config` for Manager task columns / API.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_key_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_dest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -700,62 +668,19 @@ fn validate_config_block(
     field: &str,
     errors: &mut Vec<YamlValidationError>,
 ) {
-    let source = non_empty(cfg.source.as_deref());
-    let key_path = non_empty(cfg.key_path.as_deref());
     let dest = non_empty(cfg.dest.as_deref());
     let render_entries = cfg.render.as_ref().map(|r| r.entries()).unwrap_or(&[]);
     let has_render = !render_entries.is_empty();
 
-    if source.is_none() && key_path.is_none() && dest.is_none() && !has_render {
+    if dest.is_none() && !has_render {
         errors.push(YamlValidationError {
             field: field.into(),
-            message: "'config:' is empty — set deliver (source+key_path+dest) and/or render-only (dest+render)".into(),
+            message: "'config:' is empty — set render-only (dest+render); object-store delivery is a plugin step (buz/config-fetch)".into(),
         });
         return;
     }
 
-    if source.is_some() != key_path.is_some() {
-        errors.push(YamlValidationError {
-            field: field.into(),
-            message: "'config.source' and 'config.key_path' must be set together (OSS deliver)"
-                .into(),
-        });
-    }
-
-    let is_deliver = source.is_some() && key_path.is_some();
-    let is_render_only = !is_deliver && has_render;
-    let is_sugar = is_deliver && has_render;
-
-    if is_deliver || is_sugar {
-        let engine = if engine.is_empty() { "shell" } else { engine };
-        if !matches!(engine, "shell" | "local" | "ssh" | "docker") {
-            errors.push(YamlValidationError {
-                field: field.into(),
-                message:
-                    "'config' OSS deliver is only valid for shell, local, ssh, or docker steps"
-                        .into(),
-            });
-        }
-        if dest.is_none() {
-            errors.push(YamlValidationError {
-                field: field.into(),
-                message: "'config.dest' is required for OSS deliver".into(),
-            });
-        }
-        if let Some(p) = key_path {
-            // Manager always builds `{key_path.trim('/')}/configs.tar.gz`. Trailing
-            // '/' is optional. Including the archive filename would double-append.
-            let trimmed = p.trim().trim_matches('/');
-            if trimmed.ends_with("configs.tar.gz") {
-                errors.push(YamlValidationError {
-                    field: format!("{field}.key_path"),
-                    message: "'config.key_path' must be a directory prefix — Manager appends '/configs.tar.gz' (do not include the archive filename)".into(),
-                });
-            }
-        }
-    }
-
-    if is_render_only || is_sugar {
+    if has_render {
         let engine = if engine.is_empty() { "shell" } else { engine };
         if !matches!(engine, "shell" | "local" | "ssh") {
             errors.push(YamlValidationError {
@@ -771,14 +696,12 @@ fn validate_config_block(
         }
     }
 
-    // Partial junk: render without deliver source but also missing dest already handled;
-    // key_path/source alone handled; dest-only without render/deliver is useless.
-    if !is_deliver && !has_render && dest.is_some() {
+    // Partial junk: dest alone without render is useless.
+    if !has_render && dest.is_some() {
         errors.push(YamlValidationError {
             field: field.into(),
-            message:
-                "'config.dest' alone is not enough — add OSS deliver (source+key_path) or render"
-                    .into(),
+            message: "'config.dest' alone is not enough — add 'render' entries (delivery is a plugin step: buz/config-fetch)"
+                .into(),
         });
     }
 
@@ -818,32 +741,25 @@ fn validate_config_block(
 /// Flatten nested `config:` into task/API column fields.
 pub fn flatten_config(
     cfg: Option<&ConfigBlock>,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<Vec<ConfigRenderEntry>>,
-) {
+) -> (Option<String>, Option<Vec<ConfigRenderEntry>>) {
     let Some(cfg) = cfg else {
-        return (None, None, None, None);
+        return (None, None);
     };
-    let source = non_empty(cfg.source.as_deref()).map(|s| s.to_string());
-    let key_path = non_empty(cfg.key_path.as_deref()).map(|s| s.to_string());
     let dest = non_empty(cfg.dest.as_deref()).map(|s| s.to_string());
     let render = cfg
         .render
         .as_ref()
         .map(|r| r.entries().to_vec())
         .filter(|v| !v.is_empty());
-    (source, key_path, dest, render)
+    (dest, render)
 }
 
 /// Collect secret names that this pipeline effectively allowlists.
 ///
-/// Includes optional top-level `secrets:`, step `secrets:`, purpose slots,
-/// `${secrets.NAME}` inside pipeline/step `env:`, and `notify[].webhook` —
-/// so production YAML may omit the top-level list (GHA-style) while Manager
-/// still binds `pipeline_secrets`.
+/// Includes optional top-level `secrets:`, step `secrets:`,
+/// `${secrets.NAME}` inside pipeline/step `env:`, `uses:` steps' `with:`
+/// inputs, and `notify[].webhook` — so production YAML may omit the
+/// top-level list (GHA-style) while Manager still binds `pipeline_secrets`.
 pub fn collect_effective_secret_names(parsed: &PipelineYaml) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut names = BTreeSet::new();
@@ -879,14 +795,13 @@ pub fn collect_effective_secret_names(parsed: &PipelineYaml) -> Vec<String> {
                 }
             }
         }
-        if let Some(raw) = step.registry_secret.as_deref() {
-            if let Some(n) = crate::secret_ref::resolve_secret_slot(raw) {
-                names.insert(n);
-            }
-        }
-        if let Some(cfg) = &step.config {
-            if let Some(raw) = cfg.source.as_deref() {
-                if let Some(n) = crate::secret_ref::resolve_secret_slot(raw) {
+        // `uses:` step inputs carry `${secrets.X}` too (the plugin contract,
+        // e.g. buz/docker-login's password) — without this scan the
+        // references would neither validate at save nor bind at claim, and
+        // every uses-based pipeline would need a top-level declaration.
+        if let Some(with) = &step.with {
+            for v in with.values() {
+                for n in crate::secret_ref::collect_secrets_names(v) {
                     names.insert(n);
                 }
             }
@@ -1294,24 +1209,6 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             ));
         }
 
-        // Deprecation warnings (2.0 removal plan): registry login and OSS
-        // config delivery have plugin/core replacements. Non-blocking so
-        // existing pipelines keep validating.
-        if step.registry_secret.is_some() {
-            warnings.push(format!(
-                "steps[{i}].registry_secret: deprecated — use the buz/docker-login \
-                 template for registry login; removal planned in 2.0"
-            ));
-        }
-        if let Some(cfg) = &step.config {
-            if cfg.source.is_some() || cfg.key_path.is_some() {
-                warnings.push(format!(
-                    "steps[{i}].config.source: deprecated — deliver with the buz/config-fetch \
-                     template and render via config.render; removal planned in 2.0"
-                ));
-            }
-        }
-
         // Honest-schema warnings: fields the schema accepts but the runner does
         // not act on yet. Non-blocking so existing pipelines keep validating.
         if step.retry.unwrap_or(0) > 0 {
@@ -1523,43 +1420,6 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             });
         }
 
-        let reg_secret = step
-            .registry_secret
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        if reg_secret.is_some() {
-            let engine = if engine.is_empty() { "shell" } else { engine };
-            if !matches!(engine, "shell" | "local" | "ssh" | "docker") {
-                errors.push(YamlValidationError {
-                    field: field.clone(),
-                    message: "'registry_secret' is only valid for shell, ssh, or docker steps"
-                        .into(),
-                });
-            }
-        }
-
-        // Reject legacy flat config fields — nested `config:` only.
-        let legacy_flat = step
-            .config_source
-            .as_deref()
-            .is_some_and(|s| !s.trim().is_empty())
-            || step
-                .config_path
-                .as_deref()
-                .is_some_and(|s| !s.trim().is_empty())
-            || step
-                .config_dir
-                .as_deref()
-                .is_some_and(|s| !s.trim().is_empty())
-            || step.env_render.as_ref().is_some_and(|v| !v.is_null());
-        if legacy_flat {
-            errors.push(YamlValidationError {
-                field: field.clone(),
-                message: "flat 'config_source'/'config_path'/'config_dir'/'env_render' are no longer supported — use nested 'config:' (see docs: Config Block DSL v2)".into(),
-            });
-        }
-
         if let Some(cfg) = &step.config {
             validate_config_block(cfg, engine, &field, &mut errors);
         }
@@ -1684,8 +1544,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             .steps
             .iter()
             .map(|s| {
-                let (config_source, config_key_path, config_dest, config_render) =
-                    flatten_config(s.config.as_ref());
+                let (config_dest, config_render) = flatten_config(s.config.as_ref());
                 StepData {
                     name: s.name.clone(),
                     run: s.run.clone(),
@@ -1717,15 +1576,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                     secrets: s.secrets.clone(),
                     env: s.env.clone(),
                     privileged: s.privileged,
-                    registry_secret: s
-                        .registry_secret
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|v| !v.is_empty())
-                        .map(str::to_string),
                     config: s.config.clone(),
-                    config_source,
-                    config_key_path,
                     config_dest,
                     config_render,
                 }

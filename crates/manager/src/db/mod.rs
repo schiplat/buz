@@ -272,7 +272,7 @@ async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
     }
 }
 
-pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Result<()> {
+pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Result<()> {
     // NOTE: the per-host team whitelist (sandbox_host_teams) is retired before
     // it ever shipped — tenant policy lives on runner team bindings. Dev
     // databases that still hold the table are migrated and the table dropped
@@ -1404,8 +1404,6 @@ pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Resu
     .execute(pool)
     .await;
 
-    backfill_registry_secret_kind(pool, jwt_secret).await?;
-
     tracing::info!("Database migrations applied successfully");
     Ok(())
 }
@@ -1673,38 +1671,6 @@ pub async fn migrate_pipeline_git_hooks_multi(pool: &SqlitePool) -> anyhow::Resu
     sqlx::query("ALTER TABLE pipeline_git_hooks_new RENAME TO pipeline_git_hooks")
         .execute(pool)
         .await?;
-    Ok(())
-}
-
-/// Mark existing secrets whose ciphertext decrypts to registry JSON as `kind=registry`.
-async fn backfill_registry_secret_kind(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Result<()> {
-    let rows = sqlx::query("SELECT id, value, kind FROM secrets")
-        .fetch_all(pool)
-        .await?;
-    let mut updated = 0u32;
-    for row in rows {
-        use sqlx::Row;
-        let id: String = row.get(0);
-        let stored: String = row.get(1);
-        let kind: String = row.get(2);
-        if shared::secret_kind::is_registry_kind(&kind) {
-            continue;
-        }
-        let Ok(plain) = crate::crypto::decrypt(&stored, jwt_secret) else {
-            continue;
-        };
-        if !shared::registry_auth::looks_like_registry_secret_value(&plain) {
-            continue;
-        }
-        sqlx::query("UPDATE secrets SET kind = 'registry' WHERE id = ?")
-            .bind(&id)
-            .execute(pool)
-            .await?;
-        updated += 1;
-    }
-    if updated > 0 {
-        tracing::info!("Backfilled kind=registry on {updated} secret(s)");
-    }
     Ok(())
 }
 

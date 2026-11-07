@@ -56,17 +56,16 @@ const BANNER_RULES: ReadonlyArray<{ match: (upper: string) => boolean; style: st
  * Every field key the runner emits as `  key   value`, both the `<16`-aligned
  * keys (e.g. `exec_type`, `config_dest`) and short keys (e.g. `note`, `cmd`).
  * Matching is longest-first so `config_dest` / `hosts_strategy` are not misread
- * as `config` / `host`, and `exit code` (two words) is handled correctly.
+ * as shorter keys, and `exit code` (two words) is handled correctly.
  */
 const FIELD_KEYS: ReadonlyArray<string> = [
   // step echo
   'note', 'cwd', 'env', 'cmd',
   // step config
-  'exec_type', 'timeout', 'fail_strategy', 'work_dir', 'image', 'registry_secret',
-  'config_dest', 'config_render', 'hosts_strategy', 'config', 'hosts',
-  // config prep
-  'object_key', 'expires_in', 'download', 'render', 'changed', 'source', 'dest', 'url', 'mode',
-  'files', 'host',
+  'exec_type', 'timeout', 'fail_strategy', 'work_dir', 'image',
+  'config_dest', 'config_render', 'hosts_strategy', 'hosts',
+  // config prep (render-only)
+  'render', 'changed', 'dest', 'mode', 'files', 'host',
   // ssh banner
   'workspace',
   // runner banner

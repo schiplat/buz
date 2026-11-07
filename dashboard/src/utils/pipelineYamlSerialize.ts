@@ -23,9 +23,6 @@ type StepLike = {
   retry?: number
   continue_on_error?: boolean
   privileged?: boolean
-  registry_secret?: string
-  config_source?: string
-  config_key_path?: string
   config_dest?: string
   config_render?: Array<{
     template?: string
@@ -263,7 +260,6 @@ export function serializePipelineFormToYaml(
       for (const v of vols) lines.push(`      - ${esc(v)}`)
     }
     if (s.privileged) lines.push('    privileged: true')
-    if (s.registry_secret) lines.push(`    registry_secret: ${esc(s.registry_secret)}`)
     if (s.secrets?.length) {
       lines.push(`    secrets: [${s.secrets.map(esc).join(', ')}]`)
     }
@@ -296,11 +292,9 @@ export function serializePipelineFormToYaml(
     if (s.continue_on_error) lines.push('    continue-on-error: true')
 
     const hasConfig =
-      !!(s.config_source || s.config_key_path || s.config_dest || (s.config_render && s.config_render.length))
+      !!(s.config_dest || (s.config_render && s.config_render.length))
     if (hasConfig) {
       lines.push('    config:')
-      if (s.config_source) lines.push(`      source: ${esc(s.config_source)}`)
-      if (s.config_key_path) lines.push(`      key_path: ${esc(s.config_key_path)}`)
       if (s.config_dest) lines.push(`      dest: ${esc(s.config_dest)}`)
       if (s.config_render?.length) {
         lines.push('      render:')

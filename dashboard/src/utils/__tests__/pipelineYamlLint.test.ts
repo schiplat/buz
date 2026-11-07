@@ -75,27 +75,6 @@ describe('splitWarningField', () => {
 })
 
 describe('diagnosticsFromValidation', () => {
-  it('positions legacy deprecations as non-blocking warnings on their field blocks', () => {
-    const yaml = `steps:
-  - name: legacy
-    registry_secret: REG
-    config:
-      source: OSS
-      key_path: app/prod
-      dest: /opt/app
-    run: echo ready
-`
-    const result = { valid: true, errors: [], warnings: [
-      'steps[0].registry_secret: deprecated — use buz/docker-login; removal planned in 2.0',
-      'steps[0].config.source: deprecated — use buz/config-fetch and config.render; removal planned in 2.0',
-    ] }
-    const diags = diagnosticsFromValidation(yaml, result)
-    expect(diags.map((diag) => diag.severity)).toEqual(['warning', 'warning'])
-    expect(diags.map((diag) => yaml.slice(diag.from, diag.to))).toEqual(['registry_secret', 'config'])
-    expect(result.valid).toBe(true)
-    expect(result.errors).toEqual([])
-  })
-
   const inputYaml = `name: demo
 on:
   manual:

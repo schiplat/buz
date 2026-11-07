@@ -10,13 +10,6 @@ register_token = ""
 workspace_dir = "./workspace"
 token_cache_path = "./state/runner-token"
 
-[clock]
-# Startup validation against the Manager clock (same container/host in
-# standalone mode, so this normally passes). See conf/runner.toml for details.
-enabled = true
-warn_threshold_seconds = 60
-max_skew_seconds = 300
-
 [logging]
 level = "info"
 file = "./logs/runner.log"

@@ -37,26 +37,7 @@ heartbeat_timeout_seconds = 90
 yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30
 
-[clock]
-# Signed config URLs (config.source → OSS) embed an absolute expiry, so a
-# Manager host clock that runs slow signs URLs that are already expired when
-# the Runner downloads them (OSS: 403 AccessDenied "Request has expired").
-# Before signing, the Manager probes the OSS endpoint's Date header and refuses
-# with an actionable error when the clock is too far behind. Fix the host clock
-# (NTP: `sudo timedatectl set-ntp true`) — do not paper over it here.
-enabled = true
-# Warn (log only) when the Manager clock is this many seconds behind.
-warn_threshold_seconds = 60
-# Reuse a probe result for this long instead of probing on every dispatch.
-cache_ttl_seconds = 300
-# Hosts the guard may probe. The probe target is derived from a team-scoped
-# config_source secret (https://{bucket}.{endpoint}/), so an allowlist is what
-# keeps a secret owner from aiming the Manager's HTTP client at an internal
-# host (SSRF). A host outside this list is never contacted — the guard is
-# simply skipped for it. Port 443 is implied; name a port explicitly
-# (e.g. "minio.internal:9000") to allow a non-443 S3-compatible endpoint.
-# An empty list disables probing entirely. Redirects are never followed.
-allowed_hosts = ["*.aliyuncs.com"]
+["*.aliyuncs.com"]
 
 [logging]
 level = "info"

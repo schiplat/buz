@@ -1,7 +1,5 @@
 pub mod api_token;
 pub mod auth;
-pub mod clock;
-pub mod config_auth;
 pub mod error;
 pub mod git_webhook;
 pub mod instance;
@@ -13,7 +11,6 @@ pub mod plugin_signature;
 pub mod plugin_spec;
 pub mod protocol;
 pub mod rbac;
-pub mod registry_auth;
 pub mod sandbox_config;
 pub mod secret_kind;
 pub mod secret_ref;

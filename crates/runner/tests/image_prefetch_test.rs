@@ -39,7 +39,7 @@ fn public_library_digest_parser_accepts_only_immutable_official_images() {
 }
 
 #[test]
-fn candidates_filter_engine_auth_policy_and_deduplicate() {
+fn candidates_filter_engine_policy_and_deduplicate() {
     let mut config = Config::default();
     config.engine.docker_enabled = true;
     let digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -48,8 +48,6 @@ fn candidates_filter_engine_auth_policy_and_deduplicate() {
         json!({"exec_type":"docker", "image":image}),
         json!({"exec_type":"docker", "image":image}),
         json!({"exec_type":"shell", "image":image}),
-        json!({"exec_type":"docker", "image":image, "registry_auth":{"registry":"x","username":"u","password":"p"}}),
-        json!({"exec_type":"docker", "image":image, "registry_secret":"REGISTRY_SECRET"}),
         json!({"exec_type":"docker", "image":"alpine:3.20"}),
         json!({"exec_type":"docker", "image":image, "privileged":true}),
     ];

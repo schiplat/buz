@@ -1,4 +1,4 @@
-//! Unit tests for `client::config_source` pure helpers.
+//! Unit tests for `client::config_source` pure helpers (render-only).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -11,160 +11,14 @@ fn step_with(value: serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
-fn needs_prepare_detects_auth_and_render() {
+fn needs_prepare_keys_on_render() {
     assert!(!needs_prepare(&serde_json::json!({})));
     assert!(!needs_prepare(
         &serde_json::json!({ "config_dest": "/opt/x" })
     ));
     assert!(needs_prepare(&serde_json::json!({
-        "config_auth": { "url": "https://example.com/a" }
-    })));
-    assert!(needs_prepare(&serde_json::json!({
         "config_render": { "template": "env.example", "output": ".env" }
     })));
-}
-
-#[test]
-fn config_url_missing_is_error() {
-    let step = serde_json::json!({});
-    assert!(config_url(&step).is_err());
-}
-
-#[test]
-fn oss_error_detail_extracts_code_and_message() {
-    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<Error>
-  <Code>AccessDenied</Code>
-  <Message>Request has expired.</Message>
-  <RequestId>6A84E4B4ACF6C5383921087D</RequestId>
-  <HostId>example-bucket.oss-cn-hongkong.aliyuncs.com</HostId>
-</Error>"#;
-    assert_eq!(oss_error_detail(xml), "AccessDenied: Request has expired.");
-}
-
-#[test]
-fn oss_error_detail_falls_back_to_snippet() {
-    assert_eq!(oss_error_detail(""), "(no response body)");
-    assert_eq!(
-        oss_error_detail("  <html>oops</html>  "),
-        "<html>oops</html>"
-    );
-}
-
-#[test]
-fn download_failure_reports_oss_time_and_clock_skew() {
-    let sent = at(1_700_000_000);
-    let received = at(1_700_002); // 2s round-trip
-    let raw = http_date(1_700_000_100); // OSS clock 100s ahead of the local midpoint
-    let remote = shared::clock::parse_http_date(&raw).expect("parse");
-
-    let msg = describe_download_failure(
-        reqwest::StatusCode::FORBIDDEN,
-        Some(&raw),
-        sent,
-        received,
-        "AccessDenied: Request has expired.",
-    );
-    assert!(
-        msg.starts_with("config bundle download returned HTTP 403 Forbidden: AccessDenied: Request has expired."),
-        "{msg}"
-    );
-    assert!(
-        msg.contains(&shared::clock::format_utc(remote.timestamp())),
-        "OSS time must be shown: {msg}"
-    );
-    assert!(
-        msg.contains(&shared::clock::format_utc(received.timestamp())),
-        "local time must be shown: {msg}"
-    );
-    let expected_skew = shared::clock::skew_from_http_date(sent, received, remote);
-    assert!(expected_skew > 0, "sanity: OSS ahead of local");
-    assert!(
-        msg.contains(&shared::clock::describe_skew(expected_skew)),
-        "skew must be quantified: {msg}"
-    );
-    assert!(
-        msg.contains("behind OSS") && msg.contains("NTP"),
-        "verdict must say which side is off: {msg}"
-    );
-}
-
-#[test]
-fn download_failure_says_aligned_clocks_mean_a_stale_url() {
-    // Same instant on both sides: the URL itself was minted with a past expiry.
-    let sent = at(1_700_000_000);
-    let received = at(1_700_000_000);
-    let raw = http_date(1_700_000_000);
-
-    let msg = describe_download_failure(
-        reqwest::StatusCode::FORBIDDEN,
-        Some(&raw),
-        sent,
-        received,
-        "AccessDenied: Request has expired.",
-    );
-    assert!(msg.contains("clocks aligned"), "{msg}");
-    assert!(
-        msg.contains("signed_at"),
-        "must point at the URL window fields: {msg}"
-    );
-    assert!(
-        !msg.contains("NTP"),
-        "no NTP noise when clocks agree: {msg}"
-    );
-}
-
-#[test]
-fn download_failure_without_date_header_keeps_plain_message() {
-    let sent = at(1_700_000_000);
-    let msg = describe_download_failure(
-        reqwest::StatusCode::NOT_FOUND,
-        None,
-        sent,
-        sent,
-        "NoSuchKey: The specified key does not exist.",
-    );
-    assert_eq!(
-        msg,
-        "config bundle download returned HTTP 404 Not Found: NoSuchKey: The specified key does not exist."
-    );
-
-    // Unparsable Date header → no half-rendered clock block.
-    let msg = describe_download_failure(
-        reqwest::StatusCode::FORBIDDEN,
-        Some("garbage"),
-        sent,
-        sent,
-        "AccessDenied: Request has expired.",
-    );
-    assert!(!msg.contains("oss_time"), "{msg}");
-}
-
-fn at(secs: i64) -> chrono::DateTime<chrono::Utc> {
-    use chrono::TimeZone;
-    chrono::Utc
-        .timestamp_opt(secs, 0)
-        .single()
-        .expect("valid timestamp")
-}
-
-/// RFC 1123 `Date` header for an epoch, e.g. `Tue, 14 Nov 2023 22:13:20 GMT`.
-fn http_date(secs: i64) -> String {
-    chrono::DateTime::from_timestamp(secs, 0)
-        .expect("valid timestamp")
-        .format("%a, %d %b %Y %H:%M:%S GMT")
-        .to_string()
-}
-
-#[test]
-fn config_url_extracts_signed_url() {
-    let step = serde_json::json!({ "config_auth": { "url": "https://oss.example.com/obj?Expires=1", "object_key": "config_tpl/a/1.0" } });
-    assert_eq!(
-        config_url(&step).unwrap(),
-        "https://oss.example.com/obj?Expires=1"
-    );
-    assert_eq!(archive_label(&step), "config_tpl/a/1.0");
-    assert_eq!(archive_label(&serde_json::json!({})), "configs.tar.gz");
 }
 
 #[test]
@@ -241,39 +95,6 @@ fn set_changed_env_sets_keys() {
     );
 }
 
-fn sample_tarball(dir: &Path) -> Vec<u8> {
-    let file = dir.join("env.example");
-    std::fs::write(
-        &file,
-        "MANAGER_IMAGE=${vars.IMAGE}\nMANAGER_TOKEN=${secrets.TOKEN}\n",
-    )
-    .unwrap();
-    let tar_gz = dir.join("bundle.tar.gz");
-    let status = std::process::Command::new("tar")
-        .current_dir(dir)
-        .args(["-czf", "bundle.tar.gz", "env.example"])
-        .status()
-        .unwrap();
-    assert!(status.success());
-    std::fs::read(&tar_gz).unwrap()
-}
-
-#[test]
-fn unpack_extracts_bundle() {
-    let tmp = tempfile::tempdir().unwrap();
-    let tarball = sample_tarball(tmp.path());
-    let dest = tmp.path().join("out");
-    unpack(&tarball, &dest).unwrap();
-    assert!(dest.join("env.example").exists());
-}
-
-#[test]
-fn unpack_fails_on_garbage() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("out");
-    assert!(unpack(b"not a tarball", &dest).is_err());
-}
-
 fn value_map() -> ValueMap {
     let mut m = ValueMap::new();
     m.secrets.insert("TOKEN".into(), "tok_secret_value".into());
@@ -282,12 +103,22 @@ fn value_map() -> ValueMap {
     m
 }
 
+/// Write the render template directly under `dir` (render-only: templates
+/// already live at `dest`).
+fn write_template(dir: &Path) {
+    std::fs::write(
+        dir.join("env.example"),
+        "MANAGER_IMAGE=${vars.IMAGE}\nMANAGER_TOKEN=${secrets.TOKEN}\n",
+    )
+    .unwrap();
+}
+
 #[test]
 fn render_env_rebuilds_and_detects_change() {
     let tmp = tempfile::tempdir().unwrap();
-    let tarball = sample_tarball(tmp.path());
     let dest = tmp.path().join("cfg");
-    unpack(&tarball, &dest).unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+    write_template(&dest);
 
     let spec = EnvRenderSpec {
         template: "env.example".into(),
@@ -297,7 +128,7 @@ fn render_env_rebuilds_and_detects_change() {
         backup_keep: 0,
     };
     let (content, changed, forced) =
-        render_env_with_old(&dest, &spec, &value_map(), "configs.tar.gz", "").unwrap();
+        render_env_with_old(&dest, &spec, &value_map(), "render-only", "").unwrap();
     assert!(content.contains("MANAGER_IMAGE=reg.example.com/a/b:1.0"));
     assert!(content.contains("MANAGER_TOKEN=tok_secret_value"));
     assert_eq!(
@@ -310,9 +141,9 @@ fn render_env_rebuilds_and_detects_change() {
 #[test]
 fn render_env_rebuild_drops_stale_keys() {
     let tmp = tempfile::tempdir().unwrap();
-    let tarball = sample_tarball(tmp.path());
     let dest = tmp.path().join("cfg");
-    unpack(&tarball, &dest).unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+    write_template(&dest);
 
     let spec = EnvRenderSpec {
         template: "env.example".into(),
@@ -325,7 +156,7 @@ fn render_env_rebuild_drops_stale_keys() {
     // defines; a full rebuild must drop it instead of preserving it.
     let old = "STALE_KEY=should_be_removed\nMANAGER_TOKEN=old\n";
     let (content, _changed, _forced) =
-        render_env_with_old(&dest, &spec, &value_map(), "configs.tar.gz", old).unwrap();
+        render_env_with_old(&dest, &spec, &value_map(), "render-only", old).unwrap();
     assert!(
         !content.contains("STALE_KEY"),
         "stale key leaked: {content}"
@@ -336,9 +167,9 @@ fn render_env_rebuild_drops_stale_keys() {
 #[test]
 fn render_env_fails_fast_on_missing_secret() {
     let tmp = tempfile::tempdir().unwrap();
-    let tarball = sample_tarball(tmp.path());
     let dest = tmp.path().join("cfg");
-    unpack(&tarball, &dest).unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+    write_template(&dest);
 
     let spec = EnvRenderSpec {
         template: "env.example".into(),
@@ -357,7 +188,7 @@ fn render_env_fails_fast_on_missing_secret() {
         .filter(|(k, _)| k != "TOKEN")
         .collect();
     m2.vars = m.vars.clone();
-    let err = render_env_with_old(&dest, &spec, &m2, "configs.tar.gz", "")
+    let err = render_env_with_old(&dest, &spec, &m2, "render-only", "")
         .unwrap_err()
         .to_string();
     assert!(err.contains("unresolved reference"), "got: {err}");
@@ -366,9 +197,9 @@ fn render_env_fails_fast_on_missing_secret() {
 #[test]
 fn render_env_unchanged_detects_no_change() {
     let tmp = tempfile::tempdir().unwrap();
-    let tarball = sample_tarball(tmp.path());
     let dest = tmp.path().join("cfg");
-    unpack(&tarball, &dest).unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+    write_template(&dest);
 
     let spec = EnvRenderSpec {
         template: "env.example".into(),
@@ -378,10 +209,10 @@ fn render_env_unchanged_detects_no_change() {
         backup_keep: 0,
     };
     let (content, _, _) =
-        render_env_with_old(&dest, &spec, &value_map(), "configs.tar.gz", "").unwrap();
+        render_env_with_old(&dest, &spec, &value_map(), "render-only", "").unwrap();
     // Rendering against identical old content yields no changed keys.
     let (_, changed, _) =
-        render_env_with_old(&dest, &spec, &value_map(), "configs.tar.gz", &content).unwrap();
+        render_env_with_old(&dest, &spec, &value_map(), "render-only", &content).unwrap();
     assert!(changed.is_empty());
 }
 
@@ -426,8 +257,7 @@ async fn prepare_local_render_only_writes_env() {
             "on_missing": "fail",
         }]
     });
-    let client = reqwest::Client::new();
-    let prep = prepare_local(&client, &step, tmp.path(), 0, &value_map())
+    let prep = prepare_local(&step, tmp.path(), 0, &value_map())
         .await
         .unwrap();
     assert_eq!(
@@ -451,8 +281,7 @@ async fn prepare_local_render_only_missing_dest_fails() {
         "config_dest": missing.to_string_lossy(),
         "config_render": { "template": "env.example", "output": ".env" }
     });
-    let client = reqwest::Client::new();
-    let err = prepare_local(&client, &step, tmp.path(), 0, &value_map())
+    let err = prepare_local(&step, tmp.path(), 0, &value_map())
         .await
         .unwrap_err()
         .to_string();
@@ -468,8 +297,7 @@ async fn prepare_local_render_only_missing_template_fails() {
         "config_dest": dest.to_string_lossy(),
         "config_render": { "template": "missing.tpl", "output": ".env" }
     });
-    let client = reqwest::Client::new();
-    let err = prepare_local(&client, &step, tmp.path(), 0, &value_map())
+    let err = prepare_local(&step, tmp.path(), 0, &value_map())
         .await
         .unwrap_err()
         .to_string();

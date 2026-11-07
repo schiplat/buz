@@ -34,7 +34,6 @@ fn test_config() -> Config {
         standalone: Default::default(),
         plugin_index: Default::default(),
         storage: Default::default(),
-        clock: Default::default(),
         logging: Default::default(),
         marketplace_url: String::new(),
     }
@@ -134,25 +133,17 @@ async fn health_degraded_with_503_when_db_unavailable_in_readiness_mode() {
     assert_eq!(body["database"]["status"], "error");
 }
 
-/// `/health` is unauthenticated: the clock section must expose the verdict only.
-/// The probe source (`https://{bucket}.{endpoint}/`) and raw probe errors would
-/// disclose internal OSS endpoints / hostnames to anonymous callers.
+/// The clock-skew guard is removed: `/health` must not expose a clock section
+/// to anonymous callers any more.
 #[tokio::test]
-async fn health_clock_section_leaks_no_internal_endpoint() {
+async fn health_has_no_clock_section() {
     let state = test_state().await;
     let (_, Json(body)) = health(State(state), Query(HealthQuery::default())).await;
 
-    let clock = &body["clock"];
-    assert!(clock.is_object(), "clock section present: {body}");
-    for key in ["source", "error", "url"] {
-        assert!(
-            clock.get(key).is_none(),
-            "unauthenticated /health must not expose `{key}`: {clock}"
-        );
-    }
-    for key in ["status", "skew_seconds", "behind_seconds", "probe_failed"] {
-        assert!(clock.get(key).is_some(), "clock.{key} missing: {clock}");
-    }
+    assert!(
+        body.get("clock").is_none(),
+        "/health must not expose a `clock` section: {body}"
+    );
 }
 
 /// Default config ships with the review gate fully off; `/health` must say so

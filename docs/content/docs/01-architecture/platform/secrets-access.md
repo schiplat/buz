@@ -11,7 +11,7 @@ Buz uses the same **allowlist → explicit map → consume** flow as GitHub Acti
 ## Rules
 
 1. **Allowlist / reference ≠ inject.** Listing a name (or referencing `${secrets.NAME}`) does **not** put `$NAME` into the process environment by itself.
-2. **Map before use.** Put values into the environment with `env:`, or bind a **purpose slot** (`registry_secret`, `config.source` — both deprecated → `buz/docker-login` / `buz/config-fetch`) to an expression.
+2. **Map before use.** Put values into the environment with `env:`. Registry auth and config delivery both use plugin templates (`buz/docker-login`, `buz/config-fetch`) instead of purpose slots — the kernel purpose slots were removed in the 2.x retirement.
 3. **Scripts use shell vars.** After `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}`, `run` uses `$GIT_SSH_KEY`. Do not write `${secrets.…}` inside `run` — the engine does not expand secrets inside scripts.
 4. **Templates still use expressions.** `config.render` templates may contain `${secrets.X}` / `${vars.X}`; the runner expands them when generating files.
 5. **Team-shared secrets** are auto-**allowlisted** for expression resolution; they are still not auto-injected as env vars.
@@ -22,7 +22,6 @@ Buz uses the same **allowlist → explicit map → consume** flow as GitHub Acti
 ```yaml
 secrets:
   - GIT_SSH_KEY
-  - ACR_PERSONAL
   - OSS_CONFIG
   - POSTGRES_PASSWORD
 
@@ -40,14 +39,6 @@ steps:
       GIT_SSH_COMMAND="ssh -i /tmp/key -o StrictHostKeyChecking=no" \
         git clone --depth 1 git@github.com:org/private.git /tmp/private
       rm -f /tmp/key
-
-  # deprecated → buz/docker-login (registry_secret retires in a future major release)
-  - name: Docker Push
-    engine: shell
-    secrets: [ACR_PERSONAL]
-    registry_secret: ${secrets.ACR_PERSONAL}   # deprecated → buz/docker-login
-    run: |
-      docker push example.com/ns/app:$INPUT_TAG
 
   # deprecated → buz/config-fetch (OSS deliver retires in a future major release)
   - name: Deliver config
@@ -78,10 +69,9 @@ steps:
 
 | Slot | YAML | Meaning |
 |------|------|---------|
-| Registry login | `registry_secret: ${secrets.NAME}` | Docker registry credentials secret (kind `registry`) — **deprecated → `buz/docker-login`** |
-| Config OSS | `config.source: ${secrets.NAME}` | Object-storage secret for Deliver / SSH fetch — **deprecated → `buz/config-fetch`** |
 
-Both slot keys are **deprecated** (`registry_secret` → `buz/docker-login`, `config.source` → `buz/config-fetch`) and retire in a future major release (Phase 3). Bare names (`registry_secret: ACR_PERSONAL`) remain accepted for migration until then; prefer the expression form.
+
+The kernel purpose slots (`registry_secret`, `config.source`) were removed in the 2.x retirement. Registry login uses the `buz/docker-login` plugin template with two plain `generic` secrets; config delivery uses `buz/config-fetch` (presigned URL) or `buz/oss-download` (AK/SK) — both reference secrets the same way plugins always have.
 
 ## Allowlist scope
 

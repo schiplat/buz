@@ -11,7 +11,7 @@ description: "How the Runner executes steps — Docker, SSH multi-host, sandbox 
 ## Reading order
 
 1. [Runner Policy](./runner-concurrent-jobs/) — concurrency, engines enabled, cleanup, SSH host-key policy
-2. [Docker Engine](./docker-engine/) — `engine: docker`, private-registry login, workspace mount
+2. [Docker Engine](./docker-engine/) — `engine: docker`, workspace mount, private-registry login via `buz/docker-login`
 3. [SSH Multi-Host](./ssh-multi-host/) — parallel/serial fan-out, cancel-all, log banners
 4. [Sandbox Host Configuration & Resource Profiles](./sandbox-host-configuration/) — design record: Manager-managed config, named profiles, quota-aware scheduling
 

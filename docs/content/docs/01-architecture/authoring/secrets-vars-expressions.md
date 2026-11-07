@@ -15,7 +15,7 @@ Related deep-dives:
 - [Secrets Access Control](../platform/secrets-access-control.md) — kind, `team_shared`, bindings
 - [Env Render](./env-render.md) — `${secrets.X}` / `${vars.X}` in `.env` templates
 - [Pipeline Format](./pipeline-format.md) — field catalogue
-- [Config Block](./config-block.md) — `config.source` (deprecated → `buz/config-fetch`) / `config.render`
+- [Config Block](./config-block.md) — `config.render` (render-only; delivery is the `buz/config-fetch` plugin step)
 
 ---
 
@@ -46,7 +46,7 @@ Aligned with GitHub Actions day-to-day authoring: **ordinary workflows do not ma
 
 **What counts as an allowlist (any one is enough, same team):**
 
-1. **Use-site reference** — `env: KEY: ${secrets.NAME}`, `registry_secret: ${secrets.NAME}`, `config.source: ${secrets.NAME}`, or `notify[].webhook: ${secrets.NAME}` (the two slot keys are deprecated → `buz/docker-login` / `buz/config-fetch`)
+1. **Use-site reference** — `env: KEY: ${secrets.NAME}` or `notify[].webhook: ${secrets.NAME}`
 2. **Step list** — `secrets: [NAME]` (optional narrowing / explicitness)
 3. **Pipeline list** — top-level `secrets: [NAME]` (optional overview + DB bind)
 4. **Team share** — secret `team_shared: true` (auto-allowlisted for the team)
@@ -85,14 +85,11 @@ Platform Variables bound via `variables:` **are** injected as `$NAME` into every
 | Location | `${secrets.X}` | `${vars.X}` | Notes |
 |----------|----------------|-------------|-------|
 | `env:` values (pipeline / step) | ✅ | ✅ | Expanded at job claim → process env |
-| `registry_secret:` | ✅ | — | Purpose slot (registry kind) — **deprecated → `buz/docker-login`** |
-| `config.source:` | ✅ | — | Purpose slot (OSS auth) — **deprecated → `buz/config-fetch`** |
 | `notify[].webhook` | ✅ | — | Resolved by Manager at send time (not claim) |
 | `config.render` template files | ✅ | ✅ | Runner Strict mode; missing → fail |
-| `config.key_path` | lenient / legacy | lenient | Prefer explicit vars; legacy `$tag` still accepted in places. OSS deliver itself is deprecated → `buz/config-fetch` |
 | **`run:` scripts** | ❌ | ❌ | **Not expanded** — use `$KEY` / `$INPUT_*` |
 
-Bare names in purpose slots (`registry_secret: ACR_PERSONAL`) remain accepted for migration; **prefer** `${secrets.NAME}`. Both slot keys are deprecated → `buz/docker-login` / `buz/config-fetch`.
+The kernel purpose slots (`registry_secret`, `config.source`) were removed in the 2.x retirement — use `env:` mappings; registry login/config delivery are plugin templates (`buz/docker-login`, `buz/config-fetch`).
 
 ### C. Shell / process consumption (`run:` and engines)
 
@@ -154,16 +151,9 @@ steps:
 
 ```yaml
 secrets:
-  - ACR_PERSONAL
   - OSS_CONFIG
 
 steps:
-  - name: Push
-    engine: shell
-    secrets: [ACR_PERSONAL]
-    registry_secret: ${secrets.ACR_PERSONAL}   # ② slot — deprecated → buz/docker-login
-    run: docker push example.com/app:$INPUT_TAG
-
   - name: Deliver
     engine: ssh
     host: $deploy_host
@@ -235,8 +225,8 @@ steps:
 |------------|--------|
 | Let this job use secret `X` | Pipeline or step `secrets: [X]` (or Team share) |
 | Put secret `X` into `$X` for scripts | `env: X: ${secrets.X}` |
-| Use registry login secret | `registry_secret: ${secrets.X}` (+ allowlist) — **deprecated → `buz/docker-login`** |
-| Fetch OSS config bundle | `config.source: ${secrets.X}` (+ allowlist) — **deprecated → `buz/config-fetch`** |
+| Log in to a private registry | `buz/docker-login` plugin template (`registry` / `username` / `password` via `${secrets.X}`) |
+| Fetch OSS config bundle | `buz/config-fetch` plugin step (`url` input = `${secrets.CONFIG_BUNDLE_URL}` presigned) |
 | Put secret into a generated `.env` | Template line `${secrets.X}` + `config.render` |
 | Bind a platform Variable | `variables: [NAME]` → use `$NAME` in `run` |
 | Use Variable in a template | `${vars.NAME}` |

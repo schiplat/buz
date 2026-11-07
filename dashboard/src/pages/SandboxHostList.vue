@@ -26,7 +26,45 @@ import {
   type SandboxHostDocument,
 } from '@/api/sandboxHosts'
 import { teamsApi, type Team } from '@/api/teams'
+import { adminSettingsApi } from '@/api/adminSettings'
+import { useAuthStore } from '@/stores/auth'
 import { useRoute } from 'vue-router'
+
+const auth = useAuthStore()
+
+/** Platform-admin governance switch behind the approval flow. The backend
+ *  keeps two independent keys (host config / grants); the UI presents one
+ *  switch and writes both together — display is ON when either key is on,
+ *  so an API-side split still shows as enabled. */
+const APPROVAL_KEYS = ['sandbox_config_require_approval', 'grants_require_approval'] as const
+const approvalsRequired = ref(false)
+const savingApprovals = ref(false)
+
+async function loadApprovalsSwitch() {
+  if (!auth.isPlatformAdmin) return
+  try {
+    const { items } = await adminSettingsApi.list()
+    const on = (key: string) => items.find((i) => i.key === key)?.value === 'true'
+    approvalsRequired.value = on(APPROVAL_KEYS[0]) || on(APPROVAL_KEYS[1])
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+async function toggleApprovals() {
+  if (savingApprovals.value) return
+  const next = !approvalsRequired.value
+  savingApprovals.value = true
+  try {
+    await Promise.all(APPROVAL_KEYS.map((key) => adminSettingsApi.update(key, String(next))))
+    approvalsRequired.value = next
+  } catch (e) {
+    console.error(e)
+    await dialog.alert('Failed to update the approvals switch — retry in a moment.')
+  } finally {
+    savingApprovals.value = false
+  }
+}
 
 const route = useRoute()
 import { type ResourceGrant } from '@/api/sandboxHosts'
@@ -242,7 +280,7 @@ const grantsPendingHint = ref('')
 function noteGrantPending(count: number) {
   if (count > 0) {
     grantsPendingHint.value =
-      `${count} grant change${count > 1 ? 's' : ''} queued for approval — see Pending changes.`
+      `${count} grant change${count > 1 ? 's' : ''} queued — awaiting a second ops approval.`
   }
 }
 
@@ -1115,7 +1153,10 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  void load()
+  void loadApprovalsSwitch()
+})
 
 // Deep link from the top-nav bell: land on the approvals queue.
 if (route.query.approvals === '1') approvalsTab.value = 'pending'
@@ -1398,8 +1439,45 @@ async function rotateToken(host: SandboxHost) {
           <RefreshCw class="h-4 w-4" />
         </UiButton>
         <UiButton size="sm" variant="outline" @click="openDefaultsDialog">Platform defaults</UiButton>
+        <div
+          v-if="auth.isPlatformAdmin"
+          class="flex items-center rounded-xl border border-border/60 bg-muted/50 px-3 py-1.5"
+          title="Platform admins only — hidden for ops users"
+        >
+          <button
+            type="button"
+            role="switch"
+            :aria-checked="approvalsRequired"
+            :disabled="savingApprovals"
+            class="flex items-center gap-2 disabled:opacity-60"
+            @click="toggleApprovals"
+          >
+            <span class="text-[11.5px] font-medium">Require approvals</span>
+            <span
+              class="relative inline-block h-4 w-7 rounded-full transition-colors"
+              :class="approvalsRequired ? 'bg-emerald-600' : 'bg-muted-foreground/30'"
+            >
+              <span
+                class="absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-all"
+                :class="approvalsRequired ? 'left-3.5' : 'left-0.5'"
+              ></span>
+            </span>
+          </button>
+        </div>
       </div>
     </div>
+
+    <p
+      v-if="auth.isPlatformAdmin"
+      class="-mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground"
+    >
+      <span
+        class="h-1.5 w-1.5 shrink-0 rounded-full"
+        :class="approvalsRequired ? 'bg-emerald-600' : 'bg-muted-foreground/40'"
+      ></span>
+      <span v-if="approvalsRequired">On — host-config and grant changes queue for a second ops approval; already-queued items stay pending if you switch off later.</span>
+      <span v-else>Off — host-config and grant changes apply immediately, nothing queues.</span>
+    </p>
 
     <!-- ── Fleet policy: profile grants (one line per team) ── -->
     <div>
@@ -1578,6 +1656,8 @@ async function rotateToken(host: SandboxHost) {
         </div>
       </div>
 
+      <p v-if="grantsPendingHint" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-400">{{ grantsPendingHint }}</p>
+
       <div class="space-y-0.5">
         <p v-if="approvalsTab === 'pending' && !changes.length" class="rounded-lg px-2 py-3 text-[11.5px] text-muted-foreground">Queue is clear — new grant/revoke requests will appear here for approval</p>
         <p v-if="approvalsTab === 'history' && !historyRows.length" class="rounded-lg px-2 py-3 text-[11.5px] text-muted-foreground">No decided records yet</p>
@@ -1737,8 +1817,6 @@ async function rotateToken(host: SandboxHost) {
           </div>
         </div>
       </div>
-
-      <p v-if="grantsPendingHint" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-400">{{ grantsPendingHint }}</p>
 
     <!-- ── host detail dialog: desired configuration ── -->
     <div v-if="detailHost" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="detailHost = null">

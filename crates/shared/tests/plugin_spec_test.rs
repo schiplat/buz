@@ -478,3 +478,46 @@ fn default_dir_validated_like_step_work_dir() {
         );
     }
 }
+
+#[test]
+fn secret_placeholder_literals_require_the_opt_in_flag() {
+    const RUN_LITERAL: &str =
+        "run: |\n  printf '%s\\n' \"${secrets.NAME} placeholder text from a template\"";
+    // Without the flag: the literal stays banned (default guard).
+    let yaml = base_yaml().replacen(
+        "run: |\n  curl -fsSL -X POST \"$INPUT_WEBHOOK\" -d '{}'\n",
+        RUN_LITERAL,
+        1,
+    );
+    let err = parse_and_validate_plugin_spec(&yaml, CURRENT).unwrap_err();
+    assert!(
+        err.iter()
+            .any(|e| e.contains("must not reference ${secrets.")),
+        "{err:?}"
+    );
+
+    // Flag on but no masked input: refused — the values channel must be masked.
+    let mut yaml = base_yaml()
+        .replace("    masking: true\n", "    masking: false\n")
+        .replacen(
+            "run: |\n  curl -fsSL -X POST \"$INPUT_WEBHOOK\" -d '{}'\n",
+            RUN_LITERAL,
+            1,
+        );
+    yaml.push_str("\nprocesses_secret_placeholders: true\n");
+    let err = parse_and_validate_plugin_spec(&yaml, CURRENT).unwrap_err();
+    assert!(
+        err.iter()
+            .any(|e| e.contains("processes_secret_placeholders: true requires")),
+        "{err:?}"
+    );
+
+    // Flag on with a masked input: the template-matching literal is allowed.
+    let mut yaml = base_yaml().replacen(
+        "run: |\n  curl -fsSL -X POST \"$INPUT_WEBHOOK\" -d '{}'\n",
+        RUN_LITERAL,
+        1,
+    );
+    yaml.push_str("\nprocesses_secret_placeholders: true\n");
+    assert!(parse_and_validate_plugin_spec(&yaml, CURRENT).is_ok());
+}

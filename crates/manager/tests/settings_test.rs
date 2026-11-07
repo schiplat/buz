@@ -28,7 +28,6 @@ fn test_config() -> Config {
         standalone: Default::default(),
         plugin_index: Default::default(),
         storage: Default::default(),
-        clock: Default::default(),
         logging: Default::default(),
         marketplace_url: String::new(),
     }
@@ -179,6 +178,52 @@ async fn settings_defaults_come_from_config() {
         .filter_map(|i| i["key"].as_str())
         .collect();
     assert!(!keys.contains(&"marketplace_url"), "{keys:?}");
+}
+
+/// The approval switches are listed, writable, and resettable. The UI writes
+/// both keys together (one "Require approvals" toggle); the API keeps them
+/// independently settable, so each is asserted on its own.
+#[tokio::test]
+async fn approval_switches_list_write_and_reset() {
+    let (router, _pool) = test_app().await;
+    let token = jwt(ADMIN_ID, Role::Admin);
+
+    // Listed with a false default.
+    let (status, body) = get_settings(&router, &token).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(
+        setting_value(&body, "sandbox_config_require_approval"),
+        "false"
+    );
+    assert_eq!(setting_value(&body, "grants_require_approval"), "false");
+
+    // Each key flips on its own — API-level granularity the UI chooses not
+    // to expose.
+    let (status, _) = put_setting(&router, &token, "grants_require_approval", "true").await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let (_, body) = get_settings(&router, &token).await;
+    assert_eq!(setting_value(&body, "grants_require_approval"), "true");
+    assert_eq!(
+        setting_value(&body, "sandbox_config_require_approval"),
+        "false"
+    );
+
+    // Reset falls back to the default.
+    let resp = router
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/admin/settings/grants_require_approval")
+                .header("authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    let (_, body) = get_settings(&router, &token).await;
+    assert_eq!(setting_value(&body, "grants_require_approval"), "false");
 }
 
 #[tokio::test]

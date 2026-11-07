@@ -276,7 +276,7 @@ behavior, the change is already reflected in the DSL / render-rules sections.
 | 6 | **Concurrent renders** — two jobs rendering the same `.env` race | Atomic temp-file+rename prevents torn writes. The diff-and-swap critical section runs under **`flock` on the output file** (Linux native, target is Linux). Deploy pipelines are additionally documented as single-flight. |
 | 7 | **Overwriting manual edits** — operators tweak `.env` by hand | **Full rebuild** (Review R2 #5): the template is the sole source of truth; every render rewrites `.env` from the template only. Prior content is preserved as a timestamped `<output>.bak.<ts>` (newest `backup_keep` kept, default `3`), so a hand-edit is recoverable. `on_change` detection covers template-defined keys only. |
 | 8 | **`on_change` scope** — `.env` feeds several services (postgres `POSTGRES_*`, manager-server) | `services:` is explicit in the DSL; the renderer emits `BUZ_ENV_CHANGED_KEYS` so the run block (or `on_change`) recreates **only** the affected service. Default: no auto-recreate; the pipeline author opts in. |
-| 9 | **Secret-name churn** — renaming a secret silently orphans templates/scripts | Phase 3 reference tracking (reverse lookup across `pipeline_secrets`, step `secrets:`, `registry_secret`, `config_source`, and render templates). Until then: rename shows a **confirm dialog** in the UI, and any template referencing the old name hits fail-fast (#3) — the reference never fails silently. |
+| 9 | **Secret-name churn** — renaming a secret silently orphans templates/scripts | Phase 3 reference tracking (reverse lookup across `pipeline_secrets`, step `secrets:`, `config_source`, and render templates). Until then: rename shows a **confirm dialog** in the UI, and any template referencing the old name hits fail-fast (#3) — the reference never fails silently. |
 | 10 | **Plaintext secrets on disk** — `.env` holds secret values (vs. host-env passthrough) | Accepted trade-off for the "write `.env`" route. Mitigations: file `0600` + root ownership; `cat .env` output stays value-redacted in job logs; target hardening note (don't ship general-purpose log agents on the deploy host). A **host-env passthrough** route (compose `environment:` + `${VAR:-}`) remains available as the zero-disk option for values that only need in-container visibility. |
 | 11 | **Empty-value secrets** — an existing-but-empty secret tripping compose `${VAR:?}` | Empty value is treated as **missing** (goes through `on_missing`, never written as bare `KEY=`). Template may additionally use `${secrets.X:?}` for a hard-required key — fail-fast even in `warn` mode. |
 | 12 | **Template packaging gaps** — `configs.tar.gz` missing `env.example` / wrong path | Render fails with an explicit error naming the expected path and the archive it came from. Never a no-op. |
@@ -305,20 +305,18 @@ already reflected in the DSL / render-rules / ValueMap sections above.
 ## Compatibility
 
 - Existing secret delivery (`secrets:` list, `team_shared` auto-inject, step
-  `secrets:`, `registry_secret`, `config.source` — the last two deprecated →
-  `buz/docker-login` / `buz/config-fetch`) is unchanged. Rendering is an
-  **additive** capability; the same secret can be injected as env **and**
-  referenced by a template.
-- OSS deliver (`config.source` + `key_path` + `dest`; deprecated → `buz/config-fetch`) unpacks to
-  `$BUZ_CONFIG_DIR`; without `config.render` it is download → unpack only.
-  Render-only steps reuse `dest` without a second OSS download.
+  `secrets:`) is unchanged. Rendering is an **additive** capability; the same
+  secret can be injected as env **and** referenced by a template. The kernel
+  purpose slots (`registry_secret`, `config.source`) were removed in the 2.x retirement —
+  delivery is the `buz/config-fetch` plugin step now; a render-only
+  `config:` block reads templates already under `dest`.
 - Secret names are UPPER_SNAKE_CASE (enforced at create, exact/case-sensitive
   matching). A legacy `env_name` column from the draft design was **merged back
   into `name`** via migration (backfill env_name → name when non-empty and
   collision-free), then dropped; existing pipelines that referenced the old
   env_name key must re-point at the merged name.
-- `registry` / `aliyun_oss_auth` (deprecated) secrets never participate in env rendering
-  (they are JSON handled by `registry_secret` / `config.source`, both deprecated).
+- Legacy `registry` / `aliyun_oss_auth` secret rows (pre-retirement data) never participate in env
+  rendering; both kinds were removed in the 2.x retirement and normalize to `generic`.
 - The unified `ValueMap::expand` keeps `ExpandMode::Lenient` for
   `config_key_path` / host resolution; `config.render` uses `Strict`.
 

@@ -55,14 +55,6 @@ async fn run_loop(mut config: config::Config) -> anyhow::Result<()> {
     let http_client = client_builder.build()?;
     let started_at = std::time::Instant::now();
 
-    // Clock consistency with the Manager: validated before registering so a
-    // mis-clocked Runner never claims work (and the heartbeat keeps re-checking).
-    let clock_monitor = std::sync::Arc::new(client::clock::ClockMonitor::new(
-        config.clock.clone(),
-        config.runner.manager_url.clone(),
-    ));
-    clock_monitor.seed(client::clock::verify_at_startup(&http_client, &config).await?);
-
     let register = client::register::register_with_center(&http_client, &config).await?;
     let runner_token = register.token;
     // Persist before accepting work so restarts can prove this runner's identity.
@@ -80,7 +72,6 @@ async fn run_loop(mut config: config::Config) -> anyhow::Result<()> {
             &sysinfo::SysInfoOpts {
                 manager_url: config.runner.manager_url.clone(),
                 prefer_interfaces: config.runner.prefer_interfaces.clone(),
-                clock_skew_seconds: clock_monitor.skew_secs(),
                 execution_capabilities: None,
                 sandboxd: None,
             },
@@ -92,7 +83,6 @@ async fn run_loop(mut config: config::Config) -> anyhow::Result<()> {
             cores = info.cpu_cores,
             ram_mb = info.memory_total_mb,
             disk_gb = info.disk_total_gb,
-            clock_skew_secs = info.clock_skew_seconds,
             "host inventory"
         );
     }
@@ -107,10 +97,9 @@ async fn run_loop(mut config: config::Config) -> anyhow::Result<()> {
     let hb_token = runner_token.clone();
     let hb_policy = shared_policy.clone();
     let hb_restart = restart_requested.clone();
-    let hb_clock = clock_monitor.clone();
     let heartbeat_handle = tokio::spawn(async move {
         client::heartbeat::run_heartbeat_loop(
-            &hb_client, &hb_config, &hb_token, started_at, hb_policy, hb_restart, hb_clock,
+            &hb_client, &hb_config, &hb_token, started_at, hb_policy, hb_restart,
         )
         .await
     });

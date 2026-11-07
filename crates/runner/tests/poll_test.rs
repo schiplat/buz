@@ -1,7 +1,6 @@
 use runner::client::poll::{
     build_ssh_env_command, buz_metadata_env, clean_job_docker_config, job_docker_config_dir,
     merge_ssh_host_outputs, parse_buz_env_file, prepare_job_docker_config_dir,
-    wrap_remote_cmd_with_registry_login,
 };
 use std::collections::HashMap;
 
@@ -175,51 +174,6 @@ fn ssh_env_command_empty_env_skips_exports() {
     let env = HashMap::new();
     let cmd = build_ssh_env_command("true\n", &env);
     assert_eq!(cmd, "set -e; true\n");
-}
-
-#[test]
-fn registry_wrapper_keeps_fail_fast_via_exit_trap() {
-    let wrapped = wrap_remote_cmd_with_registry_login("docker compose up -d\n");
-    assert!(!wrapped.contains("set +e"), "{wrapped}");
-    assert!(
-        wrapped.contains("|| exit $?"),
-        "login failure must exit before the run block: {wrapped}"
-    );
-    assert!(
-        wrapped
-            .contains("trap 'docker logout \"$BUZ_REGISTRY_HOST\" >/dev/null 2>&1 || true' EXIT"),
-        "logout must be guaranteed via EXIT trap: {wrapped}"
-    );
-    assert!(wrapped.ends_with("docker compose up -d\n"), "{wrapped}");
-}
-
-#[test]
-fn registry_wrapper_preserves_user_command_verbatim() {
-    let wrapped = wrap_remote_cmd_with_registry_login(
-        "set +e\nfalse\n_rc=$?\ndocker logout foo >/dev/null 2>&1 || true\nexit $_rc\n",
-    );
-    // A user block that opts out of fail-fast explicitly stays intact.
-    assert!(
-        wrapped.contains(
-            "set +e\nfalse\n_rc=$?\ndocker logout foo >/dev/null 2>&1 || true\nexit $_rc\n"
-        ),
-        "{wrapped}"
-    );
-}
-
-#[test]
-fn full_ssh_registry_command_is_fail_fast_by_default() {
-    let mut env = HashMap::new();
-    env.insert("BUZ_REGISTRY_HOST".into(), "reg.example.com".into());
-    env.insert("BUZ_REGISTRY_USER".into(), "u".into());
-    env.insert("BUZ_REGISTRY_PASSWORD".into(), "p".into());
-    let wrapped = wrap_remote_cmd_with_registry_login("docker compose up -d\n");
-    let full = build_ssh_env_command(&wrapped, &env);
-
-    assert!(full.starts_with("set -e; "), "{full}");
-    assert!(!full.contains("set +e"), "{full}");
-    assert!(full.contains("trap 'docker logout"), "{full}");
-    assert!(full.contains("docker compose up -d\n"), "{full}");
 }
 
 #[test]

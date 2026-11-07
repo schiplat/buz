@@ -1,312 +1,143 @@
 ---
-title: Config Block DSL v2
+title: Config Block (render-only)
 weight: 6
-description: "Shipped — nested config: delivery + multi-file render (OSS / render-only)"
+description: "Nested config: block — render-only templates in place (delivery is a plugin step)"
 aliases:
-  - /docs/01-architecture/config-block/
+  - /docs/01-architecture/authoring/config-block/
 ---
 
-> **Status: SHIPPED — Phase 2b complete (D1–D5).**  
-> Nested `config:` is the only authoring shape. DB/API/Runner use
-> `config_key_path` / `config_dest` / `config_render` (legacy columns dropped).
-> Render-only prepare works on shell/local (in place) and ssh (fetch→render→upload).
-> Author via YAML online editor / Quick YAML Reference ([YAML-First](/docs/01-architecture/authoring/yaml-first-authoring/)); Form Config cards removed.  
-> **Not in 2b:** `config.git` (2c), auto `on_change`/`services` (2d).  
-> See also [Env Render](/docs/01-architecture/authoring/env-render/) (Phase 1 engine).
+The step-level `config:` block is **render-only**: it renders template files
+that already exist under `dest`, injecting secret values and exporting
+`$BUZ_CONFIG_DIR` / `$BUZ_ENV_CHANGED` to the step.
 
-> **Deprecated:** the **OSS deliver** mode of the config block (`config.source` / `config.key_path`) is deprecated — use the `buz/config-fetch` plugin template instead. **`config.render` (render-only) remains fully supported.** OSS deliver retires in a future major release (Phase 3).
+> **Removed in the 2.x retirement:** the kernel OSS-deliver mode (`config.source` /
+> `config.key_path`) is gone — pipelines using those keys fail validation.
+> Deliver config bundles with the [`buz/config-fetch`](https://github.com/schiplat/buz-plugins) plugin step
+> (presigned-URL mode) or [`buz/oss-download`](https://github.com/schiplat/buz-plugins)
+> (AK/SK, `engines: [docker, ssh]`), then keep a render-only `config:` block on
+> the follow-up step. See [Sample A](#sample-a--fetch-plugin--render-two-step).
 
-## Goals
-
-1. Remove the `config_path` vs `config_dir` naming clash (OSS key vs host path).
-2. Support **multiple** render outputs in one step.
-3. Prefer **delivery and render as separate steps** (same shape for OSS and git).
-4. Hard cut: new YAML + new DB columns only (no dual-read, no flat import).
-
-## Authoring model
-
-```text
-[optional Validate]
-    → Deliver (OSS unpack  |  git clone run  |  future config.git)
-    → Render-only (config.dest + config.render)
-    → Compose / app steps
-    → Health
-```
-
-| Mode | `config:` fields | Prepare | Phase |
-|------|------------------|---------|-------|
-| **OSS deliver** | `source` + `key_path` + `dest` | signed GET → unpack to `dest` | **2b** — deprecated → `buz/config-fetch` |
-| **render-only** | `dest` + `render` | templates already at `dest` → render | **2b** |
-| **OSS+render one-step** | all of the above | unpack then render | 2b sugar — **not** used in docs/examples |
-| **`config.git`** | `git` + `dest` (+ optional later render) | first-class clone | **2c** |
-
-### Validation rules (2b)
-
-- Nested `config:` only. Flat `config_source` / `config_path` / `config_dir` /
-  `env_render` → **validation error** (YAML import included).
-- A `config:` block must be exactly one of:
-  - **deliver:** `source` ∧ `key_path` ∧ `dest` (no `render` in preferred form), or
-  - **render-only:** `dest` ∧ `render` and **no** `source` / `key_path`.
-- **`config.render` / render-only are invalid on `engine: docker`** (shell /
-  local / ssh only). See [Engines](#engines-render-only-does-not-include-docker).
-- One-step sugar (`source` + `key_path` + `dest` + `render`) may be accepted by
-  the engine but must not appear in examples or Quick YAML Reference.
-
-### Signed URL lifetime (Manager clock)
-
-OSS deliver does not ship credentials: the Manager signs a short-lived GET URL
-(`ttl` 3600s, OSS Query String Authentication V1) and injects it as
-`$BUZ_CONFIG_URL`. The signature embeds an **absolute** `Expires`, so the URL is
-only valid if the **Manager host clock** is correct — a Manager clock behind
-real time signs URLs that are already expired when the Runner downloads them:
-
-```text
-config bundle download returned HTTP 403 Forbidden: AccessDenied: Request has expired.
-```
-
-The Manager therefore probes the OSS endpoint's `Date` header before signing and
-refuses to dispatch a doomed URL with an actionable error
-(`[clock]` guard — see
-[Configuration → Clock skew](/docs/03-operations/configuration/#clock-skew)).
-Runner and DB clocks are irrelevant to this check. Do **not** "fix" a slow
-Manager clock by raising the TTL — sync the host with NTP.
-
-#### Reading a 403 from the job log
-
-The signed window travels with the task, so a bad URL names its own cause:
-
-```text
-==> CONFIG PREP
-  object_key       config_tpl/demo-app/0.1.9/configs.tar.gz
-  expires_in       3600s
-  signed_at        2026-09-20 10:14:35 UTC
-  url_age          2s
-  url_remaining    3598s
-```
-
-- `signed_at` / `url_age` / `url_remaining` come from the Manager-stamped
-  `signed_at_epoch` / `expires_epoch` in `config_auth` (absent → older Manager).
-- A URL that arrives **already expired** also prints
-  `url_warning  signed Ns ago with a 3600s TTL — already expired before download`.
-  With `url_age` in seconds this separates the two causes immediately:
-  - small `url_age` + expired ⇒ the **Manager clock lagged** when it signed
-    (fix NTP on the Manager host);
-  - large `url_age` (≳ TTL) ⇒ the **task waited too long** between sign and
-    download (claim → execution latency), the clocks may be fine.
-
-Download failures additionally carry the OSS `Date` header, so the log shows
-which side of the exchange is off — no NTP guessing required:
-
-```text
-config bundle download returned HTTP 403 Forbidden: AccessDenied: Request has expired.
-  oss_time     2026-09-20 12:54:56 UTC
-  local_time   2026-09-20 11:14:37 UTC
-  clock_skew   6000s behind (this host is behind OSS — sync NTP on the runner host)
-```
-
-When the verdict reads `clocks aligned`, the local clock matches OSS and the URL
-was already stale when it was used — look at `signed_at` / `url_age` instead of
-touching NTP.
-
-### Field reference
-
-| YAML | DB column | Meaning |
-|------|-----------|---------|
-| `config.source` | `config_source` | OSS auth secret name — **deprecated → `buz/config-fetch`** |
-| `config.key_path` | `config_key_path` | OSS object-key **directory prefix** — e.g. `config_tpl/app/v1` or `config_tpl/app/v1/` (trailing `/` optional). Manager always builds `{prefix}/configs.tar.gz`; do **not** put `configs.tar.gz` in the value. **deprecated → `buz/config-fetch`** |
-| `config.dest` | `config_dest` | Unpack / working dir → `$BUZ_CONFIG_DIR` (one root per step) |
-| `config.render` | `config_render` (JSON array) | List (or single object → normalized to 1-element array) |
-
-| `render[]` field | Required in examples | Runtime default if omitted |
-|------------------|----------------------|----------------------------|
-| `template` | yes | — (required; **relative to `dest`**) |
-| `output` | yes | `<template>.rendered` (**relative to `dest`**) |
-| `mode` | yes (show always) | `"0600"` |
-| `on_missing` | yes (show always) | `fail` (`fail` \| `warn`) |
-| `backup_keep` | no | `3` (`0` disables timestamped `<output>.bak.<ts>` backups before overwrite) |
-
-Render is a **full rebuild**: the template is the sole source of truth, so keys
-removed from the template are dropped (no stale keys linger). The pre-overwrite
-`.bak` backup preserves the prior `.env` for rollback; only the newest
-`backup_keep` backups are kept.
-
-**Why `dest` is separate (not absolute paths inside each render entry):** one
-working root aligns Deliver + Render, sets `$BUZ_CONFIG_DIR`, and keeps OSS
-bundle layouts as relative paths. Subdirectories under the same root use
-relative `template` / `output` (e.g. `conf/nginx.conf`). Unrelated filesystem
-roots need **another render-only step** with its own `dest` — a single
-`config:` block has exactly one dest. See [Sample B](#sample-b--paths-under-dest).
-
-**Not in 2b examples or enforcement:** `on_change` / `services` (see below).
-
-Runtime env names unchanged: `$BUZ_CONFIG_DIR`, `$BUZ_CONFIG_URL` (OSS deliver),
-`$BUZ_ENV_CHANGED`, `$BUZ_ENV_CHANGED_KEYS`.
-
-### DB migration (one shot)
-
-1. `ADD` `config_key_path`, `config_dest`, `config_render`.
-2. Backfill from `config_path` / `config_dir` / `env_render` (object → `[obj]`).
-3. `DROP` `config_path`, `config_dir`, `env_render` in the **same** upgrade.
-4. Claim / Runner JSON: new names only. Upgrade Manager + Runner together.
-
-### Render behavior (multi-file)
-
-1. Delivery step (if any) places files under `dest` once.
-2. Render-only step processes `render` entries **in order**.
-3. Paths are relative to `$BUZ_CONFIG_DIR` (`dest`).
-4. Any `on_missing: fail` miss → fail the step.
-5. `$BUZ_ENV_CHANGED=1` if any file’s managed keys changed; `_KEYS` = deduped union.
-6. **Where prepare runs depends on the step engine** (not “SSH-only”):
-   - **`shell` / `local`:** `dest` is on the Runner machine → read templates and
-     write outputs **in place** (same as today’s local OSS prepare).
-   - **`ssh`:** `dest` is on the remote host → fetch each `template` (+ old
-     `output` for change-diff / timestamped backup) over SSH, render on the
-     Runner (secrets never leave), upload outputs back. Same trust model as
-     today’s SSH + OSS path.
-   - **`docker`:** **not supported for `render` / render-only in 2b** (see below).
-
-### Engines: render-only does **not** include `docker`
-
-| Engine | OSS deliver (`source` + `key_path` + `dest`) | `render` / render-only |
-|--------|-----------------------------------------------|-------------------------|
-| `shell` / `local` | yes | **yes** (in place) |
-| `ssh` | yes | **yes** (fetch → render → upload) |
-| `docker` | may keep today’s deliver-only allowance | **no** in 2b |
-
-**SSH transfer:** Runner downloads the signed OSS bundle locally, then streams
-bytes to the remote via SSH channel stdin (`cat > /tmp/…` → `mv` into `dest`).
-Payloads are **not** embedded in the exec argv (SSH `max_packet_size` is often
-~32KiB; large `echo | base64` commands fail with an empty exit status).
-
-**SSH step session:** each `engine: ssh` step opens **one TCP session per host**
-(with connect retries on transient reset/refused/timeout). Config prepare
-(upload / `cat` / render) and the step `run` block reuse that session via new
-exec channels — they do **not** reconnect per remote command. Sessions are not
-shared across steps or jobs. When a step resolves **multiple** hosts, fan-out
-follows `hosts_strategy` (`chain` default, or `parallel`): OSS download once on
-the Runner, then upload/render/`run` per host. **Cancel** aborts every in-flight
-host — see [SSH Multi-Host Execution](/docs/01-architecture/execution/ssh-multi-host/).
-
-**Why:** prepare runs **before** the container `run`. Templates must already
-exist on a host filesystem the Runner can read. A `engine: docker` workdir lives
-inside the container unless `dest` is defined as a host path bind-mounted in —
-that contract is not designed yet.
-
-**Workaround:** render on `shell`/`ssh`, then a later `docker` step mounts
-`dest` (e.g. `volumes: ["/opt/manager:/app/config"]`).
-
-Validation must reject `config.render` (and render-only `config:`) on
-`engine: docker`. Do not document docker+render samples until a later phase
-defines host-`dest` + volume semantics.
-
----
-
-## Sample A — OSS deploy (preferred two-step)
-
-Canonical shape for `demo-app-deploy-host-b` after 2b lands:
+## YAML shape
 
 ```yaml
-name: demo-app deploy host-b
-description: Deploy manager-server + postgres + redis (OSS config + render).
-team: default
-
-secrets:
-  - POSTGRES_PASSWORD
-
-on:
-  manual:
-    inputs:
-      tag:
-        description: Image / config bundle tag
-        required: true
-        default: "1.4.0"
-      deploy_host:
-        description: Buz Host name
-        required: true
-        default: "host-b"
-
-runner:
-  labels: [linux-x64]
-  timeout: 20m
-
-env:
-  CONFIG_DIR: /opt/manager
-
 steps:
-  - name: Validate tag
-    engine: shell
-    run: |
-      case "$INPUT_TAG" in
-        ''|*[!A-Za-z0-9._-]*)
-          echo "ERROR: invalid tag '$INPUT_TAG'" >&2
-          exit 1
-          ;;
-      esac
-      echo "tag OK: $INPUT_TAG"
-    timeout: 30s
-
-  # ── Deliver: OSS unpack only (deprecated → buz/config-fetch) ──
-  - name: Deliver config
-    engine: ssh
-    host: $deploy_host
-    config:
-      source: OSS_CONFIG          # deprecated → buz/config-fetch
-      key_path: config_tpl/demo-app/$tag
-      dest: /opt/manager
-    run: |
-      ls -l "$BUZ_CONFIG_DIR/docker-compose.yml" "$BUZ_CONFIG_DIR/env.example"
-    timeout: 5m
-
-  # ── Render: templates already on disk ──
   - name: Render env
-    engine: ssh
-    host: $deploy_host
+    engine: shell            # shell / local / ssh — not docker
     config:
-      dest: /opt/manager
+      dest: /opt/manager    # workspace-relative or absolute host path
       render:
         - template: env.example
           output: .env
           mode: "0600"
           on_missing: fail
     run: |
-      ls -l "$BUZ_CONFIG_DIR/.env"
-      echo "==> env changed: ${BUZ_ENV_CHANGED:-0} (${BUZ_ENV_CHANGED_KEYS:-none})"
-    timeout: 2m
-
-  # Dedicated Compose step (preferred over render on_change).
-  # --force-recreate so .env rotations apply; $BUZ_ENV_CHANGED is step-local.
-  - name: Compose up
-    engine: ssh
-    host: $deploy_host
-    registry_secret: ACR_PERSONAL  # deprecated → buz/docker-login
-    run: |
-      cd "$CONFIG_DIR"
-      docker compose pull
-      docker compose up -d --force-recreate --remove-orphans
-      docker compose ps
-    timeout: 15m
-
-  - name: Health check
-    engine: ssh
-    host: $deploy_host
-    run: |
-      sleep 12
-      curl -fsS http://127.0.0.1:8787/health && echo || echo "not ready yet"
-      docker compose -f "$CONFIG_DIR/docker-compose.yml" exec -T postgres pg_isready -U postgres -d super_manager
-      docker compose -f "$CONFIG_DIR/docker-compose.yml" exec -T redis redis-cli ping
-    continue-on-error: true
-    timeout: 2m
+      echo "changed=${BUZ_ENV_CHANGED:-0} keys=${BUZ_ENV_CHANGED_KEYS:-none}"
 ```
 
----
+Validation rules:
+
+- Nested `config:` only. Flat `config_source` / `config_path` / `config_dir` /
+  `env_render` keys are rejected (unknown fields).
+- `dest` ∧ `render` required together; `dest` alone or `render` alone is an error.
+- `config:` is only valid on `engine: shell` / `local` / `ssh` — **not docker**
+  (prepare runs on the Runner host, before the container starts; mount `dest`
+  into the container with `volumes:` instead).
+
+## Render behavior (multi-file)
+
+1. Render-only step processes `render` entries **in order**.
+2. Paths are relative to `$BUZ_CONFIG_DIR` (`dest`).
+3. Any `on_missing: fail` miss → fail the step.
+4. `$BUZ_ENV_CHANGED=1` if any file's managed keys changed; `_KEYS` = deduped union.
+5. **Where prepare runs depends on the step engine:**
+   - **`shell` / `local`:** `dest` is on the Runner machine → read templates and
+     write outputs **in place**.
+   - **`ssh`:** `dest` is on the remote host → fetch each `template` (+ old
+     `output` for change-diff / timestamped backup) over SSH, render on the
+     Runner (secrets never leave), upload outputs back.
+
+Render is a **full rebuild**: the template is the sole source of truth, so keys
+removed from the template disappear from the output. Rendered secret values are
+masked in logs.
+
+### SSH step session
+
+Each `engine: ssh` step opens **one TCP session per host** (with connect retries
+on transient reset/refused/timeout). Config prepare (fetch / render / upload)
+and the step `run` block reuse that session via new exec channels — they do
+**not** reconnect per remote command. Sessions are not shared across steps or
+jobs. When a step resolves **multiple** hosts, fan-out follows `hosts_strategy`
+(`chain` default, or `parallel`). **Cancel** aborts every in-flight host — see
+[SSH Multi-Host Execution](/docs/01-architecture/execution/ssh-multi-host/).
+
+### `engine: docker` workaround
+
+Render on a `shell`/`ssh` step, then a later `docker` step mounts `dest`:
+
+```yaml
+volumes: ["/opt/manager:/app/config"]
+```
+
+## Runtime env
+
+| Variable | Set on |
+|----------|--------|
+| `$BUZ_CONFIG_DIR` | Steps with a `config:` block (= `dest`) |
+| `$BUZ_ENV_CHANGED` / `$BUZ_ENV_CHANGED_KEYS` | Same step, after render |
+
+`on_change` / `services` keys are parsed historically but **not enforced** —
+branch on `$BUZ_ENV_CHANGED` in `run` instead:
+
+```yaml
+run: |
+  if [ "${BUZ_ENV_CHANGED:-0}" = "1" ]; then
+    docker compose up -d --force-recreate manager-server
+  fi
+```
+
+## Sample A — fetch plugin + render (two-step)
+
+Delivery is an explicit plugin step; rendering stays a kernel `config:` block.
+Canonical shape (see `example/pipelines/oss-config-demo.yml`):
+
+```yaml
+secrets:
+  - CONFIG_BUNDLE_URL
+
+steps:
+  # ── 1. Fetch config bundle (presigned OSS URL → unpack) ────────────
+  - name: Fetch config bundle
+    uses: buz/config-fetch@1.1.0
+    with:
+      url: ${secrets.CONFIG_BUNDLE_URL}   # presigned, TTL <= 1h — refresh per deploy
+      dest: config                        # workspace-relative
+
+  # ── 2. Render-only (templates already under dest) ──────────────────
+  - name: Render env
+    engine: shell
+    config:
+      dest: config
+      render:
+        - template: env.example
+          output: .env
+          mode: "0600"
+          on_missing: fail
+    run: |
+      echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
+      ls -l "$BUZ_CONFIG_DIR/.env"
+      echo "==> env changed: ${BUZ_ENV_CHANGED:-0} (${BUZ_ENV_CHANGED_KEYS:-none})"
+```
+
+For `engine: ssh` targets without runner-side workspace hand-off, use
+`buz/oss-download` with `engine: ssh` (the target host pulls directly with
+masked AK/SK) followed by the same render-only step.
 
 ## Sample B — Paths under `dest`
 
 ### B1 — Same root, different subdirectories (one step)
 
 `dest` is the stack root; `template` / `output` are relative. Resolves to
-`/opt/manager/.env`, `/opt/manager/nginx/nginx.conf`, etc. Matches a typical
-OSS bundle layout.
+`/opt/manager/.env`, `/opt/manager/nginx/nginx.conf`, etc.
 
 ```yaml
   - name: Render configs
@@ -332,53 +163,16 @@ OSS bundle layout.
       # $BUZ_CONFIG_DIR == /opt/manager
 ```
 
-| Scenario | Approach |
-|----------|----------|
-| Same root, different subdirs | One `dest` + relative paths (this sample) |
-| Unrelated roots (e.g. `/opt/manager` and `/etc/foo`) | **Two** render-only steps, each with its own `dest` (B2) |
-
 ### B2 — Unrelated roots (two steps)
 
-One `config:` block cannot declare two dests. Split steps; each step’s
-`$BUZ_CONFIG_DIR` equals that step’s `dest`.
+| Scenario | Approach |
+|----------|----------|
+| Same root, different subdirs | One `dest` + relative paths (B1) |
+| Unrelated roots (e.g. `/opt/manager` and `/etc/foo`) | **Two** render-only steps, each with its own `dest` |
 
-```yaml
-  - name: Render app env
-    engine: ssh
-    host: $deploy_host
-    config:
-      dest: /opt/manager
-      render:
-        - template: env.example
-          output: .env
-          mode: "0600"
-          on_missing: fail
-    run: |
-      ls -l "$BUZ_CONFIG_DIR/.env"
+## Sample C — Git clone + render-only
 
-  - name: Render system conf
-    engine: ssh
-    host: $deploy_host
-    config:
-      dest: /etc/foo
-      render:
-        - template: foo.conf.tpl
-          output: foo.conf
-          mode: "0644"
-          on_missing: fail
-    run: |
-      ls -l "$BUZ_CONFIG_DIR/foo.conf"
-```
-
-Do **not** put absolute paths in `template` / `output` as a substitute for
-`dest` — the engine treats those fields as relative to `dest` for prepare
-(shell in-place / SSH fetch→upload) and for `$BUZ_CONFIG_DIR`.
-
----
-
-## Sample C — Git clone + render-only (until 2c)
-
-No `config.git` yet — clone in `run`, then the same render-only step as OSS:
+No `config.git` kernel mode — clone in `run`, then the same render-only step:
 
 ```yaml
   - name: Clone config repo
@@ -404,137 +198,7 @@ No `config.git` yet — clone in `run`, then the same render-only step as OSS:
     timeout: 2m
 ```
 
----
-
-## Sample D — Minimal OSS smoke (deliver + list)
-
-```yaml
-  # OSS deliver — deprecated → buz/config-fetch
-  - name: Deliver demo bundle
-    engine: shell
-    config:
-      source: OSS_DEMO
-      key_path: config_tpl/demo/$tag
-      dest: /tmp/buz-config-demo
-    run: |
-      ls -la "$BUZ_CONFIG_DIR"
-```
-
----
-
-## Out of scope for 2b
-
-| Item | Why |
-|------|-----|
-| **`render` / render-only on `engine: docker`** | Prepare needs host-visible `dest`; container-only paths undefined — use shell/ssh render + volume mount |
-| **`on_change` / `services` auto recreate** | Not required for 2b — see next section |
-| **`config.git`** | Phase **2c** (credentials, clone locus, UI) |
-| Rename `$BUZ_CONFIG_DIR` | Keep for script compatibility |
-| Flat YAML import rewrite | Reject old shape instead |
-
-## `on_change` / `services` — ship with 2b?
-
-**No — do not bundle into 2b.**
-
-| | |
-|--|--|
-| What they are | After render, auto `docker compose up -d --force-recreate <services>` when managed keys change |
-| Today | Parsed in YAML historically; **not enforced**. Authors branch on `$BUZ_ENV_CHANGED` / `_KEYS` in `run` |
-| Cost if added now | Extra compose execution path on SSH/shell, multi-file “which services?”, conflict with a following Compose step, more UI + tests |
-| 2b already delivers | Nested DSL, DB cut-over, multi-file render, OSS deliver, render-only, clear step split |
-
-**Recommendation:** keep using:
-
-```yaml
-run: |
-  if [ "${BUZ_ENV_CHANGED:-0}" = "1" ]; then
-    docker compose up -d --force-recreate manager-server
-  fi
-```
-
-Revisit auto `on_change`/`services` as **2d** (or finish Phase 2) after 2b is stable.
-**Do not** put `on_change` / `services` in samples or Quick YAML Reference until enforced.
-
-## Implementation checklist
-
-| # | Area | Notes | Status |
-|---|------|-------|--------|
-| 1–4 | Create / Edit / import / Definition UI | Nested Config; deliver vs render-only modes; multi-row render; **show** `template`/`output`/`mode`/`on_missing` | ✅ |
-| 5 | `pipeline_yaml` | `ConfigBlock`; reject flat fields; validate deliver XOR render-only (+ optional sugar); **reject `render` on `docker`** | ✅ |
-| 6–7 | `pipelines.rs` + claim | New columns; expand `key_path`; `config_auth` only for OSS deliver | ✅ |
-| 8 | Runner prepare | OSS unpack; multi-file render loop; **shell/local in-place** + **SSH fetch/render/upload** | ✅ |
-| 9 | TS types | `config_source` / `config_key_path` / `config_dest` / `config_render` | ✅ |
-| 10–11 | `example/pipelines/*` + Quick Ref | Nested `config:` in examples + Pipelines Quick YAML Reference | ✅ |
-| — | Docs | This page + env-render + pipeline-format `config` section | ✅ |
-
-## Schedule (Phase 2b)
-
-Estimate for **one focused developer**, tests interleaved (not deferred to the
-end). **Plan on ~5 working days**; tight path ~4d, buffer to ~5.5d.
-
-| Day | Deliverables | Tests (same day) |
-|-----|--------------|------------------|
-| **D1** ✅ | `pipeline_yaml` + protocol: `ConfigBlock`, `render[]` / single-object sugar, reject flat fields, deliver XOR render-only | Unit: valid/invalid YAML; multi-file fields; mixed flat+nested rejected |
-| **D2** ✅ | DB one-shot migration (`config_key_path` / `config_dest` / `config_render`, backfill, **DROP** old cols); `pipelines` CRUD/GET; claim expands `key_path`, attaches `config_auth` **only** for OSS deliver; FE types + form fields renamed (no dual-read) | Claim JSON new names only; shared/manager/runner tests green |
-| **D3** ✅ | Runner prepare: **render-only without OSS**; SSH fetch template → render on Runner → upload; multi-file `BUZ_ENV_CHANGED` union | `config_source_*` / poll: render-only; missing dest/template; `on_missing` warn |
-| **D4** ✅ | Nested Config UI + multi-row render editor + Definition polish (Quick YAML Ref already nested in D2) | `configForm` vitest; form modes for deliver/render; `npm run build` |
-| **D5** ✅ | Integration + doc polish + CI gate | `cargo test --all`; `example_pipelines_validate_test`; `npm test` + `npm run build` |
-
-Two developers (backend ∥ frontend) can compress calendar time to ~**3–3.5 days**,
-still reserving half a day for joint integration.
-
-### Testing cadence
-
-1. **Per layer before merge:** shared → manager → runner → frontend tests green
-   for that slice.
-2. **After D2:** boot Manager against a DB that had legacy columns; confirm DROP
-   + backfill; GET pipeline shows new field names.
-3. **After D3:** exercise at least:
-   - OSS **deliver** → **render-only** (shell and/or SSH)
-   - **render-only** alone (pre-seeded `dest`)
-   - Failures isolated: OSS 404 on deliver step; missing `${secrets.X}` on render step
-4. **After D4:** YAML import **new shape only**; UI can edit deliver vs multi-row render.
-5. **Exit gate (D5 — passed):** `cargo test --all`,
-   `example_pipelines_validate_test`, `cd dashboard && npm test && npm run build`.
-
-### Acceptance (D5)
-
-| Check | Result |
-|-------|--------|
-| All example pipelines validate (`example/pipelines/*.yml`) | ✅ |
-| Shared / manager / runner tests green | ✅ |
-| Frontend vitest + `npm run build` | ✅ |
-| YAML import rejects flat `config_path` / `env_render` | ✅ (D1) |
-| Form can author deliver vs multi-row render | ✅ (D4) |
-| Claim attaches `config_auth` only for OSS deliver | ✅ (D2) |
-| Render-only prepare without OSS download | ✅ (D3) |
-
-### Runner scope reminder (D3)
-
-| Engine | `dest` location | Prepare |
-|--------|-----------------|---------|
-| `shell` / `local` | Runner filesystem | In-place read/write under `dest` |
-| `ssh` | Remote host | Fetch templates (+ old output) → render on Runner → upload outputs |
-| `docker` | — | **No `render` / render-only** in 2b |
-
-Do **not** treat render-only as an SSH-only feature; also do **not** enable it
-for `docker` without a host-`dest` + volume design.
-
-### Schedule risks (+0.5–1d)
-
-- SSH fetch/upload edge cases (permissions, missing template, multi-host)
-- Frontend mode switch (deliver vs render-only) rework
-- Real DB migration + claim/snapshot integration surprises
-
-### Not in this schedule
-
-| Phase | Item | Rough add-on |
-|-------|------|--------------|
-| **2c** | `config.git` delivery | ~2–3d |
-| **2d** | Enforce `on_change` / `services` | ~1–2d |
-
 ## Related
 
-- [Env Render](/docs/01-architecture/authoring/env-render/) — Phase 1 engine, ValueMap, security
-- [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) — OSS secret kind, verbose/debug
-- [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/)
+- [Env Render](/docs/01-architecture/authoring/env-render/) — template expression reference
+- [Plugin Marketplace](https://github.com/schiplat/buz-plugins) — `buz/config-fetch`, `buz/oss-download`

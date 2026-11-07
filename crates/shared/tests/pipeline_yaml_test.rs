@@ -818,44 +818,6 @@ steps:
 }
 
 #[test]
-fn docker_step_with_registry_secret_valid() {
-    let yaml = r#"
-name: pull-private
-steps:
-  - name: run
-    engine: docker
-    image: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
-    registry_secret: acr-personal
-    run: echo ok
-"#;
-    let r = validate_fixture(yaml);
-    assert!(r.valid, "Errors: {:?}", r.errors);
-    let parsed = r.parsed.unwrap();
-    assert_eq!(
-        parsed.steps[0].registry_secret.as_deref(),
-        Some("acr-personal")
-    );
-}
-
-#[test]
-fn shell_step_with_registry_secret_valid() {
-    let yaml = r#"
-name: push-private
-steps:
-  - name: push
-    engine: shell
-    registry_secret: acr-personal
-    run: docker push crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/ns/app:1.0
-"#;
-    let r = validate_fixture(yaml);
-    assert!(r.valid, "Errors: {:?}", r.errors);
-    assert_eq!(
-        r.parsed.unwrap().steps[0].registry_secret.as_deref(),
-        Some("acr-personal")
-    );
-}
-
-#[test]
 fn concurrency_legacy_string_format() {
     let yaml = r#"
 name: legacy-concurrency
@@ -1002,10 +964,12 @@ fn masking_input_demo_example_file() {
     assert!(version.masking.is_none() || version.masking == Some(false));
 }
 
-// ── Config block DSL v2 (Phase 2b / D1) ───────────────────────────────
+// ── Config block DSL v2 (render-only; kernel deliver removed in the 2.x retirement) ──
 
 #[test]
-fn config_oss_deliver_accepted() {
+fn config_source_key_path_rejected_after_removal() {
+    // Phase 3: OSS deliver keys are gone — deny_unknown_fields rejects them;
+    // delivery is the buz/config-fetch plugin step now.
     let yaml = r#"
 name: oss-deliver
 steps:
@@ -1018,54 +982,48 @@ steps:
     run: ls "$BUZ_CONFIG_DIR"
 "#;
     let r = validate_fixture(yaml);
-    assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(
-        r.warnings
-            .iter()
-            .any(|w| w.contains("config.source: deprecated") && w.contains("buz/config-fetch")),
-        "expected OSS delivery deprecation warning, got: {:?}",
-        r.warnings
+        !r.valid,
+        "config.source/key_path must be rejected after removal: {:?}",
+        r.errors
     );
+    assert!(
+        r.errors.iter().any(|e| e.message.contains("source")),
+        "error should name the offending key: {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn render_only_config_accepted() {
+    let yaml = r#"
+name: render-only
+steps:
+  - name: render
+    engine: shell
+    config:
+      dest: /tmp/cfg
+      render:
+        - template: app.env.tpl
+          output: app.env
+    run: ls "$BUZ_CONFIG_DIR"
+"#;
+    let r = validate_fixture(yaml);
+    assert!(r.valid, "Errors: {:?}", r.errors);
     let step = &r.parsed.unwrap().steps[0];
-    assert_eq!(step.config_source.as_deref(), Some("OSS_DEMO"));
-    assert_eq!(step.config_key_path.as_deref(), Some("config_tpl/demo/v1"));
     assert_eq!(step.config_dest.as_deref(), Some("/tmp/cfg"));
-    assert!(step.config_render.is_none());
+    assert!(step.config_render.as_ref().unwrap().len() == 1);
     assert!(step.config.is_some());
 }
 
 #[test]
-fn config_key_path_trailing_slash_ok_no_warning() {
+fn config_dest_alone_rejected() {
     let yaml = r#"
-name: oss-slash
+name: dest-only
 steps:
-  - name: deliver
+  - name: go
     engine: shell
     config:
-      source: OSS_DEMO
-      key_path: config_tpl/demo/v1/
-      dest: /tmp/cfg
-    run: ls
-"#;
-    let r = validate_fixture(yaml);
-    assert!(r.valid, "Errors: {:?}", r.errors);
-    assert!(
-        !r.warnings.iter().any(|w| w.contains("key_path")),
-        "trailing slash must not warn: {:?}",
-        r.warnings
-    );
-}
-
-#[test]
-fn config_key_path_rejects_archive_filename() {
-    let yaml = r#"
-name: oss-archive
-steps:
-  - name: deliver
-    engine: shell
-    config:
-      source: OSS_DEMO
-      key_path: config_tpl/demo/v1/configs.tar.gz
       dest: /tmp/cfg
     run: ls
 "#;
@@ -1074,7 +1032,7 @@ steps:
     assert!(
         r.errors
             .iter()
-            .any(|e| e.field.contains("key_path") && e.message.contains("directory prefix")),
+            .any(|e| e.message.contains("alone is not enough")),
         "errors: {:?}",
         r.errors
     );
@@ -1101,7 +1059,6 @@ steps:
     let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
     let step = &r.parsed.unwrap().steps[0];
-    assert!(step.config_source.is_none());
     assert_eq!(step.config_dest.as_deref(), Some("/opt/manager"));
     let render = step.config_render.as_ref().unwrap();
     assert_eq!(render.len(), 1);
@@ -1142,32 +1099,8 @@ steps:
 }
 
 #[test]
-fn config_sugar_deliver_plus_render_allowed() {
-    let yaml = r#"
-name: sugar
-steps:
-  - name: all-in-one
-    engine: shell
-    config:
-      source: OSS_CONFIG
-      key_path: config_tpl/x/v1
-      dest: /opt/manager
-      render:
-        - template: env.example
-          output: .env
-          mode: "0600"
-          on_missing: fail
-    run: echo ok
-"#;
-    let r = validate_fixture(yaml);
-    assert!(r.valid, "Errors: {:?}", r.errors);
-    let step = &r.parsed.unwrap().steps[0];
-    assert_eq!(step.config_source.as_deref(), Some("OSS_CONFIG"));
-    assert_eq!(step.config_render.as_ref().unwrap().len(), 1);
-}
-
-#[test]
 fn config_rejects_legacy_flat_fields() {
+    // Flat legacy fields are plain unknown keys now — deny_unknown_fields.
     let yaml = r#"
 name: legacy
 steps:
@@ -1180,14 +1113,16 @@ steps:
     let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
-        r.errors.iter().any(|e| e.message.contains("config:")),
+        r.errors
+            .iter()
+            .any(|e| e.message.contains("config_source") || e.message.contains("config_path")),
         "Errors: {:?}",
         r.errors
     );
 }
 
 #[test]
-fn config_rejects_source_without_key_path() {
+fn config_rejects_source_key() {
     let yaml = r#"
 name: bad-deliver
 steps:
@@ -1201,9 +1136,7 @@ steps:
     let r = validate_fixture(yaml);
     assert!(!r.valid);
     assert!(
-        r.errors
-            .iter()
-            .any(|e| e.message.contains("source") && e.message.contains("key_path")),
+        r.errors.iter().any(|e| e.message.contains("source")),
         "Errors: {:?}",
         r.errors
     );
@@ -1322,18 +1255,12 @@ fn step_env_map_and_secrets_expr_slot_parsed() {
 name: gha-secrets
 secrets:
   - GIT_SSH_KEY
-  - ACR_PERSONAL
 steps:
   - name: clone
     secrets: [GIT_SSH_KEY]
     env:
       GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
     run: echo "$GIT_SSH_KEY" > /tmp/key
-  - name: push
-    engine: shell
-    secrets: [ACR_PERSONAL]
-    registry_secret: ${secrets.ACR_PERSONAL}
-    run: docker push example.com/app:1
 "#;
     let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
@@ -1342,10 +1269,6 @@ steps:
     assert_eq!(
         env.get("GIT_SSH_KEY").map(String::as_str),
         Some("${secrets.GIT_SSH_KEY}")
-    );
-    assert_eq!(
-        parsed.steps[1].registry_secret.as_deref(),
-        Some("${secrets.ACR_PERSONAL}")
     );
 }
 
@@ -1431,27 +1354,40 @@ steps:
     env:
       GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}
     run: echo "$GIT_SSH_KEY"
-  - name: push
-    engine: shell
-    registry_secret: ${secrets.ACR_PERSONAL}
-    run: docker push example.com/app:1
-  - name: deliver
+"#;
+    let parsed: shared::pipeline_yaml::PipelineYaml = serde_yaml::from_str(yaml).expect("parse");
+    let names = collect_effective_secret_names(&parsed);
+    assert_eq!(names, vec!["GIT_SSH_KEY".to_string()]);
+}
+
+/// `uses:` step inputs are part of the GHA-style reference surface: a
+/// pipeline whose only secret references live in `with:` maps binds them
+/// without any top-level `secrets:` declaration.
+#[test]
+fn collect_effective_secret_names_from_uses_with_inputs() {
+    use shared::pipeline_yaml::collect_effective_secret_names;
+
+    let yaml = r#"
+name: uses-with-secrets
+steps:
+  - name: login
+    uses: buz/docker-login@1.1.0
     engine: ssh
-    host: box
-    config:
-      source: ${secrets.OSS_CONFIG}
-      key_path: tpl/v1
-      dest: /opt/app
-    run: ls
+    host: $deploy_host
+    with:
+      registry: registry.example.com
+      username: ${secrets.REGISTRY_USERNAME}
+      password: ${secrets.REGISTRY_PASSWORD}
+  - name: plain
+    run: echo hi
 "#;
     let parsed: shared::pipeline_yaml::PipelineYaml = serde_yaml::from_str(yaml).expect("parse");
     let names = collect_effective_secret_names(&parsed);
     assert_eq!(
         names,
         vec![
-            "ACR_PERSONAL".to_string(),
-            "GIT_SSH_KEY".to_string(),
-            "OSS_CONFIG".to_string(),
+            "REGISTRY_PASSWORD".to_string(),
+            "REGISTRY_USERNAME".to_string()
         ]
     );
 }
@@ -1835,7 +1771,9 @@ steps:
 }
 
 #[test]
-fn registry_secret_emits_deprecation_warning() {
+fn registry_secret_key_is_rejected_after_removal() {
+    // Phase 3: the kernel slot is gone. `deny_unknown_fields` must reject the
+    // key outright — the replacement is the `buz/docker-login` plugin step.
     let yaml = r#"
 name: legacy registry login
 on:
@@ -1848,40 +1786,16 @@ steps:
     run: echo hi
 "#;
     let r = validate_fixture(yaml);
-    assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(
-        r.warnings
-            .iter()
-            .any(|w| w.contains("registry_secret: deprecated") && w.contains("buz/docker-login")),
-        "expected deprecation warning, got: {:?}",
-        r.warnings
+        !r.valid,
+        "registry_secret must be rejected after Phase 3 removal"
     );
-}
-
-#[test]
-fn config_source_emits_deprecation_warning() {
-    let yaml = r#"
-name: legacy config delivery
-on:
-  manual: {}
-steps:
-  - name: deliver
-    engine: ssh
-    host: web-01
-    config:
-      source: OSS_CREDS
-      key_path: config_tpl/app/v1
-      dest: /opt/app
-    run: ls "$BUZ_CONFIG_DIR"
-"#;
-    let r = validate_fixture(yaml);
-    assert!(r.valid, "Errors: {:?}", r.errors);
     assert!(
-        r.warnings
+        r.errors
             .iter()
-            .any(|w| w.contains("config.source: deprecated") && w.contains("buz/config-fetch")),
-        "expected deprecation warning, got: {:?}",
-        r.warnings
+            .any(|e| e.message.contains("registry_secret")),
+        "error should name the offending key: {:?}",
+        r.errors
     );
 }
 

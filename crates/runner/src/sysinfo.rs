@@ -10,9 +10,6 @@ pub struct SysInfoOpts {
     pub manager_url: String,
     /// Interface names whose addresses should be listed first (e.g. `["enp26s0"]`).
     pub prefer_interfaces: Vec<String>,
-    /// Last measured Runner↔Manager clock skew (`remote - local`); positive
-    /// means this Runner is behind. `None` when not measured yet.
-    pub clock_skew_seconds: Option<i64>,
     pub execution_capabilities: Option<RunnerExecutionCapabilities>,
     /// Sandbox supervisor status block, when the Runner runs a sandboxed tier.
     pub sandboxd: Option<serde_json::Value>,
@@ -148,7 +145,6 @@ pub fn collect_system_info(started_at: std::time::Instant, opts: &SysInfoOpts) -
         network_interfaces,
         ip_addresses,
         uptime_seconds: uptime,
-        clock_skew_seconds: opts.clock_skew_seconds,
         execution_capabilities: opts.execution_capabilities.clone(),
         sandboxd: opts.sandboxd.clone(),
     }

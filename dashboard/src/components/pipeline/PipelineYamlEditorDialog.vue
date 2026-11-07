@@ -448,9 +448,6 @@ async function openEdit(p: Pick<Pipeline, 'id' | 'name' | 'source'> & { yaml_pat
         retry: authorable.retry_count || undefined,
         continue_on_error: authorable.fail_strategy === 'continue' ? true : undefined,
         privileged: authorable.privileged === true ? true : undefined,
-        registry_secret: (authorable.registry_secret || '').trim() || undefined,
-        config_source: (authorable.config_source || '').trim() || '',
-        config_key_path: (authorable.config_key_path || '').trim() || '',
         config_dest: (authorable.config_dest || '').trim() || '',
         config_render: normalizeConfigRender(authorable.config_render),
       }

@@ -51,7 +51,6 @@ Scope: **one step**. `engine:` selects the executor; engine-specific keys are re
 | `secrets` | Narrows the pipeline allowlist for this step | current |
 | `uses` + `with` | Template reference → §2.4 | current |
 | `config` | App-config files → §3 | current |
-| `registry_secret` | Registry login | **deprecated → `buz/docker-login`; removal planned** |
 
 ### 2.2 `engine: docker` only
 
@@ -74,7 +73,7 @@ Scope: **one step**. `engine:` selects the executor; engine-specific keys are re
 |---|---|---|
 | **Template spec** | `run`, `image`, typed `inputs`, default `engine` | every call site of that template version |
 | **Call site `engine:` override** | template-declared `engines` list (e.g. `[shell, ssh]`); incompatible override fails at claim time | this step only |
-| **Call site** (kept through expansion) | `name`, `env`, `timeout`, `continue-on-error`, `secrets`, `host*`, `dir`, `volumes`, `privileged`, `registry_secret` | this step only |
+| **Call site** (kept through expansion) | `name`, `env`, `timeout`, `continue-on-error`, `secrets`, `host*`, `dir`, `volumes`, `privileged` | this step only |
 | **`with`** | → `INPUT_<UPPER_SNAKE>` step env; validated against declared inputs | this step only |
 
 ## 3. `config` block — one step's app-config files
@@ -102,8 +101,7 @@ Scope: **injected per step**, read-only for the author. Declared by the Runner (
 | `BUZ_CONFIG_DIR` | `config` block present | the step's config root | current |
 | `DOCKER_CONFIG` | Runner-injected (`per_job` isolation) | job-scoped Docker CLI config dir — do not set manually | current |
 | `INPUT_*` | `with:` values and manual-trigger inputs | masked when the template input declares `masking: true` | current |
-| `BUZ_CONFIG_URL` | OSS deliver only | — | **retires with OSS delivery (Phase 3)** |
-| `BUZ_REGISTRY_HOST/USER/PASSWORD` | ssh steps with `registry_secret` | remote login env | **retires with registry retirement (Phase 3)** |
+
 
 ## A complete example
 
@@ -188,6 +186,6 @@ What crosses scopes here: `${secrets.*}` are pipeline-scope references resolved 
 
 | Item | Scope today | Replacement | Plan |
 |---|---|---|---|
-| Step `registry_secret` | step key | `buz/docker-login` (Runner host) / inline `engine: ssh` login step (target hosts) | warning → removal (major release) |
-| `BUZ_REGISTRY_*` runtime env | ssh step env | — (follows `registry_secret`) | same |
-| `BUZ_CONFIG_URL` | step env (OSS deliver) | — (delivery is a step: `buz/config-fetch`) | same |
+
+
+Registry auth (step `registry_secret` and the `BUZ_REGISTRY_*` ssh env) was **removed in v3** — use the `buz/docker-login` plugin template (Runner host) / an inline `engine: ssh` login step (target hosts).

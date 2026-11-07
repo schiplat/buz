@@ -158,10 +158,7 @@ fn uses_step(uses: &str) -> StepDef {
         secrets: None,
         env: None,
         privileged: None,
-        registry_secret: None,
         config: None,
-        config_source: None,
-        config_key_path: None,
         config_dest: None,
         config_render: None,
     }

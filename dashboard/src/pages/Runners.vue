@@ -1033,7 +1033,7 @@ const eventBadge = (t: string) => {
                   {{ modeBlockReason(editExecutionMode) }}
                 </p>
                 <p class="mt-1 text-[10px] text-muted-foreground">
-                  Sandboxed modes support local shell steps only; SSH, per-step Docker, registry auth and host-side config prep fail closed. The Runner probes each tier automatically — you choose the default tier here; the system never picks one for you.
+                  Sandboxed modes support local shell steps only; SSH, per-step Docker and host-side config prep fail closed. The Runner probes each tier automatically — you choose the default tier here; the system never picks one for you.
                 </p>
               </div>
               <div>

@@ -40,7 +40,6 @@ fn test_config() -> Config {
         standalone: Default::default(),
         plugin_index: Default::default(),
         storage: Default::default(),
-        clock: Default::default(),
         logging: Default::default(),
         marketplace_url: String::new(),
     }
@@ -1025,7 +1024,6 @@ async fn runner_execution_mode_requires_fresh_supported_capability() {
         network_interfaces: vec![],
         ip_addresses: vec![],
         uptime_seconds: 1,
-        clock_skew_seconds: None,
         execution_capabilities: Some(RunnerExecutionCapabilities {
             container: ExecutionBackendStatus::Supported,
             container_reason: None,
