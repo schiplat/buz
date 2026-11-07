@@ -995,7 +995,9 @@ pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Res
         )
         .execute(&mut *tx)
         .await?;
-        sqlx::query("DROP TABLE scheduler_lease").execute(&mut *tx).await?;
+        sqlx::query("DROP TABLE scheduler_lease")
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("ALTER TABLE scheduler_lease_new RENAME TO scheduler_lease")
             .execute(&mut *tx)
             .await?;
