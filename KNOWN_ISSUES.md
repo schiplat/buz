@@ -84,7 +84,7 @@ instead of rebuilt per request (`4a4b1fe`).
 
 ## Deferred designs (roadmap, by priority)
 
-### 0a. Kernel retirement — **done (2.1.2)**
+### 0a. Kernel retirement — **done (2.1.2, lease fix in 2.1.3)**
 
 Phase 3 of `registry-auth-dual-track.md` / `object-store-config-source.md`
 shipped: `registry_secret`, `config.source`/`config.key_path` (OSS
