@@ -1,6 +1,6 @@
 ---
 title: Docker Engine
-weight: 6
+weight: 20
 description: "Step-level Docker execution on the runner — design target aligned with GitHub Actions job container semantics"
 aliases:
   - /docs/01-architecture/docker-engine/

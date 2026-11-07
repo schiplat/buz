@@ -1,6 +1,6 @@
 ---
 title: Pipeline Input Validation
-weight: 4
+weight: 80
 description: "Declarative manual-input validation — type / pattern / options / host / required, enforced at trigger time before a job is queued"
 ---
 

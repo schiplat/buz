@@ -1,6 +1,6 @@
 ---
 title: Plugin Tooling
-weight: 8
+weight: 40
 description: "Responsibility boundaries between the plugin contract, the buz-plugin CLI, the Manager, and the plugins repository"
 ---
 

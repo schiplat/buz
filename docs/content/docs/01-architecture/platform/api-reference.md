@@ -1,6 +1,6 @@
 ---
 title: API Reference
-weight: 4
+weight: 70
 description: "Buz Manager REST API reference"
 aliases:
   - /docs/01-architecture/api-reference/

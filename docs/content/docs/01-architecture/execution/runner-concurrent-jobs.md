@@ -1,6 +1,6 @@
 ---
 title: Runner Policy (UI-managed)
-weight: 25
+weight: 10
 description: "Centralized runner strategy — labels, concurrency, engines, cleanup — configured in Manager UI"
 aliases:
   - /docs/01-architecture/runner-concurrent-jobs/

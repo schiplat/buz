@@ -1,6 +1,6 @@
 ---
 title: GitHub Actions Secrets/Variables Sync
-weight: 6
+weight: 50
 description: Bind Buz secrets/vars to GitHub repos, push values to Actions
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: Users, Teams & RBAC
-weight: 5
+weight: 10
 description: "Phase 2 authorization model — platform admins, teams, four team roles, and resource scoping"
 aliases:
   - /docs/01-architecture/rbac/

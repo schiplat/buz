@@ -1,6 +1,6 @@
 ---
 title: Runner Capability Re-probe
-weight: 8
+weight: 85
 description: "On-demand sandbox capability re-probe from the Manager UI, and how the lifecycle shows up in the Runner drawer"
 ---
 

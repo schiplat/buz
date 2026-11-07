@@ -1,6 +1,6 @@
 ---
 title: Admin Audit Logs
-weight: 12
+weight: 60
 description: "Platform-admin operation audit — redacted before/after snapshots"
 aliases:
   - /docs/01-architecture/admin-audit-logs/

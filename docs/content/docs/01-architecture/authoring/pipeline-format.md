@@ -1,6 +1,6 @@
 ---
 title: Pipeline Format
-weight: 3
+weight: 10
 description: "Full reference for Buz pipeline YAML definitions (Form mapping is transitional)"
 aliases:
   - /docs/01-architecture/pipeline-format/

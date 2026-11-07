@@ -1,6 +1,6 @@
 ---
 title: Job Concurrency & Queue
-weight: 8
+weight: 70
 description: "Design for pipeline-level concurrency control with queue, discard-old, and discard-new modes — ready for multi-runner and multi-manager clusters."
 aliases:
   - /docs/01-architecture/job-concurrency-queue/

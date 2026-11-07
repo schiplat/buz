@@ -1,6 +1,6 @@
 ---
 title: Sandbox Isolation Tiers
-weight: 26
+weight: 45
 description: "Design record: job execution modes as isolation-strength tiers — host, container, sandbox (gVisor), vm (Firecracker) — and the pluggable OCI-runtime backend model behind them"
 ---
 

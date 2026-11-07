@@ -1,6 +1,6 @@
 ---
 title: Environments
-weight: 7
+weight: 30
 description: Platform Environments overlay Variable and Secret defaults at Trigger / claim time
 ---
 

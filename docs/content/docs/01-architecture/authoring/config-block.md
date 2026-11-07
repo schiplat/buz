@@ -1,6 +1,6 @@
 ---
 title: Config Block (render-only)
-weight: 6
+weight: 50
 description: "Nested config: block — render-only templates in place (delivery is a plugin step)"
 aliases:
   - /docs/01-architecture/authoring/config-block/

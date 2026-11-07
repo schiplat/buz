@@ -1,6 +1,6 @@
 ---
 title: YAML-First Pipeline Authoring
-weight: 2
+weight: 90
 description: "YAML file/Git is the authority; Manager projects into DB; UI edits write back to the scan directory"
 aliases:
   - /docs/01-architecture/yaml-first-authoring/

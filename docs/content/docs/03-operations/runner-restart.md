@@ -1,6 +1,6 @@
 ---
 title: Runner Restart
-weight: 5
+weight: 80
 description: "Remotely restart a Runner from the Manager UI"
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: Secrets Access Control
-weight: 4
+weight: 20
 description: "How Buz controls which pipelines can access secrets — kind, team_shared opt-in, explicit binding, and three-tier resolution"
 aliases:
   - /docs/01-architecture/secrets-access-control/
@@ -14,7 +14,7 @@ Buz controls secret delivery with a **team ownership boundary** plus an **opt-in
 2. **Explicit per-pipeline bindings** — `pipeline_secrets` / YAML `secrets:`
 3. **Explicit step references** — step `secrets:` allowlist
 
-**Getting a value into the process env** always requires an explicit map: `env: KEY: ${secrets.NAME}` (or a purpose slot). See [Secrets Access (GHA-style)](/docs/01-architecture/platform/secrets-access/).
+**Getting a value into the process env** always requires an explicit map: `env: KEY: ${secrets.NAME}` (or a purpose slot). See [Secrets in Pipelines (GHA-style)](/docs/01-architecture/authoring/secrets-access/).
 
 **Default for new secrets: `team_shared = false`.** Same-team pipelines do **not** resolve the secret unless they bind or reference it. Cross-team use remains forbidden (future Phase 3 grants).
 

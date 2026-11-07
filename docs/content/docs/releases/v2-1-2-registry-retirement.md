@@ -1,6 +1,6 @@
 ---
-title: Registry Retirement Migration Guide
-weight: 3
+title: v2.1.2 — Registry Retirement Migration
+weight: 20
 description: "Migrating off the retired kernel registry_secret and config.source paths"
 ---
 

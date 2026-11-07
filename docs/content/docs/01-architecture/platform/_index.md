@@ -11,8 +11,8 @@ Manager **control-plane** concerns: users/teams/RBAC, how secrets are stored and
 ## Reading order
 
 1. [Users, Teams & RBAC](./rbac/)
-2. [Secrets Access (GHA-style)](./secrets-access/) — runtime mapping rules
-3. [Secrets Access Control](./secrets-access-control/) — kind, team_shared, bindings
+2. [Secrets Access Control](./secrets-access-control/) — kind, team_shared, bindings
+3. [Approvals Switch](./approvals-switch/) — two-person approval for host-config and grant changes
 4. [GitHub Actions Secrets/Variables Sync](./github-actions-sync/) — remote push to GitHub repos
 5. [Environments](./environments/) — Variable / Secret overlays at Trigger / claim
 6. [Environment Approval Gates](./environment-approvals/) — protected env Trigger ACL + approvals
