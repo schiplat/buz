@@ -957,10 +957,10 @@ pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Res
     .execute(pool)
     .await?;
 
-    // ── Scheduler leader-lease table (single-row singleton) ──
+    // ── Scheduler leader-lease table (multi-row: one lease per scheduler) ──
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS scheduler_lease (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
+            id INTEGER PRIMARY KEY,
             instance_id TEXT NOT NULL,
             expires_at TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -968,6 +968,41 @@ pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Res
     )
     .execute(pool)
     .await?;
+
+    // Legacy singleton schema carried `CHECK (id = 1)`; the GitHub auto-fetch
+    // scheduler leases row 2 and would hit the CHECK on every cycle. Rebuild
+    // once when the constraint is still present (row id=1 carries over).
+    let lease_sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_lease'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if lease_sql.is_some_and(|s| s.contains("CHECK (id = 1)")) {
+        let mut tx = pool.begin().await?;
+        sqlx::query(
+            "CREATE TABLE scheduler_lease_new (
+                id INTEGER PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO scheduler_lease_new (id, instance_id, expires_at, updated_at)
+                SELECT id, instance_id, expires_at, updated_at FROM scheduler_lease",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE scheduler_lease")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("ALTER TABLE scheduler_lease_new RENAME TO scheduler_lease")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+    }
 
     // ── Git webhook hooks + unified trigger events ──
     // Recover / upgrade first (may rename leftover `pipeline_git_hooks_new`).
