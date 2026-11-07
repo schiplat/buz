@@ -1,6 +1,6 @@
 ---
 title: HTTPS Communication
-weight: 4
+weight: 40
 description: "Step-by-step HTTPS for Manager ↔ Runner (and UI) — commands, configs, Docker, reverse proxy"
 ---
 

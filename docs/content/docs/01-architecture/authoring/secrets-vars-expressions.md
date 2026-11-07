@@ -1,6 +1,6 @@
 ---
 title: Secrets & Variables — Expression Cheat Sheet
-weight: 3
+weight: 25
 description: "All YAML / script / template ways to declare and reference secrets, platform variables, env, and trigger inputs"
 aliases:
   - /docs/01-architecture/secrets-vars-expressions/

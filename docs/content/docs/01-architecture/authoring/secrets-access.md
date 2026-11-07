@@ -1,9 +1,10 @@
 ---
-title: Secrets Access (GHA-style)
-weight: 3
+title: Secrets in Pipelines (GHA-style)
+weight: 20
 description: Allowlist secrets, map via env or purpose slots, expand ${secrets.X} / ${vars.X}
 aliases:
   - /docs/01-architecture/secrets-access/
+  - /docs/01-architecture/platform/secrets-access/
 ---
 
 Buz uses the same **allowlist → explicit map → consume** flow as GitHub Actions, with expression syntax aligned to config render: `${secrets.X}` / `${vars.X}` (not `${{ }}`).
@@ -15,7 +16,7 @@ Buz uses the same **allowlist → explicit map → consume** flow as GitHub Acti
 3. **Scripts use shell vars.** After `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}`, `run` uses `$GIT_SSH_KEY`. Do not write `${secrets.…}` inside `run` — the engine does not expand secrets inside scripts.
 4. **Templates still use expressions.** `config.render` templates may contain `${secrets.X}` / `${vars.X}`; the runner expands them when generating files.
 5. **Team-shared secrets** are auto-**allowlisted** for expression resolution; they are still not auto-injected as env vars.
-6. **Top-level `secrets:` is optional.** Prefer GHA-style production YAML: omit the pipeline list and reference secrets at the step (`env:` / purpose slots). A top-level list remains useful as an optional overview. Full cheat sheet: [Secrets & Variables Expressions](../authoring/secrets-vars-expressions.md).
+6. **Top-level `secrets:` is optional** for references the YAML scanner can see — step `env:` maps and `uses:` steps' `with:` inputs are collected automatically (GHA-style). It remains **required** when a `config.render` template references secrets: those references live inside external template files no YAML scan can see, so the declaration is the injection allowlist for external templates. Full cheat sheet: [Secrets & Variables Expressions](../authoring/secrets-vars-expressions.md).
 
 ## Pipeline shape
 
@@ -39,17 +40,6 @@ steps:
       GIT_SSH_COMMAND="ssh -i /tmp/key -o StrictHostKeyChecking=no" \
         git clone --depth 1 git@github.com:org/private.git /tmp/private
       rm -f /tmp/key
-
-  # deprecated → buz/config-fetch (OSS deliver retires in a future major release)
-  - name: Deliver config
-    engine: ssh
-    host: $deploy_host
-    secrets: [OSS_CONFIG]
-    config:
-      source: ${secrets.OSS_CONFIG}   # deprecated → buz/config-fetch
-      key_path: config_tpl/app/$tag
-      dest: /opt/app
-    run: ls "$BUZ_CONFIG_DIR"
 
   - name: Render env
     engine: ssh
@@ -89,5 +79,5 @@ Cross-team names always fail. Missing same-team secret → claim / expand error.
 - [Secrets & Variables — Expression Cheat Sheet](../authoring/secrets-vars-expressions.md) — **all syntaxes in one place**
 - [Pipeline YAML format](../authoring/pipeline-format.md)
 - [Secrets Access Control](./secrets-access-control.md) — kind, team_shared, bindings
-- [Config Block](../authoring/config-block.md) — Deliver / Render / `${secrets.X}` in templates
+- [Config Block & Env Files](../authoring/config-block.md) — Deliver / Render / `${secrets.X}` in templates
 - [YAML-First Authoring](../authoring/yaml-first-authoring.md) — YAML sole orchestration source (file authority)

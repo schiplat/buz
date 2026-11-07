@@ -1,6 +1,6 @@
 ---
 title: Git Webhook Triggers
-weight: 5
+weight: 65
 description: "GitHub/Gitee push → signed webhook → job trigger, normalized INPUT_GIT_*, and Trigger events history"
 aliases:
   - /docs/01-architecture/git-webhook-triggers/

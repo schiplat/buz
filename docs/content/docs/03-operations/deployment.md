@@ -1,6 +1,6 @@
 ---
 title: Deployment
-weight: 2
+weight: 20
 description: "Deploying Center and Runner in production"
 ---
 

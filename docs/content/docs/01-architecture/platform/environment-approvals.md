@@ -1,6 +1,6 @@
 ---
 title: Environment Approval Gates
-weight: 8
+weight: 35
 description: Protected Environments — Trigger ACL, waiting_approval, append-only approval records
 ---
 

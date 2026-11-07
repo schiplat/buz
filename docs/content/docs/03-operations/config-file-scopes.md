@@ -1,6 +1,6 @@
 ---
 title: Config File Scopes
-weight: 6
+weight: 50
 description: "Configuration-file parameters only (manager.toml / runner.toml) — where each key is declared, what it takes effect on, who can override it. Pipeline YAML parameters live in Authoring."
 aliases:
   - /docs/03-operations/config-file-scopes/

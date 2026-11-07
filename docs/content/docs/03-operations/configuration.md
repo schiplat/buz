@@ -1,6 +1,6 @@
 ---
 title: Configuration Reference
-weight: 1
+weight: 10
 description: "All configuration options for Manager and Runner"
 ---
 
@@ -79,6 +79,8 @@ level = "info"                 # error | warn | info | debug | trace
 | `auth` | `jwt_secret` | Signs JWTs + encrypts secrets/hosts. **Required** (≥ 32 chars). Empty / `CHANGE_ME` / `changeme` / `demo-only` placeholders are **refused at startup** unless `BUZ_ALLOW_INSECURE_JWT=1` (local only) |
 | `auth` | `jwt_ttl_hours` | UI/API JWT lifetime |
 | `auth` | `runner_register_token_ttl_hours` | Runner JWT lifetime after register |
+| env `BUZ_JWT_SECRET` | — | Overrides `auth.jwt_secret` (same key derivation); takes precedence over the config file |
+| env `BUZ_HTTP_NO_SYSTEM_PROXY` | — | Set (any value except `0`) to skip the OS-level proxy probe in outbound HTTP clients and honor proxy environment variables explicitly (`http_proxy`/`https_proxy`/`all_proxy`/`no_proxy`). On macOS the default probe can stall seconds per process. See `.cargo/config.toml` for the workspace default |
 | `runner` | `heartbeat_timeout_seconds` | Offline threshold for runners |
 | `pipeline` | `yaml_scan_*` | File/Git authority for pipeline YAML; scanner + UI online edit write here. **Flat directory only** (basename files; no private subdirs). See [YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/) |
 | `plugin_index` | `local_dir` | Local plugin specs used to resolve `uses:` references. Empty (the default) uses `<data_dir>/plugins`; Manager reads the selected directory and does not clone or sync it. |

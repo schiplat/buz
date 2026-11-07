@@ -1,6 +1,6 @@
 ---
 title: Standalone (single image)
-weight: 3
+weight: 30
 description: "First run and upgrade for buz-standalone (Manager + Runner in one container, arm64)"
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: Pipeline Parameter Scopes
-weight: 3
+weight: 85
 description: "Pipeline YAML parameters only — top level / step / config block / template / runtime env, with each key's scope stated explicitly. Config-file (TOML) parameters live in Operations."
 aliases:
   - /docs/01-architecture/authoring/pipeline-parameter-scopes/

@@ -1,6 +1,6 @@
 ---
 title: SSH Multi-Host Execution
-weight: 7
+weight: 30
 description: "One SSH step, many hosts — chain default / parallel opt-in, cancel-all, log banners"
 aliases:
   - /docs/01-architecture/ssh-multi-host/

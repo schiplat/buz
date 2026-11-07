@@ -1,6 +1,6 @@
 ---
 title: Env Render — Declarative .env Generation
-weight: 5
+weight: 55
 description: "Render env.example into .env on the target host with explicit ${secrets.X} / ${vars.X} namespaces, GH-Actions-style references, fail-fast on missing sources"
 aliases:
   - /docs/01-architecture/env-render/
