@@ -1,0 +1,70 @@
+name: Deploy Documentation
+
+# Deploys the Hugo site in docs/ to GitHub Pages (buz.docs.sconts.com).
+# Only docs changes trigger a deploy; workflow_dispatch covers manual runs.
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'docs/**'
+      - '.github/workflows/deploy-docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  # Pages serves one deployment at a time; never cancel a deploy mid-flight,
+  # let the next run queue instead.
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # hextra theme is a submodule (docs/themes/hextra)
+          submodules: recursive
+          # displayUpdatedDate uses git history for .Lastmod — a shallow
+          # clone stamps every page with the build date.
+          fetch-depth: 0
+
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@6b1ee2dcc06c9b6629a5317fa0146473914d05e1 # v3
+        with:
+          hugo-version: '0.163.3'
+          extended: true
+
+      - name: Build
+        working-directory: ./docs
+        env:
+          # hugo.yaml keeps a static baseURL; build against the live Pages URL
+          # (the custom domain once Settings → Pages has it configured).
+          HUGO_BASEURL: ${{ steps.pages.outputs.base_url }}/
+        run: hugo --minify
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: docs/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
