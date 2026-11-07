@@ -24,13 +24,25 @@ use sha2::{Digest, Sha256};
 pub const TRIGGER_PARAM_ENC_PREFIX: &str = "buzenc:v1:";
 
 /// Derive a 32-byte AES-256 key from the JWT secret.
-fn derive_key(jwt_secret: &str) -> [u8; 32] {
+pub(crate) fn derive_key(jwt_secret: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(jwt_secret.as_bytes());
     let result = hasher.finalize();
     let mut key = [0u8; 32];
     key.copy_from_slice(&result);
     key
+}
+
+/// Short non-reversible fingerprint of a key (first 8 hex of its SHA-256) —
+/// lets tooling confirm WHICH secret resolved without exposing it.
+pub(crate) fn key_fingerprint(jwt_secret: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(jwt_secret.as_bytes());
+    hex(&hasher.finalize())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Encrypt `plaintext` with AES-256-GCM, keyed by `jwt_secret`.

@@ -28,7 +28,7 @@ We consider good-faith security research of Buz to be authorized: we will not pu
 Buz ships with the following known limitations. They are tracked and will be addressed over time; deploy with the listed mitigations in mind.
 
 - **No rate limiting.** Authentication, `/setup`, webhook, and runner-registration endpoints have no built-in rate limiting. Deploy behind a reverse proxy with rate limiting (sample configs in `deploy/nginx/`).
-- **One secret, two uses.** `auth.jwt_secret` both signs tokens and derives the secrets-encryption key (unsalted SHA-256, no rotation). Treat it as a root key: read access to it means access to every stored secret, and rotating it invalidates all stored secrets. A dedicated master key with data migration is planned.
+- **One secret, two uses.** `auth.jwt_secret` both signs tokens and derives the secrets-encryption key (unsalted SHA-256, no rotation). Treat it as a root key: read access to it means access to every stored secret, and rotating it invalidates all stored secrets until re-encrypted — `buz-manager rotate-jwt-key` performs that rotation in place (plan/apply, snapshot + single transaction). A dedicated master key with data migration is planned.
 - **`debug_unredact` persists plaintext.** An admin-triggered run with `debug_unredact` stores unredacted secret values in the job-log table.
 - **Permissive CORS.** `Any/Any/Any` — low risk under Bearer-token auth, not hardened.
 - **WebSocket token in URL.** The live-log stream authenticates via a token in the URL query string, which can appear in reverse-proxy access logs.
@@ -58,7 +58,7 @@ Buz ships with the following known limitations. They are tracked and will be add
 ## 已知限制
 
 - **无速率限制**：认证、`/setup`、webhook、runner 注册端点未内建限流，建议前置反代限流（`deploy/nginx/` 提供样例）。
-- **一钥两用**：`auth.jwt_secret` 既签发 JWT 又派生密文加密密钥（无盐 SHA-256、无轮换）。把它当根密钥保护：能读到它即能解密全部已存密文，轮换会使已存密文全部失效。独立主密钥 + 数据迁移在规划中。
+- **一钥两用**：`auth.jwt_secret` 既签发 JWT 又派生密文加密密钥（无盐 SHA-256、无轮换）。把它当根密钥保护：能读到它即能解密全部已存密文；轮换后旧密文失效直至重加密——`buz-manager rotate-jwt-key` 可原地完成轮换（plan/apply 两段式、快照 + 单事务）。独立主密钥 + 数据迁移在规划中。
 - **`debug_unredact` 落盘明文**：管理员触发的调试运行会把未打码的密文值写入数据库日志表。
 - **CORS 全放开**：Bearer 认证下风险较低，未收紧。
 - **WS 日志流 token 走 URL 查询参数**：可能进入反代访问日志。
