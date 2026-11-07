@@ -32,6 +32,19 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::ScanDeprecated) => {
             return services::deprecated_scan::run(&cli.config).await;
         }
+        Some(Command::RotateJwtKey {
+            db_path,
+            apply,
+            new_secret_file,
+        }) => {
+            return services::rotate_key::run(
+                &cli.config,
+                db_path.as_deref(),
+                apply,
+                new_secret_file.as_deref(),
+            )
+            .await;
+        }
         Some(Command::Completions { shell }) => {
             return print_completions(shell);
         }

@@ -82,6 +82,31 @@ pub enum Command {
     /// pipeline YAML carrying retired keys is already rejected by the parser.
     ScanDeprecated,
 
+    /// Rotate the JWT secret and re-encrypt every stored value in place.
+    ///
+    /// The current secret is resolved from the same config chain the Manager
+    /// uses (-c / BUZ_JWT_SECRET). Without --apply the command prints the
+    /// plan only — zero writes. With --apply it snapshots the database
+    /// (`<db>.pre-rotation`), re-encrypts secrets, GitHub connection tokens,
+    /// git-hook secrets, environment secret overrides, host credentials and
+    /// encrypted job trigger params in one transaction, verifies every new
+    /// blob, and commits. STOP the Manager service first.
+    RotateJwtKey {
+        /// Override the database path (default: database.path from the config)
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        db_path: Option<String>,
+
+        /// Perform the rotation. Without this flag: plan only, zero writes.
+        #[arg(long)]
+        apply: bool,
+
+        /// Where to store the generated new secret (default:
+        /// <db directory>/.jwt_secret, mode 0600 — the file is gitignored
+        /// because the data directory is)
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        new_secret_file: Option<String>,
+    },
+
     /// Print a shell completion script for `buz-manager` to stdout.
     ///
     /// Example: `buz-manager completions zsh > ~/.zfunc/_buz-manager`
