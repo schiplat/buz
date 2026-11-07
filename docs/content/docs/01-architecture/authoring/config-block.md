@@ -10,6 +10,11 @@ The step-level `config:` block is **render-only**: it renders template files
 that already exist under `dest`, injecting secret values and exporting
 `$BUZ_CONFIG_DIR` / `$BUZ_ENV_CHANGED` to the step.
 
+> **Prefer the plugin for new pipelines:** [`buz/env-render`](https://plugins.buz.schiplat.com)
+> does the same job as an explicit `with:` step (secrets declared at the use
+> site). The kernel `config:` block below remains fully supported for
+> existing pipelines; the plugin is its long-term replacement.
+
 > **Removed in the 2.x retirement:** the kernel OSS-deliver mode (`config.source` /
 > `config.key_path`) is gone — pipelines using those keys fail validation.
 > Deliver config bundles with the [`buz/config-fetch`](https://github.com/schiplat/buz-plugins) plugin step

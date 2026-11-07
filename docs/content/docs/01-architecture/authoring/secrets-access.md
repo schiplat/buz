@@ -14,7 +14,7 @@ Buz uses the same **allowlist → explicit map → consume** flow as GitHub Acti
 1. **Allowlist / reference ≠ inject.** Listing a name (or referencing `${secrets.NAME}`) does **not** put `$NAME` into the process environment by itself.
 2. **Map before use.** Put values into the environment with `env:`. Registry auth and config delivery both use plugin templates (`buz/docker-login`, `buz/config-fetch`) instead of purpose slots — the kernel purpose slots were removed in the 2.x retirement.
 3. **Scripts use shell vars.** After `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}`, `run` uses `$GIT_SSH_KEY`. Do not write `${secrets.…}` inside `run` — the engine does not expand secrets inside scripts.
-4. **Templates still use expressions.** `config.render` templates may contain `${secrets.X}` / `${vars.X}`; the runner expands them when generating files.
+4. **Render templates get their values via `buz/env-render`'s `values` map.** One `NAME=${secrets.NAME}` line per referenced secret in `with:` — the kernel `config.render` block still works for existing pipelines, but the plugin is the recommended path.
 5. **Team-shared secrets** are auto-**allowlisted** for expression resolution; they are still not auto-injected as env vars.
 6. **Top-level `secrets:` is optional** for references the YAML scanner can see — step `env:` maps and `uses:` steps' `with:` inputs are collected automatically (GHA-style). It remains **required** when a `config.render` template references secrets: those references live inside external template files no YAML scan can see, so the declaration is the injection allowlist for external templates. Full cheat sheet: [Secrets & Variables Expressions](../authoring/secrets-vars-expressions.md).
 
@@ -42,17 +42,17 @@ steps:
       rm -f /tmp/key
 
   - name: Render env
+    uses: buz/env-render@1.0.0
     engine: ssh
     host: $deploy_host
-    secrets: [POSTGRES_PASSWORD]
-    config:
-      dest: /opt/app
-      render:
-        - template: env.example   # file uses ${secrets.POSTGRES_PASSWORD}
-          output: .env
-          mode: "0600"
-          on_missing: fail
-    run: ls "$BUZ_CONFIG_DIR/.env"
+    with:
+      dest_dir: /opt/app
+      template: env.example   # file uses ${secrets.POSTGRES_PASSWORD}
+      output: .env
+      mode: "0600"
+      on_missing: fail
+      values: |
+        POSTGRES_PASSWORD=${secrets.POSTGRES_PASSWORD}
 ```
 
 ## Purpose slots

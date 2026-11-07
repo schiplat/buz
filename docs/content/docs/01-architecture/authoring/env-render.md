@@ -6,6 +6,8 @@ aliases:
   - /docs/01-architecture/env-render/
 ---
 
+> **Prefer the plugin for new pipelines:** [`buz/env-render`](https://plugins.buz.schiplat.com) — see [Config Block](../config-block/). The kernel mechanism below remains supported for existing pipelines.
+
 > **Status: IMPLEMENTED — Phase 1 engine + Phase 2b authoring shipped.**  
 > This page is the **render engine** design: template syntax, `ValueMap`,
 > security gates, change detection, flock.  
