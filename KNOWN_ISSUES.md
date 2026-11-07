@@ -149,8 +149,8 @@ trigger). Deliberately not scheduled — revisit on demand.
 
 ### 3b. Secrets declaration — GHA-alignment split (2026-11-06)
 
-Findings from migrating the super-manager deploy pipeline to plugin
-steps (`buz/config-fetch` / `buz/docker-login` / `buz/docker-logout`):
+Findings from migrating a production deploy pipeline (a private
+companion product) to plugin steps (`buz/config-fetch` / `buz/docker-login` / `buz/docker-logout`):
 
 1. `collect_effective_secret_names` scans top-level/step `secrets:`
    lists, `env:` and `notify` references — **not `uses:` steps' `with:`
