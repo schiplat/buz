@@ -1,8 +1,10 @@
 ---
 title: Sandbox Isolation Tiers
-weight: 45
+weight: 40
 description: "Design record: job execution modes as isolation-strength tiers — host, container, sandbox (gVisor), vm (Firecracker) — and the pluggable OCI-runtime backend model behind them"
 ---
+
+{{< callout type="note" >}}**Design record** — the isolation-tier ladder decision. Shipped tiers and deferrals are tracked in [Status](#status) below.{{< /callout >}}
 
 This page records a design decision: Buz job execution modes are ordered by **isolation strength**, not by implementation name. Each tier is a contract a job can rely on; the host operator chooses which OCI runtime delivers each tier; periodic capability probes report what each runner can actually deliver. The model explains the existing `host`/`container`/`vm` modes and adds one tier in the middle.
 

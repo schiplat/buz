@@ -1,6 +1,6 @@
 ---
 title: Pipeline Format
-weight: 10
+weight: 20
 description: "Full reference for Buz pipeline YAML definitions (Form mapping is transitional)"
 aliases:
   - /docs/01-architecture/pipeline-format/
@@ -163,6 +163,8 @@ Built-in top-level keys on `PipelineYaml` (`deny_unknown_fields`):
 | `steps` | ✓ | Ordered step list (see [Steps](#steps)) |
 
 ## `environments` (Required deployment targets)
+
+Declaring environments is the **authoring side**. Protection, approval gates, and Variable/Secret overlays are governed on the control plane: [Environments](/docs/01-architecture/platform/environments/) · [Environment Approval Gates](/docs/01-architecture/platform/environment-approvals/).
 
 Every pipeline must declare a non-empty top-level list of registered environment slugs:
 

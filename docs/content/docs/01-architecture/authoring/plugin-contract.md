@@ -1,6 +1,6 @@
 ---
 title: Plugin Contract
-weight: 30
+weight: 50
 description: "The versioned interface between the Buz runtime and step-template plugins"
 ---
 

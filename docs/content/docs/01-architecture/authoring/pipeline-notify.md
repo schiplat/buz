@@ -1,6 +1,6 @@
 ---
 title: Pipeline Notify
-weight: 60
+weight: 100
 description: "End-of-build notifications — Feishu custom bot first; YAML notify: + Secrets webhook + Job Detail deep link"
 aliases:
   - /docs/01-architecture/pipeline-notify/

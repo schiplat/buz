@@ -6,6 +6,8 @@ aliases:
   - /docs/01-architecture/rbac/
 ---
 
+{{< callout type="note" >}}**Design record — implemented** (Phase 2 + Phase 3 auth items).{{< /callout >}}
+
 ## Status
 
 **Implemented (Phase 2 + Phase 3 auth items).** Multi-user login, teams, four team roles, required `team_id` on pipelines/secrets, optional host team, membership-filtered list APIs, platform-admin API tokens, and tiered audit-log visibility (super admin vs regular admin).

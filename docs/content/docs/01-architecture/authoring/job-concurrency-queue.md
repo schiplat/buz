@@ -1,10 +1,12 @@
 ---
 title: Job Concurrency & Queue
-weight: 70
+weight: 90
 description: "Design for pipeline-level concurrency control with queue, discard-old, and discard-new modes — ready for multi-runner and multi-manager clusters."
 aliases:
   - /docs/01-architecture/job-concurrency-queue/
 ---
+
+{{< callout type="note" >}}**Design record — implemented.** Schema and scheduler sections reflect shipped behavior; API-change lists are historical notes.{{< /callout >}}
 
 ## Status
 
@@ -475,3 +477,7 @@ and avoids Jenkins' notorious queue-bloat problem.
 | 5 | Frontend: queued status in job list/detail, trigger confirmation toast | Medium |
 | 6 | Multi-runner awareness: check runner availability before dispatch | Low |
 | 7 | Multi-pipeline concurrency group sharing | Low |
+
+---
+
+Boundary: this page is the **pipeline-level** declaration (what a pipeline allows). The **Runner-level** policy (what a runner machine permits — max jobs, engines, cleanup) is UI-managed: see [Runner Policy](/docs/01-architecture/execution/runner-policy/).

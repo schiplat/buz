@@ -1,6 +1,6 @@
 ---
 title: Sandbox Host Configuration & Resource Profiles
-weight: 40
+weight: 50
 description: "Design record: Manager-managed sandbox host configuration, named resource profiles, quota-aware scheduling, and host/instance identity — replacing sandboxd.toml"
 ---
 

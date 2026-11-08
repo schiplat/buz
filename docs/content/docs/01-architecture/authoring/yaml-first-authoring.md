@@ -1,10 +1,12 @@
 ---
 title: YAML-First Pipeline Authoring
-weight: 90
+weight: 10
 description: "YAML file/Git is the authority; Manager projects into DB; UI edits write back to the scan directory"
 aliases:
   - /docs/01-architecture/yaml-first-authoring/
 ---
+
+{{< callout type="note" >}}**Design record — implemented (2026-08).**{{< /callout >}}
 
 **Status:** Implemented (2026-08). Form UI stays hidden. Online YAML editor creates/updates/deletes files under Manager `pipeline.yaml_scan_dir` and immediately upserts the DB projection.
 

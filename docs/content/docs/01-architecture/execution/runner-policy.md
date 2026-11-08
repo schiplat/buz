@@ -165,3 +165,7 @@ Policy columns live on `runners` (see [Database Schema](/docs/02-development/dat
 - [Docker Engine](/docs/01-architecture/execution/docker-engine/) — gated by UI `docker_enabled`
 - [Job Concurrency Queue](/docs/01-architecture/authoring/job-concurrency-queue/) — pipeline-level queue / discard modes
 - [Deployment](/docs/03-operations/deployment/) — install + smoke path
+
+---
+
+Boundary: this page is the **Runner-level** policy (what this machine permits). The **pipeline-level** concurrency declaration (queue / discard modes per pipeline) is authored in YAML: see [Job Concurrency & Queue](/docs/01-architecture/authoring/job-concurrency-queue/).

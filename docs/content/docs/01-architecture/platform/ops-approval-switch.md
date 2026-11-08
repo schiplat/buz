@@ -1,6 +1,6 @@
 ---
 title: Ops Approval Switch
-weight: 40
+weight: 50
 description: Require a second ops approval for host-config and resource-grant changes
 aliases:
   - /docs/01-architecture/platform/approvals-switch/
