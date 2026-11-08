@@ -26,7 +26,7 @@ fn strict_policy_allows_workspace_without_extra_capabilities() {
         ..Default::default()
     };
     assert_eq!(
-        validate_step_policy(&runner, &[], &[], false, false).unwrap(),
+        validate_step_policy(&runner, &[], &[], false).unwrap(),
         None
     );
 }
@@ -37,9 +37,8 @@ fn strict_policy_rejects_explicit_mount_privileged_and_host_prepare() {
         docker_mount_policy: DockerMountPolicy::Strict,
         ..Default::default()
     };
-    assert!(validate_step_policy(&runner, &[], &["/data:/data".into()], false, false).is_err());
-    assert!(validate_step_policy(&runner, &[], &[], true, false).is_err());
-    assert!(validate_step_policy(&runner, &[], &[], false, true).is_err());
+    assert!(validate_step_policy(&runner, &[], &["/data:/data".into()], false).is_err());
+    assert!(validate_step_policy(&runner, &[], &[], true).is_err());
 }
 
 #[test]
@@ -51,16 +50,16 @@ fn socket_capability_requires_local_allow_and_valid_source() {
         ..Default::default()
     };
     let cap = vec!["docker-socket".to_string()];
-    assert!(validate_step_policy(&runner, &cap, &[], false, false).is_err());
+    assert!(validate_step_policy(&runner, &cap, &[], false).is_err());
     runner.docker_socket_allowed = true;
-    let authorized_path = validate_step_policy(&runner, &cap, &[], false, false).unwrap();
+    let authorized_path = validate_step_policy(&runner, &cap, &[], false).unwrap();
     assert_eq!(
         authorized_path.as_deref(),
         Some(socket_path.canonicalize().unwrap().as_path())
     );
     assert!(socket_dir.path().exists());
     runner.docker_socket_path = "/run/../docker.sock".into();
-    assert!(validate_step_policy(&runner, &cap, &[], false, false).is_err());
+    assert!(validate_step_policy(&runner, &cap, &[], false).is_err());
 }
 
 #[test]
@@ -73,18 +72,18 @@ fn strict_policy_accepts_capability_only_and_rejects_explicit_socket_mounts() {
         ..Default::default()
     };
     let cap = vec!["docker-socket".to_string()];
-    assert!(validate_step_policy(&runner, &cap, &[], false, false)
+    assert!(validate_step_policy(&runner, &cap, &[], false)
         .unwrap()
         .is_some());
     let duplicate = vec![
         format!("{}:/var/run/docker.sock", socket_path.display()),
         format!("{}:/var/run/docker.sock", socket_path.display()),
     ];
-    assert!(validate_step_policy(&runner, &cap, &duplicate, false, false).is_err());
+    assert!(validate_step_policy(&runner, &cap, &duplicate, false).is_err());
     let alias = socket_path.with_extension("sock-link");
     std::os::unix::fs::symlink(&socket_path, &alias).unwrap();
     runner.docker_socket_path = alias.to_string_lossy().into_owned();
-    assert!(validate_step_policy(&runner, &cap, &[], false, false).is_err());
+    assert!(validate_step_policy(&runner, &cap, &[], false).is_err());
     assert!(socket_dir.path().exists());
 }
 
@@ -92,7 +91,7 @@ fn strict_policy_accepts_capability_only_and_rejects_explicit_socket_mounts() {
 fn legacy_policy_keeps_normal_mounts_but_socket_requires_local_authorization() {
     let default_runner = RunnerSection::default();
     assert!(
-        validate_step_policy(&default_runner, &[], &["/data:/data".into()], false, false)
+        validate_step_policy(&default_runner, &[], &["/data:/data".into()], false)
             .unwrap()
             .is_none()
     );
@@ -102,25 +101,17 @@ fn legacy_policy_keeps_normal_mounts_but_socket_requires_local_authorization() {
         ..Default::default()
     };
     let socket_volume = format!("{}:/var/run/docker.sock", socket_path.display());
-    assert!(validate_step_policy(
-        &runner,
-        &[],
-        std::slice::from_ref(&socket_volume),
-        false,
-        false
-    )
-    .is_err());
-    runner.docker_socket_allowed = true;
     assert!(
-        validate_step_policy(&runner, &[], &[socket_volume], false, false)
-            .unwrap()
-            .is_some()
+        validate_step_policy(&runner, &[], std::slice::from_ref(&socket_volume), false).is_err()
     );
+    runner.docker_socket_allowed = true;
+    assert!(validate_step_policy(&runner, &[], &[socket_volume], false)
+        .unwrap()
+        .is_some());
     assert!(validate_step_policy(
         &runner,
         &[],
         &[format!("{}:/host", socket_path.display())],
-        false,
         false
     )
     .is_err());
@@ -130,12 +121,11 @@ fn legacy_policy_keeps_normal_mounts_but_socket_requires_local_authorization() {
 #[test]
 fn capabilities_reject_unknown_duplicates_and_non_docker() {
     let runner = RunnerSection::default();
-    assert!(validate_step_policy(&runner, &["host-root".into()], &[], false, false).is_err());
+    assert!(validate_step_policy(&runner, &["host-root".into()], &[], false).is_err());
     assert!(validate_step_policy(
         &runner,
         &["docker-socket".into(), "docker-socket".into()],
         &[],
-        false,
         false
     )
     .is_err());

@@ -128,7 +128,6 @@ pub fn validate_step_policy(
     capabilities: &[String],
     volumes: &[String],
     privileged: bool,
-    has_host_prepare: bool,
 ) -> anyhow::Result<Option<std::path::PathBuf>> {
     let mut socket_path = None;
     let mut wants_socket = false;
@@ -176,9 +175,6 @@ pub fn validate_step_policy(
     }
     if runner.docker_mount_policy == DockerMountPolicy::Strict && privileged {
         anyhow::bail!("privileged Docker containers are forbidden by strict local Runner policy");
-    }
-    if runner.docker_mount_policy == DockerMountPolicy::Strict && has_host_prepare {
-        anyhow::bail!("strict Docker policy forbids host-side config_render preparation");
     }
     Ok(socket_path)
 }

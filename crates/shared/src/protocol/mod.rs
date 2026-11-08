@@ -1067,19 +1067,11 @@ pub struct StepDef {
     /// Required for Docker-in-Docker. Has host-escaping security implications.
     #[serde(default)]
     pub privileged: Option<bool>,
-    /// Nested `config:` block (Phase 2b authoring shape).
+    /// Removed kernel surface (captured only to produce a friendly
+    /// migration error — render with the `buz/env-render` plugin step).
     #[serde(default)]
-    pub config: Option<crate::pipeline_yaml::ConfigBlock>,
-    /// Unpack directory (`config.dest` / column `config_dest`).
-    #[serde(default)]
-    pub config_dest: Option<String>,
-    /// Render entries (`config.render` / column `config_render` JSON array).
-    #[serde(default)]
-    pub config_render: Option<Vec<crate::pipeline_yaml::ConfigRenderEntry>>,
+    pub config: Option<serde_yaml::Value>,
 }
-
-/// Legacy name — prefer [`crate::pipeline_yaml::ConfigRenderEntry`].
-pub type EnvRenderDef = crate::pipeline_yaml::ConfigRenderEntry;
 
 // --- Secrets ---
 

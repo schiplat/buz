@@ -18,11 +18,6 @@ continue-on-error: true
 secrets: [UPLOAD_TOKEN]
 env:
   REGION: cn-hangzhou
-config:
-  dest: /opt/app
-  render:
-    template: app.env.tpl
-    output: app.env
 "#,
     )
     .unwrap();
@@ -49,9 +44,4 @@ config:
         step.env.as_ref().unwrap().get("REGION").unwrap(),
         "cn-hangzhou"
     );
-    assert_eq!(step.config_dest.as_deref(), Some("/opt/app"));
-    let render = step.config_render.as_ref().unwrap();
-    assert_eq!(render.len(), 1);
-    assert_eq!(render[0].template.as_deref(), Some("app.env.tpl"));
-    assert_eq!(render[0].output.as_deref(), Some("app.env"));
 }

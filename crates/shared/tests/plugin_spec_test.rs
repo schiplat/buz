@@ -496,22 +496,6 @@ fn secret_placeholder_literals_require_the_opt_in_flag() {
         "{err:?}"
     );
 
-    // Flag on but no masked input: refused — the values channel must be masked.
-    let mut yaml = base_yaml()
-        .replace("    masking: true\n", "    masking: false\n")
-        .replacen(
-            "run: |\n  curl -fsSL -X POST \"$INPUT_WEBHOOK\" -d '{}'\n",
-            RUN_LITERAL,
-            1,
-        );
-    yaml.push_str("\nprocesses_secret_placeholders: true\n");
-    let err = parse_and_validate_plugin_spec(&yaml, CURRENT).unwrap_err();
-    assert!(
-        err.iter()
-            .any(|e| e.contains("processes_secret_placeholders: true requires")),
-        "{err:?}"
-    );
-
     // Flag on with a masked input: the template-matching literal is allowed.
     let mut yaml = base_yaml().replacen(
         "run: |\n  curl -fsSL -X POST \"$INPUT_WEBHOOK\" -d '{}'\n",

@@ -159,8 +159,6 @@ fn uses_step(uses: &str) -> StepDef {
         env: None,
         privileged: None,
         config: None,
-        config_dest: None,
-        config_render: None,
     }
 }
 

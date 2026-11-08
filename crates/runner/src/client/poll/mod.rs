@@ -1,6 +1,5 @@
 use reqwest::Client;
 use shared::protocol::{LogChunk, LogLevel, UpdateJobStatusRequest};
-use shared::value_source::ValueMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,11 +16,10 @@ use std::collections::{HashMap, HashSet};
 pub mod step_log;
 
 use step_log::{
-    build_config_prep_banner, build_config_prep_progress, build_runner_banner, build_ssh_banner,
-    build_step_echo, build_step_failure_message, build_verbose_stage, build_verbose_step_config,
-    build_verbose_step_result, mask_output, step_failure_hint, step_timeout_content, StepLogger,
-    LOG_ECHO, LOG_LOGIN, LOG_RUNNER_BANNER, LOG_STEP_SUMMARY, LOG_STEP_VERBOSE_CONFIG,
-    LOG_STEP_VERBOSE_CONFIG_PREP, LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE,
+    build_runner_banner, build_ssh_banner, build_step_echo, build_step_failure_message,
+    build_verbose_stage, build_verbose_step_config, build_verbose_step_result, mask_output,
+    step_failure_hint, step_timeout_content, StepLogger, LOG_ECHO, LOG_LOGIN, LOG_RUNNER_BANNER,
+    LOG_STEP_SUMMARY, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE,
     LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
 };
 
@@ -370,9 +368,7 @@ pub async fn execute_job(
                     .get("exec_type")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("shell");
-                if matches!(engine, "ssh" | "docker")
-                    || crate::client::config_source::needs_prepare(step)
-                {
+                if matches!(engine, "ssh" | "docker") {
                     Some(format!("step {} ({engine})", index + 1))
                 } else {
                     None
@@ -509,64 +505,6 @@ fn job_secret_mask_inputs(task: &serde_json::Value) -> (HashSet<String>, Vec<Str
     (pipeline_secret_keys, secret_mask_values)
 }
 
-/// Build the `config_render` ValueMap once per job:
-/// - `secrets` domain resolves `${secrets.X}` by logical name from job
-///   `secrets` plus per-step `render_env_secrets` (Manager attaches the
-///   latter when a step has `config_render`);
-/// - `vars` domain is pipeline env + trigger inputs (both `NAME` /
-///   `INPUT_NAME` forms), with `masking: true` inputs excluded so a
-///   sensitive trigger value can never route into `.env` via the
-///   non-sensitive namespace.
-fn build_render_values(task: &serde_json::Value, tasks: &[serde_json::Value]) -> ValueMap {
-    let mut render_values = ValueMap::new();
-    if let Some(obj) = task.get("secrets").and_then(|v| v.as_object()) {
-        for (k, v) in obj {
-            if let Some(s) = v.as_str() {
-                render_values.secrets.insert(k.clone(), s.to_string());
-            }
-        }
-    }
-    for step in tasks {
-        if let Some(obj) = step.get("render_env_secrets").and_then(|v| v.as_object()) {
-            for (k, v) in obj {
-                if let Some(s) = v.as_str() {
-                    render_values.secrets.insert(k.clone(), s.to_string());
-                }
-            }
-        }
-    }
-    if let Some(obj) = task.get("env").and_then(|v| v.as_object()) {
-        for (k, v) in obj {
-            if let Some(s) = v.as_str() {
-                render_values.vars.insert(k.clone(), s.to_string());
-            }
-        }
-    }
-    let masking_input_keys: HashSet<String> = task
-        .get("masking_input_keys")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    if let Some(obj) = task.get("inputs").and_then(|v| v.as_object()) {
-        for (k, v) in obj {
-            if masking_input_keys.contains(k) {
-                continue;
-            }
-            if let Some(s) = v.as_str() {
-                render_values.vars.insert(k.clone(), s.to_string());
-                render_values
-                    .vars
-                    .insert(shared::protocol::input_env_key(k), s.to_string());
-            }
-        }
-    }
-    render_values
-}
-
 async fn execute_job_inner(
     client: &Client,
     config: &Config,
@@ -651,8 +589,6 @@ async fn execute_job_inner(
 
     // Secret catalog keys/values for log redaction (not process env injection).
     let (pipeline_secret_keys, secret_mask_values) = job_secret_mask_inputs(task);
-    let render_values = build_render_values(task, tasks);
-
     // Tracks whether any step failed under fail_strategy = "continue". The job
     // must end as failed even though execution continued past the failing step.
     let mut any_step_failed = false;
@@ -661,7 +597,7 @@ async fn execute_job_inner(
         let log = StepLogger::new(client, config, token, job_id, idx);
         let spec = parse_step_spec(idx, step);
         let docker_socket_path = validate_step_constraints(&log, config, step, &spec).await?;
-        let mut secrets = build_step_secrets(
+        let secrets = build_step_secrets(
             &log,
             step,
             &base_env,
@@ -678,38 +614,6 @@ async fn execute_job_inner(
         // Open before config prepare so render shares the same session as the
         // run block.
         let mut ssh_sessions = open_ssh_sessions(&log, config, step, &spec, cancel_rx).await?;
-
-        // ── config prepare: config_render (render-only) ──────────────────────
-        let config_prep = prepare_step_config(
-            &log,
-            config,
-            step,
-            &spec,
-            &mut ssh_sessions,
-            &render_values,
-            verbose,
-            step_started,
-            cancel_rx,
-        )
-        .await?;
-
-        // Inject BUZ_CONFIG_DIR / BUZ_ENV_CHANGED(_KEYS) into the step env and
-        // register every rendered secret value for forced value redaction.
-        if let Some(prep) = &config_prep {
-            for (k, v) in &prep.env {
-                secrets.env.insert(k.clone(), v.clone());
-            }
-            // Debug mode disables all redaction, forced values included.
-            if !debug_unredact {
-                for v in &prep.forced_redact {
-                    secrets.catalog.add_forced_value(v.clone());
-                }
-                // The mask lists were snapshotted before prepare ran; refresh
-                // so the just-registered rendered values actually reach the
-                // engine runners and the summary chunk.
-                secrets.forced_values = secrets.catalog.forced_secret_values();
-            }
-        }
 
         // Verbose: exec-stage marker only (STEP CONFIG already uploaded above).
         if verbose {
@@ -856,13 +760,11 @@ async fn validate_step_constraints(
     spec: &PluginSpec<'_>,
 ) -> anyhow::Result<Option<std::path::PathBuf>> {
     let docker_socket_path = if spec.exec_type == "docker" {
-        let has_host_prepare = super::config_source::needs_prepare(step);
         match engine::docker::validate_step_policy(
             &config.runner,
             &spec.capabilities,
             &spec.volumes,
             spec.privileged,
-            has_host_prepare,
         ) {
             Ok(value) => value,
             Err(e) => return Err(log.fail_step(format!("{e:#}")).await),
@@ -1080,14 +982,6 @@ async fn announce_step(
         return Err(log.fail_step(format!("SSH host resolution: {err}")).await);
     }
 
-    // Fail fast if Manager could not resolve config_render.
-    if let Some(err) = step
-        .get("config_render_error")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        return Err(log.fail_step(format!("config_render: {err}")).await);
-    }
     Ok(())
 }
 
@@ -1160,98 +1054,6 @@ async fn open_ssh_sessions(
 /// Prepare failures MUST be reported with this step's `step_order` (not
 /// the job-level -1 catch in `run_one_job`) so Job Detail attaches the
 /// ERROR to the correct terminal without frontend guessing.
-#[allow(clippy::too_many_arguments)] // job execution context: step, sandbox, secrets, logging handles
-async fn prepare_step_config(
-    log: &StepLogger,
-    config: &Config,
-    step: &serde_json::Value,
-    spec: &PluginSpec<'_>,
-    ssh_sessions: &mut Vec<SshSession>,
-    render_values: &ValueMap,
-    verbose: bool,
-    step_started: std::time::Instant,
-    cancel_rx: &mut watch::Receiver<bool>,
-) -> anyhow::Result<Option<super::config_source::ConfigPrep>> {
-    if !super::config_source::needs_prepare(step) {
-        return Ok(None);
-    }
-    let prep_result = if spec.exec_type == "ssh" {
-        if ssh_sessions.is_empty() {
-            // The SSH branch below reports the missing-host error.
-            Ok(None)
-        } else {
-            let prep_fut = super::config_source::prepare_ssh(
-                step,
-                ssh_sessions,
-                Path::new(&config.runner.workspace_dir),
-                &log.job_id,
-                spec.idx,
-                render_values,
-                spec.timeout,
-                ssh_hosts_parallel(step),
-            );
-            tokio::select! {
-                result = prep_fut => result.map(Some),
-                _ = cancel_triggered(cancel_rx) => {
-                    return Err(log.cancel_step().await);
-                }
-            }
-        }
-    } else {
-        super::config_source::prepare_local(
-            step,
-            Path::new(&config.runner.workspace_dir),
-            spec.idx,
-            render_values,
-        )
-        .await
-        .map(Some)
-    };
-    match prep_result {
-        Ok(prep) => {
-            // Emit the CONFIG PREP chunk once, on success: the Verbose banner
-            // (dest / mode) plus the always-visible progress (per-file render,
-            // readiness). Progress is collected by the prepare functions and
-            // never leaks secrets.
-            if let Some(p) = &prep {
-                let mut content = String::new();
-                if verbose {
-                    content.push_str(&build_config_prep_banner(step));
-                }
-                if !p.logs.is_empty() {
-                    let progress = build_config_prep_progress(&p.logs, verbose);
-                    if !progress.is_empty() {
-                        if !content.is_empty() && !content.ends_with('\n') {
-                            content.push('\n');
-                        }
-                        content.push_str(&progress);
-                    }
-                }
-                if !content.is_empty() {
-                    log.emit(LOG_STEP_VERBOSE_CONFIG_PREP, content).await;
-                }
-            }
-            Ok(prep)
-        }
-        Err(e) => {
-            // Verbose: still surface the dest / mode shape on a prepare-only
-            // failure (banner chunk is otherwise empty).
-            if verbose {
-                log.emit(LOG_STEP_VERBOSE_CONFIG_PREP, build_config_prep_banner(step))
-                    .await;
-            }
-            if verbose {
-                log.emit(
-                    LOG_STEP_VERBOSE_RESULT,
-                    build_verbose_step_result(step_started.elapsed(), -1),
-                )
-                .await;
-            }
-            Err(log.fail_step(format!("{e:#}")).await)
-        }
-    }
-}
-
 /// Shared inputs for one step's engine execution. Each engine mutates its own
 /// copy of `env`; cancel racing happens on the separately passed receiver.
 struct StepRun<'a> {

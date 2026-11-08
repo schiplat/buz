@@ -159,14 +159,12 @@ pub fn candidates(tasks: &[Value], config: &Config) -> Vec<String> {
             .get("privileged")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let has_host_prepare = crate::client::config_source::needs_prepare(step);
         if engine::docker::preflight(config.engine.docker_enabled, image).is_err()
             || engine::docker::validate_step_policy(
                 &config.runner,
                 &capabilities,
                 &volumes,
                 privileged,
-                has_host_prepare,
             )
             .is_err()
         {

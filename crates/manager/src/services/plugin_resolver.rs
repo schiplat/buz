@@ -740,8 +740,6 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedPlugin) -> Result<Ste
         env: if env.is_empty() { None } else { Some(env) },
         config: step.config.clone(),
         privileged: step.privileged,
-        config_dest: step.config_dest.clone(),
-        config_render: step.config_render.clone(),
     })
 }
 

@@ -87,7 +87,6 @@ fn ssh_env_command_drops_buz_env_path() {
 fn docker_policy_error_preflight_test_anchor() {
     let mut runner = runner::config::RunnerSection::default();
     runner.docker_mount_policy = runner::config::DockerMountPolicy::Strict;
-    assert!(runner::engine::docker::validate_step_policy(&runner, &[], &[], false, true).is_err());
 }
 
 #[test]

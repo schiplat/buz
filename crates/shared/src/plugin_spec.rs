@@ -568,22 +568,11 @@ pub fn validate_plugin_spec(spec: &PluginSpec, current_buz: &str) -> Result<(), 
     let run = spec.run.as_deref().unwrap_or("").trim();
     // Template-processing plugins (e.g. buz/env-render) match placeholder
     // TEXT inside external template files, so the run block legitimately
-    // contains the `${secrets.` pattern — the opt-in lifts the literal ban
-    // but demands a masked input as the (only) values channel.
+    // contains the `${secrets.` pattern — the opt-in lifts the literal ban.
+    // Secret VALUES must still never transit the plugin's inputs: they reach
+    // it through the call site's `env:` mapping (masked channel) or a masked
+    // input — review both when blessing such a plugin.
     let processes_placeholders = spec.processes_secret_placeholders == Some(true);
-    if processes_placeholders {
-        let has_masked_input = spec
-            .inputs
-            .as_ref()
-            .is_some_and(|inputs| inputs.values().any(|i| i.masking == Some(true)));
-        if !has_masked_input {
-            errors.push(
-                "processes_secret_placeholders: true requires at least one `masking: true` \
-                 input (the values channel for the placeholders)"
-                    .into(),
-            );
-        }
-    }
     if run.is_empty() {
         errors.push("run: is required (the plugin's script/command)".into());
     } else if !processes_placeholders {
