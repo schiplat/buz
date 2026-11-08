@@ -76,11 +76,11 @@ Images:
 |-------|------------|
 | `buz-manager` | `Dockerfile` |
 | `buz-runner` | `Dockerfile.runner` |
-| `buz-standalone` (arm64 only) | `docker/Dockerfile.standalone` — Manager + Runner in one image |
+| `buz-standalone` | `docker/Dockerfile.standalone` — Manager + Runner in one image |
 
 Both split images are built for `linux/amd64` **and** `linux/arm64` (native matrix builds: `ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64, no QEMU emulation). The matrix jobs push platform-specific tags (`v1.7.3-amd64` / `v1.7.3-arm64`), and a final `merge` job assembles the shared multi-arch tags (`v1.7.3` / `1.7.3` / `latest`) with `docker buildx imagetools create`. Pushing the same tag concurrently from both jobs would make ACR produce a broken index (arm64 as `unknown/unknown`), so the two tags are never pushed in parallel.
 
-The standalone image is **arm64-only** (workflow `.github/workflows/docker-standalone.yml` on `ubuntu-24.04-arm`); tags are `buz-standalone:vX.Y.Z` / `:latest` / `:X.Y.Z` plus `-arm64` suffixes.
+The standalone image is **multi-arch** (`linux/amd64` + `linux/arm64`), built by `.github/workflows/docker-standalone.yml` with the same matrix + `imagetools create` shape; tags are `buz-standalone:vX.Y.Z` / `:latest` / `:X.Y.Z` plus `-amd64` / `-arm64` suffixes. It is also published publicly to Docker Hub as `schiplat/buz-standalone`.
 
 **Standalone auth (dev only).** The image enables Manager `[standalone]` so the
 co-located Runner may register over loopback without `register_token`, but only
@@ -96,7 +96,7 @@ Template Compose: `deploy/standalone/docker-compose.yml`.
 
 Workflows:
 - `.github/workflows/docker.yml` — split `buz-manager` / `buz-runner` (amd64 + arm64)
-- `.github/workflows/docker-standalone.yml` — combined `buz-standalone` (**arm64 only**)
+- `.github/workflows/docker-standalone.yml` — combined `buz-standalone` (amd64 + arm64)
 
 Both trigger on `v*` tags or manual `workflow_dispatch`.
 
