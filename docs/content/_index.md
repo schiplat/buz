@@ -2,18 +2,28 @@
 title: "Documentation"
 type: docs
 weight: 1
-description: "Buz runs YAML pipelines across firewalled networks — the Manager is the only component that listens. GitHub Actions ergonomics, Jenkins-grade governance, one binary per role."
+description: "Buz — a self-hosted pipeline platform: one static Rust binary per role, declarative YAML with GitHub Actions ergonomics and Jenkins-grade governance, a full stack in one container in five minutes."
 ---
 
-Buz runs YAML pipelines on machines across firewalls, NATs, and network
-segments — machines that were never meant to talk to each other. The
-**Manager** is the only component that listens; **Runners** connect
-outbound-only, so targets need zero inbound ports, no VPN, no port
-forwarding. Authoring follows GitHub Actions (declarative YAML, `uses:`
-steps, GHA-style secrets); governance follows Jenkins (approval gates, RBAC,
-audit logs); and plugin references are locked to a content hash at save
-time — primitives that make Buz a safe target for AI-agent-authored
-automation. This site documents how to evaluate, operate, and extend it.
+Buz is a self-hosted pipeline platform that ships as a single static Rust
+binary per role — no JVM, no runtime dependencies — and a full Manager +
+Runner stack comes up in one container in five minutes.
+
+Everything is declared in YAML, not configured in a UI: pipelines, triggers,
+environments, concurrency queues, retries, and per-step timeouts.
+
+Steps are shell, SSH, Docker, or `uses:` references into a reviewed plugin
+marketplace, locked to a content hash at save time; secrets follow the
+GitHub Actions `${secrets.NAME}` style and are never auto-injected into the
+process environment. Runners connect outbound-only, so the machines doing
+the work keep zero inbound ports.
+
+Governance is built in — environments with approval gates, RBAC, and audit
+logs keep a human in charge of production deploys; the same primitives make
+Buz a safe target for AI-agent-authored automation. This site documents how
+to evaluate, operate, and extend it.
+
+In its design, Buz borrows proven ideas from GitHub Actions and Jenkins.
 
 {{< callout type="tip" >}}
 **New here?** The [5-minute standalone demo](/docs/00-quick-start/) runs the

@@ -1,9 +1,8 @@
 # Buz
 
-**YAML pipelines across firewalled networks — the Manager is the only
-component that listens.** Runners connect outbound-only: machines behind
-NATs, in other clouds, or on partner networks run the same pipeline with
-zero inbound ports, no VPN, no port forwarding.
+**A self-hosted pipeline platform: one static Rust binary per role, a full
+Manager + Runner stack in one container in five minutes, everything declared
+in YAML.**
 
 [Buz Docs](https://buz.docs.sconts.com/) ·
 [Plugin Marketplace](https://plugins.buz.schiplat.com/) ·
@@ -16,30 +15,15 @@ zero inbound ports, no VPN, no port forwarding.
 
 ## What is Buz
 
-Buz takes the proven halves of two platforms you already know and adds what
-neither has. From **GitHub Actions**: declarative YAML workflows, `uses:`
-reusable steps, GHA-style `${secrets.NAME}` secrets. From **Jenkins**: the
-governance core — environments with approval gates, RBAC, audit logs. From
-**Buz itself**: an outbound-only network model. A small control plane (the
-**Manager**) is the only component that listens; a fleet of execution agents
-(**Runners**) dial out to claim jobs and reach hosts spread across
-firewalls, NATs, and network segments — a build box in one datacenter, a
-deploy target behind a corporate proxy, an arm64 board in a lab rack. Every
-role ships as a single static Rust binary, and a full Manager + Runner stack
-comes up in one container in five minutes.
-
 It exists for the environment where a full CI/CD platform or Kubernetes is
-too much: you want declarative pipelines, secrets, and an audit trail, but
+too much: you want declarative pipelines, secrets, and an audit trail — but
 the machines are heterogeneous and the network is hostile.
 
-It is also ready for how automation gets written next: **AI agents as
-pipeline authors**. Buz's primitives are safe to generate against — plain
-declarative YAML instead of scripted Groovy; `uses:` references locked to a
-content hash at save time, so nothing upstream can rewrite a saved
-pipeline; secrets that never auto-inject into the process environment;
-approval gates that keep a human in the loop when an agent proposes a
-production deploy; and complete job logs an agent can read back to
-self-correct. See the full [comparison with Drone, GitHub Actions, and
+Governance is built in — environments with approval gates, RBAC, and audit
+logs keep a human in charge of production deploys; declarative YAML,
+save-time content-hash locking on `uses:` references, and secrets that
+never auto-inject make Buz a safe target for AI-agent-authored automation.
+See the full [comparison with Drone, GitHub Actions, and
 Jenkins](https://buz.docs.sconts.com/docs/01-architecture/comparison/).
 
 - **One binary per role.** `buz-manager` (control plane), `buz-runner`
@@ -52,6 +36,8 @@ Jenkins](https://buz.docs.sconts.com/docs/01-architecture/comparison/).
   against a plugin marketplace and are content-hash locked at save time.
 - **Secrets are GHA-style.** `${secrets.NAME}` at the use site, encrypted at
   rest (AES-256-GCM), never auto-injected into the process environment.
+
+In its design, Buz borrows proven ideas from GitHub Actions and Jenkins.
 
 ## How it works
 

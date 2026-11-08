@@ -22,7 +22,7 @@ markup:
 enableInlineShortcodes: true
 
 params:
-  description: "Buz — YAML pipelines across firewalled networks. The Manager is the only component that listens: GitHub Actions ergonomics, Jenkins-grade governance, one binary per role."
+  description: "Buz — a self-hosted pipeline platform: one static Rust binary per role, declarative YAML with GitHub Actions ergonomics and Jenkins-grade governance, a full stack in one container in five minutes."
   externalLinkDecoration: true
   theme:
     default: light
