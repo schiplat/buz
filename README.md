@@ -10,7 +10,68 @@ Tab completion for `buz-manager` / `buz-runner` / `buz-plugin`: `buz-manager com
 
 ![Buz overview](docs/static/image/buz_overview.png)
 
-## Quick Start
+## 快速考察 — Standalone 单容器演练（约 5 分钟）
+
+一个容器跑通全部栈（Manager + Runner），全程复制粘贴即可，不在任何仓库
+留下内容。考察的功能面：Manager/Runner 配对、仪表盘、job 调度与执行、
+插件市场、secret 静态加密。
+
+> 要求：Linux（或 Docker Desktop）、`docker` + `docker compose`、
+> `curl`、`openssl`。镜像为 linux/arm64（Apple Silicon Mac 可模拟运行）。
+
+**镜像二选一**：
+
+```bash
+# A. 已有 ACR 访问权限（内部环境）：
+docker login registry.cn-hongkong.aliyuncs.com
+export IMAGE=registry.cn-hongkong.aliyuncs.com/dadoulab/buz-standalone:v2.1.5
+
+# B. 从源码本地构建（公开路径，无需任何仓库权限）：
+git clone https://github.com/schiplat/buz.git && cd buz
+docker build -f Dockerfile.standalone -t buz-standalone:local .
+export IMAGE=buz-standalone:local
+```
+
+```bash
+# 1. Stage a deploy directory
+mkdir -p /tmp/buz-demo && cd /tmp/buz-demo
+curl -fsSL -o docker-compose.yml   https://raw.githubusercontent.com/schiplat/buz/master/deploy/standalone/docker-compose.yml
+
+# 2. Secret + launch (demo secret is auto-generated, not committed anywhere)
+echo "BUZ_JWT_SECRET=$(openssl rand -hex 32)" > .env
+docker compose up -d && sleep 5
+curl -s http://localhost:8080/health | grep '"status":"ok"'
+```
+
+Open **http://localhost:8080** — the first visit walks you through creating
+the admin account (`/setup`). Then verify the feature surface:
+
+```bash
+# 3. 注册 Runner：浏览器打开 http://localhost:8080 → /setup 创建管理员
+#    → Runners → New Runner，复制一次性 token，写入容器内
+#    /app/buz/runner.toml 后重启容器（docker compose restart）
+#    容器内 Manager + Runner 同箱配对，注册后即 online
+
+# 4. 端到端 job：UI 里新建一条管道（一个 `echo` shell 步骤），触发后
+#    在 Jobs 页看到它被容器内 Runner 认领 → 执行 → 成功
+
+# 5. 插件渲染演示（可选）：导入仓库里的
+#    example/pipelines/oss-config-demo.yml —— 演示 buz/config-fetch +
+#    buz/env-render 全链路（先在 UI Secrets 里录入模板引用的 secret）
+```
+
+这套演练验证的功能面：Manager/Runner 配对、仪表盘、job 调度与执行、
+插件市场、secret 静态加密——单机即可考察生产部署的完整功能形态。
+
+清理：`docker compose down`，删除演练目录即可。
+
+
+## 快速启动（本地开发环境）
+
+> 面向在本仓库工作的贡献者：需要 Rust 工具链、Node.js 与 make。外部考察者请用上方 Standalone 演练。
+
+> For contributors working in this repository — requires a Rust toolchain,
+> Node.js, and `make`. Evaluators: use the Standalone walkthrough below.
 
 ```bash
 # One-step: build dashboard + backend and start Manager
@@ -21,6 +82,7 @@ make run
 make example        # create data/pipelines dirs (configs in example/conf/)
 make build          # dashboard + release binaries (UI embedded in buz-manager)
 cd example && BUZ_ALLOW_INSECURE_JWT=1 ../target/release/buz-manager
+# ↑ the insecure-JWT escape hatch is for local development only
 
 # Runner (register_token from Manager UI → Runners)
 export BUZ_REGISTER_TOKEN="your-token"
@@ -31,9 +93,8 @@ make docs-serve
 # → http://127.0.0.1:3001/  (or :1313 depending on Hugo)
 ```
 
-**Lab / single-VM (arm64):** one-container image — see [Standalone](docs/content/docs/03-operations/standalone.md) (`buz-standalone`).
-
 More: [docs Quick Start](docs/content/docs/00-quick-start/_index.md) · [Deployment](docs/content/docs/03-operations/deployment.md) · [Configuration](docs/content/docs/03-operations/configuration.md) (includes `[standalone]`).
+
 
 ## Architecture
 
