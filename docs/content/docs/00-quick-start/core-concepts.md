@@ -28,7 +28,7 @@ content-hash-locked at save time.
 Secrets are team-scoped, encrypted at rest (AES-256-GCM, keyed by the
 Manager's `jwt_secret`), and referenced GHA-style: `${secrets.NAME}` at a
 use site allowlists and binds the value — nothing is auto-injected into the
-process environment. See [Secrets in Pipelines](../01-architecture/authoring/secrets-access.md).
+process environment. See [Secrets & Variables](/docs/01-architecture/authoring/secrets-variables/).
 
 ## Governance
 

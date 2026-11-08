@@ -1,21 +1,37 @@
 ---
-title: Secrets & Variables — Expression Cheat Sheet
-weight: 25
-description: "All YAML / script / template ways to declare and reference secrets, platform variables, env, and trigger inputs"
+title: Secrets & Variables
+weight: 40
+description: "Declare, resolve, and consume secrets and platform variables — allowlist flow, expression cheat sheet, end-to-end patterns"
 aliases:
+  - /docs/01-architecture/secrets-access/
+  - /docs/01-architecture/platform/secrets-access/
   - /docs/01-architecture/secrets-vars-expressions/
+  - /docs/01-architecture/authoring/secrets-access/
+  - /docs/01-architecture/authoring/secrets-vars-expressions/
 ---
 
-**Canonical quick reference** for every way Buz expresses secrets and variables.
-Use this page when authoring YAML or reviewing Quick YAML Reference.
+Canonical reference for everything about **secrets and platform variables** in
+pipeline YAML: the allowlist flow, every expression syntax, and end-to-end
+patterns. Buz uses the same **allowlist → explicit map → consume** flow as
+GitHub Actions, with expression syntax `${secrets.X}` / `${vars.X}` (not `${{ }}`).
 
 Related deep-dives:
 
-- [Secrets Access (GHA-style)](/docs/01-architecture/authoring/secrets-access/) — allowlist → map → consume
-- [Secrets Access Control](../platform/secrets-access-control.md) — kind, `team_shared`, bindings
-- [Env Render](./env-render.md) — `${secrets.X}` / `${vars.X}` in `.env` templates
+- [Secrets Access Control](../platform/secrets-access-control.md) — who can use what: kind, `team_shared`, bindings
 - [Pipeline Format](./pipeline-format.md) — field catalogue
-- [Config Block](./config-block.md) — `config.render` (render-only; delivery is the `buz/config-fetch` plugin step)
+- [Migrating from the kernel `config:` block](./migration-config-block.md) — legacy render/delivery
+- [YAML-First Authoring](./yaml-first-authoring.md) — file authority
+
+---
+
+## Core rules
+
+1. **Allowlist / reference ≠ inject.** Listing a name (or referencing `${secrets.NAME}`) does **not** put `$NAME` into the process environment by itself.
+2. **Map before use.** Put values into the environment with `env:`. Registry auth and config delivery both use plugin templates (`buz/docker-login`, `buz/config-fetch`) instead of purpose slots — the kernel purpose slots were removed in the 2.x retirement.
+3. **Scripts use shell vars.** After `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}`, `run` uses `$GIT_SSH_KEY`. Do not write `${secrets.…}` inside `run` — the engine does not expand secrets inside scripts.
+4. **Render templates get their values via `buz/env-render`'s `values` map.** One `NAME=${secrets.NAME}` line per referenced secret in `with:` — the kernel `config.render` block still works for existing pipelines, but the plugin is the recommended path.
+5. **Team-shared secrets** are auto-**allowlisted** for expression resolution; they are still not auto-injected as env vars.
+6. **Top-level `secrets:` is optional** for references the YAML scanner can see — step `env:` maps and `uses:` steps' `with:` inputs are collected automatically (GHA-style). It remains **required** when a `config.render` template references secrets: those references live inside external template files no YAML scan can see, so the declaration is the injection allowlist for external templates.
 
 ---
 
@@ -35,25 +51,28 @@ Related deep-dives:
 
 **Never confuse** `secrets: [OSS_CONFIG]` (optional list) with `${secrets.OSS_CONFIG}` (the actual value reference).
 
-### Top-level `secrets:` is optional (GHA-style)
+### What counts as an allowlist (any one is enough, same team)
 
-Aligned with GitHub Actions day-to-day authoring: **ordinary workflows do not maintain a YAML secret inventory**. Buz follows the same feel:
+| Source | Effect |
+|--------|--------|
+| Use-site `${secrets.NAME}` reference | **Implicit allowlist** for that name (same team) |
+| Step `secrets: [NAME]` | Explicit step allowlist (optional narrowing) |
+| Pipeline top-level `secrets:` | Optional overview + `pipeline_secrets` bind |
+| `team_shared: true` | Auto-allowlisted for every same-team job |
+
+Aligned with GitHub Actions day-to-day authoring, ordinary workflows do not
+maintain a YAML secret inventory. Two styles:
 
 | Style | YAML | When to use |
 |-------|------|-------------|
 | **Thin top / thick step (preferred for production)** | Omit pipeline `secrets:` — reference at the use site | DRY; closest to GHA |
-| **Thick top (optional overview)** | List names under pipeline `secrets:` | Teaching examples, review footprint, UI “Authorized Secrets” mirror |
+| **Thick top (optional overview)** | List names under pipeline `secrets:` | Teaching examples, review footprint, UI "Authorized Secrets" mirror |
 
-**What counts as an allowlist (any one is enough, same team):**
+The Manager **collects** names from use-site references, step lists, and the
+pipeline list when upserting YAML, so Authorized Secrets / `pipeline_secrets`
+stay populated even when the top-level list is omitted.
 
-1. **Use-site reference** — `env: KEY: ${secrets.NAME}` or `notify[].webhook: ${secrets.NAME}`
-2. **Step list** — `secrets: [NAME]` (optional narrowing / explicitness)
-3. **Pipeline list** — top-level `secrets: [NAME]` (optional overview + DB bind)
-4. **Team share** — secret `team_shared: true` (auto-allowlisted for the team)
-
-The Manager **collects** names from (1)+(2)+(3) when upserting YAML so Authorized Secrets / `pipeline_secrets` stay populated even when the top-level list is omitted.
-
-Allowlist / reference alone does **not** create `$OSS_CONFIG` / `$GIT_SSH_KEY` — still map via `env:` or a purpose slot.
+Cross-team names always fail. Missing same-team secret → claim / expand error.
 
 ---
 
@@ -139,55 +158,39 @@ secrets:
   - GIT_SSH_KEY
 
 steps:
-  - name: Clone
+  - name: Clone Private Repo
     secrets: [GIT_SSH_KEY]                 # ① allowlist (optional if pipeline-listed)
     env:
       GIT_SSH_KEY: ${secrets.GIT_SSH_KEY} # ② map
     run: |
-      echo "$GIT_SSH_KEY" > /tmp/key       # ③ consume
+      echo "$GIT_SSH_KEY" > /tmp/key && chmod 600 /tmp/key   # ③ consume
+      GIT_SSH_COMMAND="ssh -i /tmp/key -o StrictHostKeyChecking=no" \
+        git clone --depth 1 git@github.com:org/private.git /tmp/private
+      rm -f /tmp/key
 ```
 
-### 2) Secret → purpose slot (no `$NAME` in script)
+### 2) Secret → `.env` on the target via the `buz/env-render` plugin (recommended)
 
 ```yaml
-secrets:
-  - OSS_CONFIG
-
 steps:
-  - name: Deliver
+  - name: Render env
+    uses: buz/env-render@1.0.0
     engine: ssh
     host: $deploy_host
-    secrets: [OSS_CONFIG]
-    config:
-      source: ${secrets.OSS_CONFIG}            # ② slot — deprecated → buz/config-fetch
-      key_path: config_tpl/app/v1
-      dest: /opt/app
-    run: ls "$BUZ_CONFIG_DIR"
+    with:
+      dest_dir: /opt/app
+      template: env.example   # file uses ${secrets.POSTGRES_PASSWORD}
+      output: .env
+      mode: "0600"
+      on_missing: fail
+      values: |
+        POSTGRES_PASSWORD=${secrets.POSTGRES_PASSWORD}
 ```
 
-### 3) Secret / var → `.env` template (render)
+The legacy kernel `config.render` block behaves the same for existing
+pipelines — see [Migrating from the kernel `config:` block](./migration-config-block.md).
 
-```yaml
-# env.example on the target (under config.dest):
-#   DB_PASSWORD=${secrets.POSTGRES_PASSWORD}
-#   IMAGE_TAG=${vars.INPUT_TAG}
-#   REGISTRY=${vars.REGISTRY:-registry.example.com}
-
-steps:
-  - name: Render
-    engine: ssh
-    host: $deploy_host
-    secrets: [POSTGRES_PASSWORD]
-    config:
-      dest: /opt/app
-      render:
-        - template: env.example
-          output: .env
-          mode: "0600"
-          on_missing: fail
-```
-
-### 4) Platform Variables (auto env)
+### 3) Platform Variables (auto env)
 
 ```yaml
 variables:
@@ -205,7 +208,7 @@ env:
   CACHE: ${vars.BUILD_CACHE_DIR}
 ```
 
-### 5) Pipeline inline env (non-secret)
+### 4) Pipeline inline env (non-secret)
 
 ```yaml
 env:
@@ -227,7 +230,7 @@ steps:
 | Put secret `X` into `$X` for scripts | `env: X: ${secrets.X}` |
 | Log in to a private registry | `buz/docker-login` plugin template (`registry` / `username` / `password` via `${secrets.X}`) |
 | Fetch OSS config bundle | `buz/config-fetch` plugin step (`url` input = `${secrets.CONFIG_BUNDLE_URL}` presigned) |
-| Put secret into a generated `.env` | Template line `${secrets.X}` + `config.render` |
+| Put secret into a generated `.env` | `buz/env-render` template line `${secrets.X}` + `values:` map |
 | Bind a platform Variable | `variables: [NAME]` → use `$NAME` in `run` |
 | Use Variable in a template | `${vars.NAME}` |
 | Pass trigger `version` into script | `$INPUT_VERSION` |
@@ -273,10 +276,11 @@ Step env  >  Pipeline env  >  Platform variables
 
 | Secret `team_shared` | Effect on expressions |
 |----------------------|------------------------|
-| `false` (default) | Must appear in pipeline/step `secrets:` (or purpose-slot resolution path) |
+| `false` (default) | Must appear in pipeline/step `secrets:` (or the resolve path of a plugin input) |
 | `true` | Auto-allowlisted for same-team jobs — **still** needs `${secrets.X}` / `env:` to inject |
 
-Cross-team secrets are forbidden. Details: [Secrets Access Control](../platform/secrets-access-control.md).
+Cross-team secrets are forbidden. Delivery-side details:
+[Secrets Access Control](../platform/secrets-access-control.md).
 
 ---
 

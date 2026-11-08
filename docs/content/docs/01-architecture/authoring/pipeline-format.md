@@ -513,7 +513,7 @@ Purpose slots use the same expression (no separate list required):
 
 Optional top-level / step `secrets: [NAME]` remains valid as an overview or narrowing. Manager collects effective names from lists + refs when upserting YAML.
 
-Do **not** write `${secrets.…}` inside `run` — the engine does not expand secrets in scripts. Full rules: [Secrets Access (GHA-style)](/docs/01-architecture/platform/secrets-access/). Syntax cheat sheet: [Secrets & Variables Expressions](/docs/01-architecture/authoring/secrets-vars-expressions/).
+Do **not** write `${secrets.…}` inside `run` — the engine does not expand secrets in scripts. Full rules: [Secrets & Variables](/docs/01-architecture/authoring/secrets-variables/). Syntax cheat sheet: [Secrets & Variables](/docs/01-architecture/authoring/secrets-variables/).
 
 Secrets default to **`team_shared: false`**. Same-team only; see [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/).
 
@@ -815,15 +815,15 @@ config:
 
 `template` / `output` are **relative to `dest`**. Same root + subdirs → one step;
 unrelated roots → separate render-only steps (see
-[Config Block — Sample B](/docs/01-architecture/authoring/config-block/#sample-b--paths-under-dest)).
+[Migrating from the kernel `config:` block](/docs/01-architecture/authoring/migration-config-block/)).
 
 Render is a **full rebuild** (the template is the sole source of truth), so keys
 removed from the template are dropped. `backup_keep` (default `3`) keeps the
 newest timestamped backups of the prior output for rollback.
 
 Flat `config_source` / `config_path` / `config_dir` / `env_render` are **rejected**.
-Full rules, DB columns, and engines: [Config Block DSL v2](/docs/01-architecture/authoring/config-block/).
-Render engine details: [Env Render](/docs/01-architecture/authoring/env-render/).
+Full rules, DB columns, and engines: [Migrating from the kernel `config:` block](/docs/01-architecture/authoring/migration-config-block/).
+Render engine details: [Migrating from the kernel `config:` block](/docs/01-architecture/authoring/migration-config-block/).
 
 | | |
 |---|---|

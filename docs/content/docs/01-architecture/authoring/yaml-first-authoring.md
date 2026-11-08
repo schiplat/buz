@@ -105,5 +105,5 @@ See [Configuration](/docs/03-operations/configuration/).
 ## Related
 
 - [Pipeline Format](./pipeline-format.md) — YAML field reference
-- [Secrets Access (GHA-style)](/docs/01-architecture/authoring/secrets-access/) — `env: KEY: ${secrets.NAME}`
-- [Config Block](./config-block.md)
+- [Secrets & Variables](/docs/01-architecture/authoring/secrets-variables/) — `env: KEY: ${secrets.NAME}`
+- [Migrating from the kernel `config:` block](./migration-config-block.md)

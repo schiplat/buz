@@ -10,7 +10,7 @@ When a job reaches a **terminal** status, Manager can push a notification to ext
 
 > **First channel:** Feishu (Lark) custom robot (`type: feishu`). The channel interface is generic — DingTalk / Slack / email are not implemented yet.
 
-Related: [Pipeline Format → `notify`](./pipeline-format.md#notify) · [Secrets & Variables Expressions](./secrets-vars-expressions.md) · [YAML-First Authoring](./yaml-first-authoring.md)
+Related: [Pipeline Format → `notify`](./pipeline-format.md#notify) · [Secrets & Variables](./secrets-variables.md) · [YAML-First Authoring](./yaml-first-authoring.md)
 
 ---
 

@@ -36,7 +36,7 @@ whole stack - Manager + Runner - in one container. No toolchain required.
 |---|---|
 | See it running in 5 minutes | [Quick Start](/docs/00-quick-start/) |
 | Understand the design | [Core Concepts](/docs/00-quick-start/core-concepts/) - [Principles](/docs/01-architecture/principles/) |
-| Write pipelines and use plugins | [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/) - [Secrets](/docs/01-architecture/authoring/secrets-access/) - [Plugin Contract](/docs/01-architecture/authoring/plugin-contract/) |
+| Write pipelines and use plugins | [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/) - [Secrets & Variables](/docs/01-architecture/authoring/secrets-variables/) - [Plugin Contract](/docs/01-architecture/authoring/plugin-contract/) |
 | Deploy a single-box lab | [Standalone](/docs/03-operations/standalone/) |
 | Operate in production | [Deployment](/docs/03-operations/deployment/) - [Configuration](/docs/03-operations/configuration/) |
 | Rotate keys, scan legacy config | [Key Rotation](/docs/03-operations/key-rotation/) - [CLI Reference](/docs/03-operations/cli-reference/) |

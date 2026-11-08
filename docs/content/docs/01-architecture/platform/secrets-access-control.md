@@ -14,7 +14,7 @@ Buz controls secret delivery with a **team ownership boundary** plus an **opt-in
 2. **Explicit per-pipeline bindings** — `pipeline_secrets` / YAML `secrets:`
 3. **Explicit step references** — step `secrets:` allowlist
 
-**Getting a value into the process env** always requires an explicit map: `env: KEY: ${secrets.NAME}` (or a purpose slot). See [Secrets in Pipelines (GHA-style)](/docs/01-architecture/authoring/secrets-access/).
+**Getting a value into the process env** always requires an explicit map: `env: KEY: ${secrets.NAME}` (or a purpose slot). See [Secrets & Variables](/docs/01-architecture/authoring/secrets-variables/).
 
 **Default for new secrets: `team_shared = false`.** Same-team pipelines do **not** resolve the secret unless they bind or reference it. Cross-team use remains forbidden (future Phase 3 grants).
 
@@ -213,7 +213,7 @@ Help text: only secrets with **Team share** enabled are auto-injected; otherwise
 
 ## YAML secret bindings (authoritative)
 
-Prefer YAML `secrets:` + `env: KEY: ${secrets.NAME}` (see [Secrets Access](/docs/01-architecture/authoring/secrets-access/)). Form create/edit for pipelines is removed ([YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/)).
+Prefer YAML `secrets:` + `env: KEY: ${secrets.NAME}` (see [Secrets & Variables](/docs/01-architecture/authoring/secrets-variables/)). Form create/edit for pipelines is removed ([YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/)).
 
 | YAML / UI | Behavior |
 |-----------|----------|
