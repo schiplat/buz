@@ -32,9 +32,9 @@ export BUZ_REGISTER_TOKEN="your-token"
 ./target/release/buz-runner -c example/conf/runner.toml
 ```
 
-## Lab / single-VM (arm64)
+## Lab / single-VM (amd64 or arm64 host)
 
-Prefer the one-container image — see **[Standalone](/docs/03-operations/standalone/)** (`buz-standalone`).
+Prefer the multi-arch one-container image (linux/amd64 + linux/arm64) — see **[Standalone](/docs/03-operations/standalone/)** (`buz-standalone`).
 
 ## Before production: the step review gate
 
