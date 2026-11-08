@@ -19,18 +19,14 @@ Tab completion for `buz-manager` / `buz-runner` / `buz-plugin`: `buz-manager com
 > 要求：Linux（或 Docker Desktop）、`docker` + `docker compose`、
 > `curl`、`openssl`。镜像为 linux/arm64（Apple Silicon Mac 可模拟运行）。
 
-**镜像二选一**：
+**获取镜像（一行，公开 DockerHub）**：
 
 ```bash
-# A. 已有 ACR 访问权限（内部环境）：
-docker login registry.cn-hongkong.aliyuncs.com
-export IMAGE=registry.cn-hongkong.aliyuncs.com/dadoulab/buz-standalone:v2.1.5
-
-# B. 从源码本地构建（公开路径，无需任何仓库权限）：
-git clone https://github.com/schiplat/buz.git && cd buz
-docker build -f Dockerfile.standalone -t buz-standalone:local .
-export IMAGE=buz-standalone:local
+export IMAGE=schiplat/buz-standalone:latest   # linux/arm64; 版本 tag 如 :v2.1.5
 ```
+
+> 或从源码本地构建：`git clone https://github.com/schiplat/buz.git && cd buz && docker build -f Dockerfile.standalone -t buz-standalone:local . && export IMAGE=buz-standalone:local`
+
 
 ```bash
 # 1. Stage a deploy directory
