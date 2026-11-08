@@ -11,7 +11,7 @@ This section is for **people changing the codebase**, not for day-to-day pipelin
 - Deploy / config → [Operations](/docs/03-operations/)
 
 {{< cards >}}
+  {{< card link="build-from-source/" title="Build from Source" subtitle="Prerequisites · build · run · tests · packaging" >}}
   {{< card link="project-structure/" title="Project Structure" subtitle="Crates, dashboard, docs layout" >}}
   {{< card link="database-schema/" title="Database Schema" subtitle="SQLite tables and migrations" >}}
-  {{< card link="team-switcher-docker-e2e/" title="Team Switcher Docker e2e" subtitle="Internal UI e2e notes" >}}
 {{< /cards >}}
