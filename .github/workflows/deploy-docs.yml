@@ -53,6 +53,19 @@ jobs:
           HUGO_BASEURL: ${{ steps.pages.outputs.base_url }}/
         run: hugo --minify
 
+      - name: Check internal links & anchors (lychee, offline)
+        # Internal links + anchors only — deterministic, no network. --root-dir
+        # resolves path-absolute links (/docs/...) against the built site, the
+        # same layout GitHub Pages serves. Dead links fail the deploy here,
+        # before anything is uploaded.
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
+        with:
+          args: >-
+            --offline
+            --no-progress
+            --root-dir ${{ github.workspace }}/docs/public
+            'docs/public/**/*.html'
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
