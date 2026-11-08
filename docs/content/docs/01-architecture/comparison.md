@@ -32,7 +32,7 @@ eight dimensions.
 
 | Dimension | Buz + buz-plugins | Drone | GitHub Actions | Jenkins |
 |---|---|---|---|---|
-| Control plane | `buz-manager`: single static Rust binary, self-hosted ([Tech Stack](/docs/01-architecture/tech-stack/)) | `drone-server`, self-hosted Go binary or container | GitHub-hosted SaaS; cannot be self-hosted | Jenkins controller on a JVM, self-hosted |
+| Control plane | `buz-manager`: single static Rust binary, self-hosted | `drone-server`, self-hosted Go binary or container | GitHub-hosted SaaS; cannot be self-hosted | Jenkins controller on a JVM, self-hosted |
 | Execution component | `buz-runner` (execution agent) + optional `buz-sandboxd` (host supervisor); measured idle RSS: Runner ≈ 25 MB, Manager ≈ 25–45 MB (macOS/arm64 release build, one registered runner, no jobs, 2026-11-08) | `drone-runner`, drives Docker containers | Hosted ephemeral VMs, or self-hosted runners on any machine | Persistent JVM agents per host |
 | Runtime dependencies | None — static binaries, no agent frameworks | Docker required on the runner host | None (hosted) / whatever self-hosting needs | JDK everywhere |
 | Time to first pipeline | 5-minute standalone demo: one container, Runner auto-registers over loopback ([Quick Start](/docs/00-quick-start/)) | Tens of minutes, straightforward | Minutes, but requires a GitHub repo | Hours to days: plugin selection, controller tuning |

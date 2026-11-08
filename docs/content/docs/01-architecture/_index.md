@@ -29,7 +29,7 @@ Zero-trust security and architectural minimalism combined.
 - **Zero-trust security**: Secrets stay in Runner memory only — never persisted, never sent back. Log masking via Aho-Corasick
 - **Zero operations burden**: V1.x uses no Redis, MQ, or external DB. All persistence, scheduling, and services are built into the Center binary
 
-More: [Principles](./principles/) · [Tech Stack](./tech-stack/)
+More: [Principles](./principles/)
 
 ---
 
@@ -56,5 +56,4 @@ Follow the product journey — **run locally → write a pipeline → see how it
   {{< card link="execution/" title="Execution" subtitle="Runner policy · Docker · SSH multi-host" >}}
   {{< card link="platform/" title="Platform" subtitle="RBAC · secrets · API · audit" >}}
   {{< card link="principles/" title="Principles" subtitle="B-U-Z detail notes" >}}
-  {{< card link="tech-stack/" title="Tech Stack" subtitle="Languages and major crates" >}}
 {{< /cards >}}
