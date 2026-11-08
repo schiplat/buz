@@ -132,7 +132,7 @@ Then restart Manager and sign in. Prefer changing the password again from the UI
 
 ## Runner (`conf/runner.toml`)
 
-Machine-local only. Strategy is **not** configured here — see [Runner Policy](/docs/01-architecture/execution/runner-concurrent-jobs/).
+Machine-local only. Strategy is **not** configured here — see [Runner Policy](/docs/01-architecture/execution/runner-policy/).
 
 | Managed in UI | Kept in TOML (`[runner]` / `[engine]` / `[logging]`) |
 |---------------|-----------------------------------------------------|
@@ -260,7 +260,7 @@ This is a coordinated, breaking release: upgrade Manager, Runner, and sandboxd b
 
 `BUZ_SANDBOXD_INSTANCE_ID` must be unique per Docker daemon. On startup sandboxd refuses to take over a socket whose live peer answers a `health` probe, removes stale sockets only when nothing is listening, and force-removes leftover `buz.sandboxd.managed=true` containers carrying its own `buz.sandboxd.instance=<id>` label — it never touches other instances' containers. Compose exposes `/dev/kvm` to sandboxd only through the optional `docker-compose.vm.yml` override (`docker compose -f docker/docker-compose.yml -f docker/docker-compose.vm.yml --profile sandbox up -d`), because the default Compose path cannot reach the host KVM device. The container image ships a `buz-sandboxd --healthcheck` subcommand used as the Compose healthcheck; the Runner waits for it via an optional `depends_on` condition, so Host-only deployments are unaffected.
 
-All sandboxed tiers currently support local shell steps only: SSH, per-step Docker engine, and host-side config preparation are rejected before the job starts. See [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes) for the full compatibility/security boundary and [Sandbox Isolation Tiers](/docs/01-architecture/execution/sandbox-isolation-tiers/) for the tier model.
+All sandboxed tiers currently support local shell steps only: SSH, per-step Docker engine, and host-side config preparation are rejected before the job starts. See [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-policy/#job-wide-execution-modes) for the full compatibility/security boundary and [Sandbox Isolation Tiers](/docs/01-architecture/execution/sandbox-isolation-tiers/) for the tier model.
 
 | Key | Notes |
 |-----|-------|

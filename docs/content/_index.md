@@ -40,7 +40,7 @@ whole stack - Manager + Runner - in one container. No toolchain required.
 | Deploy a single-box lab | [Standalone](/docs/03-operations/standalone/) |
 | Operate in production | [Deployment](/docs/03-operations/deployment/) - [Configuration](/docs/03-operations/configuration/) |
 | Rotate keys, scan legacy config | [Key Rotation](/docs/03-operations/key-rotation/) - [CLI Reference](/docs/03-operations/cli-reference/) |
-| Control access and approvals | [RBAC](/docs/01-architecture/platform/rbac/) - [Approvals Switch](/docs/01-architecture/platform/approvals-switch/) - [Audit Logs](/docs/01-architecture/platform/admin-audit-logs/) |
+| Control access and approvals | [RBAC](/docs/01-architecture/platform/rbac/) - [Ops Approval Switch](/docs/01-architecture/platform/ops-approval-switch/) - [Audit Logs](/docs/01-architecture/platform/admin-audit-logs/) |
 | Report a vulnerability | [Security Policy](https://github.com/schiplat/buz/security/policy) |
 
 ## Sections

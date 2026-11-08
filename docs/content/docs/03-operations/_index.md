@@ -17,6 +17,6 @@ description: "Configuration, deployment, and operations guides"
 
 Local first run: [Quick Start](/docs/00-quick-start/). Production detail: [Deployment](/docs/03-operations/deployment/).
 
-Runner strategy (concurrency, engines, cleanup) is configured in the UI — see [Runner Policy](/docs/01-architecture/execution/runner-concurrent-jobs/).
+Runner strategy (concurrency, engines, cleanup) is configured in the UI — see [Runner Policy](/docs/01-architecture/execution/runner-policy/).
 
 First admin is created at **`/setup`** on a fresh database (not from config).

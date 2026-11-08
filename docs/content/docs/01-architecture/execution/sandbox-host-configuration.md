@@ -130,7 +130,7 @@ other.
 The authoring side of this split — what pipeline authors write versus what
 platform admins configure, and why Runner labels use capability vocabulary
 rather than tier names — is described in
-[Runner Policy — Who decides what: the authoring boundary](/docs/01-architecture/execution/runner-concurrent-jobs/#who-decides-what-the-authoring-boundary).
+[Runner Policy — Who decides what: the authoring boundary](/docs/01-architecture/execution/runner-policy/#who-decides-what-the-authoring-boundary).
 
 ## Identity model
 
@@ -701,5 +701,5 @@ These are the defaults chosen for items not separately decided; change them deli
 - [Configuration](/docs/03-operations/configuration/)
 - [Config File Scopes](/docs/03-operations/config-file-scopes/)
 - [Sandbox Isolation Tiers](/docs/01-architecture/execution/sandbox-isolation-tiers/)
-- [Runner Policy](/docs/01-architecture/execution/runner-concurrent-jobs/)
+- [Runner Policy](/docs/01-architecture/execution/runner-policy/)
 - [Security Notes](https://github.com/schiplat/buz/blob/master/SECURITY.md)

@@ -1,9 +1,10 @@
 ---
-title: Runner Policy (UI-managed)
+title: Runner Policy
 weight: 10
 description: "Centralized runner strategy — labels, concurrency, engines, cleanup — configured in Manager UI"
 aliases:
   - /docs/01-architecture/runner-concurrent-jobs/
+  - /docs/01-architecture/execution/runner-concurrent-jobs/
 ---
 
 Runner **strategy** (what the agent is allowed to do and how) is configured in **Manager UI / DB**, not in `runner.toml`.  

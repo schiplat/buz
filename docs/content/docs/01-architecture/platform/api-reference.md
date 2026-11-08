@@ -127,7 +127,7 @@ Workspace version is defined in root `Cargo.toml` (`[workspace.package].version`
 
 ## Runners
 
-> Policy fields (`max_concurrent_jobs`, engines, cleanup, `ssh_host_key_policy`) are UI-managed. See [Runner Policy](/docs/01-architecture/execution/runner-concurrent-jobs/).
+> Policy fields (`max_concurrent_jobs`, engines, cleanup, `ssh_host_key_policy`) are UI-managed. See [Runner Policy](/docs/01-architecture/execution/runner-policy/).
 
 | Method | Path | Auth |
 |--------|------|------|

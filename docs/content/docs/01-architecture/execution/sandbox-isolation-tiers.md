@@ -10,7 +10,7 @@ This page records a design decision: Buz job execution modes are ordered by **is
 
 | Tier | State |
 |------|-------|
-| `host`, `container`, `vm` | **Shipped** — see [Runner Policy](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes), [Configuration](/docs/03-operations/configuration/), and [Security Notes](https://github.com/schiplat/buz/blob/master/SECURITY.md) |
+| `host`, `container`, `vm` | **Shipped** — see [Runner Policy](/docs/01-architecture/execution/runner-policy/#job-wide-execution-modes), [Configuration](/docs/03-operations/configuration/), and [Security Notes](https://github.com/schiplat/buz/blob/master/SECURITY.md) |
 | `sandbox` (userspace-kernel sandbox, delivered by gVisor `runsc`) | **Shipped (code, 2026-10-28).** Protocol, Runner config, `buz-sandboxd` probing, Manager gating, and dashboard selection all accept the tier. **Verified end-to-end on real gVisor** (Debian 13 arm64, no `/dev/kvm`, gVisor release-20261026.0, Docker `runsc` runtime): full capability probe, job create/exec/destroy lifecycle, and a step executing inside the gVisor kernel (`uname` → `4.19.0-gvisor`). The verification also caught and fixed a real portability bug: the step-timeout wrapper now uses busybox-compatible short flags (`timeout -s TERM -k 5`), since busybox applets reject GNU's `--signal`. |
 
 Decision date: 2026-10-28.
@@ -220,7 +220,7 @@ Measured 2026-10-28 on the verification host (Debian 13, **ARM64, 2 vCPU, no `/d
 
 ## References
 
-- [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-concurrent-jobs/#job-wide-execution-modes)
+- [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-policy/#job-wide-execution-modes)
 - [Configuration — sandbox and VM options](/docs/03-operations/configuration/)
 - [Sandbox Host Configuration & Resource Profiles](/docs/01-architecture/execution/sandbox-host-configuration/) — accepted design for Manager-managed host policy and named resource profiles
 - [Security Notes](https://github.com/schiplat/buz/blob/master/SECURITY.md)

@@ -85,7 +85,7 @@ This is where the platforms genuinely differ — everything else is degrees.
 
 | Dimension | Buz | Drone | GitHub Actions | Jenkins |
 |---|---|---|---|---|
-| Approval gates | ✅ Built-in environment gates, optional second approver, [switchable](/docs/01-architecture/platform/approvals-switch/) | OSS: no; promotions and governance features sit in Drone Enterprise | ✅ Environments with required reviewers — free in public repos, paid plans for private repos | ❌ Nothing native; plugins and process conventions |
+| Approval gates | ✅ Built-in environment gates, optional second approver, [switchable](/docs/01-architecture/platform/ops-approval-switch/) | OSS: no; promotions and governance features sit in Drone Enterprise | ✅ Environments with required reviewers — free in public repos, paid plans for private repos | ❌ Nothing native; plugins and process conventions |
 | RBAC | ✅ Built-in ([RBAC](/docs/01-architecture/platform/rbac/)) | SCM-derived permissions; finer control in Drone Enterprise | GitHub's repo/org/team permission system | Plugins (Role-based Authorization, Matrix) |
 | Audit logs | ✅ Built-in admin audit logs ([Audit Logs](/docs/01-architecture/platform/admin-audit-logs/)) | Drone Enterprise | Organization audit log | Plugins (Audit Trail) |
 

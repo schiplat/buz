@@ -1,7 +1,9 @@
 ---
-title: Approvals Switch
+title: Ops Approval Switch
 weight: 40
 description: Require a second ops approval for host-config and resource-grant changes
+aliases:
+  - /docs/01-architecture/platform/approvals-switch/
 ---
 
 Sensitive control-plane changes can be routed through a two-person approval
