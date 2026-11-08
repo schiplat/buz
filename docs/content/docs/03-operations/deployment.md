@@ -1,119 +1,51 @@
 ---
 title: Deployment
 weight: 20
-description: "Deploying Center and Runner in production"
+description: "Production deployment - container images or release binaries"
 ---
 
-> **New here?** Start with [Quick Start](/docs/00-quick-start/) (`make run`). This page covers **production** deploy: release packages, split Manager + Runner, Docker, and upgrades.
->
-> **Lab / single-VM?** Prefer the one-container image — see [Standalone](/docs/03-operations/standalone/) (`buz-standalone`, arm64).
+> **Lab / single box?** The [Quick Start](/docs/00-quick-start/) demo and the
+> [Standalone](/docs/03-operations/standalone/) image run everything in one
+> container.
+> **Building from source?** See [Development - Build from
+> source](/docs/02-development/build-from-source/). This page covers
+> deployment **from published artifacts only** - no compilation.
+
+Two supported deployment modes:
+
+| Mode | What you deploy | Artifacts |
+|------|-----------------|-----------|
+| **Container** | `buz-manager` / `buz-runner` / `buz-standalone` images | Multi-arch (amd64 + arm64), Aliyun ACR + Docker Hub |
+| **Binary** | Release archives with `buz-manager` + `buz-runner` (dashboard embedded) | GitHub Releases (linux-x86_64 / linux-aarch64 / macos-aarch64) |
+
+Both consume the same config files (`manager.toml` / `runner.toml`), the same
+`BUZ_JWT_SECRET` derivation, and the same SQLite storage - switching between
+them does not change runtime behavior.
 
 ## Embedded Web UI
 
-`buz-manager` embeds `dashboard/dist` at compile time (`rust-embed`). Production binaries and Docker images need **no** separate `dashboard/` directory.
+`buz-manager` embeds `dashboard/dist` at compile time (`rust-embed`).
+Production binaries and Docker images need **no** separate `dashboard/`
+directory.
 
-```bash
-make build-dashboard   # required before release cargo build
-make build-backend
-./target/release/buz-manager -c conf/manager.toml
-# Optional disk override for UI iteration: -f dashboard/dist
-```
+## Container deployment
 
-## GitHub Release packages
+### Images
 
-CI workflow `.github/workflows/release.yml` builds **Linux + macOS** archives (UI embedded in `buz-manager`) on tag `v*`:
+| Image | Contents | Platforms |
+|-------|----------|-----------|
+| `buz-manager` | Manager only (dashboard embedded) | linux/amd64 + linux/arm64 |
+| `buz-runner` | Runner only | linux/amd64 + linux/arm64 |
+| `buz-standalone` | Manager + Runner + entrypoint in one container (lab / single-box) | linux/amd64 + linux/arm64 |
 
-| Archive | Runner |
-|---------|--------|
-| `buz-<ver>-linux-x86_64.tar.gz` | ubuntu-latest |
-| `buz-<ver>-linux-aarch64.tar.gz` | ubuntu-24.04-arm |
-| `buz-<ver>-macos-aarch64.tar.gz` | macos-14 (Apple Silicon) |
-| ~~`buz-<ver>-macos-x86_64.tar.gz`~~ | temporarily disabled (macos-13 / Intel) |
+Registries: Aliyun ACR (`<registry>/<namespace>/...`, private) and Docker Hub
+(`schiplat/...`, `buz-standalone` public). Tags: `vX.Y.Z`, `X.Y.Z`, `latest`,
+plus `-amd64` / `-arm64` platform suffixes.
 
-The authoring toolchain ships as a **separate asset** per platform, so plugin
-authors download one small binary instead of the Manager/Runner bundle:
+### Layout
 
-| Archive | Contents |
-|---------|----------|
-| `buz-plugin-<ver>-linux-x86_64.tar.gz` | single `buz-plugin` binary |
-| `buz-plugin-<ver>-linux-aarch64.tar.gz` | 〃 |
-| `buz-plugin-<ver>-macos-aarch64.tar.gz` | 〃 |
-
-Each archive has a `.sha256` sibling. See
-[Plugin Tooling](/docs/01-architecture/authoring/plugin-tooling/) for usage.
-
-```text
-buz-<version>-linux-x86_64.tar.gz
-  bin/buz-manager   # UI embedded
-  bin/buz-runner
-  conf/manager.toml
-  conf/runner.toml
-  data/  pipelines/
-  README.md
-```
-
-```bash
-git tag v1.7.3 && git push origin v1.7.3
-make package   # local host only → dist/release/buz-*.tar.gz
-```
-
-```bash
-tar -xzf buz-*-linux-x86_64.tar.gz && cd buz-*
-# edit conf/*.toml
-./bin/buz-manager -c conf/manager.toml
-```
-
-Optional: install tab completion for the packaged binaries with
-`./bin/buz-manager completions <shell>` / `./bin/buz-runner completions <shell>`
-— see [Shell Completions](/docs/03-operations/shell-completions/).
-
-Apple Silicon Mac: use `macos-aarch64`. Intel Mac (`macos-x86_64`) builds are temporarily disabled in CI.
-## Docker (Aliyun ACR)
-
-Images:
-
-| Image | Dockerfile |
-|-------|------------|
-| `buz-manager` | `Dockerfile` |
-| `buz-runner` | `Dockerfile.runner` |
-| `buz-standalone` | `docker/Dockerfile.standalone` — Manager + Runner in one image |
-
-Both split images are built for `linux/amd64` **and** `linux/arm64` (native matrix builds: `ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64, no QEMU emulation). The matrix jobs push platform-specific tags (`v1.7.3-amd64` / `v1.7.3-arm64`), and a final `merge` job assembles the shared multi-arch tags (`v1.7.3` / `1.7.3` / `latest`) with `docker buildx imagetools create`. Pushing the same tag concurrently from both jobs would make ACR produce a broken index (arm64 as `unknown/unknown`), so the two tags are never pushed in parallel.
-
-The standalone image is **multi-arch** (`linux/amd64` + `linux/arm64`), built by `.github/workflows/docker-standalone.yml` with the same matrix + `imagetools create` shape; tags are `buz-standalone:vX.Y.Z` / `:latest` / `:X.Y.Z` plus `-amd64` / `-arm64` suffixes. It is also published publicly to Docker Hub as `schiplat/buz-standalone`.
-
-**Standalone auth (dev only).** The image enables Manager `[standalone]` so the
-co-located Runner may register over loopback without `register_token`, but only
-if the runner name is already authorized (UI → New Runner, or
-`standalone.auto_approve`). Non-loopback registration is rejected. This does
-**not** change the production register_token protocol used by split
-`buz-manager` / `buz-runner` deployments.
-
-**Full first-run and upgrade guide:** [Standalone (single image)](/docs/03-operations/standalone/).
-Template Compose: `deploy/standalone/docker-compose.yml`.
-
-### GitHub Actions → personal ACR
-
-Workflows:
-- `.github/workflows/docker.yml` — split `buz-manager` / `buz-runner` (amd64 + arm64)
-- `.github/workflows/docker-standalone.yml` — combined `buz-standalone` (amd64 + arm64)
-
-Both trigger on `v*` tags or manual `workflow_dispatch`.
-
-Configure the GitHub repository:
-
-| Kind | Name | Example |
-|------|------|---------|
-| Variable | `ACR_REGISTRY` | `registry.cn-hangzhou.aliyuncs.com` |
-| Variable | `ACR_NAMESPACE` | your ACR namespace |
-| Secret | `ACR_USERNAME` | ACR login user |
-| Secret | `ACR_PASSWORD` | ACR password / token |
-
-Pushed tags: `<registry>/<namespace>/buz-manager:v1.7.3` (and `:1.7.3`, `:latest`), same for `buz-runner`. Standalone: `<registry>/<namespace>/buz-standalone:v1.7.3` (linux/arm64).
-
-### Container layout
-
-Each image contains **only** the binary + a default config (UI is embedded in `buz-manager`):
+Each image contains **only** the binary + a default config (UI is embedded in
+`buz-manager`):
 
 ```text
 /app/buz/
@@ -123,42 +55,42 @@ Each image contains **only** the binary + a default config (UI is embedded in `b
   workspace/                 # Runner volume
 ```
 
-Host templates for Compose **and** tar.gz releases live in **`deploy/conf/`**. Compose mounts them into `/app/buz/conf/…` (`BUZ_MANAGER_CONF` / `BUZ_RUNNER_CONF`).
+Host templates for Compose live in **`deploy/conf/`**. Compose mounts them
+into `/app/buz/conf/...` (`BUZ_MANAGER_CONF` / `BUZ_RUNNER_CONF`).
+
+### Split deploy (Manager + Runner containers)
+
+```bash
+export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
+
+# Manager (in the buz repository, `make up` runs the same compose file):
+docker compose up -d manager
+# UI -> Runners -> New Runner -> paste token into deploy/conf/runner.toml
+docker compose up -d runner
+
+# Runner on another machine: point manager_url at the Manager, then
+export BUZ_RUNNER_CONF=/etc/buz/runner.toml
+docker compose up -d runner
+```
+
+Pull images from the registry instead of building:
+
+```bash
+docker pull registry.cn-hongkong.aliyuncs.com/<ns>/buz-manager:latest
+docker pull registry.cn-hongkong.aliyuncs.com/<ns>/buz-runner:latest
+```
 
 ### Deploy modes
 
 | Mode | How |
 |------|-----|
-| Same host | Manager → UI create Runner → edit `deploy/conf/runner.toml` → start Runner |
+| Same host | Manager -> UI create Runner -> edit `deploy/conf/runner.toml` -> start Runner |
 | Manager only | `docker compose up -d manager` |
 | Runner elsewhere | `BUZ_RUNNER_CONF=/etc/buz/runner.toml docker compose up -d runner` |
 
-```bash
-# Compose builds these for you (`make up`); building by hand from the repo root:
-docker build -t buz-manager:local -f docker/Dockerfile .
-docker build -t buz-runner:local -f docker/Dockerfile.runner .
-
-export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
-docker compose up -d manager
-# UI → Runners → New Runner → paste token into deploy/conf/runner.toml
-docker compose up -d runner
-
-# Other machine:
-export BUZ_RUNNER_CONF=/etc/buz/runner.toml   # manager_url = Center URL
-docker compose up -d runner
-```
-
-Pull from ACR:
-
-```bash
-docker login registry.cn-hangzhou.aliyuncs.com
-docker pull registry.cn-hangzhou.aliyuncs.com/<ns>/buz-manager:latest
-docker pull registry.cn-hangzhou.aliyuncs.com/<ns>/buz-runner:latest
-```
-
 ### One-shot VM deploy (`deploy/dev-deploy.sh`)
 
-For a fresh Linux VM (e.g. a Linux VM on macOS, arm64 or x86_64) that only has Docker:
+For a fresh Linux VM (arm64 or x86_64) that only has Docker:
 
 ```bash
 ./deploy/dev-deploy.sh login   # docker login to ACR (or set ACR_USERNAME/ACR_PASSWORD)
@@ -173,70 +105,67 @@ ADMIN_USERNAME='<admin>' ADMIN_PASSWORD='<password>' ./deploy/dev-deploy.sh runn
 
 All knobs are env-overridable: `ACR_REGISTRY`, `ACR_NAMESPACE`, `IMAGE_TAG`,
 `MANAGER_PORT`, `DEPLOY_DIR` (default `/opt/buz`), `RUNNER_NAME`, `RUNNER_TOKEN`,
-`DOCKER`, `BUZ_CONTAINER_UID`.
-A `BUZ_JWT_SECRET` is generated on first `up` and persisted in `$DEPLOY_DIR/.env`
-so stored secrets stay decryptable across restarts. `render` writes the compose
-file + runner config without touching Docker (useful to preview before deploying).
+`DOCKER`, `BUZ_CONTAINER_UID`. A `BUZ_JWT_SECRET` is generated on first `up`
+and persisted in `$DEPLOY_DIR/.env` so stored secrets stay decryptable across
+restarts. `render` writes the compose file + runner config without touching
+Docker (useful to preview before deploying).
 
-**Works on both arm64 and amd64 VMs.** The default `IMAGE_TAG=latest` points to
-the merged multi-arch manifest, so Docker pulls the image matching the VM's
-architecture automatically. To pin a single platform — for example while the CI
-`merge` job has not finished yet, or to bypass a broken index — set a
+**Works on both arm64 and amd64 VMs.** The default `IMAGE_TAG=latest` points
+to the merged multi-arch manifest. To pin a single platform set a
 platform-specific tag instead: `IMAGE_TAG=latest-arm64` (or `latest-amd64` /
-`1.7.3-arm64`). Verify the platform tags with
-`docker manifest inspect <registry>/<namespace>/buz-manager:1.7.3-arm64`.
+`1.7.3-arm64`).
 
-**Runs as a non-root user with sudo.** Every `docker` invocation is prefixed with
-`sudo` when the current user cannot reach the daemon directly (auto-detected;
-override with `DOCKER='sudo docker'`, or add your user to the docker group).
-`$DEPLOY_DIR` is created with sudo when needed and owned by the caller. The buz
-containers run as `USER buz` (uid `BUZ_CONTAINER_UID`, default 10001), so the
-bind-mounted data dirs (`data`, `pipelines`, `workspace`, `logs`) are chown'ed to
-that uid — this keeps them writable by the containers even though the host user
-is not root. `conf/` stays owned by the deploying user so `runner.toml` can be
+**Runs as a non-root user with sudo.** Every `docker` invocation is prefixed
+with `sudo` when the current user cannot reach the daemon directly
+(auto-detected; override with `DOCKER='sudo docker'`, or add your user to the
+docker group). `$DEPLOY_DIR` is created with sudo when needed and owned by
+the caller. The buz containers run as `USER buz` (uid `BUZ_CONTAINER_UID`,
+default 10001), so the bind-mounted data dirs are chown'ed to that uid.
+`conf/` stays owned by the deploying user so `runner.toml` can be
 (re)written by the script.
 
-**Troubleshooting: Runner stuck in a restart loop with `Cannot reach Buz Manager`.**
-If `docker logs buz-runner` shows `error sending request for url (http://manager:8080/...)`
-while `docker ps` shows `buz-manager` is `Up (healthy)`, usual causes are:
-(1) Runner started before Manager was ready, or (2) compose DNS alias `manager`
-went stale after Manager was recreated.
+### GitHub Actions -> personal ACR
 
-One-shot fix on a `dev-deploy.sh` host:
+Workflows:
+- `.github/workflows/docker.yml` - split `buz-manager` / `buz-runner` (amd64 + arm64)
+- `.github/workflows/docker-standalone.yml` - combined `buz-standalone` (amd64 + arm64)
 
-```bash
-# Prefer upgrade (waits for Manager health, recreates Runner after sleep 3s).
-# If the stack was first created with sudo/root, keep using the same daemon:
-sudo SKIP_PULL=1 IMAGE_TAG=<current-or-new-tag> ./dev-deploy.sh upgrade
-# or:
-DOCKER='sudo docker' SKIP_PULL=1 IMAGE_TAG=<tag> ./dev-deploy.sh upgrade
-# Or just repair Runner:
-sudo SKIP_PULL=1 ./dev-deploy.sh runner
-```
+Both trigger on `v*` tags or manual `workflow_dispatch`.
 
-Mixing plain `docker` (docker group / rootless) with `sudo docker` (rootful) talks
-to different daemons — Runner recreated on the wrong side never reaches Manager.
-`dev-deploy.sh` prefers the daemon that already has `buz-manager`.
+Configure the GitHub repository:
 
-Manual check: `sudo docker exec buz-runner getent hosts manager` (should return the
-Manager container IP) and compare against
-`sudo docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' buz-manager`.
-Same-compose default is container↔container: `manager_url = "http://manager:8080"`
-with `depends_on: manager: condition: service_healthy`.
+| Kind | Name | Example |
+|------|------|---------|
+| Variable | `ACR_REGISTRY` | `registry.cn-hongkong.aliyuncs.com` |
+| Variable | `ACR_NAMESPACE` | your ACR namespace |
+| Secret | `ACR_USERNAME` | ACR login user |
+| Secret | `ACR_PASSWORD` | ACR password / token |
 
-**Upgrading Runner and Manager authentication behavior.** Where practical, upgrade Runners before the Manager, then upgrade the Manager. New Runner builds persist their Manager-issued JWT at `runner.token_cache_path` (default `./state/runner-token`) outside the job workspace and present it on restart, so subsequent registrations refresh without the one-shot register token. Persist this state path across restarts; on Unix the credential is stored with mode `0600`. The newer Manager intentionally provides no compatibility grace period that accepts an old Runner based only on its name.
+Pushed tags: `<registry>/<namespace>/buz-manager:v1.7.3` (and `:1.7.3`,
+`:latest`), same for `buz-runner` and `buz-standalone` (multi-arch).
 
-For upgrades, if the new cache path is missing the Runner reads the legacy `<workspace_dir>/runner-token` file and migrates it after a successful registration. If the new cache exists but cannot be read or is insecure, startup fails rather than silently using an older credential. A cache write failure after registration also aborts before jobs are accepted. If no valid cached JWT remains, reissue its register token from Dashboard → **Runners** → key icon. Copy the token shown once into the Runner's effective `register_token` setting (TOML or `BUZ_REGISTER_TOKEN`) and restart the Runner. Reissuing replaces the previous token; after registration, the Runner stores its refreshed JWT. Platform admins can also call `POST /api/v1/runners/{id}/register-token/reissue`; see the [API reference](/docs/01-architecture/platform/api-reference/#post-runnersidregister-tokenreissue-reissue-runner-register-token). This remains a manual, out-of-band recovery flow; the Manager cannot update or restart a disconnected Runner.
+### Standalone auth (dev only)
 
-**Runner provisioning requires a platform admin.** `runner` auto-creates the
-runner by calling `buz-manager gen-runner-token` inside the Manager container.
-That CLI subcommand verifies the caller holds a platform-admin credential —
-either a login JWT or an **API token** (created in Manager UI → Access → API
-tokens; recommended for automation since it is revocable and audited via
-`api_token.*` events) — before touching the `runners` table. It logs in via
-`POST /api/v1/auth/login` using `ADMIN_USERNAME`/`ADMIN_PASSWORD`, or accepts a
-pre-obtained `BUZ_ADMIN_TOKEN`. To provision from elsewhere, export the token
-yourself:
+The standalone image enables Manager `[standalone]` so the co-located Runner
+may register over loopback without `register_token`, but only if the runner
+name is already authorized (`standalone.auto_approve`). Non-loopback
+registration is rejected. This does **not** change the production
+`register_token` protocol used by split deployments.
+
+**Full first-run and upgrade guide:** [Standalone (single
+image)](/docs/03-operations/standalone/). Template Compose:
+`deploy/standalone/docker-compose.yml`.
+
+### Runner provisioning requires a platform admin
+
+`runner` auto-creates the runner by calling `buz-manager gen-runner-token`
+inside the Manager container. That CLI subcommand verifies the caller holds a
+platform-admin credential - either a login JWT or an **API token** (created
+in Manager UI -> Access -> API tokens; recommended for automation since it is
+revocable and audited via `api_token.*` events) - before touching the
+`runners` table. It logs in via `POST /api/v1/auth/login` using
+`ADMIN_USERNAME`/`ADMIN_PASSWORD`, or accepts a pre-obtained
+`BUZ_ADMIN_TOKEN`. To provision from elsewhere, export the token yourself:
 
 ```bash
 # Option A: login JWT
@@ -247,66 +176,90 @@ ADMIN_TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/v1/auth/login \
 docker exec buz-manager /app/buz/buz-manager -c /app/buz/conf/manager.toml \
   gen-runner-token linux-vm-runner --labels linux-x64 --token "$ADMIN_TOKEN"
 # name: linux-vm-runner
-# register_token: <one-shot token>   → paste into conf/runner.toml
+# register_token: <one-shot token>   -> paste into conf/runner.toml
 
-# Option B (preferred for scripts): API token from Access → API tokens
+# Option B (preferred for scripts): API token from Access -> API tokens
 BUZ_ADMIN_TOKEN='buz_...' docker exec buz-manager \
   /app/buz/buz-manager -c /app/buz/conf/manager.toml \
   gen-runner-token linux-vm-runner --labels linux-x64
 ```
 
-## Reverse Proxy (Nginx, HTTP-only)
+### Troubleshooting: Runner stuck in a restart loop with `Cannot reach Buz Manager`
 
-`buz-manager` serves both the API and the embedded Web UI on a single port. Put Nginx in front so only the proxy is exposed publicly.
+If `docker logs buz-runner` shows `error sending request for url
+(http://manager:8080/...)` while `docker ps` shows `buz-manager` is
+`Up (healthy)`, usual causes are: (1) Runner started before Manager was
+ready, or (2) compose DNS alias `manager` went stale after Manager was
+recreated.
 
-Templates:
-- `deploy/nginx/buz-manager.conf` — manager running directly on the host (HTTP)
-- `deploy/nginx/buz-manager-docker.conf` — manager started via `deploy/dev-deploy.sh` (Docker, HTTP)
-- `deploy/nginx/buz-manager-ssl.conf` — HTTPS + redirect
-
-### Docker deployment (`dev-deploy.sh`)
-
-```bash
-# 1) Tighten the published port so only Nginx is reachable from outside:
-#    in /opt/buz/docker-compose.yml change
-#        - "${MANAGER_PORT}:8080"
-#    to
-#        - "127.0.0.1:${MANAGER_PORT}:8080"
-#    then `./dev-deploy.sh down && ./dev-deploy.sh up` (JWT secret + volumes kept).
-
-# 2) Install the Nginx site config (non-root user with sudo)
-sudo cp deploy/nginx/buz-manager-docker.conf /etc/nginx/sites-available/buz-manager.conf
-sudo ln -s ../sites-available/buz-manager.conf /etc/nginx/sites-enabled/buz-manager.conf
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-The config covers:
-
-- WebSocket upgrade for live job logs (`/api/v1/jobs/{id}/logs/stream`) and pipeline stream
-- Runner long-poll (50s) + WS keepalive timeouts
-- `client_max_body_size` for pipeline YAML import and log uploads
-- gzip for embedded UI assets and JSON
-
-Runners behind the proxy:
-
-```toml
-[runner]
-manager_url = "http://buz.example.com"   # no :8080; proxy forwards to Manager
-```
-
-For HTTPS, add `listen 443 ssl` + certificate lines to the site config (see [HTTPS Communication](/docs/03-operations/tls/)).
-
-## Center Deployment
-
-The Center binary includes the dashboard static assets and SQLite database. No external dependencies required.
+One-shot fix on a `dev-deploy.sh` host:
 
 ```bash
-# Build
-make build-dashboard
-make build-backend
+# Prefer upgrade (waits for Manager health, recreates Runner after sleep 3s).
+sudo SKIP_PULL=1 IMAGE_TAG=<current-or-new-tag> ./dev-deploy.sh upgrade
+# Or just repair Runner:
+sudo SKIP_PULL=1 ./dev-deploy.sh runner
+```
 
-# Create config (or use `make example`)
-mkdir -p conf
+Mixing plain `docker` (docker group / rootless) with `sudo docker` (rootful)
+talks to different daemons - Runner recreated on the wrong side never reaches
+Manager. `dev-deploy.sh` prefers the daemon that already has `buz-manager`.
+
+Manual check: `sudo docker exec buz-runner getent hosts manager` (should
+return the Manager container IP) and compare against
+`sudo docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' buz-manager`.
+Same-compose default is container-to-container: `manager_url =
+"http://manager:8080"` with `depends_on: manager: condition: service_healthy`.
+
+**Upgrading Runner and Manager authentication behavior.** Where practical,
+upgrade Runners before the Manager, then upgrade the Manager. New Runner
+builds persist their Manager-issued JWT at `runner.token_cache_path` (default
+`./state/runner-token`) outside the job workspace and present it on restart,
+so subsequent registrations refresh without the one-shot register token.
+Persist this state path across restarts; on Unix the credential is stored
+with mode `0600`. The newer Manager intentionally provides no compatibility
+grace period that accepts an old Runner based only on its name.
+
+For upgrades, if the new cache path is missing the Runner reads the legacy
+`<workspace_dir>/runner-token` file and migrates it after a successful
+registration. If the new cache exists but cannot be read or is insecure,
+startup fails rather than silently using an older credential. A cache write
+failure after registration also aborts before jobs are accepted. If no valid
+cached JWT remains, reissue its register token from Dashboard -> **Runners**
+-> key icon. Copy the token shown once into the Runner's effective
+`register_token` setting (TOML or `BUZ_REGISTER_TOKEN`) and restart the
+Runner. Platform admins can also call
+`POST /api/v1/runners/{id}/register-token/reissue`; see the [API
+reference](/docs/01-architecture/platform/api-reference/). This remains a
+manual, out-of-band recovery flow; the Manager cannot update or restart a
+disconnected Runner.
+
+## Binary deployment
+
+Deploy the release archives from
+[GitHub Releases](https://github.com/schiplat/buz/releases) directly - no
+compilation. Each archive contains the binaries, default configs, and
+sample pipelines:
+
+```text
+buz-<version>-linux-x86_64.tar.gz
+  bin/buz-manager   # dashboard embedded
+  bin/buz-runner
+  conf/manager.toml
+  conf/runner.toml
+  data/  pipelines/
+  README.md
+```
+
+### Manager
+
+```bash
+# Download and extract (linux-x86_64 example; linux-aarch64 for arm64 hosts)
+curl -fsSLO https://github.com/schiplat/buz/releases/download/v<version>/buz-<version>-linux-x86_64.tar.gz
+tar -xzf buz-<version>-linux-x86_64.tar.gz && cd buz-<version>-linux-x86_64
+
+# Create config (or reuse the shipped conf/manager.toml)
+mkdir -p conf data
 cat > conf/manager.toml <<'EOF'
 [server]
 host = "0.0.0.0"
@@ -327,22 +280,29 @@ yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30
 EOF
 
-# Start
+# Start (run under systemd or a process supervisor in production)
 export BUZ_JWT_SECRET="$(openssl rand -hex 32)"
-./target/release/buz-manager
-# Open https://… or http://… → /setup to create the first admin
+./bin/buz-manager -c conf/manager.toml
+# Open https://... or http://... -> /setup to create the first admin
 ```
 
-For HTTPS (Manager native TLS, Runner client, reverse proxy, full commands), see **[HTTPS Communication](/docs/03-operations/tls/)**.
+For HTTPS (Manager native TLS, reverse proxy, full commands), see
+**[HTTPS Communication](/docs/03-operations/tls/)**.
 
-## Runner Deployment
+### Runner
 
-Runners can be deployed on any machine with outbound HTTPS access to the Center.
+Runners can be deployed on any machine with outbound HTTPS access to the
+Manager.
 
-> **Trust boundary.** A Runner executes every job as its own OS user — jobs are not sandboxed from one another or from the Runner's credentials. A **Shared** Runner (no team binding) runs jobs from every team: use it only when all those teams trust each other. Put mutually untrusted teams on dedicated Runner hosts/OS users, and treat Docker socket access as host-root-equivalent. See [RBAC — Tenancy Model](/docs/01-architecture/platform/rbac/).
+> **Trust boundary.** A Runner executes every job as its own OS user - jobs
+> are not sandboxed from one another or from the Runner's credentials. A
+> **Shared** Runner (no team binding) runs jobs from every team: use it only
+> when all those teams trust each other. Put mutually untrusted teams on
+> dedicated Runner hosts/OS users, and treat Docker socket access as
+> host-root-equivalent. See [RBAC - Tenancy
+> Model](/docs/01-architecture/platform/rbac/).
 
 ```bash
-# Create config
 mkdir -p conf
 cat > conf/runner.toml <<EOF
 [runner]
@@ -360,29 +320,79 @@ level = "info"
 EOF
 
 export BUZ_REGISTER_TOKEN="your-token"
-./target/release/buz-runner
+./bin/buz-runner
 ```
 
-> Enable Docker steps (`engine: docker`) in **Manager UI → Runners → Docker**. See [Docker Engine](/docs/01-architecture/execution/docker-engine/). Host-side `docker build` / SSH `docker …` does **not** need this flag.
+> Enable Docker steps (`engine: docker`) in **Manager UI -> Runners ->
+> Docker**. See [Docker Engine](/docs/01-architecture/execution/docker-engine/).
+> Host-side `docker build` / SSH `docker ...` does **not** need this flag.
 
 ## Requirements
 
 | Component | Minimum |
 |-----------|---------|
 | Runner memory (idle) | < 20MB |
-| Center memory (idle) | < 50MB |
-| Network | Runner → Center outbound HTTPS only |
+| Manager memory (idle) | < 50MB |
+| Network | Runner -> Manager outbound HTTPS only |
 | Database | SQLite (built-in, zero setup) |
+
+## Reverse Proxy (Nginx, HTTP-only)
+
+`buz-manager` serves both the API and the embedded Web UI on a single port.
+Put Nginx in front so only the proxy is exposed publicly.
+
+Templates:
+- `deploy/nginx/buz-manager.conf` - manager running directly on the host (HTTP)
+- `deploy/nginx/buz-manager-docker.conf` - manager started via `deploy/dev-deploy.sh` (Docker, HTTP)
+- `deploy/nginx/buz-manager-ssl.conf` - HTTPS + redirect
+
+### Docker deployment (`dev-deploy.sh`)
+
+```bash
+# 1) Tighten the published port so only Nginx is reachable from outside:
+#    in /opt/buz/docker-compose.yml change
+#        - "${MANAGER_PORT}:8080"
+#    to
+#        - "127.0.0.1:${MANAGER_PORT}:8080"
+#    then `./dev-deploy.sh down && ./dev-deploy.sh up` (JWT secret + volumes kept).
+
+# 2) Install the Nginx site config (non-root user with sudo)
+sudo cp deploy/nginx/buz-manager-docker.conf /etc/nginx/sites-available/buz-manager.conf
+sudo ln -s ../sites-available/buz-manager.conf /etc/nginx/sites-enabled/buz-manager.conf
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+The config covers:
+
+- WebSocket upgrade for live job logs (`/api/v1/jobs/{id}/logs/stream`) and
+  pipeline stream
+- Runner long-poll (50s) + WS keepalive timeouts
+- `client_max_body_size` for pipeline YAML import and log uploads
+- gzip for embedded UI assets and JSON
+
+Runners behind the proxy:
+
+```toml
+[runner]
+manager_url = "http://buz.example.com"   # no :8080; proxy forwards to Manager
+```
+
+For HTTPS, add `listen 443 ssl` + certificate lines to the site config (see
+[HTTPS Communication](/docs/03-operations/tls/)).
 
 ## Troubleshooting: sidebar clicks dead after Manager restart
 
-**Symptom:** After stopping and restarting Manager, sidebar links often do nothing on click, but the same `href` still works via address bar / new tab.
+**Symptom:** After stopping and restarting Manager, sidebar links often do
+nothing on click, but the same `href` still works via address bar / new tab.
 
-**Cause:** While Manager is down, in-flight API polls / hung requests occupy the browser per-host connection pool. SPA route lazy-imports share that pool, so `router.push` hangs. Full page loads use a fresh context and still work.
+**Cause:** While Manager is down, in-flight API polls / hung requests occupy
+the browser per-host connection pool. SPA route lazy-imports share that pool,
+so `router.push` hangs. Full page loads use a fresh context and still work.
 
 **Mitigations in the UI (already shipped):**
 
-- Sidebar uses `safeNavigate` — if SPA navigation does not settle within ~4s, it hard-loads the target URL.
+- Sidebar uses `safeNavigate` - if SPA navigation does not settle within
+  ~4s, it hard-loads the target URL.
 - Job log polling skips overlapping requests and aborts on unmount.
 - Job / pipeline WebSockets reconnect with backoff after Manager restart.
 - Vite API proxy enables `ws: true` for log streams.
@@ -400,39 +410,25 @@ Then click sidebar items. Look for `[buz-nav]` / `[buz]` lines:
 |-----|---------|
 | `sidebar click` / `start` | Click reached the nav handler |
 | `ok` | SPA navigation finished |
-| `navigation timed out — hard fallback` | Connection pool / chunk load hung; full reload used |
+| `navigation timed out - hard fallback` | Connection pool / chunk load hung; full reload used |
 | `api request` / `inFlight` | How many HTTP calls are outstanding |
 | `router.onError` | Chunk / dynamic import failure |
 
 Disable with `localStorage.removeItem('buz_debug_nav')`.
 
----
-
-## End-to-end smoke (Phase 1 + Team)
-
-Minimal path after `make example` / `make build`:
-
-1. Start Manager + Runner (`example/conf/*.toml`). Login with configured admin (re-login after RBAC upgrade).
-2. Confirm **Access → Teams** has `default` (created at bootstrap).
-3. **Hosts**: register `dev-vm-1` with SSH key / password / agent.
-4. Copy `example/pipelines/ssh-verify.yml` (and optionally `smoke-test.yml`) into the Manager `yaml_scan_dir`. Wait for scanner (~interval) or restart Manager.
-5. Pipelines list should show the YAML pipelines under team `default`.
-6. Trigger **SSH Verify**; open Job Detail — steps + live logs should stream.
-7. Runner labels in Manager UI must include `linux-x64` (match YAML `runner.labels`).
-
-YAML team assignment:
-
-```yaml
-team: default   # or another existing team slug; omit → default
-```
-
 ### SSH host keys (production)
 
-New runners default to `known_hosts` (secure since v1.6): server keys are verified against the runner's known_hosts file, defaulting to `~/.ssh/known_hosts` — add your hosts once via `ssh-keyscan` or a first manual `ssh`. Runners created before v1.6 keep their stored `insecure` value; flip them in Manager UI → Runners if you want verification. To point at a specific file, set it in `runner.toml`:
+New runners default to `known_hosts` (secure since v1.6): server keys are
+verified against the runner's known_hosts file, defaulting to
+`~/.ssh/known_hosts` - add your hosts once via `ssh-keyscan` or a first
+manual `ssh`. Runners created before v1.6 keep their stored `insecure`
+value; flip them in Manager UI -> Runners if you want verification. To point
+at a specific file, set it in `runner.toml`:
 
 ```toml
 [engine]
 ssh_known_hosts_path = "/home/runner/.ssh/known_hosts"  # optional; default ~/.ssh/known_hosts
 ```
 
-Pre-seed keys with `ssh-keyscan -p 22 host >> ~/.ssh/known_hosts`. A changed host key fails the step with an explicit error.
+Pre-seed keys with `ssh-keyscan -p 22 host >> ~/.ssh/known_hosts`. A changed
+host key fails the step with an explicit error.
