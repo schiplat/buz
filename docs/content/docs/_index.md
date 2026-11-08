@@ -2,6 +2,8 @@
 title: "Introduction"
 weight: 1
 description: "Welcome to Buz - Manager, Runners, plugin marketplace"
+sidebar:
+  open: true
 ---
 
 Welcome to the Buz documentation. The full site home - the goal-based
