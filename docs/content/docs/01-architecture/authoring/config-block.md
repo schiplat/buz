@@ -1,7 +1,7 @@
 ---
 title: 'Config Block (render-only) — removed'
 weight: 55
-description: The kernel config: block was removed — render env files with the buz/env-render plugin
+description: 'The kernel config: block was removed — render env files with the buz/env-render plugin'
 aliases:
   - /docs/01-architecture/authoring/config-block/
 ---
