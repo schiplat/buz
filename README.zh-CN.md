@@ -1,8 +1,8 @@
 # Buz
 
-轻量级单二进制编排平台，用于在彼此不通的网络中的机器上运行管道。
-
-**一个 Manager，多个 Runner，仅出站连接，执行任务的机器零入站端口。**
+**跨越防火墙跑同一套 YAML 管道——Manager 是唯一监听端口的组件。** Runner
+仅出站连接：NAT 后面、其他云上、伙伴网络里的机器零入站端口、零 VPN、
+零端口转发地跑同一根管道。
 
 [Buz 文档](https://buz.docs.sconts.com/) ·
 [插件市场](https://plugins.buz.schiplat.com/) ·
@@ -15,12 +15,24 @@
 
 ## Buz 是什么
 
-Buz 由一个小型控制平面（**Manager**）和一组执行代理（**Runner**）组成，
-在跨越防火墙、NAT 和网段的机器上运行 YAML 管道——一台机房里的构建机、
-一个藏在公司代理后面的部署目标、机架上的一块 arm64 开发板。
+Buz 取两家之长，再补上它们都没有的东西。借鉴 **GitHub Actions**：声明式
+YAML 工作流、`uses:` 复用步骤、GHA 风格的 `${secrets.NAME}` 密钥。借鉴
+**Jenkins**：治理内核——带审批门的环境、RBAC、审计日志。**Buz 自己**补上
+的：仅出站连接的网络模型。小型控制平面（**Manager**）是唯一监听端口的
+组件；一组执行代理（**Runner**）出站领任务，把管道送到防火墙、NAT、网段
+两侧的主机上——机房里的构建机、公司代理后面的部署目标、实验架上的一块
+arm64 板子。每个角色都是一个静态 Rust 二进制：一条 docker compose 命令，
+5 分钟在单容器里起一套完整的 Manager + Runner。
 
 它为这样的环境而生：完整的 CI/CD 平台或 Kubernetes 太重，而你想要的只是
 声明式管道、密钥管理和审计追踪——但机器异构，网络环境恶劣。
+
+它也为自动化的下一个写作方式做好了准备：**AI agent 成为管道的作者**。
+Buz 的原语对"被生成"友好且安全——纯声明式 YAML 而非脚本化 Groovy；
+`uses:` 引用在保存时锁定内容哈希，上游变更改不动已保存的管道；密钥永不
+自动注入进程环境；审批门保证 agent 提议的生产部署始终有人拍板；完整的
+任务日志可供 agent 读取并自我修正。详见[与 Drone、GitHub Actions、
+Jenkins 的完整对比](https://buz.docs.sconts.com/docs/01-architecture/comparison/)。
 
 - **每个角色一个二进制。** `buz-manager`（控制平面）、`buz-runner`
   （执行代理）、`buz-sandboxd`（可选的主机监督器）。静态 Rust 二进制，

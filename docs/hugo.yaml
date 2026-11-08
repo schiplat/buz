@@ -22,7 +22,7 @@ markup:
 enableInlineShortcodes: true
 
 params:
-  description: "Buz — Lightweight Cross-Network Orchestration Platform"
+  description: "Buz — YAML pipelines across firewalled networks. The Manager is the only component that listens: GitHub Actions ergonomics, Jenkins-grade governance, one binary per role."
   externalLinkDecoration: true
   theme:
     default: light

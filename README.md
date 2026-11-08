@@ -1,10 +1,9 @@
 # Buz
 
-A lightweight, single-binary orchestration platform for running pipelines on
-machines across networks that were never meant to talk to each other.
-
-**One Manager, many Runners, outbound-only connections, zero inbound ports on
-the machines doing the work.**
+**YAML pipelines across firewalled networks — the Manager is the only
+component that listens.** Runners connect outbound-only: machines behind
+NATs, in other clouds, or on partner networks run the same pipeline with
+zero inbound ports, no VPN, no port forwarding.
 
 [Buz Docs](https://buz.docs.sconts.com/) ·
 [Plugin Marketplace](https://plugins.buz.schiplat.com/) ·
@@ -17,14 +16,31 @@ the machines doing the work.**
 
 ## What is Buz
 
-Buz is a small control plane (the **Manager**) plus a fleet of execution
-agents (**Runners**) that run YAML pipelines on hosts spread across
+Buz takes the proven halves of two platforms you already know and adds what
+neither has. From **GitHub Actions**: declarative YAML workflows, `uses:`
+reusable steps, GHA-style `${secrets.NAME}` secrets. From **Jenkins**: the
+governance core — environments with approval gates, RBAC, audit logs. From
+**Buz itself**: an outbound-only network model. A small control plane (the
+**Manager**) is the only component that listens; a fleet of execution agents
+(**Runners**) dial out to claim jobs and reach hosts spread across
 firewalls, NATs, and network segments — a build box in one datacenter, a
-deploy target behind a corporate proxy, an arm64 board in a lab rack.
+deploy target behind a corporate proxy, an arm64 board in a lab rack. Every
+role ships as a single static Rust binary, and a full Manager + Runner stack
+comes up in one container in five minutes.
 
 It exists for the environment where a full CI/CD platform or Kubernetes is
 too much: you want declarative pipelines, secrets, and an audit trail, but
 the machines are heterogeneous and the network is hostile.
+
+It is also ready for how automation gets written next: **AI agents as
+pipeline authors**. Buz's primitives are safe to generate against — plain
+declarative YAML instead of scripted Groovy; `uses:` references locked to a
+content hash at save time, so nothing upstream can rewrite a saved
+pipeline; secrets that never auto-inject into the process environment;
+approval gates that keep a human in the loop when an agent proposes a
+production deploy; and complete job logs an agent can read back to
+self-correct. See the full [comparison with Drone, GitHub Actions, and
+Jenkins](https://buz.docs.sconts.com/docs/01-architecture/comparison/).
 
 - **One binary per role.** `buz-manager` (control plane), `buz-runner`
   (execution agent), `buz-sandboxd` (optional host supervisor). Static

@@ -2,13 +2,18 @@
 title: "Documentation"
 type: docs
 weight: 1
-description: "Buz platform documentation - quick start, concepts, authoring, operations"
+description: "Buz runs YAML pipelines across firewalled networks — the Manager is the only component that listens. GitHub Actions ergonomics, Jenkins-grade governance, one binary per role."
 ---
 
-Buz is a single-binary orchestration platform for running YAML pipelines on
-machines across firewalls and network segments: a **Manager** control plane,
-**Runners** that connect outbound-only, and a reviewed plugin marketplace for
-reusable steps. This site documents how to evaluate, operate, and extend it.
+Buz runs YAML pipelines on machines across firewalls, NATs, and network
+segments — machines that were never meant to talk to each other. The
+**Manager** is the only component that listens; **Runners** connect
+outbound-only, so targets need zero inbound ports, no VPN, no port
+forwarding. Authoring follows GitHub Actions (declarative YAML, `uses:`
+steps, GHA-style secrets); governance follows Jenkins (approval gates, RBAC,
+audit logs); and plugin references are locked to a content hash at save
+time — primitives that make Buz a safe target for AI-agent-authored
+automation. This site documents how to evaluate, operate, and extend it.
 
 {{< callout type="tip" >}}
 **New here?** The [5-minute standalone demo](/docs/00-quick-start/) runs the
