@@ -1,4 +1,4 @@
-# Prebuilt standalone image: Manager + Runner in one container (linux/arm64),
+# Prebuilt standalone image: Manager + Runner in one container (multi-arch),
 # consuming the release archive extracted by the workflow (bin/ + conf/ +
 # standalone tomls + entrypoint in the build context). Base matches the
 # release build runners (ubuntu 24.04, glibc 2.39).

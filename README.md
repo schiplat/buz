@@ -17,43 +17,36 @@ Tab completion for `buz-manager` / `buz-runner` / `buz-plugin`: `buz-manager com
 插件市场、secret 静态加密。
 
 > 要求：Linux（或 Docker Desktop）、`docker` + `docker compose`、
-> `curl`、`openssl`。镜像为 linux/arm64（Apple Silicon Mac 可模拟运行）。
+> `curl`、`openssl`。多架构镜像（linux/amd64 + linux/arm64），Intel 与 Apple Silicon Mac 均可直接运行。
 
-**获取镜像（一行，公开 DockerHub）**：
+**镜像**（公开 DockerHub，多架构；`docker pull` 自动选匹配平台）：
 
 ```bash
-export IMAGE=schiplat/buz-standalone:latest   # linux/arm64; 版本 tag 如 :v2.1.5
+docker pull schiplat/buz-standalone:latest
 ```
 
-> 或从源码本地构建：`git clone https://github.com/schiplat/buz.git && cd buz && docker build -f Dockerfile.standalone -t buz-standalone:local . && export IMAGE=buz-standalone:local`
-
+> 或从源码构建：`git clone https://github.com/schiplat/buz.git && cd buz && docker build -f docker/Dockerfile.standalone -t schiplat/buz-standalone:local .`
 
 ```bash
-# 1. Stage a deploy directory
+# 1. 起容器（demo 密钥现场生成，不写入任何仓库）
 mkdir -p /tmp/buz-demo && cd /tmp/buz-demo
-curl -fsSL -o docker-compose.yml   https://raw.githubusercontent.com/schiplat/buz/master/deploy/standalone/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/schiplat/buz/master/deploy/standalone/docker-compose.yml
+echo "BUZ_JWT_SECRET=$(openssl rand -hex 32)" > .env && chmod 600 .env
+docker compose up -d
+until curl -sf http://localhost:8080/health >/dev/null; do sleep 1; done
 
-# 2. Secret + launch (demo secret is auto-generated, not committed anywhere)
-echo "BUZ_JWT_SECRET=$(openssl rand -hex 32)" > .env
-docker compose up -d && sleep 5
-curl -s http://localhost:8080/health | grep '"status":"ok"'
-```
+# 2. 打开 http://localhost:8080 → /setup 创建管理员账号
+#    镜像自带 [standalone] auto_approve = ["standalone-runner"]：
+#    Manager 首次启动即创建该 Runner 行，容器内 Runner 经 loopback
+#    免 token 注册 —— Runners 页应直接看到它 online，无需手工登记。
 
-Open **http://localhost:8080** — the first visit walks you through creating
-the admin account (`/setup`). Then verify the feature surface:
+# 3. 端到端 job：UI 新建管道（一个 echo shell 步骤，runner label
+#    选 standalone-runner），手动触发 → Jobs 页看到它被认领、执行、
+#    成功；Job 详情里有完整日志回传。
 
-```bash
-# 3. 注册 Runner：浏览器打开 http://localhost:8080 → /setup 创建管理员
-#    → Runners → New Runner，复制一次性 token，写入容器内
-#    /app/buz/runner.toml 后重启容器（docker compose restart）
-#    容器内 Manager + Runner 同箱配对，注册后即 online
-
-# 4. 端到端 job：UI 里新建一条管道（一个 `echo` shell 步骤），触发后
-#    在 Jobs 页看到它被容器内 Runner 认领 → 执行 → 成功
-
-# 5. 插件渲染演示（可选）：导入仓库里的
-#    example/pipelines/oss-config-demo.yml —— 演示 buz/config-fetch +
-#    buz/env-render 全链路（先在 UI Secrets 里录入模板引用的 secret）
+# 4. 插件渲染演示（可选）：导入 example/pipelines/oss-config-demo.yml
+#    —— buz/config-fetch 拉包 + buz/env-render 渲染 .env 全链路
+#    （先在 Secrets 页录入模板引用的 secret 值）。
 ```
 
 这套演练验证的功能面：Manager/Runner 配对、仪表盘、job 调度与执行、
@@ -136,7 +129,7 @@ buz/
 ├── docker/
 │   ├── Dockerfile             # buz-manager image
 │   ├── Dockerfile.runner      # buz-runner image
-│   ├── Dockerfile.standalone  # Manager + Runner (arm64 lab image)
+│   ├── Dockerfile.standalone  # Manager + Runner (multi-arch lab image)
 │   ├── Dockerfile.sandboxd    # buz-sandboxd image (container / sandbox / vm isolation tiers)
 │   ├── docker-compose.yml     # `make up` / `docker compose -f docker/docker-compose.yml up -d`
 │   └── docker-compose.vm.yml  # sandbox (VM mode) compose overlay

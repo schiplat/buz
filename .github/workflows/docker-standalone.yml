@@ -1,26 +1,33 @@
 name: Docker Standalone / ACR + Docker Hub
 
-# Build and push a single arm64 image that contains both Manager and Runner
+# Build and push a multi-arch image that contains both Manager and Runner
 # (see docker/prebuilt-standalone.Dockerfile) — from the RELEASE BINARIES,
 # no compilation. Triggers:
 #   1. workflow_run — automatically AFTER the Release workflow completes
-#      successfully (its arm64 archive carries the binaries).
+#      successfully (its archives carry the binaries).
 #   2. workflow_dispatch — manual rebuild for an existing tag.
 # Base ubuntu:24.04 matches the release build runners' glibc.
+#
+# Platforms: linux/amd64 + linux/arm64, each matrix leg downloading the
+# release archive matching its native architecture. Matrix jobs push
+# platform-specific tags (vX.Y.Z-amd64 / vX.Y.Z-arm64); the final `merge`
+# job assembles the shared multi-arch tags (vX.Y.Z / latest / X.Y.Z) with
+# `buildx imagetools create`. Pushing the same tag concurrently from two
+# jobs produces a broken index on ACR — do not revert to that pattern.
 #
 # Required repository configuration (same as docker.yml):
 #   Secrets:
 #     ACR_USERNAME          — ACR login username
 #     ACR_PASSWORD          — ACR login password / temporary token
-#     DOCKERHUB_USERNAME    — (optional) Docker Hub login; set to ENABLE Docker Hub push
-#     DOCKERHUB_TOKEN        — (optional) Docker Hub access token
+#     DOCKERHUB_TOKEN       — (optional) Docker Hub access token; set to ENABLE Docker Hub push
 #   Variables:
 #     ACR_REGISTRY          — e.g. registry.cn-hangzhou.aliyuncs.com
 #     ACR_NAMESPACE         — personal namespace
+#     DOCKERHUB_USERNAME    — (optional) Docker Hub login username
 #     DOCKERHUB_NAMESPACE   — (optional, default: schiplat)
 #
 # Image:
-#   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-standalone:<tag>  (linux/arm64)
+#   ${ACR_REGISTRY}/${ACR_NAMESPACE}/buz-standalone:<tag>  (linux/amd64 + linux/arm64)
 #   ${DOCKERHUB_NAMESPACE}/buz-standalone:<tag>            (only when DOCKERHUB_USERNAME is set)
 
 on:
@@ -78,11 +85,23 @@ jobs:
           echo "Image tag: ${PRIMARY} (version ${PRIMARY#v})"
 
   push:
-    name: Build & push buz-standalone (arm64)
+    name: Build & push (${{ matrix.name }})
     needs: prepare
-    runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: amd64
+            runs-on: ubuntu-latest
+            platform: linux/amd64
+            release_target: linux-x86_64
+          - name: arm64
+            runs-on: ubuntu-24.04-arm
+            platform: linux/arm64
+            release_target: linux-aarch64
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -99,26 +118,21 @@ jobs:
             exit 1
           fi
 
-          if [[ -n "${PRIMARY}" ]]; then
-            : "${PRIMARY}"
-          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            PRIMARY="${GITHUB_REF_NAME}"
-          else
-            PRIMARY="latest"
+          if [[ -z "${PRIMARY}" ]]; then
+            echo "prepare job produced an empty tag" >&2
+            exit 1
           fi
 
+          # Platform-specific tags only. The shared multi-arch tags
+          # (vX.Y.Z / latest / X.Y.Z) are assembled in the `merge` job from
+          # these two — pushing one tag from both jobs races the registry.
+          SUFFIX="${{ matrix.name }}"
           IMAGE="${REGISTRY}/${NAMESPACE}/buz-standalone"
           {
-            echo "${IMAGE}:${PRIMARY}"
-            echo "${IMAGE}:latest"
+            echo "${IMAGE}:${PRIMARY}-${SUFFIX}"
+            echo "${IMAGE}:latest-${SUFFIX}"
             if [[ "$PRIMARY" == v* ]]; then
-              echo "${IMAGE}:${PRIMARY#v}"
-            fi
-            # Explicit platform suffix for operators who pin -arm64 tags.
-            echo "${IMAGE}:${PRIMARY}-arm64"
-            echo "${IMAGE}:latest-arm64"
-            if [[ "$PRIMARY" == v* ]]; then
-              echo "${IMAGE}:${PRIMARY#v}-arm64"
+              echo "${IMAGE}:${PRIMARY#v}-${SUFFIX}"
             fi
           } > /tmp/tags-standalone.txt
 
@@ -128,15 +142,10 @@ jobs:
           if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
             DH_IMAGE="${DH_NAMESPACE}/buz-standalone"
             {
-              echo "${DH_IMAGE}:${PRIMARY}"
-              echo "${DH_IMAGE}:latest"
+              echo "${DH_IMAGE}:${PRIMARY}-${SUFFIX}"
+              echo "${DH_IMAGE}:latest-${SUFFIX}"
               if [[ "$PRIMARY" == v* ]]; then
-                echo "${DH_IMAGE}:${PRIMARY#v}"
-              fi
-              echo "${DH_IMAGE}:${PRIMARY}-arm64"
-              echo "${DH_IMAGE}:latest-arm64"
-              if [[ "$PRIMARY" == v* ]]; then
-                echo "${DH_IMAGE}:${PRIMARY#v}-arm64"
+                echo "${DH_IMAGE}:${PRIMARY#v}-${SUFFIX}"
               fi
             } >> /tmp/tags-standalone.txt
           fi
@@ -170,14 +179,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_TARGET: ${{ matrix.release_target }}
         run: |
           set -euo pipefail
           mkdir -p ctx
-          # The arm64 release archive carries both binaries (bin/ +
-          # conf/); standalone tomls and the entrypoint come from the repo.
+          # Each arch downloads its OWN release archive (bin/ + conf/);
+          # standalone tomls and the entrypoint come from this repo.
           gh release download "${{ needs.prepare.outputs.primary }}" \
             --repo "$GITHUB_REPOSITORY" \
-            --pattern "buz-${VERSION}-linux-aarch64.tar.gz" \
+            --pattern "buz-${VERSION}-${RELEASE_TARGET}.tar.gz" \
             --output "release/archive.tar.gz"
           tar -xzf release/archive.tar.gz -C ctx --strip-components=1
           cp deploy/conf/manager.standalone.toml ctx/manager.toml
@@ -190,7 +200,7 @@ jobs:
         with:
           context: ctx
           file: docker/prebuilt-standalone.Dockerfile
-          platforms: linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           # Aliyun ACR (personal) rejects the OCI provenance/SBOM attachments
@@ -199,7 +209,66 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: Inspect image
+  merge:
+    name: Merge multi-arch manifests
+    needs: [prepare, push]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create multi-arch tags
+        env:
+          PRIMARY: ${{ needs.prepare.outputs.primary }}
         run: |
+          set -euo pipefail
+          REGISTRY="${{ vars.ACR_REGISTRY }}"
+          NAMESPACE="${{ vars.ACR_NAMESPACE }}"
+
+          TAGS=("${PRIMARY}" "latest")
+          if [[ "${PRIMARY}" == v* ]]; then
+            TAGS+=("${PRIMARY#v}")
+          fi
+
+          for T in "${TAGS[@]}"; do
+            echo "Merging ${REGISTRY}/${NAMESPACE}/buz-standalone:${T}"
+            docker buildx imagetools create \
+              --tag "${REGISTRY}/${NAMESPACE}/buz-standalone:${T}" \
+              "${REGISTRY}/${NAMESPACE}/buz-standalone:${T}-amd64" \
+              "${REGISTRY}/${NAMESPACE}/buz-standalone:${T}-arm64"
+          done
+
+          if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
+            DH_NAMESPACE="${{ vars.DOCKERHUB_NAMESPACE || 'schiplat' }}"
+            for T in "${TAGS[@]}"; do
+              echo "Merging ${DH_NAMESPACE}/buz-standalone:${T}"
+              docker buildx imagetools create \
+                --tag "${DH_NAMESPACE}/buz-standalone:${T}" \
+                "${DH_NAMESPACE}/buz-standalone:${T}-amd64" \
+                "${DH_NAMESPACE}/buz-standalone:${T}-arm64"
+            done
+          fi
+
+      - name: Inspect merged manifest
+        env:
+          PRIMARY: ${{ needs.prepare.outputs.primary }}
+        run: |
+          set -euo pipefail
           docker buildx imagetools inspect \
-            "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.primary }}"
+            "${{ vars.ACR_REGISTRY }}/${{ vars.ACR_NAMESPACE }}/buz-standalone:${PRIMARY}"

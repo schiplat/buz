@@ -1,4 +1,4 @@
-# Standalone compose — Manager + Runner in one container (arm64)
+# Standalone compose — Manager + Runner in one container (multi-arch)
 
 Full guide: docs/content/docs/03-operations/standalone.md
 (or site path /docs/03-operations/standalone/).

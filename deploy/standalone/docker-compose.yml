@@ -1,10 +1,11 @@
-# buz-standalone — Manager + Runner in one container (linux/arm64)
+# buz-standalone — Manager + Runner in one container (multi-arch: amd64 + arm64)
 #
 # Docs: docs/content/docs/03-operations/standalone.md
 # Usage:
 #   cd /opt/buz-standalone
 #   cp this file to docker-compose.yml
 #   create .env with BUZ_JWT_SECRET=... and optional IMAGE_TAG=...
+#   (docker pull / compose pick the host-matching platform from the multi-arch image)
 #   docker compose up -d
 
 services:

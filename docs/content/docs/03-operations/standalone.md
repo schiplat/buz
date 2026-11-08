@@ -1,20 +1,20 @@
 ---
 title: Standalone (single image)
 weight: 30
-description: "First run and upgrade for buz-standalone (Manager + Runner in one container, arm64)"
+description: "First run and upgrade for buz-standalone (Manager + Runner in one container, amd64 + arm64)"
 ---
 
 # Standalone image — first run & upgrade
 
 `buz-standalone` packs **Manager + Runner** in one container. It is intended for
-**dev / lab / single-VM demos** (arm64 only). Production split deploy continues
+**dev / lab / single-VM demos** (amd64 + arm64). Production split deploy continues
 to use `buz-manager` + `buz-runner` with normal `register_token` registration.
 
 | Item | Value |
 |------|--------|
 | Image | `schiplat/buz-standalone` |
-| Arch | **linux/arm64** only |
-| Tags | `latest`, `vX.Y.Z`, `X.Y.Z`, plus `-arm64` suffixes |
+| Arch | **linux/amd64** + **linux/arm64** (multi-arch image) |
+| Tags | `latest`, `vX.Y.Z`, `X.Y.Z`, plus `-amd64` / `-arm64` suffixes |
 | Auth mode | Manager `[standalone]` on — loopback tokenless register for `standalone-runner` |
 | Compose template | [`deploy/standalone/docker-compose.yml`](https://github.com/schiplat/buz/blob/master/deploy/standalone/docker-compose.yml) |
 
@@ -45,7 +45,7 @@ to use `buz-manager` + `buz-runner` with normal `register_token` registration.
 
 ## Prerequisites
 
-- Linux **arm64** host (Apple Silicon VM, Graviton, arm64 cloud VM, …)
+- Linux **amd64** or **arm64** host (Docker Desktop on Intel or Apple Silicon Mac, x86_64 VM, Graviton, arm64 cloud VM, …)
 - Docker (or `sudo docker`) with compose v2 recommended
 - Outbound access to Docker Hub (or a pre-pulled image)
 - `docker login` only if you hit Docker Hub rate limits (public image needs no login):
@@ -357,8 +357,8 @@ The Runners page should show `online` again within a few seconds.
 
 **Wrong architecture**
 
-Image is arm64-only. On amd64 hosts Docker will fail to run (or need emulation,
-which is unsupported here). Use split amd64 images or an arm64 VM.
+Image is published multi-arch (linux/amd64 + linux/arm64); `docker pull` picks
+the matching platform automatically.
 
 ---
 
