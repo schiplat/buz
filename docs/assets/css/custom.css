@@ -1,53 +1,48 @@
-/* Homepage subtitle */
-.ihome-hero-sub {
-  text-align: center;
-  color: var(--tw-prose-body);
-  opacity: 0.6;
-  font-size: 1.125rem;
-  margin-top: -0.5rem;
-  margin-bottom: 2rem;
-}
+/* Custom site styles: docs home callout + site footer (multi-column) */
 
-/* Card grid for docs sections */
-.ihome-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 1rem;
-  list-style: none;
-  padding: 0;
-  max-width: 56rem;
-  margin: 2rem auto;
-}
+/* ── docs home callout (hextra callout shortcode, tuned width) ── */
+.content .callout { max-width: 48rem; }
 
-.ihome-card {
-  display: block;
-  padding: 1.5rem;
-  border: 1px solid var(--tw-prose-th-borders);
-  border-radius: 0.5rem;
-  text-decoration: none !important;
-  transition: border-color 0.15s;
-}
-.ihome-card:hover {
-  border-color: var(--tw-prose-links);
-}
-
-.ihome-card-kicker {
-  display: block;
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  opacity: 0.4;
-  margin-bottom: 0.25rem;
-}
-.ihome-card-title {
-  display: block;
-  font-size: 1.125rem;
-  font-weight: 600;
-  margin-bottom: 0.25rem;
-}
-.ihome-card-desc {
-  display: block;
+/* ── site footer (overrides hextra default via layouts/partials/footer.html) ── */
+.site-footer {
+  border-top: 1px solid #e5e7eb;
+  background: #f9fafb;
+  color: #374151;
   font-size: 0.875rem;
-  opacity: 0.6;
 }
+.site-footer a { color: #4b5563; text-decoration: none; }
+.site-footer a:hover { color: #111827; text-decoration: underline; }
+.site-footer .footer-inner { max-width: 90rem; margin: 0 auto; padding: 2rem 1.5rem 1.25rem; }
+.site-footer .footer-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 1.5rem;
+  padding-bottom: 1.5rem;
+}
+.site-footer .footer-h {
+  font-weight: 600;
+  color: #111827;
+  margin-bottom: 0.5rem;
+  font-size: 0.8125rem;
+}
+.site-footer .footer-col a { display: block; padding: 0.15rem 0; }
+.site-footer .footer-bottom {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 1rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  color: #6b7280;
+}
+
+/* dark mode */
+.dark .site-footer {
+  background: #0b0d10;
+  color: #9ca3af;
+  border-top-color: #1f2937;
+}
+.dark .site-footer a { color: #9ca3af; }
+.dark .site-footer a:hover { color: #f3f4f6; }
+.dark .site-footer .footer-h { color: #e5e7eb; }
+.dark .site-footer .footer-bottom { border-top-color: #1f2937; }

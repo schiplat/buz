@@ -54,7 +54,7 @@ menu:
   main:
     - identifier: docs
       name: Docs
-      url: /docs/
+      url: /
       weight: 1
     - identifier: github
       name: GitHub
