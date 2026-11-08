@@ -2,7 +2,7 @@
 # Verifies the config flow end-to-end on a shell/local runner:
 #
 #   1. Deliver: fetch a presigned OSS URL into dest (plain curl + tar).
-#   2. Render: nested `config: { dest, render }` — render-only.
+#   2. Render: buz/env-render plugin step (env: carries the values).
 #      config_render on tasks (no flat config_path / env_render).
 #   3. Deliver step: Manager signs a 1-hour GET for
 #      `key_path + /configs.tar.gz` → Runner unpacks to dest ($BUZ_CONFIG_DIR).
@@ -63,23 +63,23 @@ steps:
       url: ${secrets.CONFIG_BUNDLE_URL}   # presigned, TTL <= 1h — refresh per deploy
       dest: config                        # workspace-relative
 
-  # ── 2. Render-only (no OSS; templates already under dest) ──────────
-  # List form shows multi-file shape; add more entries as the bundle grows.
-  # $BUZ_ENV_CHANGED(_KEYS) are set on THIS step only — a later Compose step
-  # should own `docker compose up` (preferred over render on_change).
+  # ── 2. Render env via the buz/env-render plugin ────────────────────
+  # Values map 1:1 to the ${secrets.NAME} placeholders in env.example via
+  # the call site's env: mapping (masked channel). The plugin renders into
+  # the workspace-relative dest_dir on the shell engine.
   - name: Render env
-    engine: shell
-    config:
-      dest: config
-      render:
-        - template: env.example
-          output: .env
-          mode: "0600"
-          on_missing: fail
+    uses: buz/env-render@1.1.0
+    env:
+      BUZV_POSTGRES_PASSWORD: ${secrets.POSTGRES_PASSWORD}
+      BUZV_SMTP_PASSWORD: ${secrets.SMTP_PASSWORD}
+    with:
+      dest_dir: config
+      template: env.example
+      output: .env
+      mode: "0600"
+      on_missing: fail
     run: |
-      echo "==> BUZ_CONFIG_DIR: ${BUZ_CONFIG_DIR:-<unset>}"
-      ls -l "$BUZ_CONFIG_DIR/.env"
-      echo "==> env changed: ${BUZ_ENV_CHANGED:-0} (${BUZ_ENV_CHANGED_KEYS:-none})"
+      ls -l config/.env
       echo "==> render-only OK"
 
   # ── 3. Sanity (no config prepare) ──────────────────────────────────
