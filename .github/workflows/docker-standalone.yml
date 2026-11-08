@@ -55,6 +55,7 @@ jobs:
           INPUT_TAG: ${{ github.event.inputs.tag }}
           RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
           RELEASE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [[ -n "${INPUT_TAG}" ]]; then
