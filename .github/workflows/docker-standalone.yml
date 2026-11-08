@@ -37,7 +37,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   # Workflow-level so step `if:` conditions and shell scripts can both probe it.
-  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
 
 jobs:
   prepare:
