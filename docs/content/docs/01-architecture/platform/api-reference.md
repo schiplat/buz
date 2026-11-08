@@ -108,7 +108,7 @@ backlog, WebSocket broadcast sink counts, and the step review-gate posture
 {
   "status": "ok",
   "name": "Buz",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "component": "manager",
   "uptime_seconds": 3600,
   "started_at": "2026-08-30T12:00:00Z",
