@@ -213,7 +213,7 @@ Help text: only secrets with **Team share** enabled are auto-injected; otherwise
 
 ## YAML secret bindings (authoritative)
 
-Prefer YAML `secrets:` + `env: KEY: ${secrets.NAME}` (see [Secrets Access](./secrets-access.md)). Form create/edit for pipelines is removed ([YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/)).
+Prefer YAML `secrets:` + `env: KEY: ${secrets.NAME}` (see [Secrets Access](/docs/01-architecture/authoring/secrets-access/)). Form create/edit for pipelines is removed ([YAML-First Authoring](/docs/01-architecture/authoring/yaml-first-authoring/)).
 
 | YAML / UI | Behavior |
 |-----------|----------|

@@ -387,7 +387,7 @@ Request:
 
 ### POST /pipelines/:id/trigger — Trigger Run
 
-Body requires `environment` and may include `inputs`, `verbose`, and `debug` (`debug` is rejected for non–platform-admin). The selected registered environment slug must be declared by the pipeline; missing, unknown, or undeclared environments are rejected. A declared slug whose Environment was deleted also fails (`422` for file-backed pipelines, `404 environment '<slug>' not found` otherwise); see [Environments](./environments/) for the `default` environment lifecycle.
+Body requires `environment` and may include `inputs`, `verbose`, and `debug` (`debug` is rejected for non–platform-admin). The selected registered environment slug must be declared by the pipeline; missing, unknown, or undeclared environments are rejected. A declared slug whose Environment was deleted also fails (`422` for file-backed pipelines, `404 environment '<slug>' not found` otherwise); see [Environments](../environments/) for the `default` environment lifecycle.
 
 Response:
 ```json
@@ -411,7 +411,7 @@ Job `snapshot.environment` records the selected slug when set.
 | POST | `/api/v1/jobs/:id/claim` | Runner Token |
 | PATCH | `/api/v1/jobs/:id/status` | Runner Token |
 
-List/get include `trigger_user_id` when set. `GET /jobs/:id` returns append-only `approvals[]` (`approve` \| `reject` \| `cancel` \| `timeout`). Protected Environment triggers create `waiting_approval` jobs (`approval_required: true` on trigger response) until approve — see [Environment Approval Gates](./environment-approvals/). Concurrent approve/reject/cancel on one job are serialized per job: exactly one decision wins and each loser gets `409 Conflict` with no side effects (race semantics in [Environment Approval Gates](./environment-approvals/)).
+List/get include `trigger_user_id` when set. `GET /jobs/:id` returns append-only `approvals[]` (`approve` \| `reject` \| `cancel` \| `timeout`). Protected Environment triggers create `waiting_approval` jobs (`approval_required: true` on trigger response) until approve — see [Environment Approval Gates](../environment-approvals/). Concurrent approve/reject/cancel on one job are serialized per job: exactly one decision wins and each loser gets `409 Conflict` with no side effects (race semantics in [Environment Approval Gates](../environment-approvals/)).
 
 List items include `team_id` (from the owning pipeline) so the UI team switcher can filter Jobs client-side. Visibility still follows membership / platform-admin rules via `team_in_clause`.
 
@@ -490,7 +490,7 @@ Response:
 | PUT | `/api/v1/variables/:id` | JWT |
 | DELETE | `/api/v1/variables/:id` | JWT |
 
-Shared **Default** lives in `platform_vars.value`. Per-run overlays: [Environments](./environments/) (Variables + Secrets). Per-repo GitHub push overlays: bind `override_value` (see Sync below).
+Shared **Default** lives in `platform_vars.value`. Per-run overlays: [Environments](../environments/) (Variables + Secrets). Per-repo GitHub push overlays: bind `override_value` (see Sync below).
 
 ## Environments
 
@@ -508,7 +508,7 @@ Shared **Default** lives in `platform_vars.value`. Per-run overlays: [Environmen
 | PUT | `/api/v1/environments/:id/secret-overrides` | PlatformAdmin `{secret_id, value}` |
 | DELETE | `/api/v1/environments/:id/secret-overrides/:secret_id` | PlatformAdmin |
 
-Protection fields: `protection_enabled`, `min_trigger_role`, `min_approve_role`, `require_approvals`, `forbid_self_approve`, `approval_timeout_seconds`. Full merge order: [Environments](./environments/). Approval gates + records: [Environment Approval Gates](./environment-approvals/).
+Protection fields: `protection_enabled`, `min_trigger_role`, `min_approve_role`, `require_approvals`, `forbid_self_approve`, `approval_timeout_seconds`. Full merge order: [Environments](../environments/). Approval gates + records: [Environment Approval Gates](../environment-approvals/).
 
 ## GitHub Actions Sync
 

@@ -185,7 +185,7 @@ GitHub Actions **name** is always the Buz resource name. Push never accepts a
 one-shot value in the request body; edit the bind (`PATCH`), then Push.
 Resolution: `effective = override ?? default`.
 
-This is **orthogonal** to platform [Environments](./environments/) (Buz job claim overlays).
+This is **orthogonal** to platform [Environments](../environments/) (Buz job claim overlays).
 
 ## Backend design
 

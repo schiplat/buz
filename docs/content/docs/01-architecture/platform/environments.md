@@ -135,7 +135,7 @@ When `protection_enabled` is true, Trigger creates `waiting_approval` jobs that
 must be approved before concurrency / claim. **Full design** (principles, state
 machine, append-only `job_approvals` records, API, deferrals):
 
-→ **[Environment Approval Gates](./environment-approvals/)**
+→ **[Environment Approval Gates](../environment-approvals/)**
 
 Summary defaults: `min_trigger_role=developer`, `min_approve_role=maintainer`,
 `require_approvals=1`, `forbid_self_approve=true`, timeout `86400s`. Automated
@@ -168,10 +168,10 @@ append-only row in `job_approvals` (exposed on `GET /jobs/{id}` as `approvals`).
 | POST | `/api/v1/jobs/{id}/reject` | Auth ≥ `min_approve_role` (`{ comment? }`) |
 
 Secret override list / upsert responses never include plaintext (`has_override: true` only).
-See also [Environment Approval Gates](./environment-approvals/) and [API Reference](./api-reference/).
+See also [Environment Approval Gates](../environment-approvals/) and [API Reference](../api-reference/).
 
 ## Out of scope
 
 - Assigning Hosts directly to Environments (Hosts remain global; Environment-owned name/label allowlists provide targeting policy)
 - Syncing Environment values to GitHub
-- Approval IM notify (see deferrals in [Approval Gates](./environment-approvals/))
+- Approval IM notify (see deferrals in [Approval Gates](../environment-approvals/))

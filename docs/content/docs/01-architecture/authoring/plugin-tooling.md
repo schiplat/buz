@@ -55,7 +55,7 @@ below. For tab completion, see
 
 | Command | Purpose |
 |---------|---------|
-| `buz-plugin init <namespace>/<id>` | Scaffold `plugins/<ns>/<id>/` per the [publishing layout](./plugin-contract/#publishing-layout): a starter spec plus README |
+| `buz-plugin init <namespace>/<id>` | Scaffold `plugins/<ns>/<id>/` per the [publishing layout](../plugin-contract/#publishing-layout): a starter spec plus README |
 | `buz-plugin validate <path…>` | Validate spec files/directories with the exact gate the Manager applies at save (`shared::plugin_spec`), including duplicate `(id, version)` detection |
 | `buz-plugin index` | Generate the source-root `plugins/index.json` (+ per-plugin `meta.json` + `revision.json` sentinel) — supersedes `gen_index.py`. `--check` verifies instead of writing |
 | `buz-plugin mirror <source> <mirror>` | Compare the revision sentinel between canonical origin and mirror (two tiny GETs); falls back to a full index byte-compare when a sentinel is missing — the same protocol the Manager's *Check mirror* action speaks |

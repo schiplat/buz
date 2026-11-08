@@ -24,7 +24,7 @@ Related: [Secrets Access Control](/docs/01-architecture/platform/secrets-access-
 
 Out of scope for Phase 2 (defer to Phase 3): SSO/OIDC, user API tokens, per-step secret ACL, cross-team grant tables.
 
-Environment approval gates (方案 B) use team role thresholds (`min_trigger_role` / `min_approve_role`) with append-only `job_approvals` — see [Environment Approval Gates](./environment-approvals/).
+Environment approval gates (方案 B) use team role thresholds (`min_trigger_role` / `min_approve_role`) with append-only `job_approvals` — see [Environment Approval Gates](../environment-approvals/).
 
 Platform-admin **Audit logs** UI/API (mutation before/after with redaction) is available — see [Admin Audit Logs](/docs/01-architecture/platform/admin-audit-logs/).
 
@@ -95,7 +95,7 @@ Runner management remains **platform-admin-only** global infrastructure. Job **d
 
 \*Viewer may see host **names** used by pipelines they can view, but not credential fields (same as today: credentials never returned to UI).
 
-\*Approve/reject: Developer may approve only when the Environment sets `min_approve_role=developer`. Default is Maintainer+. See [Environment Approval Gates](./environment-approvals/).
+\*Approve/reject: Developer may approve only when the Environment sets `min_approve_role=developer`. Default is Maintainer+. See [Environment Approval Gates](../environment-approvals/).
 
 **Webhook / cron**: still fire without a user session for unprotected paths; **protected Environments reject automated triggers**. Job records store `trigger_by` as today (`webhook` / `cron` / username).
 

@@ -11,7 +11,7 @@ Use this page when authoring YAML or reviewing Quick YAML Reference.
 
 Related deep-dives:
 
-- [Secrets Access (GHA-style)](../platform/secrets-access.md) — allowlist → map → consume
+- [Secrets Access (GHA-style)](/docs/01-architecture/authoring/secrets-access/) — allowlist → map → consume
 - [Secrets Access Control](../platform/secrets-access-control.md) — kind, `team_shared`, bindings
 - [Env Render](./env-render.md) — `${secrets.X}` / `${vars.X}` in `.env` templates
 - [Pipeline Format](./pipeline-format.md) — field catalogue

@@ -78,6 +78,6 @@ Cross-team names always fail. Missing same-team secret → claim / expand error.
 
 - [Secrets & Variables — Expression Cheat Sheet](../authoring/secrets-vars-expressions.md) — **all syntaxes in one place**
 - [Pipeline YAML format](../authoring/pipeline-format.md)
-- [Secrets Access Control](./secrets-access-control.md) — kind, team_shared, bindings
+- [Secrets Access Control](/docs/01-architecture/platform/secrets-access-control/) — kind, team_shared, bindings
 - [Config Block & Env Files](../authoring/config-block.md) — Deliver / Render / `${secrets.X}` in templates
 - [YAML-First Authoring](../authoring/yaml-first-authoring.md) — YAML sole orchestration source (file authority)

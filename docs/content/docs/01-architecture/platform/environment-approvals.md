@@ -6,7 +6,7 @@ description: Protected Environments — Trigger ACL, waiting_approval, append-on
 
 # Environment Approval Gates
 
-Related: [Environments](./environments/) · [Users, Teams & RBAC](./rbac/) · [Admin Audit Logs](./admin-audit-logs/)
+Related: [Environments](../environments/) · [Users, Teams & RBAC](../rbac/) · [Admin Audit Logs](../admin-audit-logs/)
 
 ## Why this exists
 
