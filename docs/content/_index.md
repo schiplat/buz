@@ -1,5 +1,6 @@
 ---
 title: "Documentation"
+type: docs
 weight: 1
 description: "Buz platform documentation - quick start, concepts, authoring, operations"
 ---
