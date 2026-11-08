@@ -214,6 +214,22 @@ fn scan_yaml_file(file: &Path, report: &mut ScanReport) {
             return;
         }
     };
+    // The removed kernel `config:` block is a first-class migration marker:
+    // any file carrying it must move to the `buz/env-render` plugin step.
+    if raw.contains("render:") && (raw.contains("config:") || raw.contains("config_render")) {
+        let mut keys = vec!["config.render".to_string()];
+        if raw.contains("registry_secret") {
+            keys.push("registry_secret".to_string());
+        }
+        if raw.contains("config.source") || raw.contains("key_path") {
+            keys.push("config.source".to_string());
+        }
+        report.file_findings.push(DeprecatedFinding {
+            location: display.clone(),
+            keys,
+        });
+    }
+
     let result = shared::pipeline_yaml::parse_and_validate(&raw);
     if result.parsed.is_none() {
         let first = result

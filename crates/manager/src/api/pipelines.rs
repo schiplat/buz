@@ -339,7 +339,7 @@ pub async fn get_one(
     let tasks = sqlx::query(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
                 work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
-                step_env, privileged, config_render, config_dest,
+                step_env, privileged,
                 hosts_strategy, capabilities
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
@@ -370,12 +370,10 @@ pub async fn get_one(
                 &t.get::<String, _>(15),
             ).ok().filter(|v| v.is_object()),
             "privileged": t.get::<i64, _>(16) != 0,
-            "config_render": serde_json::from_str::<serde_json::Value>(
-                &t.get::<String, _>(17),
-            ).ok().filter(|v| !v.is_null()),
-            "config_dest": t.get::<String, _>(18),
-            "hosts_strategy": t.get::<String, _>(19),
-            "capabilities": serde_json::from_str::<Vec<String>>(&t.get::<String, _>(20)).unwrap_or_default(),
+            "config_render": serde_json::Value::Null,
+            "config_dest": serde_json::Value::Null,
+            "hosts_strategy": t.get::<String, _>(17),
+            "capabilities": serde_json::from_str::<Vec<String>>(&t.get::<String, _>(18)).unwrap_or_default(),
         })
     })
     .collect::<Vec<_>>();
@@ -1313,7 +1311,7 @@ pub async fn do_trigger(
     let mut tasks_snapshot = sqlx::query(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, volumes,
-                privileged, config_render, config_dest,
+                privileged,
                 hosts_strategy, id, capabilities
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
@@ -1343,13 +1341,11 @@ pub async fn do_trigger(
                 &t.get::<String, _>(14),
             ).unwrap_or(serde_json::Value::Array(vec![])),
             "privileged": t.get::<i64, _>(15) != 0,
-            "config_render": serde_json::from_str::<serde_json::Value>(
-                &t.get::<String, _>(16),
-            ).ok().filter(|v| !v.is_null()),
-            "config_dest": t.get::<String, _>(17),
-            "hosts_strategy": t.get::<String, _>(18),
-            "id": t.get::<String, _>(19),
-            "capabilities": serde_json::from_str::<Vec<String>>(&t.get::<String, _>(20)).unwrap_or_default(),
+            "config_render": serde_json::Value::Null,
+            "config_dest": serde_json::Value::Null,
+            "hosts_strategy": t.get::<String, _>(16),
+            "id": t.get::<String, _>(17),
+            "capabilities": serde_json::from_str::<Vec<String>>(&t.get::<String, _>(18)).unwrap_or_default(),
         })
     })
     .collect::<Vec<_>>();
@@ -1877,29 +1873,12 @@ pub(crate) async fn insert_steps(
             0i64
         };
 
-        // Prefer nested `config:`; else use flattened API fields.
-        let (flat_dest, flat_render) = shared::pipeline_yaml::flatten_config(step.config.as_ref());
-        let config_dest_stored = flat_dest
-            .or_else(|| {
-                step.config_dest
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_default();
-        let config_render_stored = flat_render
-            .or_else(|| step.config_render.clone())
-            .as_ref()
-            .map(|e| serde_json::to_string(e).unwrap_or_default())
-            .unwrap_or_default();
-
         sqlx::query(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
              command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
-             step_env, volumes, privileged, config_render, config_dest,
+             step_env, volumes, privileged,
              hosts_strategy, capabilities)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(pipeline_id)
@@ -1919,8 +1898,6 @@ pub(crate) async fn insert_steps(
         .bind(&step_env_stored)
         .bind(&volumes_stored)
         .bind(privileged_val)
-        .bind(&config_render_stored)
-        .bind(&config_dest_stored)
         .bind(&hosts_strategy_stored)
         .bind(&capabilities_stored)
         .execute(&mut *conn)

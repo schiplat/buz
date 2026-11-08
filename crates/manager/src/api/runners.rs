@@ -1502,8 +1502,6 @@ async fn poll_once(
                     COALESCE(json_extract(j.value, '$.step_env'), '{}'),
                     COALESCE(json_extract(j.value, '$.image'), ''),
                     COALESCE(json_extract(j.value, '$.volumes'), '[]'),
-                    COALESCE(json_extract(j.value, '$.config_render'), 'null'),
-                    COALESCE(json_extract(j.value, '$.config_dest'), ''),
                     COALESCE(json_extract(j.value, '$.hosts_strategy'), 'chain'),
                     COALESCE(json_extract(j.value, '$.privileged'), 0),
                     COALESCE(json_extract(j.value, '$.capabilities'), '[]')
@@ -1517,7 +1515,7 @@ async fn poll_once(
         sqlx::query(
             "SELECT id, step_order, name, exec_type, COALESCE(host_id, ''), host_names, host_labels, command_template,
                     work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
-                    config_render, config_dest, hosts_strategy,
+                    hosts_strategy,
                     privileged, capabilities
              FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
         )
@@ -1756,11 +1754,9 @@ async fn poll_once(
         let step_env_raw: String = t.get(13);
         let image: String = t.get(14);
         let volumes_raw: String = t.get(15);
-        let config_render_raw: String = t.get(16);
-        let config_dest: String = t.get(17);
-        let hosts_strategy: String = t.get(18);
-        let privileged: i64 = t.get(19);
-        let capabilities_raw: String = t.get(20);
+        let hosts_strategy: String = t.get(16);
+        let privileged: i64 = t.get(17);
+        let capabilities_raw: String = t.get(18);
         let capabilities: Vec<String> = serde_json::from_str(&capabilities_raw).map_err(|_| {
             AppError::ValidationFailed(format!(
                 "task {} has invalid capabilities JSON",
@@ -1783,9 +1779,6 @@ async fn poll_once(
             "image": &image,
             "volumes": serde_json::from_str::<serde_json::Value>(&volumes_raw)
                 .unwrap_or(serde_json::Value::Array(vec![])),
-            "config_render": serde_json::from_str::<serde_json::Value>(&config_render_raw)
-                .unwrap_or(serde_json::Value::Null),
-            "config_dest": &config_dest,
             "hosts_strategy": shared::pipeline_yaml::normalize_hosts_strategy(
                 Some(hosts_strategy.as_str()),
             )
@@ -2094,45 +2087,8 @@ async fn poll_once(
             }
         }
 
-        // Attach step allowlist values for render/mask (Runner does not auto-inject `$NAME`).
+        // Attach step allowlist values for mask (Runner does not auto-inject `$NAME`).
         task_json["step_secrets"] = step_secrets_map.clone();
-
-        // `config_render` resolves `${secrets.X}` by secret name — attach for
-        // any step that opts into render (pipeline allowlist + step allowlist).
-        if !config_render_raw.is_empty() {
-            let mut render_secrets = secrets_by_name.clone();
-            if let (Some(dst), Some(src)) =
-                (render_secrets.as_object_mut(), step_secrets_map.as_object())
-            {
-                for (k, v) in src {
-                    dst.entry(k.clone()).or_insert(v.clone());
-                }
-            }
-
-            // Surface a precise, team-aware error when a render-referenced
-            // secret is missing from the pipeline's team (the usual cause is a
-            // secret created in another team). Enforced only when
-            // `on_missing: fail` (the default); `warn` stays permissive.
-            if config_render_strict(&config_render_raw) {
-                let mut missing: Vec<String> = Vec::new();
-                for name in step_secrets_str
-                    .split(',')
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                {
-                    if render_secrets.get(name).and_then(|v| v.as_str()).is_none()
-                        && !missing.iter().any(|m| m == name)
-                    {
-                        missing.push(name.to_string());
-                    }
-                }
-                if let Some(msg) = render_missing_error(&state.pool, &pipeline_id, &missing).await {
-                    task_json["config_render_error"] = serde_json::Value::String(msg);
-                }
-            }
-
-            task_json["render_env_secrets"] = render_secrets;
-        }
 
         task_json["log_mask_values"] = serde_json::Value::Array(
             log_mask_values
@@ -2203,97 +2159,8 @@ async fn poll_once(
 /// Load same-team secrets by name into `into_by_name` (and optionally a parallel map).
 /// Skips names already present. Used for GHA-style implicit allowlist via `${secrets.X}`
 /// / purpose slots when top-level `secrets:` is omitted.
-/// Whether any `config.render` entry enforces `on_missing: fail` (the default
-/// when the key is absent). Only `warn` is permissive.
-fn config_render_strict(config_render_raw: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(config_render_raw) else {
-        return true;
-    };
-    let entries: &[serde_json::Value] = match &value {
-        serde_json::Value::Array(items) => items.as_slice(),
-        serde_json::Value::Object(_) => std::slice::from_ref(&value),
-        _ => return true,
-    };
-    if entries.is_empty() {
-        return false;
-    }
-    entries.iter().any(|e| {
-        let om = e
-            .get("on_missing")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .unwrap_or("fail");
-        !om.eq_ignore_ascii_case("warn")
-    })
-}
-
-/// Build a precise, team-aware error message for render secrets referenced in
 /// the step allowlist but not resolvable in the pipeline's team. Returns
 /// `None` when `missing` is empty. The message never leaks secret values.
-async fn render_missing_error(
-    pool: &sqlx::SqlitePool,
-    pipeline_id: &str,
-    missing: &[String],
-) -> Option<String> {
-    if missing.is_empty() {
-        return None;
-    }
-
-    let team_row: Option<(String, String)> = sqlx::query_as(
-        "SELECT t.name, t.slug FROM teams t
-         JOIN pipelines p ON p.team_id = t.id
-         WHERE p.id = ?",
-    )
-    .bind(pipeline_id)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
-
-    let placeholders = vec!["?"; missing.len()].join(",");
-    let query = format!(
-        "SELECT s.name, COALESCE(t.name, ''), COALESCE(t.slug, '') FROM secrets s
-         LEFT JOIN teams t ON t.id = s.team_id
-         WHERE s.name IN ({placeholders})"
-    );
-    let mut q = sqlx::query_as::<_, (String, String, String)>(&query);
-    for name in missing {
-        q = q.bind(name);
-    }
-    let located: Vec<(String, String, String)> = q.fetch_all(pool).await.unwrap_or_default();
-
-    let (team_name, team_slug) = team_row.unwrap_or_else(|| ("unknown".into(), "unknown".into()));
-    let mut msg = format!(
-        "config.render references secret(s) not found in pipeline team '{team_name}' \
-         (slug: {team_slug}): {}. ",
-        missing.join(", ")
-    );
-
-    for name in missing {
-        match located.iter().find(|(n, _, _)| n == name) {
-            Some((_, other_name, other_slug)) if !other_slug.is_empty() => {
-                msg.push_str(&format!(
-                    "'{name}' exists in team '{other_name}' (slug: {other_slug}) — \
-                     move the secret into '{team_slug}' or bind the pipeline to \
-                     '{other_slug}'. "
-                ));
-            }
-            Some(_) => {
-                msg.push_str(&format!(
-                    "'{name}' exists but has no team — assign it to team '{team_slug}'. "
-                ));
-            }
-            None => {
-                msg.push_str(&format!(
-                    "'{name}' does not exist in any team — create it under team '{team_slug}'. "
-                ));
-            }
-        }
-    }
-
-    Some(msg)
-}
-
 async fn merge_team_secrets_by_name(
     pool: &sqlx::SqlitePool,
     pipeline_id: &str,

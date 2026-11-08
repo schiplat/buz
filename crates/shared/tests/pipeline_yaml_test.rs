@@ -337,43 +337,6 @@ steps:
 }
 
 #[test]
-fn unknown_config_key_rejected() {
-    assert_unknown_key_rejected(
-        r#"
-name: test
-steps:
-  - name: a
-    engine: shell
-    config:
-      dest: /tmp/x
-      renders:
-        - template: env.example
-    run: echo hi
-"#,
-        "renders",
-    );
-}
-
-#[test]
-fn unknown_config_render_key_rejected() {
-    assert_unknown_key_rejected(
-        r#"
-name: test
-steps:
-  - name: a
-    engine: shell
-    config:
-      dest: /tmp/x
-      render:
-        template: env.example
-        out: .env
-    run: echo hi
-"#,
-        "out",
-    );
-}
-
-#[test]
 fn invalid_uses_engine_rejected() {
     let yaml = r#"
 name: test
@@ -988,16 +951,18 @@ steps:
         r.errors
     );
     assert!(
-        r.errors.iter().any(|e| e.message.contains("source")),
-        "error should name the offending key: {:?}",
+        r.errors
+            .iter()
+            .any(|e| e.message.contains("config:` was removed")),
+        "errors: {:?}",
         r.errors
     );
 }
 
 #[test]
-fn render_only_config_accepted() {
+fn kernel_config_block_is_removed_with_friendly_error() {
     let yaml = r#"
-name: render-only
+name: legacy-render
 steps:
   - name: render
     engine: shell
@@ -1006,96 +971,17 @@ steps:
       render:
         - template: app.env.tpl
           output: app.env
-    run: ls "$BUZ_CONFIG_DIR"
-"#;
-    let r = validate_fixture(yaml);
-    assert!(r.valid, "Errors: {:?}", r.errors);
-    let step = &r.parsed.unwrap().steps[0];
-    assert_eq!(step.config_dest.as_deref(), Some("/tmp/cfg"));
-    assert!(step.config_render.as_ref().unwrap().len() == 1);
-    assert!(step.config.is_some());
-}
-
-#[test]
-fn config_dest_alone_rejected() {
-    let yaml = r#"
-name: dest-only
-steps:
-  - name: go
-    engine: shell
-    config:
-      dest: /tmp/cfg
     run: ls
 "#;
     let r = validate_fixture(yaml);
-    assert!(!r.valid);
+    assert!(!r.valid, "kernel config: must be rejected");
     assert!(
-        r.errors
-            .iter()
-            .any(|e| e.message.contains("alone is not enough")),
+        r.errors.iter().any(|e| {
+            e.message.contains("config:` was removed") && e.message.contains("buz/env-render")
+        }),
         "errors: {:?}",
         r.errors
     );
-}
-
-#[test]
-fn config_render_only_accepted() {
-    let yaml = r#"
-name: render-only
-steps:
-  - name: render
-    engine: ssh
-    host: host-b
-    config:
-      dest: /opt/manager
-      render:
-        template: env.example
-        output: .env
-        mode: "0600"
-        on_missing: fail
-        backup_keep: 2
-    run: cat "$BUZ_CONFIG_DIR/.env"
-"#;
-    let r = validate_fixture(yaml);
-    assert!(r.valid, "Errors: {:?}", r.errors);
-    let step = &r.parsed.unwrap().steps[0];
-    assert_eq!(step.config_dest.as_deref(), Some("/opt/manager"));
-    let render = step.config_render.as_ref().unwrap();
-    assert_eq!(render.len(), 1);
-    assert_eq!(render[0].template.as_deref(), Some("env.example"));
-    assert_eq!(render[0].output.as_deref(), Some(".env"));
-    assert_eq!(render[0].mode.as_deref(), Some("0600"));
-    assert_eq!(render[0].on_missing.as_deref(), Some("fail"));
-    assert_eq!(render[0].backup_keep, Some(2));
-}
-
-#[test]
-fn config_render_list_normalizes_to_vec() {
-    let yaml = r#"
-name: multi-render
-steps:
-  - name: render
-    engine: shell
-    config:
-      dest: /opt/manager
-      render:
-        - template: env.example
-          output: .env
-          mode: "0600"
-          on_missing: fail
-        - template: nginx.conf.tpl
-          output: conf/nginx.conf
-          mode: "0644"
-          on_missing: warn
-    run: echo ok
-"#;
-    let r = validate_fixture(yaml);
-    assert!(r.valid, "Errors: {:?}", r.errors);
-    let parsed = r.parsed.unwrap();
-    let render = parsed.steps[0].config_render.as_ref().unwrap();
-    assert_eq!(render.len(), 2);
-    assert_eq!(render[1].template.as_deref(), Some("nginx.conf.tpl"));
-    assert_eq!(render[1].on_missing.as_deref(), Some("warn"));
 }
 
 #[test]
@@ -1122,49 +1008,6 @@ steps:
 }
 
 #[test]
-fn config_rejects_source_key() {
-    let yaml = r#"
-name: bad-deliver
-steps:
-  - name: x
-    engine: shell
-    config:
-      source: OSS_DEMO
-      dest: /tmp/x
-    run: echo hi
-"#;
-    let r = validate_fixture(yaml);
-    assert!(!r.valid);
-    assert!(
-        r.errors.iter().any(|e| e.message.contains("source")),
-        "Errors: {:?}",
-        r.errors
-    );
-}
-
-#[test]
-fn config_rejects_render_without_dest() {
-    let yaml = r#"
-name: bad-render
-steps:
-  - name: x
-    engine: shell
-    config:
-      render:
-        template: env.example
-        output: .env
-    run: echo hi
-"#;
-    let r = validate_fixture(yaml);
-    assert!(!r.valid);
-    assert!(
-        r.errors.iter().any(|e| e.message.contains("dest")),
-        "Errors: {:?}",
-        r.errors
-    );
-}
-
-#[test]
 fn config_rejects_dest_alone() {
     let yaml = r#"
 name: dest-only
@@ -1177,52 +1020,6 @@ steps:
 "#;
     let r = validate_fixture(yaml);
     assert!(!r.valid);
-}
-
-#[test]
-fn config_rejects_render_missing_template() {
-    let yaml = r#"
-name: no-template
-steps:
-  - name: x
-    engine: shell
-    config:
-      dest: /opt/manager
-      render:
-        output: .env
-        on_missing: fail
-    run: echo hi
-"#;
-    let r = validate_fixture(yaml);
-    assert!(!r.valid);
-    assert!(
-        r.errors.iter().any(|e| e.message.contains("template")),
-        "Errors: {:?}",
-        r.errors
-    );
-}
-
-#[test]
-fn config_rejects_bad_on_missing() {
-    let yaml = r#"
-name: bad-om
-steps:
-  - name: x
-    engine: shell
-    config:
-      dest: /opt/manager
-      render:
-        template: env.example
-        on_missing: ignore
-    run: echo hi
-"#;
-    let r = validate_fixture(yaml);
-    assert!(!r.valid);
-    assert!(
-        r.errors.iter().any(|e| e.message.contains("on_missing")),
-        "Errors: {:?}",
-        r.errors
-    );
 }
 
 #[test]
@@ -1622,31 +1419,6 @@ steps:
 }
 
 #[test]
-fn render_on_change_and_services_get_not_enforced_warning() {
-    let yaml = r#"
-name: render-change
-steps:
-  - name: render
-    engine: shell
-    run: echo hi
-    config:
-      dest: ./app
-      render:
-        - template: env.example
-          output: .env
-          on_change: recreate
-          services: [web, worker]
-"#;
-    let warnings = warnings_for(yaml);
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.contains("config.render[0]") && w.contains("not enforced")),
-        "on_change/services must warn: {warnings:?}"
-    );
-}
-
-#[test]
 fn uses_step_with_inputs_is_valid() {
     let yaml = r#"
 name: uses-step
@@ -1812,22 +1584,18 @@ steps:
       url: ${secrets.CONFIG_BUNDLE_URL}
       dest: config
   - name: render
+    uses: buz/env-render@1.1.0
     engine: ssh
     host: web-01
-    config:
-      dest: config
-      render:
-        - template: env.tpl
-          output: .env
-    run: ls "$BUZ_CONFIG_DIR"
+    with:
+      dest_dir: config
+      template: env.tpl
+      output: .env
+    run: ls /opt/app
 "#;
     let r = validate_fixture(yaml);
     assert!(r.valid, "Errors: {:?}", r.errors);
-    assert!(
-        !r.warnings.iter().any(|w| w.contains("deprecated")),
-        "unexpected deprecation warnings: {:?}",
-        r.warnings
-    );
+    assert!(r.warnings.is_empty(), "warnings: {:?}", r.warnings);
 }
 
 #[test]

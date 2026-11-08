@@ -235,108 +235,6 @@ pub struct RunnerYaml {
     pub resources: Option<String>,
 }
 
-/// One `config.render` entry (template → output file).
-///
-/// Runs after delivery (OSS unpack / prior clone) places files under
-/// `$BUZ_CONFIG_DIR`, and before the run block. References resolve against
-/// job secrets (`${secrets.X}`) and vars (`${vars.X}`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct ConfigRenderEntry {
-    /// Template file relative to `$BUZ_CONFIG_DIR` (e.g. `env.example`).
-    #[serde(default)]
-    pub template: Option<String>,
-    /// Output file relative to `$BUZ_CONFIG_DIR`. Defaults to
-    /// `<template>.rendered` when unset at runtime.
-    #[serde(default)]
-    pub output: Option<String>,
-    /// Output file mode (e.g. `0600`).
-    #[serde(default)]
-    pub mode: Option<String>,
-    /// `fail` (default) aborts on unresolved refs; `warn` writes empty `KEY=`.
-    #[serde(default)]
-    pub on_missing: Option<String>,
-    /// `recreate` (Phase 2d — parsed, not enforced).
-    #[serde(default)]
-    pub on_change: Option<String>,
-    /// Compose services for `on_change` (Phase 2d — parsed, not enforced).
-    #[serde(default)]
-    pub services: Option<Vec<String>>,
-    /// Number of timestamped `<output>.bak.<ts>` backups to keep when the
-    /// render overwrites an existing output file. `0` disables backups.
-    /// Defaults to `3` when unset.
-    #[serde(default)]
-    pub backup_keep: Option<u32>,
-}
-
-/// Legacy alias — prefer [`ConfigRenderEntry`].
-pub type EnvRender = ConfigRenderEntry;
-
-/// `config.render`: a single object or a list of objects.
-///
-/// Custom deserialize so unknown keys on a single object (e.g. `out:`) are not
-/// swallowed by untagged fallback to the list variant.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum ConfigRender {
-    One(ConfigRenderEntry),
-    Many(Vec<ConfigRenderEntry>),
-}
-
-impl<'de> Deserialize<'de> for ConfigRender {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = serde_yaml::Value::deserialize(deserializer)?;
-        match value {
-            serde_yaml::Value::Sequence(_) => {
-                let many: Vec<ConfigRenderEntry> =
-                    serde_yaml::from_value(value).map_err(serde::de::Error::custom)?;
-                Ok(ConfigRender::Many(many))
-            }
-            serde_yaml::Value::Mapping(_) => {
-                let one: ConfigRenderEntry =
-                    serde_yaml::from_value(value).map_err(serde::de::Error::custom)?;
-                Ok(ConfigRender::One(one))
-            }
-            other => Err(serde::de::Error::custom(format!(
-                "config.render must be an object or a list, got {}",
-                type_name_of_yaml(&other)
-            ))),
-        }
-    }
-}
-
-impl ConfigRender {
-    pub fn entries(&self) -> &[ConfigRenderEntry] {
-        match self {
-            Self::One(e) => std::slice::from_ref(e),
-            Self::Many(v) => v.as_slice(),
-        }
-    }
-
-    pub fn into_vec(self) -> Vec<ConfigRenderEntry> {
-        match self {
-            Self::One(e) => vec![e],
-            Self::Many(v) => v,
-        }
-    }
-}
-
-/// Nested step `config:` block (Phase 2b).
-///
-/// Render-only (see docs/01-architecture/config-block.md): render templates
-/// that already live under `dest` in place. Object-store delivery moved to
-/// the `buz/config-fetch` plugin step (kernel OSS deliver removed in the 2.x retirement).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct ConfigBlock {
-    /// Unpack / working directory → `$BUZ_CONFIG_DIR`.
-    #[serde(default)]
-    pub dest: Option<String>,
-    /// One or more render entries (relative to `dest`).
-    #[serde(default)]
-    pub render: Option<ConfigRender>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StepYaml {
@@ -357,9 +255,10 @@ pub struct StepYaml {
     /// Only use on disposable runner VMs.
     #[serde(default)]
     pub privileged: Option<bool>,
-    /// Nested config delivery + render (Phase 2b). Required shape for YAML.
+    /// Removed kernel surface (captured only to produce a friendly
+    /// migration error — render with the `buz/env-render` plugin step).
     #[serde(default)]
-    pub config: Option<ConfigBlock>,
+    pub config: Option<serde_yaml::Value>,
     #[serde(default)]
     pub host: Option<OneOrMany>,
     #[serde(default, alias = "work_dir")]
@@ -397,8 +296,8 @@ pub struct StepYaml {
 
 impl From<&StepYaml> for crate::protocol::StepDef {
     fn from(step: &StepYaml) -> Self {
-        let (config_dest, config_render) = flatten_config(step.config.as_ref());
         Self {
+            config: step.config.clone(),
             name: step.name.clone().unwrap_or_else(|| "unnamed".into()),
             run: step.run.clone().unwrap_or_default(),
             engine: step.engine.clone(),
@@ -417,9 +316,6 @@ impl From<&StepYaml> for crate::protocol::StepDef {
             secrets: step.secrets.clone(),
             env: step.env.clone(),
             privileged: step.privileged,
-            config: step.config.clone(),
-            config_dest,
-            config_render,
         }
     }
 }
@@ -572,24 +468,12 @@ pub struct StepData {
     /// Privileged mode flag (only for docker steps).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub privileged: Option<bool>,
-    /// Nested `config:` block (authoring / import shape).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<ConfigBlock>,
-    /// Flattened from `config` for Manager task columns / API.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_dest: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_render: Option<Vec<ConfigRenderEntry>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct YamlValidationError {
     pub field: String,
     pub message: String,
-}
-
-fn non_empty(s: Option<&str>) -> Option<&str> {
-    s.map(str::trim).filter(|v| !v.is_empty())
 }
 
 /// Normalize SSH multi-host strategy. Empty / omitted → `chain` (one host after another).
@@ -661,97 +545,19 @@ fn validate_duration_field(field: &str, raw: Option<&str>, errors: &mut Vec<Yaml
     }
 }
 
-/// Validate a nested `config:` block (deliver / render-only / sugar).
-fn validate_config_block(
-    cfg: &ConfigBlock,
-    engine: &str,
+/// Friendly rejection for the removed kernel `config:` block — points at
+/// the `buz/env-render` plugin replacement.
+fn reject_removed_config_block(
+    has_config: bool,
     field: &str,
     errors: &mut Vec<YamlValidationError>,
 ) {
-    let dest = non_empty(cfg.dest.as_deref());
-    let render_entries = cfg.render.as_ref().map(|r| r.entries()).unwrap_or(&[]);
-    let has_render = !render_entries.is_empty();
-
-    if dest.is_none() && !has_render {
+    if has_config {
         errors.push(YamlValidationError {
             field: field.into(),
-            message: "'config:' is empty — set render-only (dest+render); object-store delivery is a plugin step (buz/config-fetch)".into(),
-        });
-        return;
-    }
-
-    if has_render {
-        let engine = if engine.is_empty() { "shell" } else { engine };
-        if !matches!(engine, "shell" | "local" | "ssh") {
-            errors.push(YamlValidationError {
-                field: field.into(),
-                message: "'config.render' is only valid for shell, local, or ssh steps".into(),
-            });
-        }
-        if dest.is_none() {
-            errors.push(YamlValidationError {
-                field: field.into(),
-                message: "'config.dest' is required when 'config.render' is set".into(),
-            });
-        }
-    }
-
-    // Partial junk: dest alone without render is useless.
-    if !has_render && dest.is_some() {
-        errors.push(YamlValidationError {
-            field: field.into(),
-            message: "'config.dest' alone is not enough — add 'render' entries (delivery is a plugin step: buz/config-fetch)"
-                .into(),
+            message: "kernel `config:` was removed — render env files with the `buz/env-render` plugin step (buz-manager scan-deprecated lists affected pipelines)".into(),
         });
     }
-
-    for (i, er) in render_entries.iter().enumerate() {
-        let entry_field = if render_entries.len() == 1 {
-            format!("{field}.config.render")
-        } else {
-            format!("{field}.config.render[{i}]")
-        };
-        let template = non_empty(er.template.as_deref()).unwrap_or("");
-        if template.is_empty() {
-            errors.push(YamlValidationError {
-                field: entry_field.clone(),
-                message: "'template' is required (relative to $BUZ_CONFIG_DIR, e.g. env.example)"
-                    .into(),
-            });
-        }
-        if let Some(om) = non_empty(er.on_missing.as_deref()) {
-            if !matches!(om, "fail" | "warn") {
-                errors.push(YamlValidationError {
-                    field: entry_field.clone(),
-                    message: "'on_missing' must be 'fail' or 'warn'".into(),
-                });
-            }
-        }
-        if let Some(oc) = non_empty(er.on_change.as_deref()) {
-            if !matches!(oc, "recreate") {
-                errors.push(YamlValidationError {
-                    field: entry_field,
-                    message: "'on_change' must be 'recreate'".into(),
-                });
-            }
-        }
-    }
-}
-
-/// Flatten nested `config:` into task/API column fields.
-pub fn flatten_config(
-    cfg: Option<&ConfigBlock>,
-) -> (Option<String>, Option<Vec<ConfigRenderEntry>>) {
-    let Some(cfg) = cfg else {
-        return (None, None);
-    };
-    let dest = non_empty(cfg.dest.as_deref()).map(|s| s.to_string());
-    let render = cfg
-        .render
-        .as_ref()
-        .map(|r| r.entries().to_vec())
-        .filter(|v| !v.is_empty());
-    (dest, render)
 }
 
 /// Collect secret names that this pipeline effectively allowlists.
@@ -1216,21 +1022,6 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 "steps[{i}].retry: automatic retries are not executed yet — the step runs once"
             ));
         }
-        if let Some(render_entries) = step
-            .config
-            .as_ref()
-            .and_then(|c| c.render.as_ref())
-            .map(|r| r.entries())
-        {
-            for (j, entry) in render_entries.iter().enumerate() {
-                if entry.on_change.is_some() || entry.services.is_some() {
-                    warnings.push(format!(
-                        "steps[{i}].config.render[{j}]: 'on_change'/'services' are parsed \
-                         but not enforced yet — output is written without service recreation"
-                    ));
-                }
-            }
-        }
     }
 
     // 3b. Manual trigger inputs — remind to declare an explicit `type` so the
@@ -1420,9 +1211,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             });
         }
 
-        if let Some(cfg) = &step.config {
-            validate_config_block(cfg, engine, &field, &mut errors);
-        }
+        reject_removed_config_block(step.config.is_some(), &field, &mut errors);
 
         // Scripts do not expand `${secrets.…}` — require explicit `env:` mapping.
         if let Some(run) = step.run.as_deref() {
@@ -1543,43 +1332,37 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         steps: parsed
             .steps
             .iter()
-            .map(|s| {
-                let (config_dest, config_render) = flatten_config(s.config.as_ref());
-                StepData {
-                    name: s.name.clone(),
-                    run: s.run.clone(),
-                    engine: s.engine.clone(),
-                    image: s.image.clone(),
-                    volumes: s.volumes.as_ref().map(|v| v.join(",")),
-                    host: s.host.as_ref().map(|h| match h {
-                        OneOrMany::One(s) => s.clone(),
-                        OneOrMany::Many(v) => v.join(","),
+            .map(|s| StepData {
+                name: s.name.clone(),
+                run: s.run.clone(),
+                engine: s.engine.clone(),
+                image: s.image.clone(),
+                volumes: s.volumes.as_ref().map(|v| v.join(",")),
+                host: s.host.as_ref().map(|h| match h {
+                    OneOrMany::One(s) => s.clone(),
+                    OneOrMany::Many(v) => v.join(","),
+                }),
+                host_labels: s.host_labels.as_ref().map(|h| match h {
+                    OneOrMany::One(s) => s.clone(),
+                    OneOrMany::Many(v) => v.join(","),
+                }),
+                hosts_strategy: s
+                    .hosts_strategy
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(|v| {
+                        normalize_hosts_strategy(Some(v))
+                            .unwrap_or("chain")
+                            .to_string()
                     }),
-                    host_labels: s.host_labels.as_ref().map(|h| match h {
-                        OneOrMany::One(s) => s.clone(),
-                        OneOrMany::Many(v) => v.join(","),
-                    }),
-                    hosts_strategy: s
-                        .hosts_strategy
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|v| !v.is_empty())
-                        .map(|v| {
-                            normalize_hosts_strategy(Some(v))
-                                .unwrap_or("chain")
-                                .to_string()
-                        }),
-                    dir: s.dir.clone(),
-                    timeout: s.timeout.clone(),
-                    retry: s.retry,
-                    continue_on_error: s.continue_on_error,
-                    secrets: s.secrets.clone(),
-                    env: s.env.clone(),
-                    privileged: s.privileged,
-                    config: s.config.clone(),
-                    config_dest,
-                    config_render,
-                }
+                dir: s.dir.clone(),
+                timeout: s.timeout.clone(),
+                retry: s.retry,
+                continue_on_error: s.continue_on_error,
+                secrets: s.secrets.clone(),
+                env: s.env.clone(),
+                privileged: s.privileged,
             })
             .collect(),
     };

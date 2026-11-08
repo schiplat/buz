@@ -266,25 +266,6 @@ fn verbose_step_config_renders_shape_without_secrets() {
 }
 
 #[test]
-fn config_prep_banner_render_only_mode() {
-    let step = serde_json::json!({
-        "config_dest": "/opt/manager",
-        "config_render": [{ "template": "env.example", "output": ".env" }],
-    });
-    let banner = build_config_prep_banner(&step);
-    assert!(
-        banner.contains("  dest             /opt/manager"),
-        "{banner}"
-    );
-    assert!(
-        banner.contains("  mode             render-only"),
-        "{banner}"
-    );
-    assert!(!banner.contains("object_key"), "{banner}");
-    assert!(!banner.contains("url"), "{banner}");
-}
-
-#[test]
 fn verbose_step_result_reports_duration_and_exit_code() {
     let r = build_verbose_step_result(std::time::Duration::from_millis(3210), 0);
     assert!(r.contains("==> STEP RESULT\n"), "{r}");

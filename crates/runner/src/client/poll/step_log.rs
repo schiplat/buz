@@ -415,41 +415,6 @@ pub fn build_verbose_step_config(step: &serde_json::Value, exec_type: &str) -> S
     out
 }
 
-/// Banner for the config prepare stage (`config_render`, render-only).
-pub fn build_config_prep_banner(step: &serde_json::Value) -> String {
-    let mut out = String::from("==> CONFIG PREP\n");
-    let mut push_field = |label: &str, value: String| {
-        if !value.is_empty() {
-            out.push_str(&format!("  {label:<16} {value}\n"));
-        }
-    };
-    if let Some(dest) = step["config_dest"].as_str().filter(|s| !s.is_empty()) {
-        push_field("dest", dest.to_string());
-    }
-    if step.get("config_render").is_some_and(|v| !v.is_null()) {
-        push_field("mode", "render-only".into());
-    }
-    out
-}
-
-/// Render config-prepare progress lines (per-file render, readiness) for the
-/// `==> CONFIG PREP` chunk. Verbose-only lines are dropped unless `verbose`
-/// is set. Always safe — carries no secrets, only status and template names.
-pub(crate) fn build_config_prep_progress(
-    logs: &[crate::client::config_source::PrepLogLine],
-    verbose: bool,
-) -> String {
-    let mut out = String::new();
-    for l in logs {
-        if l.verbose_only && !verbose {
-            continue;
-        }
-        out.push_str(&l.text);
-        out.push('\n');
-    }
-    out
-}
-
 /// Verbose-mode step result summary (duration + exit code).
 pub fn build_verbose_step_result(duration: Duration, exit_code: i32) -> String {
     let dur = if duration.as_secs_f64() >= 1.0 {
