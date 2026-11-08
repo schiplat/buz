@@ -1,33 +1,12 @@
-{{/* Custom footer override - multi-column docs footer. Styles in assets/css/custom.css (.site-footer). */}}
+{{/* Custom footer override - minimal bottom bar (site navigation lives in the sidebar). Styles in assets/css/custom.css (.site-footer). */}}
 <footer class="site-footer">
   <div class="footer-inner">
-    <div class="footer-cols">
-      <div class="footer-col">
-        <div class="footer-h">Documentation</div>
-        <a href="/docs/00-quick-start/">Quick Start</a>
-        <a href="/docs/01-architecture/authoring/pipeline-format/">Pipeline Format</a>
-        <a href="/docs/01-architecture/authoring/plugin-contract/">Plugin Contract</a>
-        <a href="/docs/03-operations/cli-reference/">CLI Reference</a>
-        <a href="/docs/03-operations/key-rotation/">Key Rotation</a>
-      </div>
-      <div class="footer-col">
-        <div class="footer-h">Resources</div>
-        <a href="https://plugins.buz.schiplat.com/">Plugin Marketplace</a>
-        <a href="https://hub.docker.com/r/schiplat/buz-standalone">Docker Images</a>
-        <a href="https://github.com/schiplat/buz/releases">Releases</a>
-        <a href="/docs/releases/">Release Notes</a>
-      </div>
-      <div class="footer-col">
-        <div class="footer-h">Project</div>
-        <a href="https://github.com/schiplat/buz">GitHub</a>
-        <a href="/docs/01-architecture/platform/rbac/">RBAC</a>
-        <a href="https://github.com/schiplat/buz/security/policy">Security Policy</a>
-        <a href="https://github.com/schiplat/buz/security/advisories/new">Report a Vulnerability</a>
-      </div>
-    </div>
     <div class="footer-bottom">
       <span>&copy; 2026 Buz &middot; Apache-2.0</span>
-      <span>Built with Hugo &amp; Hextra</span>
+      <span class="footer-links">
+        <a href="https://github.com/schiplat/buz">GitHub</a>
+        <a href="https://plugins.buz.schiplat.com/">Plugin Marketplace</a>
+      </span>
     </div>
   </div>
 </footer>
