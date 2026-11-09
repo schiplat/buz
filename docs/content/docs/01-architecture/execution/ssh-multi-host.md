@@ -20,7 +20,7 @@ Wait-all exit aggregation; job **Cancel** aborts all in-flight hosts; job-log
 | Step exit code with N hosts | **Any non-zero / error → step failed** |
 | UI / API **Cancel** during multi-host work | Drops the active fan-out future → **all hosts** |
 | Job log: target + remote workspace | `==> SSH […]` + `workspace` (`pwd`) |
-| Parallel width cap | `hosts_max_parallel: 1–256` (default **16** when unset) — bounds concurrent connect / prepare / `run` |
+| Parallel width cap | `hosts_max_parallel: 1–256` (default **5** when unset) — bounds concurrent connect / prepare / `run` |
 
 Related: [Pipeline Format — `host` / `host_labels` / `hosts_strategy`](/docs/01-architecture/authoring/pipeline-format/#host--host_labels-ssh), [Config Block — SSH step session](/docs/01-architecture/authoring/config-block/), [Docker Engine cancel](/docs/01-architecture/execution/docker-engine/) (same job-cancel → runner kill path).
 
@@ -40,7 +40,7 @@ A single pipeline step with `engine: ssh` may bind **multiple** Infrastructure H
   engine: ssh
   host_labels: [prod]
   hosts_strategy: parallel   # omit for chain (default)
-  hosts_max_parallel: 8      # optional; default 16 when unset
+  hosts_max_parallel: 8      # optional; default 5 when unset
   run: |
     docker compose up -d
 ```

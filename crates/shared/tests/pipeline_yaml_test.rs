@@ -1829,8 +1829,8 @@ fn effective_hosts_parallel_width_caps_and_defaults() {
     use shared::pipeline_yaml::effective_hosts_parallel_width as width;
     // chain: width == hosts (serial loop, cap ignored)
     assert_eq!(width(false, Some(8), 200), 200);
-    // parallel without cap: bounded default 16
-    assert_eq!(width(true, None, 200), 16);
+    // parallel without cap: bounded default 5
+    assert_eq!(width(true, None, 200), 5);
     // parallel with explicit cap: min(cap, hosts)
     assert_eq!(width(true, Some(8), 200), 8);
     assert_eq!(width(true, Some(8), 4), 4);
@@ -1842,7 +1842,7 @@ fn effective_hosts_parallel_width_caps_and_defaults() {
 
 #[test]
 fn hosts_parallel_width_defaults_and_clamps() {
-    // Parallel: absent cap → bounded default 16, clamped to the host count.
+    // Parallel: absent cap → bounded default 5, clamped to the host count.
     assert_eq!(
         shared::pipeline_yaml::effective_hosts_parallel_width(true, None, 3),
         3,
@@ -1850,8 +1850,8 @@ fn hosts_parallel_width_defaults_and_clamps() {
     );
     assert_eq!(
         shared::pipeline_yaml::effective_hosts_parallel_width(true, None, 40),
-        16,
-        "more hosts than the default width → capped at 16"
+        5,
+        "more hosts than the default width → capped at 5"
     );
     // Explicit cap clamps into [1, hosts].
     assert_eq!(

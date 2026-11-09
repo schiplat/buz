@@ -1992,7 +1992,7 @@ pub(crate) fn ssh_hosts_parallel(step: &serde_json::Value) -> bool {
 }
 
 /// Step-level parallel width cap (1–256). Absent → bounded runner default
-/// (16) applied by `shared::pipeline_yaml::effective_hosts_parallel_width`.
+/// (5) applied by `shared::pipeline_yaml::effective_hosts_parallel_width`.
 pub(crate) fn ssh_hosts_max_parallel(step: &serde_json::Value) -> Option<usize> {
     step["hosts_max_parallel"].as_u64().map(|v| v as usize)
 }
@@ -2077,7 +2077,7 @@ async fn execute_ssh_step(
         sessions.len(),
     );
     // `hosts_strategy: parallel` runs concurrently at `width` (the effective
-    // default is 16, clamped to the host count). When width covers every host
+    // default is 5, clamped to the host count). When width covers every host
     // the buffer is unbounded — equivalent to join_all — so one code path
     // serves both the capped and the uncapped cases. `chain` keeps the
     // sequential loop, and it still runs every host (failures are collected,

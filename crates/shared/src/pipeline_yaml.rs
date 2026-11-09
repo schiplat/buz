@@ -269,7 +269,7 @@ pub struct StepYaml {
     #[serde(default)]
     pub hosts_strategy: Option<String>,
     /// Multi-host SSH parallel width cap (1–256; requires `parallel`).
-    /// Unset → bounded runner default (16).
+    /// Unset → bounded runner default (5).
     #[serde(default)]
     pub hosts_max_parallel: Option<u32>,
     #[serde(default)]
@@ -514,7 +514,7 @@ pub fn normalize_hosts_strategy(raw: Option<&str>) -> Result<&'static str, Strin
 /// `host_labels` match cannot open hundreds of simultaneous SSH connections
 /// against target sshd `MaxStartups` limits (default 10:30:100 drops the
 /// excess) or runner fd/memory limits.
-pub const DEFAULT_HOSTS_MAX_PARALLEL: u32 = 16;
+pub const DEFAULT_HOSTS_MAX_PARALLEL: u32 = 5;
 
 /// Effective parallel width for multi-host SSH fan-out: `hosts` when serial
 /// (chain loop), else `max_parallel` clamped to `[1, hosts]` with the bounded

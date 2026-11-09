@@ -1067,7 +1067,7 @@ pub struct StepDef {
     #[serde(default)]
     pub hosts_strategy: Option<String>,
     /// SSH parallel fan-out width cap (1–256; requires `hosts_strategy:
-    /// parallel`). Unset → bounded runner default (16).
+    /// parallel`). Unset → bounded runner default (5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hosts_max_parallel: Option<u32>,
     pub dir: Option<String>,

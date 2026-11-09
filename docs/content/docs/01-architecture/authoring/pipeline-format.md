@@ -862,7 +862,7 @@ In the form: comma-separated for multiple names/labels. Help text states “at l
 | Param | Values | Default | Rules |
 |-------|--------|---------|-------|
 | `hosts_strategy` | `chain` \| `parallel` | `chain` | Legacy alias `serial` accepted → normalized to `chain`. `chain` = one host after another; `parallel` = concurrent connect / config-prepare / `run` |
-| `hosts_max_parallel` | integer `1`–`256` | `16` | **Only valid with `engine: ssh` and `hosts_strategy: parallel`** — otherwise the validator rejects the save. Caps simultaneous SSH connections per step |
+| `hosts_max_parallel` | integer `1`–`256` | `5` | **Only valid with `engine: ssh` and `hosts_strategy: parallel`** — otherwise the validator rejects the save. Caps simultaneous SSH connections per step |
 
 - Both fields are SSH-only; other engines reject them at validation.
 - The cap exists because a wide `host_labels` match opening hundreds of simultaneous SSH connections trips target sshd `MaxStartups` limits (default 10:30:100 drops the excess) and stresses the Runner's fd budget — the fan-out runs in bounded waves of `hosts_max_parallel`.
@@ -1060,7 +1060,7 @@ Authoring is YAML-only ([YAML-First](./yaml-first-authoring.md)). On Validate / 
 | `steps[].engine` | `exec_type` | `shell`/`local`/`ssh`/`docker` only |
 | `steps[].image` / `volumes` / `privileged` | `tasks.image` / `volumes` / `privileged` | Docker engine |
 | `steps[].host` / `host_labels` / `hosts_strategy` | `tasks.*` | SSH; strategy default `chain` |
-| `steps[].hosts_max_parallel` | `tasks.*` | SSH; requires `hosts_strategy: parallel`; 1–256, default 16 |
+| `steps[].hosts_max_parallel` | `tasks.*` | SSH; requires `hosts_strategy: parallel`; 1–256, default 5 |
 | `steps[].env` / `secrets` | `step_env` / `step_secrets` | |
 | `steps[].continue-on-error` | `fail_strategy` | |
 
