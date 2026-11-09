@@ -1067,14 +1067,6 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 i
             ));
         }
-
-        // Honest-schema warnings: fields the schema accepts but the runner does
-        // not act on yet. Non-blocking so existing pipelines keep validating.
-        if step.retry.unwrap_or(0) > 0 {
-            warnings.push(format!(
-                "steps[{i}].retry: automatic retries are not executed yet — the step runs once"
-            ));
-        }
     }
 
     // 3b. Manual trigger inputs — remind to declare an explicit `type` so the

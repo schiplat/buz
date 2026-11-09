@@ -386,6 +386,108 @@ async fn local_shell_step_streams_masked_chunks_and_reports_success() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn step_retry_reruns_after_failure_and_appends_output() {
+    use std::sync::Mutex as StdMutex;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let bodies: std::sync::Arc<StdMutex<Vec<String>>> =
+        std::sync::Arc::new(StdMutex::new(Vec::new()));
+    let server_bodies = bodies.clone();
+    let server = tokio::spawn(async move {
+        for _ in 0..32 {
+            let accepted =
+                tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept()).await;
+            let (mut stream, _) = match accepted {
+                Ok(Ok(inner)) => inner,
+                _ => break,
+            };
+            let request = read_http_request(&mut stream).await;
+            server_bodies.lock().unwrap().push(request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        }
+    });
+
+    // First attempt fails and drops a marker; the retry sees it and succeeds.
+    let marker = std::env::temp_dir().join(format!(
+        "buz-retry-marker-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_file(&marker);
+    let command = format!(
+        "if [ -f '{m}' ]; then echo second-attempt; exit 0; fi; touch '{m}'; echo first-attempt; exit 1",
+        m = marker.display()
+    );
+
+    let client = reqwest::Client::new();
+    let config = runner::config::Config {
+        runner: runner::config::RunnerSection {
+            manager_url: format!("http://{addr}"),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let task = serde_json::json!({
+        "job_id": "job-retry",
+        "tasks": [{
+            "name": "flaky",
+            "command_template": command,
+            "exec_type": "shell",
+            "retry_count": 1
+        }]
+    });
+    let (_cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    let result =
+        runner::client::poll::execute_job(&client, &config, "runner-token", &task, &mut cancel_rx)
+            .await;
+    let _ = std::fs::remove_file(&marker);
+    assert!(result.is_ok(), "retried job must succeed: {result:?}");
+
+    let requests = bodies.lock().unwrap().clone();
+    let logs =
+        |needle: &str| -> Vec<&String> { requests.iter().filter(|r| r.contains(needle)).collect() };
+
+    // The retry marker is emitted between the attempts.
+    assert!(
+        logs("==> RETRY 1/1").iter().any(|r| r.contains("exit 1")),
+        "retry marker with the exit code: {requests:?}"
+    );
+    // Both attempts' output is kept: the failed attempt at LOG_STREAM_START,
+    // the retry appended after it (same window reuse would have overwritten
+    // the earlier line via INSERT OR REPLACE).
+    let chunk = |index: u32| -> Vec<&String> {
+        requests
+            .iter()
+            .filter(|r| r.contains(&format!("\"chunk_index\":{index}")))
+            .collect()
+    };
+    assert!(
+        chunk(6).iter().any(|r| r.contains("first-attempt")),
+        "first attempt output at LOG_STREAM_START: {requests:?}"
+    );
+    assert!(
+        chunk(7).iter().any(|r| r.contains("second-attempt")),
+        "retry appends after the failed attempt: {requests:?}"
+    );
+    // And the job still ends successfully through the normal path.
+    let last = requests.last().unwrap();
+    assert!(
+        last.contains("PATCH") && last.contains("\"status\":\"success\""),
+        "{last}"
+    );
+    server.await.unwrap();
+}
+
 #[test]
 fn sandbox_masker_split_feeding_equals_one_shot_masking() {
     // Sandbox streaming property: feeding the same buffer in arbitrary frame

@@ -1386,7 +1386,9 @@ on:
 }
 
 #[test]
-fn retry_declared_gets_not_executed_warning() {
+fn retry_is_executed_and_does_not_warn() {
+    // The runner retries a step `retry` times after a non-zero exit; the old
+    // "not executed yet" warning was removed when that landed.
     let yaml = r#"
 name: retry-warning
 steps:
@@ -1397,10 +1399,8 @@ steps:
 "#;
     let warnings = warnings_for(yaml);
     assert!(
-        warnings
-            .iter()
-            .any(|w| w.contains("steps[0].retry") && w.contains("not executed yet")),
-        "retry>0 must warn: {warnings:?}"
+        warnings.iter().all(|w| !w.contains(".retry")),
+        "retry>0 must not warn about execution: {warnings:?}"
     );
 
     let quiet = r#"

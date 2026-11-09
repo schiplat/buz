@@ -161,6 +161,15 @@ pub struct EngineConfig {
     /// (`shared`). Not UI-managed — never overridden by Manager policy.
     #[serde(default)]
     pub docker_config_isolation: DockerConfigIsolation,
+    /// Run `shell` steps as this OS user instead of the Runner's user.
+    ///
+    /// Machine-local, never set by the Manager. Requires passwordless sudo
+    /// with SETENV for that user, e.g.
+    /// `buz-runner ALL=(buz-job) NOPASSWD:SETENV: /bin/sh`.
+    /// Applies to the shell engine only; SSH steps run as the SSH user and
+    /// Docker containers run as the image's user.
+    #[serde(default)]
+    pub run_as_user: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
@@ -198,6 +207,7 @@ impl Default for EngineConfig {
             ssh_host_key_policy: SshHostKeyPolicy::KnownHosts,
             ssh_known_hosts_path: None,
             docker_config_isolation: DockerConfigIsolation::PerJob,
+            run_as_user: None,
         }
     }
 }

@@ -19,7 +19,7 @@ use super::update_job_status;
 pub fn level_for_offset(offset: i32) -> LogLevel {
     match offset {
         LOG_STEP_ERROR => LogLevel::Error,
-        LOG_STEP_CANCELLED => LogLevel::Warn,
+        LOG_STEP_CANCELLED | LOG_STEP_TRUNCATED | LOG_STEP_RETRY => LogLevel::Warn,
         LOG_STEP_VERBOSE_PREPARE
         | LOG_STEP_VERBOSE_CONFIG
         | LOG_STEP_VERBOSE_CONFIG_PREP
@@ -47,10 +47,104 @@ pub const LOG_LOGIN: i32 = 3;
 pub const LOG_STEP_VERBOSE_EXEC: i32 = 4;
 pub const LOG_ECHO: i32 = 5;
 pub const LOG_STREAM_START: i32 = 6;
+/// Last chunk offset streamed output may occupy. The stream starts at
+/// `LOG_STREAM_START` (6) and must stop at or below this offset — 9991
+/// carries the truncation marker, 9993+ are the semantic sentinels.
+/// `job_logs` has `UNIQUE(job_id, chunk_index)` + `INSERT OR REPLACE` on the
+/// Manager side: an unguarded stream would silently overwrite the sentinels
+/// (and, past the next step's base, another step's chunks).
+pub const LOG_STREAM_LAST: i32 = 9990;
+
+/// `==> OUTPUT TRUNCATED` marker offset — uploaded when a step's streamed
+/// output exhausts the window (see [`LOG_STREAM_LAST`]). Re-uploaded with the
+/// final omitted count when the stream closes; `INSERT OR REPLACE` keeps the
+/// last write.
+pub const LOG_STEP_TRUNCATED: i32 = 9991;
+
+/// `==> RETRY` marker offset — one line per automatic retry; later attempts
+/// replace it in place (the final view shows the last retry).
+pub const LOG_STEP_RETRY: i32 = 9992;
+
 pub const LOG_STEP_VERBOSE_RESULT: i32 = 9993;
 pub const LOG_STEP_ERROR: i32 = 9997;
 pub const LOG_STEP_CANCELLED: i32 = 9998;
 pub const LOG_STEP_SUMMARY: i32 = 9999;
+
+/// Streaming budget for one step's log window: hands out chunk indexes from
+/// `LOG_STREAM_START` through `LOG_STREAM_LAST`, then flips to truncated —
+/// further chunks are counted as omitted and the caller uploads the
+/// [`LOG_STEP_TRUNCATED`] marker (immediately on the first overflow so the
+/// live view notices, and again with the final count when the stream closes).
+pub struct StreamBudget {
+    next: i32,
+    last: i32,
+    truncated: bool,
+    notified: bool,
+    omitted: u64,
+}
+
+impl StreamBudget {
+    pub fn new(log_base: i32) -> Self {
+        Self::new_at(log_base, log_base + LOG_STREAM_START)
+    }
+
+    /// Budget that resumes at `next` (a retry continues after the previous
+    /// attempt's stream so the two runs do not overwrite each other in
+    /// `job_logs`, where `(job_id, chunk_index)` is unique).
+    pub fn new_at(log_base: i32, next: i32) -> Self {
+        Self {
+            next,
+            last: log_base + LOG_STREAM_LAST,
+            truncated: false,
+            notified: false,
+            omitted: 0,
+        }
+    }
+
+    /// Index the next chunk would take (callers persist it across retries).
+    pub fn next_index(&self) -> i32 {
+        self.next
+    }
+
+    /// Index for the next uploaded chunk, or `None` when the window is
+    /// exhausted (the chunk is counted as omitted; keep draining output —
+    /// stopping the read would block the child's pipe).
+    pub fn take(&mut self) -> Option<i32> {
+        if self.next <= self.last {
+            let index = self.next;
+            self.next += 1;
+            return Some(index);
+        }
+        self.truncated = true;
+        self.omitted += 1;
+        None
+    }
+
+    /// Whether any chunk has been omitted.
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// Marker content exactly once, on the first overflow after the previous
+    /// call — `Some(marker)` lets the caller surface the notice while the
+    /// step is still running.
+    pub fn unnotified_truncation(&mut self) -> Option<String> {
+        if self.truncated && !self.notified {
+            self.notified = true;
+            return Some(self.marker());
+        }
+        None
+    }
+
+    /// Marker content with the total omitted-chunk count (a chunk is one
+    /// engine output line).
+    pub fn marker(&self) -> String {
+        format!(
+            "==> OUTPUT TRUNCATED\n  omitted  {} chunk(s) over the per-step log window\n",
+            self.omitted
+        )
+    }
+}
 
 /// Two-pass output redaction shared by every execution path: value masking
 /// first, then forced masking (rendered `.env` secret values,
@@ -207,23 +301,63 @@ impl StepLogger {
     }
 
     /// Stream engine output: mask each chunk, upload under consecutive indexes
-    /// from `LOG_STREAM_START`. Spawned as the background upload task; upload
-    /// failures are logged, never fatal.
+    /// from `start` (normally `log_base + LOG_STREAM_START`). Spawned as the
+    /// background upload task; upload failures are logged, never fatal.
+    ///
+    /// The window is bounded ([`LOG_STREAM_LAST`]) because `job_logs` is
+    /// `UNIQUE(job_id, chunk_index)` + `INSERT OR REPLACE`: an unbounded stream
+    /// silently overwrites the step's own sentinels (ERROR/CANCELLED/SUMMARY)
+    /// and, past the next step's base, *that* step's chunks. Output past the
+    /// window is drained and dropped (dropping it would block the child's
+    /// pipe) and reported once as an `==> OUTPUT TRUNCATED` marker.
+    ///
+    /// Returns the index the next attempt should start from, so a retry
+    /// appends after the failed attempt instead of overwriting it.
     pub(super) async fn stream_chunks(
         &self,
         output_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
         secret_values: &[String],
         forced_values: &[String],
-    ) {
-        let mut chunk_num = self.log_base + LOG_STREAM_START;
+        start: i32,
+    ) -> i32 {
+        let mut budget = StreamBudget::new_at(self.log_base, start);
         while let Some(chunk) = output_rx.recv().await {
             let masked = mask_output(&chunk, secret_values, forced_values);
-            if let Err(error) = self.emit_at(chunk_num, masked).await {
-                tracing::warn!("Log upload chunk {chunk_num} failed: {error}");
+            match budget.take() {
+                Some(chunk_num) => {
+                    if let Err(error) = self.emit_at(chunk_num, masked).await {
+                        tracing::warn!("Log upload chunk {chunk_num} failed: {error}");
+                    }
+                }
+                None => {
+                    // Window exhausted: keep draining (see doc above) and
+                    // annotate once so the live terminal shows why output
+                    // stops being appended.
+                    if let Some(marker) = budget.unnotified_truncation() {
+                        self.emit(LOG_STEP_TRUNCATED, marker).await;
+                    }
+                }
             }
-            chunk_num += 1;
         }
+        if budget.truncated() {
+            // Final count — replaces the first-overflow marker in place.
+            self.emit(LOG_STEP_TRUNCATED, budget.marker()).await;
+        }
+        budget.next_index()
     }
+}
+
+/// `==> RETRY` marker: the step failed and will run again.
+pub fn build_retry_marker(name: &str, attempt: u32, max_attempts: u32, detail: &str) -> String {
+    let mut out = format!(
+        "==> RETRY {attempt}/{}\n  step  {name}\n",
+        max_attempts.saturating_sub(1)
+    );
+    if !detail.is_empty() {
+        out.push_str(&format!("  detail  {detail}\n"));
+    }
+    out.push_str("  retrying\n");
+    out
 }
 
 /// Build a structured step header (shown before command output).

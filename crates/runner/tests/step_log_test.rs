@@ -239,6 +239,150 @@ fn verbose_chunks_do_not_collide_with_meta_region() {
 }
 
 #[test]
+fn stream_window_stops_before_sentinels() {
+    // The stream must never hand out an index the sentinels use: job_logs is
+    // UNIQUE(job_id, chunk_index) + INSERT OR REPLACE, so a collision silently
+    // overwrites the truncation notice, the ERROR chunk, or the summary.
+    let base = step_log_base(1);
+    let mut budget = StreamBudget::new(base);
+    let mut handed_out = 0;
+    while let Some(index) = budget.take() {
+        assert!(
+            index <= base + LOG_STREAM_LAST,
+            "budget handed out sentinel-reserved index {index}"
+        );
+        assert!(
+            index < base + LOG_STEP_TRUNCATED,
+            "stream index {index} collides with the truncation marker"
+        );
+        handed_out += 1;
+    }
+    // Window is exactly LOG_STREAM_START..=LOG_STREAM_LAST, one index per chunk.
+    assert_eq!(
+        handed_out,
+        LOG_STREAM_LAST - LOG_STREAM_START + 1,
+        "window width"
+    );
+    assert!(budget.truncated(), "overflow flips the budget to truncated");
+    assert_eq!(budget.take(), None);
+}
+
+#[test]
+fn stream_window_never_crosses_into_next_step() {
+    // Every step owns 10_000 indexes; a step's stream reaching LOG_STREAM_LAST
+    // must still sort strictly before the next step's first chunk.
+    let step0_last = step_log_base(0) + LOG_STREAM_LAST;
+    let step1_first = step_log_base(1) + LOG_STEP_VERBOSE_PREPARE;
+    assert!(
+        step0_last < step1_first,
+        "stream must stay inside its own step"
+    );
+    assert!(step_log_base(0) + LOG_STEP_SUMMARY < step1_first);
+}
+
+#[test]
+fn truncation_marker_is_warn_and_reports_omitted_count() {
+    assert_eq!(
+        level_for_offset(LOG_STEP_TRUNCATED),
+        shared::protocol::LogLevel::Warn
+    );
+    let mut budget = StreamBudget::new(step_log_base(0));
+    // Fill the window exactly — nothing is omitted yet.
+    let width = LOG_STREAM_LAST - LOG_STREAM_START + 1;
+    for _ in 0..width {
+        assert!(budget.take().is_some());
+    }
+    assert!(!budget.truncated(), "full window is not yet truncated");
+    // Three chunks past the window are dropped and counted.
+    for _ in 0..3 {
+        assert_eq!(budget.take(), None);
+    }
+    assert!(budget.truncated());
+    let marker = budget.marker();
+    assert!(marker.contains("OUTPUT TRUNCATED"), "{marker}");
+    assert!(
+        marker.contains("3 chunk"),
+        "omitted count in marker: {marker}"
+    );
+}
+
+#[test]
+fn truncation_is_announced_once_then_kept_for_the_final_marker() {
+    let mut budget = StreamBudget::new(step_log_base(0));
+    assert!(
+        budget.unnotified_truncation().is_none(),
+        "no notice while inside the window"
+    );
+    // Fill the window without triggering the overflow path.
+    let width = LOG_STREAM_LAST - LOG_STREAM_START + 1;
+    for _ in 0..width {
+        assert!(budget.take().is_some());
+    }
+    assert!(
+        budget.unnotified_truncation().is_none(),
+        "no notice for a stream that exactly fills the window"
+    );
+    // First overflow: counted and announced once.
+    assert_eq!(budget.take(), None);
+    assert!(
+        budget.unnotified_truncation().is_some(),
+        "first overflow surfaces a live notice"
+    );
+    for _ in 0..5 {
+        assert_eq!(budget.take(), None);
+    }
+    assert!(
+        budget.unnotified_truncation().is_none(),
+        "live notice is emitted exactly once"
+    );
+    assert!(
+        budget.marker().contains("6 chunk"),
+        "final marker carries the total omitted count: {}",
+        budget.marker()
+    );
+}
+
+#[test]
+fn retry_marker_names_attempt_and_detail() {
+    let marker = build_retry_marker("build", 1, 3, "exit 1");
+    assert!(marker.contains("RETRY 1/2"), "{marker}");
+    assert!(marker.contains("step  build"), "{marker}");
+    assert!(marker.contains("detail  exit 1"), "{marker}");
+    assert_eq!(
+        level_for_offset(LOG_STEP_RETRY),
+        shared::protocol::LogLevel::Warn
+    );
+}
+
+#[test]
+fn stream_budget_resumes_after_a_previous_attempt() {
+    let base = step_log_base(0);
+    let mut budget = StreamBudget::new_at(base, base + 7);
+    assert_eq!(budget.take(), Some(base + 7));
+    assert_eq!(budget.take(), Some(base + 8));
+    assert_eq!(budget.next_index(), base + 9);
+}
+
+#[test]
+fn truncation_marker_does_not_collide_with_verbose_or_error_chunks() {
+    let mut set = std::collections::HashSet::new();
+    for offset in [
+        LOG_STREAM_LAST,
+        LOG_STEP_TRUNCATED,
+        LOG_STEP_RETRY,
+        LOG_STEP_VERBOSE_RESULT,
+        LOG_STEP_ERROR,
+        LOG_STEP_CANCELLED,
+        LOG_STEP_SUMMARY,
+    ] {
+        assert!(
+            set.insert(offset),
+            "offset {offset} collides with the truncation window"
+        );
+    }
+}
+
+#[test]
 fn verbose_step_config_renders_shape_without_secrets() {
     let step = serde_json::json!({
         "name": "deploy",

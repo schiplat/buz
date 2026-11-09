@@ -16,10 +16,11 @@ use std::collections::{HashMap, HashSet};
 pub mod step_log;
 
 use step_log::{
-    build_runner_banner, build_ssh_banner, build_step_echo, build_step_failure_message,
-    build_verbose_stage, build_verbose_step_config, build_verbose_step_result, mask_output,
-    step_failure_hint, step_timeout_content, StepLogger, LOG_ECHO, LOG_LOGIN, LOG_RUNNER_BANNER,
-    LOG_STEP_SUMMARY, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE,
+    build_retry_marker, build_runner_banner, build_ssh_banner, build_step_echo,
+    build_step_failure_message, build_verbose_stage, build_verbose_step_config,
+    build_verbose_step_result, mask_output, step_failure_hint, step_timeout_content, StepLogger,
+    StreamBudget, LOG_ECHO, LOG_LOGIN, LOG_RUNNER_BANNER, LOG_STEP_RETRY, LOG_STEP_SUMMARY,
+    LOG_STEP_TRUNCATED, LOG_STEP_VERBOSE_CONFIG, LOG_STEP_VERBOSE_EXEC, LOG_STEP_VERBOSE_PREPARE,
     LOG_STEP_VERBOSE_RESULT, LOG_STREAM_START,
 };
 
@@ -123,6 +124,7 @@ pub async fn run_poll_loop(
                     tracing::error!("Failed to create job workspace {job_ws}: {e}");
                     continue;
                 }
+                restrict_job_workspace(&job_ws, config.engine.run_as_user.as_deref());
                 if let Err(e) =
                     prepare_job_docker_config_dir(&job_ws, config.engine.docker_config_isolation)
                 {
@@ -547,6 +549,21 @@ async fn execute_job_inner(
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("missing tasks array"))?;
 
+    // Host-mode isolation: `[engine] run_as_user` executes shell steps as a
+    // separate OS account. Fail once here (clear sudoers message) instead of
+    // surfacing a sudo failure per step. Sandbox modes have their own boundary.
+    if config.execution_mode == shared::protocol::RunnerExecutionMode::Host {
+        if let Some(user) = config
+            .engine
+            .run_as_user
+            .as_deref()
+            .map(str::trim)
+            .filter(|user| !user.is_empty())
+        {
+            engine::shell::preflight_run_as_user(user).await?;
+        }
+    }
+
     // Job-start runner identity (version + OS) — makes every job's logs
     // self-describing for troubleshooting. Non-fatal if the upload fails.
     let _ = super::logs::upload_chunk(
@@ -610,54 +627,112 @@ async fn execute_job_inner(
         let step_started = std::time::Instant::now();
         announce_step(&log, config, step, &spec, &secrets.env, verbose).await?;
 
-        // ── SSH step session (one TCP connect per host for prepare + run) ──
-        // Open before config prepare so render shares the same session as the
-        // run block.
-        let mut ssh_sessions = open_ssh_sessions(&log, config, step, &spec, cancel_rx).await?;
-
-        // Verbose: exec-stage marker only (STEP CONFIG already uploaded above).
-        if verbose {
-            log.emit(LOG_STEP_VERBOSE_EXEC, build_verbose_stage("exec"))
-                .await;
-        }
-
-        // ── Race step execution against cancel polling ────────────────────────
         let exec_type = spec.exec_type;
         let step_name = spec.name;
-        let run = StepRun {
-            log: &log,
-            config,
-            spec: spec.clone(),
-            env: secrets.env,
-            catalog: &secrets.catalog,
-            secret_values: &secrets.secret_values,
-            forced_values: &secrets.forced_values,
-            docker_config_dir: docker_config_dir.as_deref(),
-            buz_env_path: &buz_env_path,
-            sandbox_handle,
-        };
-        let execution = match exec_type {
-            "local" | "shell" => run_shell_step(run, cancel_rx).await?,
-            "ssh" => run_ssh_step(run, &mut ssh_sessions, cancel_rx).await?,
-            "docker" => {
-                run_docker_step(run, prefetch, docker_socket_path.as_deref(), cancel_rx).await?
-            }
-            "wasm" => anyhow::bail!(
-                "wasm engine is not implemented in this release — step '{step_name}' cannot run"
-            ),
-            other => anyhow::bail!("unsupported engine type: {other}"),
-        };
+        let max_attempts = spec.retry.saturating_add(1);
+        // A retry continues after the failed attempt's streamed output: the
+        // chunk index is unique per job, so restarting at LOG_STREAM_START
+        // would overwrite the earlier attempt's lines.
+        let mut stream_start = log.log_base + LOG_STREAM_START;
+        let mut attempt: u32 = 0;
 
-        any_step_failed |= finalize_step(
-            &log,
-            &spec,
-            execution,
-            &secrets.forced_values,
-            sandbox_handle,
-            verbose,
-            step_started,
-        )
-        .await?;
+        loop {
+            attempt += 1;
+
+            // ── One attempt: fresh SSH sessions, engine run, no status verdict ──
+            let attempt_result: anyhow::Result<StepExecution> = async {
+                let mut ssh_sessions =
+                    open_ssh_sessions(&log, config, step, &spec, cancel_rx).await?;
+
+                // Verbose: exec-stage marker only (STEP CONFIG already uploaded).
+                if verbose {
+                    log.emit(LOG_STEP_VERBOSE_EXEC, build_verbose_stage("exec"))
+                        .await;
+                }
+
+                let run = StepRun {
+                    log: &log,
+                    config,
+                    spec: spec.clone(),
+                    env: secrets.env.clone(),
+                    catalog: &secrets.catalog,
+                    secret_values: &secrets.secret_values,
+                    forced_values: &secrets.forced_values,
+                    docker_config_dir: docker_config_dir.as_deref(),
+                    buz_env_path: &buz_env_path,
+                    sandbox_handle,
+                    stream_start,
+                };
+                match exec_type {
+                    "local" | "shell" => run_shell_step(run, cancel_rx).await,
+                    "ssh" => run_ssh_step(run, &mut ssh_sessions, cancel_rx).await,
+                    "docker" => {
+                        run_docker_step(run, prefetch, docker_socket_path.as_deref(), cancel_rx)
+                            .await
+                    }
+                    "wasm" => anyhow::bail!(
+                        "wasm engine is not implemented in this release — step '{step_name}' cannot run"
+                    ),
+                    other => anyhow::bail!("unsupported engine type: {other}"),
+                }
+            }
+            .await;
+
+            match attempt_result {
+                Ok(execution) => {
+                    stream_start = execution.next_stream;
+                    let failed = execution.output.exit_code != 0 && !execution.was_cancelled;
+                    if failed && attempt < max_attempts {
+                        let detail = format!("exit {}", execution.output.exit_code);
+                        let marker = build_retry_marker(step_name, attempt, max_attempts, &detail);
+                        tracing::warn!(
+                            step = step_name,
+                            attempt,
+                            max_attempts,
+                            exit_code = execution.output.exit_code,
+                            "step failed — retrying"
+                        );
+                        log.emit(LOG_STEP_RETRY, marker).await;
+                        continue;
+                    }
+                    any_step_failed |= finalize_step(
+                        &log,
+                        &spec,
+                        execution,
+                        &secrets.forced_values,
+                        sandbox_handle,
+                        verbose,
+                        step_started,
+                    )
+                    .await?;
+                    break;
+                }
+                Err(error) => {
+                    // Cancellation is not retryable. `cancel_rx` is only read,
+                    // never consumed, so the next attempt still observes it.
+                    let cancelled = *cancel_rx.borrow();
+                    if attempt < max_attempts && !cancelled {
+                        let detail = mask_output(
+                            &format!("{error:#}"),
+                            &secrets.secret_values,
+                            &secrets.forced_values,
+                        );
+                        let marker =
+                            build_retry_marker(step_name, attempt, max_attempts, detail.trim());
+                        tracing::warn!(
+                            step = step_name,
+                            attempt,
+                            max_attempts,
+                            error = %error,
+                            "step attempt failed — retrying"
+                        );
+                        log.emit(LOG_STEP_RETRY, marker).await;
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
 
         // ── $BUZ_ENV merge: what this step wrote becomes env for later steps ──
         // Shell and Docker steps share the same physical file (the Docker
@@ -712,6 +787,8 @@ struct PluginSpec<'a> {
     fail_strategy: &'a str,
     timeout_secs: u64,
     timeout: Option<Duration>,
+    /// Automatic retries after a non-zero exit (`retry` in the step YAML).
+    retry: u32,
     privileged: bool,
     volumes: Vec<String>,
     capabilities: Vec<String>,
@@ -729,6 +806,10 @@ fn parse_step_spec(idx: usize, step: &serde_json::Value) -> PluginSpec<'_> {
         fail_strategy: step["fail_strategy"].as_str().unwrap_or("stop"),
         timeout_secs,
         timeout: (timeout_secs > 0).then(|| Duration::from_secs(timeout_secs)),
+        retry: step["retry_count"]
+            .as_u64()
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32,
         privileged: step
             .get("privileged")
             .and_then(|v| v.as_bool())
@@ -1067,6 +1148,10 @@ struct StepRun<'a> {
     docker_config_dir: Option<&'a str>,
     buz_env_path: &'a str,
     sandbox_handle: Option<&'a crate::client::sandbox_client::SandboxHandle>,
+    /// First stream chunk index for this attempt. Carried across retries so a
+    /// later attempt appends after the failed one (the chunk index is unique
+    /// per job, so reusing it would overwrite the earlier output).
+    stream_start: i32,
 }
 
 /// What one engine produced for the step. `output_secret_values` carries the
@@ -1076,6 +1161,8 @@ struct StepExecution {
     output: engine::shell::ShellOutput,
     was_cancelled: bool,
     output_secret_values: Vec<String>,
+    /// Index the next attempt's stream should start from.
+    next_stream: i32,
 }
 
 /// `local`/`shell` engine: inside the job sandbox when one exists, otherwise
@@ -1113,7 +1200,7 @@ async fn run_shell_step(
         } else {
             0
         };
-        let (output, was_cancelled) = run_sandbox_step(
+        let (output, was_cancelled, next_stream) = run_sandbox_step(
             run.log,
             run.config,
             run.spec.command,
@@ -1124,12 +1211,14 @@ async fn run_shell_step(
             run.forced_values,
             cancel_rx,
             handle,
+            run.stream_start,
         )
         .await?;
         return Ok(StepExecution {
             output,
             was_cancelled,
             output_secret_values: run.secret_values.to_vec(),
+            next_stream,
         });
     }
 
@@ -1158,40 +1247,48 @@ async fn run_shell_step(
     let jid = run.log.job_id.clone();
     let sname = run.spec.name.to_string();
 
-    let exec_result =
-        engine::shell::execute_streaming(run.spec.command, run.spec.work_dir, Some(&env)).await;
+    let exec_result = engine::shell::execute_streaming(
+        run.spec.command,
+        run.spec.work_dir,
+        Some(&env),
+        run.config.engine.run_as_user.as_deref(),
+    )
+    .await;
     let (mut child, mut output_rx, read_guard) = match exec_result {
         Ok(v) => v,
         Err(e) => return Err(e),
     };
 
-    // Background task: stream output chunks to the manager in real time
+    // Background task: stream output chunks to the manager in real time.
+    // It returns the next free chunk index so a retry can append after this
+    // attempt instead of overwriting it.
     let upload_task = {
         let logger = run.log.clone();
         let secret_values = run.secret_values.to_vec();
         let forced_values = run.forced_values.to_vec();
+        let start = run.stream_start;
         tokio::spawn(async move {
             logger
-                .stream_chunks(&mut output_rx, &secret_values, &forced_values)
-                .await;
+                .stream_chunks(&mut output_rx, &secret_values, &forced_values, start)
+                .await
         })
     };
 
     // Race: child completion vs cancellation vs timeout
-    let (exit_code, was_cancelled_local, was_timeout) = tokio::select! {
+    let (exit_code, was_cancelled_local, was_timeout, next_stream) = tokio::select! {
         status = child.wait() => {
             let code = status?.code().unwrap_or(-1);
             // Ensure all pipe data is read before proceeding
             let _ = read_guard.join().await;
-            let _ = upload_task.await;
-            (code, false, false)
+            let next = upload_task.await.unwrap_or(run.stream_start);
+            (code, false, false, next)
         }
         _ = cancel_triggered(&mut cancel_rx_step) => {
             tracing::warn!("Job {jid} cancelled during step '{sname}' — killing");
             let _ = child.kill().await;
             let _ = child.wait().await;
             upload_task.abort();
-            (-1, true, false)
+            (-1, true, false, run.stream_start)
         }
         _ = tokio::time::sleep(run.spec.timeout.unwrap_or(Duration::from_secs(3600))), if run.spec.timeout.is_some() => {
             tracing::warn!("Step '{sname}' timed out after {}s — killing process", run.spec.timeout_secs);
@@ -1199,7 +1296,7 @@ async fn run_shell_step(
             let _ = child.wait().await;
             let _ = read_guard.join().await;
             upload_task.abort();
-            (-1, false, true)
+            (-1, false, true, run.stream_start)
         }
     };
 
@@ -1221,6 +1318,7 @@ async fn run_shell_step(
         },
         was_cancelled: was_cancelled_local,
         output_secret_values: run.secret_values.to_vec(),
+        next_stream,
     })
 }
 
@@ -1305,6 +1403,8 @@ async fn run_ssh_step(
         output,
         was_cancelled,
         output_secret_values,
+        // SSH output is uploaded as one summary chunk, not streamed.
+        next_stream: run.stream_start,
     })
 }
 
@@ -1376,19 +1476,20 @@ async fn run_docker_step(
         let logger = run.log.clone();
         let secret_values = run.secret_values.to_vec();
         let forced_values = run.forced_values.to_vec();
+        let start = run.stream_start;
         tokio::spawn(async move {
             logger
-                .stream_chunks(&mut output_rx, &secret_values, &forced_values)
-                .await;
+                .stream_chunks(&mut output_rx, &secret_values, &forced_values, start)
+                .await
         })
     };
 
-    let (exit_code, was_cancelled_docker, was_timeout_docker) = tokio::select! {
+    let (exit_code, was_cancelled_docker, was_timeout_docker, next_stream) = tokio::select! {
         status = child.wait() => {
             let code = status?.code().unwrap_or(-1);
             let _ = read_guard.join().await;
-            let _ = upload_task.await;
-            (code, false, false)
+            let next = upload_task.await.unwrap_or(run.stream_start);
+            (code, false, false, next)
         }
         _ = cancel_triggered(&mut cancel_rx_step) => {
             tracing::warn!("Job {jid} cancelled during docker step '{sname}' — killing container process");
@@ -1396,7 +1497,7 @@ async fn run_docker_step(
             let _ = child.wait().await;
             engine::docker::stop_container(&container_name, run.docker_config_dir).await;
             upload_task.abort();
-            (-1, true, false)
+            (-1, true, false, run.stream_start)
         }
         _ = tokio::time::sleep(run.spec.timeout.unwrap_or(Duration::from_secs(3600))), if run.spec.timeout.is_some() => {
             tracing::warn!("Docker step '{sname}' timed out after {}s — killing container", run.spec.timeout_secs);
@@ -1405,7 +1506,7 @@ async fn run_docker_step(
             engine::docker::stop_container(&container_name, run.docker_config_dir).await;
             let _ = read_guard.join().await;
             upload_task.abort();
-            (-1, false, true)
+            (-1, false, true, run.stream_start)
         }
     };
 
@@ -1427,6 +1528,7 @@ async fn run_docker_step(
         },
         was_cancelled: was_cancelled_docker,
         output_secret_values: run.secret_values.to_vec(),
+        next_stream,
     })
 }
 
@@ -1448,6 +1550,7 @@ async fn finalize_step(
         output,
         was_cancelled,
         output_secret_values,
+        next_stream: _,
     } = execution;
     if was_cancelled {
         return Err(log.cancel_step().await);
@@ -1592,7 +1695,8 @@ async fn run_sandbox_step(
     forced_values: &[String],
     cancel_rx: &mut watch::Receiver<bool>,
     handle: &crate::client::sandbox_client::SandboxHandle,
-) -> anyhow::Result<(engine::shell::ShellOutput, bool)> {
+    stream_start: i32,
+) -> anyhow::Result<(engine::shell::ShellOutput, bool, i32)> {
     let mut stream = crate::client::sandbox_client::exec_step(
         &config.sandbox,
         handle,
@@ -1602,7 +1706,7 @@ async fn run_sandbox_step(
         timeout_seconds,
     )
     .await?;
-    let mut chunk_num = log.log_base + LOG_STREAM_START;
+    let mut budget = StreamBudget::new_at(log.log_base, stream_start);
     let mut output_masker = SandboxOutputMasker::new(secret_values, forced_values);
     loop {
         tokio::select! {
@@ -1611,16 +1715,31 @@ async fn run_sandbox_step(
                     Some(Ok(crate::client::sandbox_client::SandboxExecEvent::Output { content, .. })) => {
                         let masked = output_masker.push(&content, false);
                         if !masked.is_empty() {
-                            if let Err(error) = log.emit_at(chunk_num, masked).await {
-                                tracing::warn!("Sandbox output chunk {chunk_num} upload failed: {error}");
+                            match budget.take() {
+                                Some(chunk_num) => {
+                                    if let Err(error) = log.emit_at(chunk_num, masked).await {
+                                        tracing::warn!("Sandbox output chunk {chunk_num} upload failed: {error}");
+                                    }
+                                }
+                                None => {
+                                    // Window exhausted: keep draining the
+                                    // supervisor stream and annotate once.
+                                    if let Some(marker) = budget.unnotified_truncation() {
+                                        log.emit(LOG_STEP_TRUNCATED, marker).await;
+                                    }
+                                }
                             }
-                            chunk_num += 1;
                         }
                     }
                     Some(Ok(crate::client::sandbox_client::SandboxExecEvent::Exit { code, timed_out })) => {
                         let tail = output_masker.push("", true);
                         if !tail.is_empty() {
-                            let _ = log.emit_at(chunk_num, tail).await;
+                            if let Some(chunk_num) = budget.take() {
+                                let _ = log.emit_at(chunk_num, tail).await;
+                            }
+                        }
+                        if budget.truncated() {
+                            log.emit(LOG_STEP_TRUNCATED, budget.marker()).await;
                         }
                         return Ok((
                             engine::shell::ShellOutput {
@@ -1633,6 +1752,7 @@ async fn run_sandbox_step(
                                 exit_code: if timed_out { -1 } else { code },
                             },
                             false,
+                            budget.next_index(),
                         ));
                     }
                     Some(Ok(crate::client::sandbox_client::SandboxExecEvent::Error { error })) => {
@@ -1644,6 +1764,9 @@ async fn run_sandbox_step(
             }
             _ = cancel_triggered(cancel_rx) => {
                 stream.abort();
+                if budget.truncated() {
+                    log.emit(LOG_STEP_TRUNCATED, budget.marker()).await;
+                }
                 return Ok((
                     engine::shell::ShellOutput {
                         stdout: String::new(),
@@ -1651,6 +1774,7 @@ async fn run_sandbox_step(
                         exit_code: -1,
                     },
                     true,
+                    budget.next_index(),
                 ));
             }
         }
@@ -2132,5 +2256,32 @@ fn clean_workspace(work_dir: &str) {
                 tracing::warn!("Failed to clean workspace '{work_dir}': {e}");
             }
         }
+    }
+}
+
+/// Restrict the per-job workspace to its owner (0700), or to a shared group
+/// (0770) when `[engine] run_as_user` makes another account execute steps in
+/// it — that account must share the workspace's group. Best-effort: a failure
+/// is logged, never fatal (Windows has no POSIX modes).
+fn restrict_job_workspace(job_ws: &str, run_as_user: Option<&str>) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if run_as_user
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .is_some()
+        {
+            0o770
+        } else {
+            0o700
+        };
+        if let Err(e) = std::fs::set_permissions(job_ws, std::fs::Permissions::from_mode(mode)) {
+            tracing::warn!("Failed to set mode {mode:o} on job workspace {job_ws}: {e}");
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (job_ws, run_as_user);
     }
 }
