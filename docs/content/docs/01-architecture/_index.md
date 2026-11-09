@@ -52,8 +52,9 @@ Follow the product journey — **run locally → write a pipeline → see how it
 ## Sections
 
 {{< cards >}}
+  {{< card link="principles/" title="Principles" subtitle="B-U-Z detail notes" >}}
+  {{< card link="comparison/" title="Comparison" subtitle="vs Drone · GitHub Actions · Jenkins" >}}
   {{< card link="authoring/" title="Authoring" subtitle="YAML format · expressions · config · notify · triggers" >}}
   {{< card link="execution/" title="Execution" subtitle="Runner policy · Docker · SSH multi-host" >}}
   {{< card link="platform/" title="Platform" subtitle="RBAC · secrets · API · audit" >}}
-  {{< card link="principles/" title="Principles" subtitle="B-U-Z detail notes" >}}
 {{< /cards >}}

@@ -1,6 +1,6 @@
 ---
 title: Platform
-weight: 1
+weight: 30
 description: "Control plane — RBAC, environments & approvals, secrets ACL, API, admin audit"
 ---
 

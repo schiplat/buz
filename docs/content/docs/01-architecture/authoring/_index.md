@@ -1,6 +1,6 @@
 ---
 title: Authoring
-weight: 1
+weight: 10
 description: "Write pipelines — YAML format, parameters, secrets & variables, plugins, triggers, notify, concurrency"
 ---
 

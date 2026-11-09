@@ -1,6 +1,6 @@
 ---
 title: Execution
-weight: 1
+weight: 20
 description: "How the Runner executes steps — runner policy, Docker, SSH multi-host, sandbox isolation"
 ---
 

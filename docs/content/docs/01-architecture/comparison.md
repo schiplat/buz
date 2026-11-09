@@ -1,6 +1,6 @@
 ---
 title: "Comparison"
-weight: 3
+weight: 2
 description: "Buz + buz-plugins vs Drone vs GitHub Actions vs Jenkins — architecture, network model, pipelines, plugin supply chain, secrets, governance, isolation, cost"
 ---
 
