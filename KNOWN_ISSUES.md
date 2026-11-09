@@ -186,3 +186,31 @@ companion product) to plugin steps (`buz/config-fetch` / `buz/docker-login` / `b
 
 `BUZ_RUNNER_ID` pins a registration to a pre-declared runner row for
 IaC / batch registration; the row is claimed only by that secret.
+
+### 5. SSH engine passes step env in the remote command string — **accepted short-term, fix scoped (2026-11-09)**
+
+`build_ssh_env_command` (runner `client/poll/mod.rs`) exports step env —
+including claim-time-expanded `${secrets.*}` values — as `export K='v'`
+statements prepended to the command string sent to the target host
+(`ssh.rs::exec` sends one exec request with that string). During the step,
+secret values sit in the remote process's argv: `ps` on the target host shows
+them to root and the owning user. The local engines are unaffected
+(`Command::env` uses the process environment, which argv-inspecting cannot
+read). Any ssh-engine step carrying secrets is exposed — the deploy flow's
+`buz/docker-login` (ssh, registry password) is the prominent case.
+
+Accepted short-term: the target host is already a trust boundary the
+pipeline author controls (it receives the workload and, under the current
+plugin model, the same secrets through other channels if the step needs
+them); same-user argv inspection is an increment on that boundary, not a new
+one. SECURITY.md documents it in the known-limitations list.
+
+Medium-term fix, scoped but not scheduled: move the SSH env channel off the
+command string — write the expanded env to a job-scoped temp file on the
+target host over the existing SSH session (`install -m 600`, sourced and
+deleted inside the same command), or feed it via stdin, then exec the run
+block bare. Either keeps `INPUT_*`/`BUZ_*` contracts intact; the temp-file
+variant needs a host-side cleanup guarantee on cancellation. The
+"compute locally, transfer the artifact" pattern (Runner-side
+render/prep + `buz/scp`) avoids the channel entirely and is the recommended
+authoring style today.
