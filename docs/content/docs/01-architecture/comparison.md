@@ -12,32 +12,32 @@ official plugin marketplace) with Drone, GitHub Actions, and Jenkins across
 eight dimensions.
 
 > Facts below reflect public documentation and this repository as of
-> 2026-11-08. Vendor capabilities evolve — verify against official docs
-> before making a decision. Buz-side claims link to the relevant pages of
-> this site.
+> 2026-11-09; vendor claims were re-verified against official docs on that
+> date. Vendor capabilities evolve — verify before making a decision. Buz-side
+> claims link to the relevant pages of this site.
 
 ## At a glance
 
 | | Buz + buz-plugins | Drone | GitHub Actions | Jenkins |
 |---|---|---|---|---|
-| Control plane | Manager: single static Rust binary, self-hosted | drone-server (Go), self-hosted | SaaS only — no self-hosted option | Jenkins controller (JVM), self-hosted |
+| Control plane | Manager: single static Rust binary, self-hosted | drone-server (Go), self-hosted | Hosted runners are SaaS-only; control plane self-hostable via GHES (bring your own runners) | Jenkins controller (JVM), self-hosted |
 | Network model | Runners connect outbound-only; **zero inbound ports** | Runners poll the server outbound, but execution is confined to the runner host | Self-hosted runners poll github.com outbound | Agents typically need the controller to be reachable |
 | Reach across firewalls/NAT | Core design goal | Partial — second-layer networks unreachable | Runner must sit inside the target network **and** reach github.com | Painful (DMZ / tunnel patterns) |
 | Authoring | Declarative YAML, GHA-style `uses:` | YAML | YAML + expressions | Groovy (Jenkinsfile) |
 | Governance | Built in: approval gates, RBAC, audit logs | Enterprise-tier features | Environments + required reviewers (paid for private repos) | Plugin-dependent |
-| Plugin supply chain | Human-reviewed, content-hash locked, signed index, egress allowlists | Docker-image plugins, no review | Largest ecosystem, no review of marketplace actions | 2000+ plugins, community-maintained |
+| Plugin supply chain | Human-reviewed, content-hash locked, signed index, egress allowlists | Docker-image plugins, no review | Largest ecosystem, no review of marketplace actions | 2300+ plugins, community-maintained |
 | Setup to first run | 5 minutes (single container, auto-registered Runner) | ~10 minutes | Minutes (needs a GitHub repo) | Hours to days |
 
 ## Architecture and deployment
 
 | Dimension | Buz + buz-plugins | Drone | GitHub Actions | Jenkins |
 |---|---|---|---|---|
-| Control plane | `buz-manager`: single static Rust binary, self-hosted | `drone-server`, self-hosted Go binary or container | GitHub-hosted SaaS; cannot be self-hosted | Jenkins controller on a JVM, self-hosted |
-| Execution component | `buz-runner` (execution agent) + optional `buz-sandboxd` (host supervisor); measured idle RSS: Runner ≈ 25 MB, Manager ≈ 25–45 MB (macOS/arm64 release build, one registered runner, no jobs, 2026-11-08) | `drone-runner`, drives Docker containers | Hosted ephemeral VMs, or self-hosted runners on any machine | Persistent JVM agents per host |
+| Control plane | `buz-manager`: single static Rust binary, self-hosted | `drone-server`, self-hosted Go binary or container | github.com SaaS (with hosted runners); GHES self-hosts the control plane but requires your own runner fleet | Jenkins controller on a JVM, self-hosted |
+| Execution component | `buz-runner` (execution agent) + optional `buz-sandboxd` (host supervisor); measured idle RSS: Runner ≈ 25 MB, Manager ≈ 25–45 MB (macOS/arm64 release build, one registered runner, no jobs, 2026-11-08) | `drone-runner` drives Docker containers (experimental exec runner runs on the host shell) | Hosted ephemeral VMs, or self-hosted runners on any machine | Persistent JVM agents per host |
 | Runtime dependencies | None — static binaries, no agent frameworks | Docker required on the runner host | None (hosted) / whatever self-hosting needs | JDK everywhere |
 | Time to first pipeline | 5-minute standalone demo: one container, Runner auto-registers over loopback ([Quick Start](/docs/00-quick-start/)) | Tens of minutes, straightforward | Minutes, but requires a GitHub repo | Hours to days: plugin selection, controller tuning |
 | CPU architectures | Official multi-arch images (linux/amd64 + linux/arm64) | Wherever Docker runs | Hosted: x64 and arm64 Linux; self-hosted: any | Very broad |
-| License | Apache-2.0 | Apache-2.0 core with commercial gating | SaaS, per-minute billing | MIT |
+| License | Apache-2.0 | Apache-2.0 OSS core; RBAC/audit/LDAP gated in the source-available Enterprise edition (Polyform license) | SaaS, per-minute billing | MIT |
 
 ## Network model
 
@@ -45,11 +45,11 @@ This is where the platforms genuinely differ — everything else is degrees.
 
 | Dimension | Buz | Drone | GitHub Actions | Jenkins |
 |---|---|---|---|---|
-| Connection direction | Runners connect **outbound-only** (long-poll claim, log push); the Manager is the only component that listens | Runners poll the server outbound via RPC | Self-hosted runners poll github.com outbound | Agents typically connect inbound to the controller (JNLP/SSH); outbound agent modes exist but the controller endpoint must still be reachable |
+| Connection direction | Runners connect **outbound-only** (long-poll claim, log push); the Manager is the only component that listens | Runners poll the server outbound via RPC | Self-hosted runners poll github.com outbound | Two common modes: "inbound" agents dial the controller over JNLP/WebSocket — the controller endpoint must be reachable from agent networks; "outbound" agents are driven by the controller over SSH — the controller must reach the agent |
 | Inbound ports on execution machines | **Zero** — no port forwarding, no VPN ([How it works](https://github.com/schiplat/buz#how-it-works)) | Zero on the runner host | Zero on the runner host | Controller must expose ports; cross-segment setups often need holes or tunnels |
-| Where work can execute | On the Runner host (containers) **or on arbitrary remote hosts over SSH** with Runner-held credentials | Only in containers on the runner host | Only on the runner (hosted VM or self-hosted machine) | Only on hosts that have an agent installed — every segment needs its own agents |
+| Where work can execute | On the Runner host (containers) **or on arbitrary remote hosts over SSH** with Runner-held credentials | Only on the runner host (Docker containers; experimental exec runner for host-shell steps) | Only on the runner (hosted VM or self-hosted machine) | Only on hosts that have an agent installed — every segment needs its own agents |
 | NAT / multi-cloud / partner networks | Designed for it: Runners live wherever the work is | The runner can sit inside a private network, but it cannot reach a second-layer network behind another firewall | The runner must sit inside the target network and be able to reach github.com over the internet | DMZ and tunnel topologies; operationally heavy |
-| Reaching heterogeneous targets (bare metal, lab boards, legacy boxes) | First-class: SSH steps with Runner-managed credentials | Not supported (container-only) | Not supported (runner-host execution only) | Possible but requires an agent on every target class |
+| Reaching heterogeneous targets (bare metal, lab boards, legacy boxes) | First-class: SSH steps with Runner-managed credentials | Not first-class — no built-in SSH fan-out; would be DIY shell steps | Not supported (runner-host execution only) | Possible but requires an agent on every target class |
 
 ## Pipeline authoring and execution
 
@@ -58,7 +58,7 @@ This is where the platforms genuinely differ — everything else is degrees.
 | Format | Declarative YAML ([Pipeline Format](/docs/01-architecture/authoring/pipeline-format/)) | Declarative YAML | YAML + expressions | Groovy (Jenkinsfile) |
 | Learning curve | Low — a pipeline is a short YAML document | Low | Moderate | Steep — Groovy sandbox, script approval |
 | Triggers | Manual / webhook / cron | Webhook / CRON / promotions | Richest set: push, PR, issues, dispatch, workflow_run, schedules, and more | Webhook / polling / cron, configured in UI or code |
-| Concurrency, retries, timeouts | Built in: concurrency queues, retries, per-step timeouts — declared in YAML ([Concurrency Queue](/docs/01-architecture/authoring/job-concurrency-queue/)) | Runner-level concurrency limits | Concurrency groups, `timeout-minutes`; no native step retry | Mostly steps or plugins (Retry, Lockable Resources, Timeout) |
+| Concurrency, retries, timeouts | Built in: concurrency queues, retries, per-step timeouts — declared in YAML ([Concurrency Queue](/docs/01-architecture/authoring/job-concurrency-queue/)) | Runner-level concurrency limits | Concurrency groups, `timeout-minutes`; no native step retry | `retry` / `timeout` are bundled Pipeline steps; `Lockable Resources` is a plugin |
 | Environments | **Mandatory**: pipelines declare target environments; every run picks one explicitly ([Environments](/docs/01-architecture/platform/environments/)) | No first-class concept | Environments (optional) | No native concept |
 | Step types | Shell, SSH, Docker, or plugins (`uses:`) | Container steps | run/shell on the runner, container jobs, composite actions | Anything Groovy can do, on any agent |
 | Parameterization | Parameter scopes ([Parameter Scopes](/docs/01-architecture/authoring/pipeline-parameter-scopes/)) | Pipeline params | Workflow inputs, matrix | Parameters (UI or code) |
@@ -67,7 +67,7 @@ This is where the platforms genuinely differ — everything else is degrees.
 
 | Dimension | Buz + buz-plugins | Drone | GitHub Actions | Jenkins |
 |---|---|---|---|---|
-| Ecosystem size | Early-stage official catalog (notifications, deploy helpers, health checks) — [plugins.buz.schiplat.com](https://plugins.buz.schiplat.com) | Moderate: community Docker-image plugins | Largest: tens of thousands of marketplace actions | Large: 2000+ plugins |
+| Ecosystem size | Early-stage official catalog (notifications, deploy helpers, health checks) — [plugins.buz.schiplat.com](https://plugins.buz.schiplat.com) | Moderate: community Docker-image plugins | Largest: tens of thousands of marketplace actions | Large: 2300+ plugins (official index) |
 | Human review before publishing | ✅ Official `buz/*` templates get a human first review; CI tracks every version against the reviewed content hash ([Plugin Tooling](/docs/01-architecture/authoring/plugin-tooling/)) | ❌ | ❌ — GitHub does not review marketplace actions (pin by SHA is a DIY mitigation) | ❌ — community-maintained |
 | Immutable resolution | ✅ `uses:` references are resolved and locked to a content hash **at save time**; upstream changes cannot alter a saved pipeline | Mutable image tags | ❌ mutable tags unless manually pinned to a commit SHA | Explicit version pinning |
 | Verifiable distribution | ✅ Signed plugin index (`index.json.sig`), signed review ledger, drift sentinel — a Manager under a trust anchor refuses an unverifiable index | ❌ | ❌ (artifact attestations exist for build outputs, not for actions themselves) | ❌ |
@@ -85,7 +85,7 @@ This is where the platforms genuinely differ — everything else is degrees.
 
 | Dimension | Buz | Drone | GitHub Actions | Jenkins |
 |---|---|---|---|---|
-| Approval gates | ✅ Built-in environment gates, optional second approver, [switchable](/docs/01-architecture/platform/ops-approval-switch/) | OSS: no; promotions and governance features sit in Drone Enterprise | ✅ Environments with required reviewers — free in public repos, paid plans for private repos | ❌ Nothing native; plugins and process conventions |
+| Approval gates | ✅ Built-in environment gates, optional second approver, [switchable](/docs/01-architecture/platform/ops-approval-switch/) | No environment-style gates in OSS; promotions, RBAC and audit sit in the source-available Enterprise edition | ✅ Environments with required reviewers — free in public repos, paid plans for private repos | ⚠️ No environment-scoped gate model; the bundled Pipeline `input` step can pause a job for manual approval |
 | RBAC | ✅ Built-in ([RBAC](/docs/01-architecture/platform/rbac/)) | SCM-derived permissions; finer control in Drone Enterprise | GitHub's repo/org/team permission system | Plugins (Role-based Authorization, Matrix) |
 | Audit logs | ✅ Built-in admin audit logs ([Audit Logs](/docs/01-architecture/platform/admin-audit-logs/)) | Drone Enterprise | Organization audit log | Plugins (Audit Trail) |
 
@@ -93,14 +93,14 @@ This is where the platforms genuinely differ — everything else is degrees.
 
 | Dimension | Buz | Drone | GitHub Actions | Jenkins |
 |---|---|---|---|---|
-| Isolation tiers | `host` → `container` → `sandbox` (gVisor) → `vm` (Firecracker-compatible); the Runner reports what its host can deliver, a human picks the tier, and an unavailable tier **fails the job instead of silently downgrading** ([Principles](/docs/01-architecture/principles/)) | Container-level | Hosted: one-shot VMs; self-hosted: your responsibility | Persistent agents (not one-shot by default); containerization optional |
+| Isolation tiers | `host` → `container` → `sandbox` (gVisor) → `vm` (Firecracker-compatible); the Runner reports what its host can deliver, a human picks the tier, and an unavailable tier **fails the job instead of silently downgrading** ([Principles](/docs/01-architecture/principles/)) | Container-level (Docker runner); exec runner runs without isolation (experimental) | Hosted: one-shot VMs; self-hosted: your responsibility | Persistent agents (not one-shot by default); containerization optional |
 | Honest risk disclosure | ✅ Documents that Docker socket access is host-root-equivalent ([SECURITY.md](https://github.com/schiplat/buz/blob/master/SECURITY.md)) | Rarely discussed | — | Rarely discussed |
 
 ## Cost and licensing
 
 | Dimension | Buz | Drone | GitHub Actions | Jenkins |
 |---|---|---|---|---|
-| License | Apache-2.0 | Apache-2.0 core, commercial edition gates governance features | SaaS subscription + per-minute billing | MIT |
+| License | Apache-2.0 | Apache-2.0 OSS core; Enterprise edition (source-available, Polyform) gates governance features | SaaS subscription + per-minute billing | MIT |
 | Private-repo cost | None (self-hosted, no per-minute metering) | None | Paid minutes; exhausted org quotas push teams to create new orgs and re-migrate repos | No license cost; high operational headcount cost |
 | Operational footprint | Two small static binaries + optional sandbox supervisor | Server + runner, Docker required | None (SaaS) | JVM controller(s), agent fleet, plugin upgrade treadmill |
 
