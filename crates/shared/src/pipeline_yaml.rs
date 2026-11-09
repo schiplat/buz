@@ -1069,9 +1069,9 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
     }
 
-    // 3b. Manual trigger inputs — remind to declare an explicit `type` so the
-    // trigger dialog renders a dedicated control and constraints are enforced.
-    // `options` only takes effect with `type: choice`; flag it specifically.
+    // 3b. Manual trigger inputs — declaration errors surface at save time so
+    // a typo cannot pass validation and then fail every trigger. The trigger
+    // path (`protocol::validate_input_values`) still owns value checks.
     if let Some(ref on) = parsed.on {
         if let Some(ref manual) = on.manual {
             if let Some(ref inputs) = manual.inputs {
@@ -1079,6 +1079,35 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                     let ty = def.r#type.as_deref().unwrap_or("").trim();
                     let has_options = def.options.as_deref().is_some_and(|o| !o.is_empty());
                     let field = format!("on.manual.inputs.{name}");
+                    let kind = crate::protocol::InputTypeKind::parse(def.r#type.as_deref());
+                    if kind.is_none() {
+                        errors.push(YamlValidationError {
+                            field: field.clone(),
+                            message: format!(
+                                "unknown input type '{ty}' — must be one of: string, number, boolean, host, choice, list"
+                            ),
+                        });
+                    }
+                    if matches!(kind, Some(crate::protocol::InputTypeKind::Choice)) && !has_options
+                    {
+                        errors.push(YamlValidationError {
+                            field: field.clone(),
+                            message: "type: choice requires a non-empty options list".into(),
+                        });
+                    }
+                    if let Some(pattern) = def
+                        .pattern
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|pattern| !pattern.is_empty())
+                    {
+                        if regex::Regex::new(pattern).is_err() {
+                            errors.push(YamlValidationError {
+                                field: format!("{field}.pattern"),
+                                message: format!("invalid pattern '{pattern}'"),
+                            });
+                        }
+                    }
                     if has_options && ty != "choice" {
                         warnings.push(format!(
                             "{field}: 'options' requires 'type: choice' to take effect — currently ignored"

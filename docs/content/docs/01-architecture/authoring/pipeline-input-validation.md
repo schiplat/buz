@@ -98,6 +98,18 @@ These are **warnings, not errors** — pipelines that omit `type` still parse, i
 
 ## Validation timing (fail-fast)
 
+Two layers, split by *what* is wrong:
+
+- **Declaration errors fail at save/scan time** (YAML validation): an unknown
+  `type`, `type: choice` without a non-empty `options` list, or an invalid
+  `pattern` regex. These would otherwise pass the schema and then fail every
+  trigger with the same message, so they are rejected when the file is saved.
+- **Value errors fail at trigger time** (below): a supplied or defaulted value
+  that violates the declared type/pattern/choice/host/required constraint.
+
+`crates/shared/tests/input_validation_layers_test.rs` pins the split across a
+fixture corpus, so the two layers cannot drift apart silently.
+
 Validation runs inside the shared `do_trigger` path, which is used by all three trigger sources:
 
 1. **Manual** — `POST /api/v1/pipelines/{id}/trigger`
