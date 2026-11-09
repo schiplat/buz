@@ -1073,6 +1073,11 @@ pub struct StepDef {
     pub dir: Option<String>,
     pub timeout: Option<String>,
     pub retry: Option<i32>,
+    /// Step names this step waits for (DAG edges). Empty = plain sequential
+    /// order. Resolved to step names at save; the Runner schedules ready
+    /// steps concurrently.
+    #[serde(default)]
+    pub needs: Vec<String>,
     #[serde(rename = "continue-on-error", alias = "continue_on_error")]
     pub continue_on_error: Option<bool>,
     /// Step secret allowlist (optional narrowing). Does not auto-inject `$NAME`.

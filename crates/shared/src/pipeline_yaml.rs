@@ -276,6 +276,12 @@ pub struct StepYaml {
     pub timeout: Option<String>,
     #[serde(default)]
     pub retry: Option<i32>,
+    /// Step names this step waits for. Declared dependencies form a DAG:
+    /// ready steps run concurrently (in job order otherwise), and a failed
+    /// dependency skips this step. Validated at save time (targets exist,
+    /// no cycles, names unique when used).
+    #[serde(default)]
+    pub needs: Option<OneOrMany>,
     /// Marketplace plugin reference: `<namespace>/<plugin-id>@<pin>` (pin is
     /// `X`, `X.Y`, `X.Y.Z`, `sha256:<hex>`, `latest`, or a branch name;
     /// ranges rejected).
@@ -318,6 +324,7 @@ impl From<&StepYaml> for crate::protocol::StepDef {
             dir: step.dir.clone(),
             timeout: step.timeout.clone(),
             retry: step.retry,
+            needs: step.needs.as_ref().map(|n| n.to_vec()).unwrap_or_default(),
             continue_on_error: step.continue_on_error,
             secrets: step.secrets.clone(),
             env: step.env.clone(),
@@ -465,6 +472,8 @@ pub struct StepData {
     pub timeout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub continue_on_error: Option<bool>,
     /// Step secret allowlist (optional narrowing).
@@ -1122,6 +1131,121 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
         }
     }
 
+    // 3c. `needs:` DAG — targets exist, step names unique when used, no
+    // cycles. Everything else (scheduling, skip semantics) is Runner-side.
+    {
+        let uses_needs = parsed
+            .steps
+            .iter()
+            .any(|step| step.needs.as_ref().is_some_and(|n| !n.to_vec().is_empty()));
+        if uses_needs {
+            // Referencing requires unambiguous names.
+            let mut name_counts: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
+            for step in &parsed.steps {
+                let name = step.name.as_deref().unwrap_or("").trim();
+                if !name.is_empty() {
+                    *name_counts.entry(name).or_insert(0) += 1;
+                }
+            }
+            for (name, count) in &name_counts {
+                if *count > 1 {
+                    errors.push(YamlValidationError {
+                        field: "steps".into(),
+                        message: format!(
+                            "step name '{name}' is declared {count} times — names must be unique when 'needs' is used"
+                        ),
+                    });
+                }
+            }
+
+            let names: std::collections::HashSet<&str> = name_counts.keys().copied().collect();
+            // (index → indices of declared targets) for cycle detection.
+            let mut edges: Vec<Vec<usize>> = Vec::with_capacity(parsed.steps.len());
+            for (i, step) in parsed.steps.iter().enumerate() {
+                let mut my_edges = Vec::new();
+                let own_name = step.name.as_deref().unwrap_or("").trim();
+                if let Some(needs) = step.needs.as_ref() {
+                    for target in needs.to_vec() {
+                        let target = target.trim();
+                        if target.is_empty() {
+                            errors.push(YamlValidationError {
+                                field: format!("steps[{i}].needs"),
+                                message: "needs entries must not be empty".into(),
+                            });
+                            continue;
+                        }
+                        if target == own_name {
+                            errors.push(YamlValidationError {
+                                field: format!("steps[{i}].needs"),
+                                message: format!("step '{target}' cannot need itself"),
+                            });
+                            continue;
+                        }
+                        match names.get(target) {
+                            Some(_) => {
+                                if let Some((j, _)) =
+                                    parsed.steps.iter().enumerate().find(|(_, other)| {
+                                        other.name.as_deref().unwrap_or("").trim() == target
+                                    })
+                                {
+                                    my_edges.push(j);
+                                }
+                            }
+                            None => {
+                                errors.push(YamlValidationError {
+                                    field: format!("steps[{i}].needs"),
+                                    message: format!(
+                                        "needs target '{target}' does not match any step name"
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+                edges.push(my_edges);
+            }
+
+            // Cycle check: DFS with three colors over the declared graph.
+            let mut color = vec![0u8; parsed.steps.len()]; // 0 white, 1 grey, 2 black
+            fn visit(
+                node: usize,
+                edges: &[Vec<usize>],
+                color: &mut [u8],
+                path: &mut Vec<usize>,
+                errors: &mut Vec<YamlValidationError>,
+            ) {
+                color[node] = 1;
+                path.push(node);
+                for &next in &edges[node] {
+                    match color[next] {
+                        1 => {
+                            let start = path.iter().position(|&n| n == next).unwrap_or(0);
+                            let cycle: Vec<String> = path[start..]
+                                .iter()
+                                .chain(std::iter::once(&next))
+                                .map(|n| n.to_string())
+                                .collect();
+                            errors.push(YamlValidationError {
+                                field: "steps".into(),
+                                message: format!("'needs' forms a cycle: {}", cycle.join(" -> ")),
+                            });
+                        }
+                        0 => visit(next, edges, color, path, errors),
+                        _ => {}
+                    }
+                }
+                path.pop();
+                color[node] = 2;
+            }
+            for node in 0..parsed.steps.len() {
+                if color[node] == 0 {
+                    visit(node, &edges, &mut color, &mut Vec::new(), &mut errors);
+                }
+            }
+        }
+    }
+
     // 4. Detect trigger type (single source of truth for UI auto-fill)
     if let Some(ref on) = parsed.on {
         let trigger_count = [on.manual.is_some(), on.webhook.is_some(), on.cron.is_some()]
@@ -1452,6 +1576,11 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 dir: s.dir.clone(),
                 timeout: s.timeout.clone(),
                 retry: s.retry,
+                needs: s
+                    .needs
+                    .as_ref()
+                    .map(|n| n.to_vec())
+                    .filter(|v| !v.is_empty()),
                 continue_on_error: s.continue_on_error,
                 secrets: s.secrets.clone(),
                 env: s.env.clone(),

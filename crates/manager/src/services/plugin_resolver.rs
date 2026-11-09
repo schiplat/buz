@@ -810,6 +810,7 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedPlugin) -> Result<Ste
             .clone()
             .or_else(|| spec.default_timeout.clone()),
         retry: step.retry,
+        needs: step.needs.clone(),
         continue_on_error: step.continue_on_error,
         secrets: step.secrets.clone(),
         env: if env.is_empty() { None } else { Some(env) },

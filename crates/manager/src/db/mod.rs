@@ -1556,6 +1556,8 @@ async fn migrate_tasks_config_block_columns(pool: &SqlitePool) -> anyhow::Result
     add_column_if_missing(pool, "tasks", "config_key_path TEXT NOT NULL DEFAULT ''").await;
     add_column_if_missing(pool, "tasks", "config_dest TEXT NOT NULL DEFAULT ''").await;
     add_column_if_missing(pool, "tasks", "config_render TEXT NOT NULL DEFAULT ''").await;
+    // `needs:` DAG edges (JSON array of step names); empty = sequential order.
+    add_column_if_missing(pool, "tasks", "needs_json TEXT NOT NULL DEFAULT '[]'").await;
 
     let _ =
         sqlx::query("ALTER TABLE tasks ADD COLUMN hosts_strategy TEXT NOT NULL DEFAULT 'chain'")

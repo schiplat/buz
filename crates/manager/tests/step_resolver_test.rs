@@ -169,6 +169,7 @@ fn uses_step(uses: &str) -> StepDef {
         dir: None,
         timeout: None,
         retry: None,
+        needs: Vec::new(),
         continue_on_error: None,
         secrets: None,
         env: None,
