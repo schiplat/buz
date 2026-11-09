@@ -22,6 +22,7 @@ type StepLike = {
   dir?: string
   timeout?: string
   retry?: number
+  needs?: string[]
   continue_on_error?: boolean
   privileged?: boolean
   config_dest?: string
@@ -246,6 +247,7 @@ export function serializePipelineFormToYaml(
       if (s.dir) lines.push(`    dir: ${esc(s.dir)}`)
       if (s.timeout) lines.push(`    timeout: ${esc(s.timeout)}`)
       if (s.retry) lines.push(`    retry: ${s.retry}`)
+      if (s.needs?.length) lines.push(`    needs: [${s.needs.map((n) => `'${n}'`).join(', ')}]`)
       if (s.continue_on_error) lines.push('    continue-on-error: true')
       continue
     }
@@ -292,6 +294,7 @@ export function serializePipelineFormToYaml(
     if (s.dir) lines.push(`    dir: ${esc(s.dir)}`)
     if (s.timeout) lines.push(`    timeout: ${esc(s.timeout)}`)
     if (s.retry) lines.push(`    retry: ${s.retry}`)
+    if (s.needs?.length) lines.push(`    needs: [${s.needs.map((n) => `'${n}'`).join(', ')}]`)
     if (s.continue_on_error) lines.push('    continue-on-error: true')
 
     const hasConfig =

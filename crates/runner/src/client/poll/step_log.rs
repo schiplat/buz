@@ -182,7 +182,7 @@ pub(super) fn step_timeout_content(timeout_secs: u64) -> String {
 /// `upload_chunk` + hand-built `LogChunk` boilerplate to one call. Cheap to
 /// clone for the spawned streaming-upload task.
 #[derive(Clone)]
-pub(super) struct StepLogger {
+pub(crate) struct StepLogger {
     pub(super) client: Client,
     pub(super) config: Config,
     pub(super) token: String,

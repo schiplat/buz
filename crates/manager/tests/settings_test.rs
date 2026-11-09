@@ -11,6 +11,12 @@ use sqlx::{Pool, Sqlite};
 use tower::ServiceExt;
 
 const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
+
+/// The plugin settings API applies overrides to a PROCESS-GLOBAL resolver
+/// slot (recomputed as a full set from the calling test's database), so two
+/// tests in this binary racing `apply_runtime_overrides` can clobber each
+/// other. Serialize every test here — each runs alone.
+static SETTINGS_GLOBAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const ADMIN_ID: &str = "admin-1";
 const MEMBER_ID: &str = "member-1";
 
@@ -139,6 +145,7 @@ fn data_ok(body: &serde_json::Value) -> bool {
 
 #[tokio::test]
 async fn settings_require_platform_admin() {
+    let _global = SETTINGS_GLOBAL.lock().await;
     let (router, _pool) = test_app().await;
 
     let (status, _) = get_settings(&router, &jwt(MEMBER_ID, Role::User)).await;
@@ -156,6 +163,7 @@ async fn settings_require_platform_admin() {
 
 #[tokio::test]
 async fn settings_defaults_come_from_config() {
+    let _global = SETTINGS_GLOBAL.lock().await;
     let (router, _pool) = test_app().await;
     let (status, body) = get_settings(&router, &jwt(ADMIN_ID, Role::Admin)).await;
     assert_eq!(status, axum::http::StatusCode::OK);
@@ -185,6 +193,7 @@ async fn settings_defaults_come_from_config() {
 /// independently settable, so each is asserted on its own.
 #[tokio::test]
 async fn approval_switches_list_write_and_reset() {
+    let _global = SETTINGS_GLOBAL.lock().await;
     let (router, _pool) = test_app().await;
     let token = jwt(ADMIN_ID, Role::Admin);
 
@@ -228,6 +237,7 @@ async fn approval_switches_list_write_and_reset() {
 
 #[tokio::test]
 async fn update_persists_applies_and_reset_falls_back() {
+    let _global = SETTINGS_GLOBAL.lock().await;
     let (router, pool) = test_app().await;
     let token = jwt(ADMIN_ID, Role::Admin);
 
@@ -288,6 +298,7 @@ async fn update_persists_applies_and_reset_falls_back() {
 
 #[tokio::test]
 async fn unknown_setting_and_invalid_path_are_rejected() {
+    let _global = SETTINGS_GLOBAL.lock().await;
     let (router, _pool) = test_app().await;
     let token = jwt(ADMIN_ID, Role::Admin);
 

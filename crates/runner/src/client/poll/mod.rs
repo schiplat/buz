@@ -13,6 +13,7 @@ use crate::masker::SecretCatalog;
 use crate::policy::{self, SharedPolicy};
 use std::collections::{HashMap, HashSet};
 
+pub(crate) mod dag;
 pub mod step_log;
 
 use step_log::{
@@ -392,7 +393,7 @@ pub async fn execute_job(
             .get("resource_profile")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        Some(
+        Some(std::sync::Arc::new(
             crate::client::sandbox_client::create_job(
                 config,
                 job_id,
@@ -400,9 +401,38 @@ pub async fn execute_job(
                 resource_profile,
             )
             .await?,
-        )
+        ))
     };
     let mut prefetch = crate::client::image_prefetch::ImagePrefetch::start(tasks, config, job_id);
+
+    // `needs:` DAG: when any step declares dependencies, the whole job is
+    // scheduled as a graph (ready steps run concurrently). Pipelines without
+    // `needs` keep the sequential loop — unchanged, byte for byte.
+    if let Some(plan) = dag::DagPlan::build(tasks)? {
+        let result = dag::execute(
+            client,
+            config,
+            token,
+            task,
+            tasks,
+            plan,
+            cancel_rx,
+            &sandbox_handle,
+        )
+        .await;
+        if let Some(prefetch) = prefetch.as_mut() {
+            prefetch.abort_and_drain().await;
+        }
+        if let Some(handle) = sandbox_handle.as_deref() {
+            if let Err(error) =
+                crate::client::sandbox_client::destroy_job(&config.sandbox, handle).await
+            {
+                tracing::error!(job_id, error = %error, "failed to destroy job sandbox");
+            }
+        }
+        return result;
+    }
+
     let result = execute_job_inner(
         client,
         config,
@@ -410,7 +440,7 @@ pub async fn execute_job(
         task,
         cancel_rx,
         &mut prefetch,
-        sandbox_handle.as_ref(),
+        sandbox_handle.as_deref(),
     )
     .await;
     if let Some(prefetch) = prefetch.as_mut() {
@@ -779,24 +809,24 @@ async fn execute_job_inner(
 /// from the step JSON; collections are owned. Cloned into `StepRun` so the
 /// loop keeps `spec` for `finalize_step`.
 #[derive(Clone)]
-struct PluginSpec<'a> {
-    idx: usize,
-    step: &'a serde_json::Value,
-    name: &'a str,
-    command: &'a str,
-    work_dir: Option<&'a str>,
-    exec_type: &'a str,
-    fail_strategy: &'a str,
-    timeout_secs: u64,
-    timeout: Option<Duration>,
+pub(super) struct PluginSpec<'a> {
+    pub(super) idx: usize,
+    pub(super) step: &'a serde_json::Value,
+    pub(super) name: &'a str,
+    pub(super) command: &'a str,
+    pub(super) work_dir: Option<&'a str>,
+    pub(super) exec_type: &'a str,
+    pub(super) fail_strategy: &'a str,
+    pub(super) timeout_secs: u64,
+    pub(super) timeout: Option<Duration>,
     /// Automatic retries after a non-zero exit (`retry` in the step YAML).
-    retry: u32,
-    privileged: bool,
-    volumes: Vec<String>,
-    capabilities: Vec<String>,
+    pub(super) retry: u32,
+    pub(super) privileged: bool,
+    pub(super) volumes: Vec<String>,
+    pub(super) capabilities: Vec<String>,
 }
 
-fn parse_step_spec(idx: usize, step: &serde_json::Value) -> PluginSpec<'_> {
+pub(super) fn parse_step_spec(idx: usize, step: &serde_json::Value) -> PluginSpec<'_> {
     let timeout_secs = step["timeout_seconds"].as_u64().unwrap_or(0);
     PluginSpec {
         idx,
@@ -836,7 +866,7 @@ fn string_list(step: &serde_json::Value, key: &str) -> Vec<String> {
 /// image preflight, and work_dir containment. Returns the Docker socket path
 /// for docker steps. Policy errors report the step failed via `fail_step`;
 /// the work_dir check keeps its historical status-only failure path.
-async fn validate_step_constraints(
+pub(super) async fn validate_step_constraints(
     log: &StepLogger,
     config: &Config,
     step: &serde_json::Value,
@@ -890,7 +920,7 @@ async fn validate_step_constraints(
 /// Per-step env + redaction state: base env plus the step `env:` map, the
 /// secret catalog (keys + forced values), and the resolved mask lists the
 /// engine runners and `finalize_step` mask with.
-struct StepSecrets {
+pub(super) struct StepSecrets {
     env: std::collections::HashMap<String, String>,
     catalog: SecretCatalog,
     secret_values: Vec<String>,
@@ -898,7 +928,7 @@ struct StepSecrets {
 }
 
 /// ── Step env: base + expanded step `env:` map (no auto-inject from secrets:) ──
-async fn build_step_secrets(
+pub(super) async fn build_step_secrets(
     log: &StepLogger,
     step: &serde_json::Value,
     base_env: &std::collections::HashMap<String, String>,
@@ -993,7 +1023,7 @@ async fn build_step_secrets(
 /// expansion, host resolution, config render). Every error here has
 /// already been reported via StepLogger before returning.
 #[allow(clippy::too_many_arguments)] // job execution context: step, sandbox, secrets, logging handles
-async fn announce_step(
+pub(super) async fn announce_step(
     log: &StepLogger,
     config: &Config,
     step: &serde_json::Value,
@@ -1072,7 +1102,7 @@ async fn announce_step(
 /// prepare and the run block to avoid reconnect storms / fail2ban /
 /// MaxStartups). Non-SSH steps get an empty vector. Cancel aborts in-flight
 /// connects and reports the step cancelled.
-async fn open_ssh_sessions(
+pub(super) async fn open_ssh_sessions(
     log: &StepLogger,
     config: &Config,
     step: &serde_json::Value,
@@ -1139,17 +1169,17 @@ async fn open_ssh_sessions(
 /// ERROR to the correct terminal without frontend guessing.
 /// Shared inputs for one step's engine execution. Each engine mutates its own
 /// copy of `env`; cancel racing happens on the separately passed receiver.
-struct StepRun<'a> {
-    log: &'a StepLogger,
-    config: &'a Config,
-    spec: PluginSpec<'a>,
-    env: std::collections::HashMap<String, String>,
-    catalog: &'a SecretCatalog,
-    secret_values: &'a [String],
-    forced_values: &'a [String],
-    docker_config_dir: Option<&'a str>,
-    buz_env_path: &'a str,
-    sandbox_handle: Option<&'a crate::client::sandbox_client::SandboxHandle>,
+pub(super) struct StepRun<'a> {
+    pub(super) log: &'a StepLogger,
+    pub(super) config: &'a Config,
+    pub(super) spec: PluginSpec<'a>,
+    pub(super) env: std::collections::HashMap<String, String>,
+    pub(super) catalog: &'a SecretCatalog,
+    pub(super) secret_values: &'a [String],
+    pub(super) forced_values: &'a [String],
+    pub(super) docker_config_dir: Option<&'a str>,
+    pub(super) buz_env_path: &'a str,
+    pub(super) sandbox_handle: Option<&'a crate::client::sandbox_client::SandboxHandle>,
     /// First stream chunk index for this attempt. Carried across retries so a
     /// later attempt appends after the failed one (the chunk index is unique
     /// per job, so reusing it would overwrite the earlier output).
@@ -1159,17 +1189,17 @@ struct StepRun<'a> {
 /// What one engine produced for the step. `output_secret_values` carries the
 /// mask list for the summary chunk — SSH swaps in its own catalog view so
 /// remote-exported step env values are covered.
-struct StepExecution {
-    output: engine::shell::ShellOutput,
-    was_cancelled: bool,
-    output_secret_values: Vec<String>,
+pub(super) struct StepExecution {
+    pub(super) output: engine::shell::ShellOutput,
+    pub(super) was_cancelled: bool,
+    pub(super) output_secret_values: Vec<String>,
     /// Index the next attempt's stream should start from.
-    next_stream: i32,
+    pub(super) next_stream: i32,
 }
 
 /// `local`/`shell` engine: inside the job sandbox when one exists, otherwise
 /// streamed on the runner host.
-async fn run_shell_step(
+pub(super) async fn run_shell_step(
     run: StepRun<'_>,
     cancel_rx: &mut watch::Receiver<bool>,
 ) -> anyhow::Result<StepExecution> {
@@ -1180,9 +1210,13 @@ async fn run_shell_step(
         // Let build scripts size themselves (e.g. make -j) by the effective
         // envelope the supervisor applied, not the one the pipeline asked for.
         sandbox_env.insert("BUZ_RESOURCE_PROFILE".into(), handle.profile().to_string());
+        let buz_file = std::path::Path::new(&run.buz_env_path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "env".into());
         sandbox_env.insert(
             "BUZ_ENV".into(),
-            format!("{}/.buz/env", engine::docker::CONTAINER_WORKSPACE),
+            format!("{}/.buz/{buz_file}", engine::docker::CONTAINER_WORKSPACE),
         );
         sandbox_env.insert(
             "DOCKER_CONFIG".into(),
@@ -1326,7 +1360,7 @@ async fn run_shell_step(
 
 /// SSH engine: one combined output upload (masked with the SSH catalog);
 /// parallel fan-out per host inside `execute_ssh_step`.
-async fn run_ssh_step(
+pub(super) async fn run_ssh_step(
     run: StepRun<'_>,
     ssh_sessions: &mut Vec<SshSession>,
     cancel_rx: &mut watch::Receiver<bool>,
@@ -1412,7 +1446,7 @@ async fn run_ssh_step(
 
 /// Docker engine: image prefetch, streaming run with the step-scoped
 /// container name; cancel/timeout also stops the container.
-async fn run_docker_step(
+pub(super) async fn run_docker_step(
     run: StepRun<'_>,
     prefetch: &mut Option<crate::client::image_prefetch::ImagePrefetch>,
     docker_socket_path: Option<&Path>,
@@ -1539,7 +1573,7 @@ async fn run_docker_step(
 /// step failed under `fail_strategy = "continue"` (the job must still end as
 /// failed); stop-strategy failures and cancels return an already-reported
 /// error.
-async fn finalize_step(
+pub(super) async fn finalize_step(
     log: &StepLogger,
     spec: &PluginSpec<'_>,
     execution: StepExecution,
@@ -1686,7 +1720,7 @@ impl SandboxOutputMasker {
 }
 
 #[allow(clippy::too_many_arguments)] // job execution context: step, sandbox, secrets, logging handles
-async fn run_sandbox_step(
+pub(super) async fn run_sandbox_step(
     log: &StepLogger,
     config: &Config,
     command: &str,
@@ -2143,7 +2177,7 @@ pub fn merge_ssh_host_outputs(
     }
 }
 
-async fn update_job_status(
+pub(super) async fn update_job_status(
     client: &Client,
     config: &Config,
     token: &str,

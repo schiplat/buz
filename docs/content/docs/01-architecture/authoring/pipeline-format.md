@@ -666,6 +666,7 @@ Every registered key on `StepYaml` (`crates/shared/src/pipeline_yaml.rs`). Unkno
 | [`work_dir`](#work_dir) / `dir` | | all | Working directory (`work_dir` aliases `dir`) |
 | [`timeout`](#timeout) | | all | Per-step duration (`10m`, …) |
 | [`retry`](#retry) | | all | Extra attempts after a failure |
+| [`needs`](#needs) | | all | DAG dependencies — ready steps run concurrently |
 | [`continue-on-error`](#continue-on-error) | | all | Do not fail the job on step failure |
 | [`env`](#env-1) | | all | Step env map (`KEY: ${secrets.X}`) |
 | [`secrets`](#secrets-1) | | all | Optional step secret allowlist (no auto-inject) |
@@ -936,6 +937,40 @@ Executed. When a step exits non-zero (or the engine cannot start it), the Runner
 | YAML | `retry: 2` |
 | Behavior | Up to `retry` extra attempts after a failure; `continue-on-error` applies only after the last attempt |
 | Default | 0 |
+
+---
+
+#### `needs`
+
+Declares the step names this step waits for, forming a DAG. Steps whose
+dependencies are finished run **concurrently**; pipelines without any `needs`
+keep plain sequential order.
+
+| | |
+|---|---|
+| YAML | `needs: [test, lint]` |
+| Behavior | waits for the named steps; a failed dependency (`fail_strategy: stop`) skips this step (`skipped`), `continue-on-error` failures do not |
+| Rules | targets must be declared step `name`s (unique when `needs` is used); cycles are rejected at save |
+
+```yaml
+steps:
+  - name: build
+    run: cargo build
+  - name: test
+    needs: [build]
+    run: cargo test
+  - name: lint
+    needs: [build]
+    run: cargo lint
+  - name: deploy
+    needs: [test, lint]
+    run: ./deploy.sh
+```
+
+Each step writes its own `$BUZ_ENV` fragment; dependents see the merged
+environment of their dependency closure (later dependencies win on duplicate
+keys). `retry` applies per step as usual; cancellation fails the whole job
+regardless of graph position.
 
 ---
 

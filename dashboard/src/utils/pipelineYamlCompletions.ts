@@ -97,6 +97,7 @@ const STEP: Completion[] = [
   },
   { label: 'timeout', type: 'property' },
   { label: 'retry', type: 'property' },
+  { label: 'needs', type: 'property' },
   { label: 'continue-on-error', type: 'property' },
   { label: 'continue_on_error', type: 'property' },
   { label: 'privileged', type: 'property', info: 'Docker privileged / DinD' },

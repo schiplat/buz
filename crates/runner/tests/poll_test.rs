@@ -3,6 +3,7 @@ use runner::client::poll::{
     merge_ssh_host_outputs, parse_buz_env_file, prepare_job_docker_config_dir,
 };
 use std::collections::HashMap;
+use std::sync::Mutex as StdMutex;
 
 #[test]
 fn work_dir_rejects_absolute_parent_and_prefix_escape() {
@@ -382,6 +383,158 @@ async fn local_shell_step_streams_masked_chunks_and_reports_success() {
     assert!(
         last.contains("PATCH") && last.contains("\"status\":\"success\""),
         "{last}"
+    );
+    server.await.unwrap();
+}
+
+async fn dag_server() -> (
+    std::net::SocketAddr,
+    std::sync::Arc<StdMutex<Vec<String>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let bodies: std::sync::Arc<StdMutex<Vec<String>>> =
+        std::sync::Arc::new(StdMutex::new(Vec::new()));
+    let server_bodies = bodies.clone();
+    let server = tokio::spawn(async move {
+        for _ in 0..96 {
+            let accepted =
+                tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept()).await;
+            let (mut stream, _) = match accepted {
+                Ok(Ok(inner)) => inner,
+                _ => break,
+            };
+            let request = read_http_request(&mut stream).await;
+            server_bodies.lock().unwrap().push(request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        }
+    });
+    (addr, bodies, server)
+}
+
+fn dag_config(addr: std::net::SocketAddr) -> runner::config::Config {
+    runner::config::Config {
+        runner: runner::config::RunnerSection {
+            manager_url: format!("http://{addr}"),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn dag_client() -> reqwest::Client {
+    reqwest::Client::new()
+}
+
+/// DAG job: `build` → (`test` ∥ `lint`) → `deploy`; every step appends its
+/// name to a shared order file and the dependents grep for their
+/// dependencies, so success proves both the ordering and the concurrency
+/// independence (deploy must see build before test and lint).
+#[tokio::test]
+async fn needs_dag_orders_steps_and_reports_success() {
+    let (addr, bodies, server) = dag_server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let order = dir.path().join("order.txt").display().to_string();
+    let step = |name: &str, needs: &[&str], requires: &[&str]| {
+        let mut command = format!("echo {name} >> '{order}'", order = order);
+        for dependency in requires {
+            command.push_str(&format!(
+                " && grep -q '^{dep}$' '{order}'",
+                dep = dependency,
+                order = order
+            ));
+        }
+        let needs: Vec<&str> = needs.to_vec();
+        serde_json::json!({
+            "name": name,
+            "command_template": command,
+            "exec_type": "shell",
+            "needs": needs,
+        })
+    };
+
+    let task = serde_json::json!({
+        "job_id": "job-dag-chain",
+        "tasks": [
+            step("build", &[], &[]),
+            step("test", &["build"], &["build"]),
+            step("lint", &["build"], &["build"]),
+            step("deploy", &["test", "lint"], &["test", "lint"]),
+        ]
+    });
+    let (_cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    let client = dag_client();
+    let result = runner::client::poll::execute_job(
+        &client,
+        &dag_config(addr),
+        "runner-token",
+        &task,
+        &mut cancel_rx,
+    )
+    .await;
+    assert!(result.is_ok(), "DAG job must succeed: {result:?}");
+
+    let requests = bodies.lock().unwrap().clone();
+    let last = requests.last().unwrap();
+    assert!(
+        last.contains("PATCH") && last.contains("\"status\":\"success\""),
+        "{last}"
+    );
+    server.await.unwrap();
+}
+
+/// A failed dependency skips its transitive dependents (status `skipped`)
+/// while independent branches still run; the job ends failed.
+#[tokio::test]
+async fn needs_failure_skips_dependents_but_runs_independents() {
+    let (addr, bodies, server) = dag_server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let ran_file = dir.path().join("ran.txt").display().to_string();
+
+    let task = serde_json::json!({
+        "job_id": "job-dag-skip",
+        "tasks": [
+            { "name": "flaky", "command_template": "exit 1", "exec_type": "shell" },
+            { "name": "dependent", "needs": ["flaky"], "command_template": format!("echo dependent >> '{ran_file}'"), "exec_type": "shell" },
+            { "name": "independent", "command_template": format!("echo independent >> '{ran_file}'"), "exec_type": "shell" },
+        ]
+    });
+    let (_cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    let client = dag_client();
+    let result = runner::client::poll::execute_job(
+        &client,
+        &dag_config(addr),
+        "runner-token",
+        &task,
+        &mut cancel_rx,
+    )
+    .await;
+    // The stop-failure surfaces as the job's error (same as sequential).
+    assert!(
+        result.is_err(),
+        "stop failure must fail the job: {result:?}"
+    );
+
+    let ran = std::fs::read_to_string(&ran_file).unwrap_or_default();
+    let lines: Vec<&str> = ran.lines().collect();
+    assert!(
+        lines.contains(&"independent") && !lines.contains(&"dependent"),
+        "independent branch ran, dependent skipped: {ran}"
+    );
+
+    let requests = bodies.lock().unwrap().clone();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.contains("\"status\":\"skipped\"")),
+        "dependents recorded as skipped: {requests:?}"
     );
     server.await.unwrap();
 }
