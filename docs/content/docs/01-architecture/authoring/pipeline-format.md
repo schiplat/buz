@@ -665,7 +665,7 @@ Every registered key on `StepYaml` (`crates/shared/src/pipeline_yaml.rs`). Unkno
 | [`hosts_strategy`](#hosts_strategy-ssh) | | ssh | Multi-host fan-out: `chain` (default) \| `parallel` |
 | [`work_dir`](#work_dir) / `dir` | | all | Working directory (`work_dir` aliases `dir`) |
 | [`timeout`](#timeout) | | all | Per-step duration (`10m`, …) |
-| [`retry`](#retry) | | all | ⚠️ Parsed but **not executed yet** — step runs once |
+| [`retry`](#retry) | | all | Extra attempts after a failure |
 | [`continue-on-error`](#continue-on-error) | | all | Do not fail the job on step failure |
 | [`env`](#env-1) | | all | Step env map (`KEY: ${secrets.X}`) |
 | [`secrets`](#secrets-1) | | all | Optional step secret allowlist (no auto-inject) |
@@ -929,12 +929,12 @@ Per-step timeout. Same format as `runner.timeout` (`10m`, `300s`, `1h`). If the 
 
 #### `retry`
 
-**Parsed but not executed yet.** The field is accepted so existing pipelines keep validating, but the runner currently executes the step exactly once and YAML validation emits a warning when `retry > 0`. Automatic step retries are planned for a future release; until then, use the job-level **Retry** action in the UI to re-run a failed job.
+Executed. When a step exits non-zero (or the engine cannot start it), the Runner runs it again up to `retry` times. Retries stop immediately on cancellation, and each retry appends its output after the failed attempt instead of overwriting it. The step's `timeout` applies per attempt.
 
 | | |
 |---|---|
 | YAML | `retry: 2` |
-| Behavior | Not executed yet — step runs once (validation warning emitted) |
+| Behavior | Up to `retry` extra attempts after a failure; `continue-on-error` applies only after the last attempt |
 | Default | 0 |
 
 ---

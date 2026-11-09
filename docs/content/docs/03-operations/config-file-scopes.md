@@ -46,6 +46,7 @@ token_cache_path = "./state/runner-token"
 
 [engine]
 # docker_config_isolation = "per_job"         # default; machine-local — UI never overrides
+# run_as_user = "buz-job"                     # shell steps run as this account (needs sudoers)
 # ssh_known_hosts_path = "~/.ssh/known_hosts"
 ```
 
@@ -89,6 +90,7 @@ Precedence: **UI policy > `runner.toml` > built-in default** — but the UI poli
 | `prefer_interfaces` | `runner.toml → [runner]` | Multi-NIC IP ordering | — |
 | `ssh_known_hosts_path` | `runner.toml → [engine]` | Host-key file when policy = `known_hosts` | — |
 | `docker_config_isolation` | `runner.toml → [engine]` | Docker CLI config scope: `per_job` (default) / `shared` | — |
+| `run_as_user` | `runner.toml → [engine]` | Run `shell` steps as this OS account instead of the Runner's user. Requires `NOPASSWD:SETENV` for `sudo -n -u <user> -- sh`; the job workspace becomes group-writable (`0770`), so the account must share its group. SSH steps run as the SSH user; Docker containers run as the image user. Does **not** isolate the network — use the `container`/`sandbox` tiers for that | — |
 | `sandbox.supervisor_socket` / `workspace_root` / `snapshot_path` | `runner.toml → [sandbox]` | Local sandboxd Unix socket, workspace allow-root, observational snapshot | — |
 | `tls_skip_verify` | `runner.toml → [runner]` | TLS verification — **dev only** | — |
 | `standalone` | `runner.toml → [runner]` | Empty-token lab mode — **lab only** | — |

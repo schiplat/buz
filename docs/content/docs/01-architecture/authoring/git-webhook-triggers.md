@@ -112,18 +112,40 @@ On successful trigger, Manager passes string inputs (exported to the runner as `
 | Key | Example | Notes |
 |-----|---------|--------|
 | `GIT_PROVIDER` | `gitee` | |
+| `GIT_EVENT` | `push` / `pull_request` | normalized event kind |
 | `GIT_REPO` | `org/myapp` | full name |
 | `GIT_CLONE_URL` | `git@gitee.com:org/myapp.git` | when present in payload |
-| `GIT_REF` | `refs/heads/main` | |
-| `GIT_BRANCH` | `main` | branch pushes |
+| `GIT_REF` | `refs/heads/main` | base branch for pull requests |
+| `GIT_BRANCH` | `main` | branch pushes; base branch for pull requests |
 | `GIT_TAG` | `v1.2.0` | tag events |
-| `GIT_SHA` | full commit sha | |
+| `GIT_SHA` | full commit sha | head commit for pull requests |
 | `GIT_SHA_SHORT` | 7-char prefix | |
-| `GIT_COMMIT_MESSAGE` | first line, truncated | |
+| `GIT_COMMIT_MESSAGE` | first line, truncated | commit subject; PR title for pull requests |
 | `GIT_SENDER` | login | |
-| `GIT_COMPARE_URL` | compare URL | optional |
+| `GIT_COMPARE_URL` | compare URL | PR page URL for pull requests |
+| `GIT_PR_NUMBER` | `42` | pull requests only |
+| `GIT_PR_BASE` | `main` | pull requests only |
+| `GIT_PR_HEAD` | `feat/thing` | pull requests only |
 
 Pipeline steps reference these like any other input (e.g. `$INPUT_GIT_SHA`). **YAML does not declare these keys** — they are injected by the adapter when the job is created from a Git event. Manual/cron/generic webhook triggers simply omit them (or leave empty).
+
+### Pull requests
+
+Hooks accept push events by default. A hook created with `event_filter:
+push,pull_request` (or just `pull_request`) also fires on GitHub
+`pull_request` deliveries and Gitee `Merge Request Hook` deliveries:
+
+- **Actionable actions:** GitHub `opened` / `synchronize` / `reopened` /
+  `ready_for_review`; Gitee `open` / `update` / `reopen`. Other actions
+  (`closed`, `labeled`, `merged`, …) are recorded as skipped and acknowledged,
+  so the provider does not retry.
+- **Draft PRs** are skipped until `ready_for_review`.
+- **`branch_filter` matches the base branch** (the branch the PR merges into).
+- **`[skip ci]`** is read from the PR title / merge-request title.
+- Event-filter changes are a delete-and-recreate of the hook (no update API).
+
+Legacy hooks keep their stored default (`push`), so upgrading never starts
+unexpected PR builds.
 
 ---
 
@@ -140,7 +162,8 @@ A pipeline may have **multiple** Git webhooks (e.g. one for GitHub, one for Gite
 | `provider` | `github` \| `gitee` |
 | `hook_key` | URL path segment (unique) |
 | `secret` | encrypted; plaintext shown once at create |
-| `branch_filter` | e.g. `main`, `release/*`; empty = all |
+| `branch_filter` | e.g. `main`, `release/*`; empty = all. For pull requests, matched against the base branch |
+| `event_filter` | `push` (default) \| `pull_request` \| `push,pull_request` |
 | `environment` | Required at create; must be one of the pipeline's declared `environments`. Every delivery triggered by this hook targets exactly this environment — it cannot be overridden per request. |
 
 Generic `on.webhook` / `webhook_path` remains for human/CI HTTP triggers (its `environment` selector precedence: query > body > YAML default).

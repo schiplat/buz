@@ -11,10 +11,11 @@ You operate **Runner machines**, or you need to understand how a claimed job act
 ## Reading order
 
 1. [Runner Policy](./runner-policy/) — UI-managed concurrency, engines, cleanup, host keys
-2. [Docker Engine](./docker-engine/) — `engine: docker`, workspace mount, private-registry login
-3. [SSH Multi-Host](./ssh-multi-host/) — chain default · parallel opt-in · cancel-all
-4. [Sandbox Isolation Tiers](./sandbox-isolation-tiers/) — host → container → sandbox → vm
-5. [Sandbox Host Configuration & Resource Profiles](./sandbox-host-configuration/) — Manager-managed config, named profiles
+2. [Scheduling Precedence](./scheduling-precedence/) — which gate decides what, in order
+3. [Docker Engine](./docker-engine/) — `engine: docker`, workspace mount, private-registry login
+4. [SSH Multi-Host](./ssh-multi-host/) — chain default · parallel opt-in · cancel-all
+5. [Sandbox Isolation Tiers](./sandbox-isolation-tiers/) — host → container → sandbox → vm
+6. [Sandbox Host Configuration & Resource Profiles](./sandbox-host-configuration/) — Manager-managed config, named profiles
 
 Authoring fields live in [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/). Ops install/config: [Operations](/docs/03-operations/).
 
@@ -22,6 +23,7 @@ Authoring fields live in [Pipeline Format](/docs/01-architecture/authoring/pipel
 
 {{< cards >}}
   {{< card link="runner-policy/" title="Runner Policy" subtitle="UI-managed concurrency, engines, cleanup" >}}
+  {{< card link="scheduling-precedence/" title="Scheduling Precedence" subtitle="approval · concurrency · slots · capacity" >}}
   {{< card link="docker-engine/" title="Docker Engine" subtitle="engine: docker + workspace mount" >}}
   {{< card link="ssh-multi-host/" title="SSH Multi-Host" subtitle="chain default · parallel opt-in · cancel-all" >}}
   {{< card link="sandbox-isolation-tiers/" title="Sandbox Isolation Tiers" subtitle="host → container → sandbox → vm" >}}

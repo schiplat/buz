@@ -95,6 +95,27 @@ the running Manager. The plugins repository pins the Buz version its CI
 validates against, so a contract change surfaces as a failing plugins build
 rather than a silent runtime break.
 
+## Deprecating a published version
+
+Published template files are immutable: their content hash is what
+`@sha256:` pins and review badges bind to, so a template is never edited in
+place — a new version is published instead. To flag a version that should no
+longer be used, a source root may carry a `deprecations.json` overlay:
+
+```json
+{
+  "deprecations": [
+    { "id": "buz/example", "version": "1.0.0", "reason": "use 1.1.0" }
+  ]
+}
+```
+
+The generator copies `reason` into the version's `index.json` / `meta.json`
+entry as `deprecated` (the file bytes and hash stay untouched). The Manager
+logs a warning when it resolves a deprecated version; already-pinned
+pipelines keep working. An overlay entry that matches no published version
+fails generation, so typos cannot silently do nothing.
+
 ## Publishing layout
 
 A plugin repository publishes **one source root per namespace** — the

@@ -14,6 +14,8 @@ aliases:
 surfaced on **Job Detail**.
 
 Related: YAML schema in [Pipeline Format](/docs/01-architecture/authoring/pipeline-format/).
+For how this mode orders against environment protection, environment deployment concurrency, and
+Runner capacity/slots, see [Scheduling Precedence](/docs/01-architecture/execution/scheduling-precedence/).
 
 ### Job Detail UX
 

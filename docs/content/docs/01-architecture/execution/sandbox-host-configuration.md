@@ -530,7 +530,10 @@ runner:
     goes to the starved job instead of another small one. The reservation never shrinks (the job
     still occupies its full slots), so the host budget cannot be oversold.
 - A `fifo` Runner can idle capacity; a `backfill` Runner can make large jobs wait longer. The setting
-  is intentionally adjustable without a restart.
+  is intentionally adjustable without a restart. Both strategies are equivalent when no job waits
+  for slots (only the `default` profile, unlimited host budget). How this gate orders against
+  pipeline/environment concurrency:
+  [Scheduling Precedence](/docs/01-architecture/execution/scheduling-precedence/).
 
 ## Reporting and freshness
 

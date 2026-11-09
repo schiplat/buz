@@ -57,7 +57,7 @@ yaml_scan_interval_seconds = 30
 # require_signed_index = false
 # Review gate — RECOMMENDED for production. Without it every `uses:` plugin
 # resolves unreviewed (the dashboard shows a banner and the editor warns):
-# reviewed_manifest = "/etc/buz/reviews.json"   # from the buz-plugins repo
+# reviewed_manifest = "/etc/buz/reviews.json"   # from a catalog snapshot / the marketplace site
 # require_reviewed = true    # strict: reject plugins absent from the manifest
 
 # Dev / single-container only — leave disabled in production (default)
@@ -108,6 +108,9 @@ updated files to Manager without adding an in-Manager sync service:
 
 ```bash
 git -C /srv/buz-plugin-mirror pull --ff-only
+# The review ledger must cover every version the index advertises — a stale
+# reviews.json makes require_reviewed reject versions the mirror just gained.
+python3 /srv/buz-plugin-mirror/scripts/check_manifest_consistency.py
 docker compose exec manager /app/buz/buz-plugin validate /app/buz/plugins
 ```
 
@@ -117,6 +120,18 @@ root. Pipeline pins are resolved and locked when saved, so mirror changes apply
 to newly saved pipelines and do not rewrite existing ones. Without the overlay,
 the default is `<data_dir>/plugins` (typically `./data/plugins`); a legacy
 `<yaml_scan_dir>/plugins` directory is migrated on startup.
+
+{{< callout type="warning" >}}
+**A plain `git clone` of the plugin repo can lag the deployed marketplace.**
+The generated manifests (`index.json`, `reviews.json`, `revision.json`) are
+written back to the repository by CI, but that push is best-effort and can be
+blocked by branch protection — the deployed site is always the current one.
+For an air-gapped mirror, prefer a catalog snapshot tag / the site's
+`plugins/` manifest set over `master`, and run
+`scripts/check_manifest_consistency.py` after every update. Under
+`require_reviewed`, a version present in `index.json` but missing from
+`reviews.json` is rejected at resolve time.
+{{< /callout >}}
 
 **First admin:** not in config. On a fresh database, open the UI — you are redirected to `/setup` to create the platform admin (password ≥ 8 chars, complexity rules apply). After that, use `/login`.
 
@@ -237,6 +252,12 @@ sandbox host (summed over running jobs across every Runner on that host). A `lar
 `slots = 4` consumes four units. Each Runner walks its queue by `claim_strategy`: `backfill`
 (default) skips jobs that do not fit; `fifo` claims nothing while the oldest eligible job does not
 fit. Pending jobs show *why* they wait (`dispatch_reason`).
+
+Both knobs only change behavior when jobs actually wait for resource slots: with only the
+`default` profile (one slot each) and unlimited host budget, the two strategies are equivalent and
+starvation aging never fires. See
+[Scheduling Precedence](/docs/01-architecture/execution/scheduling-precedence/) for how this gate
+interacts with pipeline and environment concurrency.
 
 Platform settings: `sandbox_config_require_approval` (two-person approval, default off),
 `sandbox_config_history_retention_days` (30), `sandbox_config_poll_seconds` (30),

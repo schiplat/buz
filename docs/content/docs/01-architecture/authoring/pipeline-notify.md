@@ -6,9 +6,11 @@ aliases:
   - /docs/01-architecture/pipeline-notify/
 ---
 
-When a job reaches a **terminal** status, Manager can push a notification to external chat bots. Configuration is **YAML-only** (`notify:`); webhook URLs live in Infrastructure **Secrets**. Sending is asynchronous and never blocks the job state machine.
+When a job reaches a **terminal** status, Manager can push a notification to external chat bots. Channels are declared in the pipeline's `notify:` block (YAML) or in the create/update request for API-managed pipelines; webhook URLs live in Infrastructure **Secrets**. Sending is asynchronous and never blocks the job state machine.
 
 > **Channels:** Feishu (Lark) custom robot (`type: feishu`) and a generic webhook receiver (`type: webhook` — POSTs a flat JSON event to any 2xx endpoint). The channel interface is generic — DingTalk / Slack / email are not implemented yet.
+
+The channels are frozen into every job snapshot at trigger time, so editing them affects future runs only. Both sources land in the same place: the YAML scanner projects the file's `notify:` block into the pipeline row, and the form/API writes it directly. The dashboard creates pipelines from YAML, so YAML is the normal path.
 
 Related: [Pipeline Format → `notify`](./pipeline-format.md#notify) · [Secrets & Variables](./secrets-variables.md) · [YAML-First Authoring](./yaml-first-authoring.md)
 

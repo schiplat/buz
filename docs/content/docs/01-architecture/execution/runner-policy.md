@@ -79,6 +79,11 @@ Runner process                        │
 3. The Runner applies the snapshot on the next poll / job without restart. A failed or successful job **never** stops a persistent runner process.
 4. On `GET /runners/poll`, Manager enforces `running < max_concurrent_jobs` and claims only jobs whose required labels are all present on the runner — and whose frozen trigger-time team matches the runner's team binding (Shared/`NULL` matches all).
 
+   **Claim order** (`backfill` / `fifo`) and starvation aging are advanced knobs: they only change
+   behavior when jobs wait for resource slots, and are equivalent for default-profile-only setups.
+   The full gate chain — trigger → protection → pipeline concurrency → queue → claim → slots — is
+   documented in [Scheduling Precedence](/docs/01-architecture/execution/scheduling-precedence/).
+
 ### Team binding is dispatch scoping, not a sandbox
 
 Team binding and labels answer different questions: **labels** match a job's requested capabilities (`linux-x64`, `gpu`, …); **team binding** restricts which team's jobs the Manager may dispatch to this Runner. Neither isolates running jobs from one another — all jobs on a Runner execute as the Runner's OS user and can access that user's files and process environments. Put mutually untrusted teams on dedicated Runner hosts/users. Jobs freeze their team at trigger time; a pipeline cannot change `team` while it has active (pending/queued/waiting-approval/running) jobs. Jobs created before team freezing carry no frozen team: bound Runners skip them, Shared Runners handle them under the pipeline's current team.
