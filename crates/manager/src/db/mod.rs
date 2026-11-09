@@ -293,6 +293,12 @@ pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Res
 
     // Add YAML content hash for file-backed pipeline projection locking.
     add_column_if_missing(pool, "pipelines", "yaml_sha256 TEXT NOT NULL DEFAULT ''").await;
+    add_column_if_missing(
+        pool,
+        "pipelines",
+        "cron_last_fired_at TEXT NOT NULL DEFAULT ''",
+    )
+    .await;
 
     // Add snapshot column to existing databases (safe to fail if already present)
     add_column_if_missing(pool, "jobs", "snapshot TEXT NOT NULL DEFAULT '{}'").await;

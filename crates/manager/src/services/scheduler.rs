@@ -336,7 +336,8 @@ pub async fn expire_queue_timeouts(pool: &SqlitePool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn parse_sqlite_datetime(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+/// Parse SQLite `datetime('now')` ("YYYY-MM-DD HH:MM:SS") or RFC 3339.
+pub(crate) fn parse_sqlite_datetime(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     // SQLite datetime('now') → "YYYY-MM-DD HH:MM:SS"
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .ok()

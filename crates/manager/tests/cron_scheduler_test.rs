@@ -135,3 +135,118 @@ async fn fetch_active_cron_pipelines_returns_configured_environment() {
          is rejected downstream)"
     );
 }
+
+// ── claim_cron_fire: persisted, transactional fire decisions ────────────
+
+use manager::services::cron_scheduler::claim_cron_fire;
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::SqlitePool;
+
+async fn claim_pool() -> SqlitePool {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    manager::db::run_migrations(&pool, "test-secret-0123456789-abcdefghijklmnop")
+        .await
+        .expect("migrate db");
+    pool
+}
+
+async fn seed_cron_pipeline(pool: &SqlitePool, id: &str, env: &str) {
+    sqlx::query(
+        "INSERT INTO pipelines (id, name, trigger_type, cron_expr, cron_environment, is_active)
+         VALUES (?, ?, 'cron', '* * * * *', ?, 1)",
+    )
+    .bind(id)
+    .bind(id)
+    .bind(env)
+    .execute(pool)
+    .await
+    .expect("seed cron pipeline");
+}
+
+/// Every-second schedule: a fire point always exists inside any non-empty
+/// window, so claim outcomes are deterministic regardless of test timing.
+fn every_second() -> cron::Schedule {
+    cron::Schedule::from_str("* * * * * *").expect("every-second schedule")
+}
+
+#[tokio::test]
+async fn first_claim_fires_and_stamps() {
+    let pool = claim_pool().await;
+    seed_cron_pipeline(&pool, "p-cron", "default").await;
+
+    let schedule = every_second();
+    let fired = claim_cron_fire(&pool, "p-cron", &schedule, 30)
+        .await
+        .expect("first claim");
+    assert!(fired, "never-fired pipeline fires");
+
+    let stamp: String =
+        sqlx::query_scalar("SELECT cron_last_fired_at FROM pipelines WHERE id = 'p-cron'")
+            .fetch_one(&pool)
+            .await
+            .expect("read stamp");
+    assert!(!stamp.is_empty(), "cron_last_fired_at persisted");
+}
+
+#[tokio::test]
+async fn second_claim_within_gap_is_refused() {
+    let pool = claim_pool().await;
+    seed_cron_pipeline(&pool, "p-cron", "default").await;
+    let schedule = every_second();
+
+    assert!(claim_cron_fire(&pool, "p-cron", &schedule, 30)
+        .await
+        .unwrap());
+    // Leadership-flip simulation: a fresh claimer immediately after the fire
+    // must see the persisted stamp and refuse — the old in-memory limiter
+    // allowed a re-fire exactly here.
+    assert!(
+        !claim_cron_fire(&pool, "p-cron", &schedule, 30)
+            .await
+            .unwrap(),
+        "persisted stamp blocks the immediate re-fire"
+    );
+}
+
+#[tokio::test]
+async fn gap_expiry_allows_the_next_window() {
+    let pool = claim_pool().await;
+    seed_cron_pipeline(&pool, "p-cron", "default").await;
+
+    // Backdate the stamp past the 120s gap.
+    sqlx::query("UPDATE pipelines SET cron_last_fired_at = datetime('now', '-130 seconds') WHERE id = 'p-cron'")
+        .execute(&pool)
+        .await
+        .expect("backdate stamp");
+    let fired = claim_cron_fire(&pool, "p-cron", &every_second(), 30)
+        .await
+        .expect("claim after gap");
+    assert!(fired, "gap expired → fires again");
+}
+
+#[tokio::test]
+async fn empty_window_never_fires() {
+    let pool = claim_pool().await;
+    seed_cron_pipeline(&pool, "p-cron", "default").await;
+
+    // check_interval = 0 makes the window empty (next_fire > now && <= now),
+    // so no schedule can fire — the window bound is what gates, not luck.
+    let fired = claim_cron_fire(&pool, "p-cron", &every_second(), 0)
+        .await
+        .expect("claim with empty window");
+    assert!(!fired);
+
+    // Garbage stamp (unparseable) behaves like "never fired".
+    sqlx::query("UPDATE pipelines SET cron_last_fired_at = 'not-a-date' WHERE id = 'p-cron'")
+        .execute(&pool)
+        .await
+        .expect("corrupt stamp");
+    let fired = claim_cron_fire(&pool, "p-cron", &every_second(), 30)
+        .await
+        .expect("claim with garbage stamp");
+    assert!(fired, "unparseable stamp falls back to never-fired");
+}

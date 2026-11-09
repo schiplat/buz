@@ -1,7 +1,5 @@
 use sqlx::{Row, SqlitePool};
-use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Mutex;
 use std::time::Duration;
 use tokio::time;
 
@@ -42,9 +40,6 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
             MIN_TRIGGER_GAP_SECS
         );
 
-        let last_triggers: Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>> =
-            Mutex::new(HashMap::new());
-
         let instance_id = uuid::Uuid::new_v4().to_string();
         tracing::info!("Cron scheduler instance: {instance_id}");
 
@@ -53,14 +48,10 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
         loop {
             interval.tick().await;
 
-            // Single-leader guard: without it, two manager instances would both
-            // scan and double-fire the same cron pipeline (the rate limiter
-            // below lives in per-process memory). Shares the `scheduler_lease`
-            // table with the dispatch scheduler on a dedicated row so the two
-            // never evict each other. Residual window: if the leader crashes
-            // inside a fire window, the new leader's empty in-memory limiter
-            // allows one re-fire of that same window — bounded by the 120s
-            // minimum trigger gap.
+            // Single-leader guard: with two manager instances only the lease
+            // holder scans. Shares the `scheduler_lease` table with the
+            // dispatch scheduler on a dedicated row so the two never evict
+            // each other.
             match crate::services::scheduler::try_acquire_lease(
                 &state.pool,
                 crate::services::scheduler::CRON_TRIGGER_LEASE_ID,
@@ -88,8 +79,6 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                 continue;
             }
 
-            let now = chrono::Utc::now();
-
             for (pipeline_id, pipeline_name, cron_expr, environment) in &pipelines {
                 let expr = match cron_expr {
                     Some(e) => e,
@@ -110,40 +99,34 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                     }
                 };
 
-                // Check if the cron expression would have fired within the last
-                // check-interval window.
-                let window_start = now - chrono::Duration::seconds(check_interval_seconds as i64);
-                let mut upcoming = schedule.upcoming(chrono::Utc);
-                let should_fire = upcoming
-                    .next()
-                    .is_some_and(|next_fire| next_fire <= now && next_fire > window_start);
-
-                if !should_fire {
-                    continue;
-                }
-
-                // Rate-limit: check when this pipeline was last triggered by cron
-                {
-                    let map = last_triggers.lock().unwrap();
-                    if let Some(last) = map.get(pipeline_id) {
-                        let gap = (now - *last).num_seconds();
-                        if gap < MIN_TRIGGER_GAP_SECS {
-                            tracing::debug!(
-                                "Cron scheduler: skipping '{}' (triggered {}s ago)",
-                                pipeline_name,
-                                gap
-                            );
-                            continue;
-                        }
-                    }
-                }
-
                 if environment.is_empty() {
                     tracing::error!(
                         pipeline = %pipeline_name,
                         "Cron trigger rejected: explicit environment is not configured"
                     );
                     continue;
+                }
+
+                // Atomic claim: min-gap + fire-window check + the
+                // `cron_last_fired_at` stamp in one IMMEDIATE transaction.
+                // The stamp is persisted, so a leadership flip after a crash
+                // cannot re-fire the same window the way the old per-process
+                // rate limiter allowed. A failed `do_trigger` still consumes
+                // the stamp — that prevents tight retry loops; the next
+                // matching window retries.
+                match claim_cron_fire(&state.pool, pipeline_id, &schedule, check_interval_seconds)
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(e) => {
+                        tracing::error!(
+                            pipeline = %pipeline_name,
+                            error = %e,
+                            "Cron scheduler claim failed"
+                        );
+                        continue;
+                    }
                 }
 
                 tracing::info!(
@@ -158,7 +141,7 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                     &state,
                     pipeline_id,
                     "cron",
-                    &HashMap::new(),
+                    &std::collections::HashMap::new(),
                     false,
                     false,
                     Some(environment.as_str()),
@@ -177,9 +160,6 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
                         {
                             tracing::info!("Cron scheduler: job {} created", job_id);
                         }
-                        // Record trigger time
-                        let mut map = last_triggers.lock().unwrap();
-                        map.insert(pipeline_id.clone(), now);
                     }
                     Err(e) => {
                         tracing::error!(
@@ -192,6 +172,61 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
             }
         }
     });
+}
+
+/// Atomically decide-and-stamp one cron fire opportunity for `pipeline_id`.
+///
+/// Gap check (min [`MIN_TRIGGER_GAP_SECS`] since `cron_last_fired_at`), the
+/// fire-window check (the expression produced a fire point within the last
+/// `check_interval_secs`), and the stamp run inside one `BEGIN IMMEDIATE`
+/// transaction — the persisted stamp outlives any instance crash. Exposed
+/// for testing.
+pub async fn claim_cron_fire(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+    schedule: &cron::Schedule,
+    check_interval_secs: u64,
+) -> anyhow::Result<bool> {
+    let now = chrono::Utc::now();
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+    let last_raw: String =
+        sqlx::query_scalar("SELECT cron_last_fired_at FROM pipelines WHERE id = ?")
+            .bind(pipeline_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .unwrap_or_default();
+    let last_fired = crate::services::scheduler::parse_sqlite_datetime(&last_raw);
+    if let Some(last) = last_fired {
+        let gap = (now - last).num_seconds();
+        if gap < MIN_TRIGGER_GAP_SECS {
+            tx.commit().await?;
+            return Ok(false);
+        }
+    }
+
+    // Fire when the schedule produced a fire point inside the last
+    // check-interval window. `Schedule::upcoming` starts strictly AFTER now
+    // (cron crate adds +1s to the query origin), so the naive
+    // `upcoming().next() <= now` shipped until 2.1.5 never held and cron
+    // pipelines silently never fired — `after(&window_start)` is the
+    // inclusive-at-edges equivalent of the documented intent.
+    let window_start = now - chrono::Duration::seconds(check_interval_secs as i64);
+    let should_fire = schedule
+        .after(&window_start)
+        .next()
+        .is_some_and(|fire_in_window| fire_in_window <= now);
+    if !should_fire {
+        tx.commit().await?;
+        return Ok(false);
+    }
+
+    sqlx::query("UPDATE pipelines SET cron_last_fired_at = datetime('now') WHERE id = ?")
+        .bind(pipeline_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 pub async fn fetch_active_cron_pipelines(
