@@ -268,6 +268,10 @@ pub struct StepYaml {
     /// Multi-host SSH fan-out: `chain` (default) or `parallel`.
     #[serde(default)]
     pub hosts_strategy: Option<String>,
+    /// Multi-host SSH parallel width cap (1–256; requires `parallel`).
+    /// Unset → bounded runner default (16).
+    #[serde(default)]
+    pub hosts_max_parallel: Option<u32>,
     #[serde(default)]
     pub timeout: Option<String>,
     #[serde(default)]
@@ -309,6 +313,7 @@ impl From<&StepYaml> for crate::protocol::StepDef {
             host: step.host.clone(),
             host_labels: step.host_labels.clone(),
             hosts_strategy: step.hosts_strategy.clone(),
+            hosts_max_parallel: step.hosts_max_parallel,
             dir: step.dir.clone(),
             timeout: step.timeout.clone(),
             retry: step.retry,
@@ -452,6 +457,8 @@ pub struct StepData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hosts_strategy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub hosts_max_parallel: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<String>,
@@ -491,6 +498,29 @@ pub fn normalize_hosts_strategy(raw: Option<&str>) -> Result<&'static str, Strin
             "invalid hosts_strategy '{other}' — must be chain or parallel"
         )),
     }
+}
+
+/// Bounded default for multi-host SSH parallel fan-out. Exists so a wide
+/// `host_labels` match cannot open hundreds of simultaneous SSH connections
+/// against target sshd `MaxStartups` limits (default 10:30:100 drops the
+/// excess) or runner fd/memory limits.
+pub const DEFAULT_HOSTS_MAX_PARALLEL: u32 = 16;
+
+/// Effective parallel width for multi-host SSH fan-out: `hosts` when serial
+/// (chain loop), else `max_parallel` clamped to `[1, hosts]` with the bounded
+/// default when unset.
+pub fn effective_hosts_parallel_width(
+    parallel: bool,
+    max_parallel: Option<u32>,
+    hosts: usize,
+) -> usize {
+    if !parallel || hosts <= 1 {
+        return hosts;
+    }
+    max_parallel
+        .map(|v| v as usize)
+        .unwrap_or(DEFAULT_HOSTS_MAX_PARALLEL as usize)
+        .clamp(1, hosts)
 }
 
 /// Parse pipeline duration strings: `30`, `30s`, `10m`, `1h` (case-insensitive unit).
@@ -1149,6 +1179,24 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 }
             }
         }
+        if let Some(max_parallel) = step.hosts_max_parallel {
+            if engine != "ssh" {
+                errors.push(YamlValidationError {
+                    field: format!("steps[{i}].hosts_max_parallel"),
+                    message: "hosts_max_parallel is only valid for engine: ssh".into(),
+                });
+            } else if normalize_hosts_strategy(step.hosts_strategy.as_deref()) != Ok("parallel") {
+                errors.push(YamlValidationError {
+                    field: format!("steps[{i}].hosts_max_parallel"),
+                    message: "hosts_max_parallel requires hosts_strategy: parallel".into(),
+                });
+            } else if !(1..=256).contains(&max_parallel) {
+                errors.push(YamlValidationError {
+                    field: format!("steps[{i}].hosts_max_parallel"),
+                    message: "hosts_max_parallel must be between 1 and 256".into(),
+                });
+            }
+        }
     }
 
     // 6c. notify channels — type whitelist, webhook secret slot, on events
@@ -1337,6 +1385,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
                 run: s.run.clone(),
                 engine: s.engine.clone(),
                 image: s.image.clone(),
+                hosts_max_parallel: s.hosts_max_parallel,
                 volumes: s.volumes.as_ref().map(|v| v.join(",")),
                 host: s.host.as_ref().map(|h| match h {
                     OneOrMany::One(s) => s.clone(),

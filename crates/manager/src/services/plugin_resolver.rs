@@ -729,6 +729,7 @@ pub fn expand_uses_step(step: &StepDef, resolved: &ResolvedPlugin) -> Result<Ste
         host: step.host.clone(),
         host_labels: step.host_labels.clone(),
         hosts_strategy: step.hosts_strategy.clone(),
+        hosts_max_parallel: step.hosts_max_parallel,
         dir: step.dir.clone().or_else(|| spec.default_dir.clone()),
         timeout: step
             .timeout

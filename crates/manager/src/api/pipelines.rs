@@ -340,7 +340,7 @@ pub async fn get_one(
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
                 work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
                 step_env, privileged,
-                hosts_strategy, capabilities
+                hosts_strategy, capabilities, hosts_max_parallel
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(&id)
@@ -1312,7 +1312,7 @@ pub async fn do_trigger(
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, volumes,
                 privileged,
-                hosts_strategy, id, capabilities
+                hosts_strategy, id, capabilities, hosts_max_parallel
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
     )
     .bind(pipeline_id)
@@ -1346,6 +1346,7 @@ pub async fn do_trigger(
             "hosts_strategy": t.get::<String, _>(16),
             "id": t.get::<String, _>(17),
             "capabilities": serde_json::from_str::<Vec<String>>(&t.get::<String, _>(18)).unwrap_or_default(),
+            "hosts_max_parallel": t.get::<Option<i64>, _>(19),
         })
     })
     .collect::<Vec<_>>();
@@ -1877,8 +1878,8 @@ pub(crate) async fn insert_steps(
             "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
              command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
              step_env, volumes, privileged,
-             hosts_strategy, capabilities)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             hosts_strategy, capabilities, hosts_max_parallel)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(pipeline_id)
@@ -1900,6 +1901,7 @@ pub(crate) async fn insert_steps(
         .bind(privileged_val)
         .bind(&hosts_strategy_stored)
         .bind(&capabilities_stored)
+        .bind(step.hosts_max_parallel.map(|v| v as i64))
         .execute(&mut *conn)
         .await?;
 

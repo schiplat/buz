@@ -1715,3 +1715,105 @@ steps:
     let r = shared::pipeline_yaml::parse_and_validate(yaml);
     assert!(!r.valid, "step-level resources must not parse");
 }
+
+#[test]
+fn hosts_max_parallel_parses_and_requires_parallel_ssh() {
+    let yaml = r#"
+name: Deploy
+environments: [production]
+steps:
+  - name: fanout
+    engine: ssh
+    host_labels: [prod]
+    hosts_strategy: parallel
+    hosts_max_parallel: 8
+    run: docker compose up -d
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(r.valid, "errors: {:?}", r.errors);
+    let step = &r.parsed.unwrap().steps[0];
+    assert_eq!(step.hosts_max_parallel, Some(8));
+}
+
+#[test]
+fn hosts_max_parallel_requires_parallel_strategy() {
+    let yaml = r#"
+name: Deploy
+environments: [production]
+steps:
+  - name: fanout
+    engine: ssh
+    host_labels: [prod]
+    hosts_strategy: chain
+    hosts_max_parallel: 8
+    run: deploy.sh
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(r
+        .errors
+        .iter()
+        .any(|e| e.message.contains("requires hosts_strategy: parallel")));
+}
+
+#[test]
+fn hosts_max_parallel_is_ssh_only() {
+    let yaml = r#"
+name: Build
+environments: [default]
+steps:
+  - name: build
+    engine: docker
+    image: rust:1
+    hosts_strategy: parallel
+    hosts_max_parallel: 4
+    run: make
+"#;
+    let r = shared::pipeline_yaml::parse_and_validate(yaml);
+    assert!(!r.valid);
+    assert!(r
+        .errors
+        .iter()
+        .any(|e| e.message.contains("only valid for engine: ssh")));
+}
+
+#[test]
+fn hosts_max_parallel_range_is_bounded() {
+    for bad in [0u32, 300] {
+        let yaml = format!(
+            r#"
+name: Deploy
+environments: [production]
+steps:
+  - name: fanout
+    engine: ssh
+    host_labels: [prod]
+    hosts_strategy: parallel
+    hosts_max_parallel: {bad}
+    run: deploy.sh
+"#
+        );
+        let r = shared::pipeline_yaml::parse_and_validate(&yaml);
+        assert!(!r.valid, "hosts_max_parallel={bad} must be rejected");
+        assert!(r
+            .errors
+            .iter()
+            .any(|e| e.message.contains("between 1 and 256")));
+    }
+}
+
+#[test]
+fn effective_hosts_parallel_width_caps_and_defaults() {
+    use shared::pipeline_yaml::effective_hosts_parallel_width as width;
+    // chain: width == hosts (serial loop, cap ignored)
+    assert_eq!(width(false, Some(8), 200), 200);
+    // parallel without cap: bounded default 16
+    assert_eq!(width(true, None, 200), 16);
+    // parallel with explicit cap: min(cap, hosts)
+    assert_eq!(width(true, Some(8), 200), 8);
+    assert_eq!(width(true, Some(8), 4), 4);
+    // single host short-circuits
+    assert_eq!(width(true, None, 1), 1);
+    // defensive clamp when hosts < 1
+    assert_eq!(width(true, Some(0), 5), 1);
+}

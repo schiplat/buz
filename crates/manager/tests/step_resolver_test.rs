@@ -151,6 +151,7 @@ fn uses_step(uses: &str) -> StepDef {
         host: None,
         host_labels: None,
         hosts_strategy: None,
+        hosts_max_parallel: None,
         dir: None,
         timeout: None,
         retry: None,

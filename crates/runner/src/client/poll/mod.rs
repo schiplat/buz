@@ -1006,7 +1006,7 @@ async fn open_ssh_sessions(
     }
     // Multi-host: connect in parallel; cancel aborts all in-flight connects.
     let connect_result = tokio::select! {
-        result = engine::ssh::connect_all(&conns, ssh_hosts_parallel(step)) => Some(result),
+        result = engine::ssh::connect_all(&conns, ssh_hosts_parallel(step), ssh_hosts_max_parallel(step)) => Some(result),
         _ = cancel_triggered(cancel_rx) => None,
     };
     match connect_result {
@@ -1288,6 +1288,7 @@ async fn run_ssh_step(
             &sname,
             &ssh_env,
             ssh_hosts_parallel(run.spec.step),
+            ssh_hosts_max_parallel(run.spec.step),
         ) => {
             (result?, false)
         }
@@ -1830,6 +1831,12 @@ pub(crate) fn ssh_hosts_parallel(step: &serde_json::Value) -> bool {
     step["hosts_strategy"].as_str() == Some("parallel")
 }
 
+/// Step-level parallel width cap (1–256). Absent → bounded runner default
+/// (16) applied by `shared::pipeline_yaml::effective_hosts_parallel_width`.
+pub(crate) fn ssh_hosts_max_parallel(step: &serde_json::Value) -> Option<usize> {
+    step["hosts_max_parallel"].as_u64().map(|v| v as usize)
+}
+
 /// Parse the step's `host` field (Manager-resolved connection objects) into
 /// connection params. Used by the config prepare path (which runs before the
 /// run block) and by `execute_ssh_step`.
@@ -1900,20 +1907,17 @@ async fn execute_ssh_step(
     step_name: &str,
     env: &std::collections::HashMap<String, String>,
     parallel: bool,
+    max_parallel: Option<usize>,
 ) -> anyhow::Result<engine::shell::ShellOutput> {
     let multi = sessions.len() > 1;
     let ssh_cmd = build_ssh_env_command(command, env);
-    let results = if parallel && multi {
-        let futs = sessions.into_iter().map(|mut session| {
-            let ssh_cmd = ssh_cmd.clone();
-            async move {
-                let host_label = session.host_label().to_string();
-                let result = session.exec(&ssh_cmd, None, step_timeout).await;
-                (host_label, result)
-            }
-        });
-        futures_util::future::join_all(futs).await
-    } else {
+    let width = shared::pipeline_yaml::effective_hosts_parallel_width(
+        parallel && multi,
+        max_parallel.map(|v| v as u32),
+        sessions.len(),
+    );
+    let capped = parallel && multi && width < sessions.len();
+    let results = if !capped {
         let mut results = Vec::with_capacity(sessions.len());
         for mut session in sessions {
             let host_label = session.host_label().to_string();
@@ -1921,6 +1925,25 @@ async fn execute_ssh_step(
             results.push((host_label, result));
         }
         results
+    } else {
+        let futs = sessions.into_iter().enumerate().map(|(idx, mut session)| {
+            let ssh_cmd = ssh_cmd.clone();
+            async move {
+                let host_label = session.host_label().to_string();
+                let result = session.exec(&ssh_cmd, None, step_timeout).await;
+                (idx, host_label, result)
+            }
+        });
+        use futures_util::StreamExt;
+        let mut collected = futures_util::stream::iter(futs)
+            .buffer_unordered(width)
+            .collect::<Vec<_>>()
+            .await;
+        collected.sort_by_key(|(idx, _, _)| *idx);
+        collected
+            .into_iter()
+            .map(|(_, host_label, result)| (host_label, result))
+            .collect()
     };
     Ok(merge_ssh_host_outputs(step_name, multi, results))
 }

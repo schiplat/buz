@@ -224,6 +224,7 @@ pub fn format_ssh_target(conn: &SshConnectionParams) -> String {
 pub async fn connect_all(
     conns: &[SshConnectionParams],
     parallel: bool,
+    max_parallel: Option<usize>,
 ) -> anyhow::Result<Vec<SshSession>> {
     if conns.is_empty() {
         return Ok(Vec::new());
@@ -265,7 +266,16 @@ pub async fn connect_all(
             let result = SshSession::connect(&conn).await;
             (idx, conn.host, conn.port, result)
         });
-    let results = futures_util::future::join_all(futs).await;
+    let results = match max_parallel {
+        Some(w) if w > 0 && w < conns.len() => {
+            use futures_util::StreamExt;
+            futures_util::stream::iter(futs)
+                .buffer_unordered(w)
+                .collect::<Vec<_>>()
+                .await
+        }
+        _ => futures_util::future::join_all(futs).await,
+    };
 
     let mut indexed: Vec<(usize, SshSession)> = Vec::with_capacity(conns.len());
     let mut first_err: Option<anyhow::Error> = None;

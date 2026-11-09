@@ -1504,7 +1504,8 @@ async fn poll_once(
                     COALESCE(json_extract(j.value, '$.volumes'), '[]'),
                     COALESCE(json_extract(j.value, '$.hosts_strategy'), 'chain'),
                     COALESCE(json_extract(j.value, '$.privileged'), 0),
-                    COALESCE(json_extract(j.value, '$.capabilities'), '[]')
+                    COALESCE(json_extract(j.value, '$.capabilities'), '[]'),
+                    COALESCE(json_extract(j.value, '$.hosts_max_parallel'), NULL)
              FROM json_each(?, '$.tasks') j
              ORDER BY json_extract(j.value, '$.step_order')",
         )
@@ -1516,7 +1517,7 @@ async fn poll_once(
             "SELECT id, step_order, name, exec_type, COALESCE(host_id, ''), host_names, host_labels, command_template,
                     work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
                     hosts_strategy,
-                    privileged, capabilities
+                    privileged, capabilities, hosts_max_parallel
              FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
         )
         .bind(&pipeline_id)
@@ -1757,6 +1758,7 @@ async fn poll_once(
         let hosts_strategy: String = t.get(16);
         let privileged: i64 = t.get(17);
         let capabilities_raw: String = t.get(18);
+        let hosts_max_parallel: Option<i64> = t.get(19);
         let capabilities: Vec<String> = serde_json::from_str(&capabilities_raw).map_err(|_| {
             AppError::ValidationFailed(format!(
                 "task {} has invalid capabilities JSON",
@@ -1785,6 +1787,7 @@ async fn poll_once(
             .unwrap_or("chain"),
             "privileged": privileged != 0,
             "capabilities": capabilities,
+            "hosts_max_parallel": hosts_max_parallel.map(|v| v as u64),
         });
 
         // Values that must be redacted in the Runner's logs. Registered here — the
