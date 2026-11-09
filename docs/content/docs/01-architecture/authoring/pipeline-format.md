@@ -1013,6 +1013,7 @@ Authoring is YAML-only ([YAML-First](./yaml-first-authoring.md)). On Validate / 
 | `steps[].engine` | `exec_type` | `shell`/`local`/`ssh`/`docker` only |
 | `steps[].image` / `volumes` / `privileged` | `tasks.image` / `volumes` / `privileged` | Docker engine |
 | `steps[].host` / `host_labels` / `hosts_strategy` | `tasks.*` | SSH; strategy default `chain` |
+| `steps[].hosts_max_parallel` | `tasks.*` | SSH; requires `hosts_strategy: parallel`; 1–256, default 16 |
 | `steps[].env` / `secrets` | `step_env` / `step_secrets` | |
 | `steps[].continue-on-error` | `fail_strategy` | |
 

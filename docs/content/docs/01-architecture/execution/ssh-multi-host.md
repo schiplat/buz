@@ -20,6 +20,7 @@ Wait-all exit aggregation; job **Cancel** aborts all in-flight hosts; job-log
 | Step exit code with N hosts | **Any non-zero / error → step failed** |
 | UI / API **Cancel** during multi-host work | Drops the active fan-out future → **all hosts** |
 | Job log: target + remote workspace | `==> SSH […]` + `workspace` (`pwd`) |
+| Parallel width cap | `hosts_max_parallel: 1–256` (default **16** when unset) — bounds concurrent connect / prepare / `run` |
 
 Related: [Pipeline Format — `host` / `host_labels` / `hosts_strategy`](/docs/01-architecture/authoring/pipeline-format/#host--host_labels-ssh), [Config Block — SSH step session](/docs/01-architecture/authoring/config-block/), [Docker Engine cancel](/docs/01-architecture/execution/docker-engine/) (same job-cancel → runner kill path).
 
@@ -39,9 +40,17 @@ A single pipeline step with `engine: ssh` may bind **multiple** Infrastructure H
   engine: ssh
   host_labels: [prod]
   hosts_strategy: parallel   # omit for chain (default)
+  hosts_max_parallel: 8      # optional; default 16 when unset
   run: |
     docker compose up -d
 ```
+
+**Why the cap exists:** `parallel` fans out to every matched host at once by
+default-capped width (16). A wide label match (say 200 hosts) opening 200
+simultaneous SSH connections trips target sshd `MaxStartups` limits (default
+10:30:100 drops the excess) and stresses the Runner's fd/memory budget — the
+cap turns the fan-out into bounded waves. Set `hosts_max_parallel` only when
+16 is wrong for your fleet.
 
 **History:** multi-host execution was always one-after-another (`for` loops). Parallel fan-out, cancel-all, login banners, and `hosts_strategy` came later. Default stays **`chain`** so existing pipelines keep that behavior until they opt into `parallel`. Legacy YAML value `serial` is accepted and normalized to `chain`.
 
@@ -72,6 +81,16 @@ When the operator clicks **Cancel** (or the job otherwise enters `cancelled` whi
 | Job log | Include a short per-host summary (host label + exit / error). Prefer buffering each host’s stdout/stderr until that host finishes, then append under `--- {step} @ {host} ---` so streams do not interleave unreadably. |
 
 Step-level `timeout` still bounds the whole step (wall clock across the fan-out).
+
+**Interaction with `continue-on-error: true`:** wait-all still runs **every**
+host; the step is recorded as failed and the pipeline proceeds past it. The
+per-host log summary stays in the job log either way.
+
+**Chain keeps going past a failed host:** a connect failure on host 1 does not
+stop hosts 2..N (wait-all — all hosts are attempted, then the step fails with
+the first error). If your deployment is order-sensitive, use an explicit
+ordered `host:` list and treat any failure as a stop condition at the pipeline
+level (`continue-on-error: false`, the default).
 
 ---
 
@@ -113,6 +132,8 @@ Align tone with existing `==> LOGIN [registry…]` / `==> RUN [ssh]` markers. Ve
 | Job / step matrix with different `run` per host | Use separate steps or a future matrix |
 | Guaranteed remote process kill on cancel | Best-effort session drop; OS may keep children |
 | Changing pipeline `concurrency` semantics | Unrelated to in-step host fan-out |
+| Fail-fast / `max_fail_percentage` aggregation | Current contract is wait-all + any-fail; revisit if partial-deploy blast radius becomes a reported pain |
+| Per-host timeout | The step-level timeout bounds the whole fan-out; per-host budgets deferred until a workload needs them |
 
 ---
 
