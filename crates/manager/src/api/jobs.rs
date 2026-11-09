@@ -1046,6 +1046,242 @@ pub async fn reject(
     }))))
 }
 
+/// POST /jobs/{id}/rerun — replay a terminal job from its frozen snapshot
+/// (GHA re-run semantics): the same `run_number` with `run_attempt + 1`,
+/// inputs and step definitions taken from the original snapshot, while the
+/// CURRENT environment protection and pipeline concurrency still gate the
+/// new run. Sealed `trigger_params` are copied verbatim — no decrypt /
+/// re-encrypt round trip — so masking keys resolve at claim exactly as in
+/// the original run. The re-run actor becomes `trigger_user_id`, so
+/// `forbid_self_approve` applies to whoever clicked re-run.
+pub async fn rerun(
+    auth: AuthUser,
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let row = sqlx::query(
+        "SELECT j.status, j.pipeline_id, j.trigger_params, j.snapshot,
+                j.environment_id, j.debug_unredact, j.verbose_logs,
+                j.run_number, j.run_attempt, j.resource_profile,
+                p.team_id, p.name, p.is_active,
+                p.concurrency_group, p.concurrency_mode, p.concurrency_max_queue
+         FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id
+         WHERE j.id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+
+    let status: String = row.get(0);
+    let pipeline_id: String = row.get(1);
+    let trigger_params_raw: Option<String> = row.get(2);
+    let snapshot_raw: String = row.get(3);
+    let environment_id: Option<String> = row.get(4);
+    let debug_unredact = row.get::<i64, _>(5) != 0;
+    let verbose_logs = row.get::<i64, _>(6) != 0;
+    let run_number: i64 = row.get(7);
+    let run_attempt: i64 = row.get(8);
+    let resource_profile: String = row.get(9);
+    let team_id: String = row.get(10);
+    let pipeline_name: String = row.get(11);
+    let is_active = row.get::<i64, _>(12) != 0;
+    let concurrency_group: Option<String> = row.get(13);
+    let concurrency_mode: String = row.get(14);
+    let concurrency_max_queue: i64 = row.get(15);
+
+    // Debug (unredacted) records are admin-only end to end — a non-admin
+    // must not even learn the job exists (404, matching get_one/list).
+    if debug_unredact && !auth.is_platform_admin {
+        return Err(AppError::NotFound("job not found".into()));
+    }
+
+    auth.check_team(&team_id, Perm::PipelineTrigger)?;
+
+    if !matches!(
+        status.as_str(),
+        "success" | "failed" | "cancelled" | "timeout"
+    ) {
+        return Err(AppError::Conflict(format!(
+            "only terminal jobs can be re-run (job is {status})"
+        )));
+    }
+    if !is_active {
+        return Err(AppError::Conflict(
+            "pipeline is disabled — enable it before re-running".into(),
+        ));
+    }
+
+    // Same authorization subject as trigger: the job's resolved team.
+    crate::services::resource_grants::ensure_team_may_use(
+        &state.pool,
+        &team_id,
+        resource_profile.trim(),
+    )
+    .await?;
+
+    // Environment: resolve by the job's stored id so CURRENT protection
+    // gates the re-run (protection belongs to the environment, not to the
+    // historical snapshot). A deleted environment is a clear 404.
+    let env =
+        super::environments::resolve_environment(&state.pool, environment_id.as_deref()).await?;
+    let job_status: &str = match env.as_ref().map(|e| &e.protection) {
+        Some(p) if p.enabled => {
+            auth.check_team_role(&team_id, p.min_trigger_role)?;
+            "waiting_approval"
+        }
+        _ => {
+            let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+            let st = super::pipelines::resolve_concurrency_status_in_tx(
+                &mut tx,
+                &pipeline_id,
+                concurrency_group.as_deref(),
+                &concurrency_mode,
+                concurrency_max_queue,
+            )
+            .await?;
+            tx.commit().await?;
+            st
+        }
+    };
+
+    // ── Rebuild the snapshot: fresh trigger identity and gate state;
+    //    frozen tasks/inputs/labels stay untouched (reproducibility). ──
+    let new_attempt = run_attempt + 1;
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(&snapshot_raw).unwrap_or(serde_json::json!({}));
+    if let Some(map) = snapshot.as_object_mut() {
+        map.insert("triggered_by".into(), serde_json::json!(&auth.username));
+        map.insert(
+            "triggered_at".into(),
+            serde_json::json!(chrono::Utc::now().to_rfc3339()),
+        );
+        match &env {
+            Some(e) => {
+                map.insert("environment".into(), serde_json::json!(&e.slug));
+                map.insert("protection".into(), e.protection.to_snapshot_json());
+            }
+            None => {
+                map.remove("environment");
+                map.remove("protection");
+            }
+        }
+        if job_status == "waiting_approval" {
+            map.insert(
+                "approval".into(),
+                serde_json::json!({ "required": true, "received": 0 }),
+            );
+        } else {
+            map.remove("approval");
+        }
+        map.insert(
+            "rerun".into(),
+            serde_json::json!({
+                "of": id,
+                "attempt": new_attempt,
+                "by": &auth.username,
+            }),
+        );
+    }
+    let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into());
+
+    let job_id = Uuid::new_v4().to_string();
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Re-check is_active inside the transaction: closes the check-to-insert
+    // race with a concurrent pipeline disable (same as do_trigger).
+    match sqlx::query_scalar::<_, i64>("SELECT is_active FROM pipelines WHERE id = ?")
+        .bind(&pipeline_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+    {
+        None => return Err(AppError::NotFound("pipeline not found".into())),
+        Some(0) => {
+            return Err(AppError::Conflict(
+                "pipeline is disabled — enable it before re-running".into(),
+            ));
+        }
+        Some(_) => {}
+    }
+    sqlx::query(
+        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot,
+                           debug_unredact, verbose_logs, environment_id, trigger_user_id,
+                           run_number, run_attempt, resource_profile, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+    )
+    .bind(&job_id)
+    .bind(&pipeline_id)
+    .bind(job_status)
+    .bind(&auth.username)
+    .bind(&trigger_params_raw) // sealed verbatim from the source job
+    .bind(&snapshot_str)
+    .bind(i64::from(debug_unredact))
+    .bind(i64::from(verbose_logs))
+    .bind(&environment_id)
+    .bind(&auth.id)
+    .bind(run_number)
+    .bind(new_attempt)
+    .bind(resource_profile.trim())
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    audit::record_in(
+        &mut tx,
+        AuditEvent::from_auth(&auth, Action::JobRerun)
+            .resource("job", &job_id, &pipeline_name)
+            .team(Some(team_id.clone()))
+            .after(Some(serde_json::json!({
+                "rerun_of": id,
+                "run_number": run_number,
+                "run_attempt": new_attempt,
+                "status": job_status,
+            }))),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    crate::services::poll_events::wake_all();
+    super::trigger_events::record_simple_trigger(
+        &state.pool,
+        &pipeline_id,
+        "rerun",
+        &auth.username,
+        &job_id,
+    )
+    .await;
+
+    tracing::info!(
+        operator = %auth.username,
+        job_id = %job_id,
+        rerun_of = %id,
+        run_number,
+        run_attempt = new_attempt,
+        "Job re-run created from snapshot"
+    );
+
+    let mut resp = serde_json::json!({
+        "job_id": job_id,
+        "pipeline_id": pipeline_id,
+        "rerun_of": id,
+        "run_number": run_number,
+        "run_attempt": new_attempt,
+        "status": job_status,
+    });
+    if job_status == "waiting_approval" {
+        if let Some(map) = resp.as_object_mut() {
+            map.insert("approval_required".into(), serde_json::json!(true));
+        }
+    }
+    Ok(Json(ApiResponse::success(resp)))
+}
+
 pub async fn delete(
     auth: AuthUser,
     Path(id): Path<String>,

@@ -494,12 +494,31 @@ pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Res
     add_column_if_missing(pool, "jobs", "run_number INTEGER NOT NULL DEFAULT 0").await;
     add_column_if_missing(pool, "jobs", "run_attempt INTEGER NOT NULL DEFAULT 1").await;
     backfill_job_run_numbers(pool).await?;
-    sqlx::query(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_pipeline_run_number \
-         ON jobs(pipeline_id, run_number) WHERE run_number > 0",
+    // Re-run shares a pipeline's run_number across attempts (GHA style), so
+    // uniqueness is (pipeline, run_number, attempt). `CREATE IF NOT EXISTS`
+    // will not upgrade the legacy two-column index in place — rebuild it
+    // whenever the stored definition predates run_attempt.
+    let index_sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master \
+         WHERE type = 'index' AND name = 'idx_jobs_pipeline_run_number'",
     )
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
+    let needs_rebuild = match index_sql.as_deref() {
+        Some(sql) => !sql.contains("run_attempt"),
+        None => true,
+    };
+    if needs_rebuild {
+        sqlx::query("DROP INDEX IF EXISTS idx_jobs_pipeline_run_number")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_pipeline_run_number \
+             ON jobs(pipeline_id, run_number, run_attempt) WHERE run_number > 0",
+        )
+        .execute(pool)
+        .await?;
+    }
 
     // ── Cancel delivery over the claim channel ──
     // `cancel_ack_pending` is 1 from the moment a job flips to `cancelled`
