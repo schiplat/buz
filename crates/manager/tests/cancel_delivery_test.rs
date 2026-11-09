@@ -36,7 +36,7 @@ fn test_config() -> Config {
             runner_register_token_ttl_hours: 24,
         },
         runner: RunnerConfig::default(),
-        pipeline: PipelineConfig::default(),
+        pipeline: isolated_pipeline_config(),
         standalone: Default::default(),
         plugin_index: Default::default(),
         storage: Default::default(),
@@ -516,6 +516,17 @@ async fn claim_poll_delivers_cancel_notices_without_legacy_compat_mode() {
 }
 
 use axum::response::IntoResponse;
+
+/// Form retirement: create/update write a YAML file under `yaml_scan_dir`.
+/// Tests in one binary run in parallel, so each gets its own directory (leaked
+/// on purpose — the process exits after the test binary finishes).
+fn isolated_pipeline_config() -> PipelineConfig {
+    let path = tempfile::tempdir().expect("temp scan dir").keep();
+    PipelineConfig {
+        yaml_scan_dir: path.to_string_lossy().into_owned(),
+        ..PipelineConfig::default()
+    }
+}
 
 #[tokio::test]
 async fn negotiated_long_poll_wakes_when_a_running_job_is_cancelled() {

@@ -23,6 +23,17 @@ use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
+/// Form retirement: create/update write a YAML file under `yaml_scan_dir`.
+/// Tests in one binary run in parallel, so each gets its own directory (leaked
+/// on purpose — the process exits after the test binary finishes).
+fn isolated_pipeline_config() -> PipelineConfig {
+    let path = tempfile::tempdir().expect("temp scan dir").keep();
+    PipelineConfig {
+        yaml_scan_dir: path.to_string_lossy().into_owned(),
+        ..PipelineConfig::default()
+    }
+}
+
 const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
 const ADMIN_ID: &str = "admin-1";
 
@@ -75,7 +86,7 @@ async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, sqlx::Sqli
             runner_register_token_ttl_hours: 24,
         },
         runner: RunnerConfig::default(),
-        pipeline: PipelineConfig::default(),
+        pipeline: isolated_pipeline_config(),
         standalone: Default::default(),
         plugin_index: Default::default(),
         storage: Default::default(),
@@ -83,6 +94,11 @@ async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, sqlx::Sqli
         marketplace_url: String::new(),
     };
     config.plugin_index.local_dir = index_dir.to_string_lossy().into_owned();
+    // Form retirement: create/update write a YAML file — each test gets its
+    // OWN scan dir, or parallel tests would overwrite each other's pipeline.
+    let yaml_dir = index_dir.join("pipelines");
+    std::fs::create_dir_all(&yaml_dir).expect("scan dir");
+    config.pipeline.yaml_scan_dir = yaml_dir.to_string_lossy().into_owned();
 
     let state = AppState {
         pool: pool.clone(),

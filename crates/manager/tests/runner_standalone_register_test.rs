@@ -25,6 +25,17 @@ use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 use shared::protocol::CreateRunnerRequest;
 
+/// Form retirement: create/update write a YAML file under `yaml_scan_dir`.
+/// Tests in one binary run in parallel, so each gets its own directory (leaked
+/// on purpose — the process exits after the test binary finishes).
+fn isolated_pipeline_config() -> PipelineConfig {
+    let path = tempfile::tempdir().expect("temp scan dir").keep();
+    PipelineConfig {
+        yaml_scan_dir: path.to_string_lossy().into_owned(),
+        ..PipelineConfig::default()
+    }
+}
+
 const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
 
 fn base_config(standalone: bool) -> Config {
@@ -37,7 +48,7 @@ fn base_config(standalone: bool) -> Config {
             runner_register_token_ttl_hours: 24,
         },
         runner: RunnerConfig::default(),
-        pipeline: PipelineConfig::default(),
+        pipeline: isolated_pipeline_config(),
         standalone: StandaloneConfig {
             enabled: standalone,
             auto_approve: vec!["standalone-runner".into()],

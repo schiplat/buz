@@ -236,6 +236,19 @@ async fn main() -> anyhow::Result<()> {
     services::debug_log_cleanup::spawn_debug_log_cleanup(db_pool.clone(), log_broadcast.clone());
     services::job_log_retention::spawn_job_log_retention(db_pool.clone(), log_broadcast.clone());
 
+    // Form retirement: converge pre-retirement `source=form` rows to YAML
+    // files before the scanner takes over (new saves are file-backed already).
+    services::form_migration::migrate_form_pipelines(
+        &db_pool,
+        &config.pipeline.yaml_scan_dir,
+        &services::plugin_resolver::effective_local_dir(
+            &config.storage.data_dir,
+            &config.plugin_index.local_dir,
+        )?,
+        sync_timeout_secs,
+    )
+    .await;
+
     services::pipeline_scanner::spawn_scanner(
         db_pool.clone(),
         config.pipeline.yaml_scan_dir.clone(),

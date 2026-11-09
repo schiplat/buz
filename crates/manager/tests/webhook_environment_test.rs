@@ -26,6 +26,17 @@ use manager::db::run_migrations;
 use manager::services::log_broadcast::LogBroadcaster;
 use manager::state::AppState;
 
+/// Form retirement: create/update write a YAML file under `yaml_scan_dir`.
+/// Tests in one binary run in parallel, so each gets its own directory (leaked
+/// on purpose — the process exits after the test binary finishes).
+fn isolated_pipeline_config() -> PipelineConfig {
+    let path = tempfile::tempdir().expect("temp scan dir").keep();
+    PipelineConfig {
+        yaml_scan_dir: path.to_string_lossy().into_owned(),
+        ..PipelineConfig::default()
+    }
+}
+
 const JWT_SECRET: &str = "test-secret-0123456789-abcdefghijklmnop";
 const SUPER_ADMIN_ID: &str = "admin-1";
 
@@ -39,7 +50,7 @@ fn test_config() -> Config {
             runner_register_token_ttl_hours: 24,
         },
         runner: RunnerConfig::default(),
-        pipeline: PipelineConfig::default(),
+        pipeline: isolated_pipeline_config(),
         standalone: Default::default(),
         plugin_index: Default::default(),
         storage: Default::default(),
@@ -428,6 +439,7 @@ async fn cron_trigger_targets_declared_environment() {
             "name": "cron-pipe",
             "trigger_type": "cron",
             "cron_expr": "0 3 * * *",
+            "cron_environment": "nightly",
             "runner_labels": ["linux-x64"],
             "team_id": "team-1",
             "environments": ["nightly", "other"],
@@ -477,7 +489,9 @@ async fn cron_trigger_without_environment_is_rejected() {
     let app = Router::new().nest("/api/v1", api::router(state.clone()));
     let admin = admin_jwt();
     create_env(&app, &admin, "nightly").await;
-    let pipe = json_req(
+    // YAML-first: a cron trigger without on.cron.environment is rejected at
+    // create (the schema has required it all along; the form path was lax).
+    let pipe_resp = json_req(
         &app,
         "POST",
         "/api/v1/pipelines",
@@ -494,13 +508,40 @@ async fn cron_trigger_without_environment_is_rejected() {
         })),
     )
     .await;
-    let pid = read_body(pipe).await["data"]["id"]
+    assert_eq!(
+        pipe_resp.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "cron without cron_environment must be rejected: {:?}",
+        read_body(pipe_resp).await
+    );
+    // (message asserted via the second create below — same contract)
+
+    // do_trigger keeps its defense-in-depth rejection for an empty
+    // environment on a declared pipeline.
+    let ok_resp = json_req(
+        &app,
+        "POST",
+        "/api/v1/pipelines",
+        &admin,
+        Some(serde_json::json!({
+            "name": "cron-withenv",
+            "trigger_type": "cron",
+            "cron_expr": "0 3 * * *",
+            "cron_environment": "nightly",
+            "runner_labels": ["linux-x64"],
+            "team_id": "team-1",
+            "environments": ["nightly"],
+            "env": [],
+            "steps": [{ "name": "echo", "run": "echo hi", "engine": "shell" }]
+        })),
+    )
+    .await;
+    assert_eq!(ok_resp.status(), StatusCode::OK);
+    let pid = read_body(ok_resp).await["data"]["id"]
         .as_str()
         .unwrap()
         .to_string();
 
-    // Missing on.cron.environment (empty cron_environment): the scheduler skips
-    // these; do_trigger itself rejects them as defense in depth.
     let err = do_trigger(
         &state,
         &pid,

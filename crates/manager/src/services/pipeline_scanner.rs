@@ -1280,6 +1280,28 @@ pub async fn yaml_sync_status(
     })
 }
 
+/// YAML trigger inputs → the DB projection's `input_defs`.
+fn project_input_defs(
+    inputs: Option<&std::collections::BTreeMap<String, shared::pipeline_yaml::InputDef>>,
+) -> Vec<PipelineInputDef> {
+    inputs
+        .map(|map| {
+            map.iter()
+                .map(|(name, def)| PipelineInputDef {
+                    name: name.clone(),
+                    description: def.description.clone(),
+                    required: def.required,
+                    default: def.default.clone(),
+                    masking: def.masking.filter(|mask| *mask),
+                    input_type: def.r#type.clone(),
+                    pattern: def.pattern.clone(),
+                    options: def.options.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Extract trigger information from the YAML `on` block.
 /// Tuple order: (type, webhook path/secret/environment, cron schedule/environment, inputs).
 #[allow(clippy::type_complexity)] // mirrors the trigger YAML shape one field per slot
@@ -1299,25 +1321,15 @@ fn extract_trigger(
     };
 
     if let Some(ref manual) = on.manual {
-        let input_defs: Vec<PipelineInputDef> = manual
-            .inputs
-            .as_ref()
-            .map(|map| {
-                map.iter()
-                    .map(|(name, def)| PipelineInputDef {
-                        name: name.clone(),
-                        description: def.description.clone(),
-                        required: def.required,
-                        default: def.default.clone(),
-                        masking: def.masking.filter(|m| *m),
-                        input_type: def.r#type.clone(),
-                        pattern: def.pattern.clone(),
-                        options: def.options.clone(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        return ("manual".into(), None, None, None, None, None, input_defs);
+        return (
+            "manual".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            project_input_defs(manual.inputs.as_ref()),
+        );
     }
 
     if let Some(ref webhook) = on.webhook {
@@ -1334,7 +1346,7 @@ fn extract_trigger(
             webhook.environment.clone(),
             None,
             None,
-            vec![],
+            project_input_defs(webhook.inputs.as_ref()),
         );
     }
 
@@ -1346,7 +1358,7 @@ fn extract_trigger(
             None,
             cron.schedule.clone(),
             cron.environment.clone(),
-            vec![],
+            project_input_defs(cron.inputs.as_ref()),
         );
     }
 

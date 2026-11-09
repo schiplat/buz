@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::{
     extract::{Path, State},
     Json,
@@ -145,16 +147,49 @@ pub async fn create(
     )
     .await?;
 
+    // Form retirement: the request is rendered into the pipeline's YAML file
+    // (the storage authority); the DB row starts as `form` and the bind step
+    // below retargets it to `yaml` in the same save. On any failure the row
+    // is removed, so a failed save never leaves a half-created pipeline.
     let pipeline_id = Uuid::new_v4().to_string();
+
+    let mut secret_names: HashMap<String, String> = HashMap::new();
+    for secret_id in req.secret_ids.iter().flatten() {
+        let name: Option<String> =
+            sqlx::query_scalar("SELECT name FROM secrets WHERE id = ? AND team_id = ?")
+                .bind(secret_id)
+                .bind(&team_id)
+                .fetch_optional(&state.pool)
+                .await?;
+        if let Some(name) = name {
+            secret_names.insert(secret_id.clone(), name);
+        }
+    }
+    let mut var_names: HashMap<String, String> = HashMap::new();
+    for var_id in req.var_ids.iter().flatten() {
+        let name: Option<String> =
+            sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
+                .bind(var_id)
+                .fetch_optional(&state.pool)
+                .await?;
+        if let Some(name) = name {
+            var_names.insert(var_id.clone(), name);
+        }
+    }
+
+    let yaml = crate::services::pipeline_yaml_emit::emit_from_request(
+        &req,
+        &owner_group,
+        &secret_names,
+        &var_names,
+    )?;
+
     let environments_json =
         serde_json::to_string(&req.environments).unwrap_or_else(|_| "[]".into());
     let labels_json = serde_json::to_string(&req.runner_labels).unwrap_or_else(|_| "[]".into());
     let input_defs_json = serde_json::to_string(&req.input_defs.clone().unwrap_or_default())
         .unwrap_or_else(|_| "[]".into());
-    // Form pipelines have no YAML file to read `notify:` from; validate and
-    // store the channels here so the trigger path can freeze them into the
-    // job snapshot (the YAML scanner writes the same column).
-    let notify_json = validated_notify_json(req.notify.as_ref())?;
+    let notify_json = serde_json::to_string(&req.notify).unwrap_or_else(|_| "[]".into());
 
     let mut tx = state.pool.begin().await?;
     sqlx::query(
@@ -184,72 +219,74 @@ pub async fn create(
     .bind(&notify_json)
     .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
-    // Steps / env / bindings are inserted after the pipeline row. If any of
-    // them fails (e.g. a `uses:` step that cannot resolve), clean up so a
-    // failed save never leaves a half-created pipeline behind.
-    let create_result = async {
-        let http = crate::services::plugin_pool::http_client(
-            crate::services::platform_settings::effective(
-                &state.pool,
-                crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
-                &state.config.plugin_index.sync_timeout_seconds.to_string(),
-            )
-            .await
-            .parse()
-            .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
-        );
-        let resolved = crate::services::plugin_resolver::resolve_uses_steps_async(
-            req.steps,
-            crate::services::plugin_resolver::effective_local_dir(
-                &state.config.storage.data_dir,
-                &state.config.plugin_index.local_dir,
-            )
-            .map_err(|e| AppError::Internal(e.to_string()))?,
-            &state.pool,
-            &http,
-        )
-        .await
-        .map_err(AppError::ValidationFailed)?;
-        let steps = insert_steps(&mut tx, &pipeline_id, &resolved.steps).await?;
-        crate::services::plugin_resolver::replace_step_resolutions(
-            &mut tx,
-            &pipeline_id,
-            &resolved.resolutions,
-        )
-        .await
-        .map_err(AppError::Internal)?;
-
-        // Insert env variables
-        if let Some(envs) = &req.env {
-            insert_env_vars(&mut tx, &pipeline_id, envs).await?;
+    // Bind the row to its YAML file: the scanner upsert rewrites every field
+    // from the file (source='yaml'), resolves `uses:` and records provenance.
+    // Names are not unique; file names are. Resolve a free one before writing
+    // (`foo.yml`, `foo-2.yml`, …) and take that file's lock.
+    let base = crate::services::pipeline_scanner::filename_from_pipeline_name(&req.name);
+    let scan_dir = &state.config.pipeline.yaml_scan_dir;
+    let mut filename = base.clone();
+    let mut file_guard =
+        crate::services::pipeline_scanner::lock_yaml_file(scan_dir, &filename).await?;
+    let mut suffix = 1u32;
+    loop {
+        match crate::services::pipeline_scanner::find_yaml_pipeline_row(&state.pool, &filename)
+            .await?
+        {
+            None => break,
+            Some(_) => {
+                suffix += 1;
+                let stem = base.strip_suffix(".yml").unwrap_or(&base);
+                filename = format!("{stem}-{suffix}.yml");
+                drop(file_guard);
+                file_guard =
+                    crate::services::pipeline_scanner::lock_yaml_file(scan_dir, &filename).await?;
+            }
         }
-
-        // Insert explicit secret bindings
-        if let Some(secret_ids) = &req.secret_ids {
-            insert_pipeline_secret_bindings(&mut tx, &pipeline_id, secret_ids).await?;
-        }
-
-        // Insert explicit variable bindings
-        if let Some(var_ids) = &req.var_ids {
-            insert_pipeline_var_bindings(&mut tx, &pipeline_id, var_ids).await?;
-        }
-        Ok(steps)
     }
+    let write_result = crate::services::pipeline_scanner::write_and_upsert_yaml_locked(
+        &state.pool,
+        &state.config.pipeline.yaml_scan_dir,
+        &filename,
+        &yaml,
+        &crate::services::plugin_resolver::effective_local_dir(
+            &state.config.storage.data_dir,
+            &state.config.plugin_index.local_dir,
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?,
+        Some(&pipeline_id),
+        crate::services::platform_settings::effective(
+            &state.pool,
+            crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+            &state.config.plugin_index.sync_timeout_seconds.to_string(),
+        )
+        .await
+        .parse()
+        .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
+        file_guard,
+    )
     .await;
+    if let Err(error) = write_result {
+        // Compensate: the row shell is removed with the pipeline.
+        let _ = sqlx::query("DELETE FROM pipelines WHERE id = ?")
+            .bind(&pipeline_id)
+            .execute(&state.pool)
+            .await;
+        tracing::warn!(
+            pipeline = %pipeline_id,
+            error = %error,
+            "pipeline create: YAML bind failed — row removed"
+        );
+        return Err(error);
+    }
 
-    let steps = match create_result {
-        Ok(steps) => {
-            tx.commit().await?;
-            steps
-        }
-        Err(e) => {
-            tx.rollback().await?;
-            return Err(e);
-        }
-    };
-
-    tracing::info!("Pipeline created: {} ({pipeline_id})", req.name);
+    tracing::info!(
+        "Pipeline created: {} ({pipeline_id}) → {}",
+        req.name,
+        filename
+    );
 
     audit::record(
         &state.pool,
@@ -262,7 +299,7 @@ pub async fn create(
                 "trigger_type": req.trigger_type,
                 "team_id": team_id,
                 "owner_group": owner_group,
-                "step_count": steps.len(),
+                "step_count": req.steps.len(),
             }))),
     )
     .await;
@@ -278,7 +315,12 @@ pub async fn create(
         "owner_group": owner_group,
         "team_id": team_id,
         "environments": req.environments,
-        "steps": steps,
+        "file": filename,
+        "steps": req.steps.iter().map(|step| serde_json::json!({
+            "name": step.name,
+            "engine": step.engine,
+            "uses": step.uses,
+        })).collect::<Vec<_>>(),
     }))))
 }
 
@@ -433,18 +475,9 @@ pub async fn update(
     let current_team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&current_team_id, Perm::PipelineWrite)?;
 
-    // YAML-first: file is authority — refuse Form/API mutation that would split DB vs disk.
-    let source: String = sqlx::query_scalar("SELECT source FROM pipelines WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
-    if source == "yaml" {
-        return Err(AppError::Conflict(
-            "pipeline is file-backed (source=yaml) — edit via PUT /pipelines/yaml-files/{filename} or the YAML editor"
-                .into(),
-        ));
-    }
+    // Form retirement: every pipeline is file-backed, and this endpoint
+    // rewrites the pipeline's YAML file (see the write below), so there is no
+    // DB-vs-disk split left to guard. The row check is what 404s a bad id.
 
     let before_row = sqlx::query(
         "SELECT name, trigger_type, team_id, owner_group, is_active FROM pipelines WHERE id = ?",
@@ -510,34 +543,43 @@ pub async fn update(
     }
 
     let labels_json = serde_json::to_string(&req.runner_labels).unwrap_or_else(|_| "[]".into());
-    let input_defs_json =
-        serde_json::to_string(&req.input_defs.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+    let input_defs_json = serde_json::to_string(&req.input_defs.clone().unwrap_or_default())
+        .unwrap_or_else(|_| "[]".into());
     let environments_json =
         serde_json::to_string(&req.environments).unwrap_or_else(|_| "[]".into());
-    let notify_json = validated_notify_json(req.notify.as_ref())?;
+    let notify_json = serde_json::to_string(&req.notify).unwrap_or_else(|_| "[]".into());
 
-    let http = crate::services::plugin_pool::http_client(
-        crate::services::platform_settings::effective(
-            &state.pool,
-            crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
-            &state.config.plugin_index.sync_timeout_seconds.to_string(),
-        )
-        .await
-        .parse()
-        .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
-    );
-    let resolved_steps = crate::services::plugin_resolver::resolve_uses_steps_async(
-        req.steps,
-        crate::services::plugin_resolver::effective_local_dir(
-            &state.config.storage.data_dir,
-            &state.config.plugin_index.local_dir,
-        )
-        .map_err(|e| AppError::Internal(e.to_string()))?,
-        &state.pool,
-        &http,
-    )
-    .await
-    .map_err(AppError::ValidationFailed)?;
+    // Form retirement: updates also land as the pipeline's YAML file. Secret /
+    // variable bindings resolve to names — YAML references names, not IDs.
+    let mut secret_names: HashMap<String, String> = HashMap::new();
+    for secret_id in req.secret_ids.iter().flatten() {
+        let name: Option<String> =
+            sqlx::query_scalar("SELECT name FROM secrets WHERE id = ? AND team_id = ?")
+                .bind(secret_id)
+                .bind(&team_id)
+                .fetch_optional(&state.pool)
+                .await?;
+        if let Some(name) = name {
+            secret_names.insert(secret_id.clone(), name);
+        }
+    }
+    let mut var_names: HashMap<String, String> = HashMap::new();
+    for var_id in req.var_ids.iter().flatten() {
+        let name: Option<String> =
+            sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
+                .bind(var_id)
+                .fetch_optional(&state.pool)
+                .await?;
+        if let Some(name) = name {
+            var_names.insert(var_id.clone(), name);
+        }
+    }
+    let yaml = crate::services::pipeline_yaml_emit::emit_from_request(
+        &req,
+        &owner_group,
+        &secret_names,
+        &var_names,
+    )?;
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
     if team_id != stored_team_id {
         let active_jobs: i64 = sqlx::query_scalar(
@@ -587,54 +629,55 @@ pub async fn update(
         return Err(AppError::NotFound("pipeline not found".into()));
     }
 
-    sqlx::query("DELETE FROM step_resolutions WHERE pipeline_id = ?")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM tasks WHERE pipeline_id = ?")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
-
-    // Delete old variables
-    sqlx::query("DELETE FROM variables WHERE pipeline_id = ?")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
-
-    // Delete old explicit secret bindings
-    sqlx::query("DELETE FROM pipeline_secrets WHERE pipeline_id = ?")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
-
-    // Delete old explicit variable bindings
-    sqlx::query("DELETE FROM pipeline_vars WHERE pipeline_id = ?")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
-
-    let steps = insert_steps(&mut tx, &id, &resolved_steps.steps).await?;
-    crate::services::plugin_resolver::replace_step_resolutions(
-        &mut tx,
-        &id,
-        &resolved_steps.resolutions,
-    )
-    .await
-    .map_err(AppError::Internal)?;
-
-    if let Some(envs) = &req.env {
-        insert_env_vars(&mut tx, &id, envs).await?;
-    }
-    if let Some(secret_ids) = &req.secret_ids {
-        insert_pipeline_secret_bindings(&mut tx, &id, secret_ids).await?;
-    }
-    if let Some(var_ids) = &req.var_ids {
-        insert_pipeline_var_bindings(&mut tx, &id, var_ids).await?;
-    }
     tx.commit().await?;
 
-    tracing::info!("Pipeline updated: {id}");
+    // Rewrite the pipeline's YAML file (the authority). Un-migrated form rows
+    // get bound here too — the same path as the startup migration.
+    let stored: (Option<String>, String) =
+        sqlx::query_as("SELECT yaml_path, source FROM pipelines WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&state.pool)
+            .await?;
+    let (yaml_path, source) = stored;
+    let filename = match source.as_str() {
+        "yaml" => yaml_path
+            .map(|path| crate::services::pipeline_scanner::normalize_yaml_path_key(&path))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| {
+                super::super::services::pipeline_scanner::filename_from_pipeline_name(&req.name)
+            }),
+        _ => super::super::services::pipeline_scanner::filename_from_pipeline_name(&req.name),
+    };
+    let bind = (source != "yaml").then(|| id.clone());
+    let file_guard = crate::services::pipeline_scanner::lock_yaml_file(
+        &state.config.pipeline.yaml_scan_dir,
+        &filename,
+    )
+    .await?;
+    crate::services::pipeline_scanner::write_and_upsert_yaml_locked(
+        &state.pool,
+        &state.config.pipeline.yaml_scan_dir,
+        &filename,
+        &yaml,
+        &crate::services::plugin_resolver::effective_local_dir(
+            &state.config.storage.data_dir,
+            &state.config.plugin_index.local_dir,
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?,
+        bind.as_deref(),
+        crate::services::platform_settings::effective(
+            &state.pool,
+            crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+            &state.config.plugin_index.sync_timeout_seconds.to_string(),
+        )
+        .await
+        .parse()
+        .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
+        file_guard,
+    )
+    .await?;
+
+    tracing::info!("Pipeline updated: {id} → {filename}");
 
     audit::record(
         &state.pool,
@@ -648,7 +691,7 @@ pub async fn update(
                 "trigger_type": req.trigger_type,
                 "team_id": team_id,
                 "owner_group": owner_group,
-                "step_count": steps.len(),
+                "step_count": req.steps.len(),
             }))),
     )
     .await;
@@ -657,7 +700,12 @@ pub async fn update(
         "id": id,
         "name": req.name,
         "environments": req.environments,
-        "steps": steps,
+        "file": filename,
+        "steps": req.steps.iter().map(|step| serde_json::json!({
+            "name": step.name,
+            "engine": step.engine,
+            "uses": step.uses,
+        })).collect::<Vec<_>>(),
     }))))
 }
 
@@ -1648,58 +1696,6 @@ pub async fn do_trigger(
 
 // --- helpers ---
 
-/// Validate and serialize form-supplied notify channels.
-///
-/// Mirrors the YAML validator (`pipeline_yaml::parse_and_validate`): known
-/// channel type, webhook that is exactly a `${secrets.NAME}` reference (or a
-/// bare secret name), and known `on` events. Stored as `pipelines.notify_json`
-/// and frozen into every job snapshot at trigger time.
-fn validated_notify_json(
-    channels: Option<&Vec<shared::pipeline_yaml::NotifyChannelYaml>>,
-) -> Result<String, AppError> {
-    const VALID_TYPES: &[&str] = &["feishu", "webhook"];
-    const VALID_ON: &[&str] = &["success", "failure", "cancelled"];
-
-    let Some(channels) = channels.filter(|list| !list.is_empty()) else {
-        return Ok("[]".into());
-    };
-    for (index, channel) in channels.iter().enumerate() {
-        let field = format!("notify[{index}]");
-        let channel_type = channel.channel_type.trim();
-        if channel_type.is_empty() || !VALID_TYPES.contains(&channel_type) {
-            return Err(AppError::ValidationFailed(format!(
-                "{field}.type: invalid notify type '{}' — must be one of: {}",
-                channel.channel_type,
-                VALID_TYPES.join(", ")
-            )));
-        }
-        let webhook = channel.webhook.trim();
-        if webhook.is_empty() {
-            return Err(AppError::ValidationFailed(format!(
-                "{field}.webhook: notify webhook is required"
-            )));
-        }
-        if shared::secret_ref::resolve_secret_slot(webhook).is_none() {
-            return Err(AppError::ValidationFailed(format!(
-                "{field}.webhook: must be '${{secrets.NAME}}' (or a bare secret name)"
-            )));
-        }
-        if let Some(events) = &channel.on {
-            for (event_index, event) in events.iter().enumerate() {
-                let event = event.trim();
-                if event.is_empty() || !VALID_ON.contains(&event) {
-                    return Err(AppError::ValidationFailed(format!(
-                        "{field}.on[{event_index}]: invalid event '{event}' — must be one of: {}",
-                        VALID_ON.join(", ")
-                    )));
-                }
-            }
-        }
-    }
-    serde_json::to_string(channels)
-        .map_err(|error| AppError::Internal(format!("cannot serialize notify: {error}")))
-}
-
 /// Webhook pipelines must bind `webhook_secret` — the NAME of a team secret
 /// whose value signs every hook request (`X-Buz-Signature`). An unprotected
 /// webhook is triggerable by anyone who can guess the path, so an empty name
@@ -2093,67 +2089,4 @@ pub async fn validate_yaml(
     )
     .await?;
     Ok(Json(ApiResponse::success(result)))
-}
-
-#[cfg(test)]
-mod notify_input_tests {
-    use super::*;
-    use shared::pipeline_yaml::NotifyChannelYaml;
-
-    fn channel(channel_type: &str, webhook: &str, on: Option<Vec<&str>>) -> NotifyChannelYaml {
-        NotifyChannelYaml {
-            channel_type: channel_type.into(),
-            webhook: webhook.into(),
-            on: on.map(|list| list.into_iter().map(str::to_string).collect()),
-        }
-    }
-
-    #[test]
-    fn form_notify_channels_serialize_with_the_yaml_shape() {
-        let json = validated_notify_json(Some(&vec![channel(
-            "feishu",
-            "${secrets.HOOK}",
-            Some(vec!["failure", "cancelled"]),
-        )]))
-        .expect("valid channels");
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value[0]["type"], "feishu");
-        assert_eq!(value[0]["webhook"], "${secrets.HOOK}");
-        assert_eq!(value[0]["on"][1], "cancelled");
-    }
-
-    #[test]
-    fn form_notify_rejects_unknown_type() {
-        let error = validated_notify_json(Some(&vec![channel("email", "${secrets.HOOK}", None)]))
-            .unwrap_err();
-        assert!(error.to_string().contains("invalid notify type"));
-    }
-
-    #[test]
-    fn form_notify_requires_a_secret_reference_webhook() {
-        let error = validated_notify_json(Some(&vec![channel(
-            "feishu",
-            "https://open.feishu.cn/plain",
-            None,
-        )]))
-        .unwrap_err();
-        assert!(error.to_string().contains("secrets.NAME"));
-    }
-
-    #[test]
-    fn form_notify_rejects_unknown_events() {
-        let error = validated_notify_json(Some(&vec![channel(
-            "webhook",
-            "${secrets.HOOK}",
-            Some(vec!["done"]),
-        )]))
-        .unwrap_err();
-        assert!(error.to_string().contains("invalid event"));
-    }
-
-    #[test]
-    fn form_notify_absent_or_empty_is_an_empty_array() {
-        assert_eq!(validated_notify_json(None).unwrap(), "[]");
-        assert_eq!(validated_notify_json(Some(&vec![])).unwrap(), "[]");
-    }
 }

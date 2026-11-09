@@ -1,12 +1,14 @@
 pub mod cron_scheduler;
 pub mod debug_log_cleanup;
 pub mod deprecated_scan;
+pub mod form_migration;
 pub mod github_actions_sync;
 pub mod github_fetch_scheduler;
 pub mod job_log_retention;
 pub mod log_broadcast;
 pub mod notify;
 pub mod pipeline_scanner;
+pub mod pipeline_yaml_emit;
 pub mod platform_settings;
 pub mod plugin_pool;
 pub mod plugin_resolver;

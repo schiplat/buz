@@ -168,7 +168,15 @@ async fn test_app() -> (Router, sqlx::SqlitePool) {
                 runner_register_token_ttl_hours: 24,
             },
             runner: Default::default(),
-            pipeline: Default::default(),
+            pipeline: {
+                // Form retirement: creates write YAML files — use a private
+                // scan dir so parallel tests cannot collide on file names.
+                let path = tempfile::tempdir().expect("temp scan dir").keep();
+                manager::config::PipelineConfig {
+                    yaml_scan_dir: path.to_string_lossy().into_owned(),
+                    ..manager::config::PipelineConfig::default()
+                }
+            },
             standalone: Default::default(),
             plugin_index: Default::default(),
             storage: Default::default(),

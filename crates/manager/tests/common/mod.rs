@@ -84,7 +84,15 @@ pub fn test_config() -> Config {
             runner_register_token_ttl_hours: 24,
         },
         runner: RunnerConfig::default(),
-        pipeline: Default::default(),
+        // Form retirement: creates write YAML files — tests in one binary run
+        // in parallel, so each app gets its own scan directory.
+        pipeline: {
+            let path = tempfile::tempdir().expect("temp scan dir").keep();
+            manager::config::PipelineConfig {
+                yaml_scan_dir: path.to_string_lossy().into_owned(),
+                ..manager::config::PipelineConfig::default()
+            }
+        },
         standalone: StandaloneConfig {
             enabled: false,
             auto_approve: vec![],
