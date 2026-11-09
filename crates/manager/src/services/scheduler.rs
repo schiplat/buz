@@ -36,6 +36,9 @@ pub fn start_scheduler(pool: SqlitePool) {
                     if let Err(e) = expire_approval_timeouts(&pool).await {
                         tracing::error!("Scheduler approval-timeout error: {e}");
                     }
+                    if let Err(e) = expire_queue_timeouts(&pool).await {
+                        tracing::error!("Scheduler queue-timeout error: {e}");
+                    }
                 }
                 Ok(false) => {
                     // Another instance is the leader — just wait and retry
@@ -51,13 +54,19 @@ pub fn start_scheduler(pool: SqlitePool) {
 }
 
 /// Lease row used by the job-dispatch scheduler (`scheduler_lease.id`).
-pub(crate) const JOB_DISPATCH_LEASE_ID: i64 = 1;
+pub const JOB_DISPATCH_LEASE_ID: i64 = 1;
+
+/// Lease row used by the cron trigger scheduler (`scheduler_lease.id`).
+/// Rows 1/2 are the job-dispatch and GitHub-fetch schedulers; a dedicated
+/// row per scheduler so none ever evicts another's lease.
+pub const CRON_TRIGGER_LEASE_ID: i64 = 3;
 
 /// Try to acquire or refresh the leader lease on a specific lease row.
 ///
 /// Different background schedulers use different `lease_id` rows of the shared
-/// `scheduler_lease` table so they never kick each other out.
-pub(crate) async fn try_acquire_lease(
+/// `scheduler_lease` table so they never kick each other out. Exposed for
+/// testing.
+pub async fn try_acquire_lease(
     pool: &SqlitePool,
     lease_id: i64,
     instance_id: &str,
@@ -248,6 +257,80 @@ async fn expire_approval_timeouts(pool: &SqlitePool) -> anyhow::Result<()> {
         tracing::info!(cancelled, "environments: approval timeout scan finished");
     } else {
         tracing::debug!("environments: approval timeout scan finished (none expired)");
+    }
+
+    Ok(())
+}
+
+/// Cancel `queued` jobs that have waited past their pipeline's concurrency
+/// `queue_timeout` (seconds). The value is frozen into the job snapshot at
+/// trigger time; absent → the 1800s save-time default. `updated_at` on a
+/// queued job marks its last status transition — the moment it entered the
+/// queue. System cancellation mirrors [`expire_approval_timeouts`]: no audit
+/// row, no notify (neither scheduler expiry has the notify context here);
+/// the snapshot annotation is the cancel-reason trail. Exposed for testing;
+/// the leader loop calls it on its dispatch cadence.
+pub async fn expire_queue_timeouts(pool: &SqlitePool) -> anyhow::Result<()> {
+    use sqlx::Row;
+
+    let rows = sqlx::query("SELECT id, snapshot, updated_at FROM jobs WHERE status = 'queued'")
+        .fetch_all(pool)
+        .await?;
+
+    let now = chrono::Utc::now();
+    let mut cancelled = 0i64;
+
+    for row in rows {
+        let job_id: String = row.get(0);
+        let snapshot_raw: String = row.get(1);
+        let updated_at_raw: String = row.get(2);
+
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&snapshot_raw).unwrap_or(serde_json::json!({}));
+        let timeout_secs = snapshot
+            .get("concurrency_queue_timeout_seconds")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1800)
+            .max(1);
+
+        let entered = parse_sqlite_datetime(&updated_at_raw).unwrap_or(now);
+        let age = (now - entered).num_seconds();
+        if age < timeout_secs {
+            continue;
+        }
+
+        let mut snapshot = snapshot;
+        if let Some(map) = snapshot.as_object_mut() {
+            map.insert(
+                "concurrency_queue_timed_out".into(),
+                serde_json::json!(true),
+            );
+        }
+        let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_default();
+
+        let result = sqlx::query(
+            "UPDATE jobs SET status = 'cancelled', snapshot = ?,
+                    end_time = datetime('now'), updated_at = datetime('now')
+             WHERE id = ? AND status = 'queued'",
+        )
+        .bind(&snapshot_str)
+        .bind(&job_id)
+        .execute(pool)
+        .await?;
+
+        if result.rows_affected() > 0 {
+            cancelled += 1;
+            tracing::info!(
+                job_id = %job_id,
+                timeout_secs,
+                age_secs = age,
+                "scheduler: queued job cancelled (queue timeout)"
+            );
+        }
+    }
+
+    if cancelled > 0 {
+        crate::services::poll_events::wake_all();
     }
 
     Ok(())

@@ -45,10 +45,36 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
         let last_triggers: Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>> =
             Mutex::new(HashMap::new());
 
+        let instance_id = uuid::Uuid::new_v4().to_string();
+        tracing::info!("Cron scheduler instance: {instance_id}");
+
         let mut interval = time::interval(Duration::from_secs(check_interval_seconds));
 
         loop {
             interval.tick().await;
+
+            // Single-leader guard: without it, two manager instances would both
+            // scan and double-fire the same cron pipeline (the rate limiter
+            // below lives in per-process memory). Shares the `scheduler_lease`
+            // table with the dispatch scheduler on a dedicated row so the two
+            // never evict each other. Residual window: if the leader crashes
+            // inside a fire window, the new leader's empty in-memory limiter
+            // allows one re-fire of that same window — bounded by the 120s
+            // minimum trigger gap.
+            match crate::services::scheduler::try_acquire_lease(
+                &state.pool,
+                crate::services::scheduler::CRON_TRIGGER_LEASE_ID,
+                &instance_id,
+            )
+            .await
+            {
+                Ok(true) => {}
+                Ok(false) => continue, // another instance leads cron triggers
+                Err(e) => {
+                    tracing::error!("Cron scheduler lease error: {e}");
+                    continue;
+                }
+            }
 
             let pipelines = match fetch_active_cron_pipelines(&state.pool).await {
                 Ok(p) => p,
