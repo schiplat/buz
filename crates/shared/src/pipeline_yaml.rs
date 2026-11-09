@@ -277,7 +277,8 @@ pub struct StepYaml {
     #[serde(default)]
     pub retry: Option<i32>,
     /// Marketplace plugin reference: `<namespace>/<plugin-id>@<pin>` (pin is
-    /// `X`, `X.Y`, `X.Y.Z`, or `sha256:<hex>`; ranges/`latest` rejected).
+    /// `X`, `X.Y`, `X.Y.Z`, `sha256:<hex>`, `latest`, or a branch name;
+    /// ranges rejected).
     /// Mutually exclusive with `engine:` / `run:` / `image:`.
     #[serde(default)]
     pub uses: Option<String>,
@@ -743,14 +744,22 @@ pub enum UsesPin {
     /// `@<branch>` — git branch ref (remote sources only; mutable: resolved
     /// to an actual commit + content hash at save time).
     Branch(String),
+    /// `@latest` — the highest available version at save time. Resolution is
+    /// save-time and content-frozen ("解析即锁定"), so `latest` is exactly as
+    /// reproducible after save as any explicit pin; the schema warns the
+    /// author to prefer `@<major>` to declare a compatibility envelope.
+    Latest,
 }
 
 /// Parse a `uses:` reference (`<namespace>/<plugin-id>@<pin>`).
 ///
 /// IDs use the same canonical two-segment grammar as step specs. Pins follow
 /// §4 of the marketplace ADR: `@1` major, `@1.2` / `@1.2.0` exact,
-/// `@sha256:<hex>` strict. Ranges and `latest` are deliberately not supported
-/// — resolution must be reproducible ("解析即锁定").
+/// `@sha256:<hex>` strict, `@<branch>` for remote sources, `@latest` for the
+/// highest available version. All pins resolve at save time and freeze
+/// version + content sha256, so every form is reproducible after save.
+/// Version *ranges* are deliberately not supported — a range cannot name a
+/// single frozen artifact.
 pub fn parse_uses_reference(raw: &str) -> Result<(String, UsesPin), String> {
     let raw = raw.trim();
     let Some((reference, pin)) = raw.rsplit_once('@') else {
@@ -792,8 +801,9 @@ pub fn parse_uses_reference(raw: &str) -> Result<(String, UsesPin), String> {
     if version_like {
         Ok((reference.to_string(), UsesPin::Version(pin.to_string())))
     } else if pin == "latest" {
-        // The classic footgun: `@latest` must never silently resolve.
-        Err("unsupported pin 'latest' — pin a version, a sha256, or an explicit branch name".into())
+        // Save-time resolution freezes the highest available version, so
+        // `latest` is as reproducible after save as any explicit pin.
+        Ok((reference.to_string(), UsesPin::Latest))
     } else if pin
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
@@ -801,8 +811,8 @@ pub fn parse_uses_reference(raw: &str) -> Result<(String, UsesPin), String> {
         Ok((reference.to_string(), UsesPin::Branch(pin.to_string())))
     } else {
         Err(format!(
-            "unsupported pin '{pin}' — use @1, @1.2, @1.2.0, @sha256:<64 hex> or @<branch> \
-             (ranges and 'latest' are not supported)"
+            "unsupported pin '{pin}' — use @1, @1.2, @1.2.0, @sha256:<64 hex>, @latest or \
+             @<branch> (ranges are not supported)"
         ))
     }
 }
@@ -978,6 +988,19 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
             },
             None => None,
         };
+
+        // @latest is valid and save-time frozen, but it declines to declare a
+        // compatibility envelope — nudge (non-blocking, like the retry note)
+        // toward a major pin.
+        if uses_ref
+            .as_ref()
+            .is_some_and(|(_, pin)| matches!(pin, UsesPin::Latest))
+        {
+            warnings.push(format!(
+                "steps[{i}].uses: '@latest' resolves to the highest available version at save \
+                 time and freezes it — consider @<major> to declare a compatibility envelope"
+            ));
+        }
 
         let run = step.run.as_deref().unwrap_or("").trim();
 

@@ -1491,6 +1491,31 @@ pub async fn sync_all_enabled(
 
 // Resolution ------------------------------------------------------------------
 
+/// Fetch the pinned row's spec content and assemble the resolved plugin.
+/// Shared tail of every pin-kind branch in [`resolve_remote`].
+async fn remote_resolved_for_row(
+    http: &reqwest::Client,
+    pool: &SqlitePool,
+    row: &PoolRow,
+) -> Result<RemoteResolved, String> {
+    let source = get_source(pool, &row.source_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("source {} disappeared", row.source_id))?;
+    let bases = source_bases(&source);
+    let content = fetch_content(http, &bases, &row.file_path, &row.sha256).await?;
+    Ok(RemoteResolved {
+        namespace: row.namespace.clone(),
+        plugin_id: row.plugin_id.clone(),
+        version: row.version.clone(),
+        sha256: row.sha256.clone(),
+        source_url: source.url.clone(),
+        file_path: row.file_path.clone(),
+        reviewed: row.reviewed,
+        content,
+    })
+}
+
 /// Resolve a `uses:` reference from the enabled pool. `None` = the namespace
 /// has no pool entries (caller falls back to the local index). Branch pins
 /// resolve through the branch's own index.json (mutable — frozen at save).
@@ -1543,22 +1568,7 @@ pub async fn resolve_remote(
                         "no plugin '{reference}' with content sha256:{hex} in the template pool"
                     )
                 })?;
-            let source = get_source(pool, &row.source_id)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("source {} disappeared", row.source_id))?;
-            let bases = source_bases(&source);
-            let content = fetch_content(http_client, &bases, &row.file_path, &row.sha256).await?;
-            RemoteResolved {
-                namespace: row.namespace.clone(),
-                plugin_id: row.plugin_id.clone(),
-                version: row.version.clone(),
-                sha256: row.sha256.clone(),
-                source_url: source.url.clone(),
-                file_path: row.file_path.clone(),
-                reviewed: row.reviewed,
-                content,
-            }
+            remote_resolved_for_row(http_client, pool, row).await?
         }
         shared::pipeline_yaml::UsesPin::Version(v) => {
             let parts: Vec<&str> = v.split('.').collect();
@@ -1587,22 +1597,21 @@ pub async fn resolve_remote(
                 .iter()
                 .find(|row| plugin_resolver::version_triple(&row.version) == Some(best))
                 .expect("non-empty");
-            let source = get_source(pool, &row.source_id)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("source {} disappeared", row.source_id))?;
-            let bases = source_bases(&source);
-            let content = fetch_content(http_client, &bases, &row.file_path, &row.sha256).await?;
-            RemoteResolved {
-                namespace: row.namespace.clone(),
-                plugin_id: row.plugin_id.clone(),
-                version: row.version.clone(),
-                sha256: row.sha256.clone(),
-                source_url: source.url.clone(),
-                file_path: row.file_path.clone(),
-                reviewed: row.reviewed,
-                content,
-            }
+            remote_resolved_for_row(http_client, pool, row).await?
+        }
+        shared::pipeline_yaml::UsesPin::Latest => {
+            // Highest available version across the enabled pool rows — frozen
+            // at save like any other pin.
+            let best = candidates
+                .iter()
+                .map(|row| plugin_resolver::version_triple(&row.version).unwrap_or((0, 0, 0)))
+                .max()
+                .expect("candidates is non-empty");
+            let row = candidates
+                .iter()
+                .find(|row| plugin_resolver::version_triple(&row.version) == Some(best))
+                .expect("non-empty");
+            remote_resolved_for_row(http_client, pool, row).await?
         }
         shared::pipeline_yaml::UsesPin::Branch(branch) => {
             // Resolve through the branch's own index.json: mutable by

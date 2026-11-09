@@ -187,6 +187,9 @@ async fn check_uses_availability(
             // Resolved through the source's index at save time; the editor
             // cannot know the branch's current content.
             shared::pipeline_yaml::UsesPin::Branch(_) => {}
+            // @latest matches whenever the plugin exists at all — the highest
+            // available version is frozen in at save time.
+            shared::pipeline_yaml::UsesPin::Latest => {}
             shared::pipeline_yaml::UsesPin::Sha256(hex) => {
                 if !hashes
                     .iter()

@@ -487,6 +487,28 @@ impl LocalPluginIndex {
                     "branch pin '@{branch}' resolves only from remote plugin sources — the local index is pinned by version or sha256"
                 ));
             }
+            UsesPin::Latest => {
+                // Highest available version overall — frozen at save like any
+                // other pin.
+                let best = candidates
+                    .iter()
+                    .map(|entry| version_triple(&entry.spec.version).unwrap_or((0, 0, 0)))
+                    .max()
+                    .expect("candidates is non-empty");
+                let at_best: Vec<&IndexedSpec> = candidates
+                    .iter()
+                    .filter(|entry| version_triple(&entry.spec.version) == Some(best))
+                    .collect();
+                if at_best.len() > 1 {
+                    let pretty = format!("{}.{}.{}", best.0, best.1, best.2);
+                    return Err(format!(
+                        "plugin '{reference}@{pretty}' is ambiguous — {} files declare the same \
+                         id and version in the local index; keep one file per id+version",
+                        at_best.len()
+                    ));
+                }
+                at_best.into_iter().next().expect("non-empty").clone()
+            }
             UsesPin::Version(v) => {
                 let parts: Vec<&str> = v.split('.').collect();
                 let matched: Vec<IndexedSpec> = candidates

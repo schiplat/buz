@@ -1508,10 +1508,12 @@ fn uses_pin_parsing() {
     let (_, pin) = parse_uses_reference(&sha).unwrap();
     assert_eq!(pin, UsesPin::Sha256("a".repeat(64)));
 
+    let (_, pin) = parse_uses_reference("ns/id@latest").unwrap();
+    assert_eq!(pin, UsesPin::Latest);
+
     for bad in [
         "buz/feishu",
         "no-namespace@1.2",
-        "ns/id/step@latest",
         "ns/ID@1.2",
         "ns/id/name/extra@1.2",
         "ns/id@1..2",
@@ -1529,7 +1531,7 @@ fn uses_invalid_pin_is_a_field_error() {
 name: bad-pin
 steps:
   - name: notify
-    uses: buz/feishu@latest
+    uses: buz/feishu@^1.2
 "#;
     let r = validate_fixture(yaml);
     assert!(!r.valid);
@@ -1539,6 +1541,26 @@ steps:
             .any(|e| e.field == "steps[0].uses" && e.message.contains("unsupported pin")),
         "{:?}",
         r.errors
+    );
+}
+
+#[test]
+fn uses_latest_pin_is_valid_with_a_major_pin_nudge() {
+    let yaml = r#"
+name: latest pin
+environments: [default]
+steps:
+  - name: notify
+    uses: buz/feishu@latest
+"#;
+    let r = validate_fixture(yaml);
+    assert!(r.valid, "{:?}", r.errors);
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("steps[0].uses") && w.contains("@latest")),
+        "expected an @latest nudge: {:?}",
+        r.warnings
     );
 }
 

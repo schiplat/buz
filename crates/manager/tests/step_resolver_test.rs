@@ -115,6 +115,20 @@ fn duplicate_id_version_across_files_is_ambiguous_even_for_major_pins() {
     assert_eq!(resolved.spec.version, "1.4.0");
 }
 
+#[test]
+fn latest_pin_resolves_the_highest_version_and_its_content_hash() {
+    let dir = seed_index();
+    let index = LocalPluginIndex::new(dir.path().to_path_buf());
+
+    // seed_index has 1.2.0 and 1.4.0 → @latest picks 1.4.0, content hash
+    // frozen exactly like an explicit pin (解析即锁定).
+    let resolved = index.resolve("buz/feishu@latest", CURRENT).unwrap();
+    assert_eq!(resolved.spec.version, "1.4.0");
+
+    let explicit = index.resolve("buz/feishu@1.4.0", CURRENT).unwrap();
+    assert_eq!(resolved.content_sha256, explicit.content_sha256);
+}
+
 fn dual_engine_spec(id: &str, version: &str) -> String {
     format!(
         r#"
