@@ -121,6 +121,8 @@ export interface PipelineStepInput {
   host_labels?: string | string[]
   /** SSH multi-host fan-out: `chain` (default) or `parallel`. */
   hosts_strategy?: 'chain' | 'parallel' | string
+  /** SSH parallel width cap (1–256; requires hosts_strategy: parallel). Unset → runner default (16). */
+  hosts_max_parallel?: number
   dir?: string
   timeout?: string
   retry?: number
@@ -261,6 +263,8 @@ export interface YamlStepData {
   host_labels?: string | null
   /** SSH multi-host fan-out: `chain` (default) or `parallel`. */
   hosts_strategy?: string | null
+  /** SSH parallel width cap (1–256); null when unset or absent in stored YAML. */
+  hosts_max_parallel?: number | null
   dir?: string | null
   timeout?: string | null
   retry?: number | null

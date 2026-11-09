@@ -81,6 +81,11 @@ const STEP: Completion[] = [
     info: 'SSH multi-host fan-out: chain (default) | parallel',
   },
   {
+    label: 'hosts_max_parallel',
+    type: 'property',
+    info: 'SSH parallel width cap: 1–256 (default 16); requires hosts_strategy: parallel',
+  },
+  {
     label: 'dir',
     type: 'property',
     info: 'Working directory (alias of work_dir); on a uses: step it overrides the template default_dir',

@@ -18,6 +18,7 @@ type StepLike = {
   host?: string
   host_labels?: string
   hosts_strategy?: string
+  hosts_max_parallel?: number
   dir?: string
   timeout?: string
   retry?: number
@@ -241,6 +242,7 @@ export function serializePipelineFormToYaml(
         }
       }
       if (s.hosts_strategy) lines.push(`    hosts_strategy: ${esc(s.hosts_strategy)}`)
+      if (s.hosts_max_parallel != null) lines.push(`    hosts_max_parallel: ${s.hosts_max_parallel}`)
       if (s.dir) lines.push(`    dir: ${esc(s.dir)}`)
       if (s.timeout) lines.push(`    timeout: ${esc(s.timeout)}`)
       if (s.retry) lines.push(`    retry: ${s.retry}`)
@@ -286,6 +288,7 @@ export function serializePipelineFormToYaml(
       }
     }
     if (s.hosts_strategy) lines.push(`    hosts_strategy: ${esc(s.hosts_strategy)}`)
+    if (s.hosts_max_parallel != null) lines.push(`    hosts_max_parallel: ${s.hosts_max_parallel}`)
     if (s.dir) lines.push(`    dir: ${esc(s.dir)}`)
     if (s.timeout) lines.push(`    timeout: ${esc(s.timeout)}`)
     if (s.retry) lines.push(`    retry: ${s.retry}`)

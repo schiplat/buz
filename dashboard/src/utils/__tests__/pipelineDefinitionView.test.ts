@@ -176,3 +176,19 @@ describe('envEntriesFromRecord / envEntriesFromRows', () => {
     ])
   })
 })
+
+describe('yamlStepsToDefTasks hosts_max_parallel', () => {
+  it('maps the parallel width cap through', () => {
+    const tasks = yamlStepsToDefTasks([
+      {
+        name: 'deploy',
+        engine: 'ssh',
+        host_labels: ['prod'],
+        hosts_strategy: 'parallel',
+        hosts_max_parallel: 8,
+        run: 'docker compose up -d',
+      },
+    ] as never)
+    expect(tasks[0].hosts_max_parallel).toBe(8)
+  })
+})

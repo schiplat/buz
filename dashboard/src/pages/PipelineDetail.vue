@@ -2396,6 +2396,10 @@ async function handleTrigger() {
                             <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Strategy</dt>
                             <dd class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ step.hosts_strategy }}</dd>
                           </div>
+                          <div v-if="step.hosts_max_parallel != null" class="min-w-0">
+                            <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Parallel width</dt>
+                            <dd class="mt-0.5 font-mono text-[10.5px] text-foreground/80">{{ step.hosts_max_parallel }}</dd>
+                          </div>
                           <div v-if="step.image" class="min-w-0">
                             <dt class="text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">Image</dt>
                             <dd class="mt-0.5 break-all font-mono text-[10.5px] text-foreground/80">{{ step.image }}</dd>

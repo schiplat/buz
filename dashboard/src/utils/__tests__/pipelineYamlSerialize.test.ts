@@ -171,3 +171,42 @@ describe('serializePipelineFormToYaml input constraints', () => {
     expect(yaml).not.toContain('masking:')
   })
 })
+
+describe('serializePipelineFormToYaml ssh multi-host', () => {
+  const sshBase = {
+    ...base,
+    steps: [
+      {
+        name: 'deploy',
+        engine: 'ssh',
+        host_labels: 'prod',
+        hosts_strategy: 'parallel',
+        hosts_max_parallel: 8,
+        run: 'docker compose up -d',
+      },
+    ],
+  }
+
+  it('emits hosts_strategy and hosts_max_parallel for parallel ssh steps', () => {
+    const yaml = serializePipelineFormToYaml(sshBase)
+    expect(yaml).toContain('hosts_strategy: parallel')
+    expect(yaml).toContain('hosts_max_parallel: 8')
+  })
+
+  it('emits a set cap even when strategy is chain (validation is the source of truth)', () => {
+    const yaml = serializePipelineFormToYaml({
+      ...sshBase,
+      steps: [{ ...sshBase.steps[0], hosts_strategy: 'chain' }],
+    })
+    expect(yaml).toContain('hosts_strategy: chain')
+    expect(yaml).toContain('hosts_max_parallel: 8')
+  })
+
+  it('omits hosts_max_parallel when unset', () => {
+    const yaml = serializePipelineFormToYaml({
+      ...sshBase,
+      steps: [{ ...sshBase.steps[0], hosts_max_parallel: undefined }],
+    })
+    expect(yaml).not.toContain('hosts_max_parallel')
+  })
+})

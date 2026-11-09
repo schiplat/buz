@@ -31,6 +31,7 @@ export function yamlStepsToDefTasks(steps: YamlStepData[]) {
     host_id: '',
     host_labels: s.host_labels || '',
     hosts_strategy: s.hosts_strategy || '',
+    hosts_max_parallel: s.hosts_max_parallel ?? null,
     work_dir: s.dir || '',
     timeout_seconds: parseDurationToSeconds(s.timeout),
     retry_count: s.retry || 0,
