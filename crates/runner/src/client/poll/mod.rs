@@ -125,9 +125,11 @@ pub async fn run_poll_loop(
                     continue;
                 }
                 restrict_job_workspace(&job_ws, config.engine.run_as_user.as_deref());
-                if let Err(e) =
-                    prepare_job_docker_config_dir(&job_ws, config.engine.docker_config_isolation)
-                {
+                if let Err(e) = prepare_job_docker_config_dir(
+                    &job_ws,
+                    config.engine.docker_config_isolation,
+                    config.engine.run_as_user.as_deref(),
+                ) {
                     // Best-effort: `docker login` recreates the dir if missing.
                     tracing::warn!("Failed to prepare job docker config dir for {job_id}: {e}");
                 }
@@ -2216,6 +2218,7 @@ pub fn job_docker_config_dir(job_ws: &str) -> String {
 pub fn prepare_job_docker_config_dir(
     job_ws: &str,
     isolation: DockerConfigIsolation,
+    run_as_user: Option<&str>,
 ) -> std::io::Result<()> {
     if isolation != DockerConfigIsolation::PerJob {
         return Ok(());
@@ -2225,7 +2228,19 @@ pub fn prepare_job_docker_config_dir(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        // A step running as another account still needs to write its Docker
+        // CLI config; group access is the only option without broadening the
+        // directory to everyone. The account must share the workspace group.
+        let mode = if run_as_user
+            .map(str::trim)
+            .filter(|user| !user.is_empty())
+            .is_some()
+        {
+            0o770
+        } else {
+            0o700
+        };
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode))?;
     }
     Ok(())
 }

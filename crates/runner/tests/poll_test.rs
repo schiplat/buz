@@ -603,18 +603,45 @@ fn prepare_creates_private_dir_for_per_job_isolation() {
     let job_ws = dir.path().join("job-1");
     std::fs::create_dir_all(&job_ws).unwrap();
 
-    prepare_job_docker_config_dir(job_ws.to_str().unwrap(), DockerConfigIsolation::PerJob).unwrap();
+    prepare_job_docker_config_dir(
+        job_ws.to_str().unwrap(),
+        DockerConfigIsolation::PerJob,
+        None,
+    )
+    .unwrap();
     let docker_dir = job_ws.join(".docker");
     assert!(docker_dir.is_dir());
     use std::os::unix::fs::PermissionsExt;
     let mode = docker_dir.metadata().unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o700, "docker config dir must be 0700");
 
+    // run_as_user: the executing account must be able to write its config,
+    // so the directory is group-writable instead of owner-only.
+    let shared_group_ws = dir.path().join("job-3");
+    std::fs::create_dir_all(&shared_group_ws).unwrap();
+    prepare_job_docker_config_dir(
+        shared_group_ws.to_str().unwrap(),
+        DockerConfigIsolation::PerJob,
+        Some("buz-job"),
+    )
+    .unwrap();
+    let group_mode = shared_group_ws
+        .join(".docker")
+        .metadata()
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(group_mode & 0o777, 0o770, "run_as_user needs group access");
+
     // Shared mode: no directory is created.
     let shared_ws = dir.path().join("job-2");
     std::fs::create_dir_all(&shared_ws).unwrap();
-    prepare_job_docker_config_dir(shared_ws.to_str().unwrap(), DockerConfigIsolation::Shared)
-        .unwrap();
+    prepare_job_docker_config_dir(
+        shared_ws.to_str().unwrap(),
+        DockerConfigIsolation::Shared,
+        None,
+    )
+    .unwrap();
     assert!(!shared_ws.join(".docker").exists());
 }
 
