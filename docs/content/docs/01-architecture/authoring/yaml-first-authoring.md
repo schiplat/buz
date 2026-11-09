@@ -101,7 +101,7 @@ See [Configuration](/docs/03-operations/configuration/).
 
 ## Notes
 
-- Form step-card authoring UI is **removed**; legacy `PUT /pipelines/{id}` body remains only for old `source=form` rows (409 once migrated to `source=yaml`).
+- **Form storage is retired** (single-source): `POST`/`PUT /pipelines` render the request into the pipeline's YAML file and bind it — every pipeline is `source=yaml`, file-backed. A startup migration converts pre-retirement `source=form` rows once (failures are logged and retried on the next start; the row keeps serving from its DB projection meanwhile). Two pipeline names may share a slug — the second gets a `-2` suffixed file. Behavior tightened with the contract: a cron trigger without `on.cron.environment` is now rejected at create (the YAML schema always required it; the old form path was lax).
 - Quick YAML Reference lives in the YAML editor dialog (Editor | Reference tabs), not a separate Form.
 
 ## Related

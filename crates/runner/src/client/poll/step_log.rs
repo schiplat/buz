@@ -81,7 +81,15 @@ pub struct StreamBudget {
     truncated: bool,
     notified: bool,
     omitted: u64,
+    /// Bounded tail of masked output past the window — the truncation marker
+    /// carries these lines so an over-limit step still shows how it ended.
+    tail: std::collections::VecDeque<String>,
 }
+
+/// Tail-summary bounds: the marker chunk carries at most this much of the
+/// overflow (masked before buffering).
+pub const STREAM_TAIL_LINES: usize = 200;
+pub const STREAM_TAIL_LINE_MAX: usize = 2000;
 
 impl StreamBudget {
     pub fn new(log_base: i32) -> Self {
@@ -98,6 +106,7 @@ impl StreamBudget {
             truncated: false,
             notified: false,
             omitted: 0,
+            tail: std::collections::VecDeque::new(),
         }
     }
 
@@ -136,13 +145,45 @@ impl StreamBudget {
         None
     }
 
-    /// Marker content with the total omitted-chunk count (a chunk is one
-    /// engine output line).
+    /// Buffer one masked chunk past the window into the tail summary.
+    /// Keeps the LAST [`STREAM_TAIL_LINES`] lines, each clipped to
+    /// [`STREAM_TAIL_LINE_MAX`] bytes on a char boundary.
+    pub fn hold(&mut self, masked_chunk: &str) {
+        for line in masked_chunk.lines() {
+            let clipped = if line.len() > STREAM_TAIL_LINE_MAX {
+                let mut cut = STREAM_TAIL_LINE_MAX;
+                while cut > 0 && !line.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                format!("{} …", &line[..cut])
+            } else {
+                line.to_string()
+            };
+            if self.tail.len() == STREAM_TAIL_LINES {
+                self.tail.pop_front();
+            }
+            self.tail.push_back(clipped);
+        }
+    }
+
+    /// Marker content: total omitted-chunk count plus the bounded tail
+    /// (a chunk is one engine output line).
     pub fn marker(&self) -> String {
-        format!(
+        let mut out = format!(
             "==> OUTPUT TRUNCATED\n  omitted  {} chunk(s) over the per-step log window\n",
             self.omitted
-        )
+        );
+        if !self.tail.is_empty() {
+            out.push_str(&format!(
+                "----- last {} line(s) of the stream -----\n",
+                self.tail.len()
+            ));
+            for line in &self.tail {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out
     }
 }
 
@@ -330,9 +371,10 @@ impl StepLogger {
                     }
                 }
                 None => {
-                    // Window exhausted: keep draining (see doc above) and
-                    // annotate once so the live terminal shows why output
-                    // stops being appended.
+                    // Window exhausted: keep draining (see doc above), hold a
+                    // bounded tail for the summary, and annotate once so the
+                    // live terminal shows why output stops being appended.
+                    budget.hold(&masked);
                     if let Some(marker) = budget.unnotified_truncation() {
                         self.emit(LOG_STEP_TRUNCATED, marker).await;
                     }

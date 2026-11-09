@@ -153,7 +153,7 @@ unexpected PR builds.
 
 A pipeline may have **multiple** Git webhooks (e.g. one for GitHub, one for Gitee, or different branch filters). Not in YAML — configure under Pipeline → **Trigger events**.
 
-**Immutable after create:** no update/rotate API. To change provider, filter, or secret — **delete** the hook and **create** a new one (new URL + secret).
+**Partially mutable.** `PUT /api/v1/pipelines/{id}/git-hooks/{hook_id}` updates `label`, `branch_filter`, `event_filter`, `environment`, and `enabled` (audit `git_hook.update`). Provider, `hook_key`, and the signing secret are **immutable** — the hook URL and secret only change by **delete + recreate** (which is also the secret-rotation path).
 
 | Field | Description |
 |-------|-------------|
@@ -164,7 +164,7 @@ A pipeline may have **multiple** Git webhooks (e.g. one for GitHub, one for Gite
 | `secret` | encrypted; plaintext shown once at create |
 | `branch_filter` | e.g. `main`, `release/*`; empty = all. For pull requests, matched against the base branch |
 | `event_filter` | `push` (default) \| `pull_request` \| `push,pull_request` |
-| `environment` | Required at create; must be one of the pipeline's declared `environments`. Every delivery triggered by this hook targets exactly this environment — it cannot be overridden per request. |
+| `environment` | Required; must be one of the pipeline's declared `environments`. Every delivery triggered by this hook targets exactly this environment — it cannot be overridden per request. Updatable via PUT. |
 
 Generic `on.webhook` / `webhook_path` remains for human/CI HTTP triggers (its `environment` selector precedence: query > body > YAML default).
 

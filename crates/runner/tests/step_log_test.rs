@@ -440,3 +440,38 @@ fn chunk_levels_follow_layout_offsets() {
         assert_eq!(level_for_offset(offset), L::Info, "offset {offset}");
     }
 }
+
+#[test]
+fn truncation_marker_carries_a_bounded_masked_tail() {
+    let mut budget = StreamBudget::new(step_log_base(0));
+    let width = LOG_STREAM_LAST - LOG_STREAM_START + 1;
+    for _ in 0..width {
+        budget.take();
+    }
+    // Overflow: every drained chunk goes through take() (counting the
+    // omission) and then into the tail — mirroring stream_chunks.
+    for i in 0..250u32 {
+        assert_eq!(budget.take(), None);
+        budget.hold(&format!("overflow line {i}\n"));
+    }
+    let marker = budget.marker();
+    assert!(marker.contains("omitted  250 chunk(s)"), "{marker}");
+    assert!(marker.contains("last 200 line(s)"), "{marker}");
+    assert!(
+        marker.contains("overflow line 249"),
+        "keeps the end: {marker}"
+    );
+    assert!(
+        !marker.contains("overflow line 49\n"),
+        "drops the head past the window: {marker}"
+    );
+    // Long lines are clipped.
+    let mut budget = StreamBudget::new(step_log_base(0));
+    while budget.take().is_some() {}
+    let long = "x".repeat(5000);
+    let _ = budget.take();
+    budget.hold(&format!("{long}\n"));
+    let marker = budget.marker();
+    assert!(marker.len() < long.len(), "tail line clipped: {marker}");
+    assert!(marker.contains('…'), "clip marker present");
+}
