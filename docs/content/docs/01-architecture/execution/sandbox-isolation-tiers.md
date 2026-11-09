@@ -41,6 +41,13 @@ Product answers recorded 2026-10-28; the rest of this page follows them.
 
 ## The tier ladder
 
+> **Maturity note.** `container` and `sandbox` are the exercised tiers (the
+> sandbox host has an automated test surface and CI coverage on Linux). The
+> `vm` tier is implemented and gated by the same slot/profile machinery, but
+> it is only exercised by the manual Linux e2e
+> (`scripts/e2e-sandbox-host.sh`) — treat it as **experimental** until it has
+> the same automated coverage.
+
 | Tier | Isolation boundary | Delivered by (OCI runtime) | Host prerequisites | Primary risk shape |
 |------|--------------------|----------------------------|--------------------|--------------------|
 | `host` (L0) | None — steps run as the Runner OS user | — | — | Full host compromise if a job turns hostile |

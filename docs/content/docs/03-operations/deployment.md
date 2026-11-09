@@ -22,6 +22,16 @@ Both consume the same config files (`manager.toml` / `runner.toml`), the same
 `BUZ_JWT_SECRET` derivation, and the same SQLite storage - switching between
 them does not change runtime behavior.
 
+{{< callout type="warning" >}}
+**Run exactly one Manager process per SQLite database.** The background
+schedulers (queue dispatch, cron triggers, GitHub fetch) elect a leader via
+the `scheduler_lease` table, so a second process would not double-fire jobs —
+but the Runner wake-up bus and the WebSocket log/status broadcast are
+in-process: a second Manager would serve stale real-time views and its
+Runners would fall back to polling timeouts. High availability at the Manager
+tier is a backup/restore concern, not an active-active deployment.
+{{< /callout >}}
+
 ## Embedded Web UI
 
 `buz-manager` embeds `dashboard/dist` at compile time (`rust-embed`).
