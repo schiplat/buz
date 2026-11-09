@@ -45,12 +45,12 @@ A single pipeline step with `engine: ssh` may bind **multiple** Infrastructure H
     docker compose up -d
 ```
 
-**Why the cap exists:** `parallel` fans out to every matched host at once by
-default-capped width (16). A wide label match (say 200 hosts) opening 200
+**Why the cap exists:** `parallel` fans out to every matched host at a
+default-capped width (5). A wide label match (say 200 hosts) opening 200
 simultaneous SSH connections trips target sshd `MaxStartups` limits (default
 10:30:100 drops the excess) and stresses the Runner's fd/memory budget — the
 cap turns the fan-out into bounded waves. Set `hosts_max_parallel` only when
-16 is wrong for your fleet.
+5 is wrong for your fleet.
 
 **History:** multi-host execution was always one-after-another (`for` loops). Parallel fan-out, cancel-all, login banners, and `hosts_strategy` came later. Default stays **`chain`** so existing pipelines keep that behavior until they opt into `parallel`. Legacy YAML value `serial` is accepted and normalized to `chain`.
 
