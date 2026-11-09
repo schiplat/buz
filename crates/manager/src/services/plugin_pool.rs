@@ -1722,11 +1722,15 @@ pub async fn resolve_remote(
     }
 
     let reviewed = picked.reviewed;
+    // Pool rows do not persist the index's `deprecated` overlay; a source that
+    // declares the notice inside the spec still surfaces it here.
+    let deprecated = spec.deprecated.clone();
     Ok(Some((
         ResolvedPlugin {
             spec,
             source: format!("{} ({})", picked.source_url, picked.file_path),
             content_sha256: picked.sha256,
+            deprecated,
         },
         reviewed,
     )))

@@ -10,9 +10,10 @@ type HmacSha256 = Hmac<Sha256>;
 pub const PROVIDER_GITHUB: &str = "github";
 pub const PROVIDER_GITEE: &str = "gitee";
 
-/// Normalized push (or ping) event after platform-specific parsing.
+/// Normalized push / pull-request (or ping) event after platform parsing.
 #[derive(Debug, Clone, Default)]
 pub struct NormalizedGitEvent {
+    /// `push` | `pull_request` | `ping`.
     pub event_type: String,
     pub repo_full_name: String,
     pub clone_url: String,
@@ -23,8 +24,17 @@ pub struct NormalizedGitEvent {
     pub commit_message: String,
     pub sender: String,
     pub compare_url: String,
+    /// Pull-request number (`""` for push events).
+    pub pr_number: String,
+    /// Pull-request base branch — what `branch` filters match on.
+    pub pr_base_branch: String,
+    /// Pull-request source branch.
+    pub pr_head_branch: String,
     /// True for platform handshake / ping — do not create a job.
     pub is_ping: bool,
+    /// Set when the delivery parsed but must not create a job (e.g. a
+    /// pull-request `closed` action). Non-empty = record and return 200.
+    pub ignored_reason: String,
 }
 
 impl NormalizedGitEvent {
@@ -37,6 +47,7 @@ impl NormalizedGitEvent {
             }
         };
         put(&mut m, "GIT_PROVIDER", provider);
+        put(&mut m, "GIT_EVENT", &self.event_type);
         put(&mut m, "GIT_REPO", &self.repo_full_name);
         put(&mut m, "GIT_CLONE_URL", &self.clone_url);
         put(&mut m, "GIT_REF", &self.git_ref);
@@ -49,6 +60,9 @@ impl NormalizedGitEvent {
         put(&mut m, "GIT_COMMIT_MESSAGE", &self.commit_message);
         put(&mut m, "GIT_SENDER", &self.sender);
         put(&mut m, "GIT_COMPARE_URL", &self.compare_url);
+        put(&mut m, "GIT_PR_NUMBER", &self.pr_number);
+        put(&mut m, "GIT_PR_BASE", &self.pr_base_branch);
+        put(&mut m, "GIT_PR_HEAD", &self.pr_head_branch);
         m
     }
 }
@@ -112,12 +126,76 @@ pub fn parse_github_event(event_name: &str, body: &Value) -> Result<NormalizedGi
             ..Default::default()
         });
     }
+    if event_name == "pull_request" {
+        return parse_github_pull_request(body);
+    }
     if event_name != "push" && !event_name.is_empty() {
         return Err(format!(
-            "unsupported GitHub event '{event_name}' (only push/ping)"
+            "unsupported GitHub event '{event_name}' (only push/pull_request/ping)"
         ));
     }
     parse_push_like(body, "push", true)
+}
+
+/// GitHub `pull_request` delivery → a normalizable event.
+///
+/// Only `opened`, `synchronize`, `reopened`, and `ready_for_review` create
+/// jobs; other actions (closed, labeled, edited, …) return an ignored event
+/// so the caller records them without a redelivery-triggering error. Draft
+/// PRs are ignored until `ready_for_review`. Branch filters match the **base**
+/// branch (what the code merges into).
+fn parse_github_pull_request(body: &Value) -> Result<NormalizedGitEvent, String> {
+    let action = json_str(body, &["action"]);
+    let draft = body
+        .get("pull_request")
+        .and_then(|pr| pr.get("draft"))
+        .and_then(|draft| draft.as_bool())
+        .unwrap_or(false);
+    let base_branch = json_str(body, &["pull_request", "base", "ref"]);
+    let head_branch = json_str(body, &["pull_request", "head", "ref"]);
+    let head_sha = json_str(body, &["pull_request", "head", "sha"]);
+    if head_sha.is_empty() {
+        return Err("pull_request payload is missing head.sha".into());
+    }
+    let clone_url = {
+        let ssh = json_str(body, &["repository", "ssh_url"]);
+        if ssh.is_empty() {
+            json_str(body, &["repository", "clone_url"])
+        } else {
+            ssh
+        }
+    };
+    let mut event = NormalizedGitEvent {
+        event_type: "pull_request".into(),
+        repo_full_name: json_str(body, &["repository", "full_name"]),
+        clone_url,
+        git_ref: if base_branch.is_empty() {
+            String::new()
+        } else {
+            format!("refs/heads/{base_branch}")
+        },
+        branch: base_branch,
+        commit_sha: head_sha,
+        commit_message: first_line_truncated(&json_str(body, &["pull_request", "title"]), 200),
+        sender: json_str(body, &["sender", "login"]),
+        compare_url: json_str(body, &["pull_request", "html_url"]),
+        pr_number: json_number(body, &["number"]),
+        pr_base_branch: json_str(body, &["pull_request", "base", "ref"]),
+        pr_head_branch: head_branch,
+        tag: String::new(),
+        is_ping: false,
+        ignored_reason: String::new(),
+    };
+    let actionable = matches!(
+        action.as_str(),
+        "opened" | "synchronize" | "reopened" | "ready_for_review"
+    );
+    if !actionable {
+        event.ignored_reason = format!("pull_request action '{action}'");
+    } else if draft && action != "ready_for_review" {
+        event.ignored_reason = "draft pull request".into();
+    }
+    Ok(event)
 }
 
 /// Parse Gitee event from JSON + `X-Gitee-Event` header (e.g. `Push Hook`).
@@ -131,10 +209,13 @@ pub fn parse_gitee_event(event_name: &str, body: &Value) -> Result<NormalizedGit
             ..Default::default()
         });
     }
+    if ev.contains("merge_request") || ev.contains("merge request") {
+        return parse_gitee_merge_request(body);
+    }
     // Gitee uses "Push Hook" / push_hooks
     if !ev.is_empty() && !ev.contains("push") {
         return Err(format!(
-            "unsupported Gitee event '{event_name}' (only Push Hook)"
+            "unsupported Gitee event '{event_name}' (only Push Hook / Merge Request Hook)"
         ));
     }
     let mut ev = parse_push_like(body, "push", false)?;
@@ -154,6 +235,55 @@ pub fn parse_gitee_event(event_name: &str, body: &Value) -> Result<NormalizedGit
         }
     }
     Ok(ev)
+}
+
+/// Gitee `Merge Request Hook` → a normalized pull-request event.
+fn parse_gitee_merge_request(body: &Value) -> Result<NormalizedGitEvent, String> {
+    let sha = json_str(body, &["object_attributes", "last_commit", "id"]);
+    if sha.is_empty() {
+        return Err("merge request payload is missing last_commit.id".into());
+    }
+    let base = json_str(body, &["object_attributes", "target_branch"]);
+    let action = json_str(body, &["object_attributes", "action"]);
+    let mut event = NormalizedGitEvent {
+        event_type: "pull_request".into(),
+        repo_full_name: gitee_repo_name(body),
+        clone_url: {
+            let ssh = json_str(body, &["repository", "git_ssh_url"]);
+            if ssh.is_empty() {
+                json_str(body, &["repository", "ssh_url"])
+            } else {
+                ssh
+            }
+        },
+        git_ref: if base.is_empty() {
+            String::new()
+        } else {
+            format!("refs/heads/{base}")
+        },
+        branch: base.clone(),
+        commit_sha: sha,
+        commit_message: first_line_truncated(&json_str(body, &["object_attributes", "title"]), 200),
+        sender: {
+            let name = json_str(body, &["sender", "name"]);
+            if name.is_empty() {
+                json_str(body, &["user", "name"])
+            } else {
+                name
+            }
+        },
+        compare_url: json_str(body, &["object_attributes", "url"]),
+        pr_number: json_number(body, &["object_attributes", "iid"]),
+        pr_base_branch: base,
+        pr_head_branch: json_str(body, &["object_attributes", "source_branch"]),
+        tag: String::new(),
+        is_ping: false,
+        ignored_reason: String::new(),
+    };
+    if !matches!(action.as_str(), "open" | "update" | "reopen" | "") {
+        event.ignored_reason = format!("merge request action '{action}'");
+    }
+    Ok(event)
 }
 
 fn gitee_repo_name(body: &Value) -> String {
@@ -232,6 +362,7 @@ fn parse_push_like(
         sender,
         compare_url,
         is_ping: false,
+        ..Default::default()
     })
 }
 
@@ -261,6 +392,21 @@ fn json_str(v: &Value, path: &[&str]) -> String {
             Some(x) => x,
             None => return String::new(),
         };
+    }
+    cur.as_str().unwrap_or("").trim().to_string()
+}
+
+/// Numeric payload field as a string (GitHub's `number` is an integer).
+fn json_number(v: &Value, path: &[&str]) -> String {
+    let mut cur = v;
+    for p in path {
+        cur = match cur.get(*p) {
+            Some(x) => x,
+            None => return String::new(),
+        };
+    }
+    if let Some(n) = cur.as_i64() {
+        return n.to_string();
     }
     cur.as_str().unwrap_or("").trim().to_string()
 }

@@ -208,6 +208,9 @@ pub struct ResolvedPlugin {
     pub source: String,
     /// SHA-256 over the raw spec file bytes.
     pub content_sha256: String,
+    /// Deprecation notice for this version (`deprecations.json` overlay in
+    /// the index directory, or the spec's own `deprecated` field).
+    pub deprecated: Option<String>,
 }
 
 /// Local plugin dir resolution.
@@ -341,6 +344,24 @@ struct IndexCacheEntry {
 static INDEX_CACHE: LazyLock<Mutex<HashMap<PathBuf, HashMap<PathBuf, IndexCacheEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// `deprecations.json` beside the specs: `{ "deprecations": [ { id,
+/// version, reason } ] }`. Generated into the manifests by the plugin
+/// tooling; the Manager reads it here so a resolve can warn without the
+/// published YAML (whose content hash must not change) carrying the flag.
+#[derive(serde::Deserialize, Default)]
+struct DeprecationsFile {
+    #[serde(default)]
+    deprecations: Vec<DeprecationEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct DeprecationEntry {
+    id: String,
+    version: String,
+    #[serde(default)]
+    reason: String,
+}
+
 /// The `local` plugin index: a directory of one-file-one-plugin YAML specs.
 pub struct LocalPluginIndex {
     dir: PathBuf,
@@ -441,6 +462,31 @@ impl LocalPluginIndex {
         }
 
         Ok(fresh)
+    }
+
+    /// Deprecation notices declared for this directory, keyed by id+version.
+    ///
+    /// A missing or malformed overlay is empty (resolve must not fail because
+    /// of an optional advisory file); the generator that writes it fails hard
+    /// on bad entries, so this lenient path only covers hand-edited copies.
+    fn deprecations(&self) -> HashMap<(String, String), String> {
+        let path = self.dir.join("deprecations.json");
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return HashMap::new();
+        };
+        let Ok(parsed) = serde_json::from_str::<DeprecationsFile>(&raw) else {
+            tracing::warn!(
+                "plugin index: {} is not valid JSON — ignored",
+                path.display()
+            );
+            return HashMap::new();
+        };
+        parsed
+            .deprecations
+            .into_iter()
+            .filter(|entry| !entry.reason.trim().is_empty())
+            .map(|entry| ((entry.id, entry.version), entry.reason.trim().to_string()))
+            .collect()
     }
 
     /// Resolve a `uses:` reference against this index.
@@ -565,10 +611,16 @@ impl LocalPluginIndex {
             buz_requirement_satisfied(requires, current_buz)?;
         }
 
+        let deprecated = picked.spec.deprecated.clone().or_else(|| {
+            self.deprecations()
+                .get(&(picked.spec.id.clone(), picked.spec.version.clone()))
+                .cloned()
+        });
         Ok(ResolvedPlugin {
             spec: picked.spec,
             source: picked.source,
             content_sha256: picked.content_sha256,
+            deprecated,
         })
     }
 }
@@ -784,6 +836,27 @@ pub struct ResolvedSteps {
     pub resolutions: Vec<PendingStepResolution>,
 }
 
+/// Warn when a resolved template is flagged deprecated.
+///
+/// The file stays resolvable (pipelines already pinned to it keep working),
+/// but new saves and triggers surface the notice so the pin can move to the
+/// replacement version.
+fn warn_if_deprecated(resolved: &ResolvedPlugin) {
+    if let Some(reason) = resolved
+        .deprecated
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+    {
+        tracing::warn!(
+            plugin = %resolved.spec.id,
+            version = %resolved.spec.version,
+            reason,
+            "resolving a deprecated plugin version"
+        );
+    }
+}
+
 /// Resolve all marketplace references without mutating the database. The caller
 /// persists `resolutions` in the same transaction as the expanded tasks.
 pub fn resolve_uses_steps(
@@ -813,6 +886,7 @@ pub fn resolve_uses_steps(
                     "resolving a template that is not in the reviewed manifest"
                 );
             }
+            warn_if_deprecated(&resolved);
             let expanded = expand_uses_step(&step, &resolved).map_err(|e| e.join("; "))?;
             let expanded_json = serde_json::to_string(&expanded)
                 .map_err(|e| format!("cannot serialize expanded step: {e}"))?;
@@ -899,6 +973,7 @@ pub async fn resolve_uses_steps_async(
                     "resolving a template without an official review badge"
                 );
             }
+            warn_if_deprecated(&resolved);
             let expanded = expand_uses_step(&step, &resolved).map_err(|e| e.join("; "))?;
             let expanded_json = serde_json::to_string(&expanded)
                 .map_err(|e| format!("cannot serialize expanded step: {e}"))?;
@@ -959,4 +1034,49 @@ pub async fn replace_step_resolutions(
         .map_err(|e| format!("cannot record step resolution: {e}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod deprecation_overlay_tests {
+    use super::*;
+
+    fn index_with_overlay(json: &str) -> (tempfile::TempDir, LocalPluginIndex) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("deprecations.json"), json).expect("write overlay");
+        let index = LocalPluginIndex::new(dir.path().to_path_buf());
+        (dir, index)
+    }
+
+    #[test]
+    fn overlay_marks_the_exact_version() {
+        let (_dir, index) = index_with_overlay(
+            r#"{"deprecations":[{"id":"buz/a","version":"1.0.0","reason":"use 1.1.0"}]}"#,
+        );
+        let notices = index.deprecations();
+        assert_eq!(
+            notices
+                .get(&("buz/a".into(), "1.0.0".into()))
+                .map(String::as_str),
+            Some("use 1.1.0")
+        );
+        assert!(!notices.contains_key(&("buz/a".into(), "1.1.0".into())));
+    }
+
+    #[test]
+    fn missing_or_malformed_overlay_is_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = LocalPluginIndex::new(dir.path().to_path_buf());
+        assert!(index.deprecations().is_empty(), "missing file");
+
+        std::fs::write(dir.path().join("deprecations.json"), "not json").expect("write");
+        assert!(index.deprecations().is_empty(), "malformed file");
+    }
+
+    #[test]
+    fn empty_reason_is_ignored() {
+        let (_dir, index) = index_with_overlay(
+            r#"{"deprecations":[{"id":"buz/a","version":"1.0.0","reason":"  "}]}"#,
+        );
+        assert!(index.deprecations().is_empty());
+    }
 }

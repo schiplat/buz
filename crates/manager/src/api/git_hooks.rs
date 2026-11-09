@@ -38,6 +38,7 @@ fn public_hook_view(
     provider: &str,
     hook_key: &str,
     branch_filter: &str,
+    event_filter: &str,
     environment: &str,
     enabled: bool,
     plaintext_secret: Option<&str>,
@@ -49,6 +50,7 @@ fn public_hook_view(
         "hook_key": hook_key,
         "url_path": format!("/api/v1/hooks/git/{provider}/{hook_key}"),
         "branch_filter": branch_filter,
+        "event_filter": event_filter,
         "environment": environment,
         "enabled": enabled,
         "has_secret": true,
@@ -70,7 +72,7 @@ pub async fn list_hooks(
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let rows = sqlx::query(
-        "SELECT id, label, provider, hook_key, branch_filter, enabled, environment
+        "SELECT id, label, provider, hook_key, branch_filter, enabled, environment, event_filter
          FROM pipeline_git_hooks WHERE pipeline_id = ?
          ORDER BY created_at ASC",
     )
@@ -88,12 +90,14 @@ pub async fn list_hooks(
             let branch_filter: String = r.get(4);
             let enabled: i64 = r.get(5);
             let environment: String = r.get(6);
+            let event_filter: String = r.get(7);
             public_hook_view(
                 &id,
                 &label,
                 &provider,
                 &hook_key,
                 &branch_filter,
+                &event_filter,
                 &environment,
                 enabled != 0,
                 None,
@@ -114,6 +118,10 @@ pub struct CreateGitHookRequest {
     pub label: Option<String>,
     #[serde(default)]
     pub branch_filter: Option<String>,
+    /// Comma-separated normalized events this hook accepts: `push`
+    /// (default), `pull_request`, or both.
+    #[serde(default)]
+    pub event_filter: Option<String>,
     pub environment: String,
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -136,6 +144,7 @@ pub async fn create_hook(
     })?;
     let label = req.label.unwrap_or_default().trim().to_string();
     let branch_filter = req.branch_filter.unwrap_or_default();
+    let event_filter = super::git_webhook::normalize_event_filter(req.event_filter.as_deref())?;
     let environment = req.environment.trim().to_string();
     if environment.is_empty() {
         return Err(AppError::ValidationFailed(
@@ -163,8 +172,8 @@ pub async fn create_hook(
 
     sqlx::query(
         "INSERT INTO pipeline_git_hooks
-         (id, pipeline_id, label, provider, hook_key, secret_ciphertext, branch_filter, environment, enabled)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, pipeline_id, label, provider, hook_key, secret_ciphertext, branch_filter, environment, enabled, event_filter)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&pipeline_id)
@@ -175,6 +184,7 @@ pub async fn create_hook(
     .bind(&branch_filter)
     .bind(&environment)
     .bind(if enabled { 1 } else { 0 })
+    .bind(&event_filter)
     .execute(&state.pool)
     .await?;
 
@@ -195,6 +205,7 @@ pub async fn create_hook(
                 "provider": provider,
                 "hook_key": &hook_key,
                 "branch_filter": &branch_filter,
+                "event_filter": &event_filter,
                 "environment": &environment,
                 "enabled": enabled,
             }))),
@@ -207,6 +218,7 @@ pub async fn create_hook(
         provider,
         &hook_key,
         &branch_filter,
+        &event_filter,
         &environment,
         enabled,
         Some(secret.as_str()),

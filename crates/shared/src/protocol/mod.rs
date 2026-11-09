@@ -575,11 +575,20 @@ impl LogLevel {
 ///   3     ==> LOGIN […]         (registry)
 ///   4     ==> STAGE exec        (verbose)
 ///   5     ==> RUN […]
-///   6…    streamed stdout/stderr
+///   6…9990 streamed stdout/stderr
+///   9991  ==> OUTPUT TRUNCATED  (stream overflowed the window)
 ///   9993  ==> STEP RESULT       (verbose; after stream)
 ///   9997  ==> ERROR
 ///   9998  ==> CANCELLED (cancel marker)
 ///   9999  ==> output summary
+///
+/// The stream window is **bounded** on purpose: each step owns exactly
+/// 10_000 chunk indexes, and `UNIQUE(job_id, chunk_index)` +
+/// `INSERT OR REPLACE` means an unbounded stream would overwrite the
+/// step's own sentinels (and the next step's chunks). A runner that
+/// exhausts 6…9990 uploads the 9991 truncation marker instead and drops
+/// the remaining engine output; display code must treat 9991 as "this
+/// step's output is incomplete", not as a step failure.
 ///
 /// The job-start runner identity banner uses `step_order = 0` with a negative
 /// `chunk_index` (see `LOG_RUNNER_BANNER`), so it sorts before step 0's first
@@ -617,6 +626,11 @@ pub struct CreatePipelineRequest {
     pub cron_expr: Option<String>,
     #[serde(default)]
     pub cron_environment: Option<String>,
+    /// End-of-build notification channels. YAML pipelines carry the same
+    /// block in their file; form pipelines store it here (it is frozen into
+    /// every job snapshot at trigger time).
+    #[serde(default)]
+    pub notify: Option<Vec<crate::pipeline_yaml::NotifyChannelYaml>>,
     pub runner_labels: Vec<String>,
     pub timeout_seconds: Option<i32>,
     pub concurrency_group: Option<String>,

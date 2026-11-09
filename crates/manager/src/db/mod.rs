@@ -477,6 +477,9 @@ pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Res
 
     // ── Multi-env governance: mandatory pipeline environments ──
     add_column_if_missing(pool, "pipelines", "environments TEXT NOT NULL DEFAULT '[]'").await;
+    // End-of-build notify channels for form pipelines (YAML pipelines store
+    // the same block in their file; the scanner mirrors it here).
+    add_column_if_missing(pool, "pipelines", "notify_json TEXT NOT NULL DEFAULT '[]'").await;
     let _ = sqlx::query(
         "ALTER TABLE pipelines ADD COLUMN webhook_environment TEXT NOT NULL DEFAULT ''",
     )
@@ -1055,6 +1058,14 @@ pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Res
     .await?;
 
     add_column_if_missing(pool, "pipeline_git_hooks", "label TEXT NOT NULL DEFAULT ''").await;
+    // Which normalized events this hook accepts; empty/default = push only,
+    // preserving the pre-PR behavior for existing hooks.
+    add_column_if_missing(
+        pool,
+        "pipeline_git_hooks",
+        "event_filter TEXT NOT NULL DEFAULT 'push'",
+    )
+    .await;
     let _ = sqlx::query(
         "ALTER TABLE pipeline_git_hooks ADD COLUMN environment TEXT NOT NULL DEFAULT ''",
     )

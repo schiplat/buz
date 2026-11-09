@@ -157,6 +157,7 @@ const gitHookCopied = ref<{ id: string; kind: 'url' | 'secret' } | null>(null)
 const newHookProvider = ref<'github' | 'gitee'>('gitee')
 const newHookLabel = ref('')
 const newHookBranchFilter = ref('')
+const newHookOnPullRequest = ref(false)
 const newHookEnvironment = ref('')
 const newHookAvailableEnvironments = computed(() => {
   const declared = new Set<string>(pipeline.value?.environments || [])
@@ -199,6 +200,7 @@ async function addGitHook() {
       provider: newHookProvider.value,
       label: newHookLabel.value.trim(),
       branch_filter: newHookBranchFilter.value,
+      event_filter: newHookOnPullRequest.value ? 'push,pull_request' : 'push',
       environment: newHookEnvironment.value,
       enabled: true,
     })
@@ -207,6 +209,7 @@ async function addGitHook() {
     }
     newHookLabel.value = ''
     newHookBranchFilter.value = ''
+    newHookOnPullRequest.value = false
     newHookEnvironment.value = ''
     await loadGitHooks()
   } catch (e: any) {
@@ -2602,6 +2605,10 @@ async function handleTrigger() {
                   <div>
                     <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Branch filter</label>
                     <input v-model="newHookBranchFilter" type="text" placeholder="optional" class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm font-mono outline-hidden" />
+                    <label class="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <input v-model="newHookOnPullRequest" type="checkbox" class="rounded-sm border-border" />
+                      Also trigger on pull requests (base branch)
+                    </label>
                   </div>
                   <div>
                     <label class="text-[10px] uppercase text-muted-foreground tracking-wider mb-0.5 block">Environment</label>

@@ -33,7 +33,7 @@ pub async fn handle(
         .ok_or_else(|| AppError::NotFound(format!("unknown git provider '{provider_raw}'")))?;
 
     let row = sqlx::query(
-        "SELECT h.pipeline_id, h.secret_ciphertext, h.branch_filter, h.enabled, h.provider, p.name, p.is_active, h.environment
+        "SELECT h.pipeline_id, h.secret_ciphertext, h.branch_filter, h.enabled, h.provider, p.name, p.is_active, h.environment, h.event_filter
          FROM pipeline_git_hooks h
          JOIN pipelines p ON p.id = h.pipeline_id
          WHERE h.hook_key = ?",
@@ -51,6 +51,7 @@ pub async fn handle(
     let pipeline_name: String = row.get(5);
     let is_active: i64 = row.get(6);
     let environment: String = row.get(7);
+    let event_filter: String = row.get(8);
 
     if configured_provider != provider {
         return Err(AppError::NotFound(format!(
@@ -163,6 +164,7 @@ pub async fn handle(
                 &pipeline_name,
                 provider,
                 &branch_filter,
+                &event_filter,
                 &event,
                 &environment,
             )
@@ -179,6 +181,7 @@ async fn finish_claimed(
     pipeline_name: &str,
     provider: &str,
     branch_filter: &str,
+    event_filter: &str,
     event: &NormalizedGitEvent,
     environment: &str,
 ) -> Result<axum::response::Response, AppError> {
@@ -190,6 +193,51 @@ async fn finish_claimed(
                 "decision": "skipped",
                 "skip_reason": "ping",
                 "event_id": event_id,
+                "pipeline_id": pipeline_id,
+                "pipeline_name": pipeline_name,
+            }),
+        ));
+    }
+
+    // Parsed-but-not-actionable deliveries (PR closed/labeled, draft PR,
+    // merged MR) are recorded and acknowledged — returning an error would
+    // make the provider retry them.
+    if !event.ignored_reason.is_empty() {
+        let reason = event.ignored_reason.clone();
+        finalize_event(&state.pool, event_id, "skipped", &reason, None).await?;
+        return Ok(json_status(
+            StatusCode::OK,
+            serde_json::json!({
+                "decision": "skipped",
+                "skip_reason": reason,
+                "event_id": event_id,
+                "event": event.event_type,
+                "pipeline_id": pipeline_id,
+                "pipeline_name": pipeline_name,
+            }),
+        ));
+    }
+
+    // Event subscription: hooks default to `push`; pull-request deliveries
+    // are opt-in per hook (`event_filter`), so existing hooks never start
+    // firing on PRs after an upgrade.
+    if !event_filter_allows(event_filter, &event.event_type) {
+        finalize_event(
+            &state.pool,
+            event_id,
+            "skipped",
+            "event_not_subscribed",
+            None,
+        )
+        .await?;
+        return Ok(json_status(
+            StatusCode::OK,
+            serde_json::json!({
+                "decision": "skipped",
+                "skip_reason": "event_not_subscribed",
+                "event_id": event_id,
+                "event": event.event_type,
+                "event_filter": event_filter,
                 "pipeline_id": pipeline_id,
                 "pipeline_name": pipeline_name,
             }),
@@ -334,4 +382,81 @@ fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
 
 fn json_status(status: StatusCode, data: serde_json::Value) -> axum::response::Response {
     (status, Json(ApiResponse::success(data))).into_response()
+}
+
+/// Whether a hook's comma-separated `event_filter` accepts an event type.
+/// Empty/legacy rows mean push only (the pre-PR behavior).
+pub(crate) fn event_filter_allows(filter: &str, event_type: &str) -> bool {
+    let filter = filter.trim();
+    if filter.is_empty() {
+        return event_type == "push";
+    }
+    filter
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .any(|part| part == event_type)
+}
+
+/// Validate an `event_filter` from the API and return its stored form
+/// (`push`, `push,pull_request`, …). Defaults to `push`.
+pub(crate) fn normalize_event_filter(raw: Option<&str>) -> Result<String, AppError> {
+    const ALLOWED: &[&str] = &["push", "pull_request"];
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok("push".into());
+    };
+    let mut selected: Vec<&str> = Vec::new();
+    for part in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        if !ALLOWED.contains(&part) {
+            return Err(AppError::ValidationFailed(format!(
+                "event_filter '{part}' is not supported — use push or pull_request"
+            )));
+        }
+        if !selected.contains(&part) {
+            selected.push(part);
+        }
+    }
+    if selected.is_empty() {
+        return Ok("push".into());
+    }
+    Ok(selected.join(","))
+}
+
+#[cfg(test)]
+mod event_filter_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_empty_filter_is_push_only() {
+        assert!(event_filter_allows("", "push"));
+        assert!(!event_filter_allows("", "pull_request"));
+    }
+
+    #[test]
+    fn filter_lists_accept_subscribed_events_only() {
+        assert!(event_filter_allows("push,pull_request", "pull_request"));
+        assert!(event_filter_allows("push", "push"));
+        assert!(!event_filter_allows("pull_request", "push"));
+        assert!(!event_filter_allows("push", "ping"));
+    }
+
+    #[test]
+    fn normalize_defaults_to_push_and_deduplicates() {
+        assert_eq!(normalize_event_filter(None).unwrap(), "push");
+        assert_eq!(normalize_event_filter(Some("  ")).unwrap(), "push");
+        assert_eq!(
+            normalize_event_filter(Some("pull_request,push,pull_request")).unwrap(),
+            "pull_request,push"
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_unknown_events() {
+        let error = normalize_event_filter(Some("push,tag")).unwrap_err();
+        assert!(error.to_string().contains("not supported"));
+    }
 }

@@ -165,3 +165,103 @@ fn ping_has_no_delivery_id() {
     };
     assert!(resolve_delivery_id("gitee", Some("ts"), &ev).is_none());
 }
+
+#[test]
+fn parse_github_pull_request_opened_is_actionable() {
+    let body: serde_json::Value = serde_json::from_str(
+        r#"{
+          "action": "opened",
+          "number": 42,
+          "pull_request": {
+            "title": "feat: add thing\n\nlong body",
+            "draft": false,
+            "html_url": "https://github.com/org/app/pull/42",
+            "base": {"ref": "main"},
+            "head": {"ref": "feat/thing", "sha": "0123456789abcdef"}
+          },
+          "repository": {"full_name": "org/app", "ssh_url": "git@github.com:org/app.git"},
+          "sender": {"login": "alice"}
+        }"#,
+    )
+    .unwrap();
+    let ev = parse_github_event("pull_request", &body).unwrap();
+    assert_eq!(ev.event_type, "pull_request");
+    assert_eq!(ev.pr_number, "42");
+    assert_eq!(ev.pr_base_branch, "main");
+    assert_eq!(ev.pr_head_branch, "feat/thing");
+    assert_eq!(ev.branch, "main", "branch filters match the base branch");
+    assert_eq!(ev.git_ref, "refs/heads/main");
+    assert_eq!(ev.commit_sha, "0123456789abcdef");
+    assert_eq!(ev.commit_message, "feat: add thing");
+    assert!(ev.ignored_reason.is_empty());
+    let inputs = ev.to_inputs("github");
+    assert_eq!(
+        inputs.get("GIT_EVENT").map(String::as_str),
+        Some("pull_request")
+    );
+    assert_eq!(inputs.get("GIT_PR_NUMBER").map(String::as_str), Some("42"));
+    assert_eq!(inputs.get("GIT_PR_BASE").map(String::as_str), Some("main"));
+    assert_eq!(
+        inputs.get("GIT_PR_HEAD").map(String::as_str),
+        Some("feat/thing")
+    );
+}
+
+#[test]
+fn parse_github_pull_request_ignores_closed_and_drafts() {
+    let body: serde_json::Value = serde_json::from_str(
+        r#"{
+          "action": "closed",
+          "number": 7,
+          "pull_request": {"draft": false, "base": {"ref": "main"}, "head": {"ref": "x", "sha": "sha1"}},
+          "repository": {"full_name": "org/app"}
+        }"#,
+    )
+    .unwrap();
+    assert!(parse_github_event("pull_request", &body)
+        .unwrap()
+        .ignored_reason
+        .contains("closed"));
+
+    let draft: serde_json::Value = serde_json::from_str(
+        r#"{
+          "action": "opened",
+          "number": 8,
+          "pull_request": {"draft": true, "base": {"ref": "main"}, "head": {"ref": "x", "sha": "sha1"}},
+          "repository": {"full_name": "org/app"}
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        parse_github_event("pull_request", &draft)
+            .unwrap()
+            .ignored_reason,
+        "draft pull request"
+    );
+}
+
+#[test]
+fn parse_gitee_merge_request_normalizes_to_pull_request() {
+    let body: serde_json::Value = serde_json::from_str(
+        r#"{
+          "object_attributes": {
+            "iid": 5,
+            "action": "open",
+            "title": "feat: gitee change",
+            "source_branch": "feat/x",
+            "target_branch": "master",
+            "last_commit": {"id": "abc123def456"},
+            "url": "https://gitee.com/org/app/pulls/5"
+          },
+          "repository": {"full_name": "org/app", "ssh_url": "git@gitee.com:org/app.git"}
+        }"#,
+    )
+    .unwrap();
+    let ev = parse_gitee_event("Merge Request Hook", &body).unwrap();
+    assert_eq!(ev.event_type, "pull_request");
+    assert_eq!(ev.pr_number, "5");
+    assert_eq!(ev.pr_base_branch, "master");
+    assert_eq!(ev.pr_head_branch, "feat/x");
+    assert_eq!(ev.commit_sha, "abc123def456");
+    assert!(ev.ignored_reason.is_empty());
+}

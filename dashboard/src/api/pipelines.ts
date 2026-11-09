@@ -433,6 +433,7 @@ export const pipelinesApi = {
       provider: 'github' | 'gitee'
       label?: string
       branch_filter?: string
+      event_filter?: string
       environment: string
       enabled?: boolean
     },
@@ -481,6 +482,7 @@ export interface GitHookConfig {
   hook_key: string
   url_path: string
   branch_filter: string
+  event_filter: string
   environment: string
   enabled: boolean
   has_secret: boolean

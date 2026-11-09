@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// Index meta is deliberately scalar-only and in this exact field order —
 /// the manager persists these onto pool rows so the dashboard can describe
 /// a plugin without downloading the template.
-const META_FIELDS: [&str; 10] = [
+const META_FIELDS: [&str; 11] = [
     "name",
     "description",
     "description_zh",
@@ -25,6 +25,7 @@ const META_FIELDS: [&str; 10] = [
     "engine",
     "default_timeout",
     "requires_buz",
+    "deprecated",
 ];
 
 #[derive(Clone)]
@@ -71,6 +72,8 @@ struct IndexEntry {
     default_timeout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     requires_buz: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deprecated: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -100,6 +103,8 @@ struct MetaVersion {
     default_timeout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     requires_buz: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deprecated: Option<String>,
 }
 
 /// The signed catalog header. `sequence` is the anti-rollback anchor: a
@@ -286,6 +291,7 @@ fn parse_spec(path: &Path, source_root: &Path) -> anyhow::Result<ParsedSpec> {
             engine: take(7),
             default_timeout: take(8),
             requires_buz: take(9),
+            deprecated: take(10),
         },
     })
 }
@@ -425,6 +431,35 @@ fn sign_one(
     Ok(())
 }
 
+/// `deprecations.json` at the source root: metadata-only flags for versions
+/// whose YAML must stay byte-identical. Editing a published spec would change
+/// its content hash and break `@sha256:` pins, so deprecation is carried by
+/// the generated manifests instead.
+#[derive(serde::Deserialize, Default)]
+struct Deprecations {
+    #[serde(default)]
+    deprecations: Vec<Deprecation>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct Deprecation {
+    id: String,
+    version: String,
+    reason: String,
+}
+
+fn load_deprecations(source_root: &Path) -> anyhow::Result<Vec<Deprecation>> {
+    let path = source_root.join("deprecations.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let parsed: Deprecations = serde_json::from_str(&raw)
+        .with_context(|| format!("{}: invalid deprecations JSON", path.display()))?;
+    Ok(parsed.deprecations)
+}
+
 /// Path each manifest the run produces to its exact bytes, in write order
 /// (index → per-plugin meta → revision sentinel last).
 fn plan_manifests(source_root: &Path, options: &Options) -> anyhow::Result<Vec<(PathBuf, String)>> {
@@ -471,10 +506,48 @@ fn plan_manifests(source_root: &Path, options: &Options) -> anyhow::Result<Vec<(
 
     let mut planned: Vec<(PathBuf, String)> = Vec::new();
 
+    // Metadata overlay: deprecation flags live outside the spec so published
+    // content (and its hash) stays immutable. Applied to the parsed specs so
+    // both the index and the per-plugin meta carry it. An overlay entry that
+    // matches nothing is a typo — fail rather than silently never applying it.
+    let deprecations = load_deprecations(source_root)?;
+    let mut matched = 0usize;
+    for specs in by_ns.values_mut() {
+        for parsed in specs.iter_mut() {
+            if let Some(flag) = deprecations
+                .iter()
+                .find(|flag| flag.id == parsed.entry.id && flag.version == parsed.entry.version)
+            {
+                matched += 1;
+                if parsed.entry.deprecated.is_none() {
+                    parsed.entry.deprecated = Some(flag.reason.trim().to_string());
+                }
+            }
+        }
+    }
+    if matched != deprecations.len() {
+        let known: std::collections::HashSet<(String, String)> = by_ns
+            .values()
+            .flatten()
+            .map(|parsed| (parsed.entry.id.clone(), parsed.entry.version.clone()))
+            .collect();
+        let unknown: Vec<String> = deprecations
+            .iter()
+            .filter(|flag| !known.contains(&(flag.id.clone(), flag.version.clone())))
+            .map(|flag| format!("{}@{}", flag.id, flag.version))
+            .collect();
+        anyhow::bail!(
+            "{}: deprecation entries match no published version: {}",
+            source_root.join("deprecations.json").display(),
+            unknown.join(", ")
+        );
+    }
+
     let mut entries: Vec<IndexEntry> = by_ns
         .values()
         .flat_map(|specs| specs.iter().map(|parsed| parsed.entry.clone()))
         .collect();
+
     entries.sort_by(|a, b| (&a.id, &a.version).cmp(&(&b.id, &b.version)));
     let (sequence, issued_at) = catalog_header(source_root, &entries, options)?;
     planned.push((
@@ -518,6 +591,7 @@ fn plan_manifests(source_root: &Path, options: &Options) -> anyhow::Result<Vec<(
                     engine: entry.engine,
                     default_timeout: entry.default_timeout,
                     requires_buz: entry.requires_buz,
+                    deprecated: entry.deprecated,
                 };
                 let plugin_meta_dir = parsed
                     .path

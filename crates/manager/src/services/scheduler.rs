@@ -4,8 +4,38 @@
 //! pipeline has no running/pending job. Uses a single-row `scheduler_lease`
 //! table for leader election so only one manager instance dispatches at a time.
 //!
-//! Also cleans up queued jobs that exceed their `queue_timeout`, and cancels
+//! Also cancels `queued` jobs past their frozen `queue_timeout` and
 //! `waiting_approval` jobs whose environment approval timeout has expired.
+//!
+//! # Where this sits in the scheduling chain
+//!
+//! Five gates can hold a run. Full table (with docs links):
+//! `docs/content/docs/01-architecture/execution/scheduling-precedence.md`.
+//!
+//! 1. **Trigger** (`api::pipelines::do_trigger`): pipeline disabled →
+//!    resource-profile grant → input validation → declared environment →
+//!    environment host allowlist → **protection** (→ `waiting_approval`, which
+//!    skips concurrency) → **pipeline concurrency** (`pending` / `queued` /
+//!    409). Pipeline concurrency is evaluated again when approvals complete.
+//! 2. **This loop** (leader only, every 5s): expire `queue_timeout`, expire
+//!    approval timeouts, promote the oldest `queued` job to `pending` when its
+//!    pipeline has no `pending`/`running` job.
+//! 3. **Claim** (`api::runners::poll_once`, inside `BEGIN IMMEDIATE`): Runner
+//!    frozen/capacity → team binding → **environment deployment_concurrency** →
+//!    labels → profile grant recheck → **sandbox host slot budget**
+//!    (`slot_scheduler`, `backfill`/`fifo` + starvation aging).
+//!
+//! Rules worth keeping in mind when changing any of these:
+//!
+//! - Approval outranks concurrency: `waiting_approval` never consults the
+//!   concurrency group, and the queue clock starts only when it enters
+//!   `queued` (tracked via `updated_at`).
+//! - Pipeline concurrency filters on `pipeline_id`; the `concurrency.group`
+//!   string is a label, not a cross-pipeline lock.
+//! - Environment concurrency and the slot budget are evaluated at claim, not
+//!   at trigger, so a job can pass one and still wait at the other.
+//! - `backfill`/`fifo` and starvation aging only matter when jobs wait for
+//!   resource slots; with only the default profile they are equivalent.
 
 use sqlx::SqlitePool;
 use std::time::Duration;

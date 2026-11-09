@@ -149,16 +149,20 @@ pub async fn create(
     let environments_json =
         serde_json::to_string(&req.environments).unwrap_or_else(|_| "[]".into());
     let labels_json = serde_json::to_string(&req.runner_labels).unwrap_or_else(|_| "[]".into());
-    let input_defs_json =
-        serde_json::to_string(&req.input_defs.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+    let input_defs_json = serde_json::to_string(&req.input_defs.clone().unwrap_or_default())
+        .unwrap_or_else(|_| "[]".into());
+    // Form pipelines have no YAML file to read `notify:` from; validate and
+    // store the channels here so the trigger path can freeze them into the
+    // job snapshot (the YAML scanner writes the same column).
+    let notify_json = validated_notify_json(req.notify.as_ref())?;
 
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path, webhook_secret,
          cron_expr, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
          concurrency_max_queue, concurrency_queue_timeout_seconds,
-         owner_group, team_id, input_defs, environments, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+         owner_group, team_id, input_defs, environments, notify_json, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(&pipeline_id)
     .bind(&req.name)
@@ -177,6 +181,7 @@ pub async fn create(
     .bind(&team_id)
     .bind(&input_defs_json)
     .bind(&environments_json)
+    .bind(&notify_json)
     .execute(&mut *tx)
     .await?;
 
@@ -290,7 +295,7 @@ pub async fn get_one(
                 runner_labels, timeout_seconds, source, input_defs, concurrency_group, is_active,
                 owner_group, team_id, created_at, updated_at,
                 concurrency_mode, concurrency_max_queue, concurrency_queue_timeout_seconds,
-                yaml_path, environments
+                yaml_path, environments, notify_json
          FROM pipelines WHERE id = ?",
     )
     .bind(&id)
@@ -404,6 +409,8 @@ pub async fn get_one(
         "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(19),
         "yaml_path": r.get::<Option<String>, _>(20),
         "environments": serde_json::from_str::<Vec<String>>(&r.get::<String, _>(21)).unwrap_or_default(),
+        "notify": serde_json::from_str::<serde_json::Value>(&r.get::<String, _>(22))
+            .unwrap_or_else(|_| serde_json::json!([])),
         "tasks": tasks,
         "env": envs,
         "yaml_sync": crate::services::pipeline_scanner::yaml_sync_status(
@@ -506,6 +513,7 @@ pub async fn update(
         serde_json::to_string(&req.input_defs.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
     let environments_json =
         serde_json::to_string(&req.environments).unwrap_or_else(|_| "[]".into());
+    let notify_json = validated_notify_json(req.notify.as_ref())?;
 
     let http = crate::services::plugin_pool::http_client(
         crate::services::platform_settings::effective(
@@ -550,7 +558,7 @@ pub async fn update(
          webhook_secret = ?, cron_expr = ?, runner_labels = ?, timeout_seconds = ?,
          concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
          concurrency_queue_timeout_seconds = ?, owner_group = ?, team_id = ?, input_defs = ?,
-         environments = ?, updated_at = datetime('now')
+         environments = ?, notify_json = ?, updated_at = datetime('now')
          WHERE id = ?",
     )
     .bind(&req.name)
@@ -569,6 +577,7 @@ pub async fn update(
     .bind(&team_id)
     .bind(&input_defs_json)
     .bind(&environments_json)
+    .bind(&notify_json)
     .bind(&id)
     .execute(&mut *tx)
     .await?;
@@ -1498,13 +1507,32 @@ pub async fn do_trigger(
     })
     .unwrap_or(serde_json::json!({}));
 
-    // Freeze notify config from on-disk YAML (keep `${secrets.…}`; resolve at send).
-    let notify_snapshot = crate::services::notify::load_notify_snapshot(
-        &state.pool,
-        &state.config.pipeline.yaml_scan_dir,
-        pipeline_id,
-    )
-    .await;
+    // Freeze notify config (keep `${secrets.…}`; resolve at send). The column
+    // is the single source for both sources: the YAML scanner projects the
+    // file's `notify:` block into it, the form API writes it directly.
+    // Legacy YAML rows created before the column existed fall back to the file.
+    let notify_snapshot = {
+        let raw: Option<String> =
+            sqlx::query_scalar("SELECT notify_json FROM pipelines WHERE id = ?")
+                .bind(pipeline_id)
+                .fetch_optional(&state.pool)
+                .await?;
+        let channels: Vec<shared::pipeline_yaml::NotifyChannelYaml> = raw
+            .as_deref()
+            .filter(|raw| !raw.trim().is_empty())
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default();
+        if channels.is_empty() {
+            crate::services::notify::load_notify_snapshot(
+                &state.pool,
+                &state.config.pipeline.yaml_scan_dir,
+                pipeline_id,
+            )
+            .await
+        } else {
+            Some(serde_json::to_value(&channels).unwrap_or_default())
+        }
+    };
 
     let mut snapshot = serde_json::json!({
         "pipeline": pipeline_snapshot,
@@ -1636,6 +1664,58 @@ pub async fn do_trigger(
 }
 
 // --- helpers ---
+
+/// Validate and serialize form-supplied notify channels.
+///
+/// Mirrors the YAML validator (`pipeline_yaml::parse_and_validate`): known
+/// channel type, webhook that is exactly a `${secrets.NAME}` reference (or a
+/// bare secret name), and known `on` events. Stored as `pipelines.notify_json`
+/// and frozen into every job snapshot at trigger time.
+fn validated_notify_json(
+    channels: Option<&Vec<shared::pipeline_yaml::NotifyChannelYaml>>,
+) -> Result<String, AppError> {
+    const VALID_TYPES: &[&str] = &["feishu", "webhook"];
+    const VALID_ON: &[&str] = &["success", "failure", "cancelled"];
+
+    let Some(channels) = channels.filter(|list| !list.is_empty()) else {
+        return Ok("[]".into());
+    };
+    for (index, channel) in channels.iter().enumerate() {
+        let field = format!("notify[{index}]");
+        let channel_type = channel.channel_type.trim();
+        if channel_type.is_empty() || !VALID_TYPES.contains(&channel_type) {
+            return Err(AppError::ValidationFailed(format!(
+                "{field}.type: invalid notify type '{}' — must be one of: {}",
+                channel.channel_type,
+                VALID_TYPES.join(", ")
+            )));
+        }
+        let webhook = channel.webhook.trim();
+        if webhook.is_empty() {
+            return Err(AppError::ValidationFailed(format!(
+                "{field}.webhook: notify webhook is required"
+            )));
+        }
+        if shared::secret_ref::resolve_secret_slot(webhook).is_none() {
+            return Err(AppError::ValidationFailed(format!(
+                "{field}.webhook: must be '${{secrets.NAME}}' (or a bare secret name)"
+            )));
+        }
+        if let Some(events) = &channel.on {
+            for (event_index, event) in events.iter().enumerate() {
+                let event = event.trim();
+                if event.is_empty() || !VALID_ON.contains(&event) {
+                    return Err(AppError::ValidationFailed(format!(
+                        "{field}.on[{event_index}]: invalid event '{event}' — must be one of: {}",
+                        VALID_ON.join(", ")
+                    )));
+                }
+            }
+        }
+    }
+    serde_json::to_string(channels)
+        .map_err(|error| AppError::Internal(format!("cannot serialize notify: {error}")))
+}
 
 /// Webhook pipelines must bind `webhook_secret` — the NAME of a team secret
 /// whose value signs every hook request (`X-Buz-Signature`). An unprotected
@@ -2029,4 +2109,67 @@ pub async fn validate_yaml(
     )
     .await?;
     Ok(Json(ApiResponse::success(result)))
+}
+
+#[cfg(test)]
+mod notify_input_tests {
+    use super::*;
+    use shared::pipeline_yaml::NotifyChannelYaml;
+
+    fn channel(channel_type: &str, webhook: &str, on: Option<Vec<&str>>) -> NotifyChannelYaml {
+        NotifyChannelYaml {
+            channel_type: channel_type.into(),
+            webhook: webhook.into(),
+            on: on.map(|list| list.into_iter().map(str::to_string).collect()),
+        }
+    }
+
+    #[test]
+    fn form_notify_channels_serialize_with_the_yaml_shape() {
+        let json = validated_notify_json(Some(&vec![channel(
+            "feishu",
+            "${secrets.HOOK}",
+            Some(vec!["failure", "cancelled"]),
+        )]))
+        .expect("valid channels");
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value[0]["type"], "feishu");
+        assert_eq!(value[0]["webhook"], "${secrets.HOOK}");
+        assert_eq!(value[0]["on"][1], "cancelled");
+    }
+
+    #[test]
+    fn form_notify_rejects_unknown_type() {
+        let error = validated_notify_json(Some(&vec![channel("email", "${secrets.HOOK}", None)]))
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid notify type"));
+    }
+
+    #[test]
+    fn form_notify_requires_a_secret_reference_webhook() {
+        let error = validated_notify_json(Some(&vec![channel(
+            "feishu",
+            "https://open.feishu.cn/plain",
+            None,
+        )]))
+        .unwrap_err();
+        assert!(error.to_string().contains("secrets.NAME"));
+    }
+
+    #[test]
+    fn form_notify_rejects_unknown_events() {
+        let error = validated_notify_json(Some(&vec![channel(
+            "webhook",
+            "${secrets.HOOK}",
+            Some(vec!["done"]),
+        )]))
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid event"));
+    }
+
+    #[test]
+    fn form_notify_absent_or_empty_is_an_empty_array() {
+        assert_eq!(validated_notify_json(None).unwrap(), "[]");
+        assert_eq!(validated_notify_json(Some(&vec![])).unwrap(), "[]");
+    }
 }

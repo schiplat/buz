@@ -1110,13 +1110,19 @@ const eventBadge = (t: string) => {
               </div>
               <div class="flex items-center gap-2">
                 <label class="text-xs text-muted-foreground w-28 shrink-0">Claim order</label>
-                <select
-                  v-model="editClaimStrategy"
-                  class="flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs outline-hidden focus:border-ring/40"
-                >
-                  <option value="backfill">backfill (skip jobs that do not fit)</option>
-                  <option value="fifo">fifo (strict order within eligible set)</option>
-                </select>
+                <div class="flex-1">
+                  <select
+                    v-model="editClaimStrategy"
+                    class="w-full rounded-lg border border-border bg-input px-2.5 py-1.5 text-xs outline-hidden focus:border-ring/40"
+                  >
+                    <option value="backfill">backfill (skip jobs that do not fit)</option>
+                    <option value="fifo">fifo (strict order within eligible set)</option>
+                  </select>
+                  <p class="mt-1 text-[10px] text-muted-foreground leading-relaxed">
+                    Advanced — only matters when jobs wait for resource slots. With just the default
+                    profile (one slot per job) both orders behave the same.
+                  </p>
+                </div>
               </div>
               <div class="flex justify-end pt-1">
                 <UiButton

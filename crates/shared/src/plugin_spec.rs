@@ -79,6 +79,12 @@ pub struct PluginSpec {
     pub processes_secret_placeholders: Option<bool>,
     #[serde(default)]
     pub license: Option<String>,
+    /// Optional deprecation notice: why this version should no longer be
+    /// pinned, and what to use instead. Published in the index/meta so the
+    /// Manager can warn at resolve time; the file itself stays immutable for
+    /// pipelines already pinned to it.
+    #[serde(default)]
+    pub deprecated: Option<String>,
     /// `>=X.Y.Z` or exact `X.Y.Z` — the only supported forms (2026-10-03).
     #[serde(default)]
     pub requires_buz: Option<String>,

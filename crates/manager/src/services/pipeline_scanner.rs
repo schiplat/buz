@@ -206,6 +206,10 @@ pub async fn upsert_from_yaml(
     let description = parsed.description.clone().unwrap_or_default();
     let environments_json =
         serde_json::to_string(&parsed.environments).unwrap_or_else(|_| "[]".into());
+    // Project `notify:` into the column the trigger path reads for both
+    // sources (form pipelines write it through the API instead).
+    let notify_json = serde_json::to_string(&parsed.notify.clone().unwrap_or_default())
+        .unwrap_or_else(|_| "[]".into());
 
     let (
         trigger_type,
@@ -357,6 +361,7 @@ pub async fn upsert_from_yaml(
              concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
              concurrency_queue_timeout_seconds = ?,
              owner_group = ?, team_id = ?, input_defs = ?, environments = ?,
+             notify_json = ?,
              yaml_path = ?, yaml_sha256 = ?, updated_at = datetime('now')
              WHERE id = ?",
         )
@@ -381,6 +386,7 @@ pub async fn upsert_from_yaml(
         .bind(&team_id)
         .bind(&input_defs_json)
         .bind(&environments_json)
+        .bind(&notify_json)
         .bind(&yaml_key)
         .bind(&yaml_sha256)
         .bind(&id)
@@ -486,8 +492,8 @@ pub async fn upsert_from_yaml(
             "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path,
              webhook_secret, webhook_environment, cron_expr, cron_environment, runner_labels, timeout_seconds, resource_profile, concurrency_group, concurrency_mode,
              concurrency_max_queue, concurrency_queue_timeout_seconds,
-            owner_group, team_id, source, yaml_path, yaml_sha256, input_defs, environments, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, 1)",
+            owner_group, team_id, source, yaml_path, yaml_sha256, input_defs, environments, notify_json, is_active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, ?, 1)",
         )
         .bind(&id)
         .bind(pipeline_name)
@@ -513,6 +519,7 @@ pub async fn upsert_from_yaml(
         .bind(&yaml_sha256)
         .bind(&input_defs_json)
         .bind(&environments_json)
+        .bind(&notify_json)
         .execute(&mut *tx)
         .await?;
 
