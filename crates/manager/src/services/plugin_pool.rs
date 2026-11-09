@@ -140,6 +140,10 @@ pub struct PoolEntryMeta {
     pub license: Option<String>,
     pub source_repo: Option<String>,
     pub engine: Option<String>,
+    /// Deprecation notice from the source's index overlay (index/meta
+    /// `deprecated`); persisted with the row so resolve can warn.
+    #[serde(default)]
+    pub deprecated: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)] // one row of pool settings; a struct here would only add noise
@@ -153,6 +157,7 @@ fn meta_json_string(
     license: &Option<String>,
     source_repo: &Option<String>,
     engine: &Option<String>,
+    deprecated: &Option<String>,
 ) -> Option<String> {
     let meta = PoolEntryMeta {
         name: name.clone(),
@@ -164,6 +169,7 @@ fn meta_json_string(
         license: license.clone(),
         source_repo: source_repo.clone(),
         engine: engine.clone(),
+        deprecated: deprecated.clone(),
     };
     serde_json::to_string(&meta).ok()
 }
@@ -272,6 +278,8 @@ pub struct RemoteResolved {
     pub file_path: String,
     pub reviewed: bool,
     pub content: String,
+    /// From the row's persisted index meta (overlay `deprecated`).
+    pub deprecated: Option<String>,
 }
 
 /// index.json -----------------------------------------------------------------
@@ -300,6 +308,9 @@ pub struct IndexEntry {
     /// can rule on compatibility without downloading the template. Older
     /// sources omit it → fetch-and-evaluate fallback.
     pub requires_buz: Option<String>,
+    /// Deprecation notice carried by the source's index overlay.
+    #[serde(default)]
+    pub deprecated: Option<String>,
     /// Full-meta scalar fields — persisted onto the pool row so the dashboard
     /// can describe the plugin. Older sources omit them; the UI falls back to
     /// the raw id.
@@ -1084,6 +1095,7 @@ async fn sync_source_inner(
                 &entry.license,
                 &entry.source_repo,
                 &entry.engine,
+                &entry.deprecated,
             );
             sqlx::query(
                 "INSERT INTO plugin_pool (namespace, plugin_id, version, sha256, source_id, file_path, \
@@ -1256,6 +1268,8 @@ struct PluginMetaEntry {
     #[serde(default)]
     requires_buz: Option<String>,
     #[serde(default)]
+    deprecated: Option<String>,
+    #[serde(default)]
     category: Option<String>,
     #[serde(default)]
     name: Option<String>,
@@ -1348,6 +1362,7 @@ async fn upsert_plugin_meta(
             &entry.license,
             &entry.source_repo,
             &entry.engine,
+            &entry.deprecated,
         );
         sqlx::query(
             "INSERT INTO plugin_pool (namespace, plugin_id, version, sha256, source_id, file_path, \
@@ -1513,6 +1528,7 @@ async fn remote_resolved_for_row(
         file_path: row.file_path.clone(),
         reviewed: row.reviewed,
         content,
+        deprecated: row.meta.as_ref().and_then(|meta| meta.deprecated.clone()),
     })
 }
 
@@ -1678,6 +1694,7 @@ pub async fn resolve_remote(
                 file_path: entry.file.clone(),
                 reviewed: entry.sha256.to_lowercase() == content_sha256,
                 content,
+                deprecated: entry.deprecated.clone(),
             }
         }
     };
@@ -1722,9 +1739,10 @@ pub async fn resolve_remote(
     }
 
     let reviewed = picked.reviewed;
-    // Pool rows do not persist the index's `deprecated` overlay; a source that
-    // declares the notice inside the spec still surfaces it here.
-    let deprecated = spec.deprecated.clone();
+    let deprecated = spec
+        .deprecated
+        .clone()
+        .or_else(|| picked.deprecated.clone());
     Ok(Some((
         ResolvedPlugin {
             spec,
@@ -1963,5 +1981,36 @@ pub async fn check_mirror(
                 ),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod deprecated_meta_tests {
+    use super::*;
+
+    #[test]
+    fn pool_meta_roundtrips_the_deprecation_notice() {
+        let raw = meta_json_string(
+            &None,
+            &Some("plugin".into()),
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &Some("use 1.1.1".into()),
+        )
+        .expect("meta json");
+        let parsed: PoolEntryMeta = serde_json::from_str(&raw).expect("parse");
+        assert_eq!(parsed.deprecated.as_deref(), Some("use 1.1.1"));
+    }
+
+    #[test]
+    fn legacy_pool_meta_without_deprecated_deserializes() {
+        let parsed: PoolEntryMeta =
+            serde_json::from_str(r#"{"name":"old","engine":"shell"}"#).expect("legacy meta");
+        assert_eq!(parsed.deprecated, None);
     }
 }
