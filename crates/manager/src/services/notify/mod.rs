@@ -5,6 +5,7 @@
 //! when the job reaches a terminal status.
 
 pub mod feishu;
+pub mod webhook;
 
 use async_trait::async_trait;
 use sqlx::{Row, SqlitePool};
@@ -17,6 +18,7 @@ use crate::services::pipeline_scanner;
 
 #[allow(unused_imports)] // re-export for unit tests / future callers
 pub use feishu::{build_feishu_card, FeishuChannel};
+pub use webhook::{build_webhook_payload, WebhookChannel};
 
 /// Job context passed to every notify channel.
 #[derive(Debug, Clone)]
@@ -205,6 +207,10 @@ async fn send_job_notifications(
         let result = match channel_type {
             "feishu" => {
                 let channel = FeishuChannel::from_webhook(webhook_url);
+                channel.send(&event).await
+            }
+            "webhook" => {
+                let channel = WebhookChannel::from_url(webhook_url);
                 channel.send(&event).await
             }
             other => {

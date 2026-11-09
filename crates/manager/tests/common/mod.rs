@@ -74,7 +74,7 @@ pub async fn migrated_pool(max_connections: u32) -> SqlitePool {
     pool
 }
 
-fn test_config() -> Config {
+pub fn test_config() -> Config {
     Config {
         server: ServerConfig::default(),
         database: Default::default(),

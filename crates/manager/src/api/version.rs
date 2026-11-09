@@ -45,6 +45,14 @@ fn started_at() -> Option<chrono::DateTime<chrono::Utc>> {
     STARTED_AT.get().copied()
 }
 
+/// Seconds since process start, or 0 before `mark_started` (tests). Exposed
+/// for the `/metrics` scrape target.
+pub fn uptime_seconds() -> u64 {
+    started_at()
+        .map(|s| (chrono::Utc::now() - s).num_seconds().max(0))
+        .unwrap_or(0) as u64
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct HealthQuery {
     /// When true, a failing dependency (e.g. database) yields HTTP 503 instead
@@ -126,9 +134,7 @@ pub async fn health(
     let ws_pipeline_sinks = state.log_broadcast.pipeline_sink_count();
 
     let started = started_at();
-    let uptime_seconds = started
-        .map(|s| (chrono::Utc::now() - s).num_seconds().max(0))
-        .unwrap_or(0);
+    let uptime_secs = uptime_seconds();
 
     let status = if db_ok { "ok" } else { "degraded" };
     // DB override (admin UI) wins over the manager.toml default.
@@ -173,7 +179,7 @@ pub async fn health(
         "component": "manager",
         "manager_instance_id": instance_id(),
         "marketplace_url": marketplace_url,
-        "uptime_seconds": uptime_seconds,
+        "uptime_seconds": uptime_secs,
         "started_at": started.map(|s| s.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         "plugin_review": plugin_review,
         "database": {

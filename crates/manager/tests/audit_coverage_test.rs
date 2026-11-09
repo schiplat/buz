@@ -124,6 +124,7 @@ const AUDITED: &[(&str, &str)] = &[
     ("POST /api/v1/jobs/{id}/approve", "job.approve"),
     ("POST /api/v1/jobs/{id}/cancel", "job.cancel"),
     ("POST /api/v1/jobs/{id}/reject", "job.reject"),
+    ("POST /api/v1/jobs/{id}/rerun", "job.rerun"),
     ("POST /api/v1/pipelines", "pipeline.create"),
     ("POST /api/v1/pipelines/yaml-files", "pipeline.yaml_create"),
     ("POST /api/v1/pipelines/{id}/disable", "pipeline.disable"),

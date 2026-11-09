@@ -59,6 +59,13 @@ const settingsMeta: Record<string, SettingMeta> = {
     label: 'Index signature public key',
     help: 'Base64 Ed25519 public key trusted for source indexes (`public_key` from `buz-plugin keygen`). One key covers every source you mirror yourself.',
   },
+  job_log_retention_days: {
+    label: 'Job log retention',
+    help: 'Purge stored logs of finished jobs older than this many days — job history, status, and audit stay; only the log bodies are dropped. 0 keeps logs forever, but job_logs then grows unbounded in SQLite, so a cap is recommended for busy installs.',
+    placeholder: '30',
+    narrow: true,
+    unit: 'd',
+  },
 }
 
 /** Display grouping: line-free sections carried by the small-caps caption. */
@@ -67,6 +74,7 @@ const settingGroups: Array<{ caption: string; keys: string[] }> = [
   { caption: 'Paths', keys: ['plugin_index_local_dir', 'plugin_reviewed_manifest'] },
   { caption: 'Sync', keys: ['plugin_sync_timeout'] },
   { caption: 'Index signature', keys: ['plugin_require_signed_index', 'plugin_index_public_key'] },
+  { caption: 'Job logs', keys: ['job_log_retention_days'] },
 ]
 const savingSetting = ref('')
 const showAddSource = ref(false)

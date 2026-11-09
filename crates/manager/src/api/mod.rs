@@ -23,6 +23,7 @@ pub mod github_sync;
 pub mod hosts;
 pub mod jobs;
 pub mod logs;
+pub mod metrics;
 pub mod openapi;
 pub mod ops_sandbox;
 pub mod plugin_sources;
@@ -173,6 +174,7 @@ pub fn router(state: AppState) -> Router {
         .route("/jobs/recent", get(jobs::recent))
         .route("/jobs/{id}", get(jobs::get_one).delete(jobs::delete))
         .route("/jobs/{id}/cancel", post(jobs::cancel))
+        .route("/jobs/{id}/rerun", post(jobs::rerun))
         .route("/jobs/{id}/approve", post(jobs::approve))
         .route("/jobs/{id}/reject", post(jobs::reject))
         .route("/jobs/{id}/status-check", get(jobs::status_check))

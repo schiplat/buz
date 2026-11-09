@@ -33,6 +33,8 @@ pub const KEY_SANDBOX_CONFIG_STALE_SECONDS: &str = "sandbox_config_dispatch_stal
 /// How long a pending job may be overtaken by smaller ones (backfill) before
 /// the runner stops filling gaps and waits for it. 0 disables aging.
 pub const KEY_SCHEDULER_STARVATION_SECONDS: &str = "scheduler_starvation_seconds";
+/// Terminal-job log retention in days (0 = keep forever).
+pub const KEY_JOB_LOG_RETENTION_DAYS: &str = "job_log_retention_days";
 /// When on, resource-profile grant/revoke requests create a pending change
 /// (two-person flow) instead of applying directly.
 pub const KEY_GRANTS_REQUIRE_APPROVAL: &str = "grants_require_approval";
@@ -43,6 +45,7 @@ pub const DEFAULT_SANDBOX_CONFIG_STALE_SECONDS: u64 = 300;
 /// 10 minutes: long enough that bursty small-job streams still backfill,
 /// short enough that a genuinely starved large job gets the next capacity.
 pub const DEFAULT_SCHEDULER_STARVATION_SECONDS: u64 = 600;
+pub const DEFAULT_JOB_LOG_RETENTION_DAYS: u64 = 30;
 
 /// Default source-sync timeout (seconds) — the single source of truth: the
 /// manager.toml serde default, the settings API default, and the HTTP client
@@ -73,6 +76,7 @@ pub fn setting_kind(key: &str) -> Option<SettingKind> {
         KEY_SANDBOX_CONFIG_POLL_SECONDS => Some(SettingKind::Number),
         KEY_SANDBOX_CONFIG_STALE_SECONDS => Some(SettingKind::Number),
         KEY_SCHEDULER_STARVATION_SECONDS => Some(SettingKind::Number),
+        KEY_JOB_LOG_RETENTION_DAYS => Some(SettingKind::Number),
         KEY_GRANTS_REQUIRE_APPROVAL => Some(SettingKind::Bool),
         _ => None,
     }
@@ -173,6 +177,17 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
                         )
                     }
                 }
+                KEY_JOB_LOG_RETENTION_DAYS => {
+                    // 0 = keep forever (retention disabled); otherwise 1..=10 years.
+                    if parsed == 0 || (1..=3650).contains(&parsed) {
+                        Ok(())
+                    } else {
+                        Err(
+                            "job_log_retention_days must be 0 (keep forever) or between 1 and 3650"
+                                .into(),
+                        )
+                    }
+                }
                 KEY_SCHEDULER_STARVATION_SECONDS => {
                     if parsed == 0 || (60..=86400).contains(&parsed) {
                         Ok(())
@@ -193,7 +208,7 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
 /// compatibility with older Managers).
 pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(KEY_MARKETPLACE_URL)
     .bind(KEY_PLUGIN_REVIEW_REQUIRED)
@@ -208,6 +223,7 @@ pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
     .bind(KEY_SANDBOX_CONFIG_STALE_SECONDS)
     .bind(KEY_SCHEDULER_STARVATION_SECONDS)
     .bind(KEY_GRANTS_REQUIRE_APPROVAL)
+    .bind(KEY_JOB_LOG_RETENTION_DAYS)
     .fetch_all(pool)
     .await
     .unwrap_or_default();

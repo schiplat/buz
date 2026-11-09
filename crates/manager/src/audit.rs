@@ -81,6 +81,7 @@ pub enum Action {
     JobCancel,
     JobDelete,
     JobReject,
+    JobRerun,
 
     // pipeline
     PipelineCreate,
@@ -197,6 +198,7 @@ impl Action {
             Action::JobCancel => "job.cancel",
             Action::JobDelete => "job.delete",
             Action::JobReject => "job.reject",
+            Action::JobRerun => "job.rerun",
             Action::PipelineCreate => "pipeline.create",
             Action::PipelineDelete => "pipeline.delete",
             Action::PipelineDisable => "pipeline.disable",
