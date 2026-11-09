@@ -25,6 +25,15 @@ const jobId = route.params.id as string
 
 const job = ref<Job | null>(null)
 const logs = ref<LogChunk[]>([])
+/**
+ * Log reads page from the END: initial load takes the last LOG_TAIL rows,
+ * "load earlier" back-pages with an end-exclusive (step_order, chunk_index)
+ * cursor (rows are append-only, so cursors are stable). Earlier rows the
+ * user pulls in are preserved by mergeTailWindow when the tail refreshes.
+ */
+const LOG_TAIL = 1000
+const earlierExhausted = ref(false)
+const loadingEarlier = ref(false)
 const loading = ref(true)
 /** Set when the logs request failed (e.g. admin-only debug job for non-admins). */
 const logsError = ref(false)
@@ -353,6 +362,34 @@ onUnmounted(() => {
   stepTerminals.value = []
 })
 
+function chunkBefore(a: LogChunk, b: LogChunk): boolean {
+  return a.step_order < b.step_order || (a.step_order === b.step_order && a.chunk_index < b.chunk_index)
+}
+
+/** Replace the tail window while keeping earlier rows the user loaded. */
+function mergeTailWindow(fresh: LogChunk[]) {
+  if (fresh.length === 0) return
+  const first = fresh[0]
+  const kept = logs.value.filter((c) => chunkBefore(c, first))
+  logs.value = [...kept, ...fresh]
+}
+
+async function loadEarlierLogs() {
+  const first = logs.value[0]
+  if (!first || earlierExhausted.value || loadingEarlier.value) return
+  loadingEarlier.value = true
+  try {
+    const prev = await jobsApi.logs(jobId, {
+      tail: LOG_TAIL,
+      beforeStep: first.step_order,
+      beforeChunk: first.chunk_index,
+    })
+    if (prev.length < LOG_TAIL) earlierExhausted.value = true
+    if (prev.length > 0) logs.value = [...prev, ...logs.value]
+  } catch (e) { console.error(e) }
+  finally { loadingEarlier.value = false }
+}
+
 async function loadJob() {
   loading.value = true
   logsError.value = false
@@ -362,7 +399,8 @@ async function loadJob() {
     job.value = await jobsApi.get(jobId)
   } catch (e) { console.error(e) }
   try {
-    logs.value = await jobsApi.logs(jobId)
+    logs.value = await jobsApi.logs(jobId, { tail: LOG_TAIL })
+    if (logs.value.length < LOG_TAIL) earlierExhausted.value = true
   } catch (e) {
     logsError.value = true
     console.error(e)
@@ -383,11 +421,10 @@ function startRefreshTimer() {
     pollAbort?.abort()
     pollAbort = new AbortController()
     try {
-      const l = await jobsApi.logs(jobId, { signal: pollAbort.signal, timeout: 5_000 })
+      const l = await jobsApi.logs(jobId, { signal: pollAbort.signal, timeout: 5_000, tail: LOG_TAIL })
       if (!alive) return
-      const oldLen = logs.value.length
-      if (l.length > oldLen) {
-        logs.value = l
+      if (l.length > 0) {
+        mergeTailWindow(l)
         const activeIdx = findActiveStep(job.value?.step_statuses)
         // Match WS path: global (-1) prepare errors surface on the failed /
         // active step so poll fallback still shows the real ERROR.
@@ -404,8 +441,7 @@ function startRefreshTimer() {
         for (const displayStep of writeTargets) {
           const st = stepTerminals.value.find(t => t.stepOrder === displayStep)
           if (!st) continue
-          for (let i = oldLen; i < l.length; i++) {
-            const c = l[i]
+          for (const c of l) {
             const belongs =
               c.step_order === displayStep ||
               (c.step_order === -1 && displayStep === globalStep)
@@ -548,9 +584,9 @@ function handleWsMessage(raw: string) {
         if (newStatus.status !== 'running' && newStatus.status !== 'pending') {
           clearRefreshTimer()
           // Prefer DB timestamps (created_at) over live WS chunks that lacked them
-          void jobsApi.logs(jobId).then((l) => {
+          void jobsApi.logs(jobId, { tail: LOG_TAIL }).then((l) => {
             if (alive) {
-              logs.value = l
+              mergeTailWindow(l)
               // The output is final now — snap every expanded terminal to its
               // real height (live mode caps it to keep the window stable).
               nextTick(() => {
@@ -685,6 +721,29 @@ watch(() => route.query.step, (step) => {
 
 async function handleCancel() {
   try { clearRefreshTimer(); await jobsApi.cancel(jobId); await loadJob() } catch (e) { console.error(e) }
+}
+
+const rerunning = ref(false)
+
+const canRerunJob = computed(() => {
+  const s = job.value?.status
+  return s === 'success' || s === 'failed' || s === 'cancelled' || s === 'timeout'
+})
+
+async function handleRerun() {
+  if (rerunning.value) return
+  const attempt = (job.value?.run_attempt ?? 0) + 1
+  if (!(await dialog.confirm(
+    `Re-run this job from its frozen snapshot? Same run number, attempt ${attempt}, inputs carried over. A protected environment will require approval again.`,
+    { title: 'Re-run job', confirmLabel: 'Re-run' },
+  ))) return
+  rerunning.value = true
+  try {
+    const resp = await jobsApi.rerun(jobId)
+    managedWs?.close()
+    router.push(`/jobs/${resp.job_id}`)
+  } catch (e) { console.error(e) }
+  finally { rerunning.value = false }
 }
 
 const approvalBusy = ref(false)
@@ -1073,6 +1132,9 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
       </button>
       <PageHeader :title="job?.run_number ? `Job #${job.run_number}` : `Job ${jobId}`" :description="job?.pipeline_name || 'Loading...'">
         <template #actions>
+          <UiButton v-if="canRerunJob" variant="outline" size="sm" class="text-xs px-3 py-1.5" :disabled="rerunning" @click="handleRerun">
+            <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': rerunning }" /> Re-run
+          </UiButton>
           <UiButton v-if="canCancelJob" variant="outline" size="sm" class="border-red-500/30 text-red-600 hover:bg-red-500/10 text-xs px-3 py-1.5" @click="handleCancel">
             <XCircle class="h-3.5 w-3.5" /> Cancel
           </UiButton>
@@ -1541,6 +1603,13 @@ function terminalTitleStatus(status: string): { dot: string; label: string } {
               >View pipeline definition</router-link>
               <button type="button" class="text-[10.5px] text-muted-foreground transition-colors hover:text-foreground" @click="expandAllSteps">Expand all</button>
               <button type="button" class="text-[10.5px] text-muted-foreground transition-colors hover:text-foreground" @click="collapseAllSteps">Collapse all</button>
+              <button
+                v-if="logs.length > 0 && !earlierExhausted"
+                type="button"
+                class="text-[10.5px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                :disabled="loadingEarlier"
+                @click="loadEarlierLogs"
+              >{{ loadingEarlier ? 'Loading…' : 'Load earlier logs' }}</button>
             </div>
           </div>
 

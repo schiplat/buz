@@ -220,11 +220,40 @@ export const jobsApi = {
     await apiClient.delete(`/jobs/${id}`)
   },
 
-  async logs(id: string, opts?: { signal?: AbortSignal; timeout?: number }): Promise<LogChunk[]> {
+  async logs(
+    id: string,
+    opts?: {
+      signal?: AbortSignal
+      timeout?: number
+      /** Last N rows (ascending) — the "show the last screen" read. */
+      tail?: number
+      /** End-exclusive cursor for back-pages: only rows strictly before this chunk. */
+      beforeStep?: number
+      beforeChunk?: number
+    },
+  ): Promise<LogChunk[]> {
+    const params: Record<string, number> = {}
+    if (opts?.tail != null) params.tail = opts.tail
+    if (opts?.beforeStep != null) params.before_step = opts.beforeStep
+    if (opts?.beforeChunk != null) params.before_chunk = opts.beforeChunk
     const resp = await apiClient.get(`/jobs/${id}/logs`, {
       signal: opts?.signal,
       timeout: opts?.timeout,
+      params,
     })
+    return resp.data
+  },
+
+  /** Replay a terminal job from its frozen snapshot (same run_number, attempt + 1). */
+  async rerun(id: string): Promise<{
+    job_id: string
+    status: string
+    run_number: number
+    run_attempt: number
+    rerun_of: string
+    approval_required?: boolean
+  }> {
+    const resp = await apiClient.post(`/jobs/${id}/rerun`)
     return resp.data
   },
 }
