@@ -856,6 +856,18 @@ host_labels: [web]
 
 In the form: comma-separated for multiple names/labels. Help text states “at least one required; combined as union.”
 
+#### `hosts_strategy` / `hosts_max_parallel` (SSH multi-host fan-out)
+
+| Param | Values | Default | Rules |
+|-------|--------|---------|-------|
+| `hosts_strategy` | `chain` \| `parallel` | `chain` | Legacy alias `serial` accepted → normalized to `chain`. `chain` = one host after another; `parallel` = concurrent connect / config-prepare / `run` |
+| `hosts_max_parallel` | integer `1`–`256` | `16` | **Only valid with `engine: ssh` and `hosts_strategy: parallel`** — otherwise the validator rejects the save. Caps simultaneous SSH connections per step |
+
+- Both fields are SSH-only; other engines reject them at validation.
+- The cap exists because a wide `host_labels` match opening hundreds of simultaneous SSH connections trips target sshd `MaxStartups` limits (default 10:30:100 drops the excess) and stresses the Runner's fd budget — the fan-out runs in bounded waves of `hosts_max_parallel`.
+- Behavior contract (cancel, wait-all aggregation, log shape, `continue-on-error` interaction): [SSH Multi-Host](/docs/01-architecture/execution/ssh-multi-host/).
+- Web UI: set both in the online YAML editor (completion suggests `hosts_max_parallel` after `hosts_strategy: parallel`); the saved pipeline's step card shows **Strategy** and **Parallel width** on the pipeline detail page.
+
 **Multi-host execution:** when the union resolves to **N > 1** hosts, the step fans out according to [`hosts_strategy`](#hosts_strategy-ssh) (default **`chain`**). Set `parallel` for concurrent deploy. Job **Cancel** aborts **all** in-flight hosts. See [SSH Multi-Host Execution](/docs/01-architecture/execution/ssh-multi-host/).
 
 | | |
