@@ -1839,3 +1839,36 @@ fn effective_hosts_parallel_width_caps_and_defaults() {
     // defensive clamp when hosts < 1
     assert_eq!(width(true, Some(0), 5), 1);
 }
+
+#[test]
+fn hosts_parallel_width_defaults_and_clamps() {
+    // Parallel: absent cap → bounded default 16, clamped to the host count.
+    assert_eq!(
+        shared::pipeline_yaml::effective_hosts_parallel_width(true, None, 3),
+        3,
+        "fewer hosts than the default width → full concurrency"
+    );
+    assert_eq!(
+        shared::pipeline_yaml::effective_hosts_parallel_width(true, None, 40),
+        16,
+        "more hosts than the default width → capped at 16"
+    );
+    // Explicit cap clamps into [1, hosts].
+    assert_eq!(
+        shared::pipeline_yaml::effective_hosts_parallel_width(true, Some(8), 40),
+        8
+    );
+    assert_eq!(
+        shared::pipeline_yaml::effective_hosts_parallel_width(true, Some(0), 40),
+        1
+    );
+    assert_eq!(
+        shared::pipeline_yaml::effective_hosts_parallel_width(true, Some(99), 4),
+        4
+    );
+    // Chain: width is irrelevant — the runner takes the sequential path.
+    assert_eq!(
+        shared::pipeline_yaml::effective_hosts_parallel_width(false, None, 10),
+        10
+    );
+}

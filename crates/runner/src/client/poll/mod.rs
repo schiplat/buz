@@ -2076,16 +2076,13 @@ async fn execute_ssh_step(
         max_parallel.map(|v| v as u32),
         sessions.len(),
     );
-    let capped = parallel && multi && width < sessions.len();
-    let results = if !capped {
-        let mut results = Vec::with_capacity(sessions.len());
-        for mut session in sessions {
-            let host_label = session.host_label().to_string();
-            let result = session.exec(&ssh_cmd, None, step_timeout).await;
-            results.push((host_label, result));
-        }
-        results
-    } else {
+    // `hosts_strategy: parallel` runs concurrently at `width` (the effective
+    // default is 16, clamped to the host count). When width covers every host
+    // the buffer is unbounded — equivalent to join_all — so one code path
+    // serves both the capped and the uncapped cases. `chain` keeps the
+    // sequential loop, and it still runs every host (failures are collected,
+    // never short-circuited).
+    let results = if parallel && multi {
         let futs = sessions.into_iter().enumerate().map(|(idx, mut session)| {
             let ssh_cmd = ssh_cmd.clone();
             async move {
@@ -2104,6 +2101,14 @@ async fn execute_ssh_step(
             .into_iter()
             .map(|(_, host_label, result)| (host_label, result))
             .collect()
+    } else {
+        let mut results = Vec::with_capacity(sessions.len());
+        for mut session in sessions {
+            let host_label = session.host_label().to_string();
+            let result = session.exec(&ssh_cmd, None, step_timeout).await;
+            results.push((host_label, result));
+        }
+        results
     };
     Ok(merge_ssh_host_outputs(step_name, multi, results))
 }
