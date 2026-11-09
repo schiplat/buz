@@ -22,7 +22,7 @@ eight dimensions.
 |---|---|---|---|---|
 | Control plane | Manager: single static Rust binary, self-hosted | drone-server (Go), self-hosted | Hosted runners are SaaS-only; control plane self-hostable via GHES (bring your own runners) | Jenkins controller (JVM), self-hosted |
 | Network model | Runners connect outbound-only; **zero inbound ports** | Runners poll the server outbound, but execution is confined to the runner host | Self-hosted runners poll github.com outbound | Agents typically need the controller to be reachable |
-| Reach across firewalls/NAT | Core design goal | Partial — second-layer networks unreachable | Runner must sit inside the target network **and** reach github.com | Painful (DMZ / tunnel patterns) |
+| Reach across firewalls/NAT | Core design goal | Partial — work runs only where runners (or attached clusters) are placed | Runner must sit inside the target network **and** reach github.com | Painful (DMZ / tunnel patterns) |
 | Authoring | Declarative YAML, GHA-style `uses:` | YAML | YAML + expressions | Groovy (Jenkinsfile) |
 | Governance | Built in: approval gates, RBAC, audit logs | Enterprise-tier features | Environments + required reviewers (paid for private repos) | Plugin-dependent |
 | Plugin supply chain | Human-reviewed, content-hash locked, signed index, egress allowlists | Docker-image plugins, no review | Largest ecosystem, no review of marketplace actions | 2300+ plugins, community-maintained |
@@ -44,10 +44,10 @@ This is where the platforms genuinely differ — everything else is degrees.
 
 | Dimension | Buz | Drone | GitHub Actions | Jenkins |
 |---|---|---|---|---|
-| Connection direction | Runners connect **outbound-only** (long-poll claim, log push); the Manager is the only component that listens | Runners poll the server outbound via RPC | Self-hosted runners poll github.com outbound | Two common modes: "inbound" agents dial the controller over JNLP/WebSocket — the controller endpoint must be reachable from agent networks; "outbound" agents are driven by the controller over SSH — the controller must reach the agent |
+| Connection direction | Runners connect **outbound-only** (long-poll claim, log push); the Manager is the only component that listens | Runners dial the server outbound over gRPC (docker / kubernetes / exec runner variants) | Self-hosted runners poll github.com outbound | Two common modes: "inbound" agents dial the controller over JNLP/WebSocket — the controller endpoint must be reachable from agent networks; "outbound" agents are driven by the controller over SSH — the controller must reach the agent |
 | Inbound ports on execution machines | **Zero** — no port forwarding, no VPN ([How it works](https://github.com/schiplat/buz#how-it-works)) | Zero on the runner host | Zero on the runner host | Controller must expose ports; cross-segment setups often need holes or tunnels |
-| Where work can execute | On the Runner host (containers) **or on arbitrary remote hosts over SSH** with Runner-held credentials | Only on the runner host (Docker containers; experimental exec runner for host-shell steps) | Only on the runner (hosted VM or self-hosted machine) | Only on hosts that have an agent installed — every segment needs its own agents |
-| NAT / multi-cloud / partner networks | Designed for it: Runners live wherever the work is | The runner can sit inside a private network, but it cannot reach a second-layer network behind another firewall | The runner must sit inside the target network and be able to reach github.com over the internet | DMZ and tunnel topologies; operationally heavy |
+| Where work can execute | On the Runner host (containers) **or on arbitrary remote hosts over SSH** with Runner-held credentials | Only where you place a runner — Docker containers on the runner host, pods in an attached Kubernetes cluster (kube runner, experimental), or host shell (exec runner, experimental); never remote SSH targets | Only on the runner (hosted VM or self-hosted machine) | Only on hosts that have an agent installed — every segment needs its own agents |
+| NAT / multi-cloud / partner networks | Designed for it: Runners live wherever the work is | Runners can sit in any private network (they dial out), but a single runner executes only on its own host or attached cluster — reaching machines in other segments means placing more runners there | The runner must sit inside the target network and be able to reach github.com over the internet | DMZ and tunnel topologies; operationally heavy |
 | Reaching heterogeneous targets (bare metal, lab boards, legacy boxes) | First-class: SSH steps with Runner-managed credentials | Not first-class — no built-in SSH fan-out; would be DIY shell steps | Not supported (runner-host execution only) | Possible but requires an agent on every target class |
 
 ## Pipeline authoring and execution
@@ -92,7 +92,7 @@ This is where the platforms genuinely differ — everything else is degrees.
 
 | Dimension | Buz | Drone | GitHub Actions | Jenkins |
 |---|---|---|---|---|
-| Isolation tiers | `host` → `container` → `sandbox` (gVisor) → `vm` (Firecracker-compatible); the Runner reports what its host can deliver, a human picks the tier, and an unavailable tier **fails the job instead of silently downgrading** ([Principles](/docs/01-architecture/principles/)) | Container-level (Docker runner); exec runner runs without isolation (experimental) | Hosted: one-shot VMs; self-hosted: your responsibility | Persistent agents (not one-shot by default); containerization optional |
+| Isolation tiers | `host` → `container` → `sandbox` (gVisor) → `vm` (Firecracker-compatible); the Runner reports what its host can deliver, a human picks the tier, and an unavailable tier **fails the job instead of silently downgrading** ([Principles](/docs/01-architecture/principles/)) | Container-level (Docker runner; kube runner as pods in an attached cluster); exec runner runs without isolation (experimental) | Hosted: one-shot VMs; self-hosted: your responsibility | Persistent agents (not one-shot by default); containerization optional |
 | Honest risk disclosure | ✅ Documents that Docker socket access is host-root-equivalent ([SECURITY.md](https://github.com/schiplat/buz/blob/master/SECURITY.md)) | Rarely discussed | — | Rarely discussed |
 
 ## Cost and licensing
