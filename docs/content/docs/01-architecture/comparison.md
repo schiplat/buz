@@ -37,7 +37,6 @@ eight dimensions.
 | Runtime dependencies | None — static binaries, no agent frameworks | Docker required on the runner host | None (hosted) / whatever self-hosting needs | JDK everywhere |
 | Time to first pipeline | 5-minute standalone demo: one container, Runner auto-registers over loopback ([Quick Start](/docs/00-quick-start/)) | Tens of minutes, straightforward | Minutes, but requires a GitHub repo | Hours to days: plugin selection, controller tuning |
 | CPU architectures | Official multi-arch images (linux/amd64 + linux/arm64) | Wherever Docker runs | Hosted: x64 and arm64 Linux; self-hosted: any | Very broad |
-| License | Apache-2.0 | Apache-2.0 OSS core; RBAC/audit/LDAP gated in the source-available Enterprise edition (Polyform license) | SaaS, per-minute billing | MIT |
 
 ## Network model
 
