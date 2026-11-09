@@ -23,6 +23,7 @@ pub mod github_sync;
 pub mod hosts;
 pub mod jobs;
 pub mod logs;
+pub mod metrics;
 pub mod openapi;
 pub mod ops_sandbox;
 pub mod plugin_sources;
