@@ -1403,12 +1403,73 @@ async fn poll_once(
         )))));
     };
 
-    let job_id: String = row.get(0);
-    let pipeline_id: String = row.get(1);
-    let trigger_params_raw: Option<String> = row.get(2);
-    let job_environment_id: Option<String> = row.get(3);
-    let run_number: i64 = row.get(4);
-    let run_attempt: i64 = row.get(5);
+    build_claim_payload(
+        &state,
+        &auth,
+        ClaimedJob {
+            job_id: row.get(0),
+            pipeline_id: row.get(1),
+            trigger_params_raw: row.get(2),
+            job_environment_id: row.get(3),
+            run_number: row.get(4),
+            run_attempt: row.get(5),
+            snapshot_raw,
+            debug_unredact,
+            verbose_logs,
+            trigger_by,
+            pipeline_name,
+            team_id,
+            pipeline_trigger_type,
+            cancelled_jobs,
+        },
+    )
+    .await
+    .map(|payload| Json(ApiResponse::success(Some(payload))))
+}
+
+/// One claimed job's row values, handed to [`build_claim_payload`].
+struct ClaimedJob {
+    job_id: String,
+    pipeline_id: String,
+    trigger_params_raw: Option<String>,
+    job_environment_id: Option<String>,
+    run_number: i64,
+    run_attempt: i64,
+    snapshot_raw: String,
+    debug_unredact: bool,
+    verbose_logs: bool,
+    trigger_by: String,
+    pipeline_name: String,
+    team_id: Option<String>,
+    pipeline_trigger_type: String,
+    cancelled_jobs: Vec<String>,
+}
+
+/// Post-claim payload assembly: decrypt trigger params, resolve secrets /
+/// environment overrides / step env / SSH hosts / marketplace inputs, and
+/// return the JSON body the Runner executes.
+async fn build_claim_payload(
+    state: &AppState,
+    auth: &RunnerClaims,
+    claimed: ClaimedJob,
+) -> Result<serde_json::Value, AppError> {
+    let ClaimedJob {
+        job_id,
+        pipeline_id,
+        trigger_params_raw,
+        job_environment_id,
+        run_number,
+        run_attempt,
+        snapshot_raw,
+        debug_unredact,
+        verbose_logs,
+        trigger_by,
+        pipeline_name,
+        team_id,
+        pipeline_trigger_type,
+        cancelled_jobs,
+    } = claimed;
+
     let trigger_params_stored: serde_json::Value = trigger_params_raw
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::json!({}));
@@ -2135,7 +2196,7 @@ async fn poll_once(
         .await?
         .flatten();
 
-    Ok(Json(ApiResponse::success(Some(serde_json::json!({
+    Ok(serde_json::json!({
         "job_id": job_id,
         "cancelled_jobs": cancelled_jobs,
         "pipeline_id": pipeline_id,
@@ -2156,7 +2217,7 @@ async fn poll_once(
         "secrets": secrets,
         "debug_unredact": debug_unredact,
         "verbose": verbose_logs,
-    })))))
+    }))
 }
 
 /// Load same-team secrets by name into `into_by_name` (and optionally a parallel map).
