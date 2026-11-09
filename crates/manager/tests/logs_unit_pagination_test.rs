@@ -76,3 +76,51 @@ async fn limit_and_offset_window_the_rows() {
     let logs = get_logs(&app, &job, "limit=99999").await;
     assert_eq!(logs.len(), 5, "limit clamps to the row count");
 }
+
+#[tokio::test]
+async fn tail_returns_the_last_rows_in_ascending_order() {
+    let (app, job) = job_with_logs(5).await;
+
+    let logs = get_logs(&app, &job, "tail=2").await;
+    assert_eq!(logs.len(), 2);
+    assert_eq!(logs[0]["content"].as_str().unwrap(), "line-3");
+    assert_eq!(logs[1]["content"].as_str().unwrap(), "line-4");
+
+    // Oversized tail clamps to the row count, full history ascending.
+    let logs = get_logs(&app, &job, "tail=999").await;
+    assert_eq!(logs.len(), 5);
+    assert_eq!(logs[0]["content"].as_str().unwrap(), "line-0");
+}
+
+#[tokio::test]
+async fn before_cursor_back_pages_through_the_log() {
+    let (app, job) = job_with_logs(5).await;
+
+    // Screen 1: tail=2 → (0,3), (0,4). Back page: strictly before (0,3).
+    let logs = get_logs(&app, &job, "tail=2&before_step=0&before_chunk=3").await;
+    assert_eq!(logs.len(), 2);
+    assert_eq!(logs[0]["content"].as_str().unwrap(), "line-1");
+    assert_eq!(logs[1]["content"].as_str().unwrap(), "line-2");
+
+    // Back page past the start clamps to whatever exists.
+    let logs = get_logs(&app, &job, "tail=2&before_step=0&before_chunk=1").await;
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0]["content"].as_str().unwrap(), "line-0");
+}
+
+#[tokio::test]
+async fn half_cursor_is_rejected() {
+    let (app, job) = job_with_logs(2).await;
+    let admin = app.admin_jwt();
+    let (status, resp) = app
+        .get(
+            &format!("/api/v1/jobs/{job}/logs?before_chunk=3"),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "half cursor: {resp}"
+    );
+}

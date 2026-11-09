@@ -92,8 +92,9 @@ pub async fn upload(
 
 /// Optional window over a job's log rows. Absent `limit` keeps the legacy
 /// full read (the dashboard's job view relies on it); callers facing huge
-/// jobs page with `limit` (+ `offset`). Rows are append-only, so
-/// offset windows are stable.
+/// jobs page with `limit` (+ `offset`) from the front, or `tail` /
+/// `before_step`+`before_chunk` from the end. Rows are append-only per
+/// `(step_order, chunk_index)`, so both windows are stable.
 #[derive(Debug, Deserialize, Default)]
 pub struct LogsPageQuery {
     /// Max rows to return (1..=10_000).
@@ -102,6 +103,16 @@ pub struct LogsPageQuery {
     /// Rows to skip from the front (only meaningful with `limit`).
     #[serde(default)]
     pub offset: Option<i64>,
+    /// Last N rows of the (cursor-bounded) set, returned in ascending order —
+    /// the "show the last screen, load earlier on demand" read.
+    #[serde(default)]
+    pub tail: Option<i64>,
+    /// End-exclusive cursor for `tail` / back-page reads: only rows strictly
+    /// before `(before_step, before_chunk)` qualify. Both or neither.
+    #[serde(default)]
+    pub before_step: Option<i64>,
+    #[serde(default)]
+    pub before_chunk: Option<i64>,
 }
 
 pub async fn get_logs(
@@ -115,7 +126,39 @@ pub async fn get_logs(
     let limit = page.limit.map(|l| l.clamp(1, 10_000));
     let offset = page.offset.unwrap_or(0).max(0);
 
-    let rows = if let Some(limit) = limit {
+    // End-of-log window: `tail` alone, or a back-page bounded by `limit`
+    // when a `before` cursor is given. One query shape covers both.
+    let has_cursor = page.before_step.is_some() || page.before_chunk.is_some();
+    if has_cursor && (page.before_step.is_none() || page.before_chunk.is_none()) {
+        return Err(AppError::ValidationFailed(
+            "before_step and before_chunk must be given together".into(),
+        ));
+    }
+    let window = match page.tail {
+        Some(t) => Some(t.clamp(1, 10_000)),
+        None if has_cursor => Some(limit.unwrap_or(10_000)),
+        None => None,
+    };
+
+    let rows = if let Some(window) = window {
+        let mut rows = sqlx::query(
+            "SELECT chunk_index, step_order, log_content, level, created_at
+             FROM job_logs WHERE job_id = ?
+             AND (? IS NULL OR step_order < ? OR (step_order = ? AND chunk_index < ?))
+             ORDER BY step_order DESC, chunk_index DESC
+             LIMIT ?",
+        )
+        .bind(&job_id)
+        .bind(page.before_step)
+        .bind(page.before_step.unwrap_or(0))
+        .bind(page.before_step.unwrap_or(0))
+        .bind(page.before_chunk.unwrap_or(0))
+        .bind(window)
+        .fetch_all(&state.pool)
+        .await?;
+        rows.reverse();
+        rows
+    } else if let Some(limit) = limit {
         sqlx::query(
             "SELECT chunk_index, step_order, log_content, level, created_at
              FROM job_logs WHERE job_id = ?
