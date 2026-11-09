@@ -1315,37 +1315,13 @@ async fn poll_once(
                 crate::services::poll_events::wake_all();
             }
             for superseded_id in &superseded_ids {
-                crate::services::notify::spawn_job_notify(
-                    state.pool.clone(),
-                    state.config.auth.jwt_secret.clone(),
-                    state.config.server.public_base_url.clone(),
-                    superseded_id.clone(),
-                    "cancelled".to_string(),
-                );
-                if let Ok(Some(cancelled)) = sqlx::query(
-                    "SELECT pipeline_id, step_statuses, end_time, debug_unredact \
-                     FROM jobs WHERE id = ?",
+                crate::services::transition::announce_job_status(
+                    &state,
+                    superseded_id,
+                    "cancelled",
+                    true,
                 )
-                .bind(superseded_id)
-                .fetch_optional(&state.pool)
-                .await
-                {
-                    let payload = serde_json::json!({
-                        "id": superseded_id,
-                        "status": "cancelled",
-                        "step_statuses": serde_json::from_str::<serde_json::Value>(
-                            &cancelled.get::<String, _>(1),
-                        ).unwrap_or_default(),
-                        "end_time": cancelled.get::<Option<String>, _>(2),
-                        "debug_unredact": cancelled.get::<i64, _>(3) != 0,
-                    });
-                    let cancelled_pipeline_id: String = cancelled.get(0);
-                    state.log_broadcast.broadcast_status(
-                        superseded_id,
-                        &cancelled_pipeline_id,
-                        &serde_json::to_string(&payload).unwrap_or_default(),
-                    );
-                }
+                .await;
                 crate::audit::record(
                     &state.pool,
                     crate::audit::AuditEvent::system(Action::EnvironmentConcurrencyCancel)

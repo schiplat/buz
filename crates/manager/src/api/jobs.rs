@@ -472,38 +472,7 @@ pub async fn cancel(
         "Job cancelled by operator"
     );
 
-    // Non-terminal → cancelled: async notify (only if channel `on` includes cancelled).
-    crate::services::notify::spawn_job_notify(
-        state.pool.clone(),
-        state.config.auth.jwt_secret.clone(),
-        state.config.server.public_base_url.clone(),
-        id.clone(),
-        "cancelled".to_string(),
-    );
-
-    // Broadcast cancelled status to WebSocket subscribers
-    if let Ok(Some(pid_row)) =
-        sqlx::query("SELECT pipeline_id, debug_unredact FROM jobs WHERE id = ?")
-            .bind(&id)
-            .fetch_optional(&state.pool)
-            .await
-    {
-        let pid: String = pid_row.get(0);
-        let debug_unredact: i64 = pid_row.get(1);
-        let ss = serde_json::to_string(&cancelled.step_statuses).unwrap_or_default();
-        let payload = serde_json::json!({
-            "id": id,
-            "status": "cancelled",
-            "step_statuses": serde_json::from_str::<serde_json::Value>(&ss).unwrap_or_default(),
-            "end_time": now_utc(),
-            "debug_unredact": debug_unredact != 0,
-        });
-        state.log_broadcast.broadcast_status(
-            &id,
-            &pid,
-            &serde_json::to_string(&payload).unwrap_or_default(),
-        );
-    }
+    crate::services::transition::announce_job_status(&state, &id, "cancelled", true).await;
 
     Ok(Json(ApiResponse::success(())))
 }
@@ -511,7 +480,6 @@ pub async fn cancel(
 /// A job flipped to `cancelled` inside the caller's transaction.
 pub(crate) struct CancelledJob {
     pub old_status: String,
-    pub step_statuses: Vec<serde_json::Value>,
 }
 
 /// Transaction-internal core of job cancellation: flips one non-terminal job
@@ -592,10 +560,8 @@ pub(crate) async fn cancel_job_in_tx(
         .execute(&mut **tx)
         .await?;
     }
-    Ok(Some(CancelledJob {
-        old_status,
-        step_statuses,
-    }))
+    let _ = step_statuses; // still written into the row above; no longer returned
+    Ok(Some(CancelledJob { old_status }))
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1525,70 +1491,27 @@ pub async fn update_status(
                 }
             }
         }
-
-        // Non-terminal → terminal: async notify (failures log-only).
-        if matches!(
-            req.status.as_str(),
-            "success" | "failed" | "cancelled" | "timeout"
-        ) {
-            crate::services::notify::spawn_job_notify(
-                state.pool.clone(),
-                state.config.auth.jwt_secret.clone(),
-                state.config.server.public_base_url.clone(),
-                job_id.clone(),
-                req.status.clone(),
-            );
-        }
     }
     tx.commit().await?;
-    if matches!(
+    let job_terminal = matches!(
         req.status.as_str(),
         "success" | "failed" | "cancelled" | "timeout"
-    ) {
+    );
+    if job_terminal {
         crate::services::poll_events::wake_all();
     }
 
     tracing::info!("Job status updated: {job_id} → {}", req.status);
 
-    // Broadcast status to WebSocket subscribers
-    let pipeline_id: Option<String> = sqlx::query("SELECT pipeline_id FROM jobs WHERE id = ?")
-        .bind(&job_id)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten()
-        .map(|r: sqlx::sqlite::SqliteRow| r.get(0));
-
-    if let Some(pid) = &pipeline_id {
-        // Build a minimal status snapshot for the broadcast
-        if let Ok(Some(job_row)) = sqlx::query(
-            "SELECT j.status, j.step_statuses, j.start_time, j.end_time, j.debug_unredact
-             FROM jobs j WHERE j.id = ?",
-        )
-        .bind(&job_id)
-        .fetch_optional(&state.pool)
-        .await
-        {
-            let status: String = job_row.get(0);
-            let step_statuses_raw: String = job_row.get(1);
-            let start_time: Option<String> = job_row.get(2);
-            let end_time: Option<String> = job_row.get(3);
-            let debug_unredact: i64 = job_row.get(4);
-            let payload = serde_json::json!({
-                "id": job_id,
-                "status": status,
-                "step_statuses": serde_json::from_str::<serde_json::Value>(&step_statuses_raw).unwrap_or_default(),
-                "start_time": start_time,
-                "end_time": end_time,
-                "debug_unredact": debug_unredact != 0,
-            });
-            state.log_broadcast.broadcast_status(
-                &job_id,
-                pid,
-                &serde_json::to_string(&payload).unwrap_or_default(),
-            );
-        }
-    }
+    // Per-step updates never notify (the job's own terminal transition will);
+    // the broadcast payload is re-read from the row either way.
+    crate::services::transition::announce_job_status(
+        &state,
+        &job_id,
+        &req.status,
+        req.step_order.is_none(),
+    )
+    .await;
 
     Ok(Json(ApiResponse::success(())))
 }

@@ -831,11 +831,10 @@ pub async fn disable(
         .await?;
     }
 
-    // (job_id, debug_unredact, step_statuses) for post-commit fan-out.
-    let mut cancelled: Vec<(String, bool, Vec<serde_json::Value>)> = Vec::new();
+    let mut cancelled: Vec<String> = Vec::new();
     if req.cancel_in_flight {
         let targets = sqlx::query(
-            "SELECT id, debug_unredact FROM jobs
+            "SELECT id FROM jobs
              WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued', 'waiting_approval')
              ORDER BY created_at, rowid",
         )
@@ -844,7 +843,6 @@ pub async fn disable(
         .await?;
         for t in targets {
             let job_id: String = t.get(0);
-            let debug_unredact: bool = t.get::<i64, _>(1) != 0;
             if let Some(info) =
                 super::jobs::cancel_job_in_tx(&mut tx, &job_id, &auth.id, &auth.username).await?
             {
@@ -855,7 +853,7 @@ pub async fn disable(
                     prev_status = %info.old_status,
                     "Job cancelled by pipeline disable"
                 );
-                cancelled.push((job_id, debug_unredact, info.step_statuses));
+                cancelled.push(job_id);
             }
         }
     }
@@ -865,29 +863,11 @@ pub async fn disable(
     }
 
     // Post-commit fan-out per cancelled job: notify channels + WebSocket.
-    for (job_id, debug_unredact, step_statuses) in &cancelled {
-        crate::services::notify::spawn_job_notify(
-            state.pool.clone(),
-            state.config.auth.jwt_secret.clone(),
-            state.config.server.public_base_url.clone(),
-            job_id.clone(),
-            "cancelled".to_string(),
-        );
-        let payload = serde_json::json!({
-            "id": job_id,
-            "status": "cancelled",
-            "step_statuses": step_statuses,
-            "end_time": super::jobs::now_utc(),
-            "debug_unredact": debug_unredact,
-        });
-        state.log_broadcast.broadcast_status(
-            job_id,
-            &id,
-            &serde_json::to_string(&payload).unwrap_or_default(),
-        );
+    for job_id in &cancelled {
+        crate::services::transition::announce_job_status(&state, job_id, "cancelled", true).await;
     }
 
-    let cancelled_ids: Vec<&str> = cancelled.iter().map(|(j, _, _)| j.as_str()).collect();
+    let cancelled_ids: Vec<&str> = cancelled.iter().map(String::as_str).collect();
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::PipelineDisable)
