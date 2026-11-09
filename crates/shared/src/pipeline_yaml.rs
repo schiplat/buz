@@ -1223,7 +1223,7 @@ pub fn parse_and_validate(raw: &str) -> YamlValidationResult {
     }
 
     // 6c. notify channels — type whitelist, webhook secret slot, on events
-    const VALID_NOTIFY_TYPES: &[&str] = &["feishu"];
+    const VALID_NOTIFY_TYPES: &[&str] = &["feishu", "webhook"];
     const VALID_NOTIFY_ON: &[&str] = &["success", "failure", "cancelled"];
     if let Some(channels) = &parsed.notify {
         for (i, ch) in channels.iter().enumerate() {

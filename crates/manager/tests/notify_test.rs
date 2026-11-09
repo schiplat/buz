@@ -121,3 +121,66 @@ fn feishu_card_failed_template() {
     let card = build_feishu_card(&event);
     assert_eq!(card["card"]["header"]["template"], "red");
 }
+
+#[test]
+fn webhook_payload_is_flat_and_stable() {
+    let payload = manager::services::notify::webhook::build_webhook_payload(&sample_event(Some(
+        "https://buz.example.com/jobs/job-abc",
+    )));
+    assert_eq!(payload["event"], "job.completed");
+    assert_eq!(payload["pipeline"], "demo");
+    assert_eq!(payload["pipeline_id"], "p1");
+    assert_eq!(payload["job_id"], "job-abc");
+    assert_eq!(payload["job_url"], "https://buz.example.com/jobs/job-abc");
+    assert_eq!(payload["status"], "success");
+    assert_eq!(payload["triggered_by"], "alice");
+    assert_eq!(payload["run_number"], 42);
+    assert_eq!(payload["duration_seconds"], 125);
+    assert!(
+        payload["timestamp"].as_str().is_some(),
+        "rfc3339 timestamp present"
+    );
+    assert!(
+        payload["job_url"].is_string(),
+        "null-safe: present here, null when no base url"
+    );
+}
+
+#[test]
+fn yaml_validate_accepts_webhook_and_rejects_unknown_channel_types() {
+    let base = |channel_type: &str| {
+        format!(
+            r#"
+name: notify-types
+environments: [default]
+notify:
+  - type: {channel_type}
+    webhook: ${{secrets.ALERT_HOOK}}
+    on: [failure, cancelled]
+steps:
+  - name: echo
+    run: echo hi
+"#
+        )
+    };
+
+    for ty in ["feishu", "webhook"] {
+        let result = shared::pipeline_yaml::parse_and_validate(&base(ty));
+        assert!(
+            result.valid,
+            "channel type {ty} must validate: {:?}",
+            result.errors
+        );
+    }
+
+    let result = shared::pipeline_yaml::parse_and_validate(&base("dingtalk"));
+    assert!(!result.valid, "unknown channel types still fail Validate");
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("feishu, webhook")),
+        "error message lists the accepted types: {:?}",
+        result.errors
+    );
+}

@@ -1,14 +1,14 @@
 ---
 title: Pipeline Notify
 weight: 100
-description: "End-of-build notifications — Feishu custom bot first; YAML notify: + Secrets webhook + Job Detail deep link"
+description: "End-of-build notifications — Feishu custom bot + generic webhook receiver; YAML notify: + Secrets webhook + Job Detail deep link"
 aliases:
   - /docs/01-architecture/pipeline-notify/
 ---
 
 When a job reaches a **terminal** status, Manager can push a notification to external chat bots. Configuration is **YAML-only** (`notify:`); webhook URLs live in Infrastructure **Secrets**. Sending is asynchronous and never blocks the job state machine.
 
-> **First channel:** Feishu (Lark) custom robot (`type: feishu`). The channel interface is generic — DingTalk / Slack / email are not implemented yet.
+> **Channels:** Feishu (Lark) custom robot (`type: feishu`) and a generic webhook receiver (`type: webhook` — POSTs a flat JSON event to any 2xx endpoint). The channel interface is generic — DingTalk / Slack / email are not implemented yet.
 
 Related: [Pipeline Format → `notify`](./pipeline-format.md#notify) · [Secrets & Variables](./secrets-variables.md) · [YAML-First Authoring](./yaml-first-authoring.md)
 
@@ -46,12 +46,12 @@ notify:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `type` | Yes | Channel implementation. Currently only `feishu`. Unknown values **fail Validate**. |
+| `type` | Yes | Channel implementation: `feishu` or `webhook`. Unknown values **fail Validate**. |
 | `webhook` | Yes | Must be `${secrets.NAME}` or a bare secret name (purpose-slot style). Plain HTTPS URLs are **rejected** at Validate — store the URL in Secrets. |
 | `on` | No | Which terminal events trigger this channel. See below. |
 
 - Registered on `NotifyChannelYaml` with `deny_unknown_fields` — typos like `webhok:` fail Validate.
-- Multiple channels in the list are supported (each evaluated independently). Today only `feishu` is implemented; unknown types at **send** time are skipped with a warning (Validate already blocks unknown types for new YAML).
+- Multiple channels in the list are supported (each evaluated independently). Unknown types at **send** time are skipped with a warning (Validate already blocks unknown types for new YAML).
 
 ### Events (`on`)
 
@@ -164,6 +164,40 @@ At **trigger** (`do_trigger`), Manager loads `notify:` from the on-disk YAML (fi
 
 ---
 
+## Generic webhook channel (`type: webhook`)
+
+For everything that is not a chat bot — self-hosted automation, incident tools, ntfy/Server酱-style receivers — `type: webhook` POSTs one flat JSON object to the secret-resolved URL:
+
+```yaml
+notify:
+  - type: webhook
+    webhook: ${secrets.ALERT_HOOK}   # any HTTPS receiver you control
+    on: [failure, cancelled]         # e.g. alert only on problems
+```
+
+The payload (stable keys, `Content-Type: application/json`):
+
+```json
+{
+  "event": "job.completed",
+  "pipeline": "deploy-demo",
+  "pipeline_id": "…uuid…",
+  "job_id": "…uuid…",
+  "job_url": "https://buz.example.com/jobs/…",
+  "status": "success",
+  "triggered_by": "alice",
+  "run_number": 42,
+  "duration_seconds": 125,
+  "timestamp": "2026-11-09T12:00:00Z"
+}
+```
+
+- Any **2xx** response counts as delivered; non-2xx is logged (`warn`) with a truncated body — no vendor response parsing, no retries.
+- `job_url` is `null` when `server.public_base_url` is unset.
+- The URL is an operator-managed team secret: whoever can edit team secrets chooses where the Manager POSTs. Keep receiver credentials inside the URL out of broadly-writable secrets.
+
+---
+
 ## Feishu card content
 
 Interactive card (`msg_type: interactive`):
@@ -223,6 +257,7 @@ Webhook URL is used only in memory for the POST; it is not shown on the card.
 | Topic | Status |
 |-------|--------|
 | Feishu custom bot | ✅ |
+| Generic webhook receiver (`type: webhook`) | ✅ — POSTs flat JSON, 2xx = delivered |
 | DingTalk / Slack / email | ❌ |
 | Notify UI / DB table | ❌ (YAML only) |
 | Job Detail deep link | ✅ via `server.public_base_url` |
@@ -239,7 +274,7 @@ Webhook URL is used only in memory for the POST; it is not shown on the card.
 | No message at all | Job terminal? `on` includes the event? Snapshot has `notify`? Secret exists same team? |
 | Cancel silent | Default `on` omits `cancelled` — add it explicitly |
 | Validate fails on `webhook` | Must be `${secrets.NAME}`, not a raw `https://…` URL |
-| Validate fails unknown type | Only `feishu` today |
+| Validate fails unknown type | Only `feishu` and `webhook` today |
 | Card without View Job | Set `server.public_base_url` and restart Manager |
 | View Job 404 / wrong host | Base URL must match how users open the UI (proxy hostname, HTTPS) |
 | Feishu `code != 0` in Manager logs | Bot revoked, webhook rotated, or Feishu rate limit — rotate Secret / check bot settings |
@@ -255,6 +290,7 @@ Manager log keywords: `job notify`, `notify channel send failed`, `notify webhoo
 | YAML schema + validation | `crates/shared/src/pipeline_yaml.rs` (`NotifyChannelYaml`) |
 | Notify dispatch + secret resolve | `crates/manager/src/services/notify/` |
 | Feishu card builder | `crates/manager/src/services/notify/feishu.rs` |
+| Generic webhook sender | `crates/manager/src/services/notify/webhook.rs` |
 | Terminal hooks | `crates/manager/src/api/jobs.rs` (`update_status`, `cancel`) |
 | Snapshot freeze | `crates/manager/src/api/pipelines.rs` (`do_trigger`) |
 | Public base URL | `server.public_base_url` in Manager config |
