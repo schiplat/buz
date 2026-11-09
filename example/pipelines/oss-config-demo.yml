@@ -22,16 +22,14 @@
 #   1. Upload configs.tar.gz to:
 #        config_tpl/demo/<tag>/configs.tar.gz
 #      Include at least `env.example` if you want the Render step to succeed.
-#   2. Create secret (Kind = Aliyun OSS auth), name OSS_DEMO, same team:
-#        {"provider":"aliyun_oss","endpoint":"oss-cn-hongkong.aliyuncs.com",
-#         "bucket":"<bucket>","region":"cn-hongkong",
-#         "access_key_id":"LTAI...","access_key_secret":"..."}
+#   2. Create a secret (plain text), name CONFIG_BUNDLE_URL, same team; its
+#      value is a PRESIGNED URL for configs.tar.gz (TTL <= 1h, refresh per
+#      deploy): ossutil sign oss://<bucket>/config_tpl/demo/<tag>/configs.tar.gz
 #
 # Failure modes (prepare-stage, before run):
-#   - secret missing / wrong team      → config_source 'OSS_DEMO' not found
-#   - wrong kind                       → set Kind to Aliyun OSS auth
-#   - object missing                   → config bundle download HTTP 404
-#   - render template missing at dest  → config_render: template '…' not found
+#   - secret missing / wrong team      → CONFIG_BUNDLE_URL unresolvable
+#   - expired / wrong URL              → config-fetch download HTTP 403/404
+#   - render template missing at dest  → env-render fails (on_missing: fail)
 
 name: OSS Config Delivery Demo
 environments: [default]
