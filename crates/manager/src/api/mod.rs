@@ -166,7 +166,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/pipelines/{id}/git-hooks/{hook_id}",
-            delete(git_hooks::delete_hook),
+            put(git_hooks::update_hook).delete(git_hooks::delete_hook),
         )
         .route("/plugins", get(plugins::list_plugins))
         .route("/jobs", get(jobs::list))

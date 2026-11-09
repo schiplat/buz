@@ -57,6 +57,7 @@ pub enum Action {
 
     // git_hook
     GitHookCreate,
+    GitHookUpdate,
     GitHookDelete,
 
     // github_connection
@@ -182,6 +183,7 @@ impl Action {
             Action::EnvironmentSecretOverrideUpsert => "environment.secret_override.upsert",
             Action::EnvironmentUpdate => "environment.update",
             Action::GitHookCreate => "git_hook.create",
+            Action::GitHookUpdate => "git_hook.update",
             Action::GitHookDelete => "git_hook.delete",
             Action::GithubConnectionCreate => "github_connection.create",
             Action::GithubConnectionDelete => "github_connection.delete",

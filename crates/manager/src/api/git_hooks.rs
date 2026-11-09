@@ -1,5 +1,7 @@
 //! Pipeline Git webhook hook configuration — multiple hooks per pipeline.
-//! Hooks are immutable after create: delete and recreate to change settings.
+//! Settings (label / branch / event filter / environment / enabled) are
+//! updatable via PUT; provider, hook_key, and the secret are immutable —
+//! changing those requires delete + recreate (new URL + secret).
 
 use axum::{
     extract::{Path, State},
@@ -226,6 +228,113 @@ pub async fn create_hook(
 }
 
 /// DELETE /pipelines/:id/git-hooks/:hook_id
+/// PUT /pipelines/:id/git-hooks/:hook_id — update mutable settings.
+///
+/// `label` / `branch_filter` / `event_filter` / `environment` / `enabled` are
+/// updatable. Provider, hook key, and the signing secret are immutable — the
+/// hook URL and secret only change by delete + recreate.
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateGitHookRequest {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub branch_filter: Option<String>,
+    /// `push` (default) | `pull_request` | both, comma-separated.
+    #[serde(default)]
+    pub event_filter: Option<String>,
+    pub environment: String,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+pub async fn update_hook(
+    auth: AuthUser,
+    Path((pipeline_id, hook_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+    Json(req): Json<UpdateGitHookRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let team_id = pipeline_team(&state.pool, &pipeline_id).await?;
+    auth.check_team(&team_id, Perm::PipelineWrite)?;
+
+    let label = req.label.unwrap_or_default().trim().to_string();
+    let branch_filter = req.branch_filter.unwrap_or_default();
+    let event_filter = super::git_webhook::normalize_event_filter(req.event_filter.as_deref())?;
+    let environment = req.environment.trim().to_string();
+    if environment.is_empty() {
+        return Err(AppError::ValidationFailed(
+            "git hook environment is required".into(),
+        ));
+    }
+    let enabled = req.enabled.unwrap_or(true);
+
+    let existing = sqlx::query(
+        "SELECT label, branch_filter, event_filter, environment, enabled, provider, hook_key
+         FROM pipeline_git_hooks WHERE id = ? AND pipeline_id = ?",
+    )
+    .bind(&hook_id)
+    .bind(&pipeline_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("git hook not found".into()))?;
+    let provider: String = existing.get(5);
+    let hook_key: String = existing.get(6);
+    let before = serde_json::json!({
+        "label": existing.get::<String, _>(0),
+        "branch_filter": existing.get::<String, _>(1),
+        "event_filter": existing.get::<String, _>(2),
+        "environment": existing.get::<String, _>(3),
+        "enabled": existing.get::<i64, _>(4) != 0,
+    });
+
+    sqlx::query(
+        "UPDATE pipeline_git_hooks SET label = ?, branch_filter = ?, event_filter = ?,
+         environment = ?, enabled = ?, updated_at = datetime('now')
+         WHERE id = ? AND pipeline_id = ?",
+    )
+    .bind(&label)
+    .bind(&branch_filter)
+    .bind(&event_filter)
+    .bind(&environment)
+    .bind(if enabled { 1 } else { 0 })
+    .bind(&hook_id)
+    .bind(&pipeline_id)
+    .execute(&state.pool)
+    .await?;
+
+    let name = if label.is_empty() {
+        hook_id.clone()
+    } else {
+        label.clone()
+    };
+    audit::record(
+        &state.pool,
+        AuditEvent::from_auth(&auth, Action::GitHookUpdate)
+            .resource("git_hook", &hook_id, &name)
+            .team(Some(team_id.clone()))
+            .before(Some(before))
+            .after(Some(serde_json::json!({
+                "label": &label,
+                "branch_filter": &branch_filter,
+                "event_filter": &event_filter,
+                "environment": &environment,
+                "enabled": enabled,
+            }))),
+    )
+    .await;
+
+    Ok(Json(ApiResponse::success(public_hook_view(
+        &hook_id,
+        &label,
+        &provider,
+        &hook_key,
+        &branch_filter,
+        &event_filter,
+        &environment,
+        enabled,
+        None,
+    ))))
+}
+
 pub async fn delete_hook(
     auth: AuthUser,
     Path((pipeline_id, hook_id)): Path<(String, String)>,

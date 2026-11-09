@@ -201,6 +201,11 @@ pub struct InputDef {
 pub struct WebhookTriggerYaml {
     #[serde(default)]
     pub path: Option<String>,
+    /// Trigger input declarations (validated at trigger time, rendered as the
+    /// dialog's fields). Kept per-trigger so a webhook pipeline declares its
+    /// own inputs without pretending to be manual.
+    #[serde(default)]
+    pub inputs: Option<std::collections::BTreeMap<String, InputDef>>,
     /// Optional bare team secret name. When set, webhook requests must carry
     /// `X-Buz-Signature: sha256=<hex HMAC-SHA256 of the raw body>`.
     /// Only the name is stored; the value is resolved at trigger time.
@@ -216,6 +221,9 @@ pub struct WebhookTriggerYaml {
 pub struct CronTriggerYaml {
     #[serde(default)]
     pub schedule: Option<String>,
+    /// Trigger input declarations (cron runs use the declared defaults).
+    #[serde(default)]
+    pub inputs: Option<std::collections::BTreeMap<String, InputDef>>,
     /// Registered pipeline environment to deploy to on each scheduled run.
     #[serde(default)]
     pub environment: Option<String>,

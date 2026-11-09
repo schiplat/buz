@@ -130,6 +130,10 @@ const AUDITED: &[(&str, &str)] = &[
     ("POST /api/v1/pipelines/{id}/disable", "pipeline.disable"),
     ("POST /api/v1/pipelines/{id}/enable", "pipeline.enable"),
     ("POST /api/v1/pipelines/{id}/git-hooks", "git_hook.create"),
+    (
+        "PUT /api/v1/pipelines/{id}/git-hooks/{hook_id}",
+        "git_hook.update",
+    ),
     ("POST /api/v1/pipelines/{id}/trigger", "pipeline.trigger"),
     ("POST /api/v1/runners", "runner.create"),
     (
