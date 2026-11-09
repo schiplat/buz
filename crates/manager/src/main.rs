@@ -234,6 +234,7 @@ async fn main() -> anyhow::Result<()> {
     // path writes into so expired debug chunks are dropped from memory too.
     let log_broadcast = manager::services::log_broadcast::LogBroadcaster::new();
     services::debug_log_cleanup::spawn_debug_log_cleanup(db_pool.clone(), log_broadcast.clone());
+    services::job_log_retention::spawn_job_log_retention(db_pool.clone(), log_broadcast.clone());
 
     services::pipeline_scanner::spawn_scanner(
         db_pool.clone(),

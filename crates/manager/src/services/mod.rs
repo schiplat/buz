@@ -3,6 +3,7 @@ pub mod debug_log_cleanup;
 pub mod deprecated_scan;
 pub mod github_actions_sync;
 pub mod github_fetch_scheduler;
+pub mod job_log_retention;
 pub mod log_broadcast;
 pub mod notify;
 pub mod pipeline_scanner;

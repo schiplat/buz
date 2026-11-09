@@ -90,21 +90,53 @@ pub async fn upload(
     Ok(Json(ApiResponse::success(())))
 }
 
+/// Optional window over a job's log rows. Absent `limit` keeps the legacy
+/// full read (the dashboard's job view relies on it); callers facing huge
+/// jobs page with `limit` (+ `offset`). Rows are append-only, so
+/// offset windows are stable.
+#[derive(Debug, Deserialize, Default)]
+pub struct LogsPageQuery {
+    /// Max rows to return (1..=10_000).
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Rows to skip from the front (only meaningful with `limit`).
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
 pub async fn get_logs(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(job_id): Path<String>,
+    Query(page): Query<LogsPageQuery>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     assert_job_team_view(&state.pool, &auth, &job_id).await?;
 
-    let rows = sqlx::query(
-        "SELECT chunk_index, step_order, log_content, level, created_at
-         FROM job_logs WHERE job_id = ?
-         ORDER BY step_order, chunk_index",
-    )
-    .bind(&job_id)
-    .fetch_all(&state.pool)
-    .await?;
+    let limit = page.limit.map(|l| l.clamp(1, 10_000));
+    let offset = page.offset.unwrap_or(0).max(0);
+
+    let rows = if let Some(limit) = limit {
+        sqlx::query(
+            "SELECT chunk_index, step_order, log_content, level, created_at
+             FROM job_logs WHERE job_id = ?
+             ORDER BY step_order, chunk_index
+             LIMIT ? OFFSET ?",
+        )
+        .bind(&job_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query(
+            "SELECT chunk_index, step_order, log_content, level, created_at
+             FROM job_logs WHERE job_id = ?
+             ORDER BY step_order, chunk_index",
+        )
+        .bind(&job_id)
+        .fetch_all(&state.pool)
+        .await?
+    };
 
     let logs: Vec<serde_json::Value> = rows
         .into_iter()

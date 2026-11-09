@@ -329,6 +329,7 @@ pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Res
     // Why a pending job was last skipped by a poller (slot wait, profile not
     // offered, host mode); cleared on claim. Display-only.
     add_column_if_missing(pool, "jobs", "dispatch_reason TEXT NOT NULL DEFAULT ''").await;
+    add_column_if_missing(pool, "jobs", "logs_purged INTEGER NOT NULL DEFAULT 0").await;
     // Slot-aware claim: UI-managed walk strategy and the heartbeat-derived
     // sandboxd instance this Runner is attached to.
     add_column_if_missing(
