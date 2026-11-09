@@ -1,0 +1,44 @@
+# ── needs: DAG Demo ───────────────────────────────────────────────
+# Demonstrates `needs:` dependencies: ready steps run concurrently, and a
+# failed dependency skips its dependents (status "skipped") while unrelated
+# branches still run.
+#
+# Graph:  build → (test ∥ lint) → report
+#
+# Trigger: manual. Pure shell — runs anywhere.
+
+name: Needs DAG Demo
+environments: [default]
+description: "needs: demo — build, then test and lint in parallel, then a summary step."
+
+team: default
+
+runner:
+  timeout: 5m
+
+steps:
+  - name: Build
+    run: |
+      echo "building…"
+      sleep 2
+      echo "artifact ready"
+
+  - name: Test
+    needs: [Build]
+    run: |
+      echo "running tests…"
+      sleep 3
+      echo "tests green"
+
+  - name: Lint
+    needs: [Build]
+    run: |
+      echo "linting…"
+      sleep 2
+      echo "lint clean"
+
+  - name: Summary
+    needs: [Test, Lint]
+    run: |
+      echo "test and lint both finished — publishing"
+      echo "BUZ_RUN_NUMBER=$BUZ_RUN_NUMBER"
