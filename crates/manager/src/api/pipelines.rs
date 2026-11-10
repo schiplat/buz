@@ -1545,56 +1545,25 @@ pub async fn do_trigger(
         .map_err(AppError::Internal)?;
     let trigger_params_json = serde_json::to_string(&sealed).unwrap_or_else(|_| "{}".into());
 
-    // Allocate the GHA-style build number and create the job atomically, so
-    // concurrent triggers of one pipeline get gapless, unique numbers.
-    // BEGIN IMMEDIATE serializes against `disable`, whose transaction flips
-    // is_active and cancels in-flight jobs — re-checking is_active here closes
-    // the check-to-insert race with a concurrent disable.
-    let mut tx = state
-        .pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    match sqlx::query_scalar::<_, i64>("SELECT is_active FROM pipelines WHERE id = ?")
-        .bind(pipeline_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-    {
-        None => return Err(AppError::NotFound("pipeline not found".into())),
-        Some(0) => {
-            return Err(AppError::Conflict(
-                "pipeline is disabled — enable it before triggering".into(),
-            ));
-        }
-        Some(_) => {}
-    }
-    let run_number = crate::db::allocate_run_number(&mut tx, pipeline_id)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    sqlx::query(
-        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot,
-                           debug_unredact, verbose_logs, environment_id, trigger_user_id,
-                           run_number, run_attempt, resource_profile, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), datetime('now'))",
+    // Allocate the GHA-style build number and create the job atomically (see
+    // `trigger_reserve::reserve_job` for the invariants).
+    crate::services::trigger_reserve::reserve_job(
+        &state.pool,
+        &crate::services::trigger_reserve::ReservedJob {
+            job_id: &job_id,
+            pipeline_id,
+            status: job_status,
+            triggered_by,
+            trigger_params_json: &trigger_params_json,
+            snapshot: &snapshot,
+            debug_unredact,
+            verbose,
+            environment_id,
+            trigger_user_id,
+            resource_profile: &resource_profile,
+        },
     )
-    .bind(&job_id)
-    .bind(pipeline_id)
-    .bind(job_status)
-    .bind(triggered_by)
-    .bind(&trigger_params_json)
-    .bind(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
-    .bind(if debug_unredact { 1 } else { 0 })
-    .bind(if verbose { 1 } else { 0 })
-    .bind(environment_id)
-    .bind(trigger_user_id)
-    .bind(run_number)
-    .bind(&resource_profile)
-    .execute(&mut *tx)
     .await?;
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
     crate::services::poll_events::wake_all();
 
     tracing::info!("Pipeline triggered: {pipeline_name} → job {job_id} (by: {triggered_by})");
