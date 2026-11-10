@@ -855,7 +855,8 @@ pub async fn disable(
         for t in targets {
             let job_id: String = t.get(0);
             if let Some(info) =
-                super::jobs::cancel_job_in_tx(&mut tx, &job_id, &auth.id, &auth.username).await?
+                crate::store::jobs::cancel_job_in_tx(&mut tx, &job_id, &auth.id, &auth.username)
+                    .await?
             {
                 tracing::info!(
                     operator = %auth.username,

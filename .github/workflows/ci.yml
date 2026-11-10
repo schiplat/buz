@@ -45,6 +45,10 @@ jobs:
           components: rustfmt
       - name: Check formatting
         run: cargo fmt --all -- --check
+      # Storage boundary: SQL lives only in crates/manager/src/store. The
+      # allowlist lists api/ files still migrating and must shrink to empty.
+      - name: Store boundary
+        run: ./scripts/check_store_boundary.sh
 
   # ── Backend ────────────────────────────────────────
   backend:

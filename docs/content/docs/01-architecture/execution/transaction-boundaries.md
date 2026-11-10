@@ -13,8 +13,11 @@ moving to Postgres.
 Rules for adding one:
 
 - A transaction that protects an invariant gets a name — either a dedicated
-  function (`cancel_job_in_tx`, `reserve_job`, `claim_cron_fire`) or a
-  clearly-scoped block in the one handler that owns the operation.
+  function in `crates/manager/src/store` (`cancel_job_in_tx`, `reserve_job`,
+  `claim_cron_fire`) or a clearly-scoped block in the one handler that owns
+  the operation. New named operations belong in `store`; `api/` may not
+  contain SQL (enforced by `scripts/check_store_boundary.sh`, allowlist at
+  `scripts/store_boundary_allowlist.txt`).
 - Re-check inside the transaction anything that was read before it. The write
   lock only orders writers; it does not make an earlier read current.
 - Post-commit work (notify, WebSocket fan-out, `wake_all`) never runs inside
@@ -27,7 +30,7 @@ Rules for adding one:
 | `services/trigger_reserve.rs::reserve_job` | Gapless per-pipeline `run_number`; `is_active` re-checked so a concurrent disable cannot interleave | `INSERT ... ON CONFLICT` on a `(pipeline_id, run_number)` unique key, or `SELECT ... FOR UPDATE` on the pipeline row |
 | `api/pipelines.rs::resolve_concurrency_status_in_tx` | Pipeline concurrency decision (`pending` / `queued` / discard) is serialised with job creation | advisory lock keyed by `pipeline_id`, or `FOR UPDATE` on the pipeline row |
 | `services/pipeline_scanner.rs::upsert_from_yaml` | Definition update + task/resolution/binding projection + ETag compare are one write | `FOR UPDATE` on the pipeline row; ETag compare-and-set stays in the same transaction |
-| `api/jobs.rs::cancel_job_in_tx` | Cancel flips status, marks the running step, records approval outcome atomically | `UPDATE ... WHERE status <> terminal` (no lock needed) |
+| `store/jobs.rs::cancel_job_in_tx` | Cancel flips status, marks the running step, records approval outcome atomically | `UPDATE ... WHERE status <> terminal` (no lock needed) |
 | `api/jobs.rs::approve` / `reject` | Approval row + status transition + snapshot update | unique `(job_id, user_id)` + `UPDATE ... WHERE status = 'waiting_approval'` |
 | `api/jobs.rs::rerun` | New attempt row + `run_attempt` increment + old job untouched | unique `(pipeline_id, run_number, run_attempt)` |
 | `api/jobs.rs::update_status` | Runner-only writes; terminal states win; truncation metadata is a union | `UPDATE ... WHERE id = ? AND runner_id = ? AND status NOT IN (terminal)` |
