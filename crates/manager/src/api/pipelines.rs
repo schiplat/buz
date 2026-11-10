@@ -1025,88 +1025,6 @@ pub async fn trigger(
     Ok(result)
 }
 
-pub(crate) async fn resolve_concurrency_status_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    pipeline_id: &str,
-    concurrency_group: Option<&str>,
-    concurrency_mode: &str,
-    concurrency_max_queue: i64,
-) -> Result<&'static str, AppError> {
-    let Some(group) = concurrency_group.filter(|g| !g.is_empty()) else {
-        return Ok("pending");
-    };
-
-    let mode = if concurrency_mode.is_empty() {
-        "discard-new"
-    } else {
-        concurrency_mode
-    };
-
-    match mode {
-        "discard-new" => {
-            let running = sqlx::query(
-                "SELECT COUNT(*) as cnt FROM jobs
-                 WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued')",
-            )
-            .bind(pipeline_id)
-            .fetch_one(&mut **tx)
-            .await?;
-            let count: i64 = running.get(0);
-            if count > 0 {
-                return Err(AppError::Conflict(format!(
-                    "concurrency group '{group}' has {count} active/queued job(s)"
-                )));
-            }
-            Ok("pending")
-        }
-
-        "discard-old" => {
-            sqlx::query(
-                "UPDATE jobs SET status = 'cancelled', updated_at = datetime('now')
-                 WHERE pipeline_id = ? AND status = 'queued'",
-            )
-            .bind(pipeline_id)
-            .execute(&mut **tx)
-            .await?;
-            Ok("pending")
-        }
-
-        "queue" => {
-            let queued_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM jobs
-                 WHERE pipeline_id = ? AND status = 'queued'",
-            )
-            .bind(pipeline_id)
-            .fetch_one(&mut **tx)
-            .await?;
-
-            if queued_count >= concurrency_max_queue {
-                return Err(AppError::Conflict(format!(
-                    "queue full: {queued_count} jobs already queued (max {concurrency_max_queue})"
-                )));
-            }
-
-            let running_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM jobs
-                 WHERE pipeline_id = ? AND status IN ('pending', 'running')",
-            )
-            .bind(pipeline_id)
-            .fetch_one(&mut **tx)
-            .await?;
-
-            if running_count == 0 {
-                Ok("pending")
-            } else {
-                Ok("queued")
-            }
-        }
-
-        _ => Err(AppError::ValidationFailed(format!(
-            "unknown concurrency mode '{mode}'"
-        ))),
-    }
-}
-
 /// Shared trigger logic — used by admin trigger, webhooks, and cron scheduler.
 ///
 /// `trigger_user_id` / `auth` are `Some` for manual UI triggers (ACL + self-approve);
@@ -1272,7 +1190,7 @@ pub async fn do_trigger(
         "waiting_approval"
     } else {
         let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let status = resolve_concurrency_status_in_tx(
+        let status = crate::store::pipelines::resolve_concurrency_status_in_tx(
             &mut tx,
             pipeline_id,
             concurrency_group.as_deref(),
