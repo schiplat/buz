@@ -95,7 +95,20 @@ jobs:
 
       # `cargo nextest run` typechecks + builds; no separate `cargo check`.
       # Doc-tests are outside nextest's scope, so they keep their own step.
+      # openssh-server enables the SSH fan-out e2e test (loopback sshd on a
+      # high port; three loopback "hosts" are connection params, not machines —
+      # concurrency is proven by timing: parallel sleep-2s vs chain-serial).
+      - name: Install openssh server
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssh-server openssh-client
+          sudo mkdir -p /run/sshd
+          sudo ssh-keygen -A
+
       - name: Run tests
+        env:
+          BUZ_SSH_E2E: "1"
         run: cargo nextest run --workspace --no-fail-fast
 
       - name: Run doc-tests
