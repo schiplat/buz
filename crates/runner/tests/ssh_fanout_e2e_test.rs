@@ -13,6 +13,7 @@
 //! everywhere else so local macOS runs stay untouched.
 
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
 use runner::client::poll::execute_ssh_step;
@@ -21,7 +22,7 @@ use runner::engine::ssh::{connect_all, SshConnectionParams};
 fn e2e_enabled() -> bool {
     cfg!(target_os = "linux")
         && std::env::var("BUZ_SSH_E2E").as_deref() == Ok("1")
-        && (std::path::Path::new("/usr/sbin/sshd").exists())
+        && std::path::Path::new("/usr/sbin/sshd").exists()
 }
 
 fn current_user() -> String {
@@ -36,15 +37,20 @@ fn current_user() -> String {
 }
 
 struct Sshd {
-    child: tokio::process::Child,
     port: u16,
     key_path: std::path::PathBuf,
     username: String,
+    pid: u32,
+    dir: std::path::PathBuf,
 }
 
 impl Drop for Sshd {
     fn drop(&mut self) {
-        let _ = self.child.start_kill();
+        // sshd daemonizes itself (config PidFile tracks it); stop it here so
+        // nextest does not report a leaked process.
+        let _ = std::process::Command::new("sudo")
+            .args(["kill", &self.pid.to_string()])
+            .status();
     }
 }
 
@@ -54,6 +60,15 @@ impl Drop for Sshd {
 async fn start_sshd() -> Option<Sshd> {
     let tmp = tempfile::tempdir().expect("temp dir");
     let dir = tmp.keep(); // leaked: sshd reads the config for its lifetime
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
+
+    let username = current_user();
+    // CI images lock the runner account (shadow password "!"); sshd with
+    // UsePAM=no rejects pubkey login for locked accounts. `*` = no password,
+    // account unlocked — pubkey auth works.
+    let _ = std::process::Command::new("sudo")
+        .args(["usermod", "-p", "*", &username])
+        .status();
 
     // User keypair for login.
     let key_path = dir.join("id_ed25519");
@@ -63,7 +78,7 @@ async fn start_sshd() -> Option<Sshd> {
         .output()
         .expect("ssh-keygen");
     if !gen.status.success() {
-        tracing::error!(
+        eprintln!(
             "ssh-keygen failed: {}",
             String::from_utf8_lossy(&gen.stderr)
         );
@@ -71,7 +86,10 @@ async fn start_sshd() -> Option<Sshd> {
     }
     let public = std::fs::read_to_string(key_path.with_extension("pub")).ok()?;
     let authorized = dir.join("authorized_keys");
+    // sshd reads authorized_keys with the target user's UID — it must be
+    // readable outside the tempdir.
     std::fs::write(&authorized, public).ok()?;
+    let _ = std::fs::set_permissions(&authorized, std::fs::Permissions::from_mode(0o644));
 
     // Dedicated host key (no writes to /etc/ssh).
     let host_key = dir.join("hostkey");
@@ -81,7 +99,7 @@ async fn start_sshd() -> Option<Sshd> {
         .output()
         .expect("ssh-keygen");
     if !gen.status.success() {
-        tracing::error!(
+        eprintln!(
             "host keygen failed: {}",
             String::from_utf8_lossy(&gen.stderr)
         );
@@ -93,6 +111,7 @@ async fn start_sshd() -> Option<Sshd> {
     let port = listener.local_addr().ok()?.port();
     drop(listener);
 
+    let pid_file = dir.join("sshd.pid");
     let sshd_config = dir.join("sshd_config");
     std::fs::write(
         &sshd_config,
@@ -100,13 +119,15 @@ async fn start_sshd() -> Option<Sshd> {
             "Port {port}\n\
              ListenAddress 127.0.0.1\n\
              HostKey {}\n\
+             PidFile {}\n\
              AuthorizedKeysFile {}\n\
              PubkeyAuthentication yes\n\
              PasswordAuthentication no\n\
              UsePAM no\n\
              StrictModes no\n\
-             Subsystem\tsftp\tinternal-sftp\n",
+             LogLevel VERBOSE\n",
             host_key.display(),
+            pid_file.display(),
             authorized.display(),
         ),
     )
@@ -117,24 +138,38 @@ async fn start_sshd() -> Option<Sshd> {
         .args(["mkdir", "-p", "/run/sshd"])
         .status();
 
-    let username = current_user();
-    let child = tokio::process::Command::new("sudo")
+    // sshd daemonizes itself and writes PidFile — no held child, no leak.
+    let started = std::process::Command::new("sudo")
         .args([
             "/usr/sbin/sshd",
-            "-D",
             "-f",
             sshd_config.to_str().expect("utf8 config"),
             "-E",
             dir.join("sshd.log").to_str().expect("utf8 log"),
         ])
-        .spawn()
+        .status()
+        .expect("spawn sshd");
+    if !started.success() {
+        eprintln!("sshd exited non-zero at startup; log:");
+        eprintln!(
+            "{}",
+            std::fs::read_to_string(dir.join("sshd.log")).unwrap_or_default()
+        );
+        return None;
+    }
+
+    let pid: u32 = std::fs::read_to_string(&pid_file)
+        .ok()?
+        .trim()
+        .parse()
         .ok()?;
 
     let sshd = Sshd {
-        child,
         port,
         key_path,
         username,
+        pid,
+        dir: dir.clone(),
     };
 
     // Wait until the port answers (sshd writes keys/logs before accepting).
@@ -144,7 +179,11 @@ async fn start_sshd() -> Option<Sshd> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    tracing::error!("sshd did not open the port in time");
+    eprintln!("sshd did not open the port in time; log:");
+    eprintln!(
+        "{}",
+        std::fs::read_to_string(dir.join("sshd.log")).unwrap_or_default()
+    );
     None
 }
 
