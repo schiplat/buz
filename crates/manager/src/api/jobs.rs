@@ -9,7 +9,6 @@ use shared::protocol::response::ApiResponse;
 use shared::rbac::Perm;
 use sqlx::Row;
 use std::collections::HashMap;
-use uuid::Uuid;
 
 use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::{AuthUser, RunnerClaims};
@@ -753,69 +752,28 @@ pub async fn rerun(
     }
     let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into());
 
-    let job_id = Uuid::new_v4().to_string();
-    let mut tx = state
-        .pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    // Re-check is_active inside the transaction: closes the check-to-insert
-    // race with a concurrent pipeline disable (same as do_trigger).
-    match sqlx::query_scalar::<_, i64>("SELECT is_active FROM pipelines WHERE id = ?")
-        .bind(&pipeline_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-    {
-        None => return Err(AppError::NotFound("pipeline not found".into())),
-        Some(0) => {
-            return Err(AppError::Conflict(
-                "pipeline is disabled — enable it before re-running".into(),
-            ));
-        }
-        Some(_) => {}
-    }
-    sqlx::query(
-        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot,
-                           debug_unredact, verbose_logs, environment_id, trigger_user_id,
-                           run_number, run_attempt, resource_profile, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
-    )
-    .bind(&job_id)
-    .bind(&pipeline_id)
-    .bind(job_status)
-    .bind(&auth.username)
-    .bind(&trigger_params_raw) // sealed verbatim from the source job
-    .bind(&snapshot_str)
-    .bind(i64::from(debug_unredact))
-    .bind(i64::from(verbose_logs))
-    .bind(&environment_id)
-    .bind(&auth.id)
-    .bind(run_number)
-    .bind(new_attempt)
-    .bind(resource_profile.trim())
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    audit::record_in(
-        &mut tx,
-        AuditEvent::from_auth(&auth, Action::JobRerun)
-            .resource("job", &job_id, &pipeline_name)
-            .team(Some(team_id.clone()))
-            .after(Some(serde_json::json!({
-                "rerun_of": id,
-                "run_number": run_number,
-                "run_attempt": new_attempt,
-                "status": job_status,
-            }))),
+    let job_id = crate::store::jobs::insert_rerun(
+        &state.pool,
+        &crate::store::jobs::RerunInsert {
+            source_job_id: &id,
+            pipeline_id: &pipeline_id,
+            pipeline_name: &pipeline_name,
+            team_id: &team_id,
+            job_status,
+            trigger_by: &auth.username,
+            trigger_user_id: &auth.id,
+            trigger_params_raw: trigger_params_raw.as_deref(),
+            snapshot_str: &snapshot_str,
+            debug_unredact,
+            verbose_logs,
+            environment_id: environment_id.as_deref(),
+            run_number,
+            run_attempt: new_attempt,
+            resource_profile: resource_profile.trim(),
+        },
+        &auth,
     )
     .await?;
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    crate::services::poll_events::wake_all();
     super::trigger_events::record_simple_trigger(
         &state.pool,
         &pipeline_id,

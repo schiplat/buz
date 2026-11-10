@@ -734,3 +734,96 @@ pub async fn apply_runner_status(
         terminal,
     })
 }
+
+/// Everything needed to insert one re-run attempt.
+pub struct RerunInsert<'a> {
+    pub source_job_id: &'a str,
+    pub pipeline_id: &'a str,
+    pub pipeline_name: &'a str,
+    pub team_id: &'a str,
+    /// `pending` or `waiting_approval` — gates decided by the caller.
+    pub job_status: &'a str,
+    pub trigger_by: &'a str,
+    pub trigger_user_id: &'a str,
+    /// Sealed `trigger_params` copied verbatim from the source job.
+    pub trigger_params_raw: Option<&'a str>,
+    pub snapshot_str: &'a str,
+    pub debug_unredact: bool,
+    pub verbose_logs: bool,
+    pub environment_id: Option<&'a str>,
+    pub run_number: i64,
+    pub run_attempt: i64,
+    pub resource_profile: &'a str,
+}
+
+/// Insert a re-run attempt atomically: `is_active` is re-checked inside the
+/// transaction (closing the check-to-insert race with a concurrent disable,
+/// same as `reserve_job`), the row and its audit record land together.
+/// Returns the new job id. Poller wake happens after commit.
+pub async fn insert_rerun(
+    pool: &SqlitePool,
+    insert: &RerunInsert<'_>,
+    actor: &crate::middleware::AuthUser,
+) -> Result<String, AppError> {
+    let job_id = Uuid::new_v4().to_string();
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    match sqlx::query_scalar::<_, i64>("SELECT is_active FROM pipelines WHERE id = ?")
+        .bind(insert.pipeline_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+    {
+        None => return Err(AppError::NotFound("pipeline not found".into())),
+        Some(0) => {
+            return Err(AppError::Conflict(
+                "pipeline is disabled — enable it before re-running".into(),
+            ));
+        }
+        Some(_) => {}
+    }
+    sqlx::query(
+        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot,
+                           debug_unredact, verbose_logs, environment_id, trigger_user_id,
+                           run_number, run_attempt, resource_profile, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+    )
+    .bind(&job_id)
+    .bind(insert.pipeline_id)
+    .bind(insert.job_status)
+    .bind(insert.trigger_by)
+    .bind(insert.trigger_params_raw)
+    .bind(insert.snapshot_str)
+    .bind(i64::from(insert.debug_unredact))
+    .bind(i64::from(insert.verbose_logs))
+    .bind(insert.environment_id)
+    .bind(insert.trigger_user_id)
+    .bind(insert.run_number)
+    .bind(insert.run_attempt)
+    .bind(insert.resource_profile)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    crate::audit::record_in(
+        &mut tx,
+        crate::audit::AuditEvent::from_auth(actor, crate::audit::Action::JobRerun)
+            .resource("job", &job_id, insert.pipeline_name)
+            .team(Some(insert.team_id.to_string()))
+            .after(Some(serde_json::json!({
+                "rerun_of": insert.source_job_id,
+                "run_number": insert.run_number,
+                "run_attempt": insert.run_attempt,
+                "status": insert.job_status,
+            }))),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    crate::services::poll_events::wake_all();
+    Ok(job_id)
+}
