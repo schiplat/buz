@@ -119,14 +119,20 @@ Writes, in this order:
    single-plugin refresh
 3. `plugins/revision.json` — **only with `--revision`**, always last
 
-`--revision` / `--updated-at` are CI inputs (commit sha + commit time); a
-local run without `--revision` never fabricates the revision sentinel, and
-without `--updated-at` the header takes the current time:
+`--revision` / `--updated-at` are optional inputs (a source stamp + commit
+time); a local run without `--revision` never fabricates the revision
+sentinel, and without `--updated-at` the header takes the current time:
 
 ```bash
 buz-plugin index --revision "$(git rev-parse --short HEAD)" \
   --updated-at "$(git log -1 --format=%cI)"
 ```
+
+A source may instead derive the sentinel from the catalog: the official
+`buz-plugins` repository writes it with `scripts/gen_revision.py`, a digest
+over the published `(id, version, sha256)` set. Mirrors compare sentinels for
+equality only, so either form works — a catalog-derived value simply cannot
+trail the tree the way a build stamp does.
 
 `--no-meta` skips step 2 (dry runs). Generation validates every spec first
 and refuses to write anything when one fails.

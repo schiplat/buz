@@ -127,7 +127,7 @@ your-plugins/
 └── plugins/                  ← source root (what a Manager source URL points into)
     ├── index.json            ← sequence + issued_at + entries (id / version / file / sha256)
     ├── reviews.json          ← optional; reviewed-content manifest
-    ├── revision.json         ← freshness sentinel (CI-written, last)
+    ├── revision.json         ← drift sentinel (derived from the catalog, written last)
     ├── index.json.sig        ← optional detached signature over index.json
     ├── reviews.json.sig      ← optional; signature over reviews.json (same signing run)
     └── buz/                  ← namespace directory (specs)
@@ -148,7 +148,7 @@ trustworthy, and the index byte-stable:
 |------|---------|------------|---------|
 | `index.json` | *what exists* — every plugin version, its content hash and location | CI, generated from the specs (`buz-plugin index` / `gen_index.py`) | Manager source sync (pool staging), the marketplace site, authoring-time input hints |
 | `reviews.json` | *what humans approved* — the trust ledger | maintainers after human review (`gen_reviews`), CI keeps official entries fresh | Manager review badges and the `require_reviewed` gate, marketplace badges |
-| `revision.json` | *what is freshest* — a drift sentinel | CI, written **last** (`buz-plugin index --revision`) | Manager *Check mirror*, mirror sync scripts, `buz-plugin mirror` |
+| `revision.json` | *which catalog this is* — a drift sentinel | derived from the catalog and written **last** (official repo: `scripts/gen_revision.py`; `buz-plugin index --revision` can stamp a commit sha) | Manager *Check mirror*, mirror sync scripts, `buz-plugin mirror` |
 
 - **`index.json` is the catalog.** Every entry pins the template's content
   sha256, so resolution locks at save time regardless of which host served
@@ -187,11 +187,15 @@ trustworthy, and the index byte-stable:
   `--sign-key` run. When *Require signed index* is on, a sync that fetches a
   ledger without a verifying signature fails — otherwise anyone who could
   rewrite `reviews.json` alone could grant themselves review approval.
-- **`revision.json` is the freshness sentinel.** It carries
-  `{"revision": "<commit sha>", "updated_at": "<iso8601>"}` and is written
-  **last** — it commits the sync. Comparing two sentinels (a few hundred
-  bytes) tells a mirror whether it is behind; only on mismatch does
-  anything larger get pulled. It says nothing about review status.
+- **`revision.json` is the drift sentinel.** It carries
+  `{"revision": "<identifier>", "updated_at": "<iso8601>"}` and is written
+  **last** — it commits the sync. The identifier is opaque: the Manager and
+  mirrors compare two sentinels for **equality only**. The official catalog
+  derives it from the published `(id, version, sha256)` set, so it changes
+  exactly when the catalog changes and cannot trail the source tree; a
+  hand-rolled source may instead stamp a commit sha. Comparing two sentinels
+  (a few hundred bytes) tells a mirror whether it is behind; only on mismatch
+  does anything larger get pulled. It says nothing about review status.
 - `file:` paths in `index.json` / `meta.json` are **relative to the source
   root**. The Manager joins them against the source base URL (the
   `index.json` URL minus its tail), so a source can be hosted anywhere — a
