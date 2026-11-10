@@ -23,4 +23,12 @@
 //! contains SQL again — the allowlist file lists files still to migrate,
 //! and shrinks with every step until it is empty.
 
+pub mod api_tokens;
+pub mod audit_logs;
+pub mod git_hooks;
+pub mod health;
 pub mod jobs;
+pub mod metrics;
+pub mod pipelines;
+pub mod plugin_sources;
+pub mod webhook_pipeline;

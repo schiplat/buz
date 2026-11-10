@@ -16,7 +16,6 @@ use axum::{
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::rbac::Perm;
-use sqlx::Row;
 
 use crate::audit::{self, Action, AuditEvent};
 use crate::middleware::AuthUser;
@@ -93,15 +92,8 @@ pub async fn get_pipeline_source(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
-    let row = sqlx::query("SELECT source, yaml_path, name FROM pipelines WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
-
-    let source: String = row.get(0);
-    let yaml_path: Option<String> = row.get(1);
-    let name: String = row.get(2);
+    let (source, yaml_path, name) =
+        crate::store::pipelines::pipeline_source_row(&state.pool, &id).await?;
 
     if source != "yaml" {
         return Err(AppError::ValidationFailed(

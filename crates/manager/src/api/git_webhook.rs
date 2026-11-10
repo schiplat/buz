@@ -14,13 +14,13 @@ use shared::git_webhook::{
     PROVIDER_GITEE, PROVIDER_GITHUB,
 };
 use shared::protocol::response::ApiResponse;
-use sqlx::Row;
 
 use super::trigger_events::{
     claim_delivery, finalize_event, insert_event, release_claim, ClaimResult, TriggerEventWrite,
 };
 use crate::crypto;
 use crate::state::AppState;
+use crate::store::git_hooks::find_by_hook_key;
 
 /// POST /hooks/git/:provider/:hook_key
 pub async fn handle(
@@ -32,44 +32,32 @@ pub async fn handle(
     let provider = normalize_provider(&provider_raw)
         .ok_or_else(|| AppError::NotFound(format!("unknown git provider '{provider_raw}'")))?;
 
-    let row = sqlx::query(
-        "SELECT h.pipeline_id, h.secret_ciphertext, h.branch_filter, h.enabled, h.provider, p.name, p.is_active, h.environment, h.event_filter
-         FROM pipeline_git_hooks h
-         JOIN pipelines p ON p.id = h.pipeline_id
-         WHERE h.hook_key = ?",
-    )
-    .bind(&hook_key)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("no git hook for key '{hook_key}'")))?;
+    let hook = find_by_hook_key(&state.pool, &hook_key).await?;
 
-    let pipeline_id: String = row.get(0);
-    let secret_ct: String = row.get(1);
-    let branch_filter: String = row.get(2);
-    let enabled: i64 = row.get(3);
-    let configured_provider: String = row.get(4);
-    let pipeline_name: String = row.get(5);
-    let is_active: i64 = row.get(6);
-    let environment: String = row.get(7);
-    let event_filter: String = row.get(8);
+    let pipeline_id = hook.pipeline_id;
+    let branch_filter = hook.branch_filter;
+    let pipeline_name = hook.pipeline_name;
+    let event_filter = hook.event_filter;
+    let environment = hook.environment;
 
-    if configured_provider != provider {
+    if hook.provider != provider {
         return Err(AppError::NotFound(format!(
-            "hook is configured for '{configured_provider}', not '{provider}'"
+            "hook is configured for '{}', not '{provider}'",
+            hook.provider
         )));
     }
-    if enabled == 0 {
+    if !hook.enabled {
         return Err(AppError::Conflict(format!(
             "git hook for pipeline '{pipeline_name}' is disabled"
         )));
     }
-    if is_active == 0 {
+    if !hook.pipeline_active {
         return Err(AppError::Conflict(format!(
             "pipeline '{pipeline_name}' is deactivated"
         )));
     }
 
-    let secret = crypto::decrypt(&secret_ct, &state.config.auth.jwt_secret)
+    let secret = crypto::decrypt(&hook.secret_ciphertext, &state.config.auth.jwt_secret)
         .map_err(|e| AppError::Internal(format!("git hook secret decrypt failed: {e}")))?;
 
     // Verify before parse side effects

@@ -1,18 +1,12 @@
-api_tokens.rs
-audit_logs.rs
 auth.rs
 environments.rs
 git_hooks.rs
-git_webhook.rs
 github_sync.rs
 hosts.rs
 jobs.rs
 logs.rs
-metrics.rs
 ops_sandbox.rs
-pipeline_yaml_files.rs
 pipelines.rs
-plugin_sources.rs
 runners.rs
 sandboxd_config.rs
 secrets.rs
@@ -20,5 +14,3 @@ teams.rs
 trigger_events.rs
 users.rs
 variables.rs
-version.rs
-webhook.rs

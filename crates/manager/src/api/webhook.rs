@@ -7,7 +7,6 @@ use axum::{
 use shared::error::AppError;
 use shared::git_webhook::verify_hex_hmac_sha256;
 use shared::protocol::response::ApiResponse;
-use sqlx::Row;
 
 use crate::state::AppState;
 
@@ -38,28 +37,15 @@ pub async fn handle(
     body: Bytes,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     // Look up pipeline by webhook_path (case-sensitive exact match)
-    let pipeline = sqlx::query(
-        "SELECT id, name, is_active, input_defs, webhook_secret, team_id, webhook_environment \
-         FROM pipelines WHERE trigger_type = 'webhook' AND webhook_path = ?",
-    )
-    .bind(&webhook_path)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| {
-        AppError::NotFound(format!(
-            "no webhook pipeline found for path '/{webhook_path}'"
-        ))
-    })?;
-
-    let pipeline_id: String = pipeline.get(0);
-    let pipeline_name: String = pipeline.get(1);
-    let is_active: i64 = pipeline.get(2);
-    let webhook_secret_name: String = pipeline.get(4);
-    let team_id: String = pipeline.get(5);
-    let configured_environment: String = pipeline.get(6);
+    let pipeline = crate::store::webhook_pipeline::find_by_path(&state.pool, &webhook_path).await?;
+    let pipeline_id = pipeline.id.clone();
+    let pipeline_name = pipeline.name.clone();
+    let webhook_secret_name = pipeline.webhook_secret_name.clone();
+    let team_id = pipeline.team_id.clone();
+    let configured_environment = pipeline.webhook_environment.clone();
     let mut environment = query.inputs.get("environment").cloned();
 
-    if is_active == 0 {
+    if !pipeline.active {
         return Err(AppError::Conflict(format!(
             "pipeline '{pipeline_name}' is deactivated"
         )));
@@ -78,13 +64,12 @@ pub async fn handle(
         ));
     }
     if !webhook_secret_name.is_empty() {
-        let ciphertext: Option<String> =
-            sqlx::query("SELECT value FROM secrets WHERE team_id = ? AND name = ?")
-                .bind(&team_id)
-                .bind(&webhook_secret_name)
-                .fetch_optional(&state.pool)
-                .await?
-                .map(|r| r.get(0));
+        let ciphertext: Option<String> = crate::store::webhook_pipeline::team_secret_value(
+            &state.pool,
+            &team_id,
+            &webhook_secret_name,
+        )
+        .await?;
         let secret_value = match ciphertext
             .and_then(|c| crate::crypto::decrypt(&c, &state.config.auth.jwt_secret).ok())
         {

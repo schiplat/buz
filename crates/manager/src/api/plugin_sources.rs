@@ -79,19 +79,16 @@ pub async fn create_source(
     }
 
     let id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO plugin_sources (id, name, url, mirror_url, auto_enable, enabled, created_by)
-         VALUES (?, ?, ?, ?, ?, 1, ?)",
+    crate::store::plugin_sources::insert(
+        &state.pool,
+        &id,
+        &name,
+        &url,
+        mirror_url.as_deref(),
+        body.auto_enable,
+        &auth.username,
     )
-    .bind(&id)
-    .bind(&name)
-    .bind(&url)
-    .bind(&mirror_url)
-    .bind(body.auto_enable as i64)
-    .bind(&auth.username)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    .await?;
     audit::record(
         &state.pool,
         AuditEvent::new(Action::PluginSourceCreate, &auth)
@@ -215,14 +212,7 @@ pub async fn reset_index_watermark(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or_else(|| AppError::NotFound("source not found".into()))?;
-    sqlx::query(
-        "UPDATE plugin_sources SET last_index_sequence = NULL, last_index_sha256 = NULL, \
-         last_index_issued_at = NULL WHERE id = ?",
-    )
-    .bind(&id)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    crate::store::plugin_sources::reset_index_watermark(&state.pool, &id).await?;
     audit::record(
         &state.pool,
         AuditEvent::new(Action::PluginSourceResetIndexWatermark, &auth)
@@ -270,11 +260,7 @@ pub async fn delete_source(
     let removed = plugin_pool::get_source(&state.pool, &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    sqlx::query("DELETE FROM plugin_sources WHERE id = ?")
-        .bind(&id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    crate::store::plugin_sources::delete(&state.pool, &id).await?;
     if let Some(removed) = &removed {
         audit::record(
             &state.pool,
@@ -293,16 +279,8 @@ pub async fn delete_source(
     // (typically the official site is unreachable); remember it so the
     // startup migration does not re-seed it on every boot.
     if id == "official" {
-        sqlx::query(
-            "INSERT INTO platform_settings (key, value, updated_by, updated_at) \
-             VALUES ('plugin_official_source_dismissed', 'true', ?, datetime('now')) \
-             ON CONFLICT(key) DO UPDATE SET value = 'true', updated_by = excluded.updated_by, \
-               updated_at = excluded.updated_at",
-        )
-        .bind(&auth.username)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        crate::store::plugin_sources::mark_official_source_dismissed(&state.pool, &auth.username)
+            .await?;
     }
     Ok(Json(ApiResponse::success(json!({ "id": id }))))
 }
@@ -387,53 +365,16 @@ pub async fn toggle_pool_entry(
         .await
         .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
     }
-    // One transaction: the state change, its provenance (who/when) and the
-    // audit record land together or not at all.
-    let mut tx = state
-        .pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    let previous_enabled: Option<i64> = sqlx::query_scalar(
-        "SELECT enabled FROM plugin_pool \
-         WHERE namespace = ? AND plugin_id = ? AND version = ?",
+    // State change, provenance and audit land together (store owns the tx).
+    crate::store::plugin_sources::toggle_pool_entry(
+        &state.pool,
+        &namespace,
+        &plugin_id,
+        &version,
+        body.enabled,
+        &auth,
     )
-    .bind(&namespace)
-    .bind(&plugin_id)
-    .bind(&version)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-    let result = sqlx::query(
-        "UPDATE plugin_pool SET enabled = ?, updated_by = ?, updated_at = datetime('now') \
-         WHERE namespace = ? AND plugin_id = ? AND version = ?",
-    )
-    .bind(body.enabled as i64)
-    .bind(&auth.username)
-    .bind(&namespace)
-    .bind(&plugin_id)
-    .bind(&version)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-    if result.rows_affected() == 0 {
-        tx.rollback().await.ok();
-        return Err(AppError::NotFound("pool entry not found".into()));
-    }
-    audit::record_in(
-        &mut tx,
-        AuditEvent::new(Action::PluginPoolToggle, &auth)
-            .on(Resource::plugin_pool(&namespace, &plugin_id, &version))
-            .changes(
-                Some(json!({ "enabled": previous_enabled.map(|v| v != 0) })),
-                Some(json!({ "enabled": body.enabled })),
-            ),
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    .await?;
     Ok(Json(ApiResponse::success(json!({
         "namespace": namespace, "plugin_id": plugin_id,
         "version": version, "enabled": body.enabled,

@@ -9,11 +9,10 @@
 //! target, not an API surface (same treatment as the sandboxd endpoints).
 
 use axum::{extract::State, http::header::CONTENT_TYPE, response::IntoResponse};
-use sqlx::Row;
-use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use crate::state::AppState;
+use crate::store::metrics::{entity_counts, job_status_counts};
 
 /// Every job status the schema uses — zero-filled so dashboards never lose a
 /// series when a status has no rows yet.
@@ -29,35 +28,6 @@ const JOB_STATUSES: &[&str] = &[
 ];
 
 const CONTENT_TYPE_PROM: &str = "text/plain; version=0.0.4; charset=utf-8";
-
-/// Best-effort grouped count: query errors yield an empty map (zeros) with a
-/// warning, so a transient DB hiccup degrades the scrape instead of failing it.
-async fn job_status_counts(pool: &sqlx::SqlitePool) -> HashMap<String, i64> {
-    let rows = sqlx::query("SELECT status, COUNT(*) AS cnt FROM jobs GROUP BY status")
-        .fetch_all(pool)
-        .await;
-    match rows {
-        Ok(rows) => rows
-            .into_iter()
-            .map(|r| (r.get::<String, _>(0), r.get::<i64, _>(1)))
-            .collect(),
-        Err(e) => {
-            tracing::warn!(error = %e, "metrics: failed to sample job counts");
-            HashMap::new()
-        }
-    }
-}
-
-/// Best-effort scalar count; `None` when the query fails (omit the line).
-async fn scalar(pool: &sqlx::SqlitePool, sql: &str) -> Option<i64> {
-    match sqlx::query_scalar(sql).fetch_one(pool).await {
-        Ok(v) => Some(v),
-        Err(e) => {
-            tracing::warn!(error = %e, sql, "metrics: count query failed");
-            None
-        }
-    }
-}
 
 pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     let mut out = String::new();
@@ -77,33 +47,22 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
         );
     }
 
-    // ── Runners ──
+    // ── Runners & pipelines ──
+    let counts = entity_counts(&state.pool).await;
     let _ = writeln!(out, "# HELP buz_runners Registered runners (aggregate).");
     let _ = writeln!(out, "# TYPE buz_runners gauge");
-    if let Some(total) = scalar(&state.pool, "SELECT COUNT(*) FROM runners").await {
+    if let Some(total) = counts.runners_total {
         let _ = writeln!(out, "buz_runners{{state=\"total\"}} {total}");
     }
-    if let Some(frozen) = scalar(
-        &state.pool,
-        "SELECT COUNT(*) FROM runners WHERE is_frozen != 0",
-    )
-    .await
-    {
+    if let Some(frozen) = counts.runners_frozen {
         let _ = writeln!(out, "buz_runners{{state=\"frozen\"}} {frozen}");
     }
-
-    // ── Pipelines ──
     let _ = writeln!(out, "# HELP buz_pipelines Pipelines (aggregate).");
     let _ = writeln!(out, "# TYPE buz_pipelines gauge");
-    if let Some(total) = scalar(&state.pool, "SELECT COUNT(*) FROM pipelines").await {
+    if let Some(total) = counts.pipelines_total {
         let _ = writeln!(out, "buz_pipelines{{state=\"total\"}} {total}");
     }
-    if let Some(active) = scalar(
-        &state.pool,
-        "SELECT COUNT(*) FROM pipelines WHERE is_active = 1",
-    )
-    .await
-    {
+    if let Some(active) = counts.pipelines_active {
         let _ = writeln!(out, "buz_pipelines{{state=\"active\"}} {active}");
     }
 
