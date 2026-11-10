@@ -40,5 +40,10 @@ so a stale "supported" never hides a broken backend. See
 [Isolation tiers](../01-architecture/execution/sandbox-isolation-tiers.md) for
 what each tier guarantees.
 
+To diagnose a host *before* it is enrolled (no token, no Manager, no applied
+policy), run `buz-sandboxd --doctor` on it — the same prerequisite rules, one
+line per tier with the blocking reason. See
+[Sandbox Host Installation](./sandbox-host.md#6-verify).
+
 Both the request and the serve are recorded in the Runner's event log and the
 Manager's audit trail.

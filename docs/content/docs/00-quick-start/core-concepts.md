@@ -14,7 +14,7 @@ machines it does not share a network with.
 | **Manager** | Control plane — stores pipelines, queues jobs, exposes the API + dashboard | Your operations network |
 | **Runner** | Execution agent — polls the Manager, claims jobs, runs steps | Any machine that can reach the Manager (HTTP(S) outbound) |
 | **Hosts** | SSH targets a Runner deploys to over its own credentials | Any machine the Runner can SSH to |
-| **sandboxd** | Optional host supervisor for sandboxed job tiers | Docker-capable hosts |
+| **sandboxd** | Optional host supervisor for sandboxed job tiers — [install & verify](../03-operations/sandbox-host.md) | Docker-capable hosts |
 
 ## A pipeline
 
@@ -40,4 +40,6 @@ resource grants) for a second ops approval. Admin actions are audited.
 
 - Author your first pipeline: [Pipeline Format](../01-architecture/authoring/pipeline-format.md)
 - Deploy something: [Deployment](../03-operations/deployment.md)
+- Add sandboxed job tiers: [Sandbox Host Installation](../03-operations/sandbox-host.md)
+- How those tiers differ: [Sandbox Isolation Tiers](../01-architecture/execution/sandbox-isolation-tiers.md)
 - Operating safely: [Security policy](https://github.com/schiplat/buz/security/policy)

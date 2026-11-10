@@ -197,7 +197,9 @@ network — from the Manager over HTTPS with a per-instance token. The Manager i
 of truth; sandboxd validates each document, applies it atomically, and caches the last good one
 root-owned so it can serve jobs through a Manager outage. Until a document has been applied,
 `create_job` is refused while `--healthcheck` keeps passing (there is no built-in default image or
-envelope). Design record: [Sandbox Host Configuration & Resource Profiles](/docs/01-architecture/execution/sandbox-host-configuration/).
+envelope). Step-by-step install, enrollment, and verification:
+[Sandbox Host Installation](/docs/03-operations/sandbox-host/). Design record:
+[Sandbox Host Configuration & Resource Profiles](/docs/01-architecture/execution/sandbox-host-configuration/).
 
 ### Bootstrap (env / flags)
 
@@ -279,7 +281,7 @@ This is a coordinated, breaking release: upgrade Manager, Runner, and sandboxd b
 4. Set `max_resource_slots` on the host record once you want slot-aware dispatch; `0` leaves the
    budget unlimited (default-profile behavior is unchanged).
 
-`BUZ_SANDBOXD_INSTANCE_ID` must be unique per Docker daemon. On startup sandboxd refuses to take over a socket whose live peer answers a `health` probe, removes stale sockets only when nothing is listening, and force-removes leftover `buz.sandboxd.managed=true` containers carrying its own `buz.sandboxd.instance=<id>` label — it never touches other instances' containers. Compose exposes `/dev/kvm` to sandboxd only through the optional `docker-compose.vm.yml` override (`docker compose -f docker/docker-compose.yml -f docker/docker-compose.vm.yml --profile sandbox up -d`), because the default Compose path cannot reach the host KVM device. The container image ships a `buz-sandboxd --healthcheck` subcommand used as the Compose healthcheck; the Runner waits for it via an optional `depends_on` condition, so Host-only deployments are unaffected.
+`BUZ_SANDBOXD_INSTANCE_ID` must be unique per Docker daemon. On startup sandboxd refuses to take over a socket whose live peer answers a `health` probe, removes stale sockets only when nothing is listening, and force-removes leftover `buz.sandboxd.managed=true` containers carrying its own `buz.sandboxd.instance=<id>` label — it never touches other instances' containers. Compose exposes `/dev/kvm` to sandboxd only through the optional `docker-compose.vm.yml` override (`docker compose -f docker/docker-compose.yml -f docker/docker-compose.vm.yml --profile sandbox up -d`), because the default Compose path cannot reach the host KVM device. The container image ships a `buz-sandboxd --healthcheck` subcommand used as the Compose healthcheck; the Runner waits for it via an optional `depends_on` condition, so Host-only deployments are unaffected. Before enrolling a host you can check its prerequisites with `buz-sandboxd --doctor` (offline, read-only) — see [Sandbox Host Installation](/docs/03-operations/sandbox-host/).
 
 All sandboxed tiers currently support local shell steps only: SSH, per-step Docker engine, and host-side config preparation are rejected before the job starts. See [Runner Policy — Job-wide execution modes](/docs/01-architecture/execution/runner-policy/#job-wide-execution-modes) for the full compatibility/security boundary and [Sandbox Isolation Tiers](/docs/01-architecture/execution/sandbox-isolation-tiers/) for the tier model.
 

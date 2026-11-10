@@ -7,7 +7,8 @@ description: "Design record: Manager-managed sandbox host configuration, named r
 > **Status: SHIPPED (2026-10-29).** This page is the implementation contract and now describes
 > shipped behavior. See [Configuration](/docs/03-operations/configuration/) → "Sandbox host
 > configuration" for the operator workflow and the migration steps from the retired
-> `conf/sandboxd.toml`. Legacy `runner.toml → [sandbox]` tier keys are ignored on load.
+> `conf/sandboxd.toml`. Step-by-step install and verification: [Sandbox Host Installation](/docs/03-operations/sandbox-host/).
+> Legacy `runner.toml → [sandbox]` tier keys are ignored on load.
 
 This page records the accepted design for moving sandbox host policy out of host-local files into
 **Manager-managed configuration**, adding **named resource profiles**, and making sandboxed job sizing

@@ -9,6 +9,7 @@ description: "Configuration, deployment, and operations guides"
   {{< card link="config-file-scopes/" title="Config File Scopes" subtitle="manager.toml / runner.toml parameter scopes" >}}
   {{< card link="deployment/" title="Deployment" subtitle="Install Manager and Runner" >}}
   {{< card link="standalone/" title="Standalone" subtitle="Single-image first run & upgrade (arm64)" >}}
+  {{< card link="sandbox-host/" title="Sandbox Host Installation" subtitle="Optional sandboxd tiers: prerequisites, enrollment, doctor" >}}
   {{< card link="tls/" title="HTTPS" subtitle="Manager TLS, Runner client, reverse proxy, commands" >}}
   {{< card link="runner-restart/" title="Runner Restart" subtitle="Remotely restart a Runner from the UI" >}}
   {{< card link="runner-reprobe/" title="Runner Capability Re-probe" subtitle="On-demand sandbox capability re-probe and its lifecycle" >}}

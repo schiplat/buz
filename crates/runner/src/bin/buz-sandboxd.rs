@@ -26,6 +26,28 @@ struct Args {
     #[arg(long)]
     healthcheck: bool,
 
+    /// Read-only host readiness report for the sandboxed tiers, then exit.
+    /// Needs no Manager, token, or applied policy; exit code 0 = at least one
+    /// tier's prerequisites are satisfied, 2 = none, 1 = a requested probe
+    /// failed.
+    #[arg(long)]
+    doctor: bool,
+
+    /// Render the --doctor report as JSON.
+    #[arg(long)]
+    json: bool,
+
+    /// With --doctor: validate one candidate image end-to-end (create → start
+    /// → exec → remove). Must be pinned by @sha256: digest, mirroring the
+    /// Manager probe.
+    #[arg(long, env = "BUZ_SANDBOXD_DOCTOR_IMAGE")]
+    probe_image: Option<String>,
+
+    /// OCI runtime for --probe-image (for example `runsc`). Omitted = the
+    /// Docker daemon's default runtime.
+    #[arg(long, env = "BUZ_SANDBOXD_DOCTOR_RUNTIME")]
+    probe_runtime: Option<String>,
+
     /// Unix socket the Runner connects to.
     #[arg(
         long,
@@ -130,6 +152,29 @@ fn read_token(args: &Args) -> anyhow::Result<String> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.json && !args.doctor {
+        anyhow::bail!("--json requires --doctor");
+    }
+    if args.probe_image.is_some() && !args.doctor {
+        anyhow::bail!("--probe-image requires --doctor");
+    }
+    if args.doctor {
+        // Read-only: deliberately before identity, token, and logging setup so
+        // it works on a host that has not been enrolled yet.
+        let options = sandbox::doctor::DoctorOptions {
+            docker_cli: args.docker_cli.clone(),
+            socket: args.socket.clone(),
+            workspace_root: args.workspace_root.clone(),
+            state_dir: args.state_dir.display().to_string(),
+            token_file: args.token_file.clone(),
+            allowed_runner_uid: args.allowed_runner_uid,
+            manager_url: args.manager_url.clone(),
+            manager_instance_id: args.manager_instance_id.clone(),
+            probe_image: args.probe_image.clone(),
+            probe_runtime: args.probe_runtime.clone(),
+        };
+        std::process::exit(sandbox::doctor::run(&options, args.json).await);
+    }
     if args.healthcheck {
         return sandbox::healthcheck(&args.socket).await;
     }

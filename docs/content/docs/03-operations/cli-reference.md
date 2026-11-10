@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 weight: 60
-description: buz-manager subcommands for operators — scan, rotate, plan, tokens
+description: operator subcommands for buz-manager and buz-sandboxd — scan, rotate, plan, tokens, doctor
 ---
 
 `buz-manager` ships operator subcommands alongside the server. All of them
@@ -74,3 +74,22 @@ Print a shell completion script (generated from the same CLI definition):
 ```bash
 buz-manager completions zsh > ~/.zfunc/_buz-manager
 ```
+
+## buz-sandboxd --doctor
+
+Read-only host readiness report for the sandboxed tiers. Needs no Manager,
+token, or applied policy, so it works on a host that has not been enrolled yet.
+Full procedure: [Sandbox Host Installation](/docs/03-operations/sandbox-host/).
+
+```bash
+buz-sandboxd --doctor                      # human table
+buz-sandboxd --doctor --json               # machine-readable
+buz-sandboxd --doctor --probe-image repo@sha256:… --probe-runtime runsc
+```
+
+Exit codes: `0` at least one tier's prerequisites are satisfied, `2` none,
+`1` a requested probe failed. `--probe-image` must be digest-pinned and runs
+the same create → start → exec → remove sequence as the Manager probe.
+
+`buz-sandboxd --healthcheck` checks a running supervisor's socket (used by the
+Compose healthcheck and systemd).

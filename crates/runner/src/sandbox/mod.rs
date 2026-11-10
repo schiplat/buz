@@ -8,6 +8,7 @@
 
 pub mod backend;
 pub mod config;
+pub mod doctor;
 pub mod manager_fetch;
 
 use std::collections::HashMap;
