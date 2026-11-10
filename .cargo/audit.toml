@@ -11,4 +11,24 @@ ignore = [
     # (`cargo tree -e features -i tokio`), so the unsound API is unreachable.
     # the upgrade needs its own regression pass rather than riding along. See SECURITY.md.
     "RUSTSEC-2026-0386",
+    # libsqlite3-sys: bundled SQLite < 3.54.0 can return uninitialized
+    # page-cache memory when it opens a database together with a crafted
+    # `-wal` whose page size differs from the database's (info disclosure,
+    # local vector, victim opens the files). Fixed in libsqlite3-sys 0.39.0
+    # (SQLite 3.54.0).
+    #
+    # No upgrade path defensively: sqlx 0.9.0 (newest release) caps
+    # libsqlite3-sys at <0.38.0, sqlx-sqlite 0.8.6 (ours) requires ^0.30.1,
+    # and libsqlite3-sys links the single native `sqlite3` library, so 0.39
+    # cannot coexist with sqlx in one dependency graph. Revisit when sqlx
+    # allows 0.39.
+    #
+    # Unreachable in a default deployment: the Manager opens exactly one
+    # database — `[database] path` from manager.toml — and never ATTACHes or
+    # opens a user-supplied file. Triggering this needs an attacker to write a
+    # crafted `-wal` beside that database, i.e. write access to the Manager's
+    # data directory, which already means full control of the service and its
+    # secrets. Keep the data directory writable only by the Manager's OS user
+    # (the same boundary jwt_secret and stored secrets rely on). See SECURITY.md.
+    "RUSTSEC-2026-0459",
 ]
