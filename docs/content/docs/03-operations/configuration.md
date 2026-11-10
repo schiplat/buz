@@ -376,6 +376,41 @@ RUST_LOG=buz_manager=debug,sqlx=warn ./buz-manager -c conf/manager.toml
 
 Do **not** log secrets (`register_token`, JWT, passwords). Create-runner API returns the token once in the JSON body; process logs only record name/id.
 
+## Job log window and truncation
+
+A step's log lives in `job_logs` under a fixed index window: step `i` owns
+`i*10_000 … i*10_000+9999`, streamed output starts at `+6`, and `+9991` is the
+truncation marker. That bounds one step at **~9,985 streamed lines**; a step
+that prints more is truncated rather than allowed to overwrite its own
+sentinel chunks (the unique index would silently drop the earlier rows).
+
+What truncation does — by design, not as a workaround:
+
+- **The head and the tail are kept.** The first ~9,985 chunks are uploaded
+  normally; the marker then carries the **last 200 lines** of the overflow
+  (each clipped to 2 KB, `… (line truncated)` marks a clipped one), so a step
+  that fails at the end still shows *how* it ended.   The middle is dropped.
+- **The marker states the shape and the volume:**
+  `kept first 9985 chunk(s)` / `kept last 200 line(s)` / `omitted N chunk(s) in between (≈ X MiB)`.
+  The byte count is what lets you tell a noisy build from a runaway one.
+- **It is a job fact, not a log fact.** The Runner reports truncated step orders
+  with the terminal status, the Manager stores them in `jobs.truncated_steps`,
+  and `GET /api/v1/jobs/{id}` returns `truncated_steps: [0, 2]`. Because it is a
+  column, the badge **survives `job_log_retention_days`** (default 30) deleting
+  the log rows — an old job still says "output was truncated" even though its
+  logs are gone. Jobs finished before the column existed fall back to scanning
+  the 9991 marker, which is correct only while their logs are still retained.
+- **A failed step says so in its error**, so a truncated log cannot be mistaken
+  for proof that the failure line is absent.
+
+Practical consequence: **do not use the log as a data channel.** Builds that
+need to emit more than a few thousand lines (test matrices, verbose compilers,
+`set -x` traces) should write a file/artifact and print a summary — anything
+else will be silently clipped in the middle. Raising `LOG_STREAM_LAST` only
+moves the cliff; it does not widen the 10_000-wide step window that the
+per-step log layout depends on.
+
+
 ## Environment overrides
 
 | Variable | Effect |

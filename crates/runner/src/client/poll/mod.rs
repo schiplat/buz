@@ -1657,24 +1657,28 @@ pub(super) async fn finalize_step(
     }
     if output.exit_code != 0 {
         // fail_strategy = "continue": keep going, but the job ends failed.
-        update_job_status(
+        let truncated = step_truncation(spec.idx, omitted);
+        update_job_status_with_truncation(
             &log.client,
             &log.config,
             &log.token,
             &log.job_id,
             "failed",
             Some(log.step_order),
+            &truncated,
         )
         .await?;
         return Ok(true);
     }
-    update_job_status(
+    let truncated = step_truncation(spec.idx, omitted);
+    update_job_status_with_truncation(
         &log.client,
         &log.config,
         &log.token,
         &log.job_id,
         "success",
         Some(log.step_order),
+        &truncated,
     )
     .await?;
     Ok(false)
@@ -1795,7 +1799,9 @@ pub(super) async fn run_sandbox_step(
                                 }
                                 None => {
                                     // Window exhausted: keep draining the
-                                    // supervisor stream and annotate once.
+                                    // supervisor stream, keep the bounded tail hooked
+                                    // for the marker, and annotate once.
+                                    budget.omit(&masked);
                                     if let Some(marker) = budget.unnotified_truncation() {
                                         log.emit(LOG_STEP_TRUNCATED, marker).await;
                                     }
@@ -2228,6 +2234,33 @@ pub(super) async fn update_job_status(
     status: &str,
     step_order: Option<i32>,
 ) -> anyhow::Result<()> {
+    update_job_status_with_truncation(client, config, token, job_id, status, step_order, &[]).await
+}
+
+/// The step orders to report alongside `step`: this step when it overflowed,
+/// nothing otherwise. One step per terminal report keeps the payload small and
+/// the Manager's column merge (union) trivial.
+fn step_truncation(step_order: usize, omitted: Option<u64>) -> Vec<i32> {
+    if omitted.is_some() {
+        vec![step_order as i32]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Same report, plus the step orders whose streamed output was truncated. The
+/// Manager stores them on the job row, so the truncation badge outlives the
+/// log rows that `job_log_retention` eventually deletes.
+#[allow(clippy::too_many_arguments)] // one logical status report
+pub(super) async fn update_job_status_with_truncation(
+    client: &Client,
+    config: &Config,
+    token: &str,
+    job_id: &str,
+    status: &str,
+    step_order: Option<i32>,
+    truncated_steps: &[i32],
+) -> anyhow::Result<()> {
     // Retry transient failures up to 3 times with short backoff.
     // Critical: if this fails silently the job stays stuck in "running" forever.
     let mut last_err = None;
@@ -2241,6 +2274,7 @@ pub(super) async fn update_job_status(
             .json(&UpdateJobStatusRequest {
                 status: status.to_string(),
                 step_order,
+                truncated_steps: truncated_steps.to_vec(),
             })
             .timeout(Duration::from_secs(15))
             .send()

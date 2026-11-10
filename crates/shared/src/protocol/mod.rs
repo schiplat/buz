@@ -533,6 +533,11 @@ pub struct ClaimJobRequest {
 pub struct UpdateJobStatusRequest {
     pub status: String,
     pub step_order: Option<i32>,
+    /// Step orders whose streamed output overflowed the per-step log window.
+    /// Sent with the terminal report so the fact survives log retention
+    /// (the 999 law marker chunk is deleted with the logs, the job row is not).
+    #[serde(default)]
+    pub truncated_steps: Vec<i32>,
 }
 
 // --- Log ---

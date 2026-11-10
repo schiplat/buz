@@ -241,47 +241,86 @@ async fn job_detail_reports_truncated_steps() {
     .await;
     let job_id = triggered["data"]["job_id"].as_str().unwrap().to_string();
 
-    // No truncation marker -> empty list.
+    // No truncation reported -> empty list.
     let (_, job) = json_response(&app, "GET", &format!("/api/v1/jobs/{job_id}"), None).await;
     assert_eq!(job["data"]["truncated_steps"], serde_json::json!([]));
 
-    // Simulate a streamed step that overflowed: chunk_index 6 (stream) and
-    // 9991 (truncation marker) within step 1's 10_000-wide window.
-    for (chunk, content) in [(6, "output"), (9991, "==> OUTPUT TRUNCATED")] {
-        sqlx::query(
-            "INSERT INTO job_logs (id, job_id, chunk_index, step_order, log_content)
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(format!("log-{chunk}"))
+    // The Runner's terminal report carries the step orders that overflowed
+    // (see `UpdateJobStatusRequest::truncated_steps`); the Manager stores them
+    // on the job row as a union, so a DAG reporting several steps keeps them
+    // all. The status endpoint itself requires Runner credentials — writing
+    // the column here isolates the read side this test is about.
+    sqlx::query("UPDATE jobs SET truncated_steps = ? WHERE id = ?")
+        .bind(r#"[1,2]"#)
         .bind(&job_id)
-        .bind(chunk)
-        .bind(1)
-        .bind(content)
         .execute(&pool)
         .await
         .unwrap();
-    }
-    // The runner banner (-2) never matches; a marker inside step 2's own
-    // window (20000 + 9991 = 19991) is step 2's truncation, so both flag.
-    for (chunk, step) in [(-2, 0), (19991, 2)] {
-        sqlx::query(
-            "INSERT INTO job_logs (id, job_id, chunk_index, step_order, log_content)
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(format!("log-x-{chunk}"))
-        .bind(&job_id)
-        .bind(chunk)
-        .bind(step)
-        .bind("x")
-        .execute(&pool)
-        .await
-        .unwrap();
-    }
 
+    let (get_status, job) =
+        json_response(&app, "GET", &format!("/api/v1/jobs/{job_id}"), None).await;
+    assert_eq!(get_status, StatusCode::OK, "{job}");
+    assert_eq!(
+        job["data"]["truncated_steps"],
+        serde_json::json!([1, 2]),
+        "union of reported steps: {job}"
+    );
+
+    // The fact lives on the job row, so retention sweeping the log rows (the
+    // legacy 9991 marker included) must not erase it.
+    sqlx::query("DELETE FROM job_logs WHERE job_id = ?")
+        .bind(&job_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     let (_, job) = json_response(&app, "GET", &format!("/api/v1/jobs/{job_id}"), None).await;
     assert_eq!(
         job["data"]["truncated_steps"],
         serde_json::json!([1, 2]),
-        "{job}"
+        "survives log retention: {job}"
     );
+}
+
+/// The union write is read-merge-write inside the status transaction. Two
+/// concurrent DAG steps truncating must both survive; a late report must not
+/// erase an earlier one. (The HTTP endpoint needs Runner credentials and a
+/// claimed job, so the SQL shape is exercised directly here.)
+#[tokio::test]
+async fn truncated_steps_union_not_overwrite() {
+    let (_app, pool) = test_app().await;
+    sqlx::query("INSERT INTO pipelines (id, name, team_id) VALUES ('p-union', 'union', 'team-1')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO jobs (id, pipeline_id, status, trigger_by)
+         VALUES ('j-union', 'p-union', 'running', 'test')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    for incoming in [vec![0i32], vec![1], vec![0, 2]] {
+        let existing: String =
+            sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = 'j-union'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let mut merged: Vec<i32> = serde_json::from_str(&existing).unwrap_or_default();
+        merged.extend(incoming);
+        merged.sort_unstable();
+        merged.dedup();
+        sqlx::query("UPDATE jobs SET truncated_steps = ? WHERE id = 'j-union'")
+            .bind(serde_json::to_string(&merged).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let stored: String =
+        sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = 'j-union'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, "[0,1,2]");
 }

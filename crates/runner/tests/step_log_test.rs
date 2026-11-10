@@ -263,8 +263,13 @@ fn stream_window_stops_before_sentinels() {
         LOG_STREAM_LAST - LOG_STREAM_START + 1,
         "window width"
     );
-    assert!(budget.truncated(), "overflow flips the budget to truncated");
-    assert_eq!(budget.take(), None);
+    assert_eq!(budget.take(), None, "no further index past the window");
+    assert!(
+        !budget.truncated(),
+        "state belongs to omit(): dropping a chunk is what flips it"
+    );
+    budget.omit("dropped\n");
+    assert!(budget.truncated());
 }
 
 #[test]
@@ -293,9 +298,10 @@ fn truncation_marker_is_warn_and_reports_omitted_count() {
         assert!(budget.take().is_some());
     }
     assert!(!budget.truncated(), "full window is not yet truncated");
-    // Three chunks past the window are dropped and counted.
-    for _ in 0..3 {
+    // Three chunks past the window are dropped, counted, and kept in the tail.
+    for i in 0..3 {
         assert_eq!(budget.take(), None);
+        budget.omit(&format!("overflow line {i}\n"));
     }
     assert!(budget.truncated());
     let marker = budget.marker();
@@ -304,6 +310,15 @@ fn truncation_marker_is_warn_and_reports_omitted_count() {
         marker.contains("3 chunk"),
         "omitted count in marker: {marker}"
     );
+    assert!(
+        marker.contains("kept     first 9985 chunk(s)"),
+        "kept head stated: {marker}"
+    );
+    assert!(
+        marker.contains("last 3 line(s)"),
+        "kept tail stated: {marker}"
+    );
+    assert!(marker.contains("overflow line 2"), "tail present: {marker}");
 }
 
 #[test]
@@ -324,12 +339,14 @@ fn truncation_is_announced_once_then_kept_for_the_final_marker() {
     );
     // First overflow: counted and announced once.
     assert_eq!(budget.take(), None);
+    budget.omit("first\n");
     assert!(
         budget.unnotified_truncation().is_some(),
         "first overflow surfaces a live notice"
     );
     for _ in 0..5 {
         assert_eq!(budget.take(), None);
+        budget.omit("more\n");
     }
     assert!(
         budget.unnotified_truncation().is_none(),
@@ -452,7 +469,7 @@ fn truncation_marker_carries_a_bounded_masked_tail() {
     // omission) and then into the tail — mirroring stream_chunks.
     for i in 0..250u32 {
         assert_eq!(budget.take(), None);
-        budget.hold(&format!("overflow line {i}\n"));
+        budget.omit(&format!("overflow line {i}\n"));
     }
     let marker = budget.marker();
     assert!(marker.contains("omitted  250 chunk(s)"), "{marker}");
@@ -470,7 +487,7 @@ fn truncation_marker_carries_a_bounded_masked_tail() {
     while budget.take().is_some() {}
     let long = "x".repeat(5000);
     let _ = budget.take();
-    budget.hold(&format!("{long}\n"));
+    budget.omit(&format!("{long}\n"));
     let marker = budget.marker();
     assert!(marker.len() < long.len(), "tail line clipped: {marker}");
     assert!(marker.contains('…'), "clip marker present");
@@ -486,8 +503,11 @@ fn stream_outcome_carries_the_omitted_count() {
     }
     assert_eq!(budget.omitted(), None, "full window is not truncated");
     budget.take();
+    assert_eq!(budget.omitted(), None, "take() alone does not count");
+    budget.omit("chunk one\n");
     assert_eq!(budget.omitted(), Some(1));
     budget.take();
+    budget.omit("chunk two\n");
     assert_eq!(budget.omitted(), Some(2));
 }
 
@@ -497,4 +517,36 @@ fn truncation_note_states_the_incomplete_output() {
     assert!(note.contains("OUTPUT TRUNCATED"), "{note}");
     assert!(note.contains("1234"), "{note}");
     assert!(note.contains("incomplete"), "{note}");
+}
+
+#[test]
+fn marker_states_kept_head_kept_tail_and_volume() {
+    let mut budget = StreamBudget::new(step_log_base(0));
+    let width = LOG_STREAM_LAST - LOG_STREAM_START + 1;
+    for _ in 0..width {
+        budget.take();
+    }
+    // 1 KiB of dropped output in two chunks, plus a 3 KiB line that gets clipped.
+    budget.omit(&format!("{}\n", "a".repeat(600)));
+    budget.omit(&format!("{}\n", "b".repeat(600)));
+    let marker = budget.marker();
+    assert!(marker.contains("kept     first 9985 chunk(s)"), "{marker}");
+    assert!(marker.contains("kept     last 2 line(s)"), "{marker}");
+    assert!(
+        marker.contains("omitted  2 chunk(s) in between"),
+        "{marker}"
+    );
+    assert!(marker.contains("≈ 1.2 KiB"), "volume reported: {marker}");
+
+    // A clipped line says so, instead of masquerading  as  a genuinely long one.
+    let mut budget = StreamBudget::new_at(step_log_base(0), step_log_base(0) + LOG_STREAM_LAST);
+    budget.take();
+    budget.omit(&format!("{}\n", "x".repeat(5000)));
+    let marker = budget.marker();
+    assert!(marker.contains("(line truncated)"), "{marker}");
+    assert!(
+        marker.len() < 5000,
+        "tail line clipped: {} bytes",
+        marker.len()
+    );
 }

@@ -343,7 +343,28 @@ pub async fn recent(
 /// (`chunk_index % 10_000 == LOG_STEP_TRUNCATED`). Per-step 10_000-wide
 /// windows make the modulo exact; negatives (runner banner) never match.
 async fn truncated_steps(pool: &sqlx::SqlitePool, job_id: &str) -> Vec<i64> {
-    sqlx::query_scalar(
+    // Written by the Runner's terminal report: job metadata, so it survives
+    // job_log_retention deleting the marker chunk.
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    if let Some(raw) = stored {
+        if let Ok(mut steps) = serde_json::from_str::<Vec<i64>>(&raw) {
+            if !steps.is_empty() {
+                steps.sort_unstable();
+                steps.dedup();
+                return steps;
+            }
+        }
+    }
+
+    // Legacy fallback (jobs finished before the column existed): the marker
+    // chunk in the step's 10_000-wide window. Correct only while logs remain.
+    let mut steps: Vec<i64> = sqlx::query_scalar(
         "SELECT DISTINCT step_order FROM job_logs
          WHERE job_id = ? AND chunk_index >= 0
            AND chunk_index % 10000 = ?",
@@ -352,7 +373,9 @@ async fn truncated_steps(pool: &sqlx::SqlitePool, job_id: &str) -> Vec<i64> {
     .bind(shared::protocol::LOG_STEP_TRUNCATED)
     .fetch_all(pool)
     .await
-    .unwrap_or_default()
+    .unwrap_or_default();
+    steps.sort_unstable();
+    steps
 }
 
 pub async fn get_one(
@@ -1512,6 +1535,30 @@ pub async fn update_status(
             }
         }
     }
+
+    // Truncation is a fact about the job, not about its log rows: persist it so
+    // it survives job_log_retention sweeping the marker chunk.
+    // Union, never assignment: a DAG job reports several steps truncating
+    // concurrently, and a late per-step report must not erase earlier ones.
+    // Read-merge-write is safe here — the surrounding BEGIN IMMEDIATE holds
+    // the single SQLite writer.
+    if !req.truncated_steps.is_empty() {
+        let existing: String = sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = ?")
+            .bind(&job_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let mut merged: Vec<i32> = serde_json::from_str(&existing).unwrap_or_default();
+        merged.extend(req.truncated_steps.iter().copied());
+        merged.sort_unstable();
+        merged.dedup();
+        let encoded = serde_json::to_string(&merged).unwrap_or_else(|_| "[]".into());
+        sqlx::query("UPDATE jobs SET truncated_steps = ? WHERE id = ?")
+            .bind(&encoded)
+            .bind(&job_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
     tx.commit().await?;
     let job_terminal = matches!(
         req.status.as_str(),

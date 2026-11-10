@@ -77,10 +77,15 @@ pub const LOG_STEP_SUMMARY: i32 = 9999;
 /// live view notices, and again with the final count when the stream closes).
 pub struct StreamBudget {
     next: i32,
+    /// First chunk index of this step's window (for the kept-count report).
+    first: i32,
     last: i32,
     truncated: bool,
     notified: bool,
     omitted: u64,
+    /// Masked bytes dropped by truncation — the marker reports a volume, not
+    /// just a chunk count, so ops can tell 10 MB apart from 10 GB.
+    omitted_bytes: u64,
     /// Bounded tail of masked output past the window — the truncation marker
     /// carries these lines so an over-limit step still shows how it ended.
     tail: std::collections::VecDeque<String>,
@@ -102,10 +107,12 @@ impl StreamBudget {
     pub fn new_at(log_base: i32, next: i32) -> Self {
         Self {
             next,
+            first: next,
             last: log_base + LOG_STREAM_LAST,
             truncated: false,
             notified: false,
             omitted: 0,
+            omitted_bytes: 0,
             tail: std::collections::VecDeque::new(),
         }
     }
@@ -116,17 +123,40 @@ impl StreamBudget {
     }
 
     /// Index for the next uploaded chunk, or `None` when the window is
-    /// exhausted (the chunk is counted as omitted; keep draining output —
-    /// stopping the read would block the child's pipe).
+    /// exhausted. `None` is not counted by itself — pass the masked content to
+    /// [`Self::omit`], which counts it and keeps the bounded tail. Keep
+    /// draining the engine output afterwards: stopping the read blocks the
+    /// child's pipe.
     pub fn take(&mut self) -> Option<i32> {
         if self.next <= self.last {
             let index = self.next;
             self.next += 1;
             return Some(index);
         }
+        None
+    }
+
+    /// Count one dropped chunk and keep its masked content in the tail window
+    /// (the last [`STREAM_TAIL_LINES`] lines survive, each clipped).
+    pub fn omit(&mut self, masked_chunk: &str) {
         self.truncated = true;
         self.omitted += 1;
-        None
+        self.omitted_bytes += masked_chunk.len() as u64;
+        for line in masked_chunk.lines() {
+            let clipped = if line.len() > STREAM_TAIL_LINE_MAX {
+                let mut cut = STREAM_TAIL_LINE_MAX;
+                while cut > 0 && !line.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                format!("{} … (line truncated)", &line[..cut])
+            } else {
+                line.to_string()
+            };
+            if self.tail.len() == STREAM_TAIL_LINES {
+                self.tail.pop_front();
+            }
+            self.tail.push_back(clipped);
+        }
     }
 
     /// Whether any chunk has been omitted.
@@ -152,45 +182,46 @@ impl StreamBudget {
         None
     }
 
-    /// Buffer one masked chunk past the window into the tail summary.
-    /// Keeps the LAST [`STREAM_TAIL_LINES`] lines, each clipped to
-    /// [`STREAM_TAIL_LINE_MAX`] bytes on a char boundary.
-    pub fn hold(&mut self, masked_chunk: &str) {
-        for line in masked_chunk.lines() {
-            let clipped = if line.len() > STREAM_TAIL_LINE_MAX {
-                let mut cut = STREAM_TAIL_LINE_MAX;
-                while cut > 0 && !line.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                format!("{} …", &line[..cut])
-            } else {
-                line.to_string()
-            };
-            if self.tail.len() == STREAM_TAIL_LINES {
-                self.tail.pop_front();
-            }
-            self.tail.push_back(clipped);
-        }
-    }
-
-    /// Marker content: total omitted-chunk count plus the bounded tail
-    /// (a chunk is one engine output line).
+    /// Marker content: what was kept at each end, what was dropped in between,
+    /// (with its volume), and the bounded tail itself escorted by
+    /// `(line truncated)` marks on clipped lines.
     pub fn marker(&self) -> String {
         let mut out = format!(
-            "==> OUTPUT TRUNCATED\n  omitted  {} chunk(s) over the per-step log window\n",
-            self.omitted
+            "==> OUTPUT TRUNCATED\n  kept     first {} chunk(s)\n  kept     last {} line(s)\n  omitted  {} chunk(s) in between (≈ {})\n",
+            self.kept_first_chunks(),
+            self.tail.len(),
+            self.omitted,
+            human_bytes(self.omitted_bytes),
         );
         if !self.tail.is_empty() {
-            out.push_str(&format!(
-                "----- last {} line(s) of the stream -----\n",
-                self.tail.len()
-            ));
+            out.push_str("----- last line(s) of the stream -----\n");
             for line in &self.tail {
                 out.push_str(line);
                 out.push('\n');
             }
         }
         out
+    }
+
+    /// Chunks this budget could still upload before the window closed.
+    fn kept_first_chunks(&self) -> i64 {
+        (self.last - self.first + 1).max(0) as i64
+    }
+}
+
+/// Compact human byte count (`512 B`, `12.3 KiB`, `4.5 MiB`) for the marker.
+fn human_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -381,7 +412,7 @@ impl StepLogger {
                     // Window exhausted: keep draining (see doc above), hold a
                     // bounded tail for the summary, and annotate once so the
                     // live terminal shows why output stops being appended.
-                    budget.hold(&masked);
+                    budget.omit(&masked);
                     if let Some(marker) = budget.unnotified_truncation() {
                         self.emit(LOG_STEP_TRUNCATED, marker).await;
                     }

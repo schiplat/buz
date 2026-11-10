@@ -1566,6 +1566,9 @@ async fn migrate_tasks_config_block_columns(pool: &SqlitePool) -> anyhow::Result
     add_column_if_missing(pool, "tasks", "config_render TEXT NOT NULL DEFAULT ''").await;
     // `needs:` DAG edges (JSON array of step names); empty = sequential order.
     add_column_if_missing(pool, "tasks", "needs_json TEXT NOT NULL DEFAULT '[]'").await;
+    // Step orders whose log output was truncated by the Runner's per-step
+    // window. Job metadata, not log data: it must outlive job_log_retention.
+    add_column_if_missing(pool, "jobs", "truncated_steps TEXT NOT NULL DEFAULT '[]'").await;
 
     let _ =
         sqlx::query("ALTER TABLE tasks ADD COLUMN hosts_strategy TEXT NOT NULL DEFAULT 'chain'")
