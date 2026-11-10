@@ -144,3 +144,68 @@ fn mode_mismatches_are_rejected() {
     let error = run(&manual_without_commit).unwrap_err();
     assert!(format!("{error:#}").contains("--commit"));
 }
+
+fn read_ledger_text(plugins: &Path) -> String {
+    std::fs::read_to_string(plugins.join("reviews.json")).unwrap()
+}
+
+fn rewrite_index(plugins: &Path, mutate: impl FnOnce(&mut Value)) {
+    let path = plugins.join("index.json");
+    let mut index: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    mutate(&mut index);
+    std::fs::write(path, serde_json::to_string(&index).unwrap()).unwrap();
+}
+
+#[test]
+fn auto_regeneration_is_byte_stable_when_content_did_not_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = source_root(dir.path(), Some(json!({ "reviews": [human("1.0.0")] })));
+    run(&options(&plugins, true)).unwrap();
+    let first = read_ledger_text(&plugins);
+
+    let mut later = options(&plugins, true);
+    later.date = Some("2026-12-31".into());
+    later.commit = Some("fffffff".into());
+    run(&later).unwrap();
+
+    assert_eq!(
+        read_ledger_text(&plugins),
+        first,
+        "an unchanged content hash must keep the entry verbatim — otherwise the \
+         ledger drifts daily and every deploy attempts a write-back"
+    );
+}
+
+#[test]
+fn auto_restamps_only_the_version_whose_content_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = source_root(dir.path(), Some(json!({ "reviews": [human("1.0.0")] })));
+    run(&options(&plugins, true)).unwrap();
+
+    rewrite_index(&plugins, |index| {
+        for step in index["steps"].as_array_mut().unwrap() {
+            if step["id"] == "buz/a" && step["version"] == "1.1.0" {
+                step["sha256"] = json!("f".repeat(64));
+            }
+        }
+    });
+    let mut later = options(&plugins, true);
+    later.date = Some("2026-11-11".into());
+    later.commit = Some("def5678".into());
+    run(&later).unwrap();
+
+    let entries = read_ledger(&plugins);
+    let find = |version: &str, source: &str| {
+        entries
+            .iter()
+            .find(|entry| {
+                entry["id"] == "buz/a" && entry["version"] == version && entry["source"] == source
+            })
+            .unwrap()
+    };
+    assert_eq!(find("1.0.0", "ci")["reviewed_at"], "2026-11-10");
+    assert_eq!(find("1.0.0", "ci")["review_commit"], "abc1234");
+    assert_eq!(find("1.1.0", "ci")["reviewed_at"], "2026-11-11");
+    assert_eq!(find("1.1.0", "ci")["review_commit"], "def5678");
+    assert_eq!(find("1.0.0", "human")["reviewed_at"], "2026-01-01");
+}

@@ -171,6 +171,16 @@ fn auto_entries(
     // All versions of a blessed id stay fresh; a brand-new official id is
     // skipped and must be recorded manually after its first human review.
     let blessed: BTreeSet<&str> = existing.iter().map(|entry| entry.id.as_str()).collect();
+    // Byte-stability: a `ci` entry whose content hash did not change is kept
+    // verbatim (date, commit, scope and all). Re-stamping every entry on every
+    // run made the ledger drift daily, forced `manifest_drift` to ignore those
+    // fields, and turned each master deploy into a write-back attempt. A review
+    // is bound to content, so its stamp should move only when content moves.
+    let unchanged: BTreeMap<(String, String), &ReviewEntry> = existing
+        .iter()
+        .filter(|entry| entry.source == AUTO_SOURCE)
+        .map(|entry| (entry.pair(), entry))
+        .collect();
     let mut out = Vec::new();
     let mut new_ids = BTreeSet::new();
     for step in index["steps"].as_array().expect("validated steps array") {
@@ -181,6 +191,15 @@ fn auto_entries(
         if !blessed.contains(id) {
             new_ids.insert(id.to_string());
             continue;
+        }
+        let version = step["version"].as_str().expect("validated version");
+        let sha256 = step["sha256"].as_str().expect("validated sha256");
+        let pair = (id.to_string(), version.to_string());
+        if let Some(previous) = unchanged.get(&pair) {
+            if previous.sha256 == sha256 {
+                out.push((*previous).clone());
+                continue;
+            }
         }
         out.push(review_entry(step, date, commit, AUTO_SCOPE, AUTO_SOURCE));
     }

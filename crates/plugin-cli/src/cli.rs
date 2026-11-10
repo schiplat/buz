@@ -55,15 +55,12 @@ pub enum Command {
         #[arg(long, value_hint = clap::ValueHint::FilePath)]
         out: Option<PathBuf>,
     },
-    /// Generate the source-root manifest (+ meta.json + revision sentinel)
+    /// Generate the source-root manifest (+ per-plugin meta.json)
     Index {
         /// Source root containing the namespace directories
         #[arg(long, default_value = "plugins", value_hint = clap::ValueHint::DirPath)]
         plugins_dir: PathBuf,
-        /// Write revision.json with this source revision (CI commit sha)
-        #[arg(long)]
-        revision: Option<String>,
-        /// Timestamp recorded beside the revision (ISO-8601, display only)
+        /// Timestamp recorded in the index header (ISO-8601, display only)
         #[arg(long)]
         updated_at: Option<String>,
         /// Pin the catalog sequence instead of deriving it from the committed
@@ -146,6 +143,20 @@ pub enum Command {
         /// Source root whose per-plugin meta.json must match the committed index
         #[arg(long, value_hint = clap::ValueHint::DirPath)]
         plugins_dir: Option<PathBuf>,
+    },
+    /// Verify index, reviews, revision, and per-plugin meta agree
+    #[command(name = "check-manifests")]
+    CheckManifests {
+        /// Source root containing the generated manifests
+        #[arg(long, default_value = "plugins", value_hint = clap::ValueHint::DirPath)]
+        plugins_dir: PathBuf,
+    },
+    /// Verify every plugin directory ships a non-empty README.md
+    #[command(name = "check-readmes")]
+    CheckReadmes {
+        /// Source root to scan for plugin directories
+        #[arg(long, default_value = "plugins", value_hint = clap::ValueHint::DirPath)]
+        plugins_dir: PathBuf,
     },
     /// Print a shell completion script for `buz-plugin` to stdout.
     ///

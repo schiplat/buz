@@ -6,7 +6,10 @@
 //! template. Feedback here, enforcement there — never two implementations.
 
 use plugin_cli::cli::{print_completions, Cli, Command};
-use plugin_cli::{indexgen, mirror, release_check, reviews, revision, scaffold, validate};
+use plugin_cli::{
+    indexgen, manifest_check, mirror, readme_check, release_check, reviews, revision, scaffold,
+    validate,
+};
 
 use clap::Parser;
 
@@ -36,7 +39,6 @@ fn main() {
         Command::Keygen { key_id, out } => scaffold::keygen(key_id, out.as_deref()),
         Command::Index {
             plugins_dir,
-            revision,
             updated_at,
             sequence,
             no_meta,
@@ -44,7 +46,6 @@ fn main() {
             sign_key,
         } => indexgen::run(&indexgen::Options {
             plugins_dir: plugins_dir.clone(),
-            revision: revision.clone(),
             updated_at: updated_at.clone(),
             sequence: *sequence,
             no_meta: *no_meta,
@@ -89,6 +90,12 @@ fn main() {
             committed: committed.clone(),
             generated: generated.clone(),
             published: published.clone(),
+            plugins_dir: plugins_dir.clone(),
+        }),
+        Command::CheckManifests { plugins_dir } => manifest_check::run(&manifest_check::Options {
+            plugins_dir: plugins_dir.clone(),
+        }),
+        Command::CheckReadmes { plugins_dir } => readme_check::run(&readme_check::Options {
             plugins_dir: plugins_dir.clone(),
         }),
         Command::Completions { shell } => print_completions(*shell),

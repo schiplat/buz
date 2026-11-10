@@ -30,7 +30,6 @@ fn write_repo(dir: &Path) -> PathBuf {
 fn options(root: &Path) -> Options {
     Options {
         plugins_dir: root.join("plugins"),
-        revision: None,
         updated_at: None,
         sequence: None,
         no_meta: false,
@@ -67,7 +66,6 @@ fn generated_manifests_match_the_golden_files() {
     let repo = dir.path().join("repo");
     copy_tree(&fixtures().join("repo"), &repo);
     run(&Options {
-        revision: Some("8d367d8".into()),
         updated_at: Some("2026-10-27T00:00:00Z".into()),
         ..options(&repo)
     })
@@ -76,7 +74,6 @@ fn generated_manifests_match_the_golden_files() {
     let golden_root = fixtures().join("golden");
     let expected_files = [
         "plugins/index.json",
-        "plugins/revision.json",
         "plugins/alice/hello/meta.json",
         "plugins/alice/world/meta.json",
     ];
@@ -115,7 +112,6 @@ fn check_passes_on_fresh_output_and_names_what_drifted() {
     let repo = dir.path().join("repo");
     copy_tree(&fixtures().join("repo"), &repo);
     let mut opts = Options {
-        revision: Some("8d367d8".into()),
         updated_at: Some("2026-10-27T00:00:00Z".into()),
         ..options(&repo)
     };

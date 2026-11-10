@@ -1,5 +1,5 @@
 //! Source-root manifest generation: `plugins/index.json` (+ per-plugin
-//! `meta.json` + the `revision.json` freshness sentinel). One source root
+//! `meta.json`). One source root
 //! carries exactly one namespace. Byte-compatible with the Python
 //! `gen_index.py` output this command supersedes: sorted entries, ordered
 //! fields, two-space JSON, trailing newline.
@@ -31,7 +31,6 @@ const META_FIELDS: [&str; 11] = [
 #[derive(Clone)]
 pub struct Options {
     pub plugins_dir: PathBuf,
-    pub revision: Option<String>,
     pub updated_at: Option<String>,
     /// Pin the catalog sequence instead of deriving it from the committed
     /// index. Publishing pipelines that keep their own counter use this.
@@ -173,12 +172,6 @@ fn now_rfc3339() -> String {
 struct MetaFile {
     id: String,
     versions: Vec<MetaVersion>,
-}
-
-#[derive(Serialize)]
-struct RevisionSentinelFile {
-    revision: String,
-    updated_at: Option<String>,
 }
 
 fn current_buz() -> &'static str {
@@ -330,7 +323,7 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
     let planned = plan_manifests(&source_root, options)?;
 
     if options.check {
-        verify_manifests(&source_root, &planned, options)?;
+        verify_manifests(&source_root, &planned)?;
     } else {
         for (path, content) in &planned {
             write_json(path, content)?;
@@ -482,7 +475,7 @@ fn load_deprecations(source_root: &Path) -> anyhow::Result<Vec<Deprecation>> {
 }
 
 /// Path each manifest the run produces to its exact bytes, in write order
-/// (index → per-plugin meta → revision sentinel last).
+/// (index → per-plugin meta; the sentinel is written by `buz-plugin revision`).
 fn plan_manifests(source_root: &Path, options: &Options) -> anyhow::Result<Vec<(PathBuf, String)>> {
     let files = layout::discover_spec_files(source_root)?;
     if files.is_empty() {
@@ -637,19 +630,6 @@ fn plan_manifests(source_root: &Path, options: &Options) -> anyhow::Result<Vec<(
         }
     }
 
-    // Revision sentinel — always last: mirrors publish content first and the
-    // sentinel commits the sync. Skipped without --revision so local runs
-    // never fabricate a version marker.
-    if let Some(revision) = &options.revision {
-        planned.push((
-            source_root.join(layout::REVISION_FILE),
-            render_json(&RevisionSentinelFile {
-                revision: revision.clone(),
-                updated_at: options.updated_at.clone(),
-            })?,
-        ));
-    }
-
     Ok(planned)
 }
 
@@ -674,23 +654,14 @@ fn report_written(planned: &[(PathBuf, String)]) {
 /// Compare the planned bytes with what is on disk. Any missing, differing, or
 /// stale manifest fails the run: in CI this turns "the committed manifests
 /// must equal what the tool produces" into a hard gate.
-fn verify_manifests(
-    source_root: &Path,
-    planned: &[(PathBuf, String)],
-    options: &Options,
-) -> anyhow::Result<()> {
+fn verify_manifests(source_root: &Path, planned: &[(PathBuf, String)]) -> anyhow::Result<()> {
     let mut problems: Vec<String> = Vec::new();
     for (path, expected) in planned {
         match std::fs::read_to_string(path) {
             Ok(actual) if &actual == expected => {}
             Ok(_) => problems.push(format!(
-                "{} is out of date — run `buz-plugin index{}` and commit the result",
-                path.display(),
-                if options.revision.is_some() {
-                    ""
-                } else {
-                    " --revision <sha>"
-                }
+                "{} is out of date — run `buz-plugin index` and commit the result",
+                path.display()
             )),
             Err(_) => problems.push(format!(
                 "{} is missing — run `buz-plugin index`",
@@ -704,9 +675,8 @@ fn verify_manifests(
     let planned_paths: std::collections::BTreeSet<&Path> =
         planned.iter().map(|(p, _)| p.as_path()).collect();
     for entry in walk_manifests(source_root)? {
-        let is_sentinel = entry.file_name().and_then(|n| n.to_str()) == Some(layout::REVISION_FILE);
-        if is_sentinel && options.revision.is_none() {
-            continue; // sentinel not managed without --revision
+        if entry.file_name().and_then(|n| n.to_str()) == Some(layout::REVISION_FILE) {
+            continue; // managed by `buz-plugin revision`, not by this command
         }
         if !planned_paths.contains(entry.as_path()) {
             problems.push(format!(
