@@ -525,3 +525,212 @@ pub async fn job_pipeline_id(pool: &SqlitePool, job_id: &str) -> Result<String, 
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))
 }
+
+/// Runner status report: one job, one status, optional per-step order.
+pub struct RunnerStatusReport {
+    pub status: String,
+    pub step_order: Option<i32>,
+    pub truncated_steps: Vec<i32>,
+}
+
+/// Outcome of a runner status report.
+pub struct StatusReportOutcome {
+    /// False when the report was silently ignored — a terminal state already
+    /// won (manual cancel/completion), or the row flipped underneath us.
+    pub applied: bool,
+    /// True when the reported status itself is terminal.
+    pub terminal: bool,
+}
+
+/// Transaction-internal core of the Runner status report (`update_status`).
+///
+/// Invariants, all under one `BEGIN IMMEDIATE`:
+/// - only the runner the job was dispatched to may write it;
+/// - terminal states win — a manual cancel or a finished job is never
+///   overwritten (an ignored report is `Ok(applied=false)`, not an error);
+/// - per-step updates upsert into `step_statuses` with started/finished stamps;
+/// - a job-level `failed` sweeps any still-running step to `failed` so the UI
+///   never hangs;
+/// - `truncated_steps` is a union, never an assignment (DAG steps report
+///   concurrently; a late per-step report must not erase earlier ones).
+///
+/// Post-commit fan-out (poller wake, announce) stays with the caller.
+pub async fn apply_runner_status(
+    pool: &SqlitePool,
+    runner_id: &str,
+    job_id: &str,
+    report: &RunnerStatusReport,
+) -> Result<StatusReportOutcome, AppError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let row = sqlx::query("SELECT status, runner_id FROM jobs WHERE id = ?")
+        .bind(job_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+
+    // Runner↔job binding: only the runner poll() dispatched the job to may
+    // update it — a leaked runner JWT must not be able to touch other jobs.
+    let owner: Option<String> = row.get(1);
+    if owner.as_deref() != Some(runner_id) {
+        tx.rollback().await?;
+        return Err(AppError::Forbidden(
+            "job is not assigned to this runner".into(),
+        ));
+    }
+
+    let current_status: String = row.get(0);
+
+    // Terminal states win — don't let the Runner overwrite a cancellation or completion.
+    if matches!(
+        current_status.as_str(),
+        "cancelled" | "success" | "failed" | "timeout"
+    ) {
+        tx.rollback().await?;
+        return Ok(StatusReportOutcome {
+            applied: false,
+            terminal: true,
+        });
+    }
+
+    if let Some(step_order) = report.step_order {
+        // Per-step status update
+        let row2 = sqlx::query("SELECT step_statuses FROM jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+
+        let raw: String = row2.get(0);
+        let mut statuses: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
+        let now = now_utc();
+
+        // Upsert
+        if let Some(existing) = statuses
+            .iter_mut()
+            .find(|s| s["step_order"].as_i64() == Some(step_order as i64))
+        {
+            existing["status"] = serde_json::json!(&report.status);
+            // Record started_at when a step transitions to "running"
+            if report.status == "running" {
+                existing["started_at"] = serde_json::json!(now);
+            }
+            // Record finished_at when a step reaches a terminal state
+            if matches!(report.status.as_str(), "success" | "failed" | "cancelled") {
+                existing["finished_at"] = serde_json::json!(now);
+            }
+        } else {
+            let mut entry = serde_json::json!({
+                "step_order": step_order,
+                "status": &report.status,
+            });
+            if report.status == "running" {
+                entry["started_at"] = serde_json::json!(now);
+            }
+            if matches!(report.status.as_str(), "success" | "failed" | "cancelled") {
+                entry["finished_at"] = serde_json::json!(now);
+            }
+            statuses.push(entry);
+        }
+
+        let updated = serde_json::to_string(&statuses).unwrap_or_else(|_| "[]".into());
+        sqlx::query("UPDATE jobs SET step_statuses = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(&updated)
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        // Overall status update
+        let now = "datetime('now')";
+        let end_expr = if matches!(
+            report.status.as_str(),
+            "success" | "failed" | "cancelled" | "timeout"
+        ) {
+            format!("end_time = {now},")
+        } else {
+            String::new()
+        };
+
+        let query = format!(
+            "UPDATE jobs SET status = ?, {end_expr} updated_at = {now}, retry_times = retry_times + 1 \
+             WHERE id = ? AND status NOT IN ('cancelled', 'success', 'failed', 'timeout')"
+        );
+
+        let result = sqlx::query(&query)
+            .bind(&report.status)
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(StatusReportOutcome {
+                applied: false,
+                terminal: true,
+            });
+        }
+
+        // Safety net: if the job transitions to a terminal state, mark any
+        // step still reported as "running" as "failed" so the UI never hangs.
+        if report.status == "failed" {
+            let row3 = sqlx::query("SELECT step_statuses FROM jobs WHERE id = ?")
+                .bind(job_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            if let Some(row3) = row3 {
+                let raw: String = row3.get(0);
+                let mut step_statuses: Vec<serde_json::Value> =
+                    serde_json::from_str(&raw).unwrap_or_default();
+                let mut changed = false;
+                for s in &mut step_statuses {
+                    if s.get("status").and_then(|v| v.as_str()) == Some("running") {
+                        s["status"] = serde_json::json!("failed");
+                        s["finished_at"] = serde_json::json!(now_utc());
+                        changed = true;
+                    }
+                }
+                if changed {
+                    let updated = serde_json::to_string(&step_statuses).unwrap_or_default();
+                    sqlx::query("UPDATE jobs SET step_statuses = ? WHERE id = ?")
+                        .bind(&updated)
+                        .bind(job_id)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+            }
+        }
+    }
+
+    // Truncation is a fact about the job, not about its log rows: persist it so
+    // it survives job_log_retention sweeping the marker chunk.
+    // Union, never assignment. Read-merge-write is safe here — the surrounding
+    // BEGIN IMMEDIATE holds the single SQLite writer.
+    if !report.truncated_steps.is_empty() {
+        let existing: String = sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let mut merged: Vec<i32> = serde_json::from_str(&existing).unwrap_or_default();
+        merged.extend(report.truncated_steps.iter().copied());
+        merged.sort_unstable();
+        merged.dedup();
+        let encoded = serde_json::to_string(&merged).unwrap_or_else(|_| "[]".into());
+        sqlx::query("UPDATE jobs SET truncated_steps = ? WHERE id = ?")
+            .bind(&encoded)
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
+    let terminal = matches!(
+        report.status.as_str(),
+        "success" | "failed" | "cancelled" | "timeout"
+    );
+    if terminal {
+        crate::services::poll_events::wake_all();
+    }
+    Ok(StatusReportOutcome {
+        applied: true,
+        terminal,
+    })
+}
