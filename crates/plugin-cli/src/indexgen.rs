@@ -457,7 +457,28 @@ fn load_deprecations(source_root: &Path) -> anyhow::Result<Vec<Deprecation>> {
         .with_context(|| format!("cannot read {}", path.display()))?;
     let parsed: Deprecations = serde_json::from_str(&raw)
         .with_context(|| format!("{}: invalid deprecations JSON", path.display()))?;
-    Ok(parsed.deprecations)
+    let mut out: Vec<Deprecation> = Vec::with_capacity(parsed.deprecations.len());
+    let mut seen: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
+    for entry in parsed.deprecations {
+        if entry.reason.trim().is_empty() {
+            anyhow::bail!(
+                "{}: {}@{} has an empty reason",
+                path.display(),
+                entry.id,
+                entry.version
+            );
+        }
+        if !seen.insert((entry.id.clone(), entry.version.clone())) {
+            anyhow::bail!(
+                "{}: duplicate deprecation for {}@{}",
+                path.display(),
+                entry.id,
+                entry.version
+            );
+        }
+        out.push(entry);
+    }
+    Ok(out)
 }
 
 /// Path each manifest the run produces to its exact bytes, in write order
@@ -511,36 +532,34 @@ fn plan_manifests(source_root: &Path, options: &Options) -> anyhow::Result<Vec<(
     // both the index and the per-plugin meta carry it. An overlay entry that
     // matches nothing is a typo — fail rather than silently never applying it.
     let deprecations = load_deprecations(source_root)?;
-    let mut matched = 0usize;
+    let known: std::collections::BTreeSet<(String, String)> = by_ns
+        .values()
+        .flatten()
+        .map(|parsed| (parsed.entry.id.clone(), parsed.entry.version.clone()))
+        .collect();
+    let unknown: Vec<String> = deprecations
+        .iter()
+        .filter(|flag| !known.contains(&(flag.id.clone(), flag.version.clone())))
+        .map(|flag| format!("{}@{}", flag.id, flag.version))
+        .collect();
+    if !unknown.is_empty() {
+        anyhow::bail!(
+            "{}: deprecation entries match no published version: {}",
+            source_root.join("deprecations.json").display(),
+            unknown.join(", ")
+        );
+    }
     for specs in by_ns.values_mut() {
         for parsed in specs.iter_mut() {
             if let Some(flag) = deprecations
                 .iter()
                 .find(|flag| flag.id == parsed.entry.id && flag.version == parsed.entry.version)
             {
-                matched += 1;
                 if parsed.entry.deprecated.is_none() {
                     parsed.entry.deprecated = Some(flag.reason.trim().to_string());
                 }
             }
         }
-    }
-    if matched != deprecations.len() {
-        let known: std::collections::HashSet<(String, String)> = by_ns
-            .values()
-            .flatten()
-            .map(|parsed| (parsed.entry.id.clone(), parsed.entry.version.clone()))
-            .collect();
-        let unknown: Vec<String> = deprecations
-            .iter()
-            .filter(|flag| !known.contains(&(flag.id.clone(), flag.version.clone())))
-            .map(|flag| format!("{}@{}", flag.id, flag.version))
-            .collect();
-        anyhow::bail!(
-            "{}: deprecation entries match no published version: {}",
-            source_root.join("deprecations.json").display(),
-            unknown.join(", ")
-        );
     }
 
     let mut entries: Vec<IndexEntry> = by_ns

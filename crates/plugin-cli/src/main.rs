@@ -6,7 +6,7 @@
 //! template. Feedback here, enforcement there — never two implementations.
 
 use plugin_cli::cli::{print_completions, Cli, Command};
-use plugin_cli::{indexgen, mirror, scaffold, validate};
+use plugin_cli::{indexgen, mirror, release_check, reviews, revision, scaffold, validate};
 
 use clap::Parser;
 
@@ -56,6 +56,41 @@ fn main() {
             mirror,
             json,
         } => mirror::run(source, mirror, *json),
+        Command::Revision {
+            index,
+            output,
+            print,
+        } => revision::run(&revision::Options {
+            index: index.clone(),
+            output: output.clone(),
+            print_only: *print,
+        }),
+        Command::Reviews {
+            plugins_dir,
+            auto,
+            date,
+            commit,
+            scope,
+            ids,
+        } => reviews::run(&reviews::Options {
+            plugins_dir: plugins_dir.clone(),
+            auto: *auto,
+            date: date.clone(),
+            commit: commit.clone(),
+            scope: scope.clone(),
+            ids: ids.clone(),
+        }),
+        Command::CheckRelease {
+            committed,
+            generated,
+            published,
+            plugins_dir,
+        } => release_check::run(&release_check::Options {
+            committed: committed.clone(),
+            generated: generated.clone(),
+            published: published.clone(),
+            plugins_dir: plugins_dir.clone(),
+        }),
         Command::Completions { shell } => print_completions(*shell),
     };
     if let Err(error) = result {

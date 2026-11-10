@@ -305,3 +305,76 @@ fn rejects_multiple_namespaces_in_one_source_root() {
     assert!(error.contains("several namespaces (alice, bob)"), "{error}");
     assert!(error.contains("one source root per namespace"), "{error}");
 }
+
+/// `deprecations.json` flags published versions without editing the spec, so
+/// the content hash (and every `@sha256:` pin) stays valid. It must land in
+/// both the index and the per-plugin meta — a generator that drops it is
+/// exactly the drift `check-release` exists to catch.
+#[test]
+fn deprecations_overlay_lands_in_index_and_meta_without_changing_the_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_repo(dir.path());
+    fs::write(
+        root.join("plugins/deprecations.json"),
+        r#"{"deprecations":[{"id":"alice/oss-upload","version":"1.0.0","reason":"use 1.1.0"}]}"#,
+    )
+    .unwrap();
+    run(&options(&root)).unwrap();
+
+    let index: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("plugins/index.json")).unwrap())
+            .unwrap();
+    let entry = &index["steps"][0];
+    assert_eq!(entry["deprecated"], "use 1.1.0");
+    let expected = format!(
+        "{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(SPEC.as_bytes())
+    );
+    assert_eq!(
+        entry["sha256"], expected,
+        "overlay must not alter the content hash"
+    );
+
+    let meta: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("plugins/alice/oss-upload/meta.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(meta["versions"][0]["deprecated"], "use 1.1.0");
+}
+
+#[test]
+fn an_overlay_entry_matching_nothing_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_repo(dir.path());
+    fs::write(
+        root.join("plugins/deprecations.json"),
+        r#"{"deprecations":[{"id":"alice/oss-upload","version":"9.9.9","reason":"typo"}]}"#,
+    )
+    .unwrap();
+    let error = run(&options(&root)).unwrap_err().to_string();
+    assert!(error.contains("match no published version"), "{error}");
+}
+
+#[test]
+fn duplicate_or_empty_overlay_reasons_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_repo(dir.path());
+    fs::write(
+        root.join("plugins/deprecations.json"),
+        r#"{"deprecations":[
+            {"id":"alice/oss-upload","version":"1.0.0","reason":"one"},
+            {"id":"alice/oss-upload","version":"1.0.0","reason":"two"}
+        ]}"#,
+    )
+    .unwrap();
+    let error = run(&options(&root)).unwrap_err().to_string();
+    assert!(error.contains("duplicate deprecation"), "{error}");
+
+    fs::write(
+        root.join("plugins/deprecations.json"),
+        r#"{"deprecations":[{"id":"alice/oss-upload","version":"1.0.0","reason":"  "}]}"#,
+    )
+    .unwrap();
+    let error = run(&options(&root)).unwrap_err().to_string();
+    assert!(error.contains("empty reason"), "{error}");
+}

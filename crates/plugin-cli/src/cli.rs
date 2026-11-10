@@ -91,6 +91,62 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Derive revision.json from the catalog published in the index
+    Revision {
+        /// Source-root index.json to derive from
+        #[arg(
+            long,
+            default_value = "plugins/index.json",
+            value_hint = clap::ValueHint::FilePath
+        )]
+        index: PathBuf,
+        /// Write the sentinel here (ignored with --print)
+        #[arg(
+            long,
+            default_value = "plugins/revision.json",
+            value_hint = clap::ValueHint::FilePath
+        )]
+        output: PathBuf,
+        /// Print the derived value without writing revision.json
+        #[arg(long, default_value_t = false)]
+        print: bool,
+    },
+    /// Generate or refresh the review ledger (ci badges and human first reviews)
+    Reviews {
+        /// Source root containing index.json and reviews.json
+        #[arg(long, default_value = "plugins", value_hint = clap::ValueHint::DirPath)]
+        plugins_dir: PathBuf,
+        /// Refresh ci-tracked entries for already-blessed buz/* ids
+        #[arg(long, default_value_t = false)]
+        auto: bool,
+        /// Review date (auto: today UTC; required in manual mode)
+        #[arg(long)]
+        date: Option<String>,
+        /// Review commit (auto: current HEAD; required in manual mode)
+        #[arg(long)]
+        commit: Option<String>,
+        /// What the human review covered (manual mode, shown to users)
+        #[arg(long, default_value = "static-lint + manual")]
+        scope: String,
+        /// Template ids to emit manual entries for
+        ids: Vec<String>,
+    },
+    /// Verify that a publish signs exactly the committed catalog
+    #[command(name = "check-release")]
+    CheckRelease {
+        /// The committed plugins/index.json
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        committed: PathBuf,
+        /// The freshly regenerated index.json
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        generated: PathBuf,
+        /// The previous release's index.json (enables the rollback check)
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        published: Option<PathBuf>,
+        /// Source root whose per-plugin meta.json must match the committed index
+        #[arg(long, value_hint = clap::ValueHint::DirPath)]
+        plugins_dir: Option<PathBuf>,
+    },
     /// Print a shell completion script for `buz-plugin` to stdout.
     ///
     /// Example: `buz-plugin completions bash > ~/.local/share/bash-completion/completions/buz-plugin`

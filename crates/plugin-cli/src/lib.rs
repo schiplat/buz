@@ -12,5 +12,8 @@ pub mod cli;
 pub mod indexgen;
 pub mod layout;
 pub mod mirror;
+pub mod release_check;
+pub mod reviews;
+pub mod revision;
 pub mod scaffold;
 pub mod validate;
