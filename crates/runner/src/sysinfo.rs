@@ -11,6 +11,8 @@ pub struct SysInfoOpts {
     /// Interface names whose addresses should be listed first (e.g. `["enp26s0"]`).
     pub prefer_interfaces: Vec<String>,
     pub execution_capabilities: Option<RunnerExecutionCapabilities>,
+    /// Host-verified `unshare --net` support (None = older runner).
+    pub netns_supported: Option<bool>,
     /// Sandbox supervisor status block, when the Runner runs a sandboxed tier.
     pub sandboxd: Option<serde_json::Value>,
 }
@@ -146,6 +148,7 @@ pub fn collect_system_info(started_at: std::time::Instant, opts: &SysInfoOpts) -
         ip_addresses,
         uptime_seconds: uptime,
         execution_capabilities: opts.execution_capabilities.clone(),
+        netns_supported: opts.netns_supported,
         sandboxd: opts.sandboxd.clone(),
     }
 }

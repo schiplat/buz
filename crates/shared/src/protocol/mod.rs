@@ -306,6 +306,12 @@ pub struct RunnerPolicyConfig {
     /// looking; `fifo` claims nothing this round. Hot-reloaded on heartbeat.
     #[serde(default = "default_claim_strategy")]
     pub claim_strategy: String,
+    /// Run each `shell` step in a loopback-only Linux network namespace.
+    /// **Default off** — the namespace has no DNS and no egress, so builds
+    /// that need the network fail by design; that strictness is opt-in.
+    /// Ignored on non-Linux hosts (the heartbeat reports actual support).
+    #[serde(default)]
+    pub netns_isolation: bool,
 }
 
 impl Default for RunnerPolicyConfig {
@@ -320,6 +326,7 @@ impl Default for RunnerPolicyConfig {
             wasm_enabled: false,
             ssh_host_key_policy: default_ssh_host_key_policy(),
             claim_strategy: default_claim_strategy(),
+            netns_isolation: false,
         }
     }
 }
@@ -437,6 +444,11 @@ pub struct SystemInfo {
     /// as JSON so adding a field never breaks older Managers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandboxd: Option<serde_json::Value>,
+    /// Host-verified ability to create a network namespace (`unshare --net`).
+    /// Absent on older Runners; false elsewhere. Gates the UI's
+    /// `netns_isolation` policy toggle.
+    #[serde(default)]
+    pub netns_supported: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -504,6 +516,10 @@ pub struct UpdateRunnerRequest {
     pub ssh_host_key_policy: Option<String>,
     #[serde(default)]
     pub claim_strategy: Option<String>,
+    /// Omitted = keep the current setting (default off). Only honored when
+    /// the host reports `netns_supported` — otherwise jobs fail at preflight.
+    #[serde(default)]
+    pub netns_isolation: Option<bool>,
 }
 
 // --- Job ---

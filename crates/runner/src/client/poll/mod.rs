@@ -585,6 +585,9 @@ async fn execute_job_inner(
     // separate OS account. Fail once here (clear sudoers message) instead of
     // surfacing a sudo failure per step. Sandbox modes have their own boundary.
     if config.execution_mode == shared::protocol::RunnerExecutionMode::Host {
+        if config.engine.netns_isolation {
+            engine::shell::preflight_netns().await?;
+        }
         if let Some(user) = config
             .engine
             .run_as_user
@@ -1292,6 +1295,7 @@ pub(super) async fn run_shell_step(
         run.spec.work_dir,
         Some(&env),
         run.config.engine.run_as_user.as_deref(),
+        run.config.engine.netns_isolation,
     )
     .await;
     let (mut child, mut output_rx, read_guard) = match exec_result {

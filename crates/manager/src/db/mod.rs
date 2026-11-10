@@ -429,6 +429,14 @@ pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Res
     add_column_if_missing(pool, "runners", "shell_enabled INTEGER NOT NULL DEFAULT 1").await;
     add_column_if_missing(pool, "runners", "ssh_enabled INTEGER NOT NULL DEFAULT 1").await;
     add_column_if_missing(pool, "runners", "docker_enabled INTEGER NOT NULL DEFAULT 0").await;
+    // UI policy (Runner Policy page): isolate shell steps in a loopback-only
+    // Linux network namespace. Default off.
+    add_column_if_missing(
+        pool,
+        "runners",
+        "netns_isolation INTEGER NOT NULL DEFAULT 0",
+    )
+    .await;
     add_column_if_missing(pool, "runners", "wasm_enabled INTEGER NOT NULL DEFAULT 0").await;
     let _ = sqlx::query(
         "ALTER TABLE runners ADD COLUMN ssh_host_key_policy TEXT NOT NULL DEFAULT 'known_hosts'",

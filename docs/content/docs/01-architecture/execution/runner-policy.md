@@ -79,6 +79,15 @@ Runner process                        │
 3. The Runner applies the snapshot on the next poll / job without restart. A failed or successful job **never** stops a persistent runner process.
 4. On `GET /runners/poll`, Manager enforces `running < max_concurrent_jobs` and claims only jobs whose required labels are all present on the runner — and whose frozen trigger-time team matches the runner's team binding (Shared/`NULL` matches all).
 
+   **Network namespace isolation** (`netns_isolation`, default **off**) wraps each shell step in a
+   loopback-only Linux network namespace — no DNS, no egress. Off by default because network-needing
+   builds fail by design; enable only for runners whose shell steps are pure build/test with no
+   network access. Requires root or CAP_SYS_ADMIN (or user namespaces enabled); the heartbeat
+   reports actual host support (`netns_supported` in capabilities) and non-Linux runners ignore the
+   flag. SSH steps run on the target host and Docker containers keep their own networking — this
+   policy is about host-mode shell steps only. Preflight fails the job with the fix if `unshare
+   --net` is unavailable.
+
    **Claim order** (`backfill` / `fifo`) and starvation aging are advanced knobs: they only change
    behavior when jobs wait for resource slots, and are equivalent for default-profile-only setups.
    The full gate chain — trigger → protection → pipeline concurrency → queue → claim → slots — is

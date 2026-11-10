@@ -1035,6 +1035,7 @@ async fn runner_execution_mode_requires_fresh_supported_capability() {
         network_interfaces: vec![],
         ip_addresses: vec![],
         uptime_seconds: 1,
+        netns_supported: Some(true),
         execution_capabilities: Some(RunnerExecutionCapabilities {
             container: ExecutionBackendStatus::Supported,
             container_reason: None,

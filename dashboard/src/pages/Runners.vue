@@ -104,6 +104,7 @@ const editSshEnabled = ref(true)
 const editDockerEnabled = ref(false)
 const editSshHostKeyPolicy = ref<'insecure' | 'known_hosts'>('insecure')
 const editClaimStrategy = ref<'backfill' | 'fifo'>('backfill')
+const editNetnsIsolation = ref(false)
 const editTeamId = ref('shared')
 const editExecutionMode = ref<RunnerExecutionMode>('host')
 const savingPolicy = ref(false)
@@ -253,6 +254,7 @@ function openDetail(r: Runner) {
   editDockerEnabled.value = !!r.docker_enabled
   editSshHostKeyPolicy.value = r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure'
   editClaimStrategy.value = r.claim_strategy === 'fifo' ? 'fifo' : 'backfill'
+  editNetnsIsolation.value = !!r.netns_isolation
   editTeamId.value = r.team_id ?? 'shared'
   editExecutionMode.value = r.execution_mode ?? 'host'
   openFolds.value = { loopback: false, bridge: false, tunnel: false, virtual: false }
@@ -359,7 +361,8 @@ function policyDirty(): boolean {
     editSshEnabled.value !== (r.ssh_enabled !== false) ||
     editDockerEnabled.value !== !!r.docker_enabled ||
     editSshHostKeyPolicy.value !== (r.ssh_host_key_policy === 'known_hosts' ? 'known_hosts' : 'insecure') ||
-    editClaimStrategy.value !== (r.claim_strategy === 'fifo' ? 'fifo' : 'backfill')
+    editClaimStrategy.value !== (r.claim_strategy === 'fifo' ? 'fifo' : 'backfill') ||
+    editNetnsIsolation.value !== !!r.netns_isolation
   )
 }
 
@@ -380,6 +383,7 @@ async function savePolicy() {
       docker_enabled: editDockerEnabled.value,
       ssh_host_key_policy: editSshHostKeyPolicy.value,
       claim_strategy: editClaimStrategy.value,
+      netns_isolation: editNetnsIsolation.value,
     })
     activeRunner.value = { ...activeRunner.value, ...updated }
     editLabels.value = (updated.labels || []).join(', ')
@@ -1124,6 +1128,19 @@ const eventBadge = (t: string) => {
                   </p>
                 </div>
               </div>
+              <label class="flex items-start gap-2 text-xs cursor-pointer">
+                <input v-model="editNetnsIsolation" type="checkbox" class="rounded-sm border-border mt-0.5" />
+                <span>
+                  Network namespace isolation (Linux)
+                  <span class="block text-[10px] text-muted-foreground leading-relaxed mt-0.5">
+                    Runs each shell step in a loopback-only network namespace — no DNS, no egress.
+                    <strong class="text-destructive">Off by default</strong>: network-needing builds
+                    fail by design. Requires root or CAP_SYS_ADMIN; ignored on non-Linux runners
+                    (unsupported hosts show it unsupported in capabilities). SSH steps run on the
+                    target host; Docker containers keep their own networking.
+                  </span>
+                </span>
+              </label>
               <div class="flex justify-end pt-1">
                 <UiButton
                   size="sm"

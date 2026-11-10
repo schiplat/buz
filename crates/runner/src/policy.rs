@@ -21,6 +21,7 @@ pub fn apply_to_config(config: &mut Config, policy: &RunnerPolicyConfig) {
     config.engine.ssh_enabled = policy.ssh_enabled;
     config.engine.docker_enabled = policy.docker_enabled;
     config.engine.wasm_enabled = policy.wasm_enabled;
+    config.engine.netns_isolation = policy.netns_isolation;
     config.engine.ssh_host_key_policy = match policy.ssh_host_key_policy.as_str() {
         "known_hosts" => SshHostKeyPolicy::KnownHosts,
         _ => SshHostKeyPolicy::Insecure,

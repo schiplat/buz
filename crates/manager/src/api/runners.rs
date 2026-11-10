@@ -254,7 +254,7 @@ async fn load_runner_policy(
     let row = sqlx::query(
         "SELECT max_concurrent_jobs, clean_workspace_after_job,
                 shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy,
-                execution_mode, claim_strategy
+                execution_mode, claim_strategy, netns_isolation
          FROM runners WHERE id = ?",
     )
     .bind(runner_id)
@@ -280,6 +280,7 @@ async fn load_runner_policy(
         execution_mode: parse_execution_mode(row.get::<String, _>(7))?,
         claim_strategy: normalize_claim_strategy(Some(row.get::<String, _>(8)))
             .unwrap_or_else(|_| "backfill".into()),
+        netns_isolation: i64_bool(row.get(9)),
     })
 }
 
@@ -294,6 +295,7 @@ fn policy_json(p: &RunnerPolicyConfig) -> serde_json::Value {
         "wasm_enabled": p.wasm_enabled,
         "ssh_host_key_policy": p.ssh_host_key_policy,
         "claim_strategy": p.claim_strategy,
+        "netns_isolation": p.netns_isolation,
     })
 }
 
@@ -2407,6 +2409,7 @@ pub async fn list_runners(
                 r.created_at, r.updated_at, r.team_id,
                 (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs,
                 r.execution_mode, r.host_id, r.runner_instance_id, r.claim_strategy,
+                r.netns_isolation,
                 r.capability_reprobe_requested, r.capability_reprobe_requested_at,
                 r.capability_reprobe_served_at
          FROM runners r ORDER BY r.created_at DESC",
@@ -2438,6 +2441,7 @@ pub async fn list_runners(
                 execution_mode: parse_execution_mode(r.get::<String, _>(19))?,
                 claim_strategy: normalize_claim_strategy(Some(r.get::<String, _>(22)))
                     .unwrap_or_else(|_| "backfill".into()),
+                netns_isolation: i64_bool(r.get(24)),
             };
             Ok(serde_json::json!({
                 "id": r.get::<String, _>(0),
@@ -2457,6 +2461,7 @@ pub async fn list_runners(
                 "ssh_enabled": policy.ssh_enabled,
                 "docker_enabled": policy.docker_enabled,
                 "wasm_enabled": policy.wasm_enabled,
+                "netns_isolation": policy.netns_isolation,
                 "ssh_host_key_policy": policy.ssh_host_key_policy,
                 "claim_strategy": policy.claim_strategy,
                 "execution_mode": policy.execution_mode.as_str(),
@@ -2527,6 +2532,7 @@ pub async fn get_runner(
         "ssh_host_key_policy": policy.ssh_host_key_policy,
         "execution_mode": policy.execution_mode.as_str(),
         "claim_strategy": policy.claim_strategy,
+        "netns_isolation": policy.netns_isolation,
     }))))
 }
 
@@ -2635,6 +2641,7 @@ pub async fn update_runner(
         "docker_enabled": before_policy.docker_enabled,
         "wasm_enabled": before_policy.wasm_enabled,
         "ssh_host_key_policy": before_policy.ssh_host_key_policy,
+        "netns_isolation": before_policy.netns_isolation,
     });
 
     if let Some(requested_team) = &req.team_id {
@@ -2750,6 +2757,15 @@ pub async fn update_runner(
     if let Some(v) = req.wasm_enabled {
         sqlx::query(
             "UPDATE runners SET wasm_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(if v { 1i64 } else { 0 })
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    }
+    if let Some(v) = req.netns_isolation {
+        sqlx::query(
+            "UPDATE runners SET netns_isolation = ?, updated_at = datetime('now') WHERE id = ?",
         )
         .bind(if v { 1i64 } else { 0 })
         .bind(&id)

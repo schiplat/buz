@@ -16,6 +16,10 @@ pub async fn run_heartbeat_loop(
     restart_requested: Arc<AtomicBool>,
 ) {
     let mut capabilities = probe_execution_capabilities(config).await;
+    // Host-verified netns support probed alongside the tier capabilities:
+    // `unshare --net` is Linux-only and needs privileges, so the UI can gate
+    // its policy toggle instead of letting jobs fail at preflight.
+    let mut netns_supported = crate::engine::shell::probe_netns_supported().await;
     let mut last_capability_check = std::time::Instant::now();
     // Set when the Manager serves a one-shot re-probe command: probe at once
     // and report fresh results on the very next heartbeat instead of idling.
@@ -29,6 +33,7 @@ pub async fn run_heartbeat_loop(
         if reprobe_requested {
             tracing::info!("Capability re-probe requested by Manager — probing now");
             capabilities = probe_execution_capabilities(config).await;
+            netns_supported = crate::engine::shell::probe_netns_supported().await;
             last_capability_check = std::time::Instant::now();
             reprobe_requested = false;
         }
@@ -48,6 +53,7 @@ pub async fn run_heartbeat_loop(
         };
         if last_capability_check.elapsed() >= std::time::Duration::from_secs(300) {
             capabilities = probe_execution_capabilities(config).await;
+            netns_supported = crate::engine::shell::probe_netns_supported().await;
             last_capability_check = std::time::Instant::now();
         }
         // Refresh system info on every heartbeat so CPU/mem/disk stay current.
@@ -57,6 +63,7 @@ pub async fn run_heartbeat_loop(
                 manager_url: config.runner.manager_url.clone(),
                 prefer_interfaces: config.runner.prefer_interfaces.clone(),
                 execution_capabilities: Some(capabilities.clone()),
+                netns_supported: Some(netns_supported),
                 sandboxd: sandboxd_block,
             },
         );

@@ -170,6 +170,15 @@ pub struct EngineConfig {
     /// Docker containers run as the image's user.
     #[serde(default)]
     pub run_as_user: Option<String>,
+    /// Run each `shell` step in a loopback-only Linux network namespace
+    /// (`unshare --net`). Machine-local, **default off**: the namespace has
+    /// no DNS and no egress, so network-needing builds fail by design —
+    /// that strictness is the point. Linux-only (ignored elsewhere);
+    /// requires root or CAP_SYS_ADMIN. SSH steps run on the target host and
+    /// Docker containers have their own networking — this flag is about the
+    /// host-mode shell engine only.
+    #[serde(default)]
+    pub netns_isolation: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
@@ -208,6 +217,7 @@ impl Default for EngineConfig {
             ssh_known_hosts_path: None,
             docker_config_isolation: DockerConfigIsolation::PerJob,
             run_as_user: None,
+            netns_isolation: false,
         }
     }
 }

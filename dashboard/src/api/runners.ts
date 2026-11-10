@@ -59,6 +59,8 @@ export interface RunnerPolicy {
   ssh_enabled: boolean
   docker_enabled: boolean
   wasm_enabled: boolean
+  /** Loopback-only Linux netns for shell steps (default off). */
+  netns_isolation: boolean
   /** `insecure` | `known_hosts` */
   ssh_host_key_policy: string
   /** `backfill` (default) | `fifo` — queue walk when a job does not fit the host slot budget */
@@ -87,6 +89,8 @@ export interface Runner {
   ssh_enabled?: boolean
   docker_enabled?: boolean
   wasm_enabled?: boolean
+  /** Loopback-only Linux netns for shell steps (default off). */
+  netns_isolation?: boolean
   ssh_host_key_policy?: string
   /** `backfill` (default) | `fifo` — queue walk on slot budget misses. */
   claim_strategy?: string

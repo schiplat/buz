@@ -70,6 +70,7 @@ async fn run_loop(mut config: config::Config) -> anyhow::Result<()> {
         let info = sysinfo::collect_system_info(
             started_at,
             &sysinfo::SysInfoOpts {
+                netns_supported: Some(false),
                 manager_url: config.runner.manager_url.clone(),
                 prefer_interfaces: config.runner.prefer_interfaces.clone(),
                 execution_capabilities: None,

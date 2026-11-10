@@ -21,11 +21,16 @@ fn apply_to_config_overwrites_strategy_keeps_paths() {
         wasm_enabled: true,
         ssh_host_key_policy: "known_hosts".into(),
         claim_strategy: "backfill".into(),
+        netns_isolation: true,
     };
     policy::apply_to_config(&mut cfg, &policy_config);
 
     assert_eq!(cfg.runner.workspace_dir, "/var/buz");
     assert_eq!(cfg.runner.token_cache_path, "/var/lib/buz/runner-token");
+    assert!(
+        cfg.engine.netns_isolation,
+        "policy must carry the netns flag into the engine config"
+    );
     assert_eq!(
         cfg.engine.ssh_known_hosts_path.as_deref(),
         Some("/etc/ssh/known_hosts")
