@@ -41,7 +41,6 @@ struct Sshd {
     key_path: std::path::PathBuf,
     username: String,
     pid: u32,
-    dir: std::path::PathBuf,
 }
 
 impl Drop for Sshd {
@@ -169,7 +168,6 @@ async fn start_sshd() -> Option<Sshd> {
         key_path,
         username,
         pid,
-        dir: dir.clone(),
     };
 
     // Wait until the port answers (sshd writes keys/logs before accepting).
