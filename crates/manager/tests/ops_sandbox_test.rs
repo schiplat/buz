@@ -867,7 +867,7 @@ async fn grants_require_approval_and_approve_applies_them() {
     assert_eq!(row["decision_comment"], "ok");
 
     let audit_actions: Vec<String> = sqlx::query_scalar(
-        "SELECT action FROM audit_logs WHERE action = 'resource_grant.update' ORDER BY rowid",
+        "SELECT action FROM audit_logs WHERE action = 'resource_grant.update' ORDER BY seq",
     )
     .fetch_all(&pool)
     .await

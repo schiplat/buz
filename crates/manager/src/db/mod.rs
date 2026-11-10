@@ -282,7 +282,7 @@ async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
 /// dispatch below, and **never edit or reorder an existing entry** — its
 /// version is already recorded on deployed databases, so an edited body would
 /// silently never run. New bodies need not be idempotent: they run once.
-const MIGRATIONS: &[i64] = &[1, 2];
+const MIGRATIONS: &[i64] = &[1, 2, 3];
 
 /// Versioned migration runner: applies each migration at most once per
 /// database, recording it in `schema_migrations`.
@@ -327,6 +327,7 @@ async fn apply_migration(pool: &SqlitePool, jwt_secret: &str, version: i64) -> a
     match version {
         1 => apply_legacy_baseline(pool, jwt_secret).await,
         2 => apply_v2_yaml_source(pool).await,
+        3 => apply_v3_insertion_order_seq(pool).await,
         other => anyhow::bail!("unknown migration version {other}"),
     }
 }
@@ -366,6 +367,67 @@ async fn apply_v2_yaml_source(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::query(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_pipelines_yaml_path
          ON pipelines(yaml_path) WHERE source = 'yaml'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v3: explicit insertion-order sequences for `jobs` and `audit_logs`.
+///
+/// Business logic picks "the newest pending job" and orders FIFO candidates by
+/// `rowid` — an SQLite-only implicit column with no Postgres equivalent. Those
+/// orderings move to an explicit `seq` maintained by a trigger, so the queries
+/// become dialect-neutral (`ORDER BY seq`).
+///
+/// Postgres mapping (storage switch): `seq BIGINT GENERATED ALWAYS AS
+/// IDENTITY` replaces both the column default and the trigger.
+///
+/// Trigger internals use `NEW.id` (both tables are `id TEXT PRIMARY KEY`), so
+/// no `rowid` dependency enters the schema objects either. The `MAX(seq)`
+/// subquery is index-backed (`idx_jobs_seq` / `idx_audit_logs_seq`); SQLite's
+/// single-writer rule makes the read-increment-write inside the trigger safe.
+async fn apply_v3_insertion_order_seq(pool: &SqlitePool) -> anyhow::Result<()> {
+    add_column_if_missing(pool, "jobs", "seq INTEGER NOT NULL DEFAULT 0").await;
+    add_column_if_missing(pool, "audit_logs", "seq INTEGER NOT NULL DEFAULT 0").await;
+
+    // Backfill from rowid: it encoded insertion order until now. UPDATE does
+    // not fire the INSERT triggers below, so order of operations is free.
+    sqlx::query("UPDATE jobs SET seq = rowid WHERE seq = 0")
+        .execute(pool)
+        .await?;
+    sqlx::query("UPDATE audit_logs SET seq = rowid WHERE seq = 0")
+        .execute(pool)
+        .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_seq ON jobs(seq)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_logs_seq ON audit_logs(seq)")
+        .execute(pool)
+        .await?;
+
+    // WHEN NEW.seq = 0 leaves explicitly-numbered inserts (tests, future
+    // import tools) untouched.
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_jobs_insert_seq
+         AFTER INSERT ON jobs
+         WHEN NEW.seq = 0
+         BEGIN
+             UPDATE jobs SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM jobs)
+             WHERE id = NEW.id;
+         END",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_audit_logs_insert_seq
+         AFTER INSERT ON audit_logs
+         WHEN NEW.seq = 0
+         BEGIN
+             UPDATE audit_logs SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM audit_logs)
+             WHERE id = NEW.id;
+         END",
     )
     .execute(pool)
     .await?;

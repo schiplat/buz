@@ -252,7 +252,7 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
     assert_eq!(job2_status, "failed", "revocation is terminal");
 
     // ── 6. Audit trail records the whole journey. ──
-    let actions: Vec<String> = sqlx::query_scalar("SELECT action FROM audit_logs ORDER BY rowid")
+    let actions: Vec<String> = sqlx::query_scalar("SELECT action FROM audit_logs ORDER BY seq")
         .fetch_all(&app.pool)
         .await
         .unwrap();
@@ -268,7 +268,7 @@ async fn enroll_publish_fetch_grant_trigger_claim_revoke_audits() {
     }
     let grant_events: Vec<(String, String)> = sqlx::query_as(
         "SELECT after_json, actor_username FROM audit_logs
-         WHERE action = 'resource_grant.update' ORDER BY rowid",
+         WHERE action = 'resource_grant.update' ORDER BY seq",
     )
     .fetch_all(&app.pool)
     .await

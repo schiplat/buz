@@ -52,7 +52,7 @@ async fn fresh_database_applies_baseline_and_records_it() {
     .await
     .unwrap();
     assert_eq!(indexed, 1, "definition-name uniqueness must be enforced");
-    assert_eq!(recorded_versions(&pool).await, vec![1, 2]);
+    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3]);
 }
 
 /// A recorded version is not replayed: seed the version table on an otherwise
@@ -70,7 +70,7 @@ async fn recorded_version_is_not_replayed() {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO schema_migrations (version) VALUES (1), (2)")
+    sqlx::query("INSERT INTO schema_migrations (version) VALUES (1), (2), (3)")
         .execute(&pool)
         .await
         .unwrap();
@@ -81,7 +81,72 @@ async fn recorded_version_is_not_replayed() {
         !table_exists(&pool, "pipelines").await,
         "an applied baseline must not be replayed"
     );
-    assert_eq!(recorded_versions(&pool).await, vec![1, 2]);
+    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3]);
+}
+
+/// `seq` replaces implicit `rowid` ordering: inserts get a monotonically
+/// increasing number, and pre-existing rows keep their historical order via
+/// the rowid backfill.
+#[tokio::test]
+async fn seq_is_assigned_on_insert_and_ordered() {
+    let pool = fresh_pool().await;
+    manager::db::run_migrations(&pool, SECRET).await.unwrap();
+
+    // jobs.pipeline_id references pipelines(id); seed one shell row.
+    sqlx::query("INSERT INTO pipelines (id, name, trigger_type, environments, team_id, input_defs) VALUES ('pipe', 'pipe', 'manual', '[]', 'team-default', '[]')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    async fn insert_job(pool: &SqlitePool, id: &str) {
+        sqlx::query(
+            "INSERT INTO jobs (id, pipeline_id, status, trigger_by, snapshot, created_at, updated_at)
+             VALUES (?, 'pipe', 'pending', 'test', '{}', datetime('now'), datetime('now'))",
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    insert_job(&pool, "job-a").await;
+    insert_job(&pool, "job-b").await;
+    insert_job(&pool, "job-c").await;
+
+    let ordered: Vec<(String, i64)> = sqlx::query_as("SELECT id, seq FROM jobs ORDER BY seq")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        ordered,
+        vec![
+            ("job-a".into(), 1),
+            ("job-b".into(), 2),
+            ("job-c".into(), 3),
+        ],
+        "insertion order must be explicit and monotonic"
+    );
+
+    // Explicitly numbered inserts are respected, not overwritten.
+    sqlx::query(
+        "INSERT INTO jobs (id, pipeline_id, status, trigger_by, snapshot, seq, created_at, updated_at)
+         VALUES ('job-x', 'pipe', 'pending', 'test', '{}', 99, datetime('now'), datetime('now'))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let seq: i64 = sqlx::query_scalar("SELECT seq FROM jobs WHERE id = 'job-x'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(seq, 99);
+
+    // Next automatic insert continues past the explicit maximum.
+    insert_job(&pool, "job-d").await;
+    let seq: i64 = sqlx::query_scalar("SELECT seq FROM jobs WHERE id = 'job-d'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(seq, 100);
 }
 
 /// Running the runner repeatedly is a no-op after the first application.
@@ -92,5 +157,5 @@ async fn second_run_changes_nothing() {
     manager::db::run_migrations(&pool, SECRET).await.unwrap();
     manager::db::run_migrations(&pool, SECRET).await.unwrap();
 
-    assert_eq!(recorded_versions(&pool).await, vec![1, 2]);
+    assert_eq!(recorded_versions(&pool).await, vec![1, 2, 3]);
 }

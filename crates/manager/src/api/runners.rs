@@ -1026,8 +1026,8 @@ async fn poll_once(
            AND (
              j.environment_id IS NULL
              OR COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress'
-             OR j.rowid = (
-                 SELECT MAX(latest.rowid) FROM jobs latest
+             OR j.seq = (
+                 SELECT MAX(latest.seq) FROM jobs latest
                  WHERE latest.environment_id = j.environment_id AND latest.status = 'pending'
              )
            )
@@ -1039,7 +1039,7 @@ async fn poll_once(
              COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress'
              AND EXISTS (SELECT 1 FROM jobs running WHERE running.pipeline_id = j.pipeline_id AND running.environment_id = j.environment_id AND running.status = 'running')
            )
-         ORDER BY j.created_at ASC, j.rowid ASC
+         ORDER BY j.created_at ASC, j.seq ASC
          LIMIT 50",
     )
     .bind(&runner_team_id)
@@ -1184,7 +1184,7 @@ async fn poll_once(
             if deployment_concurrency == "cancel_in_progress" {
                 let newest_pending: Option<String> = sqlx::query_scalar(
                     "SELECT id FROM jobs WHERE environment_id = ? AND status = 'pending' \
-                     ORDER BY rowid DESC LIMIT 1",
+                     ORDER BY seq DESC LIMIT 1",
                 )
                 .bind(env_id)
                 .fetch_optional(&mut *tx)

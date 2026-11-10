@@ -250,7 +250,7 @@ async fn latest_job(pool: &SqlitePool, pipeline_id: &str) -> (Option<String>, se
         "SELECT e.slug, j.snapshot FROM jobs j
          LEFT JOIN environments e ON e.id = j.environment_id
          WHERE j.pipeline_id = ?
-         ORDER BY j.rowid DESC LIMIT 1",
+         ORDER BY j.seq DESC LIMIT 1",
     )
     .bind(pipeline_id)
     .fetch_optional(pool)
@@ -474,7 +474,7 @@ async fn cron_trigger_targets_declared_environment() {
     assert_eq!(snapshot["environment"], "nightly");
 
     let trigger_by: String = sqlx::query_scalar(
-        "SELECT trigger_by FROM jobs WHERE pipeline_id = ? ORDER BY rowid DESC LIMIT 1",
+        "SELECT trigger_by FROM jobs WHERE pipeline_id = ? ORDER BY seq DESC LIMIT 1",
     )
     .bind(&pid)
     .fetch_one(&pool)

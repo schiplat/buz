@@ -847,7 +847,7 @@ pub async fn disable(
         let targets = sqlx::query(
             "SELECT id FROM jobs
              WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued', 'waiting_approval')
-             ORDER BY created_at, rowid",
+             ORDER BY created_at, seq",
         )
         .bind(&id)
         .fetch_all(&mut *tx)
