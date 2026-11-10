@@ -2098,7 +2098,7 @@ fn build_ssh_conn(hv: &serde_json::Value, config: &Config) -> anyhow::Result<Ssh
 /// Wait-all: every host finishes (unless this future is dropped on cancel).
 /// Any non-zero exit or exec error fails the step. Per-host output is buffered
 /// then concatenated under `--- {step} @ {host} ---` when multi-host.
-async fn execute_ssh_step(
+pub async fn execute_ssh_step(
     sessions: Vec<SshSession>,
     command: &str,
     step_timeout: Option<std::time::Duration>,
