@@ -1195,6 +1195,9 @@ pub(super) struct StepExecution {
     pub(super) output_secret_values: Vec<String>,
     /// Index the next attempt's stream should start from.
     pub(super) next_stream: i32,
+    /// `Some(count)` when the streamed output overflowed the per-step log
+    /// window — surfaced on the step's summary and failure message.
+    pub(super) omitted: Option<u64>,
 }
 
 /// `local`/`shell` engine: inside the job sandbox when one exists, otherwise
@@ -1236,7 +1239,7 @@ pub(super) async fn run_shell_step(
         } else {
             0
         };
-        let (output, was_cancelled, next_stream) = run_sandbox_step(
+        let (output, was_cancelled, next_stream, omitted) = run_sandbox_step(
             run.log,
             run.config,
             run.spec.command,
@@ -1255,6 +1258,7 @@ pub(super) async fn run_shell_step(
             was_cancelled,
             output_secret_values: run.secret_values.to_vec(),
             next_stream,
+            omitted,
         });
     }
 
@@ -1311,20 +1315,22 @@ pub(super) async fn run_shell_step(
     };
 
     // Race: child completion vs cancellation vs timeout
-    let (exit_code, was_cancelled_local, was_timeout, next_stream) = tokio::select! {
+    let (exit_code, was_cancelled_local, was_timeout, stream_outcome) = tokio::select! {
         status = child.wait() => {
             let code = status?.code().unwrap_or(-1);
             // Ensure all pipe data is read before proceeding
             let _ = read_guard.join().await;
-            let next = upload_task.await.unwrap_or(run.stream_start);
-            (code, false, false, next)
+            let outcome = upload_task
+                .await
+                .unwrap_or(step_log::StreamOutcome { next_index: run.stream_start, omitted: None });
+            (code, false, false, outcome)
         }
         _ = cancel_triggered(&mut cancel_rx_step) => {
             tracing::warn!("Job {jid} cancelled during step '{sname}' — killing");
             let _ = child.kill().await;
             let _ = child.wait().await;
             upload_task.abort();
-            (-1, true, false, run.stream_start)
+            (-1, true, false, step_log::StreamOutcome { next_index: run.stream_start, omitted: None })
         }
         _ = tokio::time::sleep(run.spec.timeout.unwrap_or(Duration::from_secs(3600))), if run.spec.timeout.is_some() => {
             tracing::warn!("Step '{sname}' timed out after {}s — killing process", run.spec.timeout_secs);
@@ -1332,7 +1338,7 @@ pub(super) async fn run_shell_step(
             let _ = child.wait().await;
             let _ = read_guard.join().await;
             upload_task.abort();
-            (-1, false, true, run.stream_start)
+            (-1, false, true, step_log::StreamOutcome { next_index: run.stream_start, omitted: None })
         }
     };
 
@@ -1354,7 +1360,8 @@ pub(super) async fn run_shell_step(
         },
         was_cancelled: was_cancelled_local,
         output_secret_values: run.secret_values.to_vec(),
-        next_stream,
+        next_stream: stream_outcome.next_index,
+        omitted: stream_outcome.omitted,
     })
 }
 
@@ -1441,6 +1448,7 @@ pub(super) async fn run_ssh_step(
         output_secret_values,
         // SSH output is uploaded as one summary chunk, not streamed.
         next_stream: run.stream_start,
+        omitted: None,
     })
 }
 
@@ -1520,12 +1528,14 @@ pub(super) async fn run_docker_step(
         })
     };
 
-    let (exit_code, was_cancelled_docker, was_timeout_docker, next_stream) = tokio::select! {
+    let (exit_code, was_cancelled_docker, was_timeout_docker, stream_outcome) = tokio::select! {
         status = child.wait() => {
             let code = status?.code().unwrap_or(-1);
             let _ = read_guard.join().await;
-            let next = upload_task.await.unwrap_or(run.stream_start);
-            (code, false, false, next)
+            let outcome = upload_task
+                .await
+                .unwrap_or(step_log::StreamOutcome { next_index: run.stream_start, omitted: None });
+            (code, false, false, outcome)
         }
         _ = cancel_triggered(&mut cancel_rx_step) => {
             tracing::warn!("Job {jid} cancelled during docker step '{sname}' — killing container process");
@@ -1533,7 +1543,7 @@ pub(super) async fn run_docker_step(
             let _ = child.wait().await;
             engine::docker::stop_container(&container_name, run.docker_config_dir).await;
             upload_task.abort();
-            (-1, true, false, run.stream_start)
+            (-1, true, false, step_log::StreamOutcome { next_index: run.stream_start, omitted: None })
         }
         _ = tokio::time::sleep(run.spec.timeout.unwrap_or(Duration::from_secs(3600))), if run.spec.timeout.is_some() => {
             tracing::warn!("Docker step '{sname}' timed out after {}s — killing container", run.spec.timeout_secs);
@@ -1542,7 +1552,7 @@ pub(super) async fn run_docker_step(
             engine::docker::stop_container(&container_name, run.docker_config_dir).await;
             let _ = read_guard.join().await;
             upload_task.abort();
-            (-1, false, true, run.stream_start)
+            (-1, false, true, step_log::StreamOutcome { next_index: run.stream_start, omitted: None })
         }
     };
 
@@ -1564,7 +1574,8 @@ pub(super) async fn run_docker_step(
         },
         was_cancelled: was_cancelled_docker,
         output_secret_values: run.secret_values.to_vec(),
-        next_stream,
+        next_stream: stream_outcome.next_index,
+        omitted: stream_outcome.omitted,
     })
 }
 
@@ -1587,17 +1598,32 @@ pub(super) async fn finalize_step(
         was_cancelled,
         output_secret_values,
         next_stream: _,
+        omitted,
     } = execution;
     if was_cancelled {
         return Err(log.cancel_step().await);
     }
 
+    // Truncation must be stated on the step-end record, not only in the live
+    // stream marker: the summary chunk (SSH/sandbox) and any failure message
+    // both note that the output above is incomplete.
+    let truncation_note = omitted.map(step_log::build_truncation_note);
+
     // For SSH steps, upload the accumulated output as a summary chunk.
     // Local steps are fully streamed so we skip this redundant upload.
     if spec.exec_type == "ssh" || sandbox_handle.is_some() {
         let combined = format!("==> {}\n{}\n{}", spec.name, output.stdout, output.stderr);
-        let masked = mask_output(&combined, &output_secret_values, forced_values);
+        let mut masked = mask_output(&combined, &output_secret_values, forced_values);
+        if let Some(note) = &truncation_note {
+            masked.push('\n');
+            masked.push_str(note);
+        }
         log.try_emit(LOG_STEP_SUMMARY, masked).await?;
+    } else if let Some(note) = &truncation_note {
+        // Streamed steps already carry the 9991 marker; on failure the ERROR
+        // terminal is the last thing read — state the truncation there too.
+        log.emit(LOG_STEP_SUMMARY, format!("==> {}\n{}", spec.name, note))
+            .await;
     }
 
     // Verbose mode: result summary (duration + exit code). Uploaded even on
@@ -1611,7 +1637,13 @@ pub(super) async fn finalize_step(
     }
 
     if output.exit_code != 0 && spec.fail_strategy == "stop" {
-        let hint = step_failure_hint(&output.stderr, output.exit_code);
+        let mut hint = step_failure_hint(&output.stderr, output.exit_code);
+        if truncation_note.is_some() {
+            if !hint.is_empty() {
+                hint.push(' ');
+            }
+            hint.push_str(step_log::TRUNCATION_FAILURE_HINT);
+        }
         let msg = build_step_failure_message(spec.name, output.exit_code, spec.command, &hint);
         // fail_step uploads the failure into this step's terminal so it is
         // visible in the UI. Prefer step_order=idx over run_one_job's global
@@ -1732,7 +1764,7 @@ pub(super) async fn run_sandbox_step(
     cancel_rx: &mut watch::Receiver<bool>,
     handle: &crate::client::sandbox_client::SandboxHandle,
     stream_start: i32,
-) -> anyhow::Result<(engine::shell::ShellOutput, bool, i32)> {
+) -> anyhow::Result<(engine::shell::ShellOutput, bool, i32, Option<u64>)> {
     let mut stream = crate::client::sandbox_client::exec_step(
         &config.sandbox,
         handle,
@@ -1789,6 +1821,7 @@ pub(super) async fn run_sandbox_step(
                             },
                             false,
                             budget.next_index(),
+                            budget.omitted(),
                         ));
                     }
                     Some(Ok(crate::client::sandbox_client::SandboxExecEvent::Error { error })) => {
@@ -1811,6 +1844,7 @@ pub(super) async fn run_sandbox_step(
                     },
                     true,
                     budget.next_index(),
+                    budget.omitted(),
                 ));
             }
         }

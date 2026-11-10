@@ -59,7 +59,7 @@ pub const LOG_STREAM_LAST: i32 = 9990;
 /// output exhausts the window (see [`LOG_STREAM_LAST`]). Re-uploaded with the
 /// final omitted count when the stream closes; `INSERT OR REPLACE` keeps the
 /// last write.
-pub const LOG_STEP_TRUNCATED: i32 = 9991;
+pub const LOG_STEP_TRUNCATED: i32 = shared::protocol::LOG_STEP_TRUNCATED;
 
 /// `==> RETRY` marker offset — one line per automatic retry; later attempts
 /// replace it in place (the final view shows the last retry).
@@ -132,6 +132,13 @@ impl StreamBudget {
     /// Whether any chunk has been omitted.
     pub fn truncated(&self) -> bool {
         self.truncated
+    }
+
+    /// `Some(omitted)` when the stream overflowed the window, `None` otherwise
+    /// — the caller records it on the step so summaries and failure messages
+    /// can flag the truncation.
+    pub fn omitted(&self) -> Option<u64> {
+        self.truncated.then_some(self.omitted)
     }
 
     /// Marker content exactly once, on the first overflow after the previous
@@ -360,7 +367,7 @@ impl StepLogger {
         secret_values: &[String],
         forced_values: &[String],
         start: i32,
-    ) -> i32 {
+    ) -> StreamOutcome {
         let mut budget = StreamBudget::new_at(self.log_base, start);
         while let Some(chunk) = output_rx.recv().await {
             let masked = mask_output(&chunk, secret_values, forced_values);
@@ -385,9 +392,35 @@ impl StepLogger {
             // Final count — replaces the first-overflow marker in place.
             self.emit(LOG_STEP_TRUNCATED, budget.marker()).await;
         }
-        budget.next_index()
+        StreamOutcome {
+            next_index: budget.next_index(),
+            omitted: budget.omitted(),
+        }
     }
 }
+
+/// What one streamed step produced beyond the output itself.
+#[derive(Debug, Clone, Copy)]
+pub struct StreamOutcome {
+    /// Index the next attempt's stream should start from (retries append).
+    pub next_index: i32,
+    /// `Some(count)` when the stream overflowed the log window.
+    pub omitted: Option<u64>,
+}
+
+/// Truncation note appended to a step's summary chunk — the step-end record
+/// must state that the output above is incomplete even if the live marker
+/// scrolled away.
+pub fn build_truncation_note(omitted: u64) -> String {
+    format!(
+        "==> OUTPUT TRUNCATED\n  omitted  {omitted} chunk(s) over the per-step log window — \
+         the output above is incomplete\n"
+    )
+}
+
+/// Extra failure hint when a step fails while its output was truncated.
+pub const TRUNCATION_FAILURE_HINT: &str =
+    "output was truncated (per-step log window) — the failing line may be missing";
 
 /// `==> RETRY` marker: the step failed and will run again.
 pub fn build_retry_marker(name: &str, attempt: u32, max_attempts: u32, detail: &str) -> String {

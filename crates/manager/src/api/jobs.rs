@@ -339,6 +339,22 @@ pub async fn recent(
     Ok(Json(ApiResponse::success(jobs)))
 }
 
+/// Step orders whose streamed output hit the truncation marker
+/// (`chunk_index % 10_000 == LOG_STEP_TRUNCATED`). Per-step 10_000-wide
+/// windows make the modulo exact; negatives (runner banner) never match.
+async fn truncated_steps(pool: &sqlx::SqlitePool, job_id: &str) -> Vec<i64> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT step_order FROM job_logs
+         WHERE job_id = ? AND chunk_index >= 0
+           AND chunk_index % 10000 = ?",
+    )
+    .bind(job_id)
+    .bind(shared::protocol::LOG_STEP_TRUNCATED)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+}
+
 pub async fn get_one(
     auth: AuthUser,
     Path(id): Path<String>,
@@ -416,6 +432,10 @@ pub async fn get_one(
         "sandbox_instance_id": r.get::<String, _>(22),
         // Why the last poller skipped this job while pending ('' once claimed).
         "dispatch_reason": r.get::<String, _>(23),
+        // Steps whose streamed output overflowed the per-step log window —
+        // the UI badges them without downloading every chunk. The offset
+        // (9991) is the shared LOG_STEP_TRUNCATED layout constant.
+        "truncated_steps": truncated_steps(&state.pool, &id).await,
     }))))
 }
 

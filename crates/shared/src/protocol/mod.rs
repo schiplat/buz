@@ -597,6 +597,11 @@ impl LogLevel {
 /// `INSERT OR REPLACE` would otherwise let the error chunk overwrite the banner.
 /// ```
 ///
+/// The `==> OUTPUT TRUNCATED` marker offset (9991). Shared so the Manager can
+/// flag truncated steps (chunk_index % 10_000 == LOG_STEP_TRUNCATED) without
+/// duplicating the layout magic number.
+pub const LOG_STEP_TRUNCATED: i32 = 9991;
+
 /// Verbose prep/config used to live at 9990+, which sorted **after** RUN +
 /// stream and made Verbose look "out of order" once the job reloaded from DB.
 /// (Runner-side layout constants: `runner::client::poll::step_log`.)

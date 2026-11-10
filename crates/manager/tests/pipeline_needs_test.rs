@@ -51,7 +51,7 @@ fn test_config() -> Config {
     }
 }
 
-async fn test_app() -> Router {
+async fn test_app() -> (Router, sqlx::SqlitePool) {
     let pool = SqlitePoolOptions::new()
         .max_connections(4)
         .connect("sqlite::memory:")
@@ -76,11 +76,11 @@ async fn test_app() -> Router {
         .expect("seed team");
 
     let state = AppState {
-        pool,
+        pool: pool.clone(),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
-    Router::new().nest("/api/v1", api::router(state))
+    (Router::new().nest("/api/v1", api::router(state)), pool)
 }
 
 fn bearer() -> String {
@@ -145,7 +145,7 @@ fn create_payload() -> String {
 
 #[tokio::test]
 async fn needs_survive_create_get_and_trigger_snapshot() {
-    let app = test_app().await;
+    let (app, _pool) = test_app().await;
 
     let (status, created) =
         json_response(&app, "POST", "/api/v1/pipelines", Some(create_payload())).await;
@@ -221,4 +221,67 @@ async fn needs_survive_create_get_and_trigger_snapshot() {
         .map(|value| value.as_str().expect("string"))
         .collect();
     assert_eq!(deploy_needs, vec!["lint", "test"]);
+}
+
+#[tokio::test]
+async fn job_detail_reports_truncated_steps() {
+    let (app, pool) = test_app().await;
+
+    let (status, created) =
+        json_response(&app, "POST", "/api/v1/pipelines", Some(create_payload())).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let pipeline_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    let (_, triggered) = json_response(
+        &app,
+        "POST",
+        &format!("/api/v1/pipelines/{pipeline_id}/trigger"),
+        Some(r#"{"inputs": {}, "environment": "default"}"#.to_string()),
+    )
+    .await;
+    let job_id = triggered["data"]["job_id"].as_str().unwrap().to_string();
+
+    // No truncation marker -> empty list.
+    let (_, job) = json_response(&app, "GET", &format!("/api/v1/jobs/{job_id}"), None).await;
+    assert_eq!(job["data"]["truncated_steps"], serde_json::json!([]));
+
+    // Simulate a streamed step that overflowed: chunk_index 6 (stream) and
+    // 9991 (truncation marker) within step 1's 10_000-wide window.
+    for (chunk, content) in [(6, "output"), (9991, "==> OUTPUT TRUNCATED")] {
+        sqlx::query(
+            "INSERT INTO job_logs (id, job_id, chunk_index, step_order, log_content)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(format!("log-{chunk}"))
+        .bind(&job_id)
+        .bind(chunk)
+        .bind(1)
+        .bind(content)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    // The runner banner (-2) never matches; a marker inside step 2's own
+    // window (20000 + 9991 = 19991) is step 2's truncation, so both flag.
+    for (chunk, step) in [(-2, 0), (19991, 2)] {
+        sqlx::query(
+            "INSERT INTO job_logs (id, job_id, chunk_index, step_order, log_content)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(format!("log-x-{chunk}"))
+        .bind(&job_id)
+        .bind(chunk)
+        .bind(step)
+        .bind("x")
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let (_, job) = json_response(&app, "GET", &format!("/api/v1/jobs/{job_id}"), None).await;
+    assert_eq!(
+        job["data"]["truncated_steps"],
+        serde_json::json!([1, 2]),
+        "{job}"
+    );
 }

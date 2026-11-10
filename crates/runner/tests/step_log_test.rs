@@ -475,3 +475,26 @@ fn truncation_marker_carries_a_bounded_masked_tail() {
     assert!(marker.len() < long.len(), "tail line clipped: {marker}");
     assert!(marker.contains('…'), "clip marker present");
 }
+
+#[test]
+fn stream_outcome_carries_the_omitted_count() {
+    let base = step_log_base(0);
+    let mut budget = StreamBudget::new(base);
+    let width = LOG_STREAM_LAST - LOG_STREAM_START + 1;
+    for _ in 0..width {
+        assert!(budget.take().is_some());
+    }
+    assert_eq!(budget.omitted(), None, "full window is not truncated");
+    budget.take();
+    assert_eq!(budget.omitted(), Some(1));
+    budget.take();
+    assert_eq!(budget.omitted(), Some(2));
+}
+
+#[test]
+fn truncation_note_states_the_incomplete_output() {
+    let note = runner::client::poll::step_log::build_truncation_note(1234);
+    assert!(note.contains("OUTPUT TRUNCATED"), "{note}");
+    assert!(note.contains("1234"), "{note}");
+    assert!(note.contains("incomplete"), "{note}");
+}
