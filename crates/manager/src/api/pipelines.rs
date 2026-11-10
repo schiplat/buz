@@ -221,34 +221,23 @@ pub async fn create(
     .await?;
     tx.commit().await?;
 
-    // Bind the row to its YAML file: the scanner upsert rewrites every field
-    // from the file (source='yaml'), resolves `uses:` and records provenance.
-    // Names are not unique; file names are. Resolve a free one before writing
-    // (`foo.yml`, `foo-2.yml`, …) and take that file's lock.
+    // Bind the row to its definition: the upsert rewrites every field from the
+    // YAML (source='yaml'), resolves `uses:` and records provenance.
+    // Names are not unique; origin filenames are. Resolve a free one before
+    // writing (`foo.yml`, `foo-2.yml`, …).
     let base = crate::services::pipeline_scanner::filename_from_pipeline_name(&req.name);
-    let scan_dir = &state.config.pipeline.yaml_scan_dir;
     let mut filename = base.clone();
-    let mut file_guard =
-        crate::services::pipeline_scanner::lock_yaml_file(scan_dir, &filename).await?;
     let mut suffix = 1u32;
-    loop {
-        match crate::services::pipeline_scanner::find_yaml_pipeline_row(&state.pool, &filename)
-            .await?
-        {
-            None => break,
-            Some(_) => {
-                suffix += 1;
-                let stem = base.strip_suffix(".yml").unwrap_or(&base);
-                filename = format!("{stem}-{suffix}.yml");
-                drop(file_guard);
-                file_guard =
-                    crate::services::pipeline_scanner::lock_yaml_file(scan_dir, &filename).await?;
-            }
-        }
+    while crate::services::pipeline_scanner::find_yaml_pipeline_row(&state.pool, &filename)
+        .await?
+        .is_some()
+    {
+        suffix += 1;
+        let stem = base.strip_suffix(".yml").unwrap_or(&base);
+        filename = format!("{stem}-{suffix}.yml");
     }
-    let write_result = crate::services::pipeline_scanner::write_and_upsert_yaml_locked(
+    let write_result = crate::services::pipeline_scanner::write_and_upsert_yaml(
         &state.pool,
-        &state.config.pipeline.yaml_scan_dir,
         &filename,
         &yaml,
         &crate::services::plugin_resolver::effective_local_dir(
@@ -265,7 +254,8 @@ pub async fn create(
         .await
         .parse()
         .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
-        file_guard,
+        None,
+        false,
     )
     .await;
     if let Err(error) = write_result {
@@ -456,13 +446,9 @@ pub async fn get_one(
             .unwrap_or_else(|_| serde_json::json!([])),
         "tasks": tasks,
         "env": envs,
-        "yaml_sync": crate::services::pipeline_scanner::yaml_sync_status(
-            &state.pool,
-            &state.config.pipeline.yaml_scan_dir,
-            &id,
-        )
-        .await
-        .ok(),
+        "yaml_sync": crate::services::pipeline_scanner::yaml_sync_status(&state.pool, &id)
+            .await
+            .ok(),
     }))))
 }
 
@@ -631,7 +617,7 @@ pub async fn update(
 
     tx.commit().await?;
 
-    // Rewrite the pipeline's YAML file (the authority). Un-migrated form rows
+    // Rewrite the pipeline's definition (the authority). Un-migrated form rows
     // get bound here too — the same path as the startup migration.
     let stored: (Option<String>, String) =
         sqlx::query_as("SELECT yaml_path, source FROM pipelines WHERE id = ?")
@@ -649,14 +635,8 @@ pub async fn update(
         _ => super::super::services::pipeline_scanner::filename_from_pipeline_name(&req.name),
     };
     let bind = (source != "yaml").then(|| id.clone());
-    let file_guard = crate::services::pipeline_scanner::lock_yaml_file(
-        &state.config.pipeline.yaml_scan_dir,
-        &filename,
-    )
-    .await?;
-    crate::services::pipeline_scanner::write_and_upsert_yaml_locked(
+    crate::services::pipeline_scanner::write_and_upsert_yaml(
         &state.pool,
-        &state.config.pipeline.yaml_scan_dir,
         &filename,
         &yaml,
         &crate::services::plugin_resolver::effective_local_dir(
@@ -673,7 +653,8 @@ pub async fn update(
         .await
         .parse()
         .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
-        file_guard,
+        None,
+        false,
     )
     .await?;
 
@@ -723,7 +704,7 @@ pub async fn delete(
     .bind(&id)
     .fetch_optional(&state.pool)
     .await?;
-    let (name, before, yaml_path_to_remove) = match before_row {
+    let (name, before) = match before_row {
         Some(r) => {
             let name: String = r.get(0);
             let source: String = r.get(4);
@@ -744,10 +725,9 @@ pub async fn delete(
                     "source": source,
                     "yaml_path": &path,
                 })),
-                path,
             )
         }
-        None => (id.clone(), None, None),
+        None => (id.clone(), None),
     };
 
     let result = sqlx::query("DELETE FROM pipelines WHERE id = ?")
@@ -757,24 +737,6 @@ pub async fn delete(
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("pipeline not found".into()));
-    }
-
-    // File is authority — remove the YAML when deleting a file-backed pipeline.
-    if let Some(ref yaml_path) = yaml_path_to_remove {
-        let scan_dir = &state.config.pipeline.yaml_scan_dir;
-        if let Some(filename) =
-            crate::services::pipeline_scanner::filename_from_yaml_path(yaml_path)
-        {
-            if let Ok(path) =
-                crate::services::pipeline_scanner::resolve_yaml_path(scan_dir, &filename)
-            {
-                if path.exists() {
-                    if let Err(e) = tokio::fs::remove_file(&path).await {
-                        tracing::warn!("Failed to remove YAML file {yaml_path}: {e}");
-                    }
-                }
-            }
-        }
     }
 
     audit::record(
@@ -1160,27 +1122,9 @@ pub async fn do_trigger(
     trigger_user_id: Option<&str>,
     auth: Option<&AuthUser>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    // File-backed pipelines: re-validate on-disk YAML and refresh DB projection
-    // so a broken/stale file cannot silently run the previous good snapshot.
-    crate::services::pipeline_scanner::sync_yaml_before_trigger(
-        &state.pool,
-        &state.config.pipeline.yaml_scan_dir,
-        &crate::services::plugin_resolver::effective_local_dir(
-            &state.config.storage.data_dir,
-            &state.config.plugin_index.local_dir,
-        )
-        .map_err(|e| AppError::Internal(e.to_string()))?,
-        pipeline_id,
-        crate::services::platform_settings::effective(
-            &state.pool,
-            crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
-            &state.config.plugin_index.sync_timeout_seconds.to_string(),
-        )
-        .await
-        .parse()
-        .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
-    )
-    .await?;
+    // The stored definition is the snapshot source: no on-disk re-read. A
+    // broken definition cannot be saved in the first place, so the previous
+    // good projection is the current one.
 
     let pipeline = sqlx::query(
         "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
@@ -1539,9 +1483,7 @@ pub async fn do_trigger(
     .unwrap_or(serde_json::json!({}));
 
     // Freeze notify config (keep `${secrets.…}`; resolve at send). The column
-    // is the single source for both sources: the YAML scanner projects the
-    // file's `notify:` block into it, the form API writes it directly.
-    // Legacy YAML rows created before the column existed fall back to the file.
+    // is projected from the stored definition, so it is the single source.
     let notify_snapshot = {
         let raw: Option<String> =
             sqlx::query_scalar("SELECT notify_json FROM pipelines WHERE id = ?")
@@ -1554,12 +1496,7 @@ pub async fn do_trigger(
             .and_then(|raw| serde_json::from_str(raw).ok())
             .unwrap_or_default();
         if channels.is_empty() {
-            crate::services::notify::load_notify_snapshot(
-                &state.pool,
-                &state.config.pipeline.yaml_scan_dir,
-                pipeline_id,
-            )
-            .await
+            None
         } else {
             Some(serde_json::to_value(&channels).unwrap_or_default())
         }

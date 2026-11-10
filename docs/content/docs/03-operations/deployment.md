@@ -286,6 +286,7 @@ jwt_secret = ""
 heartbeat_timeout_seconds = 90
 
 [pipeline]
+# Import/export directory only; definitions live in the database.
 yaml_scan_dir = "./pipelines"
 yaml_scan_interval_seconds = 30
 EOF

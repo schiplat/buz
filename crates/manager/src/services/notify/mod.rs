@@ -14,7 +14,6 @@ use shared::pipeline_yaml::{notify_should_send, NotifyChannelYaml};
 use shared::secret_ref::resolve_secret_slot;
 
 use crate::crypto;
-use crate::services::pipeline_scanner;
 
 #[allow(unused_imports)] // re-export for unit tests / future callers
 pub use feishu::{build_feishu_card, FeishuChannel};
@@ -52,36 +51,6 @@ pub enum NotifyError {
 #[async_trait]
 pub trait NotifyChannel: Send + Sync {
     async fn send(&self, event: &NotifyEvent) -> Result<(), NotifyError>;
-}
-
-/// Load `notify` from on-disk YAML for freezing into the job snapshot.
-///
-/// Returns `None` when the pipeline is not file-backed or has no channels.
-/// Expressions like `${secrets.NAME}` are preserved (not resolved).
-pub async fn load_notify_snapshot(
-    pool: &SqlitePool,
-    scan_dir: &str,
-    pipeline_id: &str,
-) -> Option<serde_json::Value> {
-    let row = sqlx::query("SELECT source, yaml_path FROM pipelines WHERE id = ?")
-        .bind(pipeline_id)
-        .fetch_optional(pool)
-        .await
-        .ok()??;
-    let source: String = row.get(0);
-    let yaml_path: Option<String> = row.get(1);
-    if source != "yaml" {
-        return None;
-    }
-    let filename = yaml_path?.trim().to_string();
-    if filename.is_empty() {
-        return None;
-    }
-    let path = pipeline_scanner::resolve_yaml_path(scan_dir, &filename).ok()?;
-    let raw = tokio::fs::read_to_string(&path).await.ok()?;
-    let parsed: shared::pipeline_yaml::PipelineYaml = serde_yaml::from_str(&raw).ok()?;
-    let channels = parsed.notify.filter(|c| !c.is_empty())?;
-    serde_json::to_value(channels).ok()
 }
 
 /// Build `{public_base_url}/jobs/{job_id}` when the base URL is non-empty.

@@ -137,6 +137,30 @@ pub enum PipelineCommand {
         #[arg(long)]
         offline: bool,
     },
+
+    /// Write every stored pipeline definition to a directory as a read-only
+    /// snapshot (one `<origin>.yml` per pipeline). Intended to be committed to
+    /// a git repository for audit and review.
+    Export {
+        /// Target directory (created if missing)
+        #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+        dir: std::path::PathBuf,
+    },
+
+    /// Store pipeline definitions from a directory of `*.yml` / `*.yaml` files.
+    ///
+    /// Files are matched by basename: `deploy.yml` updates the pipeline stored
+    /// under that origin or creates one. Import never deletes — a definition
+    /// absent from the directory is left untouched. A file that fails
+    /// validation is reported and the command exits non-zero.
+    Import {
+        /// Source directory of `*.yml` / `*.yaml`
+        #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+        dir: std::path::PathBuf,
+        /// Validate and report without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Write a completion script for `buz-manager` to `out`.

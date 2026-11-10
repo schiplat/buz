@@ -1,7 +1,8 @@
 pub mod cron_scheduler;
 pub mod debug_log_cleanup;
+pub mod definition_backfill;
+pub mod definition_transfer;
 pub mod deprecated_scan;
-pub mod form_migration;
 pub mod github_actions_sync;
 pub mod github_fetch_scheduler;
 pub mod job_log_retention;

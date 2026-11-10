@@ -1,13 +1,8 @@
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
-use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
-use std::time::Duration;
-use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
-use tokio::time;
 use uuid::Uuid;
 
 use shared::error::AppError;
@@ -17,9 +12,6 @@ use shared::protocol::{EnvPair, PipelineInputDef, StepDef};
 use crate::api::{
     insert_env_vars, insert_pipeline_secret_bindings, insert_pipeline_var_bindings, insert_steps,
 };
-
-static YAML_FILE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Weak<AsyncMutex<()>>>>> =
-    OnceLock::new();
 
 #[derive(Debug)]
 struct StepResolutionError(String);
@@ -32,168 +24,34 @@ impl fmt::Display for StepResolutionError {
 
 impl Error for StepResolutionError {}
 
-/// Coordinate in-process operations for one YAML file. The key is its path under
-/// the configured scan directory; this lock is intentionally not cross-process.
-pub async fn lock_yaml_file(
-    scan_dir: &str,
-    filename: &str,
-) -> Result<OwnedMutexGuard<()>, AppError> {
-    let path = resolve_yaml_path(scan_dir, filename)?;
-    let locks = YAML_FILE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
-    let lock = {
-        let mut locks = locks
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        locks.retain(|_, lock| lock.strong_count() > 0);
-        match locks.get(&path).and_then(Weak::upgrade) {
-            Some(lock) => lock,
-            None => {
-                let lock = Arc::new(AsyncMutex::new(()));
-                locks.insert(path, Arc::downgrade(&lock));
-                lock
-            }
-        }
-    };
-    Ok(lock.lock_owned().await)
-}
+#[derive(Debug)]
+struct YamlConflictError(String);
 
-pub async fn read_yaml_for_scan(
-    scan_dir: &str,
-    filename: &str,
-) -> Result<(String, OwnedMutexGuard<()>), AppError> {
-    let file_guard = lock_yaml_file(scan_dir, filename).await?;
-    let content = read_yaml_file(scan_dir, filename).await?;
-    Ok((content, file_guard))
-}
-
-/// Periodically scan `yaml_scan_dir` for `.yml`/`.yaml` files,
-/// parsing them into pipeline definitions and upserting into the DB.
-pub fn spawn_scanner(
-    pool: SqlitePool,
-    dir: String,
-    step_index_dir: PathBuf,
-    interval_secs: u64,
-    sync_timeout_secs: u64,
-) {
-    tokio::spawn(async move {
-        tracing::info!("Pipeline YAML scanner started (dir: {dir}, interval: {interval_secs}s)");
-
-        let mut tick = time::interval(Duration::from_secs(interval_secs));
-        // Do an immediate scan on startup
-        tokio::task::yield_now().await;
-        scan_and_sync(&pool, &dir, &step_index_dir, sync_timeout_secs).await;
-
-        loop {
-            tick.tick().await;
-            scan_and_sync(&pool, &dir, &step_index_dir, sync_timeout_secs).await;
-        }
-    });
-}
-
-async fn scan_and_sync(
-    pool: &SqlitePool,
-    dir: &str,
-    step_index_dir: &Path,
-    sync_timeout_secs: u64,
-) {
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
-        tracing::warn!("YAML scanner: cannot read directory {dir}");
-        return;
-    };
-
-    // Flat scan only — no private subdirectories under yaml_scan_dir.
-    let mut found_names: Vec<String> = Vec::new();
-
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        let Ok(ft) = entry.file_type().await else {
-            continue;
-        };
-        if ft.is_dir() {
-            tracing::debug!(
-                "YAML scanner: skip subdirectory {} (flat scan_dir only)",
-                path.display()
-            );
-            continue;
-        }
-        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-            continue;
-        };
-        if ext != "yml" && ext != "yaml" {
-            continue;
-        }
-
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-        // Temp / hidden files (e.g. `.foo.yml.buz-tmp`) are not pipelines.
-        if filename.starts_with('.') {
-            continue;
-        }
-        if validate_yaml_filename(&filename).is_err() {
-            tracing::warn!("YAML scanner: skip invalid filename {filename}");
-            continue;
-        }
-
-        // DB key is the basename (normalized) — never absolute/relative path strings.
-        let yaml_key = filename.clone();
-
-        let (raw, _file_guard) = match read_yaml_for_scan(dir, &filename).await {
-            Ok(read) => read,
-            Err(e) => {
-                tracing::warn!("YAML scanner: cannot read/coordinate {filename}: {e}");
-                found_names.push(yaml_key);
-                continue;
-            }
-        };
-
-        match crate::services::yaml_validate::validate_pipeline_yaml_with_parse(pool, &raw).await {
-            Ok(validation) if !validation.result.valid => {
-                tracing::warn!(
-                    "YAML scanner: {filename} has validation errors: {:?}",
-                    validation.result.errors
-                );
-            }
-            Ok(validation) => {
-                // `valid` implies the cached typed parse succeeded.
-                if let Some(parsed) = validation.parsed {
-                    if let Err(e) = upsert_from_yaml(
-                        pool,
-                        &yaml_key,
-                        &parsed,
-                        step_index_dir,
-                        &raw,
-                        sync_timeout_secs,
-                    )
-                    .await
-                    {
-                        tracing::error!("YAML scanner: failed to upsert {filename}: {e:#}");
-                    }
-                } else {
-                    tracing::warn!(
-                        "YAML scanner: {filename} validated but failed to deserialize — this is a bug"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!("YAML scanner: validate {filename} failed: {e}");
-            }
-        }
-
-        found_names.push(yaml_key);
+impl fmt::Display for YamlConflictError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
+}
 
-    // Deactivate pipelines whose source file was removed
-    if let Err(e) = deactivate_removed(pool, &found_names).await {
-        tracing::warn!("YAML scanner: cleanup failed: {e}");
-    }
+impl Error for YamlConflictError {}
+
+/// True when a write lost a uniqueness race (two concurrent creates for one
+/// origin basename). The partial unique index on `(yaml_path)` is the backstop.
+fn is_unique_violation(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().contains("UNIQUE constraint failed"))
 }
 
 /// Upsert a pipeline from its parsed YAML definition.
-/// Match is by `yaml_path` + `source='yaml'` — same file = same pipeline.
-/// Returns the pipeline id.
+/// Match is by `yaml_path` + `source='yaml'` — same definition name = same
+/// pipeline. Returns the pipeline id.
+///
+/// `expected_etag` is the optimistic-concurrency token from the client: when
+/// set, it is compared **inside** the write transaction, so two writers holding
+/// the same token cannot both succeed. `create_only` turns a would-be update
+/// into a conflict (POST semantics).
+#[allow(clippy::too_many_arguments)] // definition, provenance, settings, concurrency
 pub async fn upsert_from_yaml(
     pool: &SqlitePool,
     file_path: &str,
@@ -201,6 +59,8 @@ pub async fn upsert_from_yaml(
     step_index_dir: &Path,
     yaml_content: &str,
     sync_timeout_secs: u64,
+    expected_etag: Option<&str>,
+    create_only: bool,
 ) -> anyhow::Result<String> {
     let pipeline_name = parsed.name.trim();
     let description = parsed.description.clone().unwrap_or_default();
@@ -287,16 +147,14 @@ pub async fn upsert_from_yaml(
     let existing = find_yaml_pipeline_row(pool, &yaml_key).await?;
     let mut team_changed = false;
     if let Some(id) = existing.as_deref() {
-        let row = sqlx::query(
-            "SELECT yaml_sha256, webhook_environment, cron_environment, team_id FROM pipelines WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_one(pool)
-        .await?;
-        let stored_hash: String = row.get(0);
-        let stored_webhook_environment: String = row.get(1);
-        let stored_cron_environment: String = row.get(2);
-        let stored_team_id: String = row.get(3);
+        // An upsert is an explicit save: it always re-projects, so a stale
+        // projection is repaired even when the text is unchanged. The scanner
+        // tick that made a same-hash short-circuit worthwhile is gone.
+        let row = sqlx::query("SELECT team_id FROM pipelines WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await?;
+        let stored_team_id: String = row.get(0);
         team_changed = stored_team_id != team_id;
         if team_changed {
             let active_jobs: i64 = sqlx::query_scalar(
@@ -311,12 +169,6 @@ pub async fn upsert_from_yaml(
                     "pipeline team cannot change while {active_jobs} active job(s) exist; finish or cancel them first"
                 );
             }
-        }
-        if stored_hash == yaml_sha256
-            && stored_webhook_environment == webhook_environment.as_deref().unwrap_or("")
-            && stored_cron_environment == cron_environment.as_deref().unwrap_or("")
-        {
-            return Ok(id.to_string());
         }
     }
 
@@ -338,7 +190,27 @@ pub async fn upsert_from_yaml(
     let input_defs_json = serde_json::to_string(&input_defs).unwrap_or_else(|_| "[]".into());
 
     if let Some(id) = existing {
+        if create_only {
+            return Err(anyhow::Error::new(YamlConflictError(format!(
+                "definition {yaml_key} already exists — use PUT to update"
+            ))));
+        }
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        // Optimistic concurrency, evaluated under the write lock so a stale
+        // token cannot slip between the check and the UPDATE.
+        if let Some(expected) = expected_etag {
+            let current: String =
+                sqlx::query_scalar("SELECT yaml_source FROM pipelines WHERE id = ?")
+                    .bind(&id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if expected != "*" && expected != yaml_content_etag(&current) {
+                tx.rollback().await?;
+                return Err(anyhow::Error::new(YamlConflictError(
+                    "definition was modified by another writer — reload and retry".into(),
+                )));
+            }
+        }
         if team_changed {
             let active_jobs: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
@@ -362,7 +234,7 @@ pub async fn upsert_from_yaml(
              concurrency_queue_timeout_seconds = ?,
              owner_group = ?, team_id = ?, input_defs = ?, environments = ?,
              notify_json = ?,
-             yaml_path = ?, yaml_sha256 = ?, updated_at = datetime('now')
+             yaml_path = ?, yaml_sha256 = ?, yaml_source = ?, updated_at = datetime('now')
              WHERE id = ?",
         )
         .bind(pipeline_name)
@@ -389,6 +261,7 @@ pub async fn upsert_from_yaml(
         .bind(&notify_json)
         .bind(&yaml_key)
         .bind(&yaml_sha256)
+        .bind(yaml_content)
         .bind(&id)
         .execute(&mut *tx)
         .await?;
@@ -492,8 +365,8 @@ pub async fn upsert_from_yaml(
             "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path,
              webhook_secret, webhook_environment, cron_expr, cron_environment, runner_labels, timeout_seconds, resource_profile, concurrency_group, concurrency_mode,
              concurrency_max_queue, concurrency_queue_timeout_seconds,
-            owner_group, team_id, source, yaml_path, yaml_sha256, input_defs, environments, notify_json, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, ?, 1)",
+            owner_group, team_id, source, yaml_path, yaml_sha256, yaml_source, input_defs, environments, notify_json, is_active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, ?, ?, 1)",
         )
         .bind(&id)
         .bind(pipeline_name)
@@ -517,6 +390,7 @@ pub async fn upsert_from_yaml(
         .bind(&team_id)
         .bind(&yaml_key)
         .bind(&yaml_sha256)
+        .bind(yaml_content)
         .bind(&input_defs_json)
         .bind(&environments_json)
         .bind(&notify_json)
@@ -781,104 +655,78 @@ pub fn assert_path_under_scan_dir(scan_dir: &str, path: &Path) -> Result<(), App
 }
 
 /// Read YAML file content from the scan directory.
-pub async fn read_yaml_file(scan_dir: &str, filename: &str) -> Result<String, AppError> {
-    let path = resolve_yaml_path(scan_dir, filename)?;
-    assert_path_under_scan_dir(scan_dir, &path)?;
-    tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|e| AppError::NotFound(format!("cannot read {filename}: {e}")))
+/// Read a pipeline's canonical YAML text from the database.
+///
+/// The database is the only authority for pipeline definitions; `yaml_path`
+/// is the origin basename the definition was imported under.
+pub async fn read_yaml_file(pool: &SqlitePool, filename: &str) -> Result<String, AppError> {
+    validate_yaml_filename(filename)?;
+    let id = find_yaml_pipeline_row(pool, filename)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("pipeline {filename} not found")))?;
+    let source: String = sqlx::query_scalar("SELECT yaml_source FROM pipelines WHERE id = ?")
+        .bind(&id)
+        .fetch_one(pool)
+        .await?;
+    if source.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "pipeline {filename} has no stored YAML"
+        )));
+    }
+    Ok(source)
 }
 
-/// List `.yml`/`.yaml` files under the scan directory, joined with DB projection rows.
-pub async fn list_yaml_files(
-    pool: &SqlitePool,
-    scan_dir: &str,
-) -> Result<Vec<YamlFileInfo>, AppError> {
-    let mut files: Vec<YamlFileInfo> = Vec::new();
-    let Ok(mut entries) = tokio::fs::read_dir(scan_dir).await else {
-        return Ok(files);
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        let Ok(ft) = entry.file_type().await else {
-            continue;
-        };
-        if ft.is_dir()
-            || path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with('.'))
-        {
-            continue;
-        }
-        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-            continue;
-        };
-        if ext != "yml" && ext != "yaml" {
-            continue;
-        }
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-        if validate_yaml_filename(&filename).is_err() {
-            continue;
-        }
-        let yaml_path = filename.clone();
-        let pipeline_id = find_yaml_pipeline_row(pool, &filename).await?;
-        files.push(match pipeline_id {
-            Some(id) => {
-                let r = sqlx::query("SELECT name, team_id, is_active FROM pipelines WHERE id = ?")
-                    .bind(&id)
-                    .fetch_one(pool)
-                    .await?;
-                YamlFileInfo {
-                    filename,
-                    yaml_path,
-                    pipeline_id: Some(id),
-                    pipeline_name: Some(r.get(0)),
-                    team_id: Some(r.get(1)),
-                    is_active: Some(r.get::<i64, _>(2) != 0),
-                }
-            }
-            None => YamlFileInfo {
+/// List stored pipeline definitions as their origin filenames.
+pub async fn list_yaml_files(pool: &SqlitePool) -> Result<Vec<YamlFileInfo>, AppError> {
+    let rows = sqlx::query(
+        "SELECT yaml_path, id, name, team_id, is_active FROM pipelines \
+         WHERE source = 'yaml' AND yaml_path NOT IN ('', 'form') ORDER BY yaml_path",
+    )
+    .fetch_all(pool)
+    .await?;
+    let files = rows
+        .into_iter()
+        .filter_map(|r| {
+            let yaml_path: String = r.get(0);
+            let filename = filename_from_yaml_path(&yaml_path)?;
+            Some(YamlFileInfo {
                 filename,
                 yaml_path,
-                pipeline_id: None,
-                pipeline_name: None,
-                team_id: None,
-                is_active: None,
-            },
-        });
-    }
-    files.sort_by(|a, b| a.filename.cmp(&b.filename));
+                pipeline_id: Some(r.get(1)),
+                pipeline_name: Some(r.get(2)),
+                team_id: Some(r.get(3)),
+                is_active: Some(r.get::<i64, _>(4) != 0),
+            })
+        })
+        .collect();
     Ok(files)
 }
 
 /// Validate YAML, write to scan dir, and immediately upsert the DB projection.
 ///
-/// Write order: backup → temp file → rename → (optional bind) → upsert.
-/// On upsert failure the previous file content is restored when possible.
+/// Validate the YAML and persist it as the pipeline's canonical definition.
+///
+/// The database row is the only authority: validation, the optional bind and
+/// the task/step projection all go through this one write path. `yaml_path`
+/// keeps the origin basename for display and export; nothing is written to
+/// disk.
 ///
 /// When `bind_pipeline_id` is set (migrating a Form/API pipeline), that row is
 /// retargeted to `source=yaml` + this path before upsert so the id is preserved.
 /// `is_active` is never forced on.
-#[allow(clippy::too_many_arguments)] // scanner context: paths, settings, index, progress
-pub async fn write_and_upsert_yaml_locked(
+#[allow(clippy::too_many_arguments)] // scanner context: filename, index, settings
+pub async fn write_and_upsert_yaml(
     pool: &SqlitePool,
-    scan_dir: &str,
     filename: &str,
     content: &str,
     step_index_dir: &Path,
     bind_pipeline_id: Option<&str>,
     sync_timeout_secs: u64,
-    _file_guard: OwnedMutexGuard<()>,
+    expected_etag: Option<&str>,
+    create_only: bool,
 ) -> Result<YamlFileWriteResult, AppError> {
     let filename = filename.trim();
     validate_yaml_filename(filename)?;
-    let path = resolve_yaml_path(scan_dir, filename)?;
-    assert_path_under_scan_dir(scan_dir, &path)?;
 
     let validation = crate::services::yaml_validate::validate_pipeline_yaml(pool, content).await?;
     crate::services::yaml_validate::reject_if_invalid(&validation)?;
@@ -886,14 +734,10 @@ pub async fn write_and_upsert_yaml_locked(
         AppError::ValidationFailed(format!("YAML syntax error after validate: {e}"))
     })?;
 
-    tokio::fs::create_dir_all(scan_dir)
-        .await
-        .map_err(|e| AppError::Internal(format!("cannot create yaml_scan_dir: {e}")))?;
-
-    // DB key = basename (flat scan_dir; no subdirectory paths).
+    // DB key = basename; a flat namespace identifies the pipeline.
     let yaml_path = filename.to_string();
 
-    // Preflight bind conflicts before touching the filesystem.
+    // Preflight bind conflicts before mutating the target row.
     let mut bind_prev: Option<(String, Option<String>)> = None; // (source, yaml_path)
     if let Some(pid) = bind_pipeline_id {
         let existing = sqlx::query("SELECT id, source, yaml_path FROM pipelines WHERE id = ?")
@@ -913,31 +757,6 @@ pub async fn write_and_upsert_yaml_locked(
         bind_prev = Some((prev_source, prev_path));
     }
 
-    let file_backup = if path.exists() {
-        Some(
-            tokio::fs::read(&path)
-                .await
-                .map_err(|e| AppError::Internal(format!("failed to backup {filename}: {e}")))?,
-        )
-    } else {
-        None
-    };
-
-    // Temp name is not a public YAML basename (leading '.') — bypass filename rules.
-    let tmp_path = {
-        let p = std::path::Path::new(scan_dir).join(format!(".{filename}.buz-tmp"));
-        assert_path_under_scan_dir(scan_dir, &p)?;
-        p
-    };
-
-    tokio::fs::write(&tmp_path, content)
-        .await
-        .map_err(|e| AppError::Internal(format!("failed to write temp {filename}: {e}")))?;
-    tokio::fs::rename(&tmp_path, &path).await.map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
-        AppError::Internal(format!("failed to replace {filename}: {e}"))
-    })?;
-
     if let Some(pid) = bind_pipeline_id {
         // Preserve pipeline id; do not force is_active.
         if let Err(e) = sqlx::query(
@@ -948,8 +767,13 @@ pub async fn write_and_upsert_yaml_locked(
         .execute(pool)
         .await
         {
-            restore_yaml_file(&path, file_backup.as_deref()).await;
-            return Err(AppError::Internal(format!("failed to bind pipeline: {e}")));
+            let error = anyhow::Error::new(e);
+            if is_unique_violation(&error) {
+                return Err(AppError::Conflict(format!(
+                    "definition {filename} was created concurrently — reload and retry"
+                )));
+            }
+            return Err(AppError::Internal(format!("failed to bind pipeline: {error}")));
         }
     }
 
@@ -960,12 +784,13 @@ pub async fn write_and_upsert_yaml_locked(
         step_index_dir,
         content,
         sync_timeout_secs,
+        expected_etag,
+        create_only,
     )
     .await
     {
         Ok(id) => id,
         Err(e) => {
-            restore_yaml_file(&path, file_backup.as_deref()).await;
             if let (Some(pid), Some((prev_source, prev_path))) =
                 (bind_pipeline_id, bind_prev.as_ref())
             {
@@ -977,6 +802,14 @@ pub async fn write_and_upsert_yaml_locked(
                 .bind(pid)
                 .execute(pool)
                 .await;
+            }
+            if let Some(error) = e.downcast_ref::<YamlConflictError>() {
+                return Err(AppError::Conflict(error.to_string()));
+            }
+            if is_unique_violation(&e) {
+                return Err(AppError::Conflict(format!(
+                    "definition {filename} was created concurrently — reload and retry"
+                )));
             }
             if let Some(error) = e.downcast_ref::<StepResolutionError>() {
                 return Err(AppError::ValidationFailed(error.to_string()));
@@ -993,40 +826,15 @@ pub async fn write_and_upsert_yaml_locked(
     })
 }
 
-async fn restore_yaml_file(path: &std::path::Path, backup: Option<&[u8]>) {
-    match backup {
-        Some(bytes) => {
-            if let Err(e) = tokio::fs::write(path, bytes).await {
-                tracing::error!("failed to restore {}: {e}", path.display());
-            }
-        }
-        None => {
-            if let Err(e) = tokio::fs::remove_file(path).await {
-                tracing::warn!("failed to remove incomplete {}: {e}", path.display());
-            }
-        }
-    }
-}
-
-/// Delete a YAML file and remove its DB projection row (hard delete).
+/// Delete a stored pipeline definition (hard delete).
 pub async fn delete_yaml_file(
     pool: &SqlitePool,
-    scan_dir: &str,
     filename: &str,
 ) -> Result<Option<String>, AppError> {
-    let _file_guard = lock_yaml_file(scan_dir, filename).await?;
-    let path = resolve_yaml_path(scan_dir, filename)?;
-    assert_path_under_scan_dir(scan_dir, &path)?;
     let yaml_path = filename.trim().to_string();
     validate_yaml_filename(&yaml_path)?;
 
     let pipeline_id = find_yaml_pipeline_row(pool, &yaml_path).await?;
-
-    if path.exists() {
-        tokio::fs::remove_file(&path)
-            .await
-            .map_err(|e| AppError::Internal(format!("failed to delete {filename}: {e}")))?;
-    }
 
     if let Some(ref id) = pipeline_id {
         sqlx::query("DELETE FROM pipelines WHERE id = ?")
@@ -1047,6 +855,56 @@ pub fn filename_from_yaml_path(yaml_path: &str) -> Option<String> {
         .filter(|s| validate_yaml_filename(s).is_ok())
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct YamlSyncStatus {
+    pub filename: String,
+    pub status: String,
+    pub last_synced_at: Option<String>,
+    pub file_mtime: Option<String>,
+    pub etag: Option<String>,
+    pub errors: Vec<String>,
+}
+
+/// Definition status for the detail page.
+///
+/// The database is authoritative, so there is nothing to drift from: a stored
+/// definition is `in_sync` and a legacy row without `yaml_source` reports
+/// `missing_file` until the startup backfill stores one. Kept for API/UI
+/// compatibility with the file-backed model.
+pub async fn yaml_sync_status(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<YamlSyncStatus, AppError> {
+    let row = sqlx::query("SELECT yaml_path, yaml_source, updated_at FROM pipelines WHERE id = ?")
+        .bind(pipeline_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+    let yaml_path: Option<String> = row.get(0);
+    let source: String = row.get(1);
+    let updated_at: String = row.get(2);
+    let filename = yaml_path
+        .as_deref()
+        .and_then(filename_from_yaml_path)
+        .unwrap_or_default();
+    let (status, errors) = if source.is_empty() {
+        (
+            "missing_file".to_string(),
+            vec!["definition is not stored — re-save the pipeline".to_string()],
+        )
+    } else {
+        ("in_sync".to_string(), Vec::new())
+    };
+    Ok(YamlSyncStatus {
+        filename,
+        status,
+        last_synced_at: Some(updated_at),
+        file_mtime: None,
+        etag: (!source.is_empty()).then(|| yaml_content_etag(&source)),
+        errors,
+    })
+}
+
 /// Resolve YAML `team` / `owner_group` slug to `(team_id, slug)`.
 /// Creates no teams — unknown slug fails (Validate / create / update must match).
 async fn resolve_team_for_yaml(pool: &SqlitePool, slug: &str) -> anyhow::Result<(String, String)> {
@@ -1061,223 +919,6 @@ async fn resolve_team_for_yaml(pool: &SqlitePool, slug: &str) -> anyhow::Result<
     anyhow::bail!(
         "team '{slug}' does not exist — create it under Teams or fix team: / owner_group:"
     )
-}
-
-/// Deactivate pipelines whose YAML source file has been deleted from disk.
-async fn deactivate_removed(pool: &SqlitePool, found_basenames: &[String]) -> anyhow::Result<()> {
-    let found: std::collections::HashSet<&str> =
-        found_basenames.iter().map(String::as_str).collect();
-
-    let rows = sqlx::query(
-        "SELECT id, name, yaml_path FROM pipelines WHERE source = 'yaml' AND is_active = 1",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    for row in &rows {
-        let yaml_path: Option<String> = row.get(2);
-        if let Some(ref path) = yaml_path {
-            let key = normalize_yaml_path_key(path);
-            if !found.contains(key.as_str()) {
-                let id: String = row.get(0);
-                let name: String = row.get(1);
-                sqlx::query(
-                    "UPDATE pipelines SET is_active = 0, updated_at = datetime('now') WHERE id = ?",
-                )
-                .bind(&id)
-                .execute(pool)
-                .await?;
-                tracing::info!("YAML scanner: deactivated {name} ({id}) — file removed: {key}");
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Before trigger: re-read file, validate, and refresh DB projection (reject if invalid).
-pub async fn sync_yaml_before_trigger(
-    pool: &SqlitePool,
-    scan_dir: &str,
-    step_index_dir: &Path,
-    pipeline_id: &str,
-    sync_timeout_secs: u64,
-) -> Result<(), AppError> {
-    let row = sqlx::query("SELECT source, yaml_path FROM pipelines WHERE id = ?")
-        .bind(pipeline_id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
-    let source: String = row.get(0);
-    if source != "yaml" {
-        return Ok(());
-    }
-    let yaml_path: Option<String> = row.get(1);
-    let yaml_path =
-        yaml_path.ok_or_else(|| AppError::NotFound("pipeline has no yaml_path".into()))?;
-    let filename = normalize_yaml_path_key(&yaml_path);
-    validate_yaml_filename(&filename)?;
-
-    let (content, _file_guard) =
-        read_yaml_for_scan(scan_dir, &filename)
-            .await
-            .map_err(|e| match e {
-                AppError::NotFound(_) => AppError::ValidationFailed(format!(
-                    "YAML file '{filename}' is missing under yaml_scan_dir — cannot trigger"
-                )),
-                other => other,
-            })?;
-
-    let validation =
-        crate::services::yaml_validate::validate_pipeline_yaml_with_parse(pool, &content).await?;
-    if !validation.result.valid {
-        let msg = validation
-            .result
-            .errors
-            .iter()
-            .map(|e| format!("{}: {}", e.field, e.message))
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(AppError::ValidationFailed(format!(
-            "YAML file '{filename}' failed validation — fix the file before triggering: {msg}"
-        )));
-    }
-
-    // The validator's cached parse is authoritative here — reusing it keeps
-    // the trigger path at zero extra parses for unchanged content.
-    let parsed: PipelineYaml = validation.parsed.ok_or_else(|| {
-        AppError::Internal(format!(
-            "YAML file '{filename}' validated but failed to deserialize — this is a bug"
-        ))
-    })?;
-    upsert_from_yaml(
-        pool,
-        &filename,
-        &parsed,
-        step_index_dir,
-        &content,
-        sync_timeout_secs,
-    )
-    .await
-    .map_err(|e| AppError::Internal(format!("failed to sync YAML projection: {e:#}")))?;
-    Ok(())
-}
-
-/// Status of the on-disk YAML vs DB projection (for Definition UI).
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct YamlSyncStatus {
-    pub filename: String,
-    /// `in_sync` | `stale` | `validation_failed` | `missing_file` | `not_file_backed`
-    pub status: String,
-    pub last_synced_at: Option<String>,
-    pub file_mtime: Option<String>,
-    pub etag: Option<String>,
-    pub errors: Vec<String>,
-}
-
-pub async fn yaml_sync_status(
-    pool: &SqlitePool,
-    scan_dir: &str,
-    pipeline_id: &str,
-) -> Result<YamlSyncStatus, AppError> {
-    let row = sqlx::query("SELECT source, yaml_path, updated_at FROM pipelines WHERE id = ?")
-        .bind(pipeline_id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
-
-    let source: String = row.get(0);
-    let yaml_path: Option<String> = row.get(1);
-    let updated_at: Option<String> = row.get(2);
-
-    if source != "yaml" {
-        return Ok(YamlSyncStatus {
-            filename: String::new(),
-            status: "not_file_backed".into(),
-            last_synced_at: updated_at,
-            file_mtime: None,
-            etag: None,
-            errors: vec![],
-        });
-    }
-
-    let filename = yaml_path
-        .as_deref()
-        .map(normalize_yaml_path_key)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_default();
-    if filename.is_empty() || validate_yaml_filename(&filename).is_err() {
-        return Ok(YamlSyncStatus {
-            filename,
-            status: "missing_file".into(),
-            last_synced_at: updated_at,
-            file_mtime: None,
-            etag: None,
-            errors: vec!["pipeline has no valid yaml_path".into()],
-        });
-    }
-
-    let path = resolve_yaml_path(scan_dir, &filename)?;
-    let meta = match tokio::fs::metadata(&path).await {
-        Ok(m) => m,
-        Err(_) => {
-            let err = format!("file '{filename}' not found under yaml_scan_dir");
-            return Ok(YamlSyncStatus {
-                filename,
-                status: "missing_file".into(),
-                last_synced_at: updated_at,
-                file_mtime: None,
-                etag: None,
-                errors: vec![err],
-            });
-        }
-    };
-
-    let file_mtime = meta.modified().ok().map(|t| {
-        let dt: chrono::DateTime<chrono::Utc> = t.into();
-        dt.format("%Y-%m-%d %H:%M:%S").to_string()
-    });
-
-    let content = tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|e| AppError::Internal(format!("read {filename}: {e}")))?;
-    let etag = yaml_content_etag(&content);
-
-    let validation = crate::services::yaml_validate::validate_pipeline_yaml(pool, &content).await?;
-    if !validation.valid {
-        let errors = validation
-            .errors
-            .iter()
-            .map(|e| format!("{}: {}", e.field, e.message))
-            .collect();
-        return Ok(YamlSyncStatus {
-            filename,
-            status: "validation_failed".into(),
-            last_synced_at: updated_at,
-            file_mtime,
-            etag: Some(etag),
-            errors,
-        });
-    }
-
-    // Stale when file mtime is clearly newer than last DB projection update.
-    let stale = match (&file_mtime, &updated_at) {
-        (Some(fm), Some(db)) => fm.as_str() > db.as_str(),
-        _ => false,
-    };
-
-    Ok(YamlSyncStatus {
-        filename,
-        status: if stale {
-            "stale".into()
-        } else {
-            "in_sync".into()
-        },
-        last_synced_at: updated_at,
-        file_mtime,
-        etag: Some(etag),
-        errors: vec![],
-    })
 }
 
 /// YAML trigger inputs → the DB projection's `input_defs`.

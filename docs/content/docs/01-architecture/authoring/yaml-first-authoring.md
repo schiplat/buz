@@ -1,39 +1,41 @@
 ---
 title: YAML-First Pipeline Authoring
 weight: 10
-description: "YAML file/Git is the authority; Manager projects into DB; UI edits write back to the scan directory"
+description: "The pipeline row stores the authoritative YAML; git receives read-only export snapshots"
 aliases:
   - /docs/01-architecture/yaml-first-authoring/
 ---
 
 {{< callout type="note" >}}**Design record — implemented (2026-08).**{{< /callout >}}
 
-**Status:** Implemented (2026-08). Form UI stays hidden. Online YAML editor creates/updates/deletes files under Manager `pipeline.yaml_scan_dir` and immediately upserts the DB projection.
+**Status:** Updated (2026-11). Form UI stays hidden. The online YAML editor writes the definition straight into the pipeline row; no file is involved. A directory of YAML files can be imported or exported with the CLI, but it is never watched and never authoritative.
 
 ## Decision
 
 1. **YAML is the only orchestration source of truth.** Pipelines are authored as GHA-style YAML (same shape as `example/pipelines/*.yml` and [Pipeline Format](./pipeline-format.md)).
 2. **The New/Edit Pipeline Form exits the main authoring path.**
-3. **Storage: File / Git directory is authority.** Manager mounts or syncs that directory (`yaml_scan_dir`). The UI writes back to that path. The DB holds the **runtime projection** only (tasks, secret/var bindings, job snapshots) — not a second authoring DSL.
+3. **Storage: the pipeline row is authority.** `pipelines.yaml_source` holds the exact YAML bytes the validator accepted; `yaml_path` keeps the origin basename. The DB also holds the runtime projection (tasks, secret/var bindings, job snapshots). There is no second authoring source: the API/UI is the only writer, and git receives **read-only export snapshots**.
 4. **Keep non-orchestration UI:** Trigger dialog, Job detail/logs, Infrastructure (Secrets / Variables / Hosts / Teams), Runner policy, RBAC, audit.
 
 ## Runtime model
 
 ```
-Git / directory  ──(mount or sync)──►  Manager yaml_scan_dir
-        ▲                                      │
-        │                              scanner + on-save upsert
-        │                                      ▼
-   UI Save (write file)                 SQLite projection
-                                        (pipelines / tasks / bindings)
+UI / API Save ──► parse_and_validate ──► pipelines.yaml_source   (authority)
+                                              │
+                                              ├── tasks / step_resolutions / bindings
+                                              │
+                                     buz-manager pipeline export --dir
+                                              ▼
+                                        git snapshot (read-only)
 ```
 
 | Layer | Role |
 |-------|------|
-| File under `yaml_scan_dir` | Authority — create / edit / delete |
-| Periodic scanner | Catch external Git/FS changes |
-| Save API | Write file → `parse_and_validate` → **immediate** upsert (same code path as scanner) |
-| DB | Runtime projection for dispatch, RBAC, jobs |
+| `pipelines.yaml_source` | Authority — the definition exactly as validated |
+| Save API | Validate → store definition + projection in one write path |
+| `buz-manager pipeline export` | Write one `<origin>.yml` per pipeline; for git review/audit |
+| `buz-manager pipeline import` | Read a directory once; per-file upsert, never deletes |
+| `yaml_scan_dir` | Import/export location only — not watched, not written by the server |
 
 ## API
 
@@ -54,23 +56,22 @@ Filenames are bare basenames only (`^[A-Za-z0-9_-]+\.(yml|yaml)$`); the stem mus
 
 **Auth / consistency:**
 
-- Create/PUT authorize `PipelineWrite` on the **serde-parsed** YAML `team:` **before** any disk/DB write (no post-write orphan on team migrate).
+- Create/PUT authorize `PipelineWrite` on the **serde-parsed** YAML `team:` **before** any write (no post-write orphan on team migrate).
 - `/pipelines/validate` is viewer-scoped: without `TeamView` on the target team, errors are generic (`team not found or not accessible`) — no cross-team secret-name oracle.
-- `PUT /pipelines/{id}` (legacy Form/API body) returns **409** when `source=yaml` — edit via YAML file APIs only.
-- Scanner / Save upsert **does not** force `is_active=1` (deactivate sticks across rescans).
-- File write uses temp + rename; upsert failure restores the previous file content when possible.
+- `PUT /pipelines/{id}` (structured body) is rewritten into YAML and stored — every pipeline has one write path.
+- Upsert **does not** force `is_active=1` (a manual deactivate sticks).
 
-**Path model (flat scan dir):**
+**Name model (flat namespace):**
 
-- `pipelines.yaml_path` stores the **basename only** (e.g. `demo.yml`), never absolute paths.
-- Files must live **directly** under `yaml_scan_dir` — no private subdirectories; scanner skips dirs and hidden/`.*` files.
+- `pipelines.yaml_path` stores the **origin basename** (e.g. `demo.yml`), never absolute paths.
+- A partial unique index on `(yaml_path)` enforces one pipeline per definition name; two concurrent creates converge on one winner (the other gets **409**).
 - Filename rules: bare `stem.ext` with stem `[A-Za-z0-9_-]+` and `.yml`/`.yaml`.
 
-**Trigger / Definition sync:**
+**Trigger / Definition:**
 
-- Trigger re-reads the file, validates, and upserts the DB projection; invalid/missing YAML **blocks** the run.
-- `GET /pipelines/{id}` includes `yaml_sync` (`in_sync` | `stale` | `validation_failed` | `missing_file`) for the Definition banner.
-- Definition tab **reads and parses the on-disk file** (via `yaml-source` + validate) for display; invalid/missing shows an alert and does **not** fall back to the DB projection as authority.
+- A trigger reads the stored definition and its projection. A definition cannot be saved invalid, so there is nothing to re-sync at trigger time.
+- `GET /pipelines/{id}` includes `yaml_sync` for the Definition banner. With the database authoritative the only states are `in_sync` and `missing_file` (a legacy row whose definition was never backfilled).
+- The Definition tab reads `yaml-source` from the database.
 
 **Optimistic concurrency:**
 
@@ -93,15 +94,25 @@ The Form authoring UI (step cards / Config Block form) has been **removed** from
 
 ```toml
 [pipeline]
-yaml_scan_dir = "./pipelines"          # mount Git checkout or shared volume here
-yaml_scan_interval_seconds = 30        # backup sync for external edits
+# Import/export location only. The server never watches or writes it.
+yaml_scan_dir = "./pipelines"
+# Retired: accepted for config compatibility, no longer used.
+yaml_scan_interval_seconds = 30
+```
+
+```bash
+# Read-only snapshot for a git repository (stable diffs)
+buz-manager pipeline export --dir pipelines/
+
+# One-shot import; per file, never deletes. --dry-run validates only.
+buz-manager pipeline import --dir pipelines/
 ```
 
 See [Configuration](/docs/03-operations/configuration/).
 
 ## Notes
 
-- **Form storage is retired** (single-source): `POST`/`PUT /pipelines` render the request into the pipeline's YAML file and bind it — every pipeline is `source=yaml`, file-backed. A startup migration converts pre-retirement `source=form` rows once (failures are logged and retried on the next start; the row keeps serving from its DB projection meanwhile). Two pipeline names may share a slug — the second gets a `-2` suffixed file. Behavior tightened with the contract: a cron trigger without `on.cron.environment` is now rejected at create (the YAML schema always required it; the old form path was lax).
+- **Form storage is retired** (single-source): `POST`/`PUT /pipelines` render the request into YAML and store it — every pipeline is `source=yaml` with a stored definition. A startup backfill stores YAML for pre-existing rows once (legacy file first, then the relational projection; failures are logged and retried on the next start, and the row keeps serving from its projection meanwhile). Two pipeline names may share a slug — the second gets a `-2` suffixed file. Behavior tightened with the contract: a cron trigger without `on.cron.environment` is now rejected at create (the YAML schema always required it; the old form path was lax).
 - Quick YAML Reference lives in the YAML editor dialog (Editor | Reference tabs), not a separate Form.
 
 ## Related

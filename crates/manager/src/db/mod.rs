@@ -272,7 +272,108 @@ async fn migrate_host_whitelists_to_runners(pool: &SqlitePool) {
     }
 }
 
-pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Result<()> {
+/// Ordered schema migrations. All v1.x schema lives in version 1 as one body:
+/// before versioning existed, every startup replayed the whole baseline
+/// (`001`–`003` DDL + the additive/`pragma_table_info` chain + data
+/// migrations), so deployed databases already hold all of it and each
+/// statement is idempotent by construction.
+///
+/// To add a migration: append a version, add its body to `MIGRATIONS`
+/// dispatch below, and **never edit or reorder an existing entry** — its
+/// version is already recorded on deployed databases, so an edited body would
+/// silently never run. New bodies need not be idempotent: they run once.
+const MIGRATIONS: &[i64] = &[1, 2];
+
+/// Versioned migration runner: applies each migration at most once per
+/// database, recording it in `schema_migrations`.
+///
+/// Only single-writer deployment is assumed today: a concurrent second Manager
+/// on the same SQLite file could interleave a migration. Serialising that is
+/// the job of the storage switch (Postgres advisory lock); with SQLite `WAL`
+/// and one Manager there is no second writer.
+pub async fn run_migrations(pool: &SqlitePool, jwt_secret: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    let applied: Vec<i64> = sqlx::query_scalar("SELECT version FROM schema_migrations")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+    for version in MIGRATIONS {
+        if applied.contains(version) {
+            tracing::debug!(version, "migration already applied — skipped");
+            continue;
+        }
+        tracing::info!(version, "applying migration");
+        apply_migration(pool, jwt_secret, *version).await?;
+        sqlx::query("INSERT INTO schema_migrations (version) VALUES (?)")
+            .bind(version)
+            .execute(pool)
+            .await?;
+    }
+
+    tracing::info!("Database migrations applied successfully");
+    Ok(())
+}
+
+async fn apply_migration(pool: &SqlitePool, jwt_secret: &str, version: i64) -> anyhow::Result<()> {
+    match version {
+        1 => apply_legacy_baseline(pool, jwt_secret).await,
+        2 => apply_v2_yaml_source(pool).await,
+        other => anyhow::bail!("unknown migration version {other}"),
+    }
+}
+
+/// v2: the canonical YAML text moves into the database. The file under
+/// `pipeline.yaml_scan_dir` stops being authoritative in this release (the
+/// directory scan is retired); `yaml_path` keeps only the origin basename for
+/// display and export, and `yaml_source` holds the exact bytes the API
+/// validated.
+async fn apply_v2_yaml_source(pool: &SqlitePool) -> anyhow::Result<()> {
+    add_column_if_missing(pool, "pipelines", "yaml_source TEXT NOT NULL DEFAULT ''").await;
+    // Origin basenames identify a stored definition. The API pre-checks before
+    // writing; this index makes two concurrent creates converge on exactly one
+    // winner instead of two rows sharing a definition name.
+    //
+    // A pre-versioning database that already holds duplicates cannot take the
+    // index. Name them, so the operator can fix the rows instead of reading a
+    // bare constraint error.
+    let duplicates: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT yaml_path, COUNT(*) FROM pipelines
+         WHERE source = 'yaml' AND yaml_path IS NOT NULL AND yaml_path != ''
+         GROUP BY yaml_path HAVING COUNT(*) > 1",
+    )
+    .fetch_all(pool)
+    .await?;
+    if !duplicates.is_empty() {
+        let list = duplicates
+            .iter()
+            .map(|(path, count)| format!("{path} ×{count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "cannot enforce one pipeline per definition name — duplicate yaml_path rows: {list}. \
+             Delete or re-save the extra pipelines, then restart."
+        );
+    }
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pipelines_yaml_path
+         ON pipelines(yaml_path) WHERE source = 'yaml'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The 1.x baseline, preserved verbatim from the pre-versioning runner.
+async fn apply_legacy_baseline(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Result<()> {
     // NOTE: the per-host team whitelist (sandbox_host_teams) is retired before
     // it ever shipped — tenant policy lives on runner team bindings. Dev
     // databases that still hold the table are migrated and the table dropped
@@ -1484,7 +1585,6 @@ pub async fn run_migrations(pool: &SqlitePool, _jwt_secret: &str) -> anyhow::Res
     .execute(pool)
     .await;
 
-    tracing::info!("Database migrations applied successfully");
     Ok(())
 }
 

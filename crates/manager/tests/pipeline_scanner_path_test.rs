@@ -1,7 +1,5 @@
 use manager::services::pipeline_scanner::filename_from_pipeline_name;
-use manager::services::pipeline_scanner::lock_yaml_file;
 use manager::services::pipeline_scanner::normalize_yaml_path_key;
-use manager::services::pipeline_scanner::read_yaml_for_scan;
 use manager::services::pipeline_scanner::upsert_from_yaml;
 use manager::services::pipeline_scanner::validate_yaml_filename;
 use manager::services::pipeline_scanner::yaml_content_etag;
@@ -44,6 +42,8 @@ steps:
         Path::new("."),
         cron_yaml,
         60,
+        None,
+        false,
     )
     .await
     .expect("insert projection");
@@ -72,6 +72,8 @@ steps:
         Path::new("."),
         cron_yaml,
         60,
+        None,
+        false,
     )
     .await
     .expect("repair same-hash projection");
@@ -98,6 +100,8 @@ steps:
         Path::new("."),
         &webhook_yaml,
         60,
+        None,
+        false,
     )
     .await
     .expect("update projection");
@@ -109,30 +113,6 @@ steps:
             .await
             .expect("read webhook projection");
     assert_eq!(projected, ("staging".into(), "".into()));
-}
-
-#[tokio::test]
-async fn scanner_read_waits_for_file_lock_and_observes_replaced_content() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let scan_dir = dir.path().to_string_lossy().to_string();
-    let filename = "scanner-lock.yml";
-    let initial = "name: initial\nsteps: []\n";
-    let replacement = "name: replacement\nsteps: []\n";
-    std::fs::write(dir.path().join(filename), initial).expect("write initial YAML");
-
-    let guard = lock_yaml_file(&scan_dir, filename)
-        .await
-        .expect("lock YAML file");
-    let scan_dir_for_task = scan_dir.clone();
-    let read_task =
-        tokio::spawn(async move { read_yaml_for_scan(&scan_dir_for_task, filename).await });
-
-    tokio::task::yield_now().await;
-    std::fs::write(dir.path().join(filename), replacement).expect("replace YAML");
-    drop(guard);
-
-    let (read, _guard) = read_task.await.expect("scanner task").expect("read YAML");
-    assert_eq!(read, replacement);
 }
 
 #[test]
@@ -225,6 +205,8 @@ steps:
         Path::new("."),
         large_yaml,
         60,
+        None,
+        false,
     )
     .await
     .expect("insert");
@@ -245,6 +227,8 @@ steps:
         Path::new("."),
         &default_yaml,
         60,
+        None,
+        false,
     )
     .await
     .expect("update");

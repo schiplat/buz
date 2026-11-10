@@ -67,6 +67,50 @@ async fn main() -> anyhow::Result<()> {
             )
             .await;
         }
+        Some(Command::Pipeline {
+            command: PipelineCommand::Export { dir },
+        }) => {
+            let config = config::load(Some(&cli.config))?;
+            let pool = db::init(&config).await?;
+            db::run_migrations(&pool, &config.auth.jwt_secret).await?;
+            let report = services::definition_transfer::export_definitions(&pool, &dir).await?;
+            let stdout = std::io::stdout();
+            services::definition_transfer::print_export(&report, &mut stdout.lock())?;
+            return Ok(());
+        }
+        Some(Command::Pipeline {
+            command: PipelineCommand::Import { dir, dry_run },
+        }) => {
+            let config = config::load(Some(&cli.config))?;
+            let pool = db::init(&config).await?;
+            db::run_migrations(&pool, &config.auth.jwt_secret).await?;
+            let step_index_dir = services::plugin_resolver::effective_local_dir(
+                &config.storage.data_dir,
+                &config.plugin_index.local_dir,
+            )?;
+            let sync_timeout_secs = services::platform_settings::effective(
+                &pool,
+                services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
+                &config.plugin_index.sync_timeout_seconds.to_string(),
+            )
+            .await
+            .parse()
+            .unwrap_or(services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
+            let report = services::definition_transfer::import_definitions(
+                &pool,
+                &dir,
+                &step_index_dir,
+                sync_timeout_secs,
+                dry_run,
+            )
+            .await?;
+            let stdout = std::io::stdout();
+            services::definition_transfer::print_import(&report, &mut stdout.lock())?;
+            if !report.failed.is_empty() {
+                anyhow::bail!("{} definition(s) failed to import", report.failed.len());
+            }
+            return Ok(());
+        }
         None => {}
     }
 
@@ -236,9 +280,10 @@ async fn main() -> anyhow::Result<()> {
     services::debug_log_cleanup::spawn_debug_log_cleanup(db_pool.clone(), log_broadcast.clone());
     services::job_log_retention::spawn_job_log_retention(db_pool.clone(), log_broadcast.clone());
 
-    // Form retirement: converge pre-retirement `source=form` rows to YAML
-    // files before the scanner takes over (new saves are file-backed already).
-    services::form_migration::migrate_form_pipelines(
+    // Definitions live in the database (`pipelines.yaml_source`). Rows created
+    // before that change are backfilled once here; the legacy directory is
+    // read-only input, never watched or written.
+    services::definition_backfill::backfill_definitions(
         &db_pool,
         &config.pipeline.yaml_scan_dir,
         &services::plugin_resolver::effective_local_dir(
@@ -248,17 +293,6 @@ async fn main() -> anyhow::Result<()> {
         sync_timeout_secs,
     )
     .await;
-
-    services::pipeline_scanner::spawn_scanner(
-        db_pool.clone(),
-        config.pipeline.yaml_scan_dir.clone(),
-        services::plugin_resolver::effective_local_dir(
-            &config.storage.data_dir,
-            &config.plugin_index.local_dir,
-        )?,
-        config.pipeline.yaml_scan_interval_seconds,
-        sync_timeout_secs,
-    );
 
     let cors = CorsLayer::new()
         .allow_origin(Any)

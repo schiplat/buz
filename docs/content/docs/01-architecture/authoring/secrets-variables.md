@@ -31,7 +31,7 @@ Related deep-dives:
 3. **Scripts use shell vars.** After `env: GIT_SSH_KEY: ${secrets.GIT_SSH_KEY}`, `run` uses `$GIT_SSH_KEY`. Do not write `${secrets.…}` inside `run` — the engine does not expand secrets inside scripts.
 4. **Render templates get their values via `buz/env-render`'s `values` map.** One `NAME=${secrets.NAME}` line per referenced secret in `with:` — the kernel `config.render` block still works for existing pipelines, but the plugin is the recommended path.
 5. **Team-shared secrets** are auto-**allowlisted** for expression resolution; they are still not auto-injected as env vars.
-6. **Top-level `secrets:` is optional** for references the YAML scanner can see — step `env:` maps and `uses:` steps' `with:` inputs are collected automatically (GHA-style). It remains **required** when a `config.render` template references secrets: those references live inside external template files no YAML scan can see, so the declaration is the injection allowlist for external templates.
+6. **Top-level `secrets:` is optional** for references the validator can see — step `env:` maps and `uses:` steps' `with:` inputs are collected automatically (GHA-style). It remains **required** when a `config.render` template references secrets: those references live inside external template files no YAML scan can see, so the declaration is the injection allowlist for external templates.
 
 ---
 
