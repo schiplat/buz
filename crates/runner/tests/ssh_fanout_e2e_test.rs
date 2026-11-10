@@ -182,16 +182,13 @@ async fn parallel_fanout_overlaps_while_chain_serializes() {
         .expect("parallel exec");
     let parallel_elapsed = started.elapsed();
     assert_eq!(output.exit_code, 0, "stdout: {}", output.stdout);
-    // All three hosts reported (wait-all merge keeps per-host sections).
-    for label_suffix in ["@ 127.0.0.1"] {
-        // host_label is user@host[:port] — assert the host part, which is
-        // identical across the three loopback sessions.
-        assert!(
-            output.stdout.contains(label_suffix),
-            "stdout: {}",
-            output.stdout
-        );
-    }
+    // host_label is user@host[:port] — the host part is identical across
+    // the three loopback sessions.
+    assert!(
+        output.stdout.contains("@ 127.0.0.1"),
+        "stdout: {}",
+        output.stdout
+    );
     // Sequential would be >= 6s; concurrent ≈ 2s (+ small overhead).
     assert!(
         parallel_elapsed < Duration::from_secs(5),
