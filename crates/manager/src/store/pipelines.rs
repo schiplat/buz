@@ -128,3 +128,17 @@ pub async fn resolve_concurrency_status(
     tx.commit().await?;
     Ok(status)
 }
+
+/// The pipeline's declared environment slugs as stored JSON text — the
+/// git-hook create/update path validates against it.
+pub async fn declared_environments(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<String, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT environments FROM pipelines WHERE id = ?")
+            .bind(pipeline_id)
+            .fetch_one(pool)
+            .await?,
+    )
+}

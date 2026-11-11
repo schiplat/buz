@@ -7,7 +7,6 @@ use shared::protocol::response::ApiResponse;
 use shared::protocol::{CreateSecretRequest, UpdateSecretRequest};
 use shared::rbac::Perm;
 use shared::secret_kind::{normalize_secret_kind, validate_secret_name};
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::audit::{self, secret_snapshot, Action, AuditEvent};
@@ -37,52 +36,33 @@ pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let team_filter = team_in_clause(&auth, "team_id");
-    let sql = match &team_filter {
-        None => {
-            "SELECT id, name, value, owner_group, team_id, team_shared, kind, updated_at FROM secrets ORDER BY name ASC"
-                .to_string()
-        }
-        Some((clause, _)) if clause == "AND 1=0" => {
-            return Ok(Json(ApiResponse::success(vec![])));
-        }
-        Some((clause, _)) => format!(
-            "SELECT id, name, value, owner_group, team_id, team_shared, kind, updated_at FROM secrets WHERE 1=1 {clause} ORDER BY name ASC"
-        ),
-    };
-
-    let mut q = sqlx::query(&sql);
-    if let Some((_, ids)) = &team_filter {
-        for id in ids {
-            q = q.bind(id);
-        }
-    }
-
-    let rows = q.fetch_all(&state.pool).await?;
+    let rows = crate::store::secrets::list(
+        &state.pool,
+        team_filter.as_ref().map(|(_, ids)| ids.as_slice()),
+    )
+    .await?;
     let jwt = &state.config.auth.jwt_secret;
 
     // Batch-load GitHub bind summaries so list rows can render bound repos.
-    let secret_ids: Vec<String> = rows.iter().map(|r| r.get::<String, _>(0)).collect();
+    let secret_ids: Vec<String> = rows.iter().map(|s| s.id.clone()).collect();
     let binds_map = super::github_sync::secret_binds_map(&state.pool, &secret_ids).await?;
 
     let secrets: Vec<serde_json::Value> = rows
         .into_iter()
-        .map(|r| {
-            let stored: String = r.get(2);
-            let (value, reencrypt_required) = value_fields_for_api(&stored, jwt);
-            let kind_raw: String = r.get(6);
-            let id: String = r.get(0);
-            let name: String = r.get(1);
+        .map(|s| {
+            let (value, reencrypt_required) = value_fields_for_api(&s.value, jwt);
+            let github_binds = binds_map.get(&s.id).cloned().unwrap_or_default();
             serde_json::json!({
-                "id": id,
-                "name": name,
+                "id": s.id,
+                "name": s.name,
                 "value": value,
                 "reencrypt_required": reencrypt_required,
-                "owner_group": r.get::<String, _>(3),
-                "team_id": r.get::<String, _>(4),
-                "team_shared": team_shared_from_row(r.get::<i64, _>(5)),
-                "kind": normalize_secret_kind(Some(&kind_raw)),
-                "updated_at": r.get::<Option<String>, _>(7),
-                "github_binds": binds_map.get(&id).cloned().unwrap_or_default(),
+                "owner_group": s.owner_group,
+                "team_id": s.team_id,
+                "team_shared": team_shared_from_row(s.team_shared),
+                "kind": normalize_secret_kind(Some(&s.kind)),
+                "updated_at": s.updated_at,
+                "github_binds": github_binds,
             })
         })
         .collect();
@@ -112,11 +92,10 @@ pub async fn create(
     .await?;
     auth.check_team(&team_id, Perm::SecretManage)?;
 
-    let existing = sqlx::query("SELECT id FROM secrets WHERE name = ?")
-        .bind(&name)
-        .fetch_optional(&state.pool)
-        .await?;
-    if existing.is_some() {
+    if crate::store::secrets::find_id_by_name(&state.pool, &name)
+        .await?
+        .is_some()
+    {
         return Err(AppError::Conflict(format!(
             "secret '{name}' already exists"
         )));
@@ -132,18 +111,16 @@ pub async fn create(
     let team_shared = req.team_shared.unwrap_or(false);
     let team_shared_i: i64 = if team_shared { 1 } else { 0 };
 
-    sqlx::query(
-        "INSERT INTO secrets (id, name, value, owner_group, team_id, team_shared, kind) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    crate::store::secrets::insert(
+        &state.pool,
+        &id,
+        &name,
+        &encrypted,
+        &slug,
+        &team_id,
+        team_shared_i,
+        kind,
     )
-    .bind(&id)
-    .bind(&name)
-    .bind(&encrypted)
-    .bind(&slug)
-    .bind(&team_id)
-    .bind(team_shared_i)
-    .bind(kind)
-    .execute(&state.pool)
     .await?;
 
     tracing::info!(
@@ -178,28 +155,22 @@ pub async fn get_one(
     let team_id = secret_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
-    let r = sqlx::query(
-        "SELECT id, name, value, owner_group, team_id, team_shared, kind, updated_at FROM secrets WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("secret not found".into()))?;
+    let s = crate::store::secrets::find_by_id(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("secret not found".into()))?;
 
-    let stored: String = r.get(2);
-    let (value, reencrypt_required) = value_fields_for_api(&stored, &state.config.auth.jwt_secret);
-    let kind_raw: String = r.get(6);
+    let (value, reencrypt_required) = value_fields_for_api(&s.value, &state.config.auth.jwt_secret);
 
     Ok(Json(ApiResponse::success(serde_json::json!({
-        "id": r.get::<String, _>(0),
-        "name": r.get::<String, _>(1),
+        "id": s.id,
+        "name": s.name,
         "value": value,
         "reencrypt_required": reencrypt_required,
-        "owner_group": r.get::<String, _>(3),
-        "team_id": r.get::<String, _>(4),
-        "team_shared": team_shared_from_row(r.get::<i64, _>(5)),
-        "kind": normalize_secret_kind(Some(&kind_raw)),
-        "updated_at": r.get::<Option<String>, _>(7),
+        "owner_group": s.owner_group,
+        "team_id": s.team_id,
+        "team_shared": team_shared_from_row(s.team_shared),
+        "kind": normalize_secret_kind(Some(&s.kind)),
+        "updated_at": s.updated_at,
     }))))
 }
 
@@ -222,25 +193,17 @@ pub async fn update(
         auth.check_team(&resolved.0, Perm::SecretManage)?;
         resolved
     } else {
-        let slug: String = sqlx::query_scalar("SELECT owner_group FROM secrets WHERE id = ?")
-            .bind(&id)
-            .fetch_one(&state.pool)
-            .await?;
+        let slug = crate::store::secrets::owner_group_of(&state.pool, &id).await?;
         (team_id, slug)
     };
 
-    let before_row = sqlx::query(
-        "SELECT name, owner_group, team_id, team_shared, kind, value FROM secrets WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_one(&state.pool)
-    .await?;
-    let before_name: String = before_row.get(0);
-    let before_slug: String = before_row.get(1);
-    let before_team: String = before_row.get(2);
-    let current_shared: i64 = before_row.get(3);
-    let current_kind: String = before_row.get(4);
-    let current_value: String = before_row.get(5);
+    let facts = crate::store::secrets::update_facts(&state.pool, &id).await?;
+    let before_name = facts.name;
+    let before_slug = facts.owner_group;
+    let before_team = facts.team_id;
+    let current_shared = facts.team_shared;
+    let current_kind = facts.kind;
+    let current_value = facts.value;
     let before = secret_snapshot(
         &id,
         &before_name,
@@ -261,31 +224,27 @@ pub async fn update(
         .unwrap_or_else(|| normalize_secret_kind(Some(&current_kind)).to_string());
 
     if req.value.is_empty() {
-        sqlx::query(
-            "UPDATE secrets SET owner_group = ?, team_id = ?, team_shared = ?, kind = ?, \
-             updated_at = datetime('now') WHERE id = ?",
+        crate::store::secrets::update_metadata(
+            &state.pool,
+            &id,
+            &slug,
+            &new_team_id,
+            team_shared_i,
+            &kind,
         )
-        .bind(&slug)
-        .bind(&new_team_id)
-        .bind(team_shared_i)
-        .bind(&kind)
-        .bind(&id)
-        .execute(&state.pool)
         .await?;
     } else {
         let encrypted = crypto::encrypt(&req.value, &state.config.auth.jwt_secret)
             .map_err(|e| AppError::Internal(format!("secret encryption failed: {e}")))?;
-        sqlx::query(
-            "UPDATE secrets SET value = ?, owner_group = ?, team_id = ?, team_shared = ?, kind = ?, \
-             updated_at = datetime('now') WHERE id = ?",
+        crate::store::secrets::update_value_and_metadata(
+            &state.pool,
+            &id,
+            &encrypted,
+            &slug,
+            &new_team_id,
+            team_shared_i,
+            &kind,
         )
-        .bind(&encrypted)
-        .bind(&slug)
-        .bind(&new_team_id)
-        .bind(team_shared_i)
-        .bind(&kind)
-        .bind(&id)
-        .execute(&state.pool)
         .await?;
     }
 
@@ -349,17 +308,12 @@ pub async fn delete(
     let team_id = secret_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::SecretManage)?;
 
-    let row = sqlx::query(
-        "SELECT name, owner_group, team_id, team_shared, kind FROM secrets WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_one(&state.pool)
-    .await?;
-    let name: String = row.get(0);
-    let slug: String = row.get(1);
-    let tid: String = row.get(2);
-    let shared: i64 = row.get(3);
-    let kind: String = row.get(4);
+    let facts = crate::store::secrets::delete_facts(&state.pool, &id).await?;
+    let name = facts.name;
+    let slug = facts.owner_group;
+    let tid = facts.team_id;
+    let shared = facts.team_shared;
+    let kind = facts.kind;
     let before = secret_snapshot(
         &id,
         &name,
@@ -369,10 +323,7 @@ pub async fn delete(
         normalize_secret_kind(Some(&kind)),
     );
 
-    sqlx::query("DELETE FROM secrets WHERE id = ?")
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+    crate::store::secrets::delete(&state.pool, &id).await?;
 
     audit::record(
         &state.pool,

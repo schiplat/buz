@@ -37,5 +37,7 @@ pub mod pipelines;
 pub mod plugin_sources;
 pub mod runners;
 pub mod sandboxd_config;
+pub mod secrets;
 pub mod trigger_events;
+pub mod variables;
 pub mod webhook_pipeline;
