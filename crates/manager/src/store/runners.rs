@@ -387,3 +387,445 @@ pub async fn environment_gate_in_tx(
         superseded: Vec::new(),
     })
 }
+
+// ───────────────────────────── registration plane ─────────────────────────────
+//
+// The register / heartbeat paths speak these statements; policy shaping and
+// token verification stay in the handler (they are auth, not storage).
+
+/// `(id, register_token, token)` of the row with this name — the registration
+/// lookup (`None` = unknown name).
+pub async fn register_row_by_name(
+    pool: &SqlitePool,
+    name: &str,
+) -> Result<Option<(String, String, Option<String>)>, AppError> {
+    let row = sqlx::query("SELECT id, register_token, token FROM runners WHERE name = ?")
+        .bind(name)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| (r.get(0), r.get(1), r.get(2))))
+}
+
+/// Persist a fresh runner JWT (hash only, never plaintext), burn the one-shot
+/// register token, flip online and record the reported deployment identities.
+#[allow(clippy::too_many_arguments)]
+pub async fn mark_registered(
+    pool: &SqlitePool,
+    runner_id: &str,
+    token_hash: &str,
+    version: Option<&str>,
+    host_id: &str,
+    runner_instance_id: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE runners SET token = ?, register_token = '', status = 'online', \
+         version = COALESCE(?, version), \
+         host_id = COALESCE(NULLIF(?, ''), host_id), \
+         runner_instance_id = COALESCE(NULLIF(?, ''), runner_instance_id), \
+         last_seen = datetime('now'), updated_at = datetime('now'), \
+         restart_requested = 0 WHERE id = ?",
+    )
+    .bind(token_hash)
+    .bind(version)
+    .bind(host_id)
+    .bind(runner_instance_id)
+    .bind(runner_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Labels JSON as stored (`"[]"` when absent).
+pub async fn labels_of(pool: &SqlitePool, runner_id: &str) -> Result<String, AppError> {
+    Ok(
+        sqlx::query_scalar::<_, String>("SELECT labels FROM runners WHERE id = ?")
+            .bind(runner_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or_else(|| "[]".into()),
+    )
+}
+
+/// Heartbeat write: status, system_info, version + deployment identities, and
+/// the liveness stamps. Empty identities keep the stored ones (COALESCE guard).
+#[allow(clippy::too_many_arguments)]
+pub async fn mark_heartbeat(
+    pool: &SqlitePool,
+    runner_id: &str,
+    status: &str,
+    system_info_json: &str,
+    version: Option<&str>,
+    host_id: &str,
+    runner_instance_id: &str,
+    sandbox_instance_id: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE runners SET status = ?, system_info = ?, version = COALESCE(?, version), \
+         host_id = COALESCE(NULLIF(?, ''), host_id), \
+         runner_instance_id = COALESCE(NULLIF(?, ''), runner_instance_id), \
+         sandbox_instance_id = COALESCE(NULLIF(?, ''), sandbox_instance_id), \
+         last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(status)
+    .bind(system_info_json)
+    .bind(version)
+    .bind(host_id)
+    .bind(runner_instance_id)
+    .bind(sandbox_instance_id)
+    .bind(runner_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// `(restart_requested, capability_reprobe_requested)` — the two one-shot
+/// command flags served (and then cleared) by a heartbeat.
+pub async fn pending_commands(
+    pool: &SqlitePool,
+    runner_id: &str,
+) -> Result<(bool, bool), AppError> {
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT restart_requested, capability_reprobe_requested FROM runners WHERE id = ?",
+    )
+    .bind(runner_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(r, c)| (r != 0, c != 0)).unwrap_or((false, false)))
+}
+
+/// Clear the consumed restart flag.
+pub async fn clear_restart_requested(pool: &SqlitePool, runner_id: &str) -> Result<(), AppError> {
+    sqlx::query("UPDATE runners SET restart_requested = 0 WHERE id = ?")
+        .bind(runner_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Clear the consumed re-probe flag and stamp when it was served.
+pub async fn clear_capability_reprobe_requested(
+    pool: &SqlitePool,
+    runner_id: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE runners SET capability_reprobe_requested = 0, \
+         capability_reprobe_served_at = datetime('now') WHERE id = ?",
+    )
+    .bind(runner_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+// ───────────────────────────── admin plane ─────────────────────────────
+//
+// The UI manages one policy column at a time; the column names below are a
+// closed set (`column` is never caller-supplied text), so the formatted SQL
+// stays within the validator's declared dynamic shapes.
+
+/// Replace one boolean policy column (`clean_workspace_after_job`,
+/// `shell_enabled`, `ssh_enabled`, `docker_enabled`, `wasm_enabled`,
+/// `netns_isolation`).
+pub async fn update_flag(
+    pool: &SqlitePool,
+    id: &str,
+    column: &str,
+    value: bool,
+) -> Result<(), AppError> {
+    sqlx::query(&format!(
+        "UPDATE runners SET {column} = ?, updated_at = datetime('now') WHERE id = ?"
+    ))
+    .bind(if value { 1i64 } else { 0 })
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Replace the labels JSON.
+pub async fn update_labels(pool: &SqlitePool, id: &str, labels_json: &str) -> Result<(), AppError> {
+    sqlx::query("UPDATE runners SET labels = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(labels_json)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Replace the concurrency budget.
+pub async fn update_max_concurrent(pool: &SqlitePool, id: &str, max: i64) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE runners SET max_concurrent_jobs = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(max)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Replace the SSH host-key policy string (`known_hosts` | `insecure`).
+pub async fn update_ssh_host_key_policy(
+    pool: &SqlitePool,
+    id: &str,
+    policy: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE runners SET ssh_host_key_policy = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(policy)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Replace the claim strategy string (`backfill` | `fifo`).
+pub async fn update_claim_strategy(
+    pool: &SqlitePool,
+    id: &str,
+    strategy: &str,
+) -> Result<(), AppError> {
+    sqlx::query("UPDATE runners SET claim_strategy = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(strategy)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Concurrency budget of one runner (`max_concurrent_jobs`, at least 1).
+pub async fn max_concurrent_of(pool: &SqlitePool, id: &str) -> Result<i64, AppError> {
+    Ok(
+        sqlx::query_scalar::<_, i64>("SELECT max_concurrent_jobs FROM runners WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(1)
+            .max(1),
+    )
+}
+
+/// Jobs currently running on this runner — the capacity gate's occupancy.
+pub async fn running_job_count(pool: &SqlitePool, id: &str) -> Result<i64, AppError> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0))
+}
+
+/// `(is_frozen, restart_requested)` — the poll dispatch gate.
+pub async fn dispatch_gate(pool: &SqlitePool, id: &str) -> Result<(bool, bool), AppError> {
+    let row: Option<(i64, i64)> =
+        sqlx::query_as("SELECT is_frozen, restart_requested FROM runners WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row
+        .map(|(frozen, restart)| (frozen != 0, restart != 0))
+        .unwrap_or((false, false)))
+}
+
+/// Delivery gate for the long-poll loop (same two flags).
+pub async fn long_poll_gate(pool: &SqlitePool, id: &str) -> Result<(i64, i64), AppError> {
+    Ok(
+        sqlx::query_as("SELECT is_frozen, restart_requested FROM runners WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or((0, 0)),
+    )
+}
+
+/// `(team_id, labels-json)` — the claim path's dispatch boundary and label set.
+pub async fn team_and_labels(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<(Option<String>, String), AppError> {
+    let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    let labels_raw: Option<String> =
+        sqlx::query_scalar::<_, String>("SELECT labels FROM runners WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    Ok((team_id, labels_raw.unwrap_or_else(|| "[]".into())))
+}
+
+/// `(execution_mode, host_id, sandbox_instance_id, claim_strategy)` — the
+/// slot scheduler's dispatch context.
+pub async fn dispatch_context_row(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<(String, String, String, String), AppError> {
+    Ok(sqlx::query_as(
+        "SELECT execution_mode, host_id, sandbox_instance_id, claim_strategy
+         FROM runners WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await?)
+}
+
+/// The registration queue: pending jobs this runner may claim, queue-fair
+/// order, with the pipeline labels and the age used by the aging rule.
+///
+/// A job is excluded while the environment it targets has a sibling running
+/// (chain rule), and `cancel_in_progress` environments offer only their oldest
+/// pending job — the sibling cancellation happens inside the claim
+/// transaction.
+pub async fn claim_candidates(
+    pool: &SqlitePool,
+    runner_team_id: Option<&str>,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+    Ok(sqlx::query(
+
+        "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
+                j.debug_unredact, j.verbose_logs, j.trigger_by, p.name,
+                COALESCE(json_extract(j.snapshot, '$.team_id'), p.team_id), p.trigger_type,
+                j.environment_id, j.run_number, j.run_attempt,
+                CAST(strftime('%s', 'now') - strftime('%s', j.created_at) AS INTEGER) AS waited_seconds
+         FROM jobs j
+         JOIN pipelines p ON p.id = j.pipeline_id
+         WHERE j.status = 'pending'
+           AND (? IS NULL OR json_extract(j.snapshot, '$.team_id') = ?)
+           AND (
+             j.environment_id IS NULL
+             OR COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress'
+             OR j.seq = (
+                 SELECT MAX(latest.seq) FROM jobs latest
+                 WHERE latest.environment_id = j.environment_id AND latest.status = 'pending'
+             )
+           )
+           AND NOT (
+             COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') = 'queue'
+             AND EXISTS (SELECT 1 FROM jobs running WHERE running.environment_id = j.environment_id AND running.status = 'running')
+           )
+           AND NOT (
+             COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress'
+             AND EXISTS (SELECT 1 FROM jobs running WHERE running.pipeline_id = j.pipeline_id AND running.environment_id = j.environment_id AND running.status = 'running')
+           )
+         ORDER BY j.created_at ASC, j.seq ASC
+         LIMIT 50",
+    )
+    .bind(runner_team_id)
+    .bind(runner_team_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// True when the team row exists — the runner team binding check.
+pub async fn team_exists(pool: &SqlitePool, team_id: &str) -> Result<bool, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM teams WHERE id = ?)")
+            .bind(team_id)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+/// `team_id` of one runner (`None` = shared/unassigned or absent row).
+pub async fn team_of(pool: &SqlitePool, runner_id: &str) -> Result<Option<String>, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
+            .bind(runner_id)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+/// How many runner rows carry this exact name (standalone idempotence check).
+pub async fn count_by_name(pool: &SqlitePool, name: &str) -> Result<i64, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT COUNT(1) FROM runners WHERE name = ?")
+            .bind(name)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+/// Mark a pending job failed because its resource-profile grant was revoked
+/// while it was queued (the claim path's terminal write).
+pub async fn fail_pending_job(pool: &SqlitePool, job_id: &str) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE jobs SET status = 'failed', end_time = datetime('now'),
+         updated_at = datetime('now') WHERE id = ? AND status = 'pending'",
+    )
+    .bind(job_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The policy columns of one runner, raw (`None` = no such row). Column order:
+/// max_concurrent_jobs, clean_workspace_after_job, shell_enabled,
+/// ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy,
+/// execution_mode, claim_strategy, netns_isolation.
+pub async fn policy_row(
+    pool: &SqlitePool,
+    runner_id: &str,
+) -> Result<Option<(i64, i64, i64, i64, i64, i64, String, String, String, i64)>, AppError> {
+    Ok(sqlx::query_as(
+        "SELECT max_concurrent_jobs, clean_workspace_after_job,
+                shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy,
+                execution_mode, claim_strategy, netns_isolation
+         FROM runners WHERE id = ?",
+    )
+    .bind(runner_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// The claim's write: flip the job to running and stamp the dispatch facts.
+/// Guarded by `status = 'pending'`, so a job another poller just took comes back
+/// `None` instead of being claimed twice. Returns the frozen run identity:
+/// `(id, pipeline_id, trigger_params, environment_id, run_number, run_attempt)`.
+pub async fn claim_job_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    runner_id: &str,
+    job_id: &str,
+    slots: i64,
+    resource_spec: &str,
+    sandbox_key: &str,
+) -> Result<Option<(String, String, Option<String>, Option<String>, i64, i64)>, AppError> {
+    Ok(sqlx::query_as(
+        "UPDATE jobs SET status = 'running', runner_id = ?, start_time = datetime('now'),
+         resource_slots = ?, resource_spec = ?, sandbox_instance_id = ?, dispatch_reason = '',
+         updated_at = datetime('now')
+         WHERE id = ? AND status = 'pending'
+         RETURNING id, pipeline_id, trigger_params, environment_id, run_number, run_attempt",
+    )
+    .bind(runner_id)
+    .bind(slots)
+    .bind(resource_spec)
+    .bind(sandbox_key)
+    .bind(job_id)
+    .fetch_optional(&mut **tx)
+    .await?)
+}
+
+/// The claim decision's re-read, inside the caller's `BEGIN IMMEDIATE` scope:
+/// `(pipeline_id, environment_id, runner_team_id, job_team_id)`. `None` when
+/// the job is gone or no longer pending (the caller rolls back and moves on).
+pub async fn claim_candidate_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    runner_id: &str,
+    job_id: &str,
+) -> Result<Option<(String, Option<String>, Option<String>, Option<String>)>, AppError> {
+    let row = sqlx::query(
+        "SELECT j.pipeline_id, j.environment_id, r.team_id, \
+                json_extract(j.snapshot, '$.team_id') \
+         FROM jobs j JOIN runners r ON r.id = ? \
+         WHERE j.id = ? AND j.status = 'pending'",
+    )
+    .bind(runner_id)
+    .bind(job_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))))
+}

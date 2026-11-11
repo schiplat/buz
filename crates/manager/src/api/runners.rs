@@ -220,36 +220,40 @@ async fn load_runner_policy(
     pool: &sqlx::SqlitePool,
     runner_id: &str,
 ) -> Result<RunnerPolicyConfig, AppError> {
-    let row = sqlx::query(
-        "SELECT max_concurrent_jobs, clean_workspace_after_job,
-                shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy,
-                execution_mode, claim_strategy, netns_isolation
-         FROM runners WHERE id = ?",
-    )
-    .bind(runner_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
+    let row = crate::store::runners::policy_row(pool, runner_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
 
+    let (
+        max_concurrent,
+        clean_workspace,
+        shell,
+        ssh,
+        docker,
+        wasm,
+        ssh_policy,
+        mode,
+        strategy,
+        netns,
+    ) = row;
     Ok(RunnerPolicyConfig {
-        max_concurrent_jobs: row.get::<i64, _>(0).max(1) as u32,
-        clean_workspace_after_job: i64_bool(row.get(1)),
-        shell_enabled: i64_bool(row.get(2)),
-        ssh_enabled: i64_bool(row.get(3)),
-        docker_enabled: i64_bool(row.get(4)),
-        wasm_enabled: i64_bool(row.get(5)),
+        max_concurrent_jobs: max_concurrent.max(1) as u32,
+        clean_workspace_after_job: i64_bool(clean_workspace),
+        shell_enabled: i64_bool(shell),
+        ssh_enabled: i64_bool(ssh),
+        docker_enabled: i64_bool(docker),
+        wasm_enabled: i64_bool(wasm),
         ssh_host_key_policy: {
-            let p: String = row.get(6);
-            if p == "insecure" {
-                p
+            if ssh_policy == "insecure" {
+                ssh_policy
             } else {
                 "known_hosts".into()
             }
         },
-        execution_mode: parse_execution_mode(row.get::<String, _>(7))?,
-        claim_strategy: normalize_claim_strategy(Some(row.get::<String, _>(8)))
+        execution_mode: parse_execution_mode(mode)?,
+        claim_strategy: normalize_claim_strategy(Some(strategy))
             .unwrap_or_else(|_| "backfill".into()),
-        netns_isolation: i64_bool(row.get(9)),
+        netns_isolation: i64_bool(netns),
     })
 }
 
@@ -483,21 +487,18 @@ pub async fn register(
     }
 
     // Look up the runner by name first.
-    let existing = sqlx::query("SELECT id, register_token, token FROM runners WHERE name = ?")
-        .bind(name)
-        .fetch_optional(&state.pool)
-        .await?;
+    let existing = crate::store::runners::register_row_by_name(&state.pool, name).await?;
 
     let runner_id: String;
 
     if let Some(ref row) = existing {
-        let existing_token: Option<String> = row.get(2);
-        let row_id: String = row.get(0);
+        let existing_token: &Option<String> = &row.2;
+        let row_id: &String = &row.0;
 
         if existing_token.as_ref().is_none_or(|t| t.is_empty()) {
             // First-time registration — must match the one-shot register_token.
-            let stored_rt: String = row.get(1);
-            if !register_token_matches(&stored_rt, register_token) {
+            let stored_rt: &String = &row.1;
+            if !register_token_matches(stored_rt, register_token) {
                 // Standalone + loopback + authorized name (row exists): allow
                 // tokenless / mismatched token. Production path unchanged.
                 if standalone && loopback {
@@ -529,9 +530,8 @@ pub async fn register(
             let authorized = if standalone && loopback {
                 true
             } else {
-                bearer_proves_runner(&headers, &state.config.auth.jwt_secret, &row_id) || {
-                    let stored_rt: String = row.get(1);
-                    register_token_matches(&stored_rt, register_token)
+                bearer_proves_runner(&headers, &state.config.auth.jwt_secret, row_id) || {
+                    register_token_matches(&row.1, register_token)
                 }
             };
             if !authorized {
@@ -546,7 +546,7 @@ pub async fn register(
             }
         }
 
-        runner_id = row_id;
+        runner_id = row_id.clone();
     } else {
         if standalone && loopback {
             tracing::warn!(
@@ -610,30 +610,20 @@ pub async fn register(
     // Hash-only at rest: the runner JWT is never stored in plaintext — only
     // its SHA-256, kept for the "already holds a token" state. The JWT itself
     // is stateless (signature-verified per request) and returned to the agent.
-    sqlx::query(
-        "UPDATE runners SET token = ?, register_token = '', status = 'online', \
-         version = COALESCE(?, version), \
-         host_id = COALESCE(NULLIF(?, ''), host_id), \
-         runner_instance_id = COALESCE(NULLIF(?, ''), runner_instance_id), \
-         last_seen = datetime('now'), updated_at = datetime('now'), \
-         restart_requested = 0 WHERE id = ?",
+    crate::store::runners::mark_registered(
+        &state.pool,
+        &runner_id,
+        &shared::api_token::hash_token(&runner_jwt),
+        version,
+        &host_id,
+        &runner_instance_id,
     )
-    .bind(shared::api_token::hash_token(&runner_jwt))
-    .bind(version)
-    .bind(&host_id)
-    .bind(&runner_instance_id)
-    .bind(&runner_id)
-    .execute(&state.pool)
     .await?;
 
     tracing::info!(runner = %name, host_id = %host_id, instance = %runner_instance_id, "Runner registered: {} ({runner_id})", name);
 
     let policy = load_runner_policy(&state.pool, &runner_id).await?;
-    let labels_db: String = sqlx::query_scalar("SELECT labels FROM runners WHERE id = ?")
-        .bind(&runner_id)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or_else(|_| "[]".into());
+    let labels_db = crate::store::runners::labels_of(&state.pool, &runner_id).await?;
 
     log_runner_event(
         &state.pool,
@@ -689,40 +679,29 @@ pub async fn heartbeat(
         .and_then(serde_json::Value::as_str)
         .map(|raw| sanitized_instance_id(raw, "sandbox_instance_id", &auth.runner_id))
         .unwrap_or_default();
-    sqlx::query(
-        "UPDATE runners SET status = ?, system_info = ?, version = COALESCE(?, version), \
-         host_id = COALESCE(NULLIF(?, ''), host_id), \
-         runner_instance_id = COALESCE(NULLIF(?, ''), runner_instance_id), \
-         sandbox_instance_id = COALESCE(NULLIF(?, ''), sandbox_instance_id), \
-         last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+    crate::store::runners::mark_heartbeat(
+        &state.pool,
+        &auth.runner_id,
+        &req.status,
+        &system_info_json,
+        version,
+        &host_id,
+        &runner_instance_id,
+        &sandbox_instance_id,
     )
-    .bind(&req.status)
-    .bind(&system_info_json)
-    .bind(version)
-    .bind(&host_id)
-    .bind(&runner_instance_id)
-    .bind(&sandbox_instance_id)
-    .bind(&auth.runner_id)
-    .execute(&state.pool)
     .await?;
 
     let policy = load_runner_policy(&state.pool, &auth.runner_id).await?;
 
     // Serve a pending one-shot restart command, then clear it (serve-and-consume).
-    let restart_requested: bool =
-        sqlx::query_scalar("SELECT restart_requested FROM runners WHERE id = ?")
-            .bind(&auth.runner_id)
-            .fetch_one(&state.pool)
-            .await
-            .map(|v: i64| v != 0)
-            .unwrap_or(false);
+    // Same for the capability re-probe command: the Runner sees either on its
+    // next heartbeat (≤30s) and acts immediately instead of idling.
+    let (restart_requested, reprobe_requested) =
+        crate::store::runners::pending_commands(&state.pool, &auth.runner_id).await?;
 
     if restart_requested {
         tracing::info!(runner = %auth.runner_id, "Serving restart command via heartbeat");
-        sqlx::query("UPDATE runners SET restart_requested = 0 WHERE id = ?")
-            .bind(&auth.runner_id)
-            .execute(&state.pool)
-            .await?;
+        crate::store::runners::clear_restart_requested(&state.pool, &auth.runner_id).await?;
         log_runner_event(
             &state.pool,
             &auth.runner_id,
@@ -732,26 +711,10 @@ pub async fn heartbeat(
         .await;
     }
 
-    // Serve a pending one-shot capability re-probe command, then clear it
-    // (serve-and-consume). Like restart, the Runner sees it on its next
-    // heartbeat (≤30s) and probes immediately instead of idling.
-    let reprobe_requested: bool =
-        sqlx::query_scalar("SELECT capability_reprobe_requested FROM runners WHERE id = ?")
-            .bind(&auth.runner_id)
-            .fetch_one(&state.pool)
-            .await
-            .map(|v: i64| v != 0)
-            .unwrap_or(false);
-
     if reprobe_requested {
         tracing::info!(runner = %auth.runner_id, "Serving capability re-probe command via heartbeat");
-        sqlx::query(
-            "UPDATE runners SET capability_reprobe_requested = 0,
-                capability_reprobe_served_at = datetime('now') WHERE id = ?",
-        )
-        .bind(&auth.runner_id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::runners::clear_capability_reprobe_requested(&state.pool, &auth.runner_id)
+            .await?;
         log_runner_event(
             &state.pool,
             &auth.runner_id,
@@ -833,12 +796,8 @@ pub async fn poll_with_wait(
 
         // Frozen/restarting runners must stop dispatch immediately; restart is
         // also signalled through the restart API, but don't hold up its response.
-        let (frozen, restarting): (i64, i64) =
-            sqlx::query_as("SELECT is_frozen, restart_requested FROM runners WHERE id = ?")
-                .bind(&auth.runner_id)
-                .fetch_optional(&state.pool)
-                .await?
-                .unwrap_or((0, 0));
+        let (frozen, restarting) =
+            crate::store::runners::long_poll_gate(&state.pool, &auth.runner_id).await?;
         if frozen != 0 || restarting != 0 {
             return Ok(response);
         }
@@ -868,13 +827,8 @@ async fn poll_once(
     // Also skip dispatch while a restart is pending: otherwise the window between
     // the restart request and the next heartbeat (up to 30s) would let this
     // runner claim pending jobs that then block the graceful exit.
-    let (frozen, restart_requested): (bool, bool) =
-        sqlx::query_as("SELECT is_frozen != 0, restart_requested != 0 FROM runners WHERE id = ?")
-            .bind(&auth.runner_id)
-            .fetch_one(&state.pool)
-            .await
-            .map(|(f, r): (i64, i64)| (f != 0, r != 0))
-            .unwrap_or((false, false));
+    let (frozen, restart_requested) =
+        crate::store::runners::dispatch_gate(&state.pool, &auth.runner_id).await?;
 
     if frozen {
         tracing::debug!("Runner {} is frozen — skipping poll", auth.runner_id);
@@ -895,20 +849,11 @@ async fn poll_once(
     }
 
     // Capacity gate: do not claim when this runner is already at max concurrent jobs.
-    let max_concurrent: i64 =
-        sqlx::query_scalar("SELECT max_concurrent_jobs FROM runners WHERE id = ?")
-            .bind(&auth.runner_id)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(1)
-            .max(1);
+    let max_concurrent =
+        crate::store::runners::max_concurrent_of(&state.pool, &auth.runner_id).await?;
 
-    let running_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
-            .bind(&auth.runner_id)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(0);
+    let running_count =
+        crate::store::runners::running_job_count(&state.pool, &auth.runner_id).await?;
 
     if running_count >= max_concurrent || active_jobs >= max_concurrent {
         tracing::debug!(
@@ -923,31 +868,15 @@ async fn poll_once(
     }
 
     // Runner team binding is a dispatch boundary. NULL means explicitly shared.
-    let runner_team_id: Option<String> =
-        sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
-            .bind(&auth.runner_id)
-            .fetch_one(&state.pool)
-            .await?;
-
     // Load this runner's labels for scheduling.
-    let runner_labels: Vec<String> =
-        sqlx::query_scalar::<_, String>("SELECT labels FROM runners WHERE id = ?")
-            .bind(&auth.runner_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default();
+    let (runner_team_id, runner_labels_raw) =
+        crate::store::runners::team_and_labels(&state.pool, &auth.runner_id).await?;
+    let runner_labels: Vec<String> = serde_json::from_str(&runner_labels_raw).unwrap_or_default();
 
     // Slot-aware dispatch context: execution mode, attached sandbox host,
     // queue-walk strategy, and the staleness threshold (see slot_scheduler).
     let dispatch = {
-        let row: (String, String, String, String) = sqlx::query_as(
-            "SELECT execution_mode, host_id, sandbox_instance_id, claim_strategy
-             FROM runners WHERE id = ?",
-        )
-        .bind(&auth.runner_id)
-        .fetch_one(&state.pool)
-        .await?;
+        let row = crate::store::runners::dispatch_context_row(&state.pool, &auth.runner_id).await?;
         let stale_after_seconds: i64 = crate::services::platform_settings::effective(
             &state.pool,
             crate::services::platform_settings::KEY_SANDBOX_CONFIG_STALE_SECONDS,
@@ -982,40 +911,8 @@ async fn poll_once(
 
     // Candidates: oldest pending jobs with pipeline (+ snapshot) labels.
     // Claim only if runner has ALL required labels (see runner_satisfies_labels).
-    let candidates = sqlx::query(
-        "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
-                j.debug_unredact, j.verbose_logs, j.trigger_by, p.name,
-                COALESCE(json_extract(j.snapshot, '$.team_id'), p.team_id), p.trigger_type,
-                j.environment_id, j.run_number, j.run_attempt,
-                CAST(strftime('%s', 'now') - strftime('%s', j.created_at) AS INTEGER) AS waited_seconds
-         FROM jobs j
-         JOIN pipelines p ON p.id = j.pipeline_id
-         WHERE j.status = 'pending'
-           AND (? IS NULL OR json_extract(j.snapshot, '$.team_id') = ?)
-           AND (
-             j.environment_id IS NULL
-             OR COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress'
-             OR j.seq = (
-                 SELECT MAX(latest.seq) FROM jobs latest
-                 WHERE latest.environment_id = j.environment_id AND latest.status = 'pending'
-             )
-           )
-           AND NOT (
-             COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') = 'queue'
-             AND EXISTS (SELECT 1 FROM jobs running WHERE running.environment_id = j.environment_id AND running.status = 'running')
-           )
-           AND NOT (
-             COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress'
-             AND EXISTS (SELECT 1 FROM jobs running WHERE running.pipeline_id = j.pipeline_id AND running.environment_id = j.environment_id AND running.status = 'running')
-           )
-         ORDER BY j.created_at ASC, j.seq ASC
-         LIMIT 50",
-    )
-    .bind(&runner_team_id)
-    .bind(&runner_team_id)
-    .fetch_all(&state.pool)
-    .await?;
-
+    let candidates =
+        crate::store::runners::claim_candidates(&state.pool, runner_team_id.as_deref()).await?;
     let mut claimed = None;
     for row in candidates {
         let job_id: String = row.get(0);
@@ -1048,13 +945,7 @@ async fn poll_once(
                     %error,
                     "resource profile grant revoked while queued; failing job"
                 );
-                let _ = sqlx::query(
-                    "UPDATE jobs SET status = 'failed', end_time = datetime('now'),
-                     updated_at = datetime('now') WHERE id = ? AND status = 'pending'",
-                )
-                .bind(&job_id)
-                .execute(&state.pool)
-                .await;
+                let _ = crate::store::runners::fail_pending_job(&state.pool, &job_id).await;
                 crate::services::notify::spawn_job_notify(
                     state.pool.clone(),
                     state.config.auth.jwt_secret.clone(),
@@ -1070,24 +961,16 @@ async fn poll_once(
         // immediate transaction reserves the writer before checking blockers,
         // so another poller must re-evaluate after this transaction commits.
         let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let candidate = sqlx::query(
-            "SELECT j.pipeline_id, j.environment_id, r.team_id, \
-                    json_extract(j.snapshot, '$.team_id') \
-             FROM jobs j JOIN runners r ON r.id = ? \
-             WHERE j.id = ? AND j.status = 'pending'",
-        )
-        .bind(&auth.runner_id)
-        .bind(&job_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some(candidate) = candidate else {
+        let Some(candidate) =
+            crate::store::runners::claim_candidate_tx(&mut tx, &auth.runner_id, &job_id).await?
+        else {
             tx.rollback().await?;
             continue;
         };
-        let candidate_pipeline_id: String = candidate.get(0);
-        let candidate_environment_id: Option<String> = candidate.get(1);
-        let candidate_runner_team: Option<String> = candidate.get(2);
-        let candidate_job_team: Option<String> = candidate.get(3);
+        let candidate_pipeline_id: String = candidate.0;
+        let candidate_environment_id: Option<String> = candidate.1;
+        let candidate_runner_team: Option<String> = candidate.2;
+        let candidate_job_team: Option<String> = candidate.3;
         if candidate_runner_team.is_some() && candidate_runner_team != candidate_job_team {
             tx.rollback().await?;
             continue;
@@ -1160,19 +1043,14 @@ async fn poll_once(
             }
         }
 
-        let got = sqlx::query(
-            "UPDATE jobs SET status = 'running', runner_id = ?, start_time = datetime('now'),
-             resource_slots = ?, resource_spec = ?, sandbox_instance_id = ?, dispatch_reason = '',
-             updated_at = datetime('now')
-             WHERE id = ? AND status = 'pending'
-             RETURNING id, pipeline_id, trigger_params, environment_id, run_number, run_attempt",
+        let got = crate::store::runners::claim_job_tx(
+            &mut tx,
+            &auth.runner_id,
+            &job_id,
+            slots,
+            &resource_spec.to_string(),
+            &sandbox_key,
         )
-        .bind(&auth.runner_id)
-        .bind(slots)
-        .bind(resource_spec.to_string())
-        .bind(&sandbox_key)
-        .bind(&job_id)
-        .fetch_optional(&mut *tx)
         .await?;
 
         if let Some(r) = got {
@@ -1222,6 +1100,8 @@ async fn poll_once(
                 row.get::<Option<String>, _>(9),
                 row.get::<String, _>(10),
             ));
+            // `r` carries the six RETURNING columns; the candidate row above
+            // carries the pipeline facts the payload also needs.
             break;
         }
         tx.rollback().await?;
@@ -1249,12 +1129,12 @@ async fn poll_once(
         &state,
         &auth,
         ClaimedJob {
-            job_id: row.get(0),
-            pipeline_id: row.get(1),
-            trigger_params_raw: row.get(2),
-            job_environment_id: row.get(3),
-            run_number: row.get(4),
-            run_attempt: row.get(5),
+            job_id: row.0,
+            pipeline_id: row.1,
+            trigger_params_raw: row.2,
+            job_environment_id: row.3,
+            run_number: row.4,
+            run_attempt: row.5,
             snapshot_raw,
             debug_unredact,
             verbose_logs,
