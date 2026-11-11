@@ -1,6 +1,7 @@
 //! Pipeline row lookups shared across handlers.
 
 use sqlx::{Row, SqlitePool};
+use uuid::Uuid;
 
 use shared::error::AppError;
 
@@ -141,4 +142,935 @@ pub async fn declared_environments(
             .fetch_one(pool)
             .await?,
     )
+}
+
+// ───────────────────────────── read models ─────────────────────────────
+//
+// Interim note: read handlers map wide rows into JSON payloads; until the PG
+// port gives each of them a typed projection, these return the fetched rows
+// verbatim (the mapping code stays with the handler). Every statement here is
+// compiled against the schema by `store_sql_validation_test`.
+
+/// One pipeline's full edit-form row (`None` = no such pipeline).
+pub async fn full_row(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<sqlx::sqlite::SqliteRow>, AppError> {
+    Ok(sqlx::query(
+        "SELECT id, name, description, trigger_type, webhook_path, webhook_secret, cron_expr,
+                runner_labels, timeout_seconds, source, input_defs, concurrency_group, is_active,
+                owner_group, team_id, created_at, updated_at,
+                concurrency_mode, concurrency_max_queue, concurrency_queue_timeout_seconds,
+                yaml_path, environments, notify_json
+         FROM pipelines WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// Secret ids explicitly bound to a pipeline.
+pub async fn secret_bind_ids(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<String>, AppError> {
+    Ok(
+        sqlx::query("SELECT secret_id FROM pipeline_secrets WHERE pipeline_id = ?")
+            .bind(pipeline_id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| r.get(0))
+            .collect(),
+    )
+}
+
+/// Variable ids explicitly bound to a pipeline.
+pub async fn var_bind_ids(pool: &SqlitePool, pipeline_id: &str) -> Result<Vec<String>, AppError> {
+    Ok(
+        sqlx::query("SELECT var_id FROM pipeline_vars WHERE pipeline_id = ?")
+            .bind(pipeline_id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| r.get(0))
+            .collect(),
+    )
+}
+
+/// Inline (non-secret) `env:` pairs of a pipeline, name-ordered.
+pub async fn inline_envs(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<(String, String)>, AppError> {
+    Ok(sqlx::query(
+        "SELECT var_name, value FROM variables
+         WHERE pipeline_id = ? AND source_type = 'inline' AND is_secret = 0
+         ORDER BY var_name",
+    )
+    .bind(pipeline_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| (r.get(0), r.get(1)))
+    .collect())
+}
+
+/// The edit-form task rows of a pipeline, step-ordered.
+pub async fn tasks_rows(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+    Ok(sqlx::query(
+        "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
+                work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
+                step_env, privileged,
+                hosts_strategy, capabilities, hosts_max_parallel, needs_json
+         FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
+    )
+    .bind(pipeline_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// The trigger-time snapshot rows of a pipeline, step-ordered (column order
+/// differs from the edit-form shape).
+pub async fn task_snapshot_rows(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+    Ok(sqlx::query(
+        "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
+                image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, volumes,
+                privileged,
+                hosts_strategy, id, capabilities, hosts_max_parallel, needs_json
+         FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
+    )
+    .bind(pipeline_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Marketplace step resolutions of a pipeline.
+pub async fn step_resolutions(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+    Ok(sqlx::query(
+        "SELECT step_order, uses_ref, resolved_version, content_sha256, source, reviewed, input_defs_json \
+         FROM step_resolutions WHERE pipeline_id = ?",
+    )
+    .bind(pipeline_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// `(kind, value)` allowlist entries of one environment.
+pub async fn env_host_allowlist(
+    pool: &SqlitePool,
+    environment_id: &str,
+) -> Result<Vec<(String, String)>, AppError> {
+    Ok(
+        sqlx::query("SELECT kind, value FROM environment_hosts WHERE environment_id = ?")
+            .bind(environment_id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| (r.get(0), r.get(1)))
+            .collect(),
+    )
+}
+
+/// `(name, labels-json)` of every host — the label-membership preload.
+pub async fn host_label_rows(pool: &SqlitePool) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+    Ok(sqlx::query("SELECT name, labels FROM hosts")
+        .fetch_all(pool)
+        .await?)
+}
+
+/// Registered host names — the trigger input validator's host universe.
+pub async fn all_host_names(pool: &SqlitePool) -> Result<Vec<String>, AppError> {
+    Ok(sqlx::query_scalar("SELECT name FROM hosts")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect())
+}
+
+/// `(var_name, is_secret)` of a pipeline's inline variables — the snapshot's
+/// env redaction flags.
+pub async fn pipeline_var_flags(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+    Ok(
+        sqlx::query("SELECT var_name, is_secret FROM variables WHERE pipeline_id = ?")
+            .bind(pipeline_id)
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
+/// `(trigger_type, timeout_seconds, source)` of one pipeline.
+pub async fn trigger_snapshot_row(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Option<sqlx::sqlite::SqliteRow>, AppError> {
+    Ok(sqlx::query(
+        "SELECT trigger_type, timeout_seconds, source
+         FROM pipelines WHERE id = ?",
+    )
+    .bind(pipeline_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// Stored notify channels JSON of one pipeline (`None` = unset/absent row).
+pub async fn notify_json_of(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Option<String>, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT notify_json FROM pipelines WHERE id = ?")
+            .bind(pipeline_id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// The trigger gate's pipeline row: identity, concurrency config, inputs,
+/// team, environments, active flag, resource profile (`None` = no such row).
+pub async fn trigger_row(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Option<sqlx::sqlite::SqliteRow>, AppError> {
+    Ok(sqlx::query(
+        "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
+                concurrency_max_queue, concurrency_queue_timeout_seconds, input_defs, team_id,
+                environments, is_active, resource_profile
+         FROM pipelines WHERE id = ?",
+    )
+    .bind(pipeline_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// Pipeline display name (`None` = no such row).
+pub async fn name_of(pool: &SqlitePool, id: &str) -> Result<Option<String>, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT name FROM pipelines WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// Stored input definitions JSON (`None` = no such row).
+pub async fn input_defs_of(pool: &SqlitePool, id: &str) -> Result<Option<String>, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT input_defs FROM pipelines WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// Audit before-snapshot facts of an update (`None` = no such pipeline).
+pub async fn update_facts(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<(String, String, String, String, bool)>, AppError> {
+    let row = sqlx::query(
+        "SELECT name, trigger_type, team_id, owner_group, is_active FROM pipelines WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| {
+        (
+            r.get(0),
+            r.get(1),
+            r.get(2),
+            r.get(3),
+            r.get::<i64, _>(4) != 0,
+        )
+    }))
+}
+
+/// `owner_group` slug of one pipeline (errors when absent).
+pub async fn owner_group_of(pool: &SqlitePool, id: &str) -> Result<String, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT owner_group FROM pipelines WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+/// Stored team id of one pipeline (errors when absent).
+pub async fn team_of(pool: &SqlitePool, id: &str) -> Result<String, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT team_id FROM pipelines WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+/// Active (non-terminal) job count of a pipeline — the team-move guard.
+pub async fn active_job_count(pool: &SqlitePool, pipeline_id: &str) -> Result<i64, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
+             AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
+    )
+    .bind(pipeline_id)
+    .fetch_one(pool)
+    .await?)
+}
+
+/// Active job count inside the caller's transaction (the re-check that makes
+/// the team-move guard race-free; same statement, same scope).
+pub async fn active_job_count_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    pipeline_id: &str,
+) -> Result<i64, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
+             AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
+    )
+    .bind(pipeline_id)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+/// Audit before-snapshot facts of a delete (`None` = no such pipeline).
+pub async fn delete_facts(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<(String, String, String, String, String, Option<String>)>, AppError> {
+    let row = sqlx::query(
+        "SELECT name, trigger_type, team_id, owner_group, source, yaml_path FROM pipelines WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5))))
+}
+
+/// Delete one pipeline row; `false` when it did not exist.
+pub async fn delete(pool: &SqlitePool, id: &str) -> Result<bool, AppError> {
+    let result = sqlx::query("DELETE FROM pipelines WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() != 0)
+}
+
+/// `(name, is_active)` of one pipeline (`None` = no such row) — the pool
+/// variant used by toggle-active.
+pub async fn name_active_of(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<(String, bool)>, AppError> {
+    let row = sqlx::query("SELECT name, is_active FROM pipelines WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| (r.get(0), r.get::<i64, _>(1) != 0)))
+}
+
+/// `(name, is_active)` inside the caller's transaction — disable/enable's
+/// read under the write lock.
+pub async fn name_active_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: &str,
+) -> Result<Option<(String, bool)>, AppError> {
+    let row = sqlx::query("SELECT name, is_active FROM pipelines WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row.map(|r| (r.get(0), r.get::<i64, _>(1) != 0)))
+}
+
+/// Flip a pipeline's active flag (toggle-active).
+pub async fn set_active(pool: &SqlitePool, id: &str, active: bool) -> Result<(), AppError> {
+    sqlx::query("UPDATE pipelines SET is_active = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(if active { 1 } else { 0 })
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Disable inside the caller's `BEGIN IMMEDIATE` scope — the flip must be
+/// serialized with the concurrent-trigger re-check (see
+/// `transaction-boundaries.md`).
+pub async fn set_active_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: &str,
+    active: bool,
+) -> Result<(), AppError> {
+    let sql = if active {
+        "UPDATE pipelines SET is_active = 1, updated_at = datetime('now') WHERE id = ?"
+    } else {
+        "UPDATE pipelines SET is_active = 0, updated_at = datetime('now') WHERE id = ?"
+    };
+    sqlx::query(sql).bind(id).execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// Ids of a pipeline's in-flight jobs, queue-fair order — the disable
+/// cancellation scan, inside the caller's transaction.
+pub async fn in_flight_job_ids_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    pipeline_id: &str,
+) -> Result<Vec<String>, AppError> {
+    Ok(sqlx::query(
+            "SELECT id FROM jobs
+             WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued', 'waiting_approval')
+             ORDER BY created_at, seq",
+    )
+    .bind(pipeline_id)
+    .fetch_all(&mut **tx)
+    .await?
+    .into_iter()
+    .map(|r| r.get(0))
+    .collect())
+}
+
+// ───────────────────────────── write models ─────────────────────────────
+
+/// Everything needed to insert one pipeline row.
+#[derive(Debug, Default)]
+pub struct NewPipeline {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub trigger_type: String,
+    pub webhook_path: Option<String>,
+    pub webhook_secret: Option<String>,
+    pub cron_expr: Option<String>,
+    pub runner_labels: String,
+    pub timeout_seconds: i64,
+    pub concurrency_group: Option<String>,
+    pub concurrency_mode: String,
+    pub concurrency_max_queue: i64,
+    pub concurrency_queue_timeout_seconds: i64,
+    pub owner_group: String,
+    pub team_id: String,
+    pub input_defs: String,
+    pub environments: String,
+    pub notify_json: String,
+}
+
+/// Insert one pipeline row inside the caller's transaction (the create path's
+/// shell row; the YAML bind retargets `source` right after).
+pub async fn insert_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    p: &NewPipeline,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path, webhook_secret,
+         cron_expr, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
+         concurrency_max_queue, concurrency_queue_timeout_seconds,
+         owner_group, team_id, input_defs, environments, notify_json, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+    )
+    .bind(&p.id)
+    .bind(&p.name)
+    .bind(&p.description)
+    .bind(&p.trigger_type)
+    .bind(&p.webhook_path)
+    .bind(&p.webhook_secret)
+    .bind(&p.cron_expr)
+    .bind(&p.runner_labels)
+    .bind(p.timeout_seconds)
+    .bind(&p.concurrency_group)
+    .bind(&p.concurrency_mode)
+    .bind(p.concurrency_max_queue)
+    .bind(p.concurrency_queue_timeout_seconds)
+    .bind(&p.owner_group)
+    .bind(&p.team_id)
+    .bind(&p.input_defs)
+    .bind(&p.environments)
+    .bind(&p.notify_json)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Everything the structured update writes.
+#[derive(Debug, Default)]
+pub struct UpdatePipeline {
+    pub name: String,
+    pub description: String,
+    pub trigger_type: String,
+    pub webhook_path: Option<String>,
+    pub webhook_secret: Option<String>,
+    pub cron_expr: Option<String>,
+    pub runner_labels: String,
+    pub timeout_seconds: i64,
+    pub concurrency_group: Option<String>,
+    pub concurrency_mode: String,
+    pub concurrency_max_queue: i64,
+    pub concurrency_queue_timeout_seconds: i64,
+    pub owner_group: String,
+    pub team_id: String,
+    pub input_defs: String,
+    pub environments: String,
+    pub notify_json: String,
+}
+
+/// Replace a pipeline's editable fields inside the caller's `BEGIN IMMEDIATE`
+/// scope (the team-move guard re-check shares the lock).
+pub async fn update_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: &str,
+    p: &UpdatePipeline,
+) -> Result<u64, AppError> {
+    let result = sqlx::query(
+        "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?, webhook_path = ?,
+         webhook_secret = ?, cron_expr = ?, runner_labels = ?, timeout_seconds = ?,
+         concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
+         concurrency_queue_timeout_seconds = ?, owner_group = ?, team_id = ?, input_defs = ?,
+         environments = ?, notify_json = ?, updated_at = datetime('now')
+         WHERE id = ?",
+    )
+    .bind(&p.name)
+    .bind(&p.description)
+    .bind(&p.trigger_type)
+    .bind(&p.webhook_path)
+    .bind(&p.webhook_secret)
+    .bind(&p.cron_expr)
+    .bind(&p.runner_labels)
+    .bind(p.timeout_seconds)
+    .bind(&p.concurrency_group)
+    .bind(&p.concurrency_mode)
+    .bind(p.concurrency_max_queue)
+    .bind(p.concurrency_queue_timeout_seconds)
+    .bind(&p.owner_group)
+    .bind(&p.team_id)
+    .bind(&p.input_defs)
+    .bind(&p.environments)
+    .bind(&p.notify_json)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// `Some(name)` when a team secret with this name exists — the
+/// webhook-secret binding check. `None` = no such secret in the team.
+pub async fn team_secret_id_by_name(
+    pool: &SqlitePool,
+    team_id: &str,
+    name: &str,
+) -> Result<Option<String>, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT id FROM secrets WHERE team_id = ? AND name = ?")
+            .bind(team_id)
+            .bind(name)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// Id of the host with this exact name, inside the caller's connection
+/// (`None` = unknown host — step resolution logs and defers).
+pub async fn host_id_by_name(
+    conn: &mut sqlx::SqliteConnection,
+    name: &str,
+) -> Result<Option<String>, AppError> {
+    Ok(sqlx::query("SELECT id FROM hosts WHERE name = ?")
+        .bind(name)
+        .fetch_optional(conn)
+        .await?
+        .map(|r| r.get(0)))
+}
+
+/// Ids of hosts whose `labels` JSON array contains `label`, inside the
+/// caller's connection.
+pub async fn host_ids_by_label(
+    conn: &mut sqlx::SqliteConnection,
+    label: &str,
+) -> Result<Vec<String>, AppError> {
+    Ok(
+        // `hosts.id` must be qualified: `json_each` also exposes an `id`
+        // column, so the unqualified form is ambiguous at compile time.
+        sqlx::query(
+            "SELECT hosts.id FROM hosts, json_each(hosts.labels) WHERE json_each.value = ?",
+        )
+        .bind(label)
+        .fetch_all(conn)
+        .await?
+        .into_iter()
+        .map(|r| r.get(0))
+        .collect(),
+    )
+}
+
+/// Everything needed to insert one task row.
+#[derive(Debug, Default)]
+pub struct TaskInsert {
+    pub id: String,
+    pub pipeline_id: String,
+    pub step_order: i64,
+    pub name: String,
+    pub exec_type: String,
+    pub host_id: Option<String>,
+    pub host_names: String,
+    pub host_labels: String,
+    pub command_template: String,
+    pub image: String,
+    pub work_dir: String,
+    pub retry_count: i64,
+    pub timeout_seconds: i64,
+    pub fail_strategy: String,
+    pub step_secrets: String,
+    pub step_env: String,
+    pub volumes: String,
+    pub privileged: i64,
+    pub hosts_strategy: String,
+    pub capabilities: String,
+    pub hosts_max_parallel: Option<i64>,
+    pub needs_json: String,
+}
+
+/// Insert one task row inside the caller's connection.
+pub async fn insert_task_tx(
+    conn: &mut sqlx::SqliteConnection,
+    t: &TaskInsert,
+) -> Result<(), AppError> {
+    sqlx::query(
+            "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
+             command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
+             step_env, volumes, privileged,
+             hosts_strategy, capabilities, hosts_max_parallel, needs_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&t.id)
+    .bind(&t.pipeline_id)
+    .bind(t.step_order)
+    .bind(&t.name)
+    .bind(&t.exec_type)
+    .bind(&t.host_id)
+    .bind(&t.host_names)
+    .bind(&t.host_labels)
+    .bind(&t.command_template)
+    .bind(&t.image)
+    .bind(&t.work_dir)
+    .bind(t.retry_count)
+    .bind(t.timeout_seconds)
+    .bind(&t.fail_strategy)
+    .bind(&t.step_secrets)
+    .bind(&t.step_env)
+    .bind(&t.volumes)
+    .bind(t.privileged)
+    .bind(&t.hosts_strategy)
+    .bind(&t.capabilities)
+    .bind(t.hosts_max_parallel)
+    .bind(&t.needs_json)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Insert one inline (non-secret) env var of a pipeline.
+pub async fn insert_inline_env_tx(
+    conn: &mut sqlx::SqliteConnection,
+    pipeline_id: &str,
+    name: &str,
+    value: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO variables (id, pipeline_id, var_name, source_type, is_secret, value)
+             VALUES (?, ?, ?, 'inline', 0, ?)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(pipeline_id)
+    .bind(name)
+    .bind(value)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Bind one variable id to a pipeline (no-op when already bound).
+pub async fn insert_var_binding_tx(
+    conn: &mut sqlx::SqliteConnection,
+    pipeline_id: &str,
+    var_id: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO pipeline_vars (pipeline_id, var_id)
+             VALUES (?, ?)",
+    )
+    .bind(pipeline_id)
+    .bind(var_id)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Bind one secret id to a pipeline (no-op when already bound).
+pub async fn insert_secret_binding_tx(
+    conn: &mut sqlx::SqliteConnection,
+    pipeline_id: &str,
+    secret_id: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO pipeline_secrets (pipeline_id, secret_id)
+             VALUES (?, ?)",
+    )
+    .bind(pipeline_id)
+    .bind(secret_id)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Name of one team secret (the YAML emit path resolves ids to names).
+pub async fn secret_name_in_team(
+    pool: &SqlitePool,
+    secret_id: &str,
+    team_id: &str,
+) -> Result<Option<String>, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT name FROM secrets WHERE id = ? AND team_id = ?")
+            .bind(secret_id)
+            .bind(team_id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// The pipeline-card list: one row per pipeline with its latest job and run
+/// totals, newest-first. `visible_team_ids = None` is unrestricted (platform
+/// admin); `Some([])` yields nothing; `Some(ids)` filters to those teams.
+/// `include_debug = false` hides debug (unredacted) jobs from latest-job and
+/// run-total subqueries — they are admin-only records.
+pub async fn list_rows(
+    pool: &SqlitePool,
+    visible_team_ids: Option<&[String]>,
+    include_debug: bool,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+    let Some(ids) = visible_team_ids else {
+        let debug_scope = if include_debug {
+            ""
+        } else {
+            "WHERE debug_unredact = 0 "
+        };
+        let sql = format!(
+        "SELECT p.id, p.name, p.description, p.trigger_type, p.runner_labels,
+                p.timeout_seconds, p.concurrency_group, p.input_defs, p.is_active,
+                p.source, p.team_id, p.owner_group, p.created_at, p.updated_at,
+                j.id as latest_job_id, j.status as latest_job_status,
+                j.start_time as latest_job_start,
+                COALESCE(js.job_total, 0) as job_total,
+                COALESCE(js.job_success, 0) as job_success,
+                p.concurrency_mode, p.concurrency_max_queue, p.concurrency_queue_timeout_seconds,
+                p.yaml_path, p.environments
+         FROM pipelines p
+         LEFT JOIN (
+             SELECT pipeline_id, MAX(created_at) as max_created
+             FROM jobs {debug_scope}GROUP BY pipeline_id
+         ) latest ON p.id = latest.pipeline_id
+         LEFT JOIN jobs j ON j.pipeline_id = latest.pipeline_id AND j.created_at = latest.max_created
+         LEFT JOIN (
+             SELECT pipeline_id,
+                    COUNT(*) as job_total,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as job_success
+             FROM jobs {debug_scope}GROUP BY pipeline_id
+         ) js ON p.id = js.pipeline_id
+         WHERE 1=1"
+        );
+        return Ok(sqlx::query(&format!("{sql} ORDER BY p.created_at DESC"))
+            .fetch_all(pool)
+            .await?);
+    };
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let debug_scope = if include_debug {
+        ""
+    } else {
+        "WHERE debug_unredact = 0 "
+    };
+    let base = format!(
+        "SELECT p.id, p.name, p.description, p.trigger_type, p.runner_labels,
+                p.timeout_seconds, p.concurrency_group, p.input_defs, p.is_active,
+                p.source, p.team_id, p.owner_group, p.created_at, p.updated_at,
+                j.id as latest_job_id, j.status as latest_job_status,
+                j.start_time as latest_job_start,
+                COALESCE(js.job_total, 0) as job_total,
+                COALESCE(js.job_success, 0) as job_success,
+                p.concurrency_mode, p.concurrency_max_queue, p.concurrency_queue_timeout_seconds,
+                p.yaml_path, p.environments
+         FROM pipelines p
+         LEFT JOIN (
+             SELECT pipeline_id, MAX(created_at) as max_created
+             FROM jobs {debug_scope}GROUP BY pipeline_id
+         ) latest ON p.id = latest.pipeline_id
+         LEFT JOIN jobs j ON j.pipeline_id = latest.pipeline_id AND j.created_at = latest.max_created
+         LEFT JOIN (
+             SELECT pipeline_id,
+                    COUNT(*) as job_total,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as job_success
+             FROM jobs {debug_scope}GROUP BY pipeline_id
+         ) js ON p.id = js.pipeline_id
+         WHERE 1=1"
+    );
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("{base} AND p.team_id IN ({placeholders}) ORDER BY p.created_at DESC");
+    let mut q = sqlx::query(&sql);
+    for id in ids {
+        q = q.bind(id);
+    }
+    Ok(q.fetch_all(pool).await?)
+}
+
+/// Result of a pipeline disable: the display name and the ids cancelled in the
+/// same transaction.
+pub struct DisableOutcome {
+    pub name: String,
+    pub cancelled: Vec<String>,
+}
+
+/// Idempotent emergency stop: flips `is_active` off and, when asked, cancels
+/// every in-flight job — all under one `BEGIN IMMEDIATE`, with the audit entry.
+///
+/// Why one lock scope: the flip must be serialised with any concurrent trigger
+/// that re-checks `is_active` inside its own insert transaction, so a trigger
+/// cannot slip a job past the cancellation scan after the commit. The scan
+/// runs after the flip (same lock), and audit-inside keeps an unauditable
+/// disable from ever committing.
+///
+/// Post-commit fan-out (poller wake, per-job WebSocket announce) is the
+/// caller's — nothing here notifies outside the transaction.
+pub async fn disable(
+    pool: &SqlitePool,
+    auth: &crate::middleware::AuthUser,
+    team_id: &str,
+    pipeline_id: &str,
+    cancel_in_flight: bool,
+) -> Result<DisableOutcome, AppError> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let (name, was_active) = name_active_tx(&mut tx, pipeline_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+
+    if was_active {
+        set_active_tx(&mut tx, pipeline_id, false).await?;
+    }
+
+    let mut cancelled: Vec<String> = Vec::new();
+    if cancel_in_flight {
+        for job_id in in_flight_job_ids_tx(&mut tx, pipeline_id).await? {
+            if let Some(info) =
+                crate::store::jobs::cancel_job_in_tx(&mut tx, &job_id, &auth.id, &auth.username)
+                    .await?
+            {
+                tracing::info!(
+                    operator = %auth.username,
+                    job_id = %job_id,
+                    pipeline = %name,
+                    prev_status = %info.old_status,
+                    "Job cancelled by pipeline disable"
+                );
+                cancelled.push(job_id);
+            }
+        }
+    }
+
+    crate::audit::record_in(
+        &mut tx,
+        crate::audit::AuditEvent::from_auth(auth, crate::audit::Action::PipelineDisable)
+            .resource("pipeline", pipeline_id, &name)
+            .team(Some(team_id.to_string()))
+            .before(Some(serde_json::json!({ "is_active": was_active })))
+            .after(Some(serde_json::json!({ "is_active": false })))
+            .meta(Some(serde_json::json!({
+                "cancel_in_flight": cancel_in_flight,
+                "cancelled_count": cancelled.len(),
+                "cancelled_jobs": cancelled.iter().map(String::as_str).collect::<Vec<_>>(),
+            }))),
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(DisableOutcome { name, cancelled })
+}
+
+/// Idempotent re-enable under one `BEGIN IMMEDIATE`; the audit entry is inside
+/// the transaction (an unauditable enable is a failed enable). No-op when
+/// already active. Returns the pipeline name.
+pub async fn enable(
+    pool: &SqlitePool,
+    auth: &crate::middleware::AuthUser,
+    team_id: &str,
+    pipeline_id: &str,
+) -> Result<String, AppError> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let (name, was_active) = name_active_tx(&mut tx, pipeline_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+    if !was_active {
+        set_active_tx(&mut tx, pipeline_id, true).await?;
+    }
+    crate::audit::record_in(
+        &mut tx,
+        crate::audit::AuditEvent::from_auth(auth, crate::audit::Action::PipelineEnable)
+            .resource("pipeline", pipeline_id, &name)
+            .team(Some(team_id.to_string()))
+            .before(Some(serde_json::json!({ "is_active": was_active })))
+            .after(Some(serde_json::json!({ "is_active": true }))),
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(name)
+}
+
+/// The structured update: one `BEGIN IMMEDIATE` that re-checks the team-move
+/// guard under the write lock and rewrites every editable field. A refused
+/// team move rolls back (nothing is written). Returns `rows_affected` so the
+/// caller can 404 a vanished row.
+///
+/// Post-commit work (the definition YAML rewrite, the audit record) stays with
+/// the handler — see `transaction-boundaries.md`.
+pub async fn update_guarded(
+    pool: &SqlitePool,
+    id: &str,
+    team_changed: bool,
+    p: &UpdatePipeline,
+) -> Result<u64, AppError> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    if team_changed {
+        let active_jobs = active_job_count_tx(&mut tx, id).await?;
+        if active_jobs > 0 {
+            tx.rollback().await.ok();
+            return Err(AppError::Conflict(format!(
+                "pipeline team cannot change while {active_jobs} active job(s) exist; finish or cancel them first"
+            )));
+        }
+    }
+    let affected = update_tx(&mut tx, id, p).await?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(affected)
 }

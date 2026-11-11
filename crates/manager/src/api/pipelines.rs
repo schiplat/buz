@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::audit::{self, Action, AuditEvent};
 use crate::crypto;
 use crate::middleware::AuthUser;
-use crate::rbac::{pipeline_team_id, resolve_required_team_id, secret_team_id, team_in_clause};
+use crate::rbac::{pipeline_team_id, resolve_required_team_id, secret_team_id};
 use crate::state::AppState;
 
 /// Success jobs ÷ total jobs for a pipeline. `None` when there are no builds yet.
@@ -36,53 +36,14 @@ pub async fn list(
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     // Debug (unredacted) jobs are admin-only end to end: non-admins must not
     // even see them as "latest job" or in the run totals of a pipeline card.
-    let debug_scope = if auth.is_platform_admin {
-        ""
+    let visible = if auth.is_platform_admin {
+        None
     } else {
-        "WHERE debug_unredact = 0 "
+        Some(auth.team_ids())
     };
-    let base = format!(
-        "SELECT p.id, p.name, p.description, p.trigger_type, p.runner_labels,
-                p.timeout_seconds, p.concurrency_group, p.input_defs, p.is_active,
-                p.source, p.team_id, p.owner_group, p.created_at, p.updated_at,
-                j.id as latest_job_id, j.status as latest_job_status,
-                j.start_time as latest_job_start,
-                COALESCE(js.job_total, 0) as job_total,
-                COALESCE(js.job_success, 0) as job_success,
-                p.concurrency_mode, p.concurrency_max_queue, p.concurrency_queue_timeout_seconds,
-                p.yaml_path, p.environments
-         FROM pipelines p
-         LEFT JOIN (
-             SELECT pipeline_id, MAX(created_at) as max_created
-             FROM jobs {debug_scope}GROUP BY pipeline_id
-         ) latest ON p.id = latest.pipeline_id
-         LEFT JOIN jobs j ON j.pipeline_id = latest.pipeline_id AND j.created_at = latest.max_created
-         LEFT JOIN (
-             SELECT pipeline_id,
-                    COUNT(*) as job_total,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as job_success
-             FROM jobs {debug_scope}GROUP BY pipeline_id
-         ) js ON p.id = js.pipeline_id
-         WHERE 1=1"
-    );
-
-    let team_filter = team_in_clause(&auth, "p.team_id");
-    let sql = match &team_filter {
-        None => format!("{base} ORDER BY p.created_at DESC"),
-        Some((clause, _)) if clause == "AND 1=0" => {
-            return Ok(Json(ApiResponse::success(vec![])));
-        }
-        Some((clause, _)) => format!("{base} {clause} ORDER BY p.created_at DESC"),
-    };
-
-    let mut q = sqlx::query(&sql);
-    if let Some((_, ids)) = &team_filter {
-        for id in ids {
-            q = q.bind(id);
-        }
-    }
-
-    let rows = q.fetch_all(&state.pool).await?;
+    let rows =
+        crate::store::pipelines::list_rows(&state.pool, visible.as_deref(), auth.is_platform_admin)
+            .await?;
 
     let pipelines: Vec<serde_json::Value> = rows
         .into_iter()
@@ -137,10 +98,10 @@ pub async fn create(
     )
     .await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
-    verify_pipeline_secret_bindings(&state.pool, &auth, &team_id, req.secret_ids.as_ref()).await?;
+    verify_pipeline_secret_bindings(&state, &auth, &team_id, req.secret_ids.as_ref()).await?;
     super::environments::validate_environment_slugs(&state.pool, &req.environments).await?;
     let webhook_secret = validate_webhook_secret_binding(
-        &state.pool,
+        &state,
         &team_id,
         &req.trigger_type,
         req.webhook_secret.as_deref(),
@@ -155,24 +116,17 @@ pub async fn create(
 
     let mut secret_names: HashMap<String, String> = HashMap::new();
     for secret_id in req.secret_ids.iter().flatten() {
-        let name: Option<String> =
-            sqlx::query_scalar("SELECT name FROM secrets WHERE id = ? AND team_id = ?")
-                .bind(secret_id)
-                .bind(&team_id)
-                .fetch_optional(&state.pool)
-                .await?;
-        if let Some(name) = name {
+        if let Some(name) =
+            crate::store::pipelines::secret_name_in_team(&state.pool, secret_id, &team_id).await?
+        {
             secret_names.insert(secret_id.clone(), name);
         }
     }
     let mut var_names: HashMap<String, String> = HashMap::new();
     for var_id in req.var_ids.iter().flatten() {
-        let name: Option<String> =
-            sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
-                .bind(var_id)
-                .fetch_optional(&state.pool)
-                .await?;
-        if let Some(name) = name {
+        if let Some(name) =
+            crate::store::variables::variable_name_optional(&state.pool, var_id).await?
+        {
             var_names.insert(var_id.clone(), name);
         }
     }
@@ -192,32 +146,30 @@ pub async fn create(
     let notify_json = serde_json::to_string(&req.notify).unwrap_or_else(|_| "[]".into());
 
     let mut tx = state.pool.begin().await?;
-    sqlx::query(
-        "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path, webhook_secret,
-         cron_expr, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
-         concurrency_max_queue, concurrency_queue_timeout_seconds,
-         owner_group, team_id, input_defs, environments, notify_json, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+    crate::store::pipelines::insert_tx(
+        &mut tx,
+        &crate::store::pipelines::NewPipeline {
+            id: pipeline_id.clone(),
+            name: req.name.clone(),
+            description: req.description.clone().unwrap_or_default(),
+            trigger_type: req.trigger_type.clone(),
+            webhook_path: req.webhook_path.clone(),
+            webhook_secret: Some(webhook_secret.clone()),
+            cron_expr: req.cron_expr.clone(),
+            runner_labels: labels_json,
+            timeout_seconds: req.timeout_seconds.unwrap_or(3600) as i64,
+            concurrency_group: req.concurrency_group.clone(),
+            concurrency_mode: req.concurrency_mode.clone().unwrap_or_default(),
+            concurrency_max_queue: req.concurrency_max_queue.unwrap_or(3) as i64,
+            concurrency_queue_timeout_seconds: req.concurrency_queue_timeout_seconds.unwrap_or(1800)
+                as i64,
+            owner_group: owner_group.clone(),
+            team_id: team_id.clone(),
+            input_defs: input_defs_json,
+            environments: environments_json,
+            notify_json,
+        },
     )
-    .bind(&pipeline_id)
-    .bind(&req.name)
-    .bind(req.description.as_deref().unwrap_or(""))
-    .bind(&req.trigger_type)
-    .bind(&req.webhook_path)
-    .bind(&webhook_secret)
-    .bind(&req.cron_expr)
-    .bind(&labels_json)
-    .bind(req.timeout_seconds.unwrap_or(3600))
-    .bind(&req.concurrency_group)
-    .bind(req.concurrency_mode.as_deref().unwrap_or(""))
-    .bind(req.concurrency_max_queue.unwrap_or(3))
-    .bind(req.concurrency_queue_timeout_seconds.unwrap_or(1800))
-    .bind(&owner_group)
-    .bind(&team_id)
-    .bind(&input_defs_json)
-    .bind(&environments_json)
-    .bind(&notify_json)
-    .execute(&mut *tx)
     .await?;
     tx.commit().await?;
 
@@ -260,10 +212,7 @@ pub async fn create(
     .await;
     if let Err(error) = write_result {
         // Compensate: the row shell is removed with the pipeline.
-        let _ = sqlx::query("DELETE FROM pipelines WHERE id = ?")
-            .bind(&pipeline_id)
-            .execute(&state.pool)
-            .await;
+        let _ = crate::store::pipelines::delete(&state.pool, &pipeline_id).await;
         tracing::warn!(
             pipeline = %pipeline_id,
             error = %error,
@@ -322,69 +271,36 @@ pub async fn get_one(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
-    let r = sqlx::query(
-        "SELECT id, name, description, trigger_type, webhook_path, webhook_secret, cron_expr,
-                runner_labels, timeout_seconds, source, input_defs, concurrency_group, is_active,
-                owner_group, team_id, created_at, updated_at,
-                concurrency_mode, concurrency_max_queue, concurrency_queue_timeout_seconds,
-                yaml_path, environments, notify_json
-         FROM pipelines WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+    let r = crate::store::pipelines::full_row(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
 
     let labels: String = r.get(6);
     let input_defs_raw: String = r.get(9);
     let input_defs = serde_json::from_str::<serde_json::Value>(&input_defs_raw).ok();
 
     // Fetch explicit secret bindings
-    let secret_bind_rows =
-        sqlx::query("SELECT secret_id FROM pipeline_secrets WHERE pipeline_id = ?")
-            .bind(&id)
-            .fetch_all(&state.pool)
-            .await?;
-    let secret_ids: Vec<String> = secret_bind_rows.iter().map(|r| r.get(0)).collect();
+    let secret_ids = crate::store::pipelines::secret_bind_ids(&state.pool, &id).await?;
 
     // Fetch explicit variable bindings
-    let var_bind_rows = sqlx::query("SELECT var_id FROM pipeline_vars WHERE pipeline_id = ?")
-        .bind(&id)
-        .fetch_all(&state.pool)
-        .await?;
-    let var_ids: Vec<String> = var_bind_rows.iter().map(|r| r.get(0)).collect();
+    let var_ids = crate::store::pipelines::var_bind_ids(&state.pool, &id).await?;
 
     // Fetch inline env vars (pipeline-level `env:` block) for the edit form.
-    let env_rows = sqlx::query(
-        "SELECT var_name, value FROM variables
-         WHERE pipeline_id = ? AND source_type = 'inline' AND is_secret = 0
-         ORDER BY var_name",
-    )
-    .bind(&id)
-    .fetch_all(&state.pool)
-    .await?;
+    let env_rows = crate::store::pipelines::inline_envs(&state.pool, &id).await?;
     let envs: Vec<serde_json::Value> = env_rows
         .iter()
-        .map(|e| {
+        .map(|(name, value)| {
             serde_json::json!({
-                "name": e.get::<String, _>(0),
-                "value": e.get::<String, _>(1),
+                "name": name,
+                "value": value,
             })
         })
         .collect();
 
-    let tasks = sqlx::query(
-        "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
-                work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
-                step_env, privileged,
-                hosts_strategy, capabilities, hosts_max_parallel, needs_json
-         FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
-    )
-    .bind(&id)
-    .fetch_all(&state.pool)
-    .await?
-    .into_iter()
-    .map(|t| {
+    let tasks = crate::store::pipelines::tasks_rows(&state.pool, &id)
+        .await?
+        .into_iter()
+        .map(|t| {
         serde_json::json!({
             "id": t.get::<String, _>(0),
             "step_order": t.get::<i64, _>(1),
@@ -465,22 +381,19 @@ pub async fn update(
     // rewrites the pipeline's YAML file (see the write below), so there is no
     // DB-vs-disk split left to guard. The row check is what 404s a bad id.
 
-    let before_row = sqlx::query(
-        "SELECT name, trigger_type, team_id, owner_group, is_active FROM pipelines WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?;
-    let before = before_row.as_ref().map(|r| {
-        serde_json::json!({
-            "id": id,
-            "name": r.get::<String, _>(0),
-            "trigger_type": r.get::<String, _>(1),
-            "team_id": r.get::<String, _>(2),
-            "owner_group": r.get::<String, _>(3),
-            "is_active": r.get::<i64, _>(4) != 0,
-        })
-    });
+    let before_facts = crate::store::pipelines::update_facts(&state.pool, &id).await?;
+    let before = before_facts
+        .as_ref()
+        .map(|(name, trigger_type, team, owner, is_active)| {
+            serde_json::json!({
+                "id": id,
+                "name": name,
+                "trigger_type": trigger_type,
+                "team_id": team,
+                "owner_group": owner,
+                "is_active": is_active,
+            })
+        });
 
     let (team_id, owner_group) = if req.team_id.is_some() || req.owner_group.is_some() {
         let resolved = resolve_required_team_id(
@@ -492,35 +405,23 @@ pub async fn update(
         auth.check_team(&resolved.0, Perm::PipelineWrite)?;
         resolved
     } else {
-        let slug: String = sqlx::query_scalar("SELECT owner_group FROM pipelines WHERE id = ?")
-            .bind(&id)
-            .fetch_one(&state.pool)
-            .await?;
+        let slug = crate::store::pipelines::owner_group_of(&state.pool, &id).await?;
         (current_team_id, slug)
     };
 
-    verify_pipeline_secret_bindings(&state.pool, &auth, &team_id, req.secret_ids.as_ref()).await?;
+    verify_pipeline_secret_bindings(&state, &auth, &team_id, req.secret_ids.as_ref()).await?;
     super::environments::validate_environment_slugs(&state.pool, &req.environments).await?;
     let webhook_secret = validate_webhook_secret_binding(
-        &state.pool,
+        &state,
         &team_id,
         &req.trigger_type,
         req.webhook_secret.as_deref(),
     )
     .await?;
 
-    let stored_team_id: String = sqlx::query_scalar("SELECT team_id FROM pipelines WHERE id = ?")
-        .bind(&id)
-        .fetch_one(&state.pool)
-        .await?;
+    let stored_team_id = crate::store::pipelines::team_of(&state.pool, &id).await?;
     if team_id != stored_team_id {
-        let active_jobs: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
-             AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
-        )
-        .bind(&id)
-        .fetch_one(&state.pool)
-        .await?;
+        let active_jobs = crate::store::pipelines::active_job_count(&state.pool, &id).await?;
         if active_jobs > 0 {
             return Err(AppError::Conflict(format!(
                 "pipeline team cannot change while {active_jobs} active job(s) exist; finish or cancel them first"
@@ -539,24 +440,17 @@ pub async fn update(
     // variable bindings resolve to names — YAML references names, not IDs.
     let mut secret_names: HashMap<String, String> = HashMap::new();
     for secret_id in req.secret_ids.iter().flatten() {
-        let name: Option<String> =
-            sqlx::query_scalar("SELECT name FROM secrets WHERE id = ? AND team_id = ?")
-                .bind(secret_id)
-                .bind(&team_id)
-                .fetch_optional(&state.pool)
-                .await?;
-        if let Some(name) = name {
+        if let Some(name) =
+            crate::store::pipelines::secret_name_in_team(&state.pool, secret_id, &team_id).await?
+        {
             secret_names.insert(secret_id.clone(), name);
         }
     }
     let mut var_names: HashMap<String, String> = HashMap::new();
     for var_id in req.var_ids.iter().flatten() {
-        let name: Option<String> =
-            sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
-                .bind(var_id)
-                .fetch_optional(&state.pool)
-                .await?;
-        if let Some(name) = name {
+        if let Some(name) =
+            crate::store::variables::variable_name_optional(&state.pool, var_id).await?
+        {
             var_names.insert(var_id.clone(), name);
         }
     }
@@ -566,65 +460,41 @@ pub async fn update(
         &secret_names,
         &var_names,
     )?;
-    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    if team_id != stored_team_id {
-        let active_jobs: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
-             AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
-        )
-        .bind(&id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if active_jobs > 0 {
-            tx.rollback().await?;
-            return Err(AppError::Conflict(format!(
-                "pipeline team cannot change while {active_jobs} active job(s) exist; finish or cancel them first"
-            )));
-        }
-    }
-    let result = sqlx::query(
-        "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?, webhook_path = ?,
-         webhook_secret = ?, cron_expr = ?, runner_labels = ?, timeout_seconds = ?,
-         concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
-         concurrency_queue_timeout_seconds = ?, owner_group = ?, team_id = ?, input_defs = ?,
-         environments = ?, notify_json = ?, updated_at = datetime('now')
-         WHERE id = ?",
+    let affected = crate::store::pipelines::update_guarded(
+        &state.pool,
+        &id,
+        team_id != stored_team_id,
+        &crate::store::pipelines::UpdatePipeline {
+            name: req.name.clone(),
+            description: req.description.clone().unwrap_or_default(),
+            trigger_type: req.trigger_type.clone(),
+            webhook_path: req.webhook_path.clone(),
+            webhook_secret: Some(webhook_secret.clone()),
+            cron_expr: req.cron_expr.clone(),
+            runner_labels: labels_json,
+            timeout_seconds: req.timeout_seconds.unwrap_or(3600) as i64,
+            concurrency_group: req.concurrency_group.clone(),
+            concurrency_mode: req.concurrency_mode.clone().unwrap_or_default(),
+            concurrency_max_queue: req.concurrency_max_queue.unwrap_or(3) as i64,
+            concurrency_queue_timeout_seconds: req.concurrency_queue_timeout_seconds.unwrap_or(1800)
+                as i64,
+            owner_group: owner_group.clone(),
+            team_id: team_id.clone(),
+            input_defs: input_defs_json,
+            environments: environments_json,
+            notify_json,
+        },
     )
-    .bind(&req.name)
-    .bind(req.description.as_deref().unwrap_or(""))
-    .bind(&req.trigger_type)
-    .bind(&req.webhook_path)
-    .bind(&webhook_secret)
-    .bind(&req.cron_expr)
-    .bind(&labels_json)
-    .bind(req.timeout_seconds.unwrap_or(3600))
-    .bind(&req.concurrency_group)
-    .bind(req.concurrency_mode.as_deref().unwrap_or(""))
-    .bind(req.concurrency_max_queue.unwrap_or(3))
-    .bind(req.concurrency_queue_timeout_seconds.unwrap_or(1800))
-    .bind(&owner_group)
-    .bind(&team_id)
-    .bind(&input_defs_json)
-    .bind(&environments_json)
-    .bind(&notify_json)
-    .bind(&id)
-    .execute(&mut *tx)
     .await?;
 
-    if result.rows_affected() == 0 {
+    if affected == 0 {
         return Err(AppError::NotFound("pipeline not found".into()));
     }
 
-    tx.commit().await?;
-
     // Rewrite the pipeline's definition (the authority). Un-migrated form rows
     // get bound here too — the same path as the startup migration.
-    let stored: (Option<String>, String) =
-        sqlx::query_as("SELECT yaml_path, source FROM pipelines WHERE id = ?")
-            .bind(&id)
-            .fetch_one(&state.pool)
-            .await?;
-    let (yaml_path, source) = stored;
+    let (source, yaml_path, _name) =
+        crate::store::pipelines::pipeline_source_row(&state.pool, &id).await?;
     let filename = match source.as_str() {
         "yaml" => yaml_path
             .map(|path| crate::services::pipeline_scanner::normalize_yaml_path_key(&path))
@@ -698,17 +568,9 @@ pub async fn delete(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::PipelineDelete)?;
 
-    let before_row = sqlx::query(
-        "SELECT name, trigger_type, team_id, owner_group, source, yaml_path FROM pipelines WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?;
-    let (name, before) = match before_row {
-        Some(r) => {
-            let name: String = r.get(0);
-            let source: String = r.get(4);
-            let yaml_path: Option<String> = r.get(5);
+    let facts = crate::store::pipelines::delete_facts(&state.pool, &id).await?;
+    let (name, before) = match facts {
+        Some((name, trigger_type, team, owner_group, source, yaml_path)) => {
             let path = if source == "yaml" {
                 yaml_path.clone()
             } else {
@@ -719,9 +581,9 @@ pub async fn delete(
                 Some(serde_json::json!({
                     "id": id,
                     "name": name,
-                    "trigger_type": r.get::<String, _>(1),
-                    "team_id": r.get::<String, _>(2),
-                    "owner_group": r.get::<String, _>(3),
+                    "trigger_type": trigger_type,
+                    "team_id": team,
+                    "owner_group": owner_group,
                     "source": source,
                     "yaml_path": &path,
                 })),
@@ -730,12 +592,9 @@ pub async fn delete(
         None => (id.clone(), None),
     };
 
-    let result = sqlx::query("DELETE FROM pipelines WHERE id = ?")
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+    let deleted = crate::store::pipelines::delete(&state.pool, &id).await?;
 
-    if result.rows_affected() == 0 {
+    if !deleted {
         return Err(AppError::NotFound("pipeline not found".into()));
     }
 
@@ -760,27 +619,19 @@ pub async fn toggle_active(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
-    let row = sqlx::query("SELECT name, is_active FROM pipelines WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
+    let (name, current_active) = crate::store::pipelines::name_active_of(&state.pool, &id)
         .await?
         .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
 
-    let current_active: i64 = row.get(1);
-    let new_active = if current_active != 0 { 0 } else { 1 };
+    let new_active = !current_active;
 
-    sqlx::query("UPDATE pipelines SET is_active = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(new_active)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+    crate::store::pipelines::set_active(&state.pool, &id, new_active).await?;
 
-    let action = if new_active != 0 {
+    let action = if new_active {
         "activated"
     } else {
         "deactivated"
     };
-    let name: String = row.get(0);
     tracing::info!("Pipeline {name} ({id}) {action}");
 
     audit::record(
@@ -788,15 +639,13 @@ pub async fn toggle_active(
         AuditEvent::from_auth(&auth, Action::PipelineToggleActive)
             .resource("pipeline", &id, &name)
             .team(Some(team_id))
-            .before(Some(
-                serde_json::json!({ "is_active": current_active != 0 }),
-            ))
-            .after(Some(serde_json::json!({ "is_active": new_active != 0 }))),
+            .before(Some(serde_json::json!({ "is_active": current_active })))
+            .after(Some(serde_json::json!({ "is_active": new_active }))),
     )
     .await;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
-        "is_active": new_active != 0
+        "is_active": new_active
     }))))
 }
 
@@ -821,55 +670,11 @@ pub async fn disable(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
-    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    let row = sqlx::query("SELECT name, is_active FROM pipelines WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
-    let name: String = row.get(0);
-    let was_active: bool = row.get::<i64, _>(1) != 0;
-
-    // Flip first, then scan: the write lock is held from BEGIN IMMEDIATE, so
-    // a trigger that re-checks is_active inside its own insert transaction
-    // cannot slip a new job past this scan after we commit.
-    if was_active {
-        sqlx::query(
-            "UPDATE pipelines SET is_active = 0, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    let mut cancelled: Vec<String> = Vec::new();
-    if req.cancel_in_flight {
-        let targets = sqlx::query(
-            "SELECT id FROM jobs
-             WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued', 'waiting_approval')
-             ORDER BY created_at, seq",
-        )
-        .bind(&id)
-        .fetch_all(&mut *tx)
-        .await?;
-        for t in targets {
-            let job_id: String = t.get(0);
-            if let Some(info) =
-                crate::store::jobs::cancel_job_in_tx(&mut tx, &job_id, &auth.id, &auth.username)
-                    .await?
-            {
-                tracing::info!(
-                    operator = %auth.username,
-                    job_id = %job_id,
-                    pipeline = %name,
-                    prev_status = %info.old_status,
-                    "Job cancelled by pipeline disable"
-                );
-                cancelled.push(job_id);
-            }
-        }
-    }
-    tx.commit().await?;
+    let outcome =
+        crate::store::pipelines::disable(&state.pool, &auth, &team_id, &id, req.cancel_in_flight)
+            .await?;
+    let name = outcome.name;
+    let cancelled = outcome.cancelled;
     if !cancelled.is_empty() {
         crate::services::poll_events::wake_all();
     }
@@ -880,20 +685,6 @@ pub async fn disable(
     }
 
     let cancelled_ids: Vec<&str> = cancelled.iter().map(String::as_str).collect();
-    audit::record(
-        &state.pool,
-        AuditEvent::from_auth(&auth, Action::PipelineDisable)
-            .resource("pipeline", &id, &name)
-            .team(Some(team_id))
-            .before(Some(serde_json::json!({ "is_active": was_active })))
-            .after(Some(serde_json::json!({ "is_active": false })))
-            .meta(Some(serde_json::json!({
-                "cancel_in_flight": req.cancel_in_flight,
-                "cancelled_count": cancelled.len(),
-                "cancelled_jobs": cancelled_ids,
-            }))),
-    )
-    .await;
 
     tracing::info!(
         "Pipeline {name} ({id}) disabled (cancelled {} in-flight jobs)",
@@ -917,33 +708,7 @@ pub async fn enable(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
-    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    let row = sqlx::query("SELECT name, is_active FROM pipelines WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
-    let name: String = row.get(0);
-    let was_active: bool = row.get::<i64, _>(1) != 0;
-    if !was_active {
-        sqlx::query(
-            "UPDATE pipelines SET is_active = 1, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
-    }
-    // Audit inside the transaction: an unauditable enable is a failed enable.
-    audit::record_in(
-        &mut tx,
-        AuditEvent::from_auth(&auth, Action::PipelineEnable)
-            .resource("pipeline", &id, &name)
-            .team(Some(team_id))
-            .before(Some(serde_json::json!({ "is_active": was_active })))
-            .after(Some(serde_json::json!({ "is_active": true }))),
-    )
-    .await?;
-    tx.commit().await?;
+    let name = crate::store::pipelines::enable(&state.pool, &auth, &team_id, &id).await?;
 
     tracing::info!("Pipeline {name} ({id}) enabled");
 
@@ -986,9 +751,7 @@ pub async fn trigger(
         Some(&auth),
     )
     .await?;
-    let name: String = sqlx::query_scalar("SELECT name FROM pipelines WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
+    let name = crate::store::pipelines::name_of(&state.pool, &id)
         .await?
         .unwrap_or_else(|| id.clone());
     let job_id = result
@@ -998,12 +761,9 @@ pub async fn trigger(
         .and_then(|d| d.get("job_id"))
         .cloned();
 
-    let input_defs_raw: String =
-        sqlx::query_scalar("SELECT input_defs FROM pipelines WHERE id = ?")
-            .bind(&id)
-            .fetch_optional(&state.pool)
-            .await?
-            .unwrap_or_else(|| "[]".into());
+    let input_defs_raw = crate::store::pipelines::input_defs_of(&state.pool, &id)
+        .await?
+        .unwrap_or_else(|| "[]".into());
     let defs: Vec<PipelineInputDef> = serde_json::from_str(&input_defs_raw).unwrap_or_default();
     let masking_keys = masking_input_names(&defs);
     let audit_inputs = redact_input_map(&body.inputs, &masking_keys);
@@ -1045,16 +805,9 @@ pub async fn do_trigger(
     // broken definition cannot be saved in the first place, so the previous
     // good projection is the current one.
 
-    let pipeline = sqlx::query(
-        "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
-                concurrency_max_queue, concurrency_queue_timeout_seconds, input_defs, team_id,
-                environments, is_active, resource_profile
-         FROM pipelines WHERE id = ?",
-    )
-    .bind(pipeline_id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+    let pipeline = crate::store::pipelines::trigger_row(&state.pool, pipeline_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
     if pipeline.get::<i64, _>(10) == 0 {
         return Err(AppError::Conflict(
             "pipeline is disabled — enable it before triggering".into(),
@@ -1107,8 +860,7 @@ pub async fn do_trigger(
     // Host references are validated against the hosts registry. Load the
     // name set once up-front so the shared validator stays DB-agnostic.
     let host_names: std::collections::HashSet<String> =
-        sqlx::query_scalar("SELECT name FROM hosts")
-            .fetch_all(&state.pool)
+        crate::store::pipelines::all_host_names(&state.pool)
             .await?
             .into_iter()
             .collect();
@@ -1207,18 +959,10 @@ pub async fn do_trigger(
 
     // Capture the full pipeline definition so historical runs are
     // reproducible even if the pipeline is later modified or deleted.
-    let mut tasks_snapshot = sqlx::query(
-        "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
-                image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, volumes,
-                privileged,
-                hosts_strategy, id, capabilities, hosts_max_parallel, needs_json
-         FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
-    )
-    .bind(pipeline_id)
-    .fetch_all(&state.pool)
-    .await?
-    .into_iter()
-    .map(|t| {
+    let mut tasks_snapshot = crate::store::pipelines::task_snapshot_rows(&state.pool, pipeline_id)
+        .await?
+        .into_iter()
+        .map(|t| {
         serde_json::json!({
             "step_order": t.get::<i64, _>(0),
             "name": t.get::<String, _>(1),
@@ -1252,13 +996,7 @@ pub async fn do_trigger(
     })
     .collect::<Vec<_>>();
 
-    let resolutions = sqlx::query(
-        "SELECT step_order, uses_ref, resolved_version, content_sha256, source, reviewed, input_defs_json \
-         FROM step_resolutions WHERE pipeline_id = ?",
-    )
-    .bind(pipeline_id)
-    .fetch_all(&state.pool)
-    .await?;
+    let resolutions = crate::store::pipelines::step_resolutions(&state.pool, pipeline_id).await?;
     for resolution in resolutions {
         let step_order: i64 = resolution.get(0);
         if let Some(task) = tasks_snapshot
@@ -1286,14 +1024,7 @@ pub async fn do_trigger(
     // references resolve only when a Runner claims the job, so restricted
     // environments reject them rather than allowing an unchecked target.
     if let Some(env_id) = environment_id {
-        let allowed: Vec<(String, String)> =
-            sqlx::query("SELECT kind, value FROM environment_hosts WHERE environment_id = ?")
-                .bind(env_id)
-                .fetch_all(&state.pool)
-                .await?
-                .into_iter()
-                .map(|r| (r.get::<String, _>(0), r.get::<String, _>(1)))
-                .collect();
+        let allowed = crate::store::pipelines::env_host_allowlist(&state.pool, env_id).await?;
         if !allowed.is_empty() {
             let allowed_names: std::collections::HashSet<&str> = allowed
                 .iter()
@@ -1310,8 +1041,7 @@ pub async fn do_trigger(
             let host_label_sets: std::collections::HashMap<
                 String,
                 std::collections::HashSet<String>,
-            > = sqlx::query("SELECT name, labels FROM hosts")
-                .fetch_all(&state.pool)
+            > = crate::store::pipelines::host_label_rows(&state.pool)
                 .await?
                 .into_iter()
                 .map(|r| {
@@ -1369,44 +1099,32 @@ pub async fn do_trigger(
         }
     }
 
-    let env_snapshot =
-        sqlx::query("SELECT var_name, is_secret FROM variables WHERE pipeline_id = ?")
-            .bind(pipeline_id)
-            .fetch_all(&state.pool)
-            .await?
-            .into_iter()
-            .map(|v| {
-                serde_json::json!({
-                    "name": v.get::<String, _>(0),
-                    "is_secret": v.get::<i64, _>(1) != 0,
-                })
+    let env_snapshot = crate::store::pipelines::pipeline_var_flags(&state.pool, pipeline_id)
+        .await?
+        .into_iter()
+        .map(|v| {
+            serde_json::json!({
+                "name": v.get::<String, _>(0),
+                "is_secret": v.get::<i64, _>(1) != 0,
             })
-            .collect::<Vec<_>>();
-
-    let pipeline_snapshot = sqlx::query(
-        "SELECT trigger_type, timeout_seconds, source
-         FROM pipelines WHERE id = ?",
-    )
-    .bind(pipeline_id)
-    .fetch_optional(&state.pool)
-    .await?
-    .map(|p| {
-        serde_json::json!({
-            "trigger_type": p.get::<String, _>(0),
-            "timeout_seconds": p.get::<i64, _>(1),
-            "source": p.get::<String, _>(2),
         })
-    })
-    .unwrap_or(serde_json::json!({}));
+        .collect::<Vec<_>>();
+
+    let pipeline_snapshot = crate::store::pipelines::trigger_snapshot_row(&state.pool, pipeline_id)
+        .await?
+        .map(|p| {
+            serde_json::json!({
+                "trigger_type": p.get::<String, _>(0),
+                "timeout_seconds": p.get::<i64, _>(1),
+                "source": p.get::<String, _>(2),
+            })
+        })
+        .unwrap_or(serde_json::json!({}));
 
     // Freeze notify config (keep `${secrets.…}`; resolve at send). The column
     // is projected from the stored definition, so it is the single source.
     let notify_snapshot = {
-        let raw: Option<String> =
-            sqlx::query_scalar("SELECT notify_json FROM pipelines WHERE id = ?")
-                .bind(pipeline_id)
-                .fetch_optional(&state.pool)
-                .await?;
+        let raw = crate::store::pipelines::notify_json_of(&state.pool, pipeline_id).await?;
         let channels: Vec<shared::pipeline_yaml::NotifyChannelYaml> = raw
             .as_deref()
             .filter(|raw| !raw.trim().is_empty())
@@ -1526,7 +1244,7 @@ pub async fn do_trigger(
 /// so the pipeline never goes live un-signable. Returns the stored name
 /// (empty for non-webhook triggers).
 async fn validate_webhook_secret_binding(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     team_id: &str,
     trigger_type: &str,
     webhook_secret: Option<&str>,
@@ -1545,12 +1263,8 @@ async fn validate_webhook_secret_binding(
                 .into(),
         ));
     }
-    let exists: Option<String> =
-        sqlx::query_scalar("SELECT id FROM secrets WHERE team_id = ? AND name = ?")
-            .bind(team_id)
-            .bind(name)
-            .fetch_optional(pool)
-            .await?;
+    let exists =
+        crate::store::pipelines::team_secret_id_by_name(&state.pool, team_id, name).await?;
     if exists.is_none() {
         tracing::warn!(
             team = %team_id,
@@ -1565,7 +1279,7 @@ async fn validate_webhook_secret_binding(
 }
 
 async fn verify_pipeline_secret_bindings(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     auth: &AuthUser,
     team_id: &str,
     secret_ids: Option<&Vec<String>>,
@@ -1575,7 +1289,7 @@ async fn verify_pipeline_secret_bindings(
     };
     auth.check_team(team_id, Perm::SecretManage)?;
     for secret_id in ids {
-        let secret_team = secret_team_id(pool, secret_id).await?;
+        let secret_team = secret_team_id(&state.pool, secret_id).await?;
         if secret_team != team_id {
             return Err(AppError::ValidationFailed(format!(
                 "secret '{secret_id}' belongs to a different team"
@@ -1644,12 +1358,10 @@ pub(crate) async fn insert_steps(
                     );
                     continue;
                 }
-                if let Ok(Some(row)) = sqlx::query("SELECT id FROM hosts WHERE name = ?")
-                    .bind(name)
-                    .fetch_optional(&mut *conn)
-                    .await
+                if let Ok(Some(host_id)) =
+                    crate::store::pipelines::host_id_by_name(&mut *conn, name).await
                 {
-                    ids.push(row.get::<String, _>(0));
+                    ids.push(host_id);
                 } else {
                     tracing::warn!(
                         "Step '{}' references unknown host '{}' — will fail at dispatch",
@@ -1674,13 +1386,7 @@ pub(crate) async fn insert_steps(
                         );
                         continue;
                     }
-                    match sqlx::query(
-                        "SELECT id FROM hosts, json_each(hosts.labels) WHERE json_each.value = ?",
-                    )
-                    .bind(label)
-                    .fetch_all(&mut *conn)
-                    .await
-                    {
+                    match crate::store::pipelines::host_ids_by_label(&mut *conn, label).await {
                         Ok(rows) => {
                             if rows.is_empty() {
                                 tracing::warn!(
@@ -1689,9 +1395,7 @@ pub(crate) async fn insert_steps(
                                     label
                                 );
                             }
-                            for row in &rows {
-                                ids.push(row.get::<String, _>(0));
-                            }
+                            ids.extend(rows);
                         }
                         Err(e) => {
                             tracing::error!(
@@ -1756,36 +1460,33 @@ pub(crate) async fn insert_steps(
             0i64
         };
 
-        sqlx::query(
-            "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
-             command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
-             step_env, volumes, privileged,
-             hosts_strategy, capabilities, hosts_max_parallel, needs_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        crate::store::pipelines::insert_task_tx(
+            conn,
+            &crate::store::pipelines::TaskInsert {
+                id: task_id.clone(),
+                pipeline_id: pipeline_id.to_string(),
+                step_order: i as i64,
+                name: step.name.clone(),
+                exec_type: exec_type.clone(),
+                host_id: host_id_bind.clone(),
+                host_names: host_names_stored.clone(),
+                host_labels: host_labels_stored.clone(),
+                command_template: step.run.clone(),
+                image: image_stored.clone(),
+                work_dir: step.dir.clone().unwrap_or_default(),
+                retry_count: step.retry.unwrap_or(0) as i64,
+                timeout_seconds: parse_timeout_seconds(step.timeout.as_deref()),
+                fail_strategy: fail_strategy.to_string(),
+                step_secrets: step_secrets_stored.clone(),
+                step_env: step_env_stored.clone(),
+                volumes: volumes_stored.clone(),
+                privileged: privileged_val,
+                hosts_strategy: hosts_strategy_stored.clone(),
+                capabilities: capabilities_stored.clone(),
+                hosts_max_parallel: step.hosts_max_parallel.map(|v| v as i64),
+                needs_json: serde_json::to_string(&step.needs).unwrap_or_else(|_| "[]".into()),
+            },
         )
-        .bind(&task_id)
-        .bind(pipeline_id)
-        .bind(i as i64)
-        .bind(&step.name)
-        .bind(&exec_type)
-        .bind(&host_id_bind)
-        .bind(&host_names_stored)
-        .bind(&host_labels_stored)
-        .bind(&step.run)
-        .bind(&image_stored)
-        .bind(step.dir.as_deref().unwrap_or(""))
-        .bind(step.retry.unwrap_or(0))
-        .bind(parse_timeout_seconds(step.timeout.as_deref()))
-        .bind(fail_strategy)
-        .bind(&step_secrets_stored)
-        .bind(&step_env_stored)
-        .bind(&volumes_stored)
-        .bind(privileged_val)
-        .bind(&hosts_strategy_stored)
-        .bind(&capabilities_stored)
-        .bind(step.hosts_max_parallel.map(|v| v as i64))
-        .bind(serde_json::to_string(&step.needs).unwrap_or_else(|_| "[]".into()))
-        .execute(&mut *conn)
         .await?;
 
         result.push(serde_json::json!({
@@ -1814,16 +1515,8 @@ pub(crate) async fn insert_env_vars(
     envs: &[shared::protocol::EnvPair],
 ) -> Result<(), AppError> {
     for env in envs {
-        sqlx::query(
-            "INSERT INTO variables (id, pipeline_id, var_name, source_type, is_secret, value)
-             VALUES (?, ?, ?, 'inline', 0, ?)",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(pipeline_id)
-        .bind(&env.name)
-        .bind(&env.value)
-        .execute(&mut *conn)
-        .await?;
+        crate::store::pipelines::insert_inline_env_tx(conn, pipeline_id, &env.name, &env.value)
+            .await?;
     }
     Ok(())
 }
@@ -1835,14 +1528,7 @@ pub(crate) async fn insert_pipeline_var_bindings(
     var_ids: &[String],
 ) -> Result<(), AppError> {
     for var_id in var_ids {
-        sqlx::query(
-            "INSERT OR IGNORE INTO pipeline_vars (pipeline_id, var_id)
-             VALUES (?, ?)",
-        )
-        .bind(pipeline_id)
-        .bind(var_id)
-        .execute(&mut *conn)
-        .await?;
+        crate::store::pipelines::insert_var_binding_tx(conn, pipeline_id, var_id).await?;
     }
     Ok(())
 }
@@ -1854,14 +1540,7 @@ pub(crate) async fn insert_pipeline_secret_bindings(
     secret_ids: &[String],
 ) -> Result<(), AppError> {
     for secret_id in secret_ids {
-        sqlx::query(
-            "INSERT OR IGNORE INTO pipeline_secrets (pipeline_id, secret_id)
-             VALUES (?, ?)",
-        )
-        .bind(pipeline_id)
-        .bind(secret_id)
-        .execute(&mut *conn)
-        .await?;
+        crate::store::pipelines::insert_secret_binding_tx(conn, pipeline_id, secret_id).await?;
     }
     Ok(())
 }
