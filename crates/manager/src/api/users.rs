@@ -5,7 +5,6 @@ use axum::{
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::protocol::{CreateUserRequest, UpdateUserRequest};
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::audit::{self, Action, AuditEvent};
@@ -17,26 +16,21 @@ pub async fn list(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let rows = sqlx::query(
-        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active, created_at, updated_at, is_ops
-         FROM users ORDER BY username ASC",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let rows = crate::store::users::list_all(&state.pool).await?;
 
     let users = rows
         .into_iter()
-        .map(|r| {
+        .map(|u| {
             serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "username": r.get::<String, _>(1),
-                "display_name": r.get::<String, _>(2),
-                "is_platform_admin": r.get::<i64, _>(3) != 0,
-                "is_super_admin": r.get::<i64, _>(4) != 0,
-                "is_active": r.get::<i64, _>(5) != 0,
-                "created_at": r.get::<Option<String>, _>(6),
-                "updated_at": r.get::<Option<String>, _>(7),
-                "is_ops": r.get::<i64, _>(8) != 0,
+                "id": u.id,
+                "username": u.username,
+                "display_name": u.display_name,
+                "is_platform_admin": u.is_platform_admin,
+                "is_super_admin": u.is_super_admin,
+                "is_active": u.is_active,
+                "created_at": u.created_at,
+                "updated_at": u.updated_at,
+                "is_ops": u.is_ops,
             })
         })
         .collect();
@@ -63,26 +57,17 @@ pub async fn create(
     let is_ops = req.is_ops.unwrap_or(false);
     let display = req.display_name.unwrap_or_else(|| username.to_string());
 
-    sqlx::query(
-        "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_ops, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+    crate::store::users::insert(
+        &state.pool,
+        &id,
+        username,
+        &hash,
+        &display,
+        is_admin,
+        is_super,
+        is_ops,
     )
-    .bind(&id)
-    .bind(username)
-    .bind(&hash)
-    .bind(&display)
-    .bind(if is_admin { 1 } else { 0 })
-    .bind(if is_super { 1 } else { 0 })
-    .bind(if is_ops { 1 } else { 0 })
-    .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            AppError::Conflict("username already exists".into())
-        } else {
-            AppError::DatabaseError(e.to_string())
-        }
-    })?;
+    .await?;
 
     audit::record(
         &state.pool,
@@ -115,23 +100,17 @@ pub async fn update(
     State(state): State<AppState>,
     Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let before_row = sqlx::query(
-        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active FROM users WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?;
-    let Some(before_row) = before_row else {
-        return Err(AppError::NotFound("user not found".into()));
-    };
-    let username: String = before_row.get(1);
+    let facts = crate::store::users::update_facts(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+    let username = facts.username.clone();
     let before = serde_json::json!({
-        "id": before_row.get::<String, _>(0),
-        "username": username,
-        "display_name": before_row.get::<String, _>(2),
-        "is_platform_admin": before_row.get::<i64, _>(3) != 0,
-        "is_super_admin": before_row.get::<i64, _>(4) != 0,
-        "is_active": before_row.get::<i64, _>(5) != 0,
+        "id": facts.id,
+        "username": facts.username,
+        "display_name": facts.display_name,
+        "is_platform_admin": facts.is_platform_admin,
+        "is_super_admin": facts.is_super_admin,
+        "is_active": facts.is_active,
     });
 
     if let Some(ref pw) = req.password {
@@ -141,44 +120,25 @@ pub async fn update(
             ));
         }
         let hash = hash_password(pw).map_err(AppError::Internal)?;
-        sqlx::query(
-            "UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(&hash)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::users::update_password(&state.pool, &id, &hash).await?;
     }
 
     if let Some(ref dn) = req.display_name {
-        sqlx::query("UPDATE users SET display_name = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(dn)
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
+        crate::store::users::update_display_name(&state.pool, &id, dn).await?;
     }
 
     if let Some(is_admin) = req.is_platform_admin {
         // Prevent removing the last platform admin
         if !is_admin && id == auth.id {
-            let admin_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM users WHERE is_platform_admin = 1 AND is_active = 1",
-            )
-            .fetch_one(&state.pool)
-            .await?;
+            let admin_count =
+                crate::store::users::count_active_platform_admins(&state.pool).await?;
             if admin_count <= 1 {
                 return Err(AppError::ValidationFailed(
                     "cannot remove the last platform admin".into(),
                 ));
             }
         }
-        sqlx::query(
-            "UPDATE users SET is_platform_admin = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(if is_admin { 1 } else { 0 })
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::users::update_is_platform_admin(&state.pool, &id, is_admin).await?;
     }
 
     // Super admin tier may only be granted/revoked by another super admin.
@@ -189,33 +149,19 @@ pub async fn update(
             ));
         }
         if !is_super && id == auth.id {
-            let super_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM users WHERE is_super_admin = 1 AND is_active = 1",
-            )
-            .fetch_one(&state.pool)
-            .await?;
+            let super_count = crate::store::users::count_active_super_admins(&state.pool).await?;
             if super_count <= 1 {
                 return Err(AppError::ValidationFailed(
                     "cannot remove the last super admin".into(),
                 ));
             }
         }
-        sqlx::query(
-            "UPDATE users SET is_super_admin = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(if is_super { 1 } else { 0 })
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::users::update_is_super_admin(&state.pool, &id, is_super).await?;
     }
 
     // Platform-ops flag: any platform admin may grant/revoke it.
     if let Some(is_ops) = req.is_ops {
-        sqlx::query("UPDATE users SET is_ops = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(if is_ops { 1 } else { 0 })
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
+        crate::store::users::update_is_ops(&state.pool, &id, is_ops).await?;
     }
 
     if let Some(active) = req.is_active {
@@ -224,27 +170,18 @@ pub async fn update(
                 "cannot deactivate yourself".into(),
             ));
         }
-        sqlx::query("UPDATE users SET is_active = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(if active { 1 } else { 0 })
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
+        crate::store::users::update_is_active(&state.pool, &id, active).await?;
     }
 
-    let after_row = sqlx::query(
-        "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active, is_ops FROM users WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_one(&state.pool)
-    .await?;
+    let after_facts = crate::store::users::update_after(&state.pool, &id).await?;
     let after = serde_json::json!({
-        "id": after_row.get::<String, _>(0),
-        "username": after_row.get::<String, _>(1),
-        "display_name": after_row.get::<String, _>(2),
-        "is_platform_admin": after_row.get::<i64, _>(3) != 0,
-        "is_super_admin": after_row.get::<i64, _>(4) != 0,
-        "is_active": after_row.get::<i64, _>(5) != 0,
-        "is_ops": after_row.get::<i64, _>(6) != 0,
+        "id": after_facts.id,
+        "username": after_facts.username,
+        "display_name": after_facts.display_name,
+        "is_platform_admin": after_facts.is_platform_admin,
+        "is_super_admin": after_facts.is_super_admin,
+        "is_active": after_facts.is_active,
+        "is_ops": after_facts.is_ops,
     });
     audit::record(
         &state.pool,
@@ -278,34 +215,26 @@ pub async fn delete(
     if id == auth.id {
         return Err(AppError::ValidationFailed("cannot delete yourself".into()));
     }
-    let before_row = sqlx::query(
-        "SELECT username, display_name, is_platform_admin, is_super_admin, is_active FROM users WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?;
-    let (username, before) = match before_row {
-        Some(r) => {
-            let username: String = r.get(0);
+    let facts = crate::store::users::delete_facts(&state.pool, &id).await?;
+    let (username, before) = match facts {
+        Some(f) => {
+            let username = f.username.clone();
             (
                 username.clone(),
                 Some(serde_json::json!({
                     "id": id,
                     "username": username,
-                    "display_name": r.get::<String, _>(1),
-                    "is_platform_admin": r.get::<i64, _>(2) != 0,
-                    "is_super_admin": r.get::<i64, _>(3) != 0,
-                    "is_active": r.get::<i64, _>(4) != 0,
+                    "display_name": f.display_name,
+                    "is_platform_admin": f.is_platform_admin,
+                    "is_super_admin": f.is_super_admin,
+                    "is_active": f.is_active,
                 })),
             )
         }
         None => (id.clone(), None),
     };
-    let result = sqlx::query("DELETE FROM users WHERE id = ?")
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
-    if result.rows_affected() == 0 {
+    let deleted = crate::store::users::delete(&state.pool, &id).await?;
+    if !deleted {
         return Err(AppError::NotFound("user not found".into()));
     }
     audit::record(

@@ -1,8 +1,6 @@
-auth.rs
 github_sync.rs
 hosts.rs
 ops_sandbox.rs
 pipelines.rs
 runners.rs
 teams.rs
-users.rs

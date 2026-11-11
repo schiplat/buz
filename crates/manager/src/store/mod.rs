@@ -25,6 +25,7 @@
 
 pub mod api_tokens;
 pub mod audit_logs;
+pub mod auth;
 pub mod environments;
 pub mod git_hooks;
 pub mod github;
@@ -39,5 +40,6 @@ pub mod runners;
 pub mod sandboxd_config;
 pub mod secrets;
 pub mod trigger_events;
+pub mod users;
 pub mod variables;
 pub mod webhook_pipeline;
