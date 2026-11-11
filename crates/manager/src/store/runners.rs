@@ -829,3 +829,150 @@ pub async fn claim_candidate_tx(
     .await?;
     Ok(row.map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))))
 }
+
+// ───────────────────────────── claim payload plane ─────────────────────────────
+//
+// Payload assembly reads per pipeline / environment. `build_claim_payload` keeps
+// the crypto and the JSON shaping; every query lives here.
+
+/// Snapshot task rows (frozen definition), step-ordered — the claim payload
+/// shape. `snapshot_raw` is the job snapshot as stored.
+pub async fn frozen_task_rows(
+    pool: &SqlitePool,
+    snapshot_raw: &str,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+    Ok(sqlx::query(
+            "SELECT COALESCE(json_extract(j.value, '$.id'), ''), json_extract(j.value, '$.step_order'),
+                    json_extract(j.value, '$.name'), json_extract(j.value, '$.exec_type'),
+                    COALESCE(json_extract(j.value, '$.host_id'), ''), COALESCE(json_extract(j.value, '$.host_names'), ''),
+                    COALESCE(json_extract(j.value, '$.host_labels'), ''),
+                    COALESCE(json_extract(j.value, '$.command_template'), ''),
+                    COALESCE(json_extract(j.value, '$.work_dir'), ''),
+                    COALESCE(json_extract(j.value, '$.retry_count'), 0),
+                    COALESCE(json_extract(j.value, '$.timeout_seconds'), 0),
+                    COALESCE(json_extract(j.value, '$.fail_strategy'), 'stop'),
+                    COALESCE(json_extract(j.value, '$.step_secrets'), ''),
+                    COALESCE(json_extract(j.value, '$.step_env'), '{}'),
+                    COALESCE(json_extract(j.value, '$.image'), ''),
+                    COALESCE(json_extract(j.value, '$.volumes'), '[]'),
+                    COALESCE(json_extract(j.value, '$.hosts_strategy'), 'chain'),
+                    COALESCE(json_extract(j.value, '$.privileged'), 0),
+                    COALESCE(json_extract(j.value, '$.capabilities'), '[]'),
+                    COALESCE(json_extract(j.value, '$.hosts_max_parallel'), NULL),
+                    COALESCE(json_extract(j.value, '$.needs'), '[]')
+             FROM json_each(?, '$.tasks') j
+             ORDER BY json_extract(j.value, '$.step_order')",
+    )
+    .bind(snapshot_raw)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Live task rows (un-frozen pipelines), step-ordered — the claim payload shape.
+pub async fn live_task_rows(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+    Ok(sqlx::query(
+            "SELECT id, step_order, name, exec_type, COALESCE(host_id, ''), host_names, host_labels, command_template,
+                    work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
+                    hosts_strategy,
+                    privileged, capabilities, hosts_max_parallel, needs_json
+             FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
+    )
+    .bind(pipeline_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// `(name, value)` of a pipeline's explicit secret bindings, same-team only —
+/// stale/cross-team rows are ignored by the join predicate.
+pub async fn bound_secret_values(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<(String, String)>, AppError> {
+    Ok(sqlx::query(
+        "SELECT s.name, s.value
+         FROM pipeline_secrets ps
+         JOIN secrets s ON s.id = ps.secret_id
+         JOIN pipelines p ON p.id = ps.pipeline_id AND s.team_id = p.team_id AND p.team_id != ''
+         WHERE ps.pipeline_id = ?",
+    )
+    .bind(pipeline_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| (r.get(0), r.get(1)))
+    .collect())
+}
+
+/// `(name, value)` of secrets a pipeline inherits from its team (opt-in
+/// `team_shared = 1`), excluding the unassigned pseudo-team.
+pub async fn team_shared_secret_values(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<(String, String)>, AppError> {
+    Ok(sqlx::query(
+        "SELECT s.name, s.value
+         FROM secrets s
+         JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
+         WHERE p.id = ? AND s.team_shared = 1",
+    )
+    .bind(pipeline_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| (r.get(0), r.get(1)))
+    .collect())
+}
+
+/// `(name, value)` of a pipeline's explicitly bound platform variables.
+pub async fn bound_variable_values(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<(String, String)>, AppError> {
+    Ok(sqlx::query(
+        "SELECT pv.name, pv.value
+         FROM pipeline_vars pvars
+         JOIN platform_vars pv ON pv.id = pvars.var_id
+         WHERE pvars.pipeline_id = ?",
+    )
+    .bind(pipeline_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| (r.get(0), r.get(1)))
+    .collect())
+}
+
+/// `(name, value)` of an environment's variable overrides.
+pub async fn environment_variable_overrides(
+    pool: &SqlitePool,
+    environment_id: &str,
+) -> Result<Vec<(String, String)>, AppError> {
+    Ok(sqlx::query(
+        "SELECT pv.name, o.value
+         FROM environment_var_overrides o
+         JOIN platform_vars pv ON pv.id = o.var_id
+         WHERE o.environment_id = ?",
+    )
+    .bind(environment_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| (r.get(0), r.get(1)))
+    .collect())
+}
+
+/// `(step_order, input_defs_json)` of a pipeline's marketplace resolutions.
+pub async fn resolution_inputs(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<(i64, String)>, AppError> {
+    Ok(sqlx::query_as(
+        "SELECT step_order, input_defs_json FROM step_resolutions WHERE pipeline_id = ?",
+    )
+    .bind(pipeline_id)
+    .fetch_all(pool)
+    .await?)
+}

@@ -1074,3 +1074,17 @@ pub async fn update_guarded(
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(affected)
 }
+
+/// `(step_order, input_defs_json)` of a pipeline's marketplace resolutions —
+/// the claim payload's per-step inputs when the job has no frozen tasks.
+pub async fn step_resolution_defs(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+) -> Result<Vec<(i64, String)>, AppError> {
+    Ok(sqlx::query_as(
+        "SELECT step_order, input_defs_json FROM step_resolutions WHERE pipeline_id = ?",
+    )
+    .bind(pipeline_id)
+    .fetch_all(pool)
+    .await?)
+}

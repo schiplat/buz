@@ -1219,9 +1219,7 @@ async fn build_claim_payload(
 
     // Fallback for jobs created before masking_input_keys existed: use live pipeline defs.
     if masking_input_keys.is_empty() {
-        let defs_raw: String = sqlx::query_scalar("SELECT input_defs FROM pipelines WHERE id = ?")
-            .bind(&pipeline_id)
-            .fetch_optional(&state.pool)
+        let defs_raw = crate::store::pipelines::input_defs_of(&state.pool, &pipeline_id)
             .await?
             .unwrap_or_else(|| "[]".into());
         let defs: Vec<shared::protocol::PipelineInputDef> =
@@ -1261,14 +1259,11 @@ async fn build_claim_payload(
         })
         .collect();
     if !has_frozen_tasks {
-        resolutions_by_order = sqlx::query_as(
-            "SELECT step_order, input_defs_json FROM step_resolutions WHERE pipeline_id = ?",
-        )
-        .bind(&pipeline_id)
-        .fetch_all(&state.pool)
-        .await?
-        .into_iter()
-        .collect();
+        resolutions_by_order =
+            crate::store::pipelines::step_resolution_defs(&state.pool, &pipeline_id)
+                .await?
+                .into_iter()
+                .collect();
     }
     let task_rows = if has_frozen_tasks {
         sqlx::query(
