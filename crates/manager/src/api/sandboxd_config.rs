@@ -57,22 +57,11 @@ struct FetchOutcome {
 
 /// Read the current desired version + document for one host.
 async fn read_desired(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     host_id: &str,
     instance_id: &str,
 ) -> Result<FetchOutcome, AppError> {
-    let row: Option<(i64, Option<String>)> = sqlx::query_as(
-        "SELECT h.desired_version, c.document
-         FROM sandbox_hosts h
-         LEFT JOIN sandbox_host_configs c
-           ON c.host_id = h.host_id AND c.instance_id = h.instance_id
-              AND c.version = h.desired_version
-         WHERE h.host_id = ? AND h.instance_id = ?",
-    )
-    .bind(host_id)
-    .bind(instance_id)
-    .fetch_optional(pool)
-    .await?;
+    let row = crate::store::sandboxd_config::desired_row(&state.pool, host_id, instance_id).await?;
 
     let Some((version, document)) = row else {
         return Err(AppError::NotFound("sandbox host not enrolled".into()));
@@ -89,9 +78,11 @@ async fn read_desired(
     // Tiers the host leaves undefined inherit the platform defaults; what is
     // delivered here is the effective document, and the sha256 covers exactly
     // those bytes.
-    let tier_defaults = crate::services::sandbox_defaults::load(pool).await?;
-    let profile_defaults = crate::services::sandbox_defaults::load_default_profiles(pool).await?;
-    let network_default = crate::services::sandbox_defaults::load_default_network(pool).await?;
+    let tier_defaults = crate::services::sandbox_defaults::load(&state.pool).await?;
+    let profile_defaults =
+        crate::services::sandbox_defaults::load_default_profiles(&state.pool).await?;
+    let network_default =
+        crate::services::sandbox_defaults::load_default_network(&state.pool).await?;
     let host_document: SandboxHostDocument = document
         .as_deref()
         .and_then(|raw| serde_json::from_str(raw).ok())
@@ -116,7 +107,7 @@ async fn read_desired(
 /// past it (re-storing the last known document when available) and alert — the
 /// host must never be told to apply an OLDER version than it runs.
 async fn reconcile_db_restore(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     host_id: &str,
     instance_id: &str,
     applied_version: i64,
@@ -124,14 +115,9 @@ async fn reconcile_db_restore(
     if applied_version <= 0 {
         return Ok(());
     }
-    let desired: i64 = sqlx::query_scalar(
-        "SELECT desired_version FROM sandbox_hosts WHERE host_id = ? AND instance_id = ?",
-    )
-    .bind(host_id)
-    .bind(instance_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("sandbox host not enrolled".into()))?;
+    let desired = crate::store::sandboxd_config::desired_version(&state.pool, host_id, instance_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("sandbox host not enrolled".into()))?;
     if desired >= applied_version {
         return Ok(());
     }
@@ -139,16 +125,9 @@ async fn reconcile_db_restore(
     // Take the highest stored document (any version) as the restoration body;
     // an empty database stores an empty document and the host keeps its cache
     // version number via the bump alone.
-    let stored: Option<String> = sqlx::query_scalar(
-        "SELECT document FROM sandbox_host_configs
-         WHERE host_id = ? AND instance_id = ?
-         ORDER BY version DESC LIMIT 1",
-    )
-    .bind(host_id)
-    .bind(instance_id)
-    .fetch_optional(pool)
-    .await?
-    .flatten();
+    let stored =
+        crate::store::sandboxd_config::latest_config_document(&state.pool, host_id, instance_id)
+            .await?;
     let restored: SandboxHostDocument = stored
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default();
@@ -167,27 +146,22 @@ async fn reconcile_db_restore(
     let json = serde_json::to_string(&sc::canonical_json(&document))
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let sha = sc::sha256_hex(json.as_bytes());
-    sqlx::query(
-        "INSERT OR IGNORE INTO sandbox_host_configs
-         (host_id, instance_id, version, document, document_sha256, created_by)
-         VALUES (?, ?, ?, ?, ?, 'db-restore-reconcile')",
+    crate::store::sandboxd_config::insert_restore_config(
+        &state.pool,
+        host_id,
+        instance_id,
+        version,
+        &json,
+        &sha,
     )
-    .bind(host_id)
-    .bind(instance_id)
-    .bind(version)
-    .bind(&json)
-    .bind(&sha)
-    .execute(pool)
     .await?;
-    sqlx::query(
-        "UPDATE sandbox_hosts SET desired_version = ?, applied_version = ?, updated_at = datetime('now')
-         WHERE host_id = ? AND instance_id = ?",
+    crate::store::sandboxd_config::bump_versions_for_restore(
+        &state.pool,
+        host_id,
+        instance_id,
+        version,
+        applied_version,
     )
-    .bind(version)
-    .bind(applied_version)
-    .bind(host_id)
-    .bind(instance_id)
-    .execute(pool)
     .await?;
     tracing::warn!(
         host = %host_id,
@@ -197,7 +171,7 @@ async fn reconcile_db_restore(
         "database restored behind a host's applied version — bumped desired version and re-served the last stored document"
     );
     crate::audit::record(
-        pool,
+        &state.pool,
         crate::audit::AuditEvent::system(crate::audit::Action::SandboxHostConfigUpdate)
             .on(crate::audit::Resource::sandbox_host(host_id, instance_id))
             .after(Some(json!({
@@ -236,7 +210,7 @@ pub async fn get_config(
     let instance_id = claims.instance_id.clone();
 
     reconcile_db_restore(
-        &state.pool,
+        &state,
         &host_id,
         &instance_id,
         q.applied_version.unwrap_or(0),
@@ -248,7 +222,7 @@ pub async fn get_config(
         // Subscribe BEFORE reading so a change committed between the read and
         // the await is buffered and cannot be missed.
         let mut events = sandbox_config_events::subscribe();
-        let current = read_desired(&state.pool, &host_id, &instance_id).await?;
+        let current = read_desired(&state, &host_id, &instance_id).await?;
         // A first fetch (no applied_version) always returns the document;
         // otherwise return as soon as the desired version differs.
         let changed = q
@@ -269,17 +243,8 @@ pub async fn get_config(
     };
 
     // Record the fetch for ops visibility (best-effort).
-    let _ = sqlx::query(
-        "UPDATE sandbox_hosts SET last_fetch_at = datetime('now'),
-         last_fetch_error = NULL, consecutive_fetch_failures = 0,
-         status = CASE WHEN status = 'enrolled' THEN 'syncing' ELSE status END,
-         updated_at = datetime('now')
-         WHERE host_id = ? AND instance_id = ?",
-    )
-    .bind(&host_id)
-    .bind(&instance_id)
-    .execute(&state.pool)
-    .await;
+    let _ =
+        crate::store::sandboxd_config::stamp_fetch_ok(&state.pool, &host_id, &instance_id).await;
 
     let changed = q
         .applied_version
@@ -325,53 +290,27 @@ pub async fn report_status(
 ) -> Result<impl IntoResponse, AppError> {
     let host_id = &claims.host_id;
     let instance_id = &claims.instance_id;
-    reconcile_db_restore(&state.pool, host_id, instance_id, report.applied_version).await?;
+    reconcile_db_restore(&state, host_id, instance_id, report.applied_version).await?;
 
     // Snapshot before the update so the log can tell a fresh apply (version
     // moved) from a routine heartbeat (same version again).
-    let before: Option<(i64, i64)> = sqlx::query_as(
-        "SELECT applied_version, desired_version FROM sandbox_hosts
-         WHERE host_id = ? AND instance_id = ?",
-    )
-    .bind(host_id)
-    .bind(instance_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let before =
+        crate::store::sandboxd_config::status_snapshot(&state.pool, host_id, instance_id).await?;
 
     let error = report.last_error.trim().to_string();
-    sqlx::query(
-        "UPDATE sandbox_hosts SET
-           applied_version = ?,
-           applied_sha256 = ?,
-           applied_at = CASE
-             WHEN ? > 0 AND ? != applied_version THEN datetime('now')
-             ELSE applied_at END,
-           last_fetch_at = datetime('now'),
-           last_fetch_error = ?,
-           consecutive_fetch_failures = ?,
-           status = CASE
-             WHEN ? > 0 AND desired_version = ? THEN 'insync'
-             WHEN ? > 0 THEN 'pending'
-             ELSE status END,
-           updated_at = datetime('now')
-         WHERE host_id = ? AND instance_id = ?",
+    crate::store::sandboxd_config::apply_status_report(
+        &state.pool,
+        host_id,
+        instance_id,
+        report.applied_version,
+        &report.applied_sha256,
+        if error.is_empty() {
+            None
+        } else {
+            Some(error.as_str())
+        },
+        report.consecutive_failures,
     )
-    .bind(report.applied_version)
-    .bind(&report.applied_sha256)
-    .bind(report.applied_version)
-    .bind(report.applied_version)
-    .bind(if error.is_empty() {
-        None
-    } else {
-        Some(error.as_str())
-    })
-    .bind(report.consecutive_failures)
-    .bind(report.applied_version)
-    .bind(report.applied_version)
-    .bind(report.applied_version)
-    .bind(host_id)
-    .bind(instance_id)
-    .execute(&state.pool)
     .await?;
 
     // Mirror the status CASE above for the log line (no second read).

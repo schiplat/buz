@@ -15,12 +15,12 @@ use shared::git_webhook::{
 };
 use shared::protocol::response::ApiResponse;
 
-use super::trigger_events::{
-    claim_delivery, finalize_event, insert_event, release_claim, ClaimResult, TriggerEventWrite,
-};
 use crate::crypto;
 use crate::state::AppState;
 use crate::store::git_hooks::find_by_hook_key;
+use crate::store::trigger_events::{
+    claim_delivery, finalize_event, insert_event, release_claim, ClaimResult, TriggerEventWrite,
+};
 
 /// POST /hooks/git/:provider/:hook_key
 pub async fn handle(

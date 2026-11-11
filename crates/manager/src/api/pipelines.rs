@@ -1492,7 +1492,7 @@ pub async fn do_trigger(
             "cron" => "cron",
             _ => "manual",
         };
-        super::trigger_events::record_simple_trigger(
+        crate::store::trigger_events::record_simple_trigger(
             &state.pool,
             pipeline_id,
             source,
