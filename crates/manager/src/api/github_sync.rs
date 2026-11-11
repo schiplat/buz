@@ -873,35 +873,23 @@ pub async fn list_secret_binds(
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let team_id = secret_team_id(&state.pool, &secret_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
-    let rows = sqlx::query(
-        "SELECT b.id, b.repo_id, c.name, r.owner, r.repo, b.last_pushed_at, b.last_status, b.last_error, b.last_op, b.override_value
-         FROM secret_github_binds b
-         JOIN github_repos r ON r.id = b.repo_id
-         JOIN github_connections c ON c.id = r.connection_id
-         WHERE b.secret_id = ?
-         ORDER BY r.owner ASC, r.repo ASC",
-    )
-    .bind(&secret_id)
-    .fetch_all(&state.pool)
-    .await?;
-    let out: Vec<serde_json::Value> = rows
+    let binds = crate::store::github_binds::list_secret_binds(&state.pool, &secret_id).await?;
+    let out: Vec<serde_json::Value> = binds
         .into_iter()
-        .map(|r| {
-            let ov_cipher: Option<String> = r.get(9);
-            let has_override = ov_cipher.is_some();
+        .map(|b| {
             bind_view(&BindView {
-                id: &r.get::<String, _>(0),
-                repo_id: &r.get::<String, _>(1),
-                connection_name: &r.get::<String, _>(2),
-                owner: &r.get::<String, _>(3),
-                repo: &r.get::<String, _>(4),
-                last_pushed_at: r.get(5),
-                last_status: &r.get::<String, _>(6),
-                last_error: &r.get::<String, _>(7),
-                last_op: &r.get::<String, _>(8),
+                id: &b.id,
+                repo_id: &b.repo_id,
+                connection_name: &b.connection_name,
+                owner: &b.owner,
+                repo: &b.repo,
+                last_pushed_at: b.last_pushed_at,
+                last_status: &b.last_status,
+                last_error: &b.last_error,
+                last_op: &b.last_op,
                 // Never expose secret override plaintext over the API.
                 override_value: None,
-                has_override,
+                has_override: b.has_override,
             })
         })
         .collect();

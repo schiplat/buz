@@ -28,6 +28,7 @@ pub mod audit_logs;
 pub mod environments;
 pub mod git_hooks;
 pub mod github;
+pub mod github_binds;
 pub mod health;
 pub mod jobs;
 pub mod metrics;
