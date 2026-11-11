@@ -1,5 +1,4 @@
 auth.rs
-environments.rs
 git_hooks.rs
 github_sync.rs
 hosts.rs
