@@ -35,6 +35,7 @@ pub mod hosts;
 pub mod jobs;
 pub mod logs;
 pub mod metrics;
+pub mod ops_sandbox;
 pub mod pipelines;
 pub mod plugin_sources;
 pub mod runners;

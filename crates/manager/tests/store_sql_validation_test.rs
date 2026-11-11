@@ -239,6 +239,10 @@ const EXPECTED_DYNAMIC_SHAPES: &[&str] = &[
     "SELECT b.repo_id, b.id, v.name, b.last_status, b.last_op FROM variable_github_binds b JOIN platform_vars v ON v.id = b.var_id WHERE b.repo_id IN ({placeholders}) ORDER BY v.name ASC",
     "SELECT b.secret_id, b.id, b.repo_id, c.name, r.owner, r.repo, b.last_status, b.last_pushed_at, b.last_error, b.last_op, b.override_value FROM secret_github_binds b JOIN github_repos r ON r.id = b.repo_id JOIN github_connections c ON c.id = r.connection_id WHERE b.secret_id IN ({placeholders}) ORDER BY r.owner ASC, r.repo ASC",
     "SELECT b.var_id, b.id, b.repo_id, c.name, r.owner, r.repo, b.last_status, b.last_pushed_at, b.last_error, b.last_op, b.override_value FROM variable_github_binds b JOIN github_repos r ON r.id = b.repo_id JOIN github_connections c ON c.id = r.connection_id WHERE b.var_id IN ({placeholders}) ORDER BY r.owner ASC, r.repo ASC",
+    "DELETE FROM {table} WHERE host_id = ? AND instance_id = ?",
+    "INSERT INTO sandbox_config_changes (id, host_id, instance_id, status, requested_by, before_document, after_document) VALUES (?, 'resource-grants', 'grant', 'pending', ?, '{}', ?)",
+    "SELECT COUNT(*) FROM sandbox_config_changes {where_clause}",
+    "SELECT id, host_id, instance_id, status, requested_by, after_document, created_at, decided_at, approved_by, decision_comment FROM sandbox_config_changes {where_clause} ORDER BY CASE WHEN status = 'pending' THEN created_at ELSE decided_at END DESC LIMIT {} OFFSET {}",
 ];
 
 /// Every unresolved-fragment statement in the store must be one of the shapes
