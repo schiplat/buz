@@ -32,4 +32,5 @@ pub mod jobs;
 pub mod metrics;
 pub mod pipelines;
 pub mod plugin_sources;
+pub mod runners;
 pub mod webhook_pipeline;

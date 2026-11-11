@@ -49,29 +49,10 @@ pub fn runner_satisfies_labels(runner_labels: &[String], required: &[String]) ->
         .all(|need| runner_labels.iter().any(|have| have == need))
 }
 
-/// Best-effort note of why a poller skipped a pending job (slot wait,
-/// profile not offered, host mode). Display-only; cleared on claim. Logged
-/// only when the reason changes, so a job parked on one reason does not
-/// repeat itself on every poll round.
+/// Best-effort note of why a poller skipped a pending job: the store owns the
+/// write and the log-on-change behaviour.
 async fn record_dispatch_reason(pool: &sqlx::SqlitePool, job_id: &str, reason: &str) {
-    match sqlx::query(
-        "UPDATE jobs SET dispatch_reason = ? WHERE id = ? AND status = 'pending'
-         AND COALESCE(dispatch_reason, '') != ?",
-    )
-    .bind(reason)
-    .bind(job_id)
-    .bind(reason)
-    .execute(pool)
-    .await
-    {
-        Ok(done) if done.rows_affected() > 0 => {
-            tracing::info!(job = %job_id, reason, "job not dispatched");
-        }
-        Ok(_) => {}
-        Err(e) => {
-            tracing::warn!(job = %job_id, error = %e, "failed to record dispatch reason");
-        }
-    }
+    crate::store::runners::record_dispatch_reason(pool, job_id, reason).await;
 }
 
 /// `(resource_profile, team_id)` frozen into the job snapshot at trigger.
@@ -111,19 +92,7 @@ async fn log_runner_event(
     event_type: &str,
     message: &str,
 ) {
-    let id = Uuid::new_v4().to_string();
-    if let Err(e) = sqlx::query(
-        "INSERT INTO runner_events (id, runner_id, event_type, message) VALUES (?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(runner_id)
-    .bind(event_type)
-    .bind(message)
-    .execute(pool)
-    .await
-    {
-        tracing::warn!("Failed to log runner event for {runner_id}: {e}");
-    }
+    crate::store::runners::log_runner_event(pool, runner_id, event_type, message).await
 }
 
 /// Validate and clamp max_concurrent_jobs to 1..=32.
@@ -2867,36 +2836,21 @@ pub async fn delete_runner(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     // Snapshot first: the audit record outlives the row and is the only
     // remaining description of what was deleted.
-    let removed = sqlx::query("SELECT name, team_id, status FROM runners WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?;
-    // Nullify runner references in past jobs so FK constraint is not violated.
-    // Jobs table FK: runner_id TEXT REFERENCES runners(id) — no ON DELETE CASCADE/SET NULL.
-    let _ = sqlx::query("UPDATE jobs SET runner_id = NULL WHERE runner_id = ?")
-        .bind(&id)
-        .execute(&state.pool)
-        .await;
+    let removed = crate::store::runners::runner_snapshot(&state.pool, &id).await?;
 
-    let result = sqlx::query("DELETE FROM runners WHERE id = ?")
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
-
-    if result.rows_affected() == 0 {
+    if !crate::store::runners::delete_runner(&state.pool, &id).await? {
         return Err(AppError::NotFound("runner not found".into()));
     }
 
-    if let Some(row) = &removed {
-        let name: String = row.get(0);
+    if let Some((name, team_id, status)) = removed {
         audit::record(
             &state.pool,
             AuditEvent::new(Action::RunnerDelete, &auth)
                 .on(Resource::runner(&id, &name))
                 .before(Some(serde_json::json!({
                     "name": name,
-                    "team_id": row.get::<Option<String>, _>(1),
-                    "status": row.get::<String, _>(2),
+                    "team_id": team_id,
+                    "status": status,
                 }))),
         )
         .await;
@@ -2910,28 +2864,10 @@ pub async fn toggle_freeze(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query("SELECT name, is_frozen FROM runners WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
+    let (name, was_frozen, now_frozen) =
+        crate::store::runners::toggle_freeze(&state.pool, &id).await?;
 
-    let current_frozen: i64 = row.get(1);
-    let new_frozen = if current_frozen != 0 { 0 } else { 1 };
-
-    sqlx::query("UPDATE runners SET is_frozen = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(new_frozen)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
-    crate::services::poll_events::wake_all();
-
-    let action = if new_frozen != 0 {
-        "frozen"
-    } else {
-        "unfrozen"
-    };
-    let name: String = row.get(0);
+    let action = if now_frozen { "frozen" } else { "unfrozen" };
     tracing::info!("Runner {name} ({id}) {action}");
 
     log_runner_event(&state.pool, &id, action, &format!("Runner {action}")).await;
@@ -2940,14 +2876,14 @@ pub async fn toggle_freeze(
         AuditEvent::new(Action::RunnerFreeze, &auth)
             .on(Resource::runner(&id, &name))
             .changes(
-                Some(serde_json::json!({ "is_frozen": current_frozen != 0 })),
-                Some(serde_json::json!({ "is_frozen": new_frozen != 0 })),
+                Some(serde_json::json!({ "is_frozen": was_frozen })),
+                Some(serde_json::json!({ "is_frozen": now_frozen })),
             ),
     )
     .await;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
-        "is_frozen": new_frozen != 0
+        "is_frozen": now_frozen
     }))))
 }
 
@@ -2959,36 +2895,19 @@ pub async fn restart(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query("SELECT name FROM runners WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
-    let name: String = row.get(0);
+    let state_row = crate::store::runners::runner_restart_state(&state.pool, &id).await?;
+    let name = state_row.name;
 
-    let running_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM jobs WHERE runner_id = ? AND status = 'running' ORDER BY created_at",
-    )
-    .bind(&id)
-    .fetch_all(&state.pool)
-    .await?;
-
-    if !running_ids.is_empty() {
+    if !state_row.running_job_ids.is_empty() {
         return Err(AppError::Conflict(format!(
             "runner has {} running job(s): {} — cancel them before restarting",
-            running_ids.len(),
-            running_ids.join(", ")
+            state_row.running_job_ids.len(),
+            state_row.running_job_ids.join(", ")
         )));
     }
 
-    sqlx::query(
-        "UPDATE runners SET restart_requested = 1, updated_at = datetime('now') WHERE id = ?",
-    )
-    .bind(&id)
-    .execute(&state.pool)
-    .await?;
+    crate::store::runners::request_restart(&state.pool, &id).await?;
 
-    crate::services::poll_events::wake_all();
     tracing::info!("Runner {name} ({id}) restart requested");
     log_runner_event(
         &state.pool,
@@ -3018,22 +2937,11 @@ pub async fn reprobe_capabilities(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query("SELECT name FROM runners WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
+    let name = crate::store::runners::runner_name(&state.pool, &id)
         .await?
         .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
-    let name: String = row.get(0);
 
-    sqlx::query(
-        "UPDATE runners SET capability_reprobe_requested = 1,
-            capability_reprobe_requested_at = datetime('now'),
-            capability_reprobe_served_at = NULL,
-            updated_at = datetime('now') WHERE id = ?",
-    )
-    .bind(&id)
-    .execute(&state.pool)
-    .await?;
+    crate::store::runners::request_capability_reprobe(&state.pool, &id).await?;
 
     tracing::info!("Runner {name} ({id}) capability re-probe requested");
     log_runner_event(
@@ -3071,15 +2979,14 @@ pub async fn reissue_register_token(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<ReissueRegisterTokenResponse>>, AppError> {
     let register_token = Uuid::new_v4().to_string();
-    let name: Option<String> = sqlx::query_scalar(
-        "UPDATE runners SET register_token = ?, updated_at = datetime('now') WHERE id = ? RETURNING name",
+    // Hash-only at rest: the plaintext is returned exactly once below.
+    let name = crate::store::runners::reissue_register_token(
+        &state.pool,
+        &id,
+        &shared::api_token::hash_token(&register_token),
     )
-    // Hash-only at rest — the plaintext is returned exactly once below.
-    .bind(shared::api_token::hash_token(&register_token))
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?;
-    let name = name.ok_or_else(|| AppError::NotFound("runner not found".into()))?;
+    .await?
+    .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
 
     tracing::info!("Runner {name} ({id}) register token re-issued");
     log_runner_event(
@@ -3108,11 +3015,9 @@ pub async fn get_events(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     // Verify runner exists
-    let _ = sqlx::query("SELECT id FROM runners WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
+    if !crate::store::runners::exists(&state.pool, &id).await? {
+        return Err(AppError::NotFound("runner not found".into()));
+    }
 
     let page: i64 = params.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
     let page_size: i64 = params
@@ -3122,36 +3027,8 @@ pub async fn get_events(
         .clamp(1, 100);
     let offset = (page - 1) * page_size;
 
-    // Get total count
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runner_events WHERE runner_id = ?")
-        .bind(&id)
-        .fetch_one(&state.pool)
-        .await?;
-
-    let rows = sqlx::query(
-        "SELECT id, event_type, message, created_at
-         FROM runner_events
-         WHERE runner_id = ?
-         ORDER BY created_at DESC
-         LIMIT ? OFFSET ?",
-    )
-    .bind(&id)
-    .bind(page_size)
-    .bind(offset)
-    .fetch_all(&state.pool)
-    .await?;
-
-    let events: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "event_type": r.get::<String, _>(1),
-                "message": r.get::<String, _>(2),
-                "created_at": r.get::<Option<String>, _>(3),
-            })
-        })
-        .collect();
+    let crate::store::runners::RunnerEventPage { events, total } =
+        crate::store::runners::event_page(&state.pool, &id, page_size, offset).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "items": events,
