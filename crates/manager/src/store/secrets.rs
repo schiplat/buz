@@ -239,3 +239,28 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
         .await?;
     Ok(())
 }
+
+/// Display name of one secret (audit + remote-delete calls read this).
+pub async fn secret_name(pool: &SqlitePool, id: &str) -> Result<String, AppError> {
+    Ok(sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?)
+}
+
+/// Display name of one secret, tolerated absent (`None` = no such row).
+pub async fn secret_name_optional(pool: &SqlitePool, id: &str) -> Result<Option<String>, AppError> {
+    Ok(sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?)
+}
+
+/// `(name, stored value, team_id)` — the GitHub push path's facts.
+pub async fn push_facts(pool: &SqlitePool, id: &str) -> Result<(String, String, String), AppError> {
+    let row = sqlx::query("SELECT name, value, team_id FROM secrets WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    Ok((row.get(0), row.get(1), row.get(2)))
+}

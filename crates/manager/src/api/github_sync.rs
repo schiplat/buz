@@ -12,7 +12,6 @@ use serde::{Deserialize, Deserializer};
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::rbac::Perm;
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::audit::{self, Action, AuditEvent};
@@ -28,23 +27,17 @@ use crate::state::AppState;
 
 /// Load a connection's token (decrypted) for outbound calls.
 async fn connection_client(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     jwt_secret: &str,
     connection_id: &str,
 ) -> Result<(GitHubClient, String), AppError> {
-    let row = sqlx::query(
-        "SELECT api_base_url, token_ciphertext, name FROM github_connections WHERE id = ?",
-    )
-    .bind(connection_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
-    let api_base_url: String = row.get(0);
-    let token_cipher: String = row.get(1);
-    let name: String = row.get(2);
-    let token = crypto::decrypt(&token_cipher, jwt_secret)
-        .map_err(|e| AppError::Internal(format!("decrypt connection token '{name}': {e}")))?;
-    Ok((GitHubClient::new(&api_base_url, &token), name))
+    let conn = crate::store::github::connection(&state.pool, connection_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
+    let token = crypto::decrypt(&conn.token_ciphertext, jwt_secret).map_err(|e| {
+        AppError::Internal(format!("decrypt connection token '{}': {e}", conn.name))
+    })?;
+    Ok((GitHubClient::new(&conn.api_base_url, &token), conn.name))
 }
 
 /// Validate a GitHub Actions secret/variable name for pushability.
@@ -451,62 +444,33 @@ fn repo_view(r: &RepoView<'_>) -> serde_json::Value {
 /// Batch-load repo → bound secret/var summaries for the repos list.
 /// Only metadata (bind id, resource name, push state) — never values.
 pub(crate) async fn repo_binds_map(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     repo_ids: &[String],
 ) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, AppError> {
     let mut map: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
-    if repo_ids.is_empty() {
-        return Ok(map);
+    let secrets =
+        crate::store::github_binds::repo_secret_bind_summaries(&state.pool, repo_ids).await?;
+    for s in secrets {
+        map.entry(s.repo_id).or_default().push(serde_json::json!({
+            "kind": "secret",
+            "id": s.id,
+            "name": s.name,
+            "last_status": s.last_status,
+            "last_op": s.last_op,
+        }));
     }
-    let placeholders = repo_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-
-    let secret_sql = format!(
-        "SELECT b.repo_id, b.id, s.name, b.last_status, b.last_op
-         FROM secret_github_binds b
-         JOIN secrets s ON s.id = b.secret_id
-         WHERE b.repo_id IN ({placeholders})
-         ORDER BY s.name ASC"
-    );
-    let mut q = sqlx::query(&secret_sql);
-    for id in repo_ids {
-        q = q.bind(id);
+    let vars =
+        crate::store::github_binds::repo_variable_bind_summaries(&state.pool, repo_ids).await?;
+    for v in vars {
+        map.entry(v.repo_id).or_default().push(serde_json::json!({
+            "kind": "variable",
+            "id": v.id,
+            "name": v.name,
+            "last_status": v.last_status,
+            "last_op": v.last_op,
+        }));
     }
-    for r in q.fetch_all(pool).await? {
-        map.entry(r.get::<String, _>(0))
-            .or_default()
-            .push(serde_json::json!({
-                "kind": "secret",
-                "id": r.get::<String, _>(1),
-                "name": r.get::<String, _>(2),
-                "last_status": r.get::<String, _>(3),
-                "last_op": r.get::<String, _>(4),
-            }));
-    }
-
-    let var_sql = format!(
-        "SELECT b.repo_id, b.id, v.name, b.last_status, b.last_op
-         FROM variable_github_binds b
-         JOIN platform_vars v ON v.id = b.var_id
-         WHERE b.repo_id IN ({placeholders})
-         ORDER BY v.name ASC"
-    );
-    let mut q = sqlx::query(&var_sql);
-    for id in repo_ids {
-        q = q.bind(id);
-    }
-    for r in q.fetch_all(pool).await? {
-        map.entry(r.get::<String, _>(0))
-            .or_default()
-            .push(serde_json::json!({
-                "kind": "variable",
-                "id": r.get::<String, _>(1),
-                "name": r.get::<String, _>(2),
-                "last_status": r.get::<String, _>(3),
-                "last_op": r.get::<String, _>(4),
-            }));
-    }
-
     Ok(map)
 }
 
@@ -514,29 +478,22 @@ pub async fn list_repos(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let rows = sqlx::query(
-        "SELECT r.id, r.connection_id, c.name, r.owner, r.repo, r.updated_at, c.api_base_url
-         FROM github_repos r
-         JOIN github_connections c ON c.id = r.connection_id
-         ORDER BY r.owner ASC, r.repo ASC",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    let repo_ids: Vec<String> = rows.iter().map(|r| r.get::<String, _>(0)).collect();
-    let binds_map = repo_binds_map(&state.pool, &repo_ids).await?;
+    let rows = crate::store::github::list_repos_with_connection(&state.pool).await?;
+    let repo_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+    let binds_map = repo_binds_map(&state, &repo_ids).await?;
     let out: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
-            let id = r.get::<String, _>(0);
+            let id = r.id.clone();
             let binds = binds_map.get(&id).cloned().unwrap_or_default();
             repo_view(&RepoView {
                 id: &id,
-                connection_id: &r.get::<String, _>(1),
-                connection_name: &r.get::<String, _>(2),
-                owner: &r.get::<String, _>(3),
-                repo: &r.get::<String, _>(4),
-                updated_at: r.get(5),
-                api_base_url: &r.get::<String, _>(6),
+                connection_id: &r.connection_id,
+                connection_name: &r.connection_name,
+                owner: &r.owner,
+                repo: &r.repo,
+                updated_at: r.updated_at,
+                api_base_url: &r.api_base_url,
                 binds: &binds,
             })
         })
@@ -698,12 +655,8 @@ pub async fn fetch_repos(
         None => return Err(AppError::ValidationFailed("owner is required".into())),
     };
 
-    let (client, name) = connection_client(
-        &state.pool,
-        &state.config.auth.jwt_secret,
-        &req.connection_id,
-    )
-    .await?;
+    let (client, name) =
+        connection_client(&state, &state.config.auth.jwt_secret, &req.connection_id).await?;
 
     tracing::info!(
         connection = %name,
@@ -717,10 +670,7 @@ pub async fn fetch_repos(
         fetch_and_upsert_repos(&state.pool, &req.connection_id, &name, &owner, &client).await?;
 
     // A manual fetch suppresses the next scheduled run.
-    sqlx::query("UPDATE github_connections SET last_fetch_at = datetime('now') WHERE id = ?")
-        .bind(&req.connection_id)
-        .execute(&state.pool)
-        .await?;
+    crate::store::github::mark_fetched(&state.pool, &req.connection_id).await?;
 
     audit::record(
         &state.pool,
@@ -744,12 +694,8 @@ pub async fn test_connection(
     State(state): State<AppState>,
     Json(req): Json<TestRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let (client, name) = connection_client(
-        &state.pool,
-        &state.config.auth.jwt_secret,
-        &req.connection_id,
-    )
-    .await?;
+    let (client, name) =
+        connection_client(&state, &state.config.auth.jwt_secret, &req.connection_id).await?;
     let owner = req
         .owner
         .map(|s| s.trim().to_string())
@@ -907,25 +853,12 @@ pub async fn add_secret_bind(
     // bind state but not change it.
     let team_id = secret_team_id(&state.pool, &secret_id).await?;
 
-    let repo = sqlx::query(
-        "SELECT r.owner, r.repo, c.name FROM github_repos r
-         JOIN github_connections c ON c.id = r.connection_id
-         WHERE r.id = ?",
-    )
-    .bind(&req.repo_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let repo = crate::store::github_binds::repo_identity(&state.pool, &req.repo_id).await?;
     let (owner, repo_name, conn_name) = match repo {
-        Some(r) => (
-            r.get::<String, _>(0),
-            r.get::<String, _>(1),
-            r.get::<String, _>(2),
-        ),
+        Some(r) => r,
         None => {
             // Binding failed — record it so the failure is traceable.
-            let secret_name: String = sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
-                .bind(&secret_id)
-                .fetch_optional(&state.pool)
+            let secret_name = crate::store::secrets::secret_name_optional(&state.pool, &secret_id)
                 .await?
                 .unwrap_or_default();
             audit::record(
@@ -944,16 +877,9 @@ pub async fn add_secret_bind(
         }
     };
 
-    let dup = sqlx::query("SELECT id FROM secret_github_binds WHERE secret_id = ? AND repo_id = ?")
-        .bind(&secret_id)
-        .bind(&req.repo_id)
-        .fetch_optional(&state.pool)
-        .await?;
-    if dup.is_some() {
-        let secret_name: String = sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
-            .bind(&secret_id)
-            .fetch_one(&state.pool)
-            .await?;
+    if crate::store::github_binds::secret_bind_exists(&state.pool, &secret_id, &req.repo_id).await?
+    {
+        let secret_name = crate::store::secrets::secret_name(&state.pool, &secret_id).await?;
         audit::record(
             &state.pool,
             AuditEvent::from_auth(&auth, Action::SecretGithubBindAdd)
@@ -985,20 +911,16 @@ pub async fn add_secret_bind(
                 .map_err(|e| AppError::Internal(format!("encrypt secret override: {e}")))?,
         ),
     };
-    sqlx::query(
-        "INSERT INTO secret_github_binds (id, secret_id, repo_id, last_op, override_value) VALUES (?, ?, ?, 'bind', ?)",
+    crate::store::github_binds::insert_secret_bind(
+        &state.pool,
+        &id,
+        &secret_id,
+        &req.repo_id,
+        override_cipher.as_deref(),
     )
-    .bind(&id)
-    .bind(&secret_id)
-    .bind(&req.repo_id)
-    .bind(&override_cipher)
-    .execute(&state.pool)
     .await?;
 
-    let secret_name: String = sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
-        .bind(&secret_id)
-        .fetch_one(&state.pool)
-        .await?;
+    let secret_name = crate::store::secrets::secret_name(&state.pool, &secret_id).await?;
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::SecretGithubBindAdd)
@@ -1036,18 +958,10 @@ pub async fn patch_secret_bind(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let team_id = secret_team_id(&state.pool, &secret_id).await?;
 
-    let row = sqlx::query(
-        "SELECT b.id, b.repo_id, c.name, r.owner, r.repo, b.last_pushed_at, b.last_status, b.last_error, b.last_op
-         FROM secret_github_binds b
-         JOIN github_repos r ON r.id = b.repo_id
-         JOIN github_connections c ON c.id = r.connection_id
-         WHERE b.id = ? AND b.secret_id = ?",
-    )
-    .bind(&bind_id)
-    .bind(&secret_id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("secret github bind not found".into()))?;
+    let row =
+        crate::store::github_binds::secret_bind_patch_facts(&state.pool, &bind_id, &secret_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("secret github bind not found".into()))?;
 
     let override_cipher = match &req.override_value {
         None => None,
@@ -1062,36 +976,36 @@ pub async fn patch_secret_bind(
         ),
     };
 
-    sqlx::query(
-        "UPDATE secret_github_binds SET override_value = ?, updated_at = datetime('now') WHERE id = ? AND secret_id = ?",
+    crate::store::github_binds::set_secret_bind_override(
+        &state.pool,
+        &bind_id,
+        &secret_id,
+        override_cipher.as_deref(),
     )
-    .bind(&override_cipher)
-    .bind(&bind_id)
-    .bind(&secret_id)
-    .execute(&state.pool)
     .await?;
 
     // Override change changes the effective push value — mark previously-ok binds stale.
-    let marked = mark_secret_bind_stale_if_ok(&state.pool, &bind_id)
+    let marked = crate::store::github_binds::mark_secret_bind_stale_if_ok(&state.pool, &bind_id)
         .await
         .unwrap_or(false);
 
-    let secret_name: String = sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
-        .bind(&secret_id)
-        .fetch_one(&state.pool)
-        .await?;
-    let repo_id: String = row.get(1);
-    let conn_name: String = row.get(2);
-    let owner: String = row.get(3);
-    let repo_name: String = row.get(4);
-    let last_pushed_at: Option<String> = row.get(5);
+    let secret_name = crate::store::secrets::secret_name(&state.pool, &secret_id).await?;
+    let repo_id: String = row.repo_id;
+    let conn_name: String = row.connection_name;
+    let owner: String = row.owner;
+    let repo_name: String = row.repo;
+    let last_pushed_at: Option<String> = row.last_pushed_at;
     let last_status: String = if marked {
         "stale".to_string()
     } else {
-        row.get(6)
+        row.last_status
     };
-    let last_error: String = if marked { String::new() } else { row.get(7) };
-    let last_op: String = row.get(8);
+    let last_error: String = if marked {
+        String::new()
+    } else {
+        row.last_error
+    };
+    let last_op: String = row.last_op;
 
     audit::record(
         &state.pool,
@@ -1137,32 +1051,18 @@ pub async fn delete_secret_bind(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     let team_id = secret_team_id(&state.pool, &secret_id).await?;
 
-    let row = sqlx::query(
-        "SELECT r.owner, r.repo, c.api_base_url, c.token_ciphertext, c.name
-         FROM secret_github_binds b
-         JOIN github_repos r ON r.id = b.repo_id
-         JOIN github_connections c ON c.id = r.connection_id
-         WHERE b.id = ? AND b.secret_id = ?",
-    )
-    .bind(&bind_id)
-    .bind(&secret_id)
-    .fetch_optional(&state.pool)
-    .await?;
-    let (owner, repo, api_base, token_cipher, conn_name) = match row {
-        Some(r) => (
-            r.get::<String, _>(0),
-            r.get::<String, _>(1),
-            r.get::<String, _>(2),
-            r.get::<String, _>(3),
-            r.get::<String, _>(4),
-        ),
-        None => return Err(AppError::NotFound("secret github bind not found".into())),
-    };
+    let target = crate::store::github_binds::secret_bind_target(&state.pool, &bind_id, &secret_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("secret github bind not found".into()))?;
+    let (owner, repo, api_base, token_cipher, conn_name) = (
+        target.owner,
+        target.repo,
+        target.api_base_url,
+        target.token_ciphertext,
+        target.connection_name,
+    );
 
-    let secret_name: String = sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
-        .bind(&secret_id)
-        .fetch_one(&state.pool)
-        .await?;
+    let secret_name = crate::store::secrets::secret_name(&state.pool, &secret_id).await?;
 
     // Remove the value from GitHub Actions first; only unbind locally when the
     // remote cleanup succeeds. 404 is treated as success (never pushed).
@@ -1172,13 +1072,12 @@ pub async fn delete_secret_bind(
     if let Err(e) = client.delete_secret(&owner, &repo, &secret_name).await {
         // Record the failed unbind on the bind row so the UI can surface it;
         // the row is kept so the operator can fix the connection and retry.
-        sqlx::query(
-            "UPDATE secret_github_binds SET last_op = 'unbind', last_status = 'failed', last_error = ?, updated_at = datetime('now') WHERE id = ? AND secret_id = ?",
+        crate::store::github_binds::mark_secret_bind_unbind_failed(
+            &state.pool,
+            &bind_id,
+            &secret_id,
+            &format!("unbind failed: {e}"),
         )
-        .bind(format!("unbind failed: {e}"))
-        .bind(&bind_id)
-        .bind(&secret_id)
-        .execute(&state.pool)
         .await?;
         tracing::warn!(
             connection = %conn_name,
@@ -1190,11 +1089,7 @@ pub async fn delete_secret_bind(
         return Err(e);
     }
 
-    sqlx::query("DELETE FROM secret_github_binds WHERE id = ? AND secret_id = ?")
-        .bind(&bind_id)
-        .bind(&secret_id)
-        .execute(&state.pool)
-        .await?;
+    crate::store::github_binds::delete_secret_bind(&state.pool, &bind_id, &secret_id).await?;
 
     tracing::info!(
         connection = %conn_name,
@@ -1229,26 +1124,18 @@ pub async fn push_secret_binds(
     Query(query): Query<PushBindsQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query("SELECT name, value, team_id FROM secrets WHERE id = ?")
-        .bind(&secret_id)
-        .fetch_one(&state.pool)
-        .await?;
-    let secret_name: String = row.get(0);
-    let stored: String = row.get(1);
-    let secret_team: String = row.get(2);
+    let (secret_name, stored, secret_team) =
+        crate::store::secrets::push_facts(&state.pool, &secret_id).await?;
     let plaintext = crypto::decrypt(&stored, &state.config.auth.jwt_secret)
         .map_err(|e| AppError::Internal(format!("decrypt secret '{secret_name}': {e}")))?;
     validate_gh_name(&secret_name)?;
 
-    let bind_ids: Vec<String> = match &query.bind_id {
-        Some(bid) if !bid.is_empty() => vec![bid.clone()],
-        _ => {
-            sqlx::query_scalar("SELECT id FROM secret_github_binds WHERE secret_id = ?")
-                .bind(&secret_id)
-                .fetch_all(&state.pool)
-                .await?
-        }
-    };
+    let bind_ids = crate::store::github_binds::secret_bind_ids(
+        &state.pool,
+        &secret_id,
+        query.bind_id.as_deref(),
+    )
+    .await?;
     if bind_ids.is_empty() {
         return Ok(Json(ApiResponse::success(serde_json::json!({
             "results": [],
@@ -1257,18 +1144,13 @@ pub async fn push_secret_binds(
 
     let mut results = Vec::new();
     for bind_id in &bind_ids {
-        let target = sqlx::query(
-            "SELECT b.id, r.owner, r.repo, c.api_base_url, c.token_ciphertext, c.name, b.override_value
-             FROM secret_github_binds b
-             JOIN github_repos r ON r.id = b.repo_id
-             JOIN github_connections c ON c.id = r.connection_id
-             WHERE b.id = ? AND b.secret_id = ?",
+        let target = match crate::store::github_binds::secret_bind_target(
+            &state.pool,
+            bind_id,
+            &secret_id,
         )
-        .bind(bind_id)
-        .bind(&secret_id)
-        .fetch_optional(&state.pool)
-        .await;
-        let target = match target {
+        .await
+        {
             Ok(Some(t)) => t,
             Ok(None) => {
                 results.push(serde_json::json!({ "bind_id": bind_id, "status": "failed", "error": "bind not found" }));
@@ -1279,12 +1161,12 @@ pub async fn push_secret_binds(
                 continue;
             }
         };
-        let owner: String = target.get(1);
-        let repo: String = target.get(2);
-        let api_base: String = target.get(3);
-        let token_cipher: String = target.get(4);
-        let conn_name: String = target.get(5);
-        let override_cipher: Option<String> = target.get(6);
+        let owner: String = target.owner;
+        let repo: String = target.repo;
+        let api_base: String = target.api_base_url;
+        let token_cipher: String = target.token_ciphertext;
+        let conn_name: String = target.connection_name;
+        let override_cipher: Option<String> = target.override_ciphertext;
 
         let push_plaintext = match &override_cipher {
             Some(cipher) => match crypto::decrypt(cipher, &state.config.auth.jwt_secret) {
@@ -1319,12 +1201,8 @@ pub async fn push_secret_binds(
 
         let outcome_success = match outcome {
             Ok(()) => {
-                sqlx::query(
-                    "UPDATE secret_github_binds SET last_status = 'ok', last_error = '', last_pushed_at = datetime('now'), last_op = 'push', updated_at = datetime('now') WHERE id = ?",
-                )
-                .bind(bind_id)
-                .execute(&state.pool)
-                .await?;
+                crate::store::github_binds::mark_secret_bind_pushed_ok(&state.pool, bind_id)
+                    .await?;
                 results.push(serde_json::json!({
                     "bind_id": bind_id, "owner": owner, "repo": repo, "status": "ok",
                 }));
@@ -1337,12 +1215,11 @@ pub async fn push_secret_binds(
                 true
             }
             Err(e) => {
-                sqlx::query(
-                    "UPDATE secret_github_binds SET last_status = 'failed', last_error = ?, last_op = 'push', updated_at = datetime('now') WHERE id = ?",
+                crate::store::github_binds::mark_secret_bind_push_failed(
+                    &state.pool,
+                    bind_id,
+                    &e.to_string(),
                 )
-                .bind(e.to_string())
-                .bind(bind_id)
-                .execute(&state.pool)
                 .await?;
                 results.push(serde_json::json!({
                     "bind_id": bind_id, "owner": owner, "repo": repo, "status": "failed", "error": e.to_string(),
@@ -1379,13 +1256,11 @@ pub async fn push_secret_binds(
 
 // ────────────────────────── variable binds (admin) ──────────────────────────
 
-async fn variable_exists(pool: &sqlx::SqlitePool, var_id: &str) -> Result<(), AppError> {
-    sqlx::query("SELECT id FROM platform_vars WHERE id = ?")
-        .bind(var_id)
-        .fetch_optional(pool)
-        .await?
-        .map(|_| ())
-        .ok_or_else(|| AppError::NotFound("variable not found".into()))
+async fn variable_exists(state: &AppState, var_id: &str) -> Result<(), AppError> {
+    if !crate::store::variables::exists(&state.pool, var_id).await? {
+        return Err(AppError::NotFound("variable not found".into()));
+    }
+    Ok(())
 }
 
 pub async fn list_variable_binds(
@@ -1393,7 +1268,7 @@ pub async fn list_variable_binds(
     Path(var_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    variable_exists(&state.pool, &var_id).await?;
+    variable_exists(&state, &var_id).await?;
     let binds = crate::store::github_binds::list_variable_binds(&state.pool, &var_id).await?;
     let out: Vec<serde_json::Value> = binds
         .into_iter()
@@ -1422,30 +1297,16 @@ pub async fn add_variable_bind(
     State(state): State<AppState>,
     Json(req): Json<AddBindRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    variable_exists(&state.pool, &var_id).await?;
+    variable_exists(&state, &var_id).await?;
 
-    let repo = sqlx::query(
-        "SELECT r.owner, r.repo, c.name FROM github_repos r
-         JOIN github_connections c ON c.id = r.connection_id
-         WHERE r.id = ?",
-    )
-    .bind(&req.repo_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let repo = crate::store::github_binds::repo_identity(&state.pool, &req.repo_id).await?;
     let (owner, repo_name, conn_name) = match repo {
-        Some(r) => (
-            r.get::<String, _>(0),
-            r.get::<String, _>(1),
-            r.get::<String, _>(2),
-        ),
+        Some(r) => r,
         None => {
             // Binding failed — record it so the failure is traceable.
-            let var_name: String =
-                sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
-                    .bind(&var_id)
-                    .fetch_optional(&state.pool)
-                    .await?
-                    .unwrap_or_default();
+            let var_name = crate::store::variables::variable_name_optional(&state.pool, &var_id)
+                .await?
+                .unwrap_or_default();
             audit::record(
                 &state.pool,
                 AuditEvent::from_auth(&auth, Action::VariableGithubBindAdd)
@@ -1462,10 +1323,7 @@ pub async fn add_variable_bind(
     };
 
     if crate::store::github_binds::variable_bind_exists(&state.pool, &var_id, &req.repo_id).await? {
-        let var_name: String = sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
-            .bind(&var_id)
-            .fetch_one(&state.pool)
-            .await?;
+        let var_name = crate::store::variables::variable_name(&state.pool, &var_id).await?;
         audit::record(
             &state.pool,
             AuditEvent::from_auth(&auth, Action::VariableGithubBindAdd)
@@ -1493,10 +1351,7 @@ pub async fn add_variable_bind(
     )
     .await?;
 
-    let var_name: String = sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
-        .bind(&var_id)
-        .fetch_one(&state.pool)
-        .await?;
+    let var_name = crate::store::variables::variable_name(&state.pool, &var_id).await?;
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::VariableGithubBindAdd)
@@ -1531,20 +1386,11 @@ pub async fn patch_variable_bind(
     State(state): State<AppState>,
     Json(req): Json<PatchBindOverrideRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    variable_exists(&state.pool, &var_id).await?;
+    variable_exists(&state, &var_id).await?;
 
-    let row = sqlx::query(
-        "SELECT b.id, b.repo_id, c.name, r.owner, r.repo, b.last_pushed_at, b.last_status, b.last_error, b.last_op
-         FROM variable_github_binds b
-         JOIN github_repos r ON r.id = b.repo_id
-         JOIN github_connections c ON c.id = r.connection_id
-         WHERE b.id = ? AND b.var_id = ?",
-    )
-    .bind(&bind_id)
-    .bind(&var_id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("variable github bind not found".into()))?;
+    let row = crate::store::github_binds::variable_bind_patch_facts(&state.pool, &bind_id, &var_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("variable github bind not found".into()))?;
 
     crate::store::github_binds::set_variable_bind_override(
         &state.pool,
@@ -1554,26 +1400,27 @@ pub async fn patch_variable_bind(
     )
     .await?;
 
-    let marked = mark_variable_bind_stale_if_ok(&state.pool, &bind_id)
+    let marked = crate::store::github_binds::mark_variable_bind_stale_if_ok(&state.pool, &bind_id)
         .await
         .unwrap_or(false);
 
-    let var_name: String = sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
-        .bind(&var_id)
-        .fetch_one(&state.pool)
-        .await?;
-    let repo_id: String = row.get(1);
-    let conn_name: String = row.get(2);
-    let owner: String = row.get(3);
-    let repo_name: String = row.get(4);
-    let last_pushed_at: Option<String> = row.get(5);
+    let var_name = crate::store::variables::variable_name(&state.pool, &var_id).await?;
+    let repo_id: String = row.repo_id;
+    let conn_name: String = row.connection_name;
+    let owner: String = row.owner;
+    let repo_name: String = row.repo;
+    let last_pushed_at: Option<String> = row.last_pushed_at;
     let last_status: String = if marked {
         "stale".to_string()
     } else {
-        row.get(6)
+        row.last_status
     };
-    let last_error: String = if marked { String::new() } else { row.get(7) };
-    let last_op: String = row.get(8);
+    let last_error: String = if marked {
+        String::new()
+    } else {
+        row.last_error
+    };
+    let last_op: String = row.last_op;
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::VariableGithubBindPatch)
@@ -1615,7 +1462,7 @@ pub async fn delete_variable_bind(
     Path((var_id, bind_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    variable_exists(&state.pool, &var_id).await?;
+    variable_exists(&state, &var_id).await?;
 
     let target = crate::store::github_binds::variable_bind_target(&state.pool, &bind_id, &var_id)
         .await?
@@ -1624,10 +1471,7 @@ pub async fn delete_variable_bind(
     let token_cipher = target.token_ciphertext;
     let conn_name = target.connection_name;
 
-    let var_name: String = sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
-        .bind(&var_id)
-        .fetch_one(&state.pool)
-        .await?;
+    let var_name = crate::store::variables::variable_name(&state.pool, &var_id).await?;
 
     // Remove the value from GitHub Actions first; only unbind locally when the
     // remote cleanup succeeds. 404 is treated as success (never pushed).
@@ -1682,14 +1526,9 @@ pub async fn push_variable_binds(
     Query(query): Query<PushBindsQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    variable_exists(&state.pool, &var_id).await?;
+    variable_exists(&state, &var_id).await?;
 
-    let row = sqlx::query("SELECT name, value FROM platform_vars WHERE id = ?")
-        .bind(&var_id)
-        .fetch_one(&state.pool)
-        .await?;
-    let var_name: String = row.get(0);
-    let value: String = row.get(1);
+    let (var_name, value) = crate::store::variables::push_facts(&state.pool, &var_id).await?;
     validate_gh_name(&var_name)?;
 
     let bind_ids = crate::store::github_binds::variable_bind_ids(
@@ -1801,129 +1640,29 @@ pub(crate) fn bind_row_json(b: &BindView<'_>) -> serde_json::Value {
     bind_view(b)
 }
 
-/// After the platform default secret value changes, mark inherit binds (`override_value IS NULL`)
-/// that were successfully pushed as `stale`. Custom-override binds are left alone.
-/// Returns how many rows were marked.
-pub(crate) async fn mark_secret_binds_stale_on_default_change(
-    pool: &sqlx::SqlitePool,
-    secret_id: &str,
-) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE secret_github_binds
-         SET last_status = 'stale', last_error = '', updated_at = datetime('now')
-         WHERE secret_id = ? AND override_value IS NULL AND last_status = 'ok'",
-    )
-    .bind(secret_id)
-    .execute(pool)
-    .await?;
-    let n = result.rows_affected();
-    if n > 0 {
-        tracing::info!(
-            secret_id = %secret_id,
-            marked = n,
-            "github-sync: marked inherit secret binds stale after default value change"
-        );
-    }
-    Ok(n)
-}
-
-/// After the platform default variable value changes, mark inherit binds as `stale`.
-pub(crate) async fn mark_variable_binds_stale_on_default_change(
-    pool: &sqlx::SqlitePool,
-    var_id: &str,
-) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE variable_github_binds
-         SET last_status = 'stale', last_error = '', updated_at = datetime('now')
-         WHERE var_id = ? AND override_value IS NULL AND last_status = 'ok'",
-    )
-    .bind(var_id)
-    .execute(pool)
-    .await?;
-    let n = result.rows_affected();
-    if n > 0 {
-        tracing::info!(
-            var_id = %var_id,
-            marked = n,
-            "github-sync: marked inherit variable binds stale after default value change"
-        );
-    }
-    Ok(n)
-}
-
-/// After a bind override is patched, mark that bind `stale` if it was previously `ok`
-/// (effective push value changed). Already-pending/failed/stale rows are left alone.
-pub(crate) async fn mark_secret_bind_stale_if_ok(
-    pool: &sqlx::SqlitePool,
-    bind_id: &str,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE secret_github_binds
-         SET last_status = 'stale', last_error = '', updated_at = datetime('now')
-         WHERE id = ? AND last_status = 'ok'",
-    )
-    .bind(bind_id)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
-}
-
-pub(crate) async fn mark_variable_bind_stale_if_ok(
-    pool: &sqlx::SqlitePool,
-    bind_id: &str,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE variable_github_binds
-         SET last_status = 'stale', last_error = '', updated_at = datetime('now')
-         WHERE id = ? AND last_status = 'ok'",
-    )
-    .bind(bind_id)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
-}
-
 /// Batch-load secret → binds map for list enrichment (single query, no N+1).
 pub(crate) async fn secret_binds_map(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     secret_ids: &[String],
 ) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, AppError> {
-    if secret_ids.is_empty() {
-        return Ok(std::collections::HashMap::new());
-    }
-    let placeholders = secret_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!(
-        "SELECT b.secret_id, b.id, b.repo_id, c.name, r.owner, r.repo, b.last_status, b.last_pushed_at, b.last_error, b.last_op, b.override_value
-         FROM secret_github_binds b
-         JOIN github_repos r ON r.id = b.repo_id
-         JOIN github_connections c ON c.id = r.connection_id
-         WHERE b.secret_id IN ({placeholders})
-         ORDER BY r.owner ASC, r.repo ASC"
-    );
-    let mut q = sqlx::query(&sql);
-    for id in secret_ids {
-        q = q.bind(id);
-    }
-    let rows = q.fetch_all(pool).await?;
     let mut map: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
-    for r in rows {
-        let secret_id: String = r.get(0);
-        let ov: Option<String> = r.get(10);
-        map.entry(secret_id)
+    for b in crate::store::github_binds::secret_bind_summaries(&state.pool, secret_ids).await? {
+        map.entry(b.resource_id)
             .or_default()
             .push(bind_row_json(&BindView {
-                id: &r.get::<String, _>(1),
-                repo_id: &r.get::<String, _>(2),
-                connection_name: &r.get::<String, _>(3),
-                owner: &r.get::<String, _>(4),
-                repo: &r.get::<String, _>(5),
-                last_pushed_at: r.get(7),
-                last_status: &r.get::<String, _>(6),
-                last_error: &r.get::<String, _>(8),
-                last_op: &r.get::<String, _>(9),
+                id: &b.id,
+                repo_id: &b.repo_id,
+                connection_name: &b.connection_name,
+                owner: &b.owner,
+                repo: &b.repo,
+                last_pushed_at: b.last_pushed_at,
+                last_status: &b.last_status,
+                last_error: &b.last_error,
+                last_op: &b.last_op,
+                // Never expose secret override plaintext over the API.
                 override_value: None,
-                has_override: ov.is_some(),
+                has_override: b.override_value.is_some(),
             }));
     }
     Ok(map)
@@ -1931,45 +1670,26 @@ pub(crate) async fn secret_binds_map(
 
 /// Batch-load variable → binds map for list enrichment.
 pub(crate) async fn variable_binds_map(
-    pool: &sqlx::SqlitePool,
+    state: &AppState,
     var_ids: &[String],
 ) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, AppError> {
-    if var_ids.is_empty() {
-        return Ok(std::collections::HashMap::new());
-    }
-    let placeholders = var_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!(
-        "SELECT b.var_id, b.id, b.repo_id, c.name, r.owner, r.repo, b.last_status, b.last_pushed_at, b.last_error, b.last_op, b.override_value
-         FROM variable_github_binds b
-         JOIN github_repos r ON r.id = b.repo_id
-         JOIN github_connections c ON c.id = r.connection_id
-         WHERE b.var_id IN ({placeholders})
-         ORDER BY r.owner ASC, r.repo ASC"
-    );
-    let mut q = sqlx::query(&sql);
-    for id in var_ids {
-        q = q.bind(id);
-    }
-    let rows = q.fetch_all(pool).await?;
     let mut map: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
-    for r in rows {
-        let var_id: String = r.get(0);
-        let ov: Option<String> = r.get(10);
-        map.entry(var_id)
+    for b in crate::store::github_binds::variable_bind_summaries(&state.pool, var_ids).await? {
+        map.entry(b.resource_id)
             .or_default()
             .push(bind_row_json(&BindView {
-                id: &r.get::<String, _>(1),
-                repo_id: &r.get::<String, _>(2),
-                connection_name: &r.get::<String, _>(3),
-                owner: &r.get::<String, _>(4),
-                repo: &r.get::<String, _>(5),
-                last_pushed_at: r.get(7),
-                last_status: &r.get::<String, _>(6),
-                last_error: &r.get::<String, _>(8),
-                last_op: &r.get::<String, _>(9),
-                override_value: ov.as_deref(),
-                has_override: ov.is_some(),
+                id: &b.id,
+                repo_id: &b.repo_id,
+                connection_name: &b.connection_name,
+                owner: &b.owner,
+                repo: &b.repo,
+                last_pushed_at: b.last_pushed_at,
+                last_status: &b.last_status,
+                last_error: &b.last_error,
+                last_op: &b.last_op,
+                override_value: b.override_value.as_deref(),
+                has_override: b.override_value.is_some(),
             }));
     }
     Ok(map)

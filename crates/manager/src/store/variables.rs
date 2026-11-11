@@ -81,3 +81,44 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
         .await?;
     Ok(())
 }
+
+/// True when the variable exists — the bind paths' existence gate.
+pub async fn exists(pool: &SqlitePool, id: &str) -> Result<bool, AppError> {
+    Ok(sqlx::query("SELECT id FROM platform_vars WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .is_some())
+}
+
+/// Display name of one variable (audit + remote-delete calls read this).
+pub async fn variable_name(pool: &SqlitePool, id: &str) -> Result<String, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+/// Display name of one variable, tolerated absent (`None` = no such row).
+pub async fn variable_name_optional(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<String>, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// `(name, value)` for the GitHub push path (strict: errors when absent).
+pub async fn push_facts(pool: &SqlitePool, id: &str) -> Result<(String, String), AppError> {
+    let row = sqlx::query("SELECT name, value FROM platform_vars WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    Ok((row.get(0), row.get(1)))
+}

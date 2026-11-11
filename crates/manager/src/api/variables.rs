@@ -18,7 +18,7 @@ pub async fn list(
     let rows = crate::store::variables::list_all(&state.pool).await?;
 
     let var_ids: Vec<String> = rows.iter().map(|(id, _, _, _)| id.clone()).collect();
-    let binds_map = super::github_sync::variable_binds_map(&state.pool, &var_ids).await?;
+    let binds_map = super::github_sync::variable_binds_map(&state, &var_ids).await?;
 
     let vars: Vec<serde_json::Value> = rows
         .into_iter()
@@ -125,16 +125,19 @@ pub async fn update(
     let mut github_binds_stale: u64 = 0;
     if old_value != req.value {
         github_binds_stale =
-            super::github_sync::mark_variable_binds_stale_on_default_change(&state.pool, &id)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        var_id = %id,
-                        error = %e,
-                        "github-sync: failed to mark variable binds stale"
-                    );
-                    0
-                });
+            crate::store::github_binds::mark_variable_binds_stale_on_default_change(
+                &state.pool,
+                &id,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    var_id = %id,
+                    error = %e,
+                    "github-sync: failed to mark variable binds stale"
+                );
+                0
+            });
     }
 
     tracing::info!("Variable updated: {name} ({id})");

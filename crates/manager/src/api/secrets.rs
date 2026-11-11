@@ -45,7 +45,7 @@ pub async fn list(
 
     // Batch-load GitHub bind summaries so list rows can render bound repos.
     let secret_ids: Vec<String> = rows.iter().map(|s| s.id.clone()).collect();
-    let binds_map = super::github_sync::secret_binds_map(&state.pool, &secret_ids).await?;
+    let binds_map = super::github_sync::secret_binds_map(&state, &secret_ids).await?;
 
     let secrets: Vec<serde_json::Value> = rows
         .into_iter()
@@ -259,16 +259,19 @@ pub async fn update(
         };
         if value_changed {
             github_binds_stale =
-                super::github_sync::mark_secret_binds_stale_on_default_change(&state.pool, &id)
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(
-                            secret_id = %id,
-                            error = %e,
-                            "github-sync: failed to mark secret binds stale"
-                        );
-                        0
-                    });
+                crate::store::github_binds::mark_secret_binds_stale_on_default_change(
+                    &state.pool,
+                    &id,
+                )
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        secret_id = %id,
+                        error = %e,
+                        "github-sync: failed to mark secret binds stale"
+                    );
+                    0
+                });
         }
     }
 

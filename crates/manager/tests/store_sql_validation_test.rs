@@ -235,6 +235,10 @@ const EXPECTED_DYNAMIC_SHAPES: &[&str] = &[
     "SELECT id, name, value, owner_group, team_id, team_shared, kind, updated_at FROM secrets WHERE 1=1 AND team_id IN ({placeholders}) ORDER BY name ASC",
     "SELECT id, name, host, port, username, credential_type, credential_data, labels, created_at, updated_at, team_id FROM hosts WHERE team_id IS NULL OR team_id = '' OR team_id IN ({placeholders}) ORDER BY created_at DESC",
     "SELECT id, name, slug, description, created_at, updated_at FROM teams WHERE id IN ({placeholders}) ORDER BY name ASC",
+    "SELECT b.repo_id, b.id, s.name, b.last_status, b.last_op FROM secret_github_binds b JOIN secrets s ON s.id = b.secret_id WHERE b.repo_id IN ({placeholders}) ORDER BY s.name ASC",
+    "SELECT b.repo_id, b.id, v.name, b.last_status, b.last_op FROM variable_github_binds b JOIN platform_vars v ON v.id = b.var_id WHERE b.repo_id IN ({placeholders}) ORDER BY v.name ASC",
+    "SELECT b.secret_id, b.id, b.repo_id, c.name, r.owner, r.repo, b.last_status, b.last_pushed_at, b.last_error, b.last_op, b.override_value FROM secret_github_binds b JOIN github_repos r ON r.id = b.repo_id JOIN github_connections c ON c.id = r.connection_id WHERE b.secret_id IN ({placeholders}) ORDER BY r.owner ASC, r.repo ASC",
+    "SELECT b.var_id, b.id, b.repo_id, c.name, r.owner, r.repo, b.last_status, b.last_pushed_at, b.last_error, b.last_op, b.override_value FROM variable_github_binds b JOIN github_repos r ON r.id = b.repo_id JOIN github_connections c ON c.id = r.connection_id WHERE b.var_id IN ({placeholders}) ORDER BY r.owner ASC, r.repo ASC",
 ];
 
 /// Every unresolved-fragment statement in the store must be one of the shapes

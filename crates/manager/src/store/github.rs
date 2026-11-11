@@ -325,3 +325,38 @@ pub async fn connection_name_and_base(
         .await?;
     Ok(row.map(|r| (r.get(0), r.get(1))))
 }
+
+/// Repos with their connection's display name and API base — the repos-list
+/// join (`github_repos` × `github_connections`), owner/repo-ordered.
+pub struct RepoListRow {
+    pub id: String,
+    pub connection_id: String,
+    pub connection_name: String,
+    pub owner: String,
+    pub repo: String,
+    pub updated_at: Option<String>,
+    pub api_base_url: String,
+}
+
+pub async fn list_repos_with_connection(pool: &SqlitePool) -> Result<Vec<RepoListRow>, AppError> {
+    let rows = sqlx::query(
+        "SELECT r.id, r.connection_id, c.name, r.owner, r.repo, r.updated_at, c.api_base_url
+         FROM github_repos r
+         JOIN github_connections c ON c.id = r.connection_id
+         ORDER BY r.owner ASC, r.repo ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| RepoListRow {
+            id: r.get(0),
+            connection_id: r.get(1),
+            connection_name: r.get(2),
+            owner: r.get(3),
+            repo: r.get(4),
+            updated_at: r.get(5),
+            api_base_url: r.get(6),
+        })
+        .collect())
+}
