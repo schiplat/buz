@@ -176,25 +176,19 @@ pub async fn list_connections(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let rows = sqlx::query(
-        "SELECT id, name, api_base_url, token_ciphertext, fetch_owners, fetch_interval_minutes, last_fetch_at, updated_at
-         FROM github_connections ORDER BY name ASC",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    let out: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            let cipher: String = r.get(3);
+    let out: Vec<serde_json::Value> = crate::store::github::list_connections(&state.pool)
+        .await?
+        .iter()
+        .map(|c| {
             connection_view(&ConnectionView {
-                id: r.get(0),
-                name: r.get(1),
-                api_base_url: r.get(2),
-                has_token: !cipher.is_empty(),
-                updated_at: r.get(7),
-                fetch_owners: r.get(4),
-                fetch_interval_minutes: r.get(5),
-                last_fetch_at: r.get(6),
+                id: c.id.clone(),
+                name: c.name.clone(),
+                api_base_url: c.api_base_url.clone(),
+                has_token: c.has_token(),
+                updated_at: c.updated_at.clone(),
+                fetch_owners: c.fetch_owners.clone(),
+                fetch_interval_minutes: c.fetch_interval_minutes,
+                last_fetch_at: c.last_fetch_at.clone(),
             })
         })
         .collect();
@@ -224,31 +218,22 @@ pub async fn create_connection(
     let fetch_owners = normalize_fetch_owners(req.fetch_owners);
     let fetch_interval_minutes = validate_fetch_interval(req.fetch_interval_minutes)?;
 
-    let existing = sqlx::query("SELECT id FROM github_connections WHERE name = ?")
-        .bind(&name)
-        .fetch_optional(&state.pool)
-        .await?;
-    if existing.is_some() {
+    if crate::store::github::name_taken(&state.pool, &name, None).await? {
         return Err(AppError::Conflict(format!(
             "github connection '{name}' already exists"
         )));
     }
 
-    let id = Uuid::new_v4().to_string();
     let cipher = crypto::encrypt(req.token.trim(), &state.config.auth.jwt_secret)
         .map_err(|e| AppError::Internal(format!("token encryption failed: {e}")))?;
-    sqlx::query(
-        "INSERT INTO github_connections
-            (id, name, api_base_url, token_ciphertext, fetch_owners, fetch_interval_minutes)
-         VALUES (?, ?, ?, ?, ?, ?)",
+    let id = crate::store::github::insert_connection(
+        &state.pool,
+        &name,
+        &api_base_url,
+        &cipher,
+        &fetch_owners,
+        fetch_interval_minutes,
     )
-    .bind(&id)
-    .bind(&name)
-    .bind(&api_base_url)
-    .bind(&cipher)
-    .bind(&fetch_owners)
-    .bind(fetch_interval_minutes)
-    .execute(&state.pool)
     .await?;
 
     audit::record(
@@ -285,19 +270,14 @@ pub async fn update_connection(
     State(state): State<AppState>,
     Json(req): Json<UpdateConnectionRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query(
-        "SELECT name, api_base_url, token_ciphertext, fetch_owners, fetch_interval_minutes
-         FROM github_connections WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
-    let old_name: String = row.get(0);
-    let old_base: String = row.get(1);
-    let old_cipher: String = row.get(2);
-    let old_fetch_owners: String = row.get(3);
-    let old_fetch_interval: Option<i64> = row.get(4);
+    let existing = crate::store::github::connection(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
+    let old_name = existing.name;
+    let old_base = existing.api_base_url;
+    let old_cipher = existing.token_ciphertext;
+    let old_fetch_owners = existing.fetch_owners;
+    let old_fetch_interval = existing.fetch_interval_minutes;
 
     let requested_name = req.name.as_deref().map(str::trim);
     let requested_token = req
@@ -333,50 +313,31 @@ pub async fn update_connection(
     };
 
     if let Some(n) = requested_name.filter(|n| !n.is_empty()) {
-        if n != old_name {
-            let dup = sqlx::query("SELECT id FROM github_connections WHERE name = ? AND id != ?")
-                .bind(n)
-                .bind(&id)
-                .fetch_optional(&state.pool)
-                .await?;
-            if dup.is_some() {
-                return Err(AppError::Conflict(format!(
-                    "github connection '{n}' already exists"
-                )));
-            }
+        if n != old_name && crate::store::github::name_taken(&state.pool, n, Some(&id)).await? {
+            return Err(AppError::Conflict(format!(
+                "github connection '{n}' already exists"
+            )));
         }
     }
 
-    match requested_token {
-        Some(token) => {
-            let cipher = crypto::encrypt(token, &state.config.auth.jwt_secret)
-                .map_err(|e| AppError::Internal(format!("token encryption failed: {e}")))?;
-            sqlx::query(
-                "UPDATE github_connections SET name = ?, api_base_url = ?, token_ciphertext = ?, fetch_owners = ?, fetch_interval_minutes = ?, updated_at = datetime('now') WHERE id = ?",
-            )
-            .bind(&new_name)
-            .bind(&new_base)
-            .bind(&cipher)
-            .bind(&new_fetch_owners)
-            .bind(new_fetch_interval)
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
-        }
-        None => {
-            sqlx::query(
-                "UPDATE github_connections SET name = ?, api_base_url = ?, fetch_owners = ?, fetch_interval_minutes = ?, updated_at = datetime('now') WHERE id = ?",
-            )
-            .bind(&new_name)
-            .bind(&new_base)
-            .bind(&new_fetch_owners)
-            .bind(new_fetch_interval)
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
-        }
-    }
-
+    // An absent token keeps the stored one; the API treats it as unchanged.
+    let new_cipher = match requested_token {
+        Some(token) => Some(
+            crypto::encrypt(token, &state.config.auth.jwt_secret)
+                .map_err(|e| AppError::Internal(format!("token encryption failed: {e}")))?,
+        ),
+        None => None,
+    };
+    crate::store::github::update_connection(
+        &state.pool,
+        &id,
+        &new_name,
+        &new_base,
+        new_cipher.as_deref(),
+        &new_fetch_owners,
+        new_fetch_interval,
+    )
+    .await?;
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::GithubConnectionUpdate)
@@ -410,16 +371,13 @@ pub async fn delete_connection(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let row = sqlx::query("SELECT name FROM github_connections WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
+    let name = crate::store::github::connection(&state.pool, &id)
         .await?
-        .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
-    let name: String = row.get(0);
-    sqlx::query("DELETE FROM github_connections WHERE id = ?")
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        .ok_or_else(|| AppError::NotFound("github connection not found".into()))?
+        .name;
+    if !crate::store::github::delete_connection(&state.pool, &id).await? {
+        return Err(AppError::NotFound("github connection not found".into()));
+    }
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::GithubConnectionDelete)
@@ -598,36 +556,21 @@ pub async fn create_repo(
             "owner and repo are required".into(),
         ));
     }
-    let conn = sqlx::query("SELECT name, api_base_url FROM github_connections WHERE id = ?")
-        .bind(&req.connection_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
-    let conn_name: String = conn.get(0);
-    let conn_api_base: String = conn.get(1);
+    let (conn_name, conn_api_base) =
+        crate::store::github::connection_name_and_base(&state.pool, &req.connection_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
 
-    let dup = sqlx::query(
-        "SELECT id FROM github_repos WHERE connection_id = ? AND owner = ? AND repo = ?",
-    )
-    .bind(&req.connection_id)
-    .bind(&owner)
-    .bind(&repo)
-    .fetch_optional(&state.pool)
-    .await?;
-    if dup.is_some() {
+    if crate::store::github::repo_exists(&state.pool, &req.connection_id, &owner, &repo, None)
+        .await?
+    {
         return Err(AppError::Conflict(format!(
             "repo '{owner}/{repo}' already registered on this connection"
         )));
     }
 
-    let id = Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO github_repos (id, connection_id, owner, repo) VALUES (?, ?, ?, ?)")
-        .bind(&id)
-        .bind(&req.connection_id)
-        .bind(&owner)
-        .bind(&repo)
-        .execute(&state.pool)
-        .await?;
+    let id =
+        crate::store::github::insert_repo(&state.pool, &req.connection_id, &owner, &repo).await?;
 
     audit::record(
         &state.pool,
@@ -655,19 +598,16 @@ pub async fn update_repo(
     State(state): State<AppState>,
     Json(req): Json<UpdateRepoRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query(
-        "SELECT r.owner, r.repo, r.connection_id, c.name, c.api_base_url
-         FROM github_repos r JOIN github_connections c ON c.id = r.connection_id WHERE r.id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("github repo not found".into()))?;
-    let old_owner: String = row.get(0);
-    let old_repo: String = row.get(1);
-    let conn_id: String = row.get(2);
-    let conn_name: String = row.get(3);
-    let conn_api_base: String = row.get(4);
+    let existing = crate::store::github::repo_by_id(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("github repo not found".into()))?;
+    let old_owner = existing.owner;
+    let old_repo = existing.repo;
+    let conn_id = existing.connection_id;
+    let (conn_name, conn_api_base) =
+        crate::store::github::connection_name_and_base(&state.pool, &conn_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("github connection not found".into()))?;
 
     let new_owner = req.owner.unwrap_or_else(|| old_owner.clone());
     let new_repo = req.repo.unwrap_or_else(|| old_repo.clone());
@@ -677,14 +617,7 @@ pub async fn update_repo(
         ));
     }
 
-    sqlx::query(
-        "UPDATE github_repos SET owner = ?, repo = ?, updated_at = datetime('now') WHERE id = ?",
-    )
-    .bind(&new_owner)
-    .bind(&new_repo)
-    .bind(&id)
-    .execute(&state.pool)
-    .await?;
+    crate::store::github::update_repo(&state.pool, &id, &new_owner, &new_repo).await?;
 
     audit::record(
         &state.pool,
@@ -713,22 +646,20 @@ pub async fn delete_repo(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let row = sqlx::query("SELECT owner, repo FROM github_repos WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
+    let removed = crate::store::github::repo_by_id(&state.pool, &id)
         .await?
         .ok_or_else(|| AppError::NotFound("github repo not found".into()))?;
-    let owner: String = row.get(0);
-    let repo: String = row.get(1);
-    sqlx::query("DELETE FROM github_repos WHERE id = ?")
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+    let repo_label = format!("{}/{}", removed.owner, removed.repo);
+    if !crate::store::github::delete_repo(&state.pool, &id).await? {
+        return Err(AppError::NotFound("github repo not found".into()));
+    }
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::GithubRepoDelete)
-            .resource("github_repo", &id, format!("{owner}/{repo}"))
-            .before(Some(serde_json::json!({ "owner": owner, "repo": repo }))),
+            .resource("github_repo", &id, &repo_label)
+            .before(Some(
+                serde_json::json!({ "owner": removed.owner, "repo": removed.repo }),
+            )),
     )
     .await;
     Ok(Json(ApiResponse::success(())))
