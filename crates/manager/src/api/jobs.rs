@@ -48,74 +48,18 @@ pub async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let base = "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
-                j.status, j.trigger_by, j.retry_times,
-                j.step_statuses, j.snapshot,
-                j.start_time, j.end_time, j.created_at, j.updated_at,
-                p.team_id, j.verbose_logs, j.debug_unredact, j.trigger_user_id,
-                j.run_number
-         FROM jobs j
-         JOIN pipelines p ON j.pipeline_id = p.id
-         WHERE 1=1";
-
-    let team_filter = team_in_clause(&auth, "p.team_id");
     // Debug (unredacted) jobs must never surface to non-admins in any job
     // listing — their logs are admin-only, so the record itself is hidden too.
-    let debug_filter = if auth.is_platform_admin {
-        String::new()
-    } else {
-        "AND j.debug_unredact = 0".to_string()
-    };
-    let sql = match &team_filter {
-        None => format!("{base} {debug_filter} ORDER BY j.created_at DESC LIMIT 200"),
+    let team_filter = match team_in_clause(&auth, "p.team_id") {
+        // No visible teams: an empty list, never an unrestricted query.
         Some((clause, _)) if clause == "AND 1=0" => {
             return Ok(Json(ApiResponse::success(vec![])));
         }
-        Some((clause, _)) => {
-            format!("{base} {clause} {debug_filter} ORDER BY j.created_at DESC LIMIT 200")
-        }
+        other => other,
     };
 
-    let mut q = sqlx::query(&sql);
-    if let Some((_, ids)) = &team_filter {
-        for id in ids {
-            q = q.bind(id);
-        }
-    }
-
-    let rows = q.fetch_all(&state.pool).await?;
-
-    let jobs: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            let step_statuses_raw: String = r.get(7);
-            let step_statuses: serde_json::Value =
-                serde_json::from_str(&step_statuses_raw).unwrap_or_default();
-            let snapshot_raw: String = r.get(8);
-            let snapshot: serde_json::Value =
-                serde_json::from_str(&snapshot_raw).unwrap_or_default();
-            serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "pipeline_id": r.get::<String, _>(1),
-                "pipeline_name": r.get::<Option<String>, _>(2),
-                "runner_id": r.get::<Option<String>, _>(3),
-                "status": r.get::<String, _>(4),
-                "trigger_by": r.get::<String, _>(5),
-                "retry_times": r.get::<i64, _>(6),
-                "step_statuses": step_statuses,
-                "snapshot": snapshot,
-                "start_time": r.get::<Option<String>, _>(9),
-                "end_time": r.get::<Option<String>, _>(10),
-                "created_at": r.get::<Option<String>, _>(11),
-                "updated_at": r.get::<Option<String>, _>(12),
-                "team_id": r.get::<String, _>(13),
-                "verbose_logs": r.get::<i64, _>(14) != 0,
-                "debug_unredact": r.get::<i64, _>(15) != 0,
-                "trigger_user_id": r.get::<Option<String>, _>(16),
-                "run_number": r.get::<i64, _>(17),
-            })
-        })
-        .collect();
+    let jobs =
+        crate::store::jobs::list_jobs(&state.pool, &team_filter, !auth.is_platform_admin).await?;
 
     Ok(Json(ApiResponse::success(jobs)))
 }
@@ -153,16 +97,6 @@ fn dashboard_team_scope(
         )));
     }
     Ok(team_in_clause(auth, "p.team_id"))
-}
-
-/// Debug (unredacted) jobs are admin-only records — hidden from every stats
-/// endpoint for non-admins, matching the job list/get handlers.
-fn dashboard_debug_filter(auth: &AuthUser) -> &'static str {
-    if auth.is_platform_admin {
-        ""
-    } else {
-        "AND j.debug_unredact = 0"
-    }
 }
 
 /// Assemble a zero-filled daily series covering the last `days` days (UTC),
@@ -212,45 +146,14 @@ pub async fn stats_trend(
         .checked_sub_signed(chrono::Duration::days(days))
         .map(|d| d.format("%Y-%m-%d 00:00:00").to_string())
         .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
-    let debug_filter = dashboard_debug_filter(&auth);
     let team_scope = dashboard_team_scope(&auth, q.team_id.as_deref())?;
 
-    let empty = serde_json::json!({
-        "days": days,
-        "points": build_trend_points(&HashMap::new(), days),
-    });
-
-    let sql = match &team_scope {
-        None => format!(
-            "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt
-             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
-             WHERE j.created_at >= ? {debug_filter}
-             GROUP BY date(j.created_at), j.status"
-        ),
-        Some((clause, _)) if clause == "AND 1=0" => {
-            return Ok(Json(ApiResponse::success(empty)));
-        }
-        Some((clause, _)) => format!(
-            "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt
-             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
-             WHERE j.created_at >= ? {clause} {debug_filter}
-             GROUP BY date(j.created_at), j.status"
-        ),
-    };
-
-    let mut q2 = sqlx::query(&sql).bind(&cutoff);
-    if let Some((_, ids)) = &team_scope {
-        for id in ids {
-            q2 = q2.bind(id);
-        }
-    }
-    let rows = q2.fetch_all(&state.pool).await?;
+    let rows =
+        crate::store::jobs::trend_rows(&state.pool, &cutoff, &team_scope, !auth.is_platform_admin)
+            .await?;
 
     let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
-    for r in rows {
-        let day: String = r.get(0);
-        let status: String = r.get(1);
-        let cnt: i64 = r.get(2);
+    for (day, status, cnt) in rows {
         counts.entry(day).or_default().insert(status, cnt);
     }
 
@@ -275,54 +178,11 @@ pub async fn recent(
     Query(q): Query<RecentQuery>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let limit = q.limit.unwrap_or(10).clamp(1, 50);
-    let debug_filter = dashboard_debug_filter(&auth);
     let team_scope = dashboard_team_scope(&auth, q.team_id.as_deref())?;
 
-    let sql = match &team_scope {
-        None => format!(
-            "SELECT j.id, j.pipeline_id, p.name AS pipeline_name, j.status,
-                    j.trigger_by, p.team_id, j.created_at
-             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
-             WHERE 1=1 {debug_filter}
-             ORDER BY j.created_at DESC, j.id DESC
-             LIMIT ?"
-        ),
-        Some((clause, _)) if clause == "AND 1=0" => {
-            return Ok(Json(ApiResponse::success(vec![])));
-        }
-        Some((clause, _)) => format!(
-            "SELECT j.id, j.pipeline_id, p.name AS pipeline_name, j.status,
-                    j.trigger_by, p.team_id, j.created_at
-             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
-             WHERE 1=1 {clause} {debug_filter}
-             ORDER BY j.created_at DESC, j.id DESC
-             LIMIT ?"
-        ),
-    };
-
-    let mut q2 = sqlx::query(&sql);
-    if let Some((_, ids)) = &team_scope {
-        for id in ids {
-            q2 = q2.bind(id);
-        }
-    }
-    q2 = q2.bind(limit);
-    let rows = q2.fetch_all(&state.pool).await?;
-
-    let jobs: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "pipeline_id": r.get::<String, _>(1),
-                "pipeline_name": r.get::<Option<String>, _>(2),
-                "status": r.get::<String, _>(3),
-                "trigger_by": r.get::<String, _>(4),
-                "team_id": r.get::<String, _>(5),
-                "created_at": r.get::<Option<String>, _>(6),
-            })
-        })
-        .collect();
+    let jobs =
+        crate::store::jobs::recent_rows(&state.pool, limit, &team_scope, !auth.is_platform_admin)
+            .await?;
 
     tracing::info!(
         user = %auth.username,
@@ -417,7 +277,7 @@ pub async fn get_one(
         .unwrap_or_default();
 
     let trigger_params_safe = redact_trigger_params_for_api(trigger_params.as_deref(), &snapshot);
-    let approvals = list_job_approvals_json(&state.pool, &id).await?;
+    let approvals = crate::store::jobs::list_job_approvals(&state.pool, &id).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": r.get::<String, _>(0),
@@ -519,34 +379,6 @@ pub async fn cancel(
 pub struct ApprovalCommentRequest {
     #[serde(default)]
     pub comment: String,
-}
-
-async fn list_job_approvals_json(
-    pool: &sqlx::SqlitePool,
-    job_id: &str,
-) -> Result<Vec<serde_json::Value>, AppError> {
-    let rows = sqlx::query(
-        "SELECT id, user_id, username, action, comment, created_at
-         FROM job_approvals
-         WHERE job_id = ?
-         ORDER BY created_at ASC, id ASC",
-    )
-    .bind(job_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| {
-            serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "user_id": r.get::<String, _>(1),
-                "username": r.get::<String, _>(2),
-                "action": r.get::<String, _>(3),
-                "comment": r.get::<String, _>(4),
-                "created_at": r.get::<Option<String>, _>(5),
-            })
-        })
-        .collect())
 }
 
 fn broadcast_job_status(state: &AppState, job_id: &str, pipeline_id: &str, status: &str) {

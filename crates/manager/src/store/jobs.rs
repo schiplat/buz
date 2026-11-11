@@ -827,3 +827,200 @@ pub async fn insert_rerun(
     crate::services::poll_events::wake_all();
     Ok(job_id)
 }
+
+// ── Read paths ──────────────────────────────────────────────────────────────
+//
+// Team scope / debug filtering arrive pre-built from the handler (that is
+// authorization); these functions assemble and run the queries and shape rows.
+
+pub type TeamScope = Option<(String, Vec<String>)>;
+
+/// `ORDER BY`-stable listing of the latest 200 jobs (admin list page).
+pub async fn list_jobs(
+    pool: &SqlitePool,
+    team_scope: &TeamScope,
+    hide_debug: bool,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let base = "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
+                j.status, j.trigger_by, j.retry_times,
+                j.step_statuses, j.snapshot,
+                j.start_time, j.end_time, j.created_at, j.updated_at,
+                p.team_id, j.verbose_logs, j.debug_unredact, j.trigger_user_id,
+                j.run_number
+         FROM jobs j
+         JOIN pipelines p ON j.pipeline_id = p.id
+         WHERE 1=1";
+    let debug_filter = if hide_debug {
+        "AND j.debug_unredact = 0"
+    } else {
+        ""
+    };
+    let sql = match team_scope {
+        None => format!("{base} {debug_filter} ORDER BY j.created_at DESC LIMIT 200"),
+        Some((clause, _)) => {
+            format!("{base} {clause} {debug_filter} ORDER BY j.created_at DESC LIMIT 200")
+        }
+    };
+
+    let mut q = sqlx::query(&sql);
+    if let Some((_, ids)) = team_scope {
+        for id in ids {
+            q = q.bind(id);
+        }
+    }
+    let rows = q.fetch_all(pool).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let step_statuses: serde_json::Value =
+                serde_json::from_str(&r.get::<String, _>(7)).unwrap_or_default();
+            let snapshot: serde_json::Value =
+                serde_json::from_str(&r.get::<String, _>(8)).unwrap_or_default();
+            serde_json::json!({
+                "id": r.get::<String, _>(0),
+                "pipeline_id": r.get::<String, _>(1),
+                "pipeline_name": r.get::<Option<String>, _>(2),
+                "runner_id": r.get::<Option<String>, _>(3),
+                "status": r.get::<String, _>(4),
+                "trigger_by": r.get::<String, _>(5),
+                "retry_times": r.get::<i64, _>(6),
+                "step_statuses": step_statuses,
+                "snapshot": snapshot,
+                "start_time": r.get::<Option<String>, _>(9),
+                "end_time": r.get::<Option<String>, _>(10),
+                "created_at": r.get::<Option<String>, _>(11),
+                "updated_at": r.get::<Option<String>, _>(12),
+                "team_id": r.get::<String, _>(13),
+                "verbose_logs": r.get::<i64, _>(14) != 0,
+                "debug_unredact": r.get::<i64, _>(15) != 0,
+                "trigger_user_id": r.get::<Option<String>, _>(16),
+                "run_number": r.get::<i64, _>(17),
+            })
+        })
+        .collect())
+}
+
+/// Dashboard build trend: `(day, status, count)` rows since `cutoff`.
+pub async fn trend_rows(
+    pool: &SqlitePool,
+    cutoff: &str,
+    team_scope: &TeamScope,
+    hide_debug: bool,
+) -> Result<Vec<(String, String, i64)>, AppError> {
+    let debug_filter = if hide_debug {
+        "AND j.debug_unredact = 0"
+    } else {
+        ""
+    };
+    let sql = match team_scope {
+        None => format!(
+            "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt
+             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
+             WHERE j.created_at >= ? {debug_filter}
+             GROUP BY date(j.created_at), j.status"
+        ),
+        Some((clause, _)) => format!(
+            "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt
+             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
+             WHERE j.created_at >= ? {clause} {debug_filter}
+             GROUP BY date(j.created_at), j.status"
+        ),
+    };
+
+    let mut q = sqlx::query(&sql).bind(cutoff);
+    if let Some((_, ids)) = team_scope {
+        for id in ids {
+            q = q.bind(id);
+        }
+    }
+    let rows = q.fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2)))
+        .collect())
+}
+
+/// Overview build stream: latest `limit` jobs, team- and role-scoped.
+pub async fn recent_rows(
+    pool: &SqlitePool,
+    limit: i64,
+    team_scope: &TeamScope,
+    hide_debug: bool,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let debug_filter = if hide_debug {
+        "AND j.debug_unredact = 0"
+    } else {
+        ""
+    };
+    let sql = match team_scope {
+        None => format!(
+            "SELECT j.id, j.pipeline_id, p.name AS pipeline_name, j.status,
+                    j.trigger_by, p.team_id, j.created_at
+             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
+             WHERE 1=1 {debug_filter}
+             ORDER BY j.created_at DESC, j.id DESC
+             LIMIT ?"
+        ),
+        Some((clause, _)) => format!(
+            "SELECT j.id, j.pipeline_id, p.name AS pipeline_name, j.status,
+                    j.trigger_by, p.team_id, j.created_at
+             FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
+             WHERE 1=1 {clause} {debug_filter}
+             ORDER BY j.created_at DESC, j.id DESC
+             LIMIT ?"
+        ),
+    };
+
+    let mut q = sqlx::query(&sql);
+    if let Some((_, ids)) = team_scope {
+        for id in ids {
+            q = q.bind(id);
+        }
+    }
+    q = q.bind(limit);
+    let rows = q.fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.get::<String, _>(0),
+                "pipeline_id": r.get::<String, _>(1),
+                "pipeline_name": r.get::<Option<String>, _>(2),
+                "status": r.get::<String, _>(3),
+                "trigger_by": r.get::<String, _>(4),
+                "team_id": r.get::<String, _>(5),
+                "created_at": r.get::<Option<String>, _>(6),
+            })
+        })
+        .collect())
+}
+
+/// Approval history rows for one job.
+pub async fn list_job_approvals(
+    pool: &SqlitePool,
+    job_id: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let rows = sqlx::query(
+        "SELECT id, user_id, username, action, comment, created_at
+         FROM job_approvals
+         WHERE job_id = ?
+         ORDER BY created_at ASC, id ASC",
+    )
+    .bind(job_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.get::<String, _>(0),
+                "user_id": r.get::<String, _>(1),
+                "username": r.get::<String, _>(2),
+                "action": r.get::<String, _>(3),
+                "comment": r.get::<String, _>(4),
+                "created_at": r.get::<Option<String>, _>(5),
+            })
+        })
+        .collect())
+}
