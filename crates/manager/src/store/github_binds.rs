@@ -182,3 +182,217 @@ pub async fn mark_variable_bind_stale_if_ok(
     .await?;
     Ok(result.rows_affected() > 0)
 }
+
+/// Every variable bind for one variable. Variable overrides are plaintext, so
+/// unlike the secret variant this returns the stored override value.
+pub async fn list_variable_binds(
+    pool: &SqlitePool,
+    var_id: &str,
+) -> Result<Vec<BindRow>, AppError> {
+    let rows = sqlx::query(
+        "SELECT b.id, b.repo_id, c.name, r.owner, r.repo,
+                b.last_pushed_at, b.last_status, b.last_error, b.last_op, b.override_value
+         FROM variable_github_binds b
+         JOIN github_repos r ON r.id = b.repo_id
+         JOIN github_connections c ON c.id = r.connection_id
+         WHERE b.var_id = ?
+         ORDER BY r.owner ASC, r.repo ASC",
+    )
+    .bind(var_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let override_value: Option<String> = r.get(9);
+            BindRow {
+                id: r.get(0),
+                repo_id: r.get(1),
+                connection_name: r.get(2),
+                owner: r.get(3),
+                repo: r.get(4),
+                last_pushed_at: r.get(5),
+                last_status: r.get(6),
+                last_error: r.get(7),
+                last_op: r.get(8),
+                has_override: override_value.is_some(),
+                override_value,
+            }
+        })
+        .collect())
+}
+
+/// Create a variable bind. Variable overrides are plaintext.
+pub async fn insert_variable_bind(
+    pool: &SqlitePool,
+    id: &str,
+    var_id: &str,
+    repo_id: &str,
+    override_value: Option<&str>,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO variable_github_binds (id, var_id, repo_id, last_op, override_value) VALUES (?, ?, ?, 'bind', ?)",
+    )
+    .bind(id)
+    .bind(var_id)
+    .bind(repo_id)
+    .bind(override_value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// True when this variable is already bound to the repo.
+pub async fn variable_bind_exists(
+    pool: &SqlitePool,
+    var_id: &str,
+    repo_id: &str,
+) -> Result<bool, AppError> {
+    let found: Option<String> =
+        sqlx::query_scalar("SELECT id FROM variable_github_binds WHERE var_id = ? AND repo_id = ?")
+            .bind(var_id)
+            .bind(repo_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(found.is_some())
+}
+
+/// Replace a variable bind's plaintext override (`None` inherits the default).
+pub async fn set_variable_bind_override(
+    pool: &SqlitePool,
+    bind_id: &str,
+    var_id: &str,
+    override_value: Option<&str>,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE variable_github_binds SET override_value = ?, updated_at = datetime('now') \
+         WHERE id = ? AND var_id = ?",
+    )
+    .bind(override_value)
+    .bind(bind_id)
+    .bind(var_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// One bind row plus the connection facts needed by variable push / unbind.
+pub struct VariableBindTarget {
+    pub owner: String,
+    pub repo: String,
+    pub api_base_url: String,
+    pub token_ciphertext: String,
+    pub connection_name: String,
+    pub override_value: Option<String>,
+}
+
+/// Load a variable bind by id, scoped to its variable (`None` = not bound).
+pub async fn variable_bind_target(
+    pool: &SqlitePool,
+    bind_id: &str,
+    var_id: &str,
+) -> Result<Option<VariableBindTarget>, AppError> {
+    let row = sqlx::query(
+        "SELECT b.id, r.owner, r.repo, c.api_base_url, c.token_ciphertext, c.name, b.override_value
+         FROM variable_github_binds b
+         JOIN github_repos r ON r.id = b.repo_id
+         JOIN github_connections c ON c.id = r.connection_id
+         WHERE b.id = ? AND b.var_id = ?",
+    )
+    .bind(bind_id)
+    .bind(var_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| VariableBindTarget {
+        owner: r.get(1),
+        repo: r.get(2),
+        api_base_url: r.get(3),
+        token_ciphertext: r.get(4),
+        connection_name: r.get(5),
+        override_value: r.get(6),
+    }))
+}
+
+/// Ids of a variable's binds (`bind_id` set = just that one, still scoped).
+pub async fn variable_bind_ids(
+    pool: &SqlitePool,
+    var_id: &str,
+    bind_id: Option<&str>,
+) -> Result<Vec<String>, AppError> {
+    match bind_id {
+        Some(bid) if !bid.is_empty() => Ok(vec![bid.to_string()]),
+        _ => Ok(
+            sqlx::query_scalar("SELECT id FROM variable_github_binds WHERE var_id = ?")
+                .bind(var_id)
+                .fetch_all(pool)
+                .await?,
+        ),
+    }
+}
+
+/// Record a successful push of a variable bind.
+pub async fn mark_variable_bind_pushed_ok(
+    pool: &SqlitePool,
+    bind_id: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE variable_github_binds SET last_status = 'ok', last_error = '', \
+         last_pushed_at = datetime('now'), last_op = 'push', updated_at = datetime('now') \
+         WHERE id = ?",
+    )
+    .bind(bind_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Record a failed push of a variable bind.
+pub async fn mark_variable_bind_push_failed(
+    pool: &SqlitePool,
+    bind_id: &str,
+    error: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE variable_github_binds SET last_status = 'failed', last_error = ?, \
+         last_op = 'push', updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(error)
+    .bind(bind_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Record a failed remote unbind, keeping the local row so the operator can retry.
+pub async fn mark_variable_bind_unbind_failed(
+    pool: &SqlitePool,
+    bind_id: &str,
+    var_id: &str,
+    error: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE variable_github_binds SET last_op = 'unbind', last_status = 'failed', \
+         last_error = ?, updated_at = datetime('now') WHERE id = ? AND var_id = ?",
+    )
+    .bind(error)
+    .bind(bind_id)
+    .bind(var_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Delete one variable bind; `false` when it did not exist.
+pub async fn delete_variable_bind(
+    pool: &SqlitePool,
+    bind_id: &str,
+    var_id: &str,
+) -> Result<bool, AppError> {
+    let result = sqlx::query("DELETE FROM variable_github_binds WHERE id = ? AND var_id = ?")
+        .bind(bind_id)
+        .bind(var_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() != 0)
+}

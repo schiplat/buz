@@ -1394,34 +1394,22 @@ pub async fn list_variable_binds(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     variable_exists(&state.pool, &var_id).await?;
-    let rows = sqlx::query(
-        "SELECT b.id, b.repo_id, c.name, r.owner, r.repo, b.last_pushed_at, b.last_status, b.last_error, b.last_op, b.override_value
-         FROM variable_github_binds b
-         JOIN github_repos r ON r.id = b.repo_id
-         JOIN github_connections c ON c.id = r.connection_id
-         WHERE b.var_id = ?
-         ORDER BY r.owner ASC, r.repo ASC",
-    )
-    .bind(&var_id)
-    .fetch_all(&state.pool)
-    .await?;
-    let out: Vec<serde_json::Value> = rows
+    let binds = crate::store::github_binds::list_variable_binds(&state.pool, &var_id).await?;
+    let out: Vec<serde_json::Value> = binds
         .into_iter()
-        .map(|r| {
-            let ov: Option<String> = r.get(9);
-            let has_override = ov.is_some();
+        .map(|b| {
             bind_view(&BindView {
-                id: &r.get::<String, _>(0),
-                repo_id: &r.get::<String, _>(1),
-                connection_name: &r.get::<String, _>(2),
-                owner: &r.get::<String, _>(3),
-                repo: &r.get::<String, _>(4),
-                last_pushed_at: r.get(5),
-                last_status: &r.get::<String, _>(6),
-                last_error: &r.get::<String, _>(7),
-                last_op: &r.get::<String, _>(8),
-                override_value: ov.as_deref(),
-                has_override,
+                id: &b.id,
+                repo_id: &b.repo_id,
+                connection_name: &b.connection_name,
+                owner: &b.owner,
+                repo: &b.repo,
+                last_pushed_at: b.last_pushed_at,
+                last_status: &b.last_status,
+                last_error: &b.last_error,
+                last_op: &b.last_op,
+                override_value: b.override_value.as_deref(),
+                has_override: b.has_override,
             })
         })
         .collect();
@@ -1473,12 +1461,7 @@ pub async fn add_variable_bind(
         }
     };
 
-    let dup = sqlx::query("SELECT id FROM variable_github_binds WHERE var_id = ? AND repo_id = ?")
-        .bind(&var_id)
-        .bind(&req.repo_id)
-        .fetch_optional(&state.pool)
-        .await?;
-    if dup.is_some() {
+    if crate::store::github_binds::variable_bind_exists(&state.pool, &var_id, &req.repo_id).await? {
         let var_name: String = sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
             .bind(&var_id)
             .fetch_one(&state.pool)
@@ -1501,14 +1484,13 @@ pub async fn add_variable_bind(
     }
 
     let id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO variable_github_binds (id, var_id, repo_id, last_op, override_value) VALUES (?, ?, ?, 'bind', ?)",
+    crate::store::github_binds::insert_variable_bind(
+        &state.pool,
+        &id,
+        &var_id,
+        &req.repo_id,
+        req.override_value.as_deref(),
     )
-    .bind(&id)
-    .bind(&var_id)
-    .bind(&req.repo_id)
-    .bind(&req.override_value)
-    .execute(&state.pool)
     .await?;
 
     let var_name: String = sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
@@ -1564,13 +1546,12 @@ pub async fn patch_variable_bind(
     .await?
     .ok_or_else(|| AppError::NotFound("variable github bind not found".into()))?;
 
-    sqlx::query(
-        "UPDATE variable_github_binds SET override_value = ?, updated_at = datetime('now') WHERE id = ? AND var_id = ?",
+    crate::store::github_binds::set_variable_bind_override(
+        &state.pool,
+        &bind_id,
+        &var_id,
+        req.override_value.as_deref(),
     )
-    .bind(&req.override_value)
-    .bind(&bind_id)
-    .bind(&var_id)
-    .execute(&state.pool)
     .await?;
 
     let marked = mark_variable_bind_stale_if_ok(&state.pool, &bind_id)
@@ -1636,27 +1617,12 @@ pub async fn delete_variable_bind(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     variable_exists(&state.pool, &var_id).await?;
 
-    let row = sqlx::query(
-        "SELECT r.owner, r.repo, c.api_base_url, c.token_ciphertext, c.name
-         FROM variable_github_binds b
-         JOIN github_repos r ON r.id = b.repo_id
-         JOIN github_connections c ON c.id = r.connection_id
-         WHERE b.id = ? AND b.var_id = ?",
-    )
-    .bind(&bind_id)
-    .bind(&var_id)
-    .fetch_optional(&state.pool)
-    .await?;
-    let (owner, repo, api_base, token_cipher, conn_name) = match row {
-        Some(r) => (
-            r.get::<String, _>(0),
-            r.get::<String, _>(1),
-            r.get::<String, _>(2),
-            r.get::<String, _>(3),
-            r.get::<String, _>(4),
-        ),
-        None => return Err(AppError::NotFound("variable github bind not found".into())),
-    };
+    let target = crate::store::github_binds::variable_bind_target(&state.pool, &bind_id, &var_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("variable github bind not found".into()))?;
+    let (owner, repo, api_base) = (target.owner, target.repo, target.api_base_url);
+    let token_cipher = target.token_ciphertext;
+    let conn_name = target.connection_name;
 
     let var_name: String = sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
         .bind(&var_id)
@@ -1671,13 +1637,12 @@ pub async fn delete_variable_bind(
     if let Err(e) = client.delete_variable(&owner, &repo, &var_name).await {
         // Record the failed unbind on the bind row so the UI can surface it;
         // the row is kept so the operator can fix the connection and retry.
-        sqlx::query(
-            "UPDATE variable_github_binds SET last_op = 'unbind', last_status = 'failed', last_error = ?, updated_at = datetime('now') WHERE id = ? AND var_id = ?",
+        crate::store::github_binds::mark_variable_bind_unbind_failed(
+            &state.pool,
+            &bind_id,
+            &var_id,
+            &format!("unbind failed: {e}"),
         )
-        .bind(format!("unbind failed: {e}"))
-        .bind(&bind_id)
-        .bind(&var_id)
-        .execute(&state.pool)
         .await?;
         tracing::warn!(
             connection = %conn_name,
@@ -1689,11 +1654,7 @@ pub async fn delete_variable_bind(
         return Err(e);
     }
 
-    sqlx::query("DELETE FROM variable_github_binds WHERE id = ? AND var_id = ?")
-        .bind(&bind_id)
-        .bind(&var_id)
-        .execute(&state.pool)
-        .await?;
+    crate::store::github_binds::delete_variable_bind(&state.pool, &bind_id, &var_id).await?;
 
     tracing::info!(
         connection = %conn_name,
@@ -1731,15 +1692,12 @@ pub async fn push_variable_binds(
     let value: String = row.get(1);
     validate_gh_name(&var_name)?;
 
-    let bind_ids: Vec<String> = match &query.bind_id {
-        Some(bid) if !bid.is_empty() => vec![bid.clone()],
-        _ => {
-            sqlx::query_scalar("SELECT id FROM variable_github_binds WHERE var_id = ?")
-                .bind(&var_id)
-                .fetch_all(&state.pool)
-                .await?
-        }
-    };
+    let bind_ids = crate::store::github_binds::variable_bind_ids(
+        &state.pool,
+        &var_id,
+        query.bind_id.as_deref(),
+    )
+    .await?;
     if bind_ids.is_empty() {
         return Ok(Json(ApiResponse::success(serde_json::json!({
             "results": [],
@@ -1748,36 +1706,30 @@ pub async fn push_variable_binds(
 
     let mut results = Vec::new();
     for bind_id in &bind_ids {
-        let target = sqlx::query(
-            "SELECT b.id, r.owner, r.repo, c.api_base_url, c.token_ciphertext, c.name, b.override_value
-             FROM variable_github_binds b
-             JOIN github_repos r ON r.id = b.repo_id
-             JOIN github_connections c ON c.id = r.connection_id
-             WHERE b.id = ? AND b.var_id = ?",
+        let target = match crate::store::github_binds::variable_bind_target(
+            &state.pool,
+            bind_id,
+            &var_id,
         )
-        .bind(bind_id)
-        .bind(&var_id)
-        .fetch_optional(&state.pool)
-        .await;
-        let target = match target {
-            Ok(Some(t)) => t,
+        .await
+        {
+            Ok(Some(target)) => target,
             Ok(None) => {
                 results.push(serde_json::json!({ "bind_id": bind_id, "status": "failed", "error": "bind not found" }));
                 continue;
             }
-            Err(e) => {
-                results.push(serde_json::json!({ "bind_id": bind_id, "status": "failed", "error": e.to_string() }));
+            Err(error) => {
+                results.push(serde_json::json!({ "bind_id": bind_id, "status": "failed", "error": error.to_string() }));
                 continue;
             }
         };
-        let owner: String = target.get(1);
-        let repo: String = target.get(2);
-        let api_base: String = target.get(3);
-        let token_cipher: String = target.get(4);
-        let conn_name: String = target.get(5);
-        let override_value: Option<String> = target.get(6);
+        let owner = target.owner;
+        let repo = target.repo;
+        let api_base = target.api_base_url;
+        let token_cipher = target.token_ciphertext;
+        let conn_name = target.connection_name;
         let push_value =
-            effective_variable_push_value(&value, override_value.as_deref()).to_string();
+            effective_variable_push_value(&value, target.override_value.as_deref()).to_string();
 
         let outcome = async {
             let token = crypto::decrypt(&token_cipher, &state.config.auth.jwt_secret)
@@ -1792,12 +1744,8 @@ pub async fn push_variable_binds(
 
         let outcome_success = match outcome {
             Ok(()) => {
-                sqlx::query(
-                    "UPDATE variable_github_binds SET last_status = 'ok', last_error = '', last_pushed_at = datetime('now'), last_op = 'push', updated_at = datetime('now') WHERE id = ?",
-                )
-                .bind(bind_id)
-                .execute(&state.pool)
-                .await?;
+                crate::store::github_binds::mark_variable_bind_pushed_ok(&state.pool, bind_id)
+                    .await?;
                 results.push(serde_json::json!({
                     "bind_id": bind_id, "owner": owner, "repo": repo, "status": "ok",
                 }));
@@ -1810,12 +1758,11 @@ pub async fn push_variable_binds(
                 true
             }
             Err(e) => {
-                sqlx::query(
-                    "UPDATE variable_github_binds SET last_status = 'failed', last_error = ?, last_op = 'push', updated_at = datetime('now') WHERE id = ?",
+                crate::store::github_binds::mark_variable_bind_push_failed(
+                    &state.pool,
+                    bind_id,
+                    &e.to_string(),
                 )
-                .bind(e.to_string())
-                .bind(bind_id)
-                .execute(&state.pool)
                 .await?;
                 results.push(serde_json::json!({
                     "bind_id": bind_id, "owner": owner, "repo": repo, "status": "failed", "error": e.to_string(),
