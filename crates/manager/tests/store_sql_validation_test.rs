@@ -233,6 +233,8 @@ const EXPECTED_DYNAMIC_SHAPES: &[&str] = &[
     "SELECT j.id, j.pipeline_id, p.name AS pipeline_name, j.status, j.trigger_by, p.team_id, j.created_at FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id WHERE 1=1 {debug_filter} ORDER BY j.created_at DESC, j.id DESC LIMIT ?",
     "SELECT id, status, step_statuses, COALESCE(snapshot, '{}') FROM jobs WHERE environment_id = ? AND id != ?",
     "SELECT id, name, value, owner_group, team_id, team_shared, kind, updated_at FROM secrets WHERE 1=1 AND team_id IN ({placeholders}) ORDER BY name ASC",
+    "SELECT id, name, host, port, username, credential_type, credential_data, labels, created_at, updated_at, team_id FROM hosts WHERE team_id IS NULL OR team_id = '' OR team_id IN ({placeholders}) ORDER BY created_at DESC",
+    "SELECT id, name, slug, description, created_at, updated_at FROM teams WHERE id IN ({placeholders}) ORDER BY name ASC",
 ];
 
 /// Every unresolved-fragment statement in the store must be one of the shapes
