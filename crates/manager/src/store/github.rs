@@ -207,13 +207,11 @@ pub struct RepoRow {
     pub connection_id: String,
     pub owner: String,
     pub repo: String,
-    pub pipeline_id: Option<String>,
     pub updated_at: Option<String>,
     pub created_at: Option<String>,
 }
 
-pub const REPO_COLUMNS: &str =
-    "id, connection_id, owner, repo, pipeline_id, updated_at, created_at";
+pub const REPO_COLUMNS: &str = "id, connection_id, owner, repo, updated_at, created_at";
 
 pub fn repo_from_row(r: &sqlx::sqlite::SqliteRow) -> RepoRow {
     RepoRow {
@@ -221,9 +219,8 @@ pub fn repo_from_row(r: &sqlx::sqlite::SqliteRow) -> RepoRow {
         connection_id: r.get(1),
         owner: r.get(2),
         repo: r.get(3),
-        pipeline_id: r.get(4),
-        updated_at: r.get(5),
-        created_at: r.get(6),
+        updated_at: r.get(4),
+        created_at: r.get(5),
     }
 }
 
