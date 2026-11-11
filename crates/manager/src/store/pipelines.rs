@@ -106,3 +106,25 @@ pub async fn resolve_concurrency_status_in_tx(
         ))),
     }
 }
+
+/// Pipeline concurrency decision, owning its transaction — the read-only-gate
+/// variant used by re-run and trigger when no other writes share the scope.
+pub async fn resolve_concurrency_status(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+    concurrency_group: Option<&str>,
+    concurrency_mode: &str,
+    concurrency_max_queue: i64,
+) -> Result<&'static str, AppError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let status = resolve_concurrency_status_in_tx(
+        &mut tx,
+        pipeline_id,
+        concurrency_group,
+        concurrency_mode,
+        concurrency_max_queue,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(status)
+}

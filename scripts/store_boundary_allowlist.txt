@@ -3,7 +3,6 @@ environments.rs
 git_hooks.rs
 github_sync.rs
 hosts.rs
-jobs.rs
 logs.rs
 ops_sandbox.rs
 pipelines.rs

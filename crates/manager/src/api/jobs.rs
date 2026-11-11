@@ -7,14 +7,13 @@ use shared::error::AppError;
 use shared::protocol::redact_input_map;
 use shared::protocol::response::ApiResponse;
 use shared::rbac::Perm;
-use sqlx::Row;
 use std::collections::HashMap;
 
 use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::{AuthUser, RunnerClaims};
 use crate::rbac::{pipeline_team_id, team_in_clause};
 use crate::state::AppState;
-use crate::store::jobs::{cancel_job_in_tx, now_utc};
+use crate::store::jobs::now_utc;
 
 /// Redact masking input values in API-facing trigger_params using snapshot.masking_input_keys.
 /// Does not decrypt — sealed (`buzenc:v1:…`) or legacy plaintext values are replaced with `***`.
@@ -194,126 +193,74 @@ pub async fn recent(
     Ok(Json(ApiResponse::success(jobs)))
 }
 
-/// Step orders whose streamed output hit the truncation marker
-/// (`chunk_index % 10_000 == LOG_STEP_TRUNCATED`). Per-step 10_000-wide
-/// windows make the modulo exact; negatives (runner banner) never match.
-async fn truncated_steps(pool: &sqlx::SqlitePool, job_id: &str) -> Vec<i64> {
-    // Written by the Runner's terminal report: job metadata, so it survives
-    // job_log_retention deleting the marker chunk.
-    let stored: Option<String> =
-        sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
-    if let Some(raw) = stored {
-        if let Ok(mut steps) = serde_json::from_str::<Vec<i64>>(&raw) {
-            if !steps.is_empty() {
-                steps.sort_unstable();
-                steps.dedup();
-                return steps;
-            }
-        }
-    }
-
-    // Legacy fallback (jobs finished before the column existed): the marker
-    // chunk in the step's 10_000-wide window. Correct only while logs remain.
-    let mut steps: Vec<i64> = sqlx::query_scalar(
-        "SELECT DISTINCT step_order FROM job_logs
-         WHERE job_id = ? AND chunk_index >= 0
-           AND chunk_index % 10000 = ?",
-    )
-    .bind(job_id)
-    .bind(shared::protocol::LOG_STEP_TRUNCATED)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-    steps.sort_unstable();
-    steps
-}
-
 pub async fn get_one(
     auth: AuthUser,
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let r = sqlx::query(
-        "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
-                j.status, j.trigger_by, j.trigger_params, j.snapshot, j.step_statuses, j.retry_times,
-                j.start_time, j.end_time, j.created_at, j.updated_at, j.debug_unredact, j.verbose_logs,
-                j.trigger_user_id, j.run_number, j.run_attempt,
-                j.resource_profile, j.resource_slots, j.resource_spec, j.sandbox_instance_id,
-                j.dispatch_reason
-         FROM jobs j
-         LEFT JOIN pipelines p ON j.pipeline_id = p.id
-         WHERE j.id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let r = crate::store::jobs::job_detail_row(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
 
-    let pipeline_id: String = r.get(1);
-    let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = pipeline_team_id(&state.pool, &r.pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
     // Debug (unredacted) jobs are admin-only records — non-admins must not
     // even see the metadata. 404 (not 403) so the existence of a debug job
     // is indistinguishable from a missing job, matching the `list` endpoint.
-    let debug_unredact: i64 = r.get(14);
-    if debug_unredact != 0 && !auth.is_platform_admin {
+    if r.debug_unredact && !auth.is_platform_admin {
         return Err(AppError::NotFound("job not found".into()));
     }
 
-    let trigger_params: Option<String> = r.get(6);
-    let snapshot_raw: Option<String> = r.get(7);
-    let snapshot: serde_json::Value = snapshot_raw
-        .and_then(|s| serde_json::from_str(&s).ok())
+    let snapshot: serde_json::Value = r
+        .snapshot_raw
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(serde_json::json!({}));
-    let step_statuses_raw: Option<String> = r.get(8);
-    let step_statuses: serde_json::Value = step_statuses_raw
-        .and_then(|s| serde_json::from_str(&s).ok())
+    let step_statuses: serde_json::Value = r
+        .step_statuses_raw
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
 
-    let trigger_params_safe = redact_trigger_params_for_api(trigger_params.as_deref(), &snapshot);
+    let trigger_params_safe = redact_trigger_params_for_api(r.trigger_params.as_deref(), &snapshot);
     let approvals = crate::store::jobs::list_job_approvals(&state.pool, &id).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
-        "id": r.get::<String, _>(0),
-        "pipeline_id": r.get::<String, _>(1),
-        "pipeline_name": r.get::<Option<String>, _>(2),
-        "runner_id": r.get::<Option<String>, _>(3),
-        "status": r.get::<String, _>(4),
-        "trigger_by": r.get::<String, _>(5),
+        "id": r.id,
+        "pipeline_id": r.pipeline_id,
+        "pipeline_name": r.pipeline_name,
+        "runner_id": r.runner_id,
+        "status": r.status,
+        "trigger_by": r.trigger_by,
         "trigger_params": trigger_params_safe,
         "snapshot": snapshot,
         "step_statuses": step_statuses,
-        "retry_times": r.get::<i64, _>(9),
-        "start_time": r.get::<Option<String>, _>(10),
-        "end_time": r.get::<Option<String>, _>(11),
-        "created_at": r.get::<Option<String>, _>(12),
-        "updated_at": r.get::<Option<String>, _>(13),
-        "debug_unredact": r.get::<i64, _>(14) != 0,
-        "verbose_logs": r.get::<i64, _>(15) != 0,
-        "trigger_user_id": r.get::<Option<String>, _>(16),
-        "run_number": r.get::<i64, _>(17),
-        "run_attempt": r.get::<i64, _>(18),
+        "retry_times": r.retry_times,
+        "start_time": r.start_time,
+        "end_time": r.end_time,
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+        "debug_unredact": r.debug_unredact,
+        "verbose_logs": r.verbose_logs,
+        "trigger_user_id": r.trigger_user_id,
+        "run_number": r.run_number,
+        "run_attempt": r.run_attempt,
         "team_id": team_id,
         "approvals": approvals,
         // Requested profile ('' = default) frozen at trigger; slots/spec and
         // the dispatching sandbox instance are filled at claim.
-        "resource_profile": r.get::<String, _>(19),
-        "resource_slots": r.get::<i64, _>(20),
-        "resource_spec": serde_json::from_str::<serde_json::Value>(&r.get::<String, _>(21))
+        "resource_profile": r.resource_profile,
+        "resource_slots": r.resource_slots,
+        "resource_spec": serde_json::from_str::<serde_json::Value>(&r.resource_spec_raw)
             .unwrap_or(serde_json::json!({})),
-        "sandbox_instance_id": r.get::<String, _>(22),
+        "sandbox_instance_id": r.sandbox_instance_id,
         // Why the last poller skipped this job while pending ('' once claimed).
-        "dispatch_reason": r.get::<String, _>(23),
+        "dispatch_reason": r.dispatch_reason,
         // Steps whose streamed output overflowed the per-step log window —
         // the UI badges them without downloading every chunk. The offset
         // (9991) is the shared LOG_STEP_TRUNCATED layout constant.
-        "truncated_steps": truncated_steps(&state.pool, &id).await,
+        "truncated_steps": crate::store::jobs::truncated_steps(&state.pool, &id).await,
     }))))
 }
 
@@ -322,51 +269,28 @@ pub async fn cancel(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let ctx = sqlx::query("SELECT j.pipeline_id, p.name FROM jobs j LEFT JOIN pipelines p ON p.id = j.pipeline_id WHERE j.id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?;
-
-    let (pipeline_id, pipeline_name) = match ctx {
-        Some(row) => (
-            row.get::<String, _>(0),
-            row.try_get::<Option<String>, _>(1).ok().flatten(),
-        ),
-        None => return Err(AppError::NotFound("job not found".into())),
-    };
+    let (pipeline_id, pipeline_name) = crate::store::jobs::job_pipeline_name(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
 
     let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
-    let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    let Some(cancelled) = cancel_job_in_tx(&mut tx, &id, &auth.id, &auth.username).await? else {
-        tx.rollback().await?;
-        return Err(AppError::NotFound(
-            "job not found or already finished".into(),
-        ));
-    };
-    audit::record_in(
-        &mut tx,
-        AuditEvent::new(Action::JobCancel, &auth)
-            .on(Resource::job(
-                &id,
-                pipeline_name.as_deref().unwrap_or(&pipeline_id),
-            ))
-            .team(Some(team_id.clone()))
-            .changes(
-                Some(serde_json::json!({ "status": cancelled.old_status })),
-                Some(serde_json::json!({ "status": "cancelled" })),
-            ),
+    let prev_status = crate::store::jobs::cancel(
+        &state.pool,
+        &auth,
+        &id,
+        &pipeline_id,
+        pipeline_name.as_deref(),
+        &team_id,
     )
     .await?;
-    tx.commit().await?;
-    crate::services::poll_events::wake_all();
 
     tracing::info!(
         operator = %auth.username,
         job_id = %id,
         pipeline = ?pipeline_name,
-        prev_status = %cancelled.old_status,
+        prev_status = %prev_status,
         "Job cancelled by operator"
     );
 
@@ -458,36 +382,24 @@ pub async fn rerun(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query(
-        "SELECT j.status, j.pipeline_id, j.trigger_params, j.snapshot,
-                j.environment_id, j.debug_unredact, j.verbose_logs,
-                j.run_number, j.run_attempt, j.resource_profile,
-                p.team_id, p.name, p.is_active,
-                p.concurrency_group, p.concurrency_mode, p.concurrency_max_queue
-         FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id
-         WHERE j.id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let src = crate::store::jobs::rerun_source(&state.pool, &id).await?;
 
-    let status: String = row.get(0);
-    let pipeline_id: String = row.get(1);
-    let trigger_params_raw: Option<String> = row.get(2);
-    let snapshot_raw: String = row.get(3);
-    let environment_id: Option<String> = row.get(4);
-    let debug_unredact = row.get::<i64, _>(5) != 0;
-    let verbose_logs = row.get::<i64, _>(6) != 0;
-    let run_number: i64 = row.get(7);
-    let run_attempt: i64 = row.get(8);
-    let resource_profile: String = row.get(9);
-    let team_id: String = row.get(10);
-    let pipeline_name: String = row.get(11);
-    let is_active = row.get::<i64, _>(12) != 0;
-    let concurrency_group: Option<String> = row.get(13);
-    let concurrency_mode: String = row.get(14);
-    let concurrency_max_queue: i64 = row.get(15);
+    let status: String = src.status;
+    let pipeline_id: String = src.pipeline_id;
+    let trigger_params_raw: Option<String> = src.trigger_params_raw;
+    let snapshot_raw: String = src.snapshot_raw;
+    let environment_id: Option<String> = src.environment_id;
+    let debug_unredact = src.debug_unredact;
+    let verbose_logs = src.verbose_logs;
+    let run_number: i64 = src.run_number;
+    let run_attempt: i64 = src.run_attempt;
+    let resource_profile: String = src.resource_profile;
+    let team_id: String = src.team_id;
+    let pipeline_name: String = src.pipeline_name;
+    let is_active = src.pipeline_active;
+    let concurrency_group: Option<String> = src.concurrency_group;
+    let concurrency_mode: String = src.concurrency_mode;
+    let concurrency_max_queue: i64 = src.concurrency_max_queue;
 
     // Debug (unredacted) records are admin-only end to end — a non-admin
     // must not even learn the job exists (404, matching get_one/list).
@@ -530,17 +442,14 @@ pub async fn rerun(
             "waiting_approval"
         }
         _ => {
-            let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-            let st = crate::store::pipelines::resolve_concurrency_status_in_tx(
-                &mut tx,
+            crate::store::pipelines::resolve_concurrency_status(
+                &state.pool,
                 &pipeline_id,
                 concurrency_group.as_deref(),
                 &concurrency_mode,
                 concurrency_max_queue,
             )
-            .await?;
-            tx.commit().await?;
-            st
+            .await?
         }
     };
 
@@ -646,27 +555,13 @@ pub async fn delete(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     // Fetch job context before deletion for logging
-    let ctx = sqlx::query(
-        "SELECT j.status, j.pipeline_id, p.name
-         FROM jobs j
-         LEFT JOIN pipelines p ON p.id = j.pipeline_id
-         WHERE j.id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let ctx = crate::store::jobs::job_context(&state.pool, &id).await?;
 
     match ctx {
-        Some(row) => {
-            let status: String = row.get(0);
-            let pipeline_id: String = row.get(1);
-            let pipeline: Option<String> = row.try_get(2).ok();
+        Some((status, pipeline_id, pipeline)) => {
             let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
             auth.check_team(&team_id, Perm::PipelineWrite)?;
-            sqlx::query("DELETE FROM jobs WHERE id = ?")
-                .bind(&id)
-                .execute(&state.pool)
-                .await?;
+            crate::store::jobs::delete_job(&state.pool, &id).await?;
             audit::record(
                 &state.pool,
                 AuditEvent::new(Action::JobDelete, &auth)
@@ -710,21 +605,10 @@ pub async fn status_check(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let row = sqlx::query("SELECT status, runner_id FROM jobs WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
+    // Runner↔job binding enforced in the store (only poll()'s owner polls).
+    let status = crate::store::jobs::runner_job_status(&state.pool, &auth.runner_id, &id)
         .await?
-        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
-
-    // Runner↔job binding: a runner may only poll jobs poll() dispatched to it.
-    let owner: Option<String> = row.get(1);
-    if owner.as_deref() != Some(auth.runner_id.as_str()) {
-        return Err(AppError::Forbidden(
-            "job is not assigned to this runner".into(),
-        ));
-    }
-
-    let status: String = row.get(0);
+        .unwrap_or_default();
     Ok(Json(ApiResponse::success(serde_json::json!({
         "status": status,
     }))))

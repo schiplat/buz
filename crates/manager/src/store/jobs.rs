@@ -1024,3 +1024,269 @@ pub async fn list_job_approvals(
         })
         .collect())
 }
+
+/// A job row joined with its pipeline name — the detail-page payload source.
+pub struct JobDetailRow {
+    pub id: String,
+    pub pipeline_id: String,
+    pub pipeline_name: Option<String>,
+    pub runner_id: Option<String>,
+    pub status: String,
+    pub trigger_by: String,
+    pub trigger_params: Option<String>,
+    pub snapshot_raw: Option<String>,
+    pub step_statuses_raw: Option<String>,
+    pub retry_times: i64,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub debug_unredact: bool,
+    pub verbose_logs: bool,
+    pub trigger_user_id: Option<String>,
+    pub run_number: i64,
+    pub run_attempt: i64,
+    pub resource_profile: String,
+    pub resource_slots: i64,
+    pub resource_spec_raw: String,
+    pub sandbox_instance_id: String,
+    pub dispatch_reason: String,
+}
+
+/// Fetch one job with pipeline identity (`None` = no such job).
+pub async fn job_detail_row(pool: &SqlitePool, id: &str) -> Result<Option<JobDetailRow>, AppError> {
+    let r = sqlx::query(
+        "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
+                j.status, j.trigger_by, j.trigger_params, j.snapshot, j.step_statuses, j.retry_times,
+                j.start_time, j.end_time, j.created_at, j.updated_at, j.debug_unredact, j.verbose_logs,
+                j.trigger_user_id, j.run_number, j.run_attempt,
+                j.resource_profile, j.resource_slots, j.resource_spec, j.sandbox_instance_id,
+                j.dispatch_reason
+         FROM jobs j
+         LEFT JOIN pipelines p ON j.pipeline_id = p.id
+         WHERE j.id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(r.map(|r| JobDetailRow {
+        id: r.get(0),
+        pipeline_id: r.get(1),
+        pipeline_name: r.get(2),
+        runner_id: r.get(3),
+        status: r.get(4),
+        trigger_by: r.get(5),
+        trigger_params: r.get(6),
+        snapshot_raw: r.get(7),
+        step_statuses_raw: r.get(8),
+        retry_times: r.get(9),
+        start_time: r.get(10),
+        end_time: r.get(11),
+        created_at: r.get(12),
+        updated_at: r.get(13),
+        debug_unredact: r.get::<i64, _>(14) != 0,
+        verbose_logs: r.get::<i64, _>(15) != 0,
+        trigger_user_id: r.get(16),
+        run_number: r.get(17),
+        run_attempt: r.get(18),
+        resource_profile: r.get(19),
+        resource_slots: r.get(20),
+        resource_spec_raw: r.get(21),
+        sandbox_instance_id: r.get(22),
+        dispatch_reason: r.get(23),
+    }))
+}
+
+/// `(status, pipeline_id, pipeline_name?)` — the audit context for cancel/delete.
+pub async fn job_context(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<(String, String, Option<String>)>, AppError> {
+    let row = sqlx::query(
+        "SELECT j.status, j.pipeline_id, p.name
+         FROM jobs j
+         LEFT JOIN pipelines p ON p.id = j.pipeline_id
+         WHERE j.id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| (row.get(0), row.get(1), row.try_get(2).ok().flatten())))
+}
+
+/// Owner-scoped status poll for the Runner.
+pub async fn runner_job_status(
+    pool: &SqlitePool,
+    runner_id: &str,
+    job_id: &str,
+) -> Result<Option<String>, AppError> {
+    let row = sqlx::query("SELECT status, runner_id FROM jobs WHERE id = ?")
+        .bind(job_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let owner: Option<String> = row.get(1);
+    if owner.as_deref() != Some(runner_id) {
+        return Err(AppError::Forbidden(
+            "job is not assigned to this runner".into(),
+        ));
+    }
+    Ok(Some(row.get(0)))
+}
+
+/// Delete one job row.
+pub async fn delete_job(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM jobs WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Step orders whose streamed output hit the truncation marker
+/// (`chunk_index % 10_000 == LOG_STEP_TRUNCATED`). Per-step 10_000-wide
+/// windows make the modulo exact; negatives (runner banner) never match.
+///
+/// Prefers the durable job column (survives job_log_retention sweeping the
+/// marker chunk); legacy fallback reads the marker chunk while logs remain.
+pub async fn truncated_steps(pool: &SqlitePool, job_id: &str) -> Vec<i64> {
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    if let Some(raw) = stored {
+        if let Ok(mut steps) = serde_json::from_str::<Vec<i64>>(&raw) {
+            if !steps.is_empty() {
+                steps.sort_unstable();
+                steps.dedup();
+                return steps;
+            }
+        }
+    }
+
+    let mut steps: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT step_order FROM job_logs
+         WHERE job_id = ? AND chunk_index >= 0
+           AND chunk_index % 10000 = ?",
+    )
+    .bind(job_id)
+    .bind(shared::protocol::LOG_STEP_TRUNCATED)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    steps.sort_unstable();
+    steps
+}
+
+/// `(pipeline_id, pipeline name?)` for cancel-path audit context.
+pub async fn job_pipeline_name(
+    pool: &SqlitePool,
+    job_id: &str,
+) -> Result<Option<(String, Option<String>)>, AppError> {
+    let row = sqlx::query(
+        "SELECT j.pipeline_id, p.name FROM jobs j
+         LEFT JOIN pipelines p ON p.id = j.pipeline_id
+         WHERE j.id = ?",
+    )
+    .bind(job_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| (row.get(0), row.try_get(1).ok().flatten())))
+}
+
+/// Source-job facts for a re-run — gates and snapshot rebuild read these.
+pub struct RerunSource {
+    pub status: String,
+    pub pipeline_id: String,
+    pub trigger_params_raw: Option<String>,
+    pub snapshot_raw: String,
+    pub environment_id: Option<String>,
+    pub debug_unredact: bool,
+    pub verbose_logs: bool,
+    pub run_number: i64,
+    pub run_attempt: i64,
+    pub resource_profile: String,
+    pub team_id: String,
+    pub pipeline_name: String,
+    pub pipeline_active: bool,
+    pub concurrency_group: Option<String>,
+    pub concurrency_mode: String,
+    pub concurrency_max_queue: i64,
+}
+
+/// Fetch the terminal job being re-run, joined with its pipeline's gate state.
+pub async fn rerun_source(pool: &SqlitePool, id: &str) -> Result<RerunSource, AppError> {
+    let row = sqlx::query(
+        "SELECT j.status, j.pipeline_id, j.trigger_params, j.snapshot,
+                j.environment_id, j.debug_unredact, j.verbose_logs,
+                j.run_number, j.run_attempt, j.resource_profile,
+                p.team_id, p.name, p.is_active,
+                p.concurrency_group, p.concurrency_mode, p.concurrency_max_queue
+         FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id
+         WHERE j.id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    Ok(RerunSource {
+        status: row.get(0),
+        pipeline_id: row.get(1),
+        trigger_params_raw: row.get(2),
+        snapshot_raw: row.get(3),
+        environment_id: row.get(4),
+        debug_unredact: row.get::<i64, _>(5) != 0,
+        verbose_logs: row.get::<i64, _>(6) != 0,
+        run_number: row.get(7),
+        run_attempt: row.get(8),
+        resource_profile: row.get(9),
+        team_id: row.get(10),
+        pipeline_name: row.get(11),
+        pipeline_active: row.get::<i64, _>(12) != 0,
+        concurrency_group: row.get(13),
+        concurrency_mode: row.get(14),
+        concurrency_max_queue: row.get(15),
+    })
+}
+
+/// Operator cancellation: the guard update and its audit record land in one
+/// `BEGIN IMMEDIATE` (`Err(NotFound)` when the job is missing or already
+/// terminal — the transaction is rolled back). Post-commit announce stays
+/// with the caller.
+pub async fn cancel(
+    pool: &SqlitePool,
+    actor: &crate::middleware::AuthUser,
+    job_id: &str,
+    pipeline_id: &str,
+    pipeline_name: Option<&str>,
+    team_id: &str,
+) -> Result<String, AppError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let Some(cancelled) = cancel_job_in_tx(&mut tx, job_id, &actor.id, &actor.username).await?
+    else {
+        tx.rollback().await?;
+        return Err(AppError::NotFound(
+            "job not found or already finished".into(),
+        ));
+    };
+    crate::audit::record_in(
+        &mut tx,
+        crate::audit::AuditEvent::new(crate::audit::Action::JobCancel, actor)
+            .on(crate::audit::Resource::job(
+                job_id,
+                pipeline_name.unwrap_or(pipeline_id),
+            ))
+            .team(Some(team_id.to_string()))
+            .changes(
+                Some(serde_json::json!({ "status": cancelled.old_status })),
+                Some(serde_json::json!({ "status": "cancelled" })),
+            ),
+    )
+    .await?;
+    tx.commit().await?;
+    crate::services::poll_events::wake_all();
+    Ok(cancelled.old_status)
+}

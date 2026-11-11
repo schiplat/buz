@@ -1189,16 +1189,14 @@ pub async fn do_trigger(
         }
         "waiting_approval"
     } else {
-        let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let status = crate::store::pipelines::resolve_concurrency_status_in_tx(
-            &mut tx,
+        let status = crate::store::pipelines::resolve_concurrency_status(
+            &state.pool,
             pipeline_id,
             concurrency_group.as_deref(),
             &concurrency_mode,
             concurrency_max_queue,
         )
         .await?;
-        tx.commit().await?;
         status
     };
 
