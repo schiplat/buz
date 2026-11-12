@@ -2,18 +2,21 @@
 //! password changes. The first-admin setup transaction is owned by the
 //! handler (it carries the audit record); these tx-internal steps speak SQL
 //! inside it.
+//!
+//! Pool-level functions run on the dual-backend dispatcher (`store::exec`).
+//! The `*_tx` helpers stay on `sqlx::Transaction<Sqlite>` — they share the
+//! setup transaction scope with `crate::audit::record_in` and migrate with
+//! the audit tx-scope slice.
 
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::{self, DbPool};
 
 use shared::error::AppError;
 
 type Tx<'a> = sqlx::Transaction<'a, sqlx::Sqlite>;
 
 /// Total user count — the "is this instance initialized" fact.
-pub async fn count_users(pool: &SqlitePool) -> Result<i64, AppError> {
-    Ok(sqlx::query_scalar("SELECT COUNT(*) FROM users")
-        .fetch_one(pool)
-        .await?)
+pub async fn count_users(pool: &DbPool) -> Result<i64, AppError> {
+    Ok(exec::fetch_scalar_i64(pool, "SELECT COUNT(*) FROM users", &[]).await?)
 }
 
 /// Total user count inside the caller's transaction (setup's re-check).
@@ -81,48 +84,48 @@ pub struct LoginUser {
 }
 
 pub async fn find_login_by_username(
-    pool: &SqlitePool,
+    pool: &DbPool,
     username: &str,
 ) -> Result<Option<LoginUser>, AppError> {
-    let row = sqlx::query(
+    let row = exec::fetch_optional(
+        pool,
         "SELECT id, username, password_hash, is_platform_admin, is_active, is_ops
          FROM users WHERE username = ?",
+        &[username.into()],
     )
-    .bind(username)
-    .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| LoginUser {
-        id: r.get(0),
-        username: r.get(1),
-        password_hash: r.get(2),
-        is_platform_admin: r.get::<i64, _>(3) != 0,
-        is_active: r.get::<i64, _>(4) != 0,
-        is_ops: r.get::<i64, _>(5) != 0,
+        id: r.text_of("id"),
+        username: r.text_of("username"),
+        password_hash: r.text_of("password_hash"),
+        is_platform_admin: r.i64_of("is_platform_admin") != 0,
+        is_active: r.i64_of("is_active") != 0,
+        is_ops: r.i64_of("is_ops") != 0,
     }))
 }
 
 /// Stored password hash of one user (`None` = no such user).
-pub async fn password_hash_of(
-    pool: &SqlitePool,
-    user_id: &str,
-) -> Result<Option<String>, AppError> {
-    let row = sqlx::query("SELECT password_hash FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|r| r.get(0)))
+pub async fn password_hash_of(pool: &DbPool, user_id: &str) -> Result<Option<String>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT password_hash FROM users WHERE id = ?",
+        &[user_id.into()],
+    )
+    .await?
+    .map(|r| r.text_of("password_hash")))
 }
 
 /// Replace one user's password hash.
 pub async fn update_password(
-    pool: &SqlitePool,
+    pool: &DbPool,
     user_id: &str,
     password_hash: &str,
 ) -> Result<(), AppError> {
-    sqlx::query("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(password_hash)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
+    exec::execute(
+        pool,
+        "UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?",
+        &[password_hash.into(), user_id.into()],
+    )
+    .await?;
     Ok(())
 }

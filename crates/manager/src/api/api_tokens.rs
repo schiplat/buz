@@ -26,6 +26,7 @@ use crate::audit::{self, Action, AuditEvent};
 use crate::middleware::PlatformAdmin;
 use crate::state::AppState;
 use crate::store::api_tokens as token_store;
+use crate::store::exec::DbPool;
 
 /// POST /api-tokens — create a token bound to the calling admin. Super admins
 /// can then list/revoke every token platform-wide.
@@ -73,7 +74,7 @@ pub async fn create(
     let prefix = api_token::display_prefix(&token);
 
     token_store::insert(
-        &state.pool,
+        &DbPool::from_sqlite(&state.pool),
         &id,
         &auth.id,
         name,
@@ -114,7 +115,7 @@ pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let items = token_store::list(
-        &state.pool,
+        &DbPool::from_sqlite(&state.pool),
         (!auth.is_super_admin).then_some(auth.id.as_str()),
     )
     .await?;
@@ -130,7 +131,7 @@ pub async fn revoke(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let (owner_id, name) = token_store::find_active(&state.pool, &id)
+    let (owner_id, name) = token_store::find_active(&DbPool::from_sqlite(&state.pool), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("api token not found".into()))?;
 
@@ -140,7 +141,7 @@ pub async fn revoke(
         ));
     }
 
-    token_store::revoke(&state.pool, &id).await?;
+    token_store::revoke(&DbPool::from_sqlite(&state.pool), &id).await?;
 
     audit::record(
         &state.pool,

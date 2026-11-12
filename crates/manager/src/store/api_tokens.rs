@@ -1,12 +1,14 @@
 //! API-token CRUD (the SQL behind platform-admin token management).
+//!
+//! On the dual-backend dispatcher (`store::exec`).
 
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::{self, DbPool};
 
 use shared::error::AppError;
 
 /// Insert a token row. Only the SHA-256 hash is stored.
 pub async fn insert(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     user_id: &str,
     name: &str,
@@ -14,17 +16,19 @@ pub async fn insert(
     token_prefix: &str,
     scope: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, scope)
          VALUES (?, ?, ?, ?, ?, ?)",
+        &[
+            id.into(),
+            user_id.into(),
+            name.into(),
+            token_hash.into(),
+            token_prefix.into(),
+            scope.into(),
+        ],
     )
-    .bind(id)
-    .bind(user_id)
-    .bind(name)
-    .bind(token_hash)
-    .bind(token_prefix)
-    .bind(scope)
-    .execute(pool)
     .await?;
     Ok(())
 }
@@ -32,32 +36,33 @@ pub async fn insert(
 /// List tokens as API payloads. `restrict_user_id = None` (super admin) sees
 /// every token; otherwise only that user's.
 pub async fn list(
-    pool: &SqlitePool,
+    pool: &DbPool,
     restrict_user_id: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, AppError> {
     let rows = match restrict_user_id {
         None => {
-            sqlx::query(
+            exec::fetch_all(
+                pool,
                 "SELECT t.id, t.user_id, u.username, t.name, t.token_prefix,
                         t.created_at, t.last_used_at, t.revoked_at, t.scope
                  FROM api_tokens t
                  LEFT JOIN users u ON u.id = t.user_id
                  ORDER BY t.created_at DESC",
+                &[],
             )
-            .fetch_all(pool)
             .await?
         }
         Some(user_id) => {
-            sqlx::query(
+            exec::fetch_all(
+                pool,
                 "SELECT t.id, t.user_id, u.username, t.name, t.token_prefix,
                         t.created_at, t.last_used_at, t.revoked_at, t.scope
                  FROM api_tokens t
                  LEFT JOIN users u ON u.id = t.user_id
                  WHERE t.user_id = ?
                  ORDER BY t.created_at DESC",
+                &[user_id.into()],
             )
-            .bind(user_id)
-            .fetch_all(pool)
             .await?
         }
     };
@@ -65,41 +70,42 @@ pub async fn list(
     Ok(rows
         .into_iter()
         .map(|r| {
+            let revoked_at = r.opt_text_of("revoked_at");
+            let revoked = revoked_at.is_some();
             serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "user_id": r.get::<String, _>(1),
-                "username": r.get::<String, _>(2),
-                "name": r.get::<String, _>(3),
-                "prefix": r.get::<String, _>(4),
-                "created_at": r.get::<String, _>(5),
-                "last_used_at": r.get::<Option<String>, _>(6),
-                "revoked_at": r.get::<Option<String>, _>(7),
-                "revoked": r.get::<Option<String>, _>(7).is_some(),
-                "scope": r.get::<String, _>(8),
+                "id": r.text_of("id"),
+                "user_id": r.text_of("user_id"),
+                "username": r.text_of("username"),
+                "name": r.text_of("name"),
+                "prefix": r.text_of("token_prefix"),
+                "created_at": r.text_of("created_at"),
+                "last_used_at": r.opt_text_of("last_used_at"),
+                "revoked_at": revoked_at,
+                "revoked": revoked,
+                "scope": r.text_of("scope"),
             })
         })
         .collect())
 }
 
 /// `(owner_user_id, name)` of an unrevoked token, for the authorize step.
-pub async fn find_active(
-    pool: &SqlitePool,
-    id: &str,
-) -> Result<Option<(String, String)>, AppError> {
-    Ok(
-        sqlx::query("SELECT user_id, name FROM api_tokens WHERE id = ? AND revoked_at IS NULL")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?
-            .map(|r| (r.get(0), r.get(1))),
+pub async fn find_active(pool: &DbPool, id: &str) -> Result<Option<(String, String)>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT user_id, name FROM api_tokens WHERE id = ? AND revoked_at IS NULL",
+        &[id.into()],
     )
+    .await?
+    .map(|r| (r.text_of("user_id"), r.text_of("name"))))
 }
 
 /// Revoke a token (idempotent where-guard).
-pub async fn revoke(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
-    sqlx::query("UPDATE api_tokens SET revoked_at = datetime('now') WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn revoke(pool: &DbPool, id: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE api_tokens SET revoked_at = datetime('now') WHERE id = ?",
+        &[id.into()],
+    )
+    .await?;
     Ok(())
 }

@@ -11,11 +11,12 @@ use crate::audit::{self, Action, AuditEvent, Resource};
 use crate::middleware::AuthUser;
 use crate::password::{hash_password, validate_password_complexity, verify_password};
 use crate::state::AppState;
+use crate::store::exec::DbPool;
 
 pub async fn setup_status(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<SetupStatusResponse>>, AppError> {
-    let count = crate::store::auth::count_users(&state.pool).await?;
+    let count = crate::store::auth::count_users(&DbPool::from_sqlite(&state.pool)).await?;
     Ok(Json(ApiResponse::success(SetupStatusResponse {
         needs_setup: count == 0,
     })))
@@ -104,7 +105,7 @@ pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<ApiResponse<LoginResponse>>, AppError> {
-    let user_count = crate::store::auth::count_users(&state.pool).await?;
+    let user_count = crate::store::auth::count_users(&DbPool::from_sqlite(&state.pool)).await?;
     if user_count == 0 {
         return Err(AppError::AuthFailed(
             "instance not initialized — open /setup to create the first admin".into(),
@@ -116,9 +117,10 @@ pub async fn login(
         return Err(AppError::AuthFailed("invalid username or password".into()));
     }
 
-    let user = crate::store::auth::find_login_by_username(&state.pool, username)
-        .await?
-        .ok_or_else(|| AppError::AuthFailed("invalid username or password".into()))?;
+    let user =
+        crate::store::auth::find_login_by_username(&DbPool::from_sqlite(&state.pool), username)
+            .await?
+            .ok_or_else(|| AppError::AuthFailed("invalid username or password".into()))?;
 
     if !user.is_active {
         return Err(AppError::AuthFailed("user is disabled".into()));
@@ -224,9 +226,10 @@ pub async fn change_password(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     validate_change_password(&req)?;
 
-    let password_hash = crate::store::auth::password_hash_of(&state.pool, &auth.id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+    let password_hash =
+        crate::store::auth::password_hash_of(&DbPool::from_sqlite(&state.pool), &auth.id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("user not found".into()))?;
 
     if !verify_password(&req.current_password, &password_hash) {
         return Err(AppError::ValidationFailed(
@@ -235,7 +238,8 @@ pub async fn change_password(
     }
 
     let new_hash = hash_password(&req.new_password).map_err(AppError::Internal)?;
-    crate::store::auth::update_password(&state.pool, &auth.id, &new_hash).await?;
+    crate::store::auth::update_password(&DbPool::from_sqlite(&state.pool), &auth.id, &new_hash)
+        .await?;
     // The hash never enters the record; the event alone is the signal.
     audit::record(
         &state.pool,
