@@ -22,6 +22,11 @@ Rules for adding one:
   lock only orders writers; it does not make an earlier read current.
 - Post-commit work (notify, WebSocket fan-out, `wake_all`) never runs inside
   the transaction.
+- The dialect token itself — SQLite's `BEGIN IMMEDIATE` — has exactly one
+  home: `store::tx::begin_immediate`. A grep for `begin_immediate` enumerates
+  every write-serialised site; the Postgres port replaces that one function's
+  body with the per-site serialisation strategy (row locks, `SKIP LOCKED`,
+  advisory locks) instead of hunting for the string.
 
 ## Inventory
 
