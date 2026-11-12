@@ -28,6 +28,7 @@ pub mod audit_logs;
 pub mod auth;
 pub mod dialect;
 pub mod environments;
+pub mod exec;
 pub mod git_hooks;
 pub mod github;
 pub mod github_binds;
