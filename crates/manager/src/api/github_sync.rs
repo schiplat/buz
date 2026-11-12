@@ -1257,7 +1257,7 @@ pub async fn push_secret_binds(
 // ────────────────────────── variable binds (admin) ──────────────────────────
 
 async fn variable_exists(state: &AppState, var_id: &str) -> Result<(), AppError> {
-    if !crate::store::variables::exists(&state.pool, var_id).await? {
+    if !crate::store::variables::exists(&state.db(), var_id).await? {
         return Err(AppError::NotFound("variable not found".into()));
     }
     Ok(())
@@ -1304,7 +1304,7 @@ pub async fn add_variable_bind(
         Some(r) => r,
         None => {
             // Binding failed — record it so the failure is traceable.
-            let var_name = crate::store::variables::variable_name_optional(&state.pool, &var_id)
+            let var_name = crate::store::variables::variable_name_optional(&state.db(), &var_id)
                 .await?
                 .unwrap_or_default();
             audit::record(
@@ -1323,7 +1323,7 @@ pub async fn add_variable_bind(
     };
 
     if crate::store::github_binds::variable_bind_exists(&state.pool, &var_id, &req.repo_id).await? {
-        let var_name = crate::store::variables::variable_name(&state.pool, &var_id).await?;
+        let var_name = crate::store::variables::variable_name(&state.db(), &var_id).await?;
         audit::record(
             &state.pool,
             AuditEvent::from_auth(&auth, Action::VariableGithubBindAdd)
@@ -1351,7 +1351,7 @@ pub async fn add_variable_bind(
     )
     .await?;
 
-    let var_name = crate::store::variables::variable_name(&state.pool, &var_id).await?;
+    let var_name = crate::store::variables::variable_name(&state.db(), &var_id).await?;
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::VariableGithubBindAdd)
@@ -1404,7 +1404,7 @@ pub async fn patch_variable_bind(
         .await
         .unwrap_or(false);
 
-    let var_name = crate::store::variables::variable_name(&state.pool, &var_id).await?;
+    let var_name = crate::store::variables::variable_name(&state.db(), &var_id).await?;
     let repo_id: String = row.repo_id;
     let conn_name: String = row.connection_name;
     let owner: String = row.owner;
@@ -1471,7 +1471,7 @@ pub async fn delete_variable_bind(
     let token_cipher = target.token_ciphertext;
     let conn_name = target.connection_name;
 
-    let var_name = crate::store::variables::variable_name(&state.pool, &var_id).await?;
+    let var_name = crate::store::variables::variable_name(&state.db(), &var_id).await?;
 
     // Remove the value from GitHub Actions first; only unbind locally when the
     // remote cleanup succeeds. 404 is treated as success (never pushed).
@@ -1528,7 +1528,7 @@ pub async fn push_variable_binds(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     variable_exists(&state, &var_id).await?;
 
-    let (var_name, value) = crate::store::variables::push_facts(&state.pool, &var_id).await?;
+    let (var_name, value) = crate::store::variables::push_facts(&state.db(), &var_id).await?;
     validate_gh_name(&var_name)?;
 
     let bind_ids = crate::store::github_binds::variable_bind_ids(

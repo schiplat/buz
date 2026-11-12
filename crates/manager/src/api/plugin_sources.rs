@@ -80,7 +80,7 @@ pub async fn create_source(
 
     let id = Uuid::new_v4().to_string();
     crate::store::plugin_sources::insert(
-        &state.pool,
+        &state.db(),
         &id,
         &name,
         &url,
@@ -212,7 +212,7 @@ pub async fn reset_index_watermark(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or_else(|| AppError::NotFound("source not found".into()))?;
-    crate::store::plugin_sources::reset_index_watermark(&state.pool, &id).await?;
+    crate::store::plugin_sources::reset_index_watermark(&state.db(), &id).await?;
     audit::record(
         &state.pool,
         AuditEvent::new(Action::PluginSourceResetIndexWatermark, &auth)
@@ -260,7 +260,7 @@ pub async fn delete_source(
     let removed = plugin_pool::get_source(&state.pool, &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    crate::store::plugin_sources::delete(&state.pool, &id).await?;
+    crate::store::plugin_sources::delete(&state.db(), &id).await?;
     if let Some(removed) = &removed {
         audit::record(
             &state.pool,
@@ -279,7 +279,7 @@ pub async fn delete_source(
     // (typically the official site is unreachable); remember it so the
     // startup migration does not re-seed it on every boot.
     if id == "official" {
-        crate::store::plugin_sources::mark_official_source_dismissed(&state.pool, &auth.username)
+        crate::store::plugin_sources::mark_official_source_dismissed(&state.db(), &auth.username)
             .await?;
     }
     Ok(Json(ApiResponse::success(json!({ "id": id }))))

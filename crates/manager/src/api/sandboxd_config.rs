@@ -61,7 +61,7 @@ async fn read_desired(
     host_id: &str,
     instance_id: &str,
 ) -> Result<FetchOutcome, AppError> {
-    let row = crate::store::sandboxd_config::desired_row(&state.pool, host_id, instance_id).await?;
+    let row = crate::store::sandboxd_config::desired_row(&state.db(), host_id, instance_id).await?;
 
     let Some((version, document)) = row else {
         return Err(AppError::NotFound("sandbox host not enrolled".into()));
@@ -115,7 +115,7 @@ async fn reconcile_db_restore(
     if applied_version <= 0 {
         return Ok(());
     }
-    let desired = crate::store::sandboxd_config::desired_version(&state.pool, host_id, instance_id)
+    let desired = crate::store::sandboxd_config::desired_version(&state.db(), host_id, instance_id)
         .await?
         .ok_or_else(|| AppError::NotFound("sandbox host not enrolled".into()))?;
     if desired >= applied_version {
@@ -126,7 +126,7 @@ async fn reconcile_db_restore(
     // an empty database stores an empty document and the host keeps its cache
     // version number via the bump alone.
     let stored =
-        crate::store::sandboxd_config::latest_config_document(&state.pool, host_id, instance_id)
+        crate::store::sandboxd_config::latest_config_document(&state.db(), host_id, instance_id)
             .await?;
     let restored: SandboxHostDocument = stored
         .and_then(|raw| serde_json::from_str(&raw).ok())
@@ -147,7 +147,7 @@ async fn reconcile_db_restore(
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let sha = sc::sha256_hex(json.as_bytes());
     crate::store::sandboxd_config::insert_restore_config(
-        &state.pool,
+        &state.db(),
         host_id,
         instance_id,
         version,
@@ -156,7 +156,7 @@ async fn reconcile_db_restore(
     )
     .await?;
     crate::store::sandboxd_config::bump_versions_for_restore(
-        &state.pool,
+        &state.db(),
         host_id,
         instance_id,
         version,
@@ -244,7 +244,7 @@ pub async fn get_config(
 
     // Record the fetch for ops visibility (best-effort).
     let _ =
-        crate::store::sandboxd_config::stamp_fetch_ok(&state.pool, &host_id, &instance_id).await;
+        crate::store::sandboxd_config::stamp_fetch_ok(&state.db(), &host_id, &instance_id).await;
 
     let changed = q
         .applied_version
@@ -295,11 +295,11 @@ pub async fn report_status(
     // Snapshot before the update so the log can tell a fresh apply (version
     // moved) from a routine heartbeat (same version again).
     let before =
-        crate::store::sandboxd_config::status_snapshot(&state.pool, host_id, instance_id).await?;
+        crate::store::sandboxd_config::status_snapshot(&state.db(), host_id, instance_id).await?;
 
     let error = report.last_error.trim().to_string();
     crate::store::sandboxd_config::apply_status_report(
-        &state.pool,
+        &state.db(),
         host_id,
         instance_id,
         report.applied_version,

@@ -125,7 +125,7 @@ pub async fn create(
     let mut var_names: HashMap<String, String> = HashMap::new();
     for var_id in req.var_ids.iter().flatten() {
         if let Some(name) =
-            crate::store::variables::variable_name_optional(&state.pool, var_id).await?
+            crate::store::variables::variable_name_optional(&state.db(), var_id).await?
         {
             var_names.insert(var_id.clone(), name);
         }
@@ -449,7 +449,7 @@ pub async fn update(
     let mut var_names: HashMap<String, String> = HashMap::new();
     for var_id in req.var_ids.iter().flatten() {
         if let Some(name) =
-            crate::store::variables::variable_name_optional(&state.pool, var_id).await?
+            crate::store::variables::variable_name_optional(&state.db(), var_id).await?
         {
             var_names.insert(var_id.clone(), name);
         }

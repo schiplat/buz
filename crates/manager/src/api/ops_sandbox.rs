@@ -144,7 +144,7 @@ async fn current_document(
     instance_id: &str,
 ) -> Result<Option<SandboxHostDocument>, AppError> {
     let raw =
-        crate::store::sandboxd_config::latest_config_document(&state.pool, host_id, instance_id)
+        crate::store::sandboxd_config::latest_config_document(&state.db(), host_id, instance_id)
             .await?;
     Ok(raw.and_then(|raw| serde_json::from_str(&raw).ok()))
 }

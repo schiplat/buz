@@ -15,7 +15,7 @@ pub async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let rows = crate::store::variables::list_all(&state.pool).await?;
+    let rows = crate::store::variables::list_all(&state.db()).await?;
 
     let var_ids: Vec<String> = rows.iter().map(|(id, _, _, _)| id.clone()).collect();
     let binds_map = super::github_sync::variable_binds_map(&state, &var_ids).await?;
@@ -55,7 +55,7 @@ pub async fn create(
     }
 
     // Check for duplicate
-    if crate::store::variables::find_id_by_name(&state.pool, &name)
+    if crate::store::variables::find_id_by_name(&state.db(), &name)
         .await?
         .is_some()
     {
@@ -65,7 +65,7 @@ pub async fn create(
     }
 
     let id = Uuid::new_v4().to_string();
-    crate::store::variables::insert(&state.pool, &id, &name, &req.value).await?;
+    crate::store::variables::insert(&state.db(), &id, &name, &req.value).await?;
 
     tracing::info!("Variable created: {name} ({id})");
 
@@ -91,7 +91,7 @@ pub async fn get_one(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let (row_id, name, stored_value, updated_at) =
-        crate::store::variables::find_by_id(&state.pool, &id)
+        crate::store::variables::find_by_id(&state.db(), &id)
             .await?
             .ok_or_else(|| AppError::NotFound("variable not found".into()))?;
 
@@ -116,10 +116,10 @@ pub async fn update(
     State(state): State<AppState>,
     Json(req): Json<UpdateVariableRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let (name, old_value) = crate::store::variables::name_value(&state.pool, &id)
+    let (name, old_value) = crate::store::variables::name_value(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("variable not found".into()))?;
-    crate::store::variables::update_value(&state.pool, &id, &req.value).await?;
+    crate::store::variables::update_value(&state.db(), &id, &req.value).await?;
 
     // Dirty-mark inherit GitHub binds when the platform default value changed.
     let mut github_binds_stale: u64 = 0;
@@ -167,10 +167,10 @@ pub async fn delete(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let (name, old_value) = crate::store::variables::name_value(&state.pool, &id)
+    let (name, old_value) = crate::store::variables::name_value(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("variable not found".into()))?;
-    crate::store::variables::delete(&state.pool, &id).await?;
+    crate::store::variables::delete(&state.db(), &id).await?;
 
     audit::record(
         &state.pool,
