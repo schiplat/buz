@@ -16,7 +16,7 @@ pub async fn list(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let rows = crate::store::users::list_all(&state.pool).await?;
+    let rows = crate::store::users::list_all(&state.db()).await?;
 
     let users = rows
         .into_iter()
@@ -58,7 +58,7 @@ pub async fn create(
     let display = req.display_name.unwrap_or_else(|| username.to_string());
 
     crate::store::users::insert(
-        &state.pool,
+        &state.db(),
         &id,
         username,
         &hash,
@@ -100,7 +100,7 @@ pub async fn update(
     State(state): State<AppState>,
     Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let facts = crate::store::users::update_facts(&state.pool, &id)
+    let facts = crate::store::users::update_facts(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("user not found".into()))?;
     let username = facts.username.clone();
@@ -120,25 +120,25 @@ pub async fn update(
             ));
         }
         let hash = hash_password(pw).map_err(AppError::Internal)?;
-        crate::store::users::update_password(&state.pool, &id, &hash).await?;
+        crate::store::users::update_password(&state.db(), &id, &hash).await?;
     }
 
     if let Some(ref dn) = req.display_name {
-        crate::store::users::update_display_name(&state.pool, &id, dn).await?;
+        crate::store::users::update_display_name(&state.db(), &id, dn).await?;
     }
 
     if let Some(is_admin) = req.is_platform_admin {
         // Prevent removing the last platform admin
         if !is_admin && id == auth.id {
             let admin_count =
-                crate::store::users::count_active_platform_admins(&state.pool).await?;
+                crate::store::users::count_active_platform_admins(&state.db()).await?;
             if admin_count <= 1 {
                 return Err(AppError::ValidationFailed(
                     "cannot remove the last platform admin".into(),
                 ));
             }
         }
-        crate::store::users::update_is_platform_admin(&state.pool, &id, is_admin).await?;
+        crate::store::users::update_is_platform_admin(&state.db(), &id, is_admin).await?;
     }
 
     // Super admin tier may only be granted/revoked by another super admin.
@@ -149,19 +149,19 @@ pub async fn update(
             ));
         }
         if !is_super && id == auth.id {
-            let super_count = crate::store::users::count_active_super_admins(&state.pool).await?;
+            let super_count = crate::store::users::count_active_super_admins(&state.db()).await?;
             if super_count <= 1 {
                 return Err(AppError::ValidationFailed(
                     "cannot remove the last super admin".into(),
                 ));
             }
         }
-        crate::store::users::update_is_super_admin(&state.pool, &id, is_super).await?;
+        crate::store::users::update_is_super_admin(&state.db(), &id, is_super).await?;
     }
 
     // Platform-ops flag: any platform admin may grant/revoke it.
     if let Some(is_ops) = req.is_ops {
-        crate::store::users::update_is_ops(&state.pool, &id, is_ops).await?;
+        crate::store::users::update_is_ops(&state.db(), &id, is_ops).await?;
     }
 
     if let Some(active) = req.is_active {
@@ -170,10 +170,10 @@ pub async fn update(
                 "cannot deactivate yourself".into(),
             ));
         }
-        crate::store::users::update_is_active(&state.pool, &id, active).await?;
+        crate::store::users::update_is_active(&state.db(), &id, active).await?;
     }
 
-    let after_facts = crate::store::users::update_after(&state.pool, &id).await?;
+    let after_facts = crate::store::users::update_after(&state.db(), &id).await?;
     let after = serde_json::json!({
         "id": after_facts.id,
         "username": after_facts.username,
@@ -215,7 +215,7 @@ pub async fn delete(
     if id == auth.id {
         return Err(AppError::ValidationFailed("cannot delete yourself".into()));
     }
-    let facts = crate::store::users::delete_facts(&state.pool, &id).await?;
+    let facts = crate::store::users::delete_facts(&state.db(), &id).await?;
     let (username, before) = match facts {
         Some(f) => {
             let username = f.username.clone();
@@ -233,7 +233,7 @@ pub async fn delete(
         }
         None => (id.clone(), None),
     };
-    let deleted = crate::store::users::delete(&state.pool, &id).await?;
+    let deleted = crate::store::users::delete(&state.db(), &id).await?;
     if !deleted {
         return Err(AppError::NotFound("user not found".into()));
     }

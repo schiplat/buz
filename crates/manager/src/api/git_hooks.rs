@@ -67,7 +67,7 @@ pub async fn list_hooks(
     let team_id = rbac::pipeline_team_id(&state.pool, &pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
-    let rows = crate::store::git_hooks::list_for_pipeline(&state.pool, &pipeline_id).await?;
+    let rows = crate::store::git_hooks::list_for_pipeline(&state.db(), &pipeline_id).await?;
 
     let items: Vec<serde_json::Value> = rows
         .into_iter()
@@ -149,7 +149,7 @@ pub async fn create_hook(
         crypto::encrypt(&secret, &state.config.auth.jwt_secret).map_err(AppError::Internal)?;
 
     crate::store::git_hooks::insert(
-        &state.pool,
+        &state.db(),
         &crate::store::git_hooks::GitHookInsert {
             id: id.clone(),
             pipeline_id: pipeline_id.clone(),
@@ -242,7 +242,7 @@ pub async fn update_hook(
     }
     let enabled = req.enabled.unwrap_or(true);
 
-    let existing = crate::store::git_hooks::find_for_update(&state.pool, &hook_id, &pipeline_id)
+    let existing = crate::store::git_hooks::find_for_update(&state.db(), &hook_id, &pipeline_id)
         .await?
         .ok_or_else(|| AppError::NotFound("git hook not found".into()))?;
     let provider = existing.provider.clone();
@@ -256,7 +256,7 @@ pub async fn update_hook(
     });
 
     crate::store::git_hooks::update_hook(
-        &state.pool,
+        &state.db(),
         &pipeline_id,
         &hook_id,
         &label,
@@ -309,7 +309,7 @@ pub async fn delete_hook(
     let team_id = rbac::pipeline_team_id(&state.pool, &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
     let before_row =
-        crate::store::git_hooks::delete_facts(&state.pool, &hook_id, &pipeline_id).await?;
+        crate::store::git_hooks::delete_facts(&state.db(), &hook_id, &pipeline_id).await?;
     let before = before_row.as_ref().map(|f| {
         serde_json::json!({
             "id": hook_id,
@@ -332,7 +332,7 @@ pub async fn delete_hook(
         })
         .unwrap_or_else(|| hook_id.clone());
 
-    let deleted = crate::store::git_hooks::delete_hook(&state.pool, &hook_id, &pipeline_id).await?;
+    let deleted = crate::store::git_hooks::delete_hook(&state.db(), &hook_id, &pipeline_id).await?;
     if !deleted {
         return Err(AppError::NotFound("git hook not found".into()));
     }

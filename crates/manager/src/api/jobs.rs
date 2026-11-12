@@ -516,7 +516,7 @@ pub async fn rerun(
     )
     .await?;
     crate::store::trigger_events::record_simple_trigger(
-        &state.pool,
+        &state.db(),
         &pipeline_id,
         "rerun",
         &auth.username,

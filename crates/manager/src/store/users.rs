@@ -1,7 +1,12 @@
 //! User administration (platform-admin plane): listing, creation, the
 //! per-field update path with its last-admin guards, and deletion.
+//!
+//! On the dual-backend dispatcher (`store::exec`): statements travel as plain
+//! SQLite-dialect strings with backend-neutral binds, rows decode by column
+//! name. Strict one-row reads keep `fetch_one` semantics via
+//! `ok_or(sqlx::Error::RowNotFound)`.
 
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::{self, DbPool, SqlValue};
 
 use shared::error::AppError;
 
@@ -20,25 +25,26 @@ pub struct UserRow {
 }
 
 /// All users, username-ordered.
-pub async fn list_all(pool: &SqlitePool) -> Result<Vec<UserRow>, AppError> {
-    let rows = sqlx::query(
+pub async fn list_all(pool: &DbPool) -> Result<Vec<UserRow>, AppError> {
+    let rows = exec::fetch_all(
+        pool,
         "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active, created_at, updated_at, is_ops
          FROM users ORDER BY username ASC",
+        &[],
     )
-    .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
         .map(|r| UserRow {
-            id: r.get(0),
-            username: r.get(1),
-            display_name: r.get(2),
-            is_platform_admin: r.get::<i64, _>(3) != 0,
-            is_super_admin: r.get::<i64, _>(4) != 0,
-            is_active: r.get::<i64, _>(5) != 0,
-            created_at: r.get(6),
-            updated_at: r.get(7),
-            is_ops: r.get::<i64, _>(8) != 0,
+            id: r.text_of("id"),
+            username: r.text_of("username"),
+            display_name: r.text_of("display_name"),
+            is_platform_admin: r.i64_of("is_platform_admin") != 0,
+            is_super_admin: r.i64_of("is_super_admin") != 0,
+            is_active: r.i64_of("is_active") != 0,
+            created_at: r.opt_text_of("created_at"),
+            updated_at: r.opt_text_of("updated_at"),
+            is_ops: r.i64_of("is_ops") != 0,
         })
         .collect())
 }
@@ -47,7 +53,7 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<UserRow>, AppError> {
 /// surfaces as `Conflict` — the create path's contract.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     username: &str,
     password_hash: &str,
@@ -56,18 +62,20 @@ pub async fn insert(
     is_super_admin: bool,
     is_ops: bool,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "INSERT INTO users (id, username, password_hash, display_name, is_platform_admin, is_super_admin, is_ops, is_active)
          VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+        &[
+            id.into(),
+            username.into(),
+            password_hash.into(),
+            display_name.into(),
+            SqlValue::Int(if is_platform_admin { 1 } else { 0 }),
+            SqlValue::Int(if is_super_admin { 1 } else { 0 }),
+            SqlValue::Int(if is_ops { 1 } else { 0 }),
+        ],
     )
-    .bind(id)
-    .bind(username)
-    .bind(password_hash)
-    .bind(display_name)
-    .bind(if is_platform_admin { 1 } else { 0 })
-    .bind(if is_super_admin { 1 } else { 0 })
-    .bind(if is_ops { 1 } else { 0 })
-    .execute(pool)
     .await
     .map_err(|e| {
         if e.to_string().contains("UNIQUE") {
@@ -90,121 +98,112 @@ pub struct UserUpdateBefore {
     pub is_active: bool,
 }
 
-pub async fn update_facts(
-    pool: &SqlitePool,
-    id: &str,
-) -> Result<Option<UserUpdateBefore>, AppError> {
-    let row = sqlx::query(
+pub async fn update_facts(pool: &DbPool, id: &str) -> Result<Option<UserUpdateBefore>, AppError> {
+    let row = exec::fetch_optional(
+        pool,
         "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active FROM users WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| UserUpdateBefore {
-        id: r.get(0),
-        username: r.get(1),
-        display_name: r.get(2),
-        is_platform_admin: r.get::<i64, _>(3) != 0,
-        is_super_admin: r.get::<i64, _>(4) != 0,
-        is_active: r.get::<i64, _>(5) != 0,
+        id: r.text_of("id"),
+        username: r.text_of("username"),
+        display_name: r.text_of("display_name"),
+        is_platform_admin: r.i64_of("is_platform_admin") != 0,
+        is_super_admin: r.i64_of("is_super_admin") != 0,
+        is_active: r.i64_of("is_active") != 0,
     }))
 }
 
 /// Replace one user's password hash.
-pub async fn update_password(
-    pool: &SqlitePool,
-    id: &str,
-    password_hash: &str,
-) -> Result<(), AppError> {
-    sqlx::query("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(password_hash)
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_password(pool: &DbPool, id: &str, password_hash: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?",
+        &[password_hash.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace one user's display name.
 pub async fn update_display_name(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     display_name: &str,
 ) -> Result<(), AppError> {
-    sqlx::query("UPDATE users SET display_name = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(display_name)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    exec::execute(
+        pool,
+        "UPDATE users SET display_name = ?, updated_at = datetime('now') WHERE id = ?",
+        &[display_name.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Active platform-admin count — the "cannot remove the last platform
 /// admin" guard reads this.
-pub async fn count_active_platform_admins(pool: &SqlitePool) -> Result<i64, AppError> {
-    Ok(sqlx::query_scalar(
+pub async fn count_active_platform_admins(pool: &DbPool) -> Result<i64, AppError> {
+    Ok(exec::fetch_scalar_i64(
+        pool,
         "SELECT COUNT(*) FROM users WHERE is_platform_admin = 1 AND is_active = 1",
+        &[],
     )
-    .fetch_one(pool)
     .await?)
 }
 
 /// Set one user's platform-admin flag.
-pub async fn update_is_platform_admin(
-    pool: &SqlitePool,
-    id: &str,
-    flag: bool,
-) -> Result<(), AppError> {
-    sqlx::query(
+pub async fn update_is_platform_admin(pool: &DbPool, id: &str, flag: bool) -> Result<(), AppError> {
+    exec::execute(
+        pool,
         "UPDATE users SET is_platform_admin = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(if flag { 1 } else { 0 }), id.into()],
     )
-    .bind(if flag { 1 } else { 0 })
-    .bind(id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Active super-admin count — the "cannot remove the last super admin"
 /// guard reads this.
-pub async fn count_active_super_admins(pool: &SqlitePool) -> Result<i64, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE is_super_admin = 1 AND is_active = 1")
-            .fetch_one(pool)
-            .await?,
+pub async fn count_active_super_admins(pool: &DbPool) -> Result<i64, AppError> {
+    Ok(exec::fetch_scalar_i64(
+        pool,
+        "SELECT COUNT(*) FROM users WHERE is_super_admin = 1 AND is_active = 1",
+        &[],
     )
+    .await?)
 }
 
 /// Set one user's super-admin flag.
-pub async fn update_is_super_admin(
-    pool: &SqlitePool,
-    id: &str,
-    flag: bool,
-) -> Result<(), AppError> {
-    sqlx::query("UPDATE users SET is_super_admin = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(if flag { 1 } else { 0 })
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_is_super_admin(pool: &DbPool, id: &str, flag: bool) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE users SET is_super_admin = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(if flag { 1 } else { 0 }), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Set one user's platform-ops flag.
-pub async fn update_is_ops(pool: &SqlitePool, id: &str, flag: bool) -> Result<(), AppError> {
-    sqlx::query("UPDATE users SET is_ops = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(if flag { 1 } else { 0 })
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_is_ops(pool: &DbPool, id: &str, flag: bool) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE users SET is_ops = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(if flag { 1 } else { 0 }), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Set one user's active flag.
-pub async fn update_is_active(pool: &SqlitePool, id: &str, flag: bool) -> Result<(), AppError> {
-    sqlx::query("UPDATE users SET is_active = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(if flag { 1 } else { 0 })
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_is_active(pool: &DbPool, id: &str, flag: bool) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE users SET is_active = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(if flag { 1 } else { 0 }), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
@@ -221,21 +220,22 @@ pub struct UserUpdateAfter {
     pub is_ops: bool,
 }
 
-pub async fn update_after(pool: &SqlitePool, id: &str) -> Result<UserUpdateAfter, AppError> {
-    let row = sqlx::query(
+pub async fn update_after(pool: &DbPool, id: &str) -> Result<UserUpdateAfter, AppError> {
+    let row = exec::fetch_optional(
+        pool,
         "SELECT id, username, display_name, is_platform_admin, is_super_admin, is_active, is_ops FROM users WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_one(pool)
-    .await?;
+    .await?
+    .ok_or(sqlx::Error::RowNotFound)?;
     Ok(UserUpdateAfter {
-        id: row.get(0),
-        username: row.get(1),
-        display_name: row.get(2),
-        is_platform_admin: row.get::<i64, _>(3) != 0,
-        is_super_admin: row.get::<i64, _>(4) != 0,
-        is_active: row.get::<i64, _>(5) != 0,
-        is_ops: row.get::<i64, _>(6) != 0,
+        id: row.text_of("id"),
+        username: row.text_of("username"),
+        display_name: row.text_of("display_name"),
+        is_platform_admin: row.i64_of("is_platform_admin") != 0,
+        is_super_admin: row.i64_of("is_super_admin") != 0,
+        is_active: row.i64_of("is_active") != 0,
+        is_ops: row.i64_of("is_ops") != 0,
     })
 }
 
@@ -249,31 +249,25 @@ pub struct UserDeleteBefore {
     pub is_active: bool,
 }
 
-pub async fn delete_facts(
-    pool: &SqlitePool,
-    id: &str,
-) -> Result<Option<UserDeleteBefore>, AppError> {
-    let row = sqlx::query(
+pub async fn delete_facts(pool: &DbPool, id: &str) -> Result<Option<UserDeleteBefore>, AppError> {
+    let row = exec::fetch_optional(
+        pool,
         "SELECT username, display_name, is_platform_admin, is_super_admin, is_active FROM users WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| UserDeleteBefore {
-        username: r.get(0),
-        display_name: r.get(1),
-        is_platform_admin: r.get::<i64, _>(2) != 0,
-        is_super_admin: r.get::<i64, _>(3) != 0,
-        is_active: r.get::<i64, _>(4) != 0,
+        username: r.text_of("username"),
+        display_name: r.text_of("display_name"),
+        is_platform_admin: r.i64_of("is_platform_admin") != 0,
+        is_super_admin: r.i64_of("is_super_admin") != 0,
+        is_active: r.i64_of("is_active") != 0,
     }))
 }
 
 /// Delete one user; returns `false` when nothing matched (caller surfaces
 /// `NotFound`).
-pub async fn delete(pool: &SqlitePool, id: &str) -> Result<bool, AppError> {
-    let result = sqlx::query("DELETE FROM users WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() > 0)
+pub async fn delete(pool: &DbPool, id: &str) -> Result<bool, AppError> {
+    let n = exec::execute(pool, "DELETE FROM users WHERE id = ?", &[id.into()]).await?;
+    Ok(n > 0)
 }

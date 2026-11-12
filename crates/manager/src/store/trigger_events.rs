@@ -4,9 +4,13 @@
 //! `claim_delivery` is the webhook idempotency gate: the partial unique index
 //! on `(pipeline_id, delivery_id)` decides who proceeds to trigger, so no
 //! transaction is held — `INSERT OR IGNORE` is the serialisation point.
-//! PG port: `ON CONFLICT DO NOTHING` (same statement shape).
+//!
+//! On the dual-backend dispatcher (`store::exec`): statements travel as plain
+//! SQLite-dialect strings with backend-neutral binds, rows decode by column
+//! name. `INSERT OR IGNORE` is rewriter-covered — it becomes
+//! `ON CONFLICT DO NOTHING` on the Postgres path.
 
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::{self, DbPool, SqlValue};
 
 use shared::error::AppError;
 use uuid::Uuid;
@@ -31,47 +35,46 @@ pub struct TriggerEventWrite {
     pub job_id: Option<String>,
 }
 
-pub async fn insert_event(
-    pool: &sqlx::SqlitePool,
-    e: &TriggerEventWrite,
-) -> Result<String, AppError> {
+pub async fn insert_event(pool: &DbPool, e: &TriggerEventWrite) -> Result<String, AppError> {
     let id = Uuid::new_v4().to_string();
     let delivery = e
         .delivery_id
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    sqlx::query(
+    exec::execute(
+        pool,
         "INSERT INTO pipeline_trigger_events (
             id, pipeline_id, source, provider, event_type, delivery_id,
             repo_full_name, git_ref, branch, tag, commit_sha, commit_message,
             sender, compare_url, received_at, decision, skip_reason, job_id, created_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, datetime('now'))",
+        &[
+            id.as_str().into(),
+            e.pipeline_id.as_str().into(),
+            e.source.as_str().into(),
+            e.provider.as_deref().into(),
+            e.event_type.as_str().into(),
+            delivery.into(),
+            e.repo_full_name.as_str().into(),
+            e.git_ref.as_str().into(),
+            e.branch.as_str().into(),
+            e.tag.as_str().into(),
+            e.commit_sha.as_str().into(),
+            e.commit_message.as_str().into(),
+            e.sender.as_str().into(),
+            e.compare_url.as_str().into(),
+            e.decision.as_str().into(),
+            e.skip_reason.as_str().into(),
+            e.job_id.as_deref().into(),
+        ],
     )
-    .bind(&id)
-    .bind(&e.pipeline_id)
-    .bind(&e.source)
-    .bind(&e.provider)
-    .bind(&e.event_type)
-    .bind(delivery)
-    .bind(&e.repo_full_name)
-    .bind(&e.git_ref)
-    .bind(&e.branch)
-    .bind(&e.tag)
-    .bind(&e.commit_sha)
-    .bind(&e.commit_message)
-    .bind(&e.sender)
-    .bind(&e.compare_url)
-    .bind(&e.decision)
-    .bind(&e.skip_reason)
-    .bind(&e.job_id)
-    .execute(pool)
     .await?;
     Ok(id)
 }
 
 pub async fn find_by_delivery(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
     delivery_id: &str,
 ) -> Result<Option<(String, Option<String>, String)>, AppError> {
@@ -79,15 +82,20 @@ pub async fn find_by_delivery(
     if delivery_id.is_empty() {
         return Ok(None);
     }
-    let row = sqlx::query(
+    let row = exec::fetch_optional(
+        pool,
         "SELECT id, job_id, decision FROM pipeline_trigger_events
          WHERE pipeline_id = ? AND delivery_id = ?",
+        &[pipeline_id.into(), delivery_id.into()],
     )
-    .bind(pipeline_id)
-    .bind(delivery_id)
-    .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r| (r.get(0), r.get(1), r.get(2))))
+    Ok(row.map(|r| {
+        (
+            r.text_of("id"),
+            r.opt_text_of("job_id"),
+            r.text_of("decision"),
+        )
+    }))
 }
 
 /// Result of claiming a delivery slot before `do_trigger` (prevents double jobs).
@@ -106,10 +114,7 @@ pub enum ClaimResult {
 /// Atomically claim `(pipeline_id, delivery_id)` with `decision=processing`.
 /// Uses `INSERT OR IGNORE` against the partial unique index so concurrent
 /// webhooks cannot both pass the old find-then-insert check.
-pub async fn claim_delivery(
-    pool: &sqlx::SqlitePool,
-    e: &TriggerEventWrite,
-) -> Result<ClaimResult, AppError> {
+pub async fn claim_delivery(pool: &DbPool, e: &TriggerEventWrite) -> Result<ClaimResult, AppError> {
     let delivery = e
         .delivery_id
         .as_deref()
@@ -127,31 +132,33 @@ pub async fn claim_delivery(
     };
 
     let id = Uuid::new_v4().to_string();
-    let res = sqlx::query(
+    let n = exec::execute(
+        pool,
         "INSERT OR IGNORE INTO pipeline_trigger_events (
             id, pipeline_id, source, provider, event_type, delivery_id,
             repo_full_name, git_ref, branch, tag, commit_sha, commit_message,
             sender, compare_url, received_at, decision, skip_reason, job_id, created_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'processing', '', NULL, datetime('now'))",
+        &[
+            id.as_str().into(),
+            e.pipeline_id.as_str().into(),
+            e.source.as_str().into(),
+            e.provider.as_deref().into(),
+            e.event_type.as_str().into(),
+            did.into(),
+            e.repo_full_name.as_str().into(),
+            e.git_ref.as_str().into(),
+            e.branch.as_str().into(),
+            e.tag.as_str().into(),
+            e.commit_sha.as_str().into(),
+            e.commit_message.as_str().into(),
+            e.sender.as_str().into(),
+            e.compare_url.as_str().into(),
+        ],
     )
-    .bind(&id)
-    .bind(&e.pipeline_id)
-    .bind(&e.source)
-    .bind(&e.provider)
-    .bind(&e.event_type)
-    .bind(did)
-    .bind(&e.repo_full_name)
-    .bind(&e.git_ref)
-    .bind(&e.branch)
-    .bind(&e.tag)
-    .bind(&e.commit_sha)
-    .bind(&e.commit_message)
-    .bind(&e.sender)
-    .bind(&e.compare_url)
-    .execute(pool)
     .await?;
 
-    if res.rows_affected() == 1 {
+    if n == 1 {
         return Ok(ClaimResult::Claimed { event_id: id });
     }
 
@@ -172,38 +179,42 @@ pub async fn claim_delivery(
 }
 
 pub async fn finalize_event(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     event_id: &str,
     decision: &str,
     skip_reason: &str,
     job_id: Option<&str>,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE pipeline_trigger_events
          SET decision = ?, skip_reason = ?, job_id = ?
          WHERE id = ?",
+        &[
+            decision.into(),
+            skip_reason.into(),
+            job_id.into(),
+            event_id.into(),
+        ],
     )
-    .bind(decision)
-    .bind(skip_reason)
-    .bind(job_id)
-    .bind(event_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Drop a claimed row so a failed trigger can be retried by the platform.
-pub async fn release_claim(pool: &sqlx::SqlitePool, event_id: &str) -> Result<(), AppError> {
-    sqlx::query("DELETE FROM pipeline_trigger_events WHERE id = ? AND decision = 'processing'")
-        .bind(event_id)
-        .execute(pool)
-        .await?;
+pub async fn release_claim(pool: &DbPool, event_id: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "DELETE FROM pipeline_trigger_events WHERE id = ? AND decision = 'processing'",
+        &[event_id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Record a simple non-git trigger after a successful `do_trigger`.
 pub async fn record_simple_trigger(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
     source: &str,
     triggered_by: &str,
@@ -240,7 +251,7 @@ pub struct ListEventsFilter {
 /// unless the caller is a platform admin — debug (unredacted) jobs are
 /// admin-only records, and their events must not surface to anyone else.
 pub async fn list_events(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
     filter: ListEventsFilter,
     include_debug_jobs: bool,
@@ -285,49 +296,50 @@ pub async fn list_events(
     count_sql.push_str(&debug_filter);
     sql.push_str(" ORDER BY e.received_at DESC LIMIT ? OFFSET ?");
 
-    let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql).bind(pipeline_id);
-    let mut list_q = sqlx::query(&sql).bind(pipeline_id);
-
+    // Shared prefix binds (pipeline, source, decision) feed both statements in
+    // the same order; the list query appends LIMIT/OFFSET.
+    let mut binds: Vec<SqlValue> = vec![pipeline_id.into()];
     if let Some(ref s) = filter.source {
         if !s.is_empty() {
-            count_q = count_q.bind(s);
-            list_q = list_q.bind(s);
+            binds.push(s.as_str().into());
         }
     }
     if let Some(ref d) = filter.decision {
         if !d.is_empty() {
-            count_q = count_q.bind(d);
-            list_q = list_q.bind(d);
+            binds.push(d.as_str().into());
         }
     }
-    list_q = list_q.bind(limit).bind(offset);
 
-    let total: i64 = count_q.fetch_one(pool).await?;
-    let rows = list_q.fetch_all(pool).await?;
+    let total = exec::fetch_scalar_i64(pool, &count_sql, &binds).await?;
+
+    let mut list_binds = binds.clone();
+    list_binds.push(SqlValue::Int(limit));
+    list_binds.push(SqlValue::Int(offset));
+    let rows = exec::fetch_all(pool, &sql, &list_binds).await?;
 
     let items: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
             serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "source": r.get::<String, _>(1),
-                "provider": r.get::<Option<String>, _>(2),
-                "event_type": r.get::<String, _>(3),
-                "delivery_id": r.get::<Option<String>, _>(4),
-                "repo_full_name": r.get::<String, _>(5),
-                "ref": r.get::<String, _>(6),
-                "git_ref": r.get::<String, _>(6),
-                "branch": r.get::<String, _>(7),
-                "tag": r.get::<String, _>(8),
-                "commit_sha": r.get::<String, _>(9),
-                "commit_message": r.get::<String, _>(10),
-                "sender": r.get::<String, _>(11),
-                "compare_url": r.get::<String, _>(12),
-                "received_at": r.get::<String, _>(13),
-                "decision": r.get::<String, _>(14),
-                "skip_reason": r.get::<String, _>(15),
-                "job_id": r.get::<Option<String>, _>(16),
-                "job_status": r.get::<Option<String>, _>(17),
+                "id": r.text_of("id"),
+                "source": r.text_of("source"),
+                "provider": r.opt_text_of("provider"),
+                "event_type": r.text_of("event_type"),
+                "delivery_id": r.opt_text_of("delivery_id"),
+                "repo_full_name": r.text_of("repo_full_name"),
+                "ref": r.text_of("git_ref"),
+                "git_ref": r.text_of("git_ref"),
+                "branch": r.text_of("branch"),
+                "tag": r.text_of("tag"),
+                "commit_sha": r.text_of("commit_sha"),
+                "commit_message": r.text_of("commit_message"),
+                "sender": r.text_of("sender"),
+                "compare_url": r.text_of("compare_url"),
+                "received_at": r.text_of("received_at"),
+                "decision": r.text_of("decision"),
+                "skip_reason": r.text_of("skip_reason"),
+                "job_id": r.opt_text_of("job_id"),
+                "job_status": r.opt_text_of("status"),
             })
         })
         .collect();

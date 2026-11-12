@@ -46,7 +46,7 @@ pub async fn list(
     let offset = (page - 1) * page_size;
 
     let (total, items) = trigger_events::list_events(
-        &state.pool,
+        &state.db(),
         &pipeline_id,
         ListEventsFilter {
             source: q.source.filter(|s| !s.is_empty()),

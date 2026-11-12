@@ -1,6 +1,10 @@
 //! Git hook lookups for the signed webhook path.
+//!
+//! On the dual-backend dispatcher (`store::exec`): statements travel as plain
+//! SQLite-dialect strings with backend-neutral binds; rows decode by column
+//! name.
 
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::{self, DbPool, SqlValue};
 
 use shared::error::AppError;
 
@@ -21,30 +25,30 @@ pub struct GitHookAndPipeline {
 
 /// Load the hook registered for `hook_key`, joined with its pipeline.
 pub async fn find_by_hook_key(
-    pool: &SqlitePool,
+    pool: &DbPool,
     hook_key: &str,
 ) -> Result<GitHookAndPipeline, AppError> {
-    let row = sqlx::query(
+    let row = exec::fetch_optional(
+        pool,
         "SELECT h.pipeline_id, h.secret_ciphertext, h.branch_filter, h.enabled, h.provider, p.name, p.is_active, h.environment, h.event_filter
          FROM pipeline_git_hooks h
          JOIN pipelines p ON p.id = h.pipeline_id
          WHERE h.hook_key = ?",
+        &[hook_key.into()],
     )
-    .bind(hook_key)
-    .fetch_optional(pool)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("no git hook for key '{hook_key}'")))?;
 
     Ok(GitHookAndPipeline {
-        pipeline_id: row.get(0),
-        secret_ciphertext: row.get(1),
-        branch_filter: row.get(2),
-        enabled: row.get::<i64, _>(3) != 0,
-        provider: row.get(4),
-        pipeline_name: row.get(5),
-        pipeline_active: row.get::<i64, _>(6) != 0,
-        environment: row.get(7),
-        event_filter: row.get(8),
+        pipeline_id: row.text_of("pipeline_id"),
+        secret_ciphertext: row.text_of("secret_ciphertext"),
+        branch_filter: row.text_of("branch_filter"),
+        enabled: row.i64_of("enabled") != 0,
+        provider: row.text_of("provider"),
+        pipeline_name: row.text_of("name"),
+        pipeline_active: row.i64_of("is_active") != 0,
+        environment: row.text_of("environment"),
+        event_filter: row.text_of("event_filter"),
     })
 }
 
@@ -63,28 +67,28 @@ pub struct GitHookRow {
 
 /// All hooks of one pipeline, creation-ordered.
 pub async fn list_for_pipeline(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
 ) -> Result<Vec<GitHookRow>, AppError> {
-    let rows = sqlx::query(
+    let rows = exec::fetch_all(
+        pool,
         "SELECT id, label, provider, hook_key, branch_filter, enabled, environment, event_filter
          FROM pipeline_git_hooks WHERE pipeline_id = ?
          ORDER BY created_at ASC",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
         .map(|r| GitHookRow {
-            id: r.get(0),
-            label: r.get(1),
-            provider: r.get(2),
-            hook_key: r.get(3),
-            branch_filter: r.get(4),
-            enabled: r.get::<i64, _>(5) != 0,
-            environment: r.get(6),
-            event_filter: r.get(7),
+            id: r.text_of("id"),
+            label: r.text_of("label"),
+            provider: r.text_of("provider"),
+            hook_key: r.text_of("hook_key"),
+            branch_filter: r.text_of("branch_filter"),
+            enabled: r.i64_of("enabled") != 0,
+            environment: r.text_of("environment"),
+            event_filter: r.text_of("event_filter"),
         })
         .collect())
 }
@@ -106,23 +110,25 @@ pub struct GitHookInsert {
 }
 
 /// Insert one hook row.
-pub async fn insert(pool: &SqlitePool, h: &GitHookInsert) -> Result<(), AppError> {
-    sqlx::query(
+pub async fn insert(pool: &DbPool, h: &GitHookInsert) -> Result<(), AppError> {
+    exec::execute(
+        pool,
         "INSERT INTO pipeline_git_hooks
          (id, pipeline_id, label, provider, hook_key, secret_ciphertext, branch_filter, environment, enabled, event_filter)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            h.id.as_str().into(),
+            h.pipeline_id.as_str().into(),
+            h.label.as_str().into(),
+            h.provider.as_str().into(),
+            h.hook_key.as_str().into(),
+            h.secret_ciphertext.as_str().into(),
+            h.branch_filter.as_str().into(),
+            h.environment.as_str().into(),
+            SqlValue::Int(if h.enabled { 1 } else { 0 }),
+            h.event_filter.as_str().into(),
+        ],
     )
-    .bind(&h.id)
-    .bind(&h.pipeline_id)
-    .bind(&h.label)
-    .bind(&h.provider)
-    .bind(&h.hook_key)
-    .bind(&h.secret_ciphertext)
-    .bind(&h.branch_filter)
-    .bind(&h.environment)
-    .bind(if h.enabled { 1 } else { 0 })
-    .bind(&h.event_filter)
-    .execute(pool)
     .await?;
     Ok(())
 }
@@ -142,26 +148,25 @@ pub struct GitHookForUpdate {
 }
 
 pub async fn find_for_update(
-    pool: &SqlitePool,
+    pool: &DbPool,
     hook_id: &str,
     pipeline_id: &str,
 ) -> Result<Option<GitHookForUpdate>, AppError> {
-    let row = sqlx::query(
+    let row = exec::fetch_optional(
+        pool,
         "SELECT label, branch_filter, event_filter, environment, enabled, provider, hook_key
          FROM pipeline_git_hooks WHERE id = ? AND pipeline_id = ?",
+        &[hook_id.into(), pipeline_id.into()],
     )
-    .bind(hook_id)
-    .bind(pipeline_id)
-    .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| GitHookForUpdate {
-        label: r.get(0),
-        branch_filter: r.get(1),
-        event_filter: r.get(2),
-        environment: r.get(3),
-        enabled: r.get::<i64, _>(4) != 0,
-        provider: r.get(5),
-        hook_key: r.get(6),
+        label: r.text_of("label"),
+        branch_filter: r.text_of("branch_filter"),
+        event_filter: r.text_of("event_filter"),
+        environment: r.text_of("environment"),
+        enabled: r.i64_of("enabled") != 0,
+        provider: r.text_of("provider"),
+        hook_key: r.text_of("hook_key"),
     }))
 }
 
@@ -169,7 +174,7 @@ pub async fn find_for_update(
 /// immutable here — changing those is delete + recreate.
 #[allow(clippy::too_many_arguments)]
 pub async fn update_hook(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
     hook_id: &str,
     label: &str,
@@ -178,19 +183,21 @@ pub async fn update_hook(
     environment: &str,
     enabled: bool,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE pipeline_git_hooks SET label = ?, branch_filter = ?, event_filter = ?,
          environment = ?, enabled = ?, updated_at = datetime('now')
          WHERE id = ? AND pipeline_id = ?",
+        &[
+            label.into(),
+            branch_filter.into(),
+            event_filter.into(),
+            environment.into(),
+            SqlValue::Int(if enabled { 1 } else { 0 }),
+            hook_id.into(),
+            pipeline_id.into(),
+        ],
     )
-    .bind(label)
-    .bind(branch_filter)
-    .bind(event_filter)
-    .bind(environment)
-    .bind(if enabled { 1 } else { 0 })
-    .bind(hook_id)
-    .bind(pipeline_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
@@ -208,39 +215,39 @@ pub struct GitHookDeleteFacts {
 }
 
 pub async fn delete_facts(
-    pool: &SqlitePool,
+    pool: &DbPool,
     hook_id: &str,
     pipeline_id: &str,
 ) -> Result<Option<GitHookDeleteFacts>, AppError> {
-    let row = sqlx::query(
+    let row = exec::fetch_optional(
+        pool,
         "SELECT label, provider, hook_key, branch_filter, environment, enabled FROM pipeline_git_hooks
          WHERE id = ? AND pipeline_id = ?",
+        &[hook_id.into(), pipeline_id.into()],
     )
-    .bind(hook_id)
-    .bind(pipeline_id)
-    .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| GitHookDeleteFacts {
-        label: r.get(0),
-        provider: r.get(1),
-        hook_key: r.get(2),
-        branch_filter: r.get(3),
-        environment: r.get(4),
-        enabled: r.get::<i64, _>(5) != 0,
+        label: r.text_of("label"),
+        provider: r.text_of("provider"),
+        hook_key: r.text_of("hook_key"),
+        branch_filter: r.text_of("branch_filter"),
+        environment: r.text_of("environment"),
+        enabled: r.i64_of("enabled") != 0,
     }))
 }
 
 /// Delete one hook; returns `false` when nothing matched (caller surfaces
 /// `NotFound`).
 pub async fn delete_hook(
-    pool: &SqlitePool,
+    pool: &DbPool,
     hook_id: &str,
     pipeline_id: &str,
 ) -> Result<bool, AppError> {
-    let res = sqlx::query("DELETE FROM pipeline_git_hooks WHERE id = ? AND pipeline_id = ?")
-        .bind(hook_id)
-        .bind(pipeline_id)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected() > 0)
+    let n = exec::execute(
+        pool,
+        "DELETE FROM pipeline_git_hooks WHERE id = ? AND pipeline_id = ?",
+        &[hook_id.into(), pipeline_id.into()],
+    )
+    .await?;
+    Ok(n > 0)
 }

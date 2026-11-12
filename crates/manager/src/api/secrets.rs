@@ -37,7 +37,7 @@ pub async fn list(
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let team_filter = team_in_clause(&auth, "team_id");
     let rows = crate::store::secrets::list(
-        &state.pool,
+        &state.db(),
         team_filter.as_ref().map(|(_, ids)| ids.as_slice()),
     )
     .await?;
@@ -92,7 +92,7 @@ pub async fn create(
     .await?;
     auth.check_team(&team_id, Perm::SecretManage)?;
 
-    if crate::store::secrets::find_id_by_name(&state.pool, &name)
+    if crate::store::secrets::find_id_by_name(&state.db(), &name)
         .await?
         .is_some()
     {
@@ -112,7 +112,7 @@ pub async fn create(
     let team_shared_i: i64 = if team_shared { 1 } else { 0 };
 
     crate::store::secrets::insert(
-        &state.pool,
+        &state.db(),
         &id,
         &name,
         &encrypted,
@@ -155,7 +155,7 @@ pub async fn get_one(
     let team_id = secret_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
-    let s = crate::store::secrets::find_by_id(&state.pool, &id)
+    let s = crate::store::secrets::find_by_id(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("secret not found".into()))?;
 
@@ -193,11 +193,11 @@ pub async fn update(
         auth.check_team(&resolved.0, Perm::SecretManage)?;
         resolved
     } else {
-        let slug = crate::store::secrets::owner_group_of(&state.pool, &id).await?;
+        let slug = crate::store::secrets::owner_group_of(&state.db(), &id).await?;
         (team_id, slug)
     };
 
-    let facts = crate::store::secrets::update_facts(&state.pool, &id).await?;
+    let facts = crate::store::secrets::update_facts(&state.db(), &id).await?;
     let before_name = facts.name;
     let before_slug = facts.owner_group;
     let before_team = facts.team_id;
@@ -225,7 +225,7 @@ pub async fn update(
 
     if req.value.is_empty() {
         crate::store::secrets::update_metadata(
-            &state.pool,
+            &state.db(),
             &id,
             &slug,
             &new_team_id,
@@ -237,7 +237,7 @@ pub async fn update(
         let encrypted = crypto::encrypt(&req.value, &state.config.auth.jwt_secret)
             .map_err(|e| AppError::Internal(format!("secret encryption failed: {e}")))?;
         crate::store::secrets::update_value_and_metadata(
-            &state.pool,
+            &state.db(),
             &id,
             &encrypted,
             &slug,
@@ -311,7 +311,7 @@ pub async fn delete(
     let team_id = secret_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::SecretManage)?;
 
-    let facts = crate::store::secrets::delete_facts(&state.pool, &id).await?;
+    let facts = crate::store::secrets::delete_facts(&state.db(), &id).await?;
     let name = facts.name;
     let slug = facts.owner_group;
     let tid = facts.team_id;
@@ -326,7 +326,7 @@ pub async fn delete(
         normalize_secret_kind(Some(&kind)),
     );
 
-    crate::store::secrets::delete(&state.pool, &id).await?;
+    crate::store::secrets::delete(&state.db(), &id).await?;
 
     audit::record(
         &state.pool,

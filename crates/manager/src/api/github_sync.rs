@@ -858,7 +858,7 @@ pub async fn add_secret_bind(
         Some(r) => r,
         None => {
             // Binding failed — record it so the failure is traceable.
-            let secret_name = crate::store::secrets::secret_name_optional(&state.pool, &secret_id)
+            let secret_name = crate::store::secrets::secret_name_optional(&state.db(), &secret_id)
                 .await?
                 .unwrap_or_default();
             audit::record(
@@ -879,7 +879,7 @@ pub async fn add_secret_bind(
 
     if crate::store::github_binds::secret_bind_exists(&state.pool, &secret_id, &req.repo_id).await?
     {
-        let secret_name = crate::store::secrets::secret_name(&state.pool, &secret_id).await?;
+        let secret_name = crate::store::secrets::secret_name(&state.db(), &secret_id).await?;
         audit::record(
             &state.pool,
             AuditEvent::from_auth(&auth, Action::SecretGithubBindAdd)
@@ -920,7 +920,7 @@ pub async fn add_secret_bind(
     )
     .await?;
 
-    let secret_name = crate::store::secrets::secret_name(&state.pool, &secret_id).await?;
+    let secret_name = crate::store::secrets::secret_name(&state.db(), &secret_id).await?;
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::SecretGithubBindAdd)
@@ -989,7 +989,7 @@ pub async fn patch_secret_bind(
         .await
         .unwrap_or(false);
 
-    let secret_name = crate::store::secrets::secret_name(&state.pool, &secret_id).await?;
+    let secret_name = crate::store::secrets::secret_name(&state.db(), &secret_id).await?;
     let repo_id: String = row.repo_id;
     let conn_name: String = row.connection_name;
     let owner: String = row.owner;
@@ -1062,7 +1062,7 @@ pub async fn delete_secret_bind(
         target.connection_name,
     );
 
-    let secret_name = crate::store::secrets::secret_name(&state.pool, &secret_id).await?;
+    let secret_name = crate::store::secrets::secret_name(&state.db(), &secret_id).await?;
 
     // Remove the value from GitHub Actions first; only unbind locally when the
     // remote cleanup succeeds. 404 is treated as success (never pushed).
@@ -1125,7 +1125,7 @@ pub async fn push_secret_binds(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let (secret_name, stored, secret_team) =
-        crate::store::secrets::push_facts(&state.pool, &secret_id).await?;
+        crate::store::secrets::push_facts(&state.db(), &secret_id).await?;
     let plaintext = crypto::decrypt(&stored, &state.config.auth.jwt_secret)
         .map_err(|e| AppError::Internal(format!("decrypt secret '{secret_name}': {e}")))?;
     validate_gh_name(&secret_name)?;

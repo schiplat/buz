@@ -1211,7 +1211,7 @@ pub async fn do_trigger(
             _ => "manual",
         };
         crate::store::trigger_events::record_simple_trigger(
-            &state.pool,
+            &state.db(),
             pipeline_id,
             source,
             triggered_by,
