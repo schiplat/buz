@@ -162,6 +162,7 @@ async fn test_app() -> (Router, sqlx::SqlitePool) {
         config: Config {
             server: Default::default(),
             database: Default::default(),
+            cluster: Default::default(),
             auth: AuthConfig {
                 jwt_secret: JWT_SECRET.into(),
                 jwt_ttl_hours: 24,

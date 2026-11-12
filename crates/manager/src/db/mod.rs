@@ -1,17 +1,97 @@
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 
+use crate::config::ClusterMode;
 use crate::config::Config;
+use crate::config::{DatabaseConfig, StorageKind};
+
+/// The SQLite file this config points at: `url` (`sqlite:<path>`) when set,
+/// otherwise the legacy `[database] path`. The startup gate refuses other
+/// schemes before this is reached.
+fn sqlite_file(database: &DatabaseConfig) -> String {
+    match &database.url {
+        Some(url) if url.trim().to_lowercase().starts_with("sqlite:") => url.trim()
+            [("sqlite:".len())..]
+            .trim_start_matches("//")
+            .to_string(),
+        _ => database.path.clone(),
+    }
+}
+
+/// Refuse to start when `[cluster] mode` and the storage backend contradict
+/// each other, or when the configured backend is not wired.
+///
+/// - `multi` + SQLite is refused: SQLite has no cross-instance coordination
+///   (a single writer, no row locks), so two Managers on one file would
+///   corrupt scheduling state. `multi` needs the Postgres backend.
+/// - Postgres is refused until the PG store backend lands: the config parses,
+///   but no code path can serve it yet — fail closed rather than half-work.
+pub fn validate_cluster_mode(mode: ClusterMode, database: &DatabaseConfig) -> anyhow::Result<()> {
+    let kind = database.storage_kind().map_err(anyhow::Error::msg)?;
+    match (mode, kind) {
+        (ClusterMode::Single, StorageKind::Sqlite) => Ok(()),
+        (ClusterMode::Multi, StorageKind::Sqlite) => Err(anyhow::anyhow!(
+            "[cluster] mode = \"multi\" requires the Postgres backend: SQLite has no \
+             cross-instance coordination (single writer, no row locks), so two Manager \
+             instances on one SQLite file would corrupt scheduling state. Point \
+             [database] url at postgres:, or keep mode = \"single\"."
+        )),
+        (_, StorageKind::Postgres) => Err(anyhow::anyhow!(
+            "database url points at Postgres, but that backend is not wired yet \
+             (store-boundary follow-up). Run SQLite with [cluster] mode = \"single\" \
+             meanwhile."
+        )),
+    }
+}
+
+/// Held-for-lifetime proof that this process is the only Manager serving its
+/// storage: an flock on a `<db path>.lock` sidecar. Dropping the handle (or
+/// exiting) releases it. Postgres needs no file lock — its instance lock is a
+/// session advisory lock, which arrives with the PG backend.
+#[derive(Debug)]
+pub struct InstanceLock {
+    _file: Option<std::fs::File>,
+}
+
+/// Take the single-instance lock for the configured storage. Errors when
+/// another process already holds it.
+pub fn acquire_instance_lock(database: &DatabaseConfig) -> anyhow::Result<InstanceLock> {
+    let kind = database.storage_kind().map_err(anyhow::Error::msg)?;
+    if kind == StorageKind::Postgres {
+        // No file lock for PG; the session advisory lock arrives with the
+        // Postgres backend.
+        return Ok(InstanceLock { _file: None });
+    }
+    let lock_path = format!("{}.lock", sqlite_file(database));
+    if let Some(parent) = std::path::Path::new(&lock_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    if file.try_lock().is_err() {
+        return Err(anyhow::anyhow!(
+            "another Manager instance is already serving {lock_path} — refusing to \
+             start a second one; stop it first (systemd: `systemctl stop buz-manager`)"
+        ));
+    }
+    Ok(InstanceLock { _file: Some(file) })
+}
 
 pub async fn init(config: &Config) -> anyhow::Result<SqlitePool> {
+    let db_file = sqlite_file(&config.database);
     // Ensure data directory exists
-    if let Some(parent) = std::path::Path::new(&config.database.path).parent() {
+    if let Some(parent) = std::path::Path::new(&db_file).parent() {
         std::fs::create_dir_all(parent)?;
     }
 
     let pool = SqlitePoolOptions::new()
         .max_connections(config.database.max_connections)
-        .connect(&format!("sqlite:{}?mode=rwc", config.database.path))
+        .connect(&format!("sqlite:{db_file}?mode=rwc"))
         .await?;
 
     // ── Performance & reliability PRAGMAs ──

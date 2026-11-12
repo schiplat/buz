@@ -115,6 +115,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let config = config::load(Some(&cli.config))?;
+    // Cluster gate before anything touches storage: a multi-instance config on
+    // SQLite, or a backend that is not wired, must stop the process here.
+    db::validate_cluster_mode(config.cluster.mode, &config.database)?;
+    // Single-instance lock, held for the process lifetime: a systemd restart
+    // stacked on the old process, or a hand-started second Manager, stops here.
+    let _instance_lock = db::acquire_instance_lock(&config.database)?;
     let _log_guard = shared::logging::init("buz_manager", &config.logging);
 
     let db_pool = db::init(&config).await?;

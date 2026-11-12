@@ -8,6 +8,11 @@ pub struct Config {
     pub server: ServerConfig,
     #[serde(default)]
     pub database: DatabaseConfig,
+    /// `[cluster] mode` — single (default): this process is the only Manager
+    /// serving its storage and takes an exclusive lock on it; multi: several
+    /// Managers serve active-active, which requires the Postgres backend.
+    #[serde(default)]
+    pub cluster: ClusterConfig,
     #[serde(default)]
     pub auth: AuthConfig,
     #[serde(default)]
@@ -163,17 +168,69 @@ impl ServerConfig {
 pub struct DatabaseConfig {
     #[serde(default = "default_db_path")]
     pub path: String,
+    /// Explicit connection target — `sqlite:<path>` today; `postgres:<…>` is
+    /// refused at startup until the PG backend lands. Empty/absent keeps the
+    /// legacy `[database] path` working (it stays the compatibility alias).
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+}
+
+/// Which backend the configured database target points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageKind {
+    Sqlite,
+    Postgres,
+}
+
+impl DatabaseConfig {
+    /// `url` wins over the legacy `path`; a scheme we do not serve is an error
+    /// surfaced by the startup gate, not silently treated as SQLite.
+    pub fn storage_kind(&self) -> Result<StorageKind, String> {
+        match &self.url {
+            None => Ok(StorageKind::Sqlite),
+            Some(url) => {
+                let scheme = url.trim().to_lowercase();
+                if scheme.starts_with("sqlite:") {
+                    Ok(StorageKind::Sqlite)
+                } else if scheme.starts_with("postgres:") || scheme.starts_with("postgresql:") {
+                    Ok(StorageKind::Postgres)
+                } else {
+                    Err(format!(
+                        "unsupported database url scheme: {url} (expected sqlite: or postgres:)"
+                    ))
+                }
+            }
+        }
+    }
 }
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             path: default_db_path(),
+            url: None,
             max_connections: default_max_connections(),
         }
     }
+}
+
+/// `[cluster] mode` — `single` (default): this process is the only Manager
+/// serving its storage and holds an exclusive lock on it; `multi`: several
+/// Managers serve active-active against one Postgres backend.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClusterMode {
+    #[default]
+    Single,
+    Multi,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ClusterConfig {
+    #[serde(default)]
+    pub mode: ClusterMode,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -57,6 +57,7 @@ async fn test_app_with_dir(dir: &std::path::Path) -> (Router, String) {
     let mut config = Config {
         server: ServerConfig::default(),
         database: Default::default(),
+        cluster: Default::default(),
         auth: AuthConfig {
             jwt_secret: JWT_SECRET.into(),
             jwt_ttl_hours: 24,
