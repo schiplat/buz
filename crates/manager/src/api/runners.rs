@@ -1779,15 +1779,13 @@ async fn build_claim_payload(
 
                 // Look up resolved names in hosts table
                 for name in &resolved_names {
-                    if let Ok(Some(row)) = sqlx::query(
-                        "SELECT id FROM hosts WHERE name = ? AND (team_id IS NULL OR team_id = ?)",
+                    if let Ok(Some(id)) = crate::store::hosts::visible_id_by_name(
+                        &state.pool,
+                        name,
+                        team_id.as_deref(),
                     )
-                    .bind(name)
-                    .bind(team_id.as_deref())
-                    .fetch_optional(&state.pool)
                     .await
                     {
-                        let id: String = row.get(0);
                         if !host_ids.contains(&id) {
                             host_ids.push(id);
                         }
@@ -1802,17 +1800,14 @@ async fn build_claim_payload(
 
                 // Look up resolved labels
                 for label in &resolved_labels {
-                    let rows = sqlx::query(
-                        "SELECT hosts.id FROM hosts, json_each(hosts.labels) \
-                         WHERE json_each.value = ? AND (hosts.team_id IS NULL OR hosts.team_id = ?)",
+                    let rows = crate::store::hosts::visible_ids_by_label(
+                        &state.pool,
+                        label,
+                        team_id.as_deref(),
                     )
-                    .bind(label)
-                    .bind(team_id.as_deref())
-                    .fetch_all(&state.pool)
                     .await
                     .unwrap_or_default();
-                    for r in &rows {
-                        let id: String = r.get(0);
+                    for id in rows {
                         if !host_ids.contains(&id) {
                             host_ids.push(id);
                         }

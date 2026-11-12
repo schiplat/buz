@@ -306,3 +306,61 @@ pub async fn credentials_of(
         credential_passphrase: r.get(2),
     }))
 }
+
+// ───────────────────────── claim-time resolution (team-scoped) ─────────────────────────
+//
+// Every read here is scoped to the runner's team: a shared (NULL) host row or
+// one owned by the same team. Cross-team rows must stay invisible — the claim
+// path treats "no row" as "host unavailable", never as a permission error.
+
+/// Id of the host with this name when it is visible to `team_id` (`None` =
+/// unknown, or owned by another team).
+pub async fn visible_id_by_name(
+    pool: &SqlitePool,
+    name: &str,
+    team_id: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    let row =
+        sqlx::query("SELECT id FROM hosts WHERE name = ? AND (team_id IS NULL OR team_id = ?)")
+            .bind(name)
+            .bind(team_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|r| r.get(0)))
+}
+
+/// Ids of hosts carrying `label` that are visible to `team_id`.
+pub async fn visible_ids_by_label(
+    pool: &SqlitePool,
+    label: &str,
+    team_id: Option<&str>,
+) -> Result<Vec<String>, AppError> {
+    Ok(sqlx::query(
+        "SELECT hosts.id FROM hosts, json_each(hosts.labels) \
+         WHERE json_each.value = ? AND (hosts.team_id IS NULL OR hosts.team_id = ?)",
+    )
+    .bind(label)
+    .bind(team_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| r.get(0))
+    .collect())
+}
+
+/// `(host, port, username, credential_type, credential_data, credential_passphrase)`
+/// for one host id when visible to `team_id` — the claim payload's host object.
+pub async fn visible_credentials_by_id(
+    pool: &SqlitePool,
+    id: &str,
+    team_id: Option<&str>,
+) -> Result<Option<(String, i64, String, String, String, String)>, AppError> {
+    Ok(sqlx::query_as(
+        "SELECT host, port, username, credential_type, credential_data, credential_passphrase
+         FROM hosts WHERE id = ? AND (team_id IS NULL OR team_id = ?)",
+    )
+    .bind(id)
+    .bind(team_id)
+    .fetch_optional(pool)
+    .await?)
+}
