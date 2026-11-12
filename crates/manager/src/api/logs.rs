@@ -16,15 +16,17 @@ use crate::middleware::{AuthUser, RunnerClaims};
 use crate::rbac::{self, pipeline_team_id};
 use crate::services::log_broadcast::LogBroadcaster;
 use crate::state::AppState;
+use crate::store::exec::DbPool;
 
 async fn assert_job_team_view(
     state: &AppState,
     auth: &AuthUser,
     job_id: &str,
 ) -> Result<(), AppError> {
-    let (pipeline_id, debug_unredact) = crate::store::logs::job_view_facts(&state.pool, job_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let (pipeline_id, debug_unredact) =
+        crate::store::logs::job_view_facts(&DbPool::from_sqlite(&state.pool), job_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("job not found".into()))?;
 
     // Debug (no-redaction) jobs contain plaintext secrets in the logs; only
     // platform admins may read them, regardless of team membership.
@@ -48,7 +50,7 @@ pub async fn upload(
     // Runner↔job binding: log chunks are accepted only for jobs poll()
     // dispatched to this runner — otherwise any runner JWT could forge any
     // job's logs.
-    let owner = crate::store::logs::job_runner_id(&state.pool, &job_id)
+    let owner = crate::store::logs::job_runner_id(&DbPool::from_sqlite(&state.pool), &job_id)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
     // `owner` is `Option<String>`: a job that exists but was never dispatched
@@ -132,7 +134,7 @@ pub async fn get_logs(
 
     let logs = if let Some(window) = window {
         crate::store::logs::read_windowed(
-            &state.pool,
+            &DbPool::from_sqlite(&state.pool),
             &job_id,
             page.before_step,
             page.before_chunk,
@@ -140,9 +142,10 @@ pub async fn get_logs(
         )
         .await?
     } else if let Some(limit) = limit {
-        crate::store::logs::read_page(&state.pool, &job_id, limit, offset).await?
+        crate::store::logs::read_page(&DbPool::from_sqlite(&state.pool), &job_id, limit, offset)
+            .await?
     } else {
-        crate::store::logs::read_all(&state.pool, &job_id).await?
+        crate::store::logs::read_all(&DbPool::from_sqlite(&state.pool), &job_id).await?
     };
 
     Ok(Json(ApiResponse::success(logs)))
