@@ -32,3 +32,12 @@ ignore = [
     # (the same boundary jwt_secret and stored secrets rely on). See SECURITY.md.
     "RUSTSEC-2026-0459",
 ]
+
+# Two further advisories are reported as *warnings* (unmaintained, no CVE) and
+# cannot be silenced here — cargo-audit only accepts vulnerability IDs in
+# `ignore`. They are accepted and tracked in SECURITY.md:
+#   - RUSTSEC-2024-0449 unsafe-libyaml (via serde_yaml): no known issue; the
+#     parser replacement is a separate migration.
+#   - RUSTSEC-2025-0134 rustls-pemfile (via axum-server): frozen, not
+#     vulnerable; dropped by axum-server 0.9, a major TLS upgrade.
+# A non-zero exit from `cargo audit` is expected until those land.
