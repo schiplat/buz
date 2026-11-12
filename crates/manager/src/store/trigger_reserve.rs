@@ -9,6 +9,8 @@ use serde_json::Value;
 use shared::error::AppError;
 use sqlx::SqlitePool;
 
+use crate::store::tx;
+
 /// Everything needed to insert one triggered job.
 pub struct ReservedJob<'a> {
     pub job_id: &'a str,
@@ -33,10 +35,7 @@ pub struct ReservedJob<'a> {
 ///
 /// Returns the allocated `run_number`.
 pub async fn reserve_job(pool: &SqlitePool, job: &ReservedJob<'_>) -> Result<i64, AppError> {
-    let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let mut tx = tx::begin_immediate(pool).await?;
 
     match sqlx::query_scalar::<_, i64>("SELECT is_active FROM pipelines WHERE id = ?")
         .bind(job.pipeline_id)

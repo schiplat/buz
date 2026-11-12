@@ -279,15 +279,11 @@ pub async fn config_document_at(
     instance_id: &str,
     version: i64,
 ) -> Result<Option<String>, AppError> {
-    Ok(sqlx::query_scalar(
-        "SELECT document FROM sandbox_host_configs
-         WHERE host_id = ? AND instance_id = ? AND version = ?",
-    )
-    .bind(host_id)
-    .bind(instance_id)
-    .bind(version)
-    .fetch_optional(pool)
-    .await?)
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    config_document_at_conn(&mut conn, host_id, instance_id, version).await
 }
 
 /// Rotate a host's sandboxd token hash.
@@ -632,4 +628,107 @@ pub async fn team_exists(pool: &SqlitePool, team_id: &str) -> Result<bool, AppEr
             .fetch_one(pool)
             .await?,
     )
+}
+
+// ────────────── claim-path reads (inside the claim transaction) ──────────────
+//
+// `slot_scheduler::decide` runs inside the claim's BEGIN IMMEDIATE; these are
+// its storage reads, named for the fact each returns. They take the
+// transaction's connection so every read shares the claim's lock.
+
+/// `(max_resource_slots, desired_version, applied_version)` of one host —
+/// the slot-budget facts (`None` = host not enrolled).
+pub async fn host_slot_facts(
+    conn: &mut sqlx::SqliteConnection,
+    host_id: &str,
+    instance_id: &str,
+) -> Result<Option<(i64, i64, i64)>, AppError> {
+    Ok(sqlx::query_as(
+        "SELECT max_resource_slots, desired_version, applied_version
+         FROM sandbox_hosts WHERE host_id = ? AND instance_id = ?",
+    )
+    .bind(host_id)
+    .bind(instance_id)
+    .fetch_optional(conn)
+    .await?)
+}
+
+/// Stored config document at one version, read through the claim
+/// transaction's connection (`None` = no such version). Connection-based core
+/// of [`config_document_at`].
+pub async fn config_document_at_conn(
+    conn: &mut sqlx::SqliteConnection,
+    host_id: &str,
+    instance_id: &str,
+    version: i64,
+) -> Result<Option<String>, AppError> {
+    let row: Option<String> = sqlx::query_scalar(
+        "SELECT document FROM sandbox_host_configs
+         WHERE host_id = ? AND instance_id = ? AND version = ?",
+    )
+    .bind(host_id)
+    .bind(instance_id)
+    .bind(version)
+    .fetch_optional(conn)
+    .await?;
+    Ok(row)
+}
+
+/// `sandbox_default_max_slots` platform setting (0 = unlimited).
+pub async fn default_max_slots_setting(conn: &mut sqlx::SqliteConnection) -> Result<i64, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT COALESCE(CAST(value AS INTEGER), 0) FROM platform_settings WHERE key = 'sandbox_default_max_slots'",
+    )
+    .fetch_optional(conn)
+    .await?
+    .unwrap_or(0))
+}
+
+/// `sandbox_default_profiles` platform setting JSON (`None` = unset).
+pub async fn default_profiles_setting(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Option<String>, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT value FROM platform_settings WHERE key = 'sandbox_default_profiles'",
+    )
+    .fetch_optional(conn)
+    .await?)
+}
+
+/// True when the config row predates the staleness window close — a host
+/// lagging its desired version for too long stops dispatching non-default
+/// profiles.
+pub async fn config_row_is_stale(
+    conn: &mut sqlx::SqliteConnection,
+    stale_seconds: i64,
+    host_id: &str,
+    instance_id: &str,
+    version: i64,
+) -> Result<bool, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT COALESCE(datetime(created_at) <= datetime('now', ? || ' seconds'), 0)
+         FROM sandbox_host_configs WHERE host_id = ? AND instance_id = ? AND version = ?",
+    )
+    .bind(format!("-{}", stale_seconds.max(0)))
+    .bind(host_id)
+    .bind(instance_id)
+    .bind(version)
+    .fetch_optional(conn)
+    .await?
+    .unwrap_or(false))
+}
+
+/// Slots currently in use by running jobs on one sandboxd instance — the
+/// budget's occupancy half.
+pub async fn running_slots_used(
+    conn: &mut sqlx::SqliteConnection,
+    sandbox_key: &str,
+) -> Result<i64, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT COALESCE(SUM(resource_slots), 0) FROM jobs
+         WHERE status = 'running' AND sandbox_instance_id = ?",
+    )
+    .bind(sandbox_key)
+    .fetch_one(conn)
+    .await?)
 }

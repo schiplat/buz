@@ -24,6 +24,5 @@ pub mod scheduler;
 pub mod slot_scheduler;
 pub mod sync_progress;
 pub mod transition;
-pub mod trigger_reserve;
 pub mod yaml_cache;
 pub mod yaml_validate;
