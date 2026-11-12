@@ -2279,22 +2279,15 @@ async fn validate_execution_mode_transition(
     runner_id: &str,
     mode: RunnerExecutionMode,
 ) -> Result<(), AppError> {
-    let (status, last_seen, system_info_raw): (String, Option<String>, String) =
-        sqlx::query_as("SELECT status, last_seen, system_info FROM runners WHERE id = ?")
-            .bind(runner_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let (status, last_seen, system_info_raw) =
+        crate::store::runners::transition_facts_tx(tx, runner_id).await?;
     if mode != RunnerExecutionMode::Host {
         if status != "online" {
             return Err(AppError::Conflict(
                 "runner must be online and report fresh sandbox capabilities before selecting this execution mode".into(),
             ));
         }
-        let fresh: bool =
-            sqlx::query_scalar("SELECT COALESCE(datetime(?) >= datetime('now', '-90 seconds'), 0)")
-                .bind(last_seen.as_deref())
-                .fetch_one(&mut *tx)
-                .await?;
+        let fresh = crate::store::runners::seen_within_90s_tx(tx, last_seen.as_deref()).await?;
         let capabilities = serde_json::from_str::<SystemInfo>(&system_info_raw)
             .ok()
             .and_then(|info| info.execution_capabilities);
@@ -2311,12 +2304,10 @@ async fn validate_execution_mode_transition(
                 mode.as_str()
             )));
         };
-        let checked_fresh: bool = sqlx::query_scalar(
-            "SELECT COALESCE(datetime(?) >= datetime('now', '-5 minutes') AND datetime(?) <= datetime('now', '+30 seconds'), 0)",
+        let checked_fresh = crate::store::runners::capability_check_fresh_tx(
+            tx,
+            capabilities.checked_at.as_deref(),
         )
-        .bind(capabilities.checked_at.as_deref())
-        .bind(capabilities.checked_at.as_deref())
-        .fetch_one(&mut *tx)
         .await?;
         if !fresh || !checked_fresh || backend != ExecutionBackendStatus::Supported {
             let detail = reason.unwrap_or("capability check is stale or unsupported");
@@ -2326,11 +2317,7 @@ async fn validate_execution_mode_transition(
             )));
         }
     }
-    let running: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
-            .bind(runner_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let running = crate::store::runners::running_job_count_tx(tx, runner_id).await?;
     if running > 0 {
         return Err(AppError::Conflict(format!(
             "execution mode cannot change while {running} job(s) are running"
@@ -2345,25 +2332,14 @@ pub async fn update_runner(
     State(state): State<AppState>,
     Json(req): Json<UpdateRunnerRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM runners WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?;
-    if exists.is_none() {
+    if !crate::store::runners::exists(&state.pool, &id).await? {
         return Err(AppError::NotFound("runner not found".into()));
     }
     // Snapshot before the field-by-field updates so the audit record states
     // the diff, not the whole row.
     let before_policy = load_runner_policy(&state.pool, &id).await?;
-    let before_team: Option<String> =
-        sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
-            .bind(&id)
-            .fetch_one(&state.pool)
-            .await?;
-    let before_labels: String = sqlx::query_scalar("SELECT labels FROM runners WHERE id = ?")
-        .bind(&id)
-        .fetch_one(&state.pool)
-        .await?;
+    let before_team = crate::store::runners::team_of(&state.pool, &id).await?;
+    let before_labels = crate::store::runners::labels_of(&state.pool, &id).await?;
     let before = serde_json::json!({
         "team_id": before_team,
         "labels": serde_json::from_str::<Vec<String>>(&before_labels).unwrap_or_default(),
@@ -2380,177 +2356,77 @@ pub async fn update_runner(
 
     if let Some(requested_team) = &req.team_id {
         let validated = validate_runner_team(&state.pool, requested_team.as_deref()).await?;
-        let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let current_team_id: Option<String> =
-            sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
-                .bind(&id)
-                .fetch_one(&mut *tx)
-                .await?;
-        if validated != current_team_id {
-            let running_jobs: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
-            )
-            .bind(&id)
-            .fetch_one(&mut *tx)
-            .await?;
-            if running_jobs > 0 {
-                tx.rollback().await?;
-                return Err(AppError::Conflict(format!(
-                    "runner team binding cannot change while {running_jobs} job(s) are running"
-                )));
-            }
-            sqlx::query(
-                "UPDATE runners SET team_id = ?, updated_at = datetime('now') WHERE id = ?",
-            )
-            .bind(validated)
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-        }
-        tx.commit().await?;
+        crate::store::runners::move_team(&state.pool, &id, validated.as_deref()).await?;
     }
 
     if let Some(labels) = &req.labels {
         let labels_json = serde_json::to_string(labels).unwrap_or_else(|_| "[]".into());
-        sqlx::query("UPDATE runners SET labels = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(&labels_json)
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
+        crate::store::runners::update_labels(&state.pool, &id, &labels_json).await?;
     }
 
     if req.max_concurrent_jobs.is_some() {
         let max_concurrent = normalize_max_concurrent(req.max_concurrent_jobs)?;
-        sqlx::query(
-            "UPDATE runners SET max_concurrent_jobs = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(max_concurrent as i64)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::runners::update_max_concurrent(&state.pool, &id, max_concurrent as i64)
+            .await?;
     }
 
     if let Some(mode) = req.execution_mode {
         let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let current: String = sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id = ?")
-            .bind(&id)
-            .fetch_one(&mut *tx)
-            .await?;
+        let current = crate::store::runners::execution_mode_tx(&mut tx, &id).await?;
         if current != mode.as_str() {
             if let Err(error) = validate_execution_mode_transition(&mut tx, &id, mode).await {
                 tx.rollback().await?;
                 return Err(error);
             }
         }
-        sqlx::query(
-            "UPDATE runners SET execution_mode = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(mode.as_str())
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
+        crate::store::runners::set_execution_mode_tx(&mut tx, &id, mode.as_str()).await?;
         tx.commit().await?;
     }
 
     if let Some(v) = req.clean_workspace_after_job {
-        sqlx::query(
-            "UPDATE runners SET clean_workspace_after_job = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(if v { 1i64 } else { 0 })
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::runners::update_clean_workspace(&state.pool, &id, v).await?;
     }
     if let Some(v) = req.shell_enabled {
-        sqlx::query(
-            "UPDATE runners SET shell_enabled = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(if v { 1i64 } else { 0 })
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::runners::update_shell_enabled(&state.pool, &id, v).await?;
     }
     if let Some(v) = req.ssh_enabled {
-        sqlx::query(
-            "UPDATE runners SET ssh_enabled = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(if v { 1i64 } else { 0 })
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::runners::update_ssh_enabled(&state.pool, &id, v).await?;
     }
     if let Some(v) = req.docker_enabled {
-        sqlx::query(
-            "UPDATE runners SET docker_enabled = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(if v { 1i64 } else { 0 })
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::runners::update_docker_enabled(&state.pool, &id, v).await?;
     }
     if let Some(v) = req.wasm_enabled {
-        sqlx::query(
-            "UPDATE runners SET wasm_enabled = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(if v { 1i64 } else { 0 })
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::runners::update_wasm_enabled(&state.pool, &id, v).await?;
     }
     if let Some(v) = req.netns_isolation {
-        sqlx::query(
-            "UPDATE runners SET netns_isolation = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(if v { 1i64 } else { 0 })
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::runners::update_netns_isolation(&state.pool, &id, v).await?;
     }
     if req.ssh_host_key_policy.is_some() {
         let p = normalize_ssh_host_key_policy(req.ssh_host_key_policy.clone())?;
-        sqlx::query(
-            "UPDATE runners SET ssh_host_key_policy = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(&p)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::runners::update_ssh_host_key_policy(&state.pool, &id, &p).await?;
     }
     if req.claim_strategy.is_some() {
         let strategy = normalize_claim_strategy(req.claim_strategy.clone())?;
-        sqlx::query(
-            "UPDATE runners SET claim_strategy = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(&strategy)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+        crate::store::runners::update_claim_strategy(&state.pool, &id, &strategy).await?;
     }
 
     log_runner_event(&state.pool, &id, "updated", "Runner policy updated from UI").await;
 
-    let r = sqlx::query(
-        "SELECT id, name, labels, status, version, system_info, last_seen,
-                created_at, updated_at, team_id FROM runners WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_one(&state.pool)
-    .await?;
+    let r = crate::store::runners::identity_row(&state.pool, &id).await?;
 
-    let labels: String = r.get(2);
-    let system_info_raw: String = r.get(5);
+    // `identity_row` is (id, name, labels, status, version, system_info,
+    // last_seen, created_at, updated_at, team_id).
+    let runner_name = r.1.clone();
+    let labels: String = r.2.clone();
+    let system_info_raw: String = r.5.clone();
+    let team_after: Option<String> = r.9.clone();
     let system_info = serde_json::from_str::<serde_json::Value>(&system_info_raw).ok();
-    let running_jobs: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
-            .bind(&id)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(0);
+    let running_jobs = crate::store::runners::running_job_count(&state.pool, &id).await?;
     let policy = load_runner_policy(&state.pool, &id).await?;
 
     // Diff against the snapshot taken before the updates.
     let after = serde_json::json!({
-        "team_id": r.get::<Option<String>, _>(9),
+        "team_id": team_after,
         "labels": serde_json::from_str::<Vec<String>>(&labels).unwrap_or_default(),
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,
@@ -2564,23 +2440,23 @@ pub async fn update_runner(
     audit::record(
         &state.pool,
         AuditEvent::new(Action::RunnerUpdate, &auth)
-            .on(Resource::runner(&id, &r.get::<String, _>(1)))
-            .team(r.get::<Option<String>, _>(9))
+            .on(Resource::runner(&id, &runner_name))
+            .team(team_after.clone())
             .changes(Some(before), Some(after)),
     )
     .await;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
-        "id": r.get::<String, _>(0),
-        "name": r.get::<String, _>(1),
+        "id": r.0,
+        "name": runner_name,
         "labels": serde_json::from_str::<Vec<String>>(&labels).unwrap_or_default(),
-        "status": r.get::<String, _>(3),
-        "version": r.get::<Option<String>, _>(4),
+        "status": r.3,
+        "version": r.4,
         "system_info": system_info,
-        "last_seen": r.get::<Option<String>, _>(6),
-        "created_at": r.get::<Option<String>, _>(7),
-        "updated_at": r.get::<Option<String>, _>(8),
-        "team_id": r.get::<Option<String>, _>(9),
+        "last_seen": r.6,
+        "created_at": r.7,
+        "updated_at": r.8,
+        "team_id": team_after.clone(),
         "running_jobs": running_jobs,
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,

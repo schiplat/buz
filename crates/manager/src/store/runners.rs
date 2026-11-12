@@ -519,27 +519,243 @@ pub async fn clear_capability_reprobe_requested(
 
 // ───────────────────────────── admin plane ─────────────────────────────
 //
-// The UI manages one policy column at a time; the column names below are a
-// closed set (`column` is never caller-supplied text), so the formatted SQL
-// stays within the validator's declared dynamic shapes.
+// One function per editable field: the column is a literal in each statement,
+// so no SQL text is ever assembled from a variable. A generic
+// `update(column)` would reintroduce an identifier-injection surface for no
+// benefit (`UPDATE runners SET {column} …`).
 
-/// Replace one boolean policy column (`clean_workspace_after_job`,
-/// `shell_enabled`, `ssh_enabled`, `docker_enabled`, `wasm_enabled`,
-/// `netns_isolation`).
-pub async fn update_flag(
+/// Replace the `clean_workspace_after_job` flag.
+pub async fn update_clean_workspace(
     pool: &SqlitePool,
     id: &str,
-    column: &str,
     value: bool,
 ) -> Result<(), AppError> {
-    sqlx::query(&format!(
-        "UPDATE runners SET {column} = ?, updated_at = datetime('now') WHERE id = ?"
-    ))
+    sqlx::query(
+        "UPDATE runners SET clean_workspace_after_job = ?, updated_at = datetime('now') \
+         WHERE id = ?",
+    )
     .bind(if value { 1i64 } else { 0 })
     .bind(id)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Replace the `shell_enabled` flag.
+pub async fn update_shell_enabled(
+    pool: &SqlitePool,
+    id: &str,
+    value: bool,
+) -> Result<(), AppError> {
+    sqlx::query("UPDATE runners SET shell_enabled = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(if value { 1i64 } else { 0 })
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Replace the `ssh_enabled` flag.
+pub async fn update_ssh_enabled(pool: &SqlitePool, id: &str, value: bool) -> Result<(), AppError> {
+    sqlx::query("UPDATE runners SET ssh_enabled = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(if value { 1i64 } else { 0 })
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Replace the `docker_enabled` flag.
+pub async fn update_docker_enabled(
+    pool: &SqlitePool,
+    id: &str,
+    value: bool,
+) -> Result<(), AppError> {
+    sqlx::query("UPDATE runners SET docker_enabled = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(if value { 1i64 } else { 0 })
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Replace the `wasm_enabled` flag.
+pub async fn update_wasm_enabled(pool: &SqlitePool, id: &str, value: bool) -> Result<(), AppError> {
+    sqlx::query("UPDATE runners SET wasm_enabled = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(if value { 1i64 } else { 0 })
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Replace the `netns_isolation` flag.
+pub async fn update_netns_isolation(
+    pool: &SqlitePool,
+    id: &str,
+    value: bool,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE runners SET netns_isolation = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(if value { 1i64 } else { 0 })
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Current `execution_mode` string (errors when the row is gone).
+pub async fn execution_mode_of(pool: &SqlitePool, id: &str) -> Result<String, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+/// The team-binding move, guarded: refuses while any job of this runner is
+/// running, and only writes when the binding actually changes. One
+/// `BEGIN IMMEDIATE` so the guard cannot be raced by a concurrent claim.
+/// Returns the previous binding.
+pub async fn move_team(
+    pool: &SqlitePool,
+    id: &str,
+    new_team_id: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let current: Option<String> = sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if current.as_deref() != new_team_id {
+        let running: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if running > 0 {
+            tx.rollback().await.ok();
+            return Err(AppError::Conflict(format!(
+                "runner team binding cannot change while {running} job(s) are running"
+            )));
+        }
+        sqlx::query("UPDATE runners SET team_id = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(new_team_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(current)
+}
+
+/// The post-update identity row for the audit diff:
+/// `(id, name, labels, status, version, system_info, last_seen, created_at,
+/// updated_at, team_id)`.
+pub type RunnerIdentityRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+pub async fn identity_row(pool: &SqlitePool, id: &str) -> Result<RunnerIdentityRow, AppError> {
+    Ok(sqlx::query_as(
+        "SELECT id, name, labels, status, version, system_info, last_seen,
+                created_at, updated_at, team_id FROM runners WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await?)
+}
+
+/// Replace the execution mode (caller validated the transition first, inside
+/// its own `BEGIN IMMEDIATE`).
+pub async fn set_execution_mode_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: &str,
+    mode: &str,
+) -> Result<(), AppError> {
+    sqlx::query("UPDATE runners SET execution_mode = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(mode)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// Current execution mode inside the caller's transaction.
+pub async fn execution_mode_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: &str,
+) -> Result<String, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await?,
+    )
+}
+
+/// `(status, last_seen, system_info)` inside the caller's transaction — the
+/// execution-mode transition validator's facts.
+pub async fn transition_facts_tx(
+    conn: &mut sqlx::SqliteConnection,
+    id: &str,
+) -> Result<(String, Option<String>, String), AppError> {
+    Ok(
+        sqlx::query_as("SELECT status, last_seen, system_info FROM runners WHERE id = ?")
+            .bind(id)
+            .fetch_one(conn)
+            .await?,
+    )
+}
+
+/// Was the runner seen within the last 90 seconds? (heartbeat freshness)
+///
+/// Both probes are separate statements with literal offsets — no caller text
+/// ever reaches the SQL, so `datetime()` modifiers stay constant.
+pub async fn seen_within_90s_tx(
+    conn: &mut sqlx::SqliteConnection,
+    last_seen: Option<&str>,
+) -> Result<bool, AppError> {
+    let value: i64 =
+        sqlx::query_scalar("SELECT COALESCE(datetime(?) >= datetime('now', '-90 seconds'), 0)")
+            .bind(last_seen)
+            .fetch_one(conn)
+            .await?;
+    Ok(value != 0)
+}
+
+/// Is the reported capability check fresh (within 5 minutes, not from the
+/// future)? Same shape as [`seen_within_90s_tx`].
+pub async fn capability_check_fresh_tx(
+    conn: &mut sqlx::SqliteConnection,
+    checked_at: Option<&str>,
+) -> Result<bool, AppError> {
+    let value: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(datetime(?) >= datetime('now', '-5 minutes') \
+         AND datetime(?) <= datetime('now', '+30 seconds'), 0)",
+    )
+    .bind(checked_at)
+    .bind(checked_at)
+    .fetch_one(conn)
+    .await?;
+    Ok(value != 0)
 }
 
 /// Replace the labels JSON.
@@ -603,6 +819,20 @@ pub async fn max_concurrent_of(pool: &SqlitePool, id: &str) -> Result<i64, AppEr
             .await
             .unwrap_or(1)
             .max(1),
+    )
+}
+
+/// Running-job count inside the caller's transaction (the execution-mode
+/// transition guard reads it under the same `BEGIN IMMEDIATE`).
+pub async fn running_job_count_tx(
+    conn: &mut sqlx::SqliteConnection,
+    id: &str,
+) -> Result<i64, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
+            .bind(id)
+            .fetch_one(conn)
+            .await?,
     )
 }
 

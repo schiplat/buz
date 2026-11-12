@@ -51,7 +51,9 @@ pub async fn upload(
     let owner = crate::store::logs::job_runner_id(&state.pool, &job_id)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
-    if owner != auth.runner_id {
+    // `owner` is `Option<String>`: a job that exists but was never dispatched
+    // has a NULL runner_id, and no runner may write to it.
+    if owner.as_deref() != Some(auth.runner_id.as_str()) {
         return Err(AppError::Forbidden(
             "job is not assigned to this runner".into(),
         ));

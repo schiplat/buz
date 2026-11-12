@@ -27,8 +27,12 @@ pub async fn job_view_facts(
 }
 
 /// Runner the job was dispatched to — the upload path accepts chunks only
-/// from that runner. `None` = no such job.
-pub async fn job_runner_id(pool: &SqlitePool, job_id: &str) -> Result<Option<String>, AppError> {
+/// from that runner. `None` = no such job; `Some(None)` = the job exists but
+/// has not been dispatched (its `runner_id` is NULL), which must be refused.
+pub async fn job_runner_id(
+    pool: &SqlitePool,
+    job_id: &str,
+) -> Result<Option<Option<String>>, AppError> {
     let row = sqlx::query("SELECT runner_id FROM jobs WHERE id = ?")
         .bind(job_id)
         .fetch_optional(pool)
