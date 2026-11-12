@@ -139,6 +139,15 @@ async fn store_statements() -> (Vec<String>, Vec<String>) {
         .expect("store dir")
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        // `dialect.rs` holds no storage SQL — its string literals are the
+        // rewriter's grammar tokens ("INSERT OR IGNORE INTO" & co.), which the
+        // validator would otherwise try to compile as statements. Its
+        // correctness is covered by `dialect_test` instead.
+        .filter(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_none_or(|name| name != "dialect.rs")
+        })
         .collect();
     files.sort();
 

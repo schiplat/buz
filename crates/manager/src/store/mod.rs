@@ -26,6 +26,7 @@
 pub mod api_tokens;
 pub mod audit_logs;
 pub mod auth;
+pub mod dialect;
 pub mod environments;
 pub mod git_hooks;
 pub mod github;
