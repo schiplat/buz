@@ -348,19 +348,36 @@ pub async fn visible_ids_by_label(
     .collect())
 }
 
-/// `(host, port, username, credential_type, credential_data, credential_passphrase)`
-/// for one host id when visible to `team_id` — the claim payload's host object.
+/// One host's push credentials, scoped to `team_id` (shared rows or the same
+/// team). `None` = unknown id, or owned by another team.
+pub struct HostCredentialsRow {
+    pub host: String,
+    pub port: i64,
+    pub username: String,
+    pub credential_type: String,
+    pub credential_data: String,
+    pub credential_passphrase: String,
+}
+
 pub async fn visible_credentials_by_id(
     pool: &SqlitePool,
     id: &str,
     team_id: Option<&str>,
-) -> Result<Option<(String, i64, String, String, String, String)>, AppError> {
-    Ok(sqlx::query_as(
+) -> Result<Option<HostCredentialsRow>, AppError> {
+    Ok(sqlx::query(
         "SELECT host, port, username, credential_type, credential_data, credential_passphrase
          FROM hosts WHERE id = ? AND (team_id IS NULL OR team_id = ?)",
     )
     .bind(id)
     .bind(team_id)
     .fetch_optional(pool)
-    .await?)
+    .await?
+    .map(|r| HostCredentialsRow {
+        host: r.get(0),
+        port: r.get(1),
+        username: r.get(2),
+        credential_type: r.get(3),
+        credential_data: r.get(4),
+        credential_passphrase: r.get(5),
+    }))
 }

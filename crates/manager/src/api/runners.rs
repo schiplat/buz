@@ -6,9 +6,8 @@ use shared::auth::TokenManager;
 use shared::error::AppError;
 use shared::protocol::response::ApiResponse;
 use shared::protocol::{
-    CreateRunnerRequest, ExecutionBackendStatus, HeartbeatRequest, HeartbeatResponse,
-    RegisterRequest, RegisterResponse, RunnerExecutionMode, RunnerPolicyConfig, SystemInfo,
-    UpdateRunnerRequest,
+    CreateRunnerRequest, HeartbeatRequest, HeartbeatResponse, RegisterRequest, RegisterResponse,
+    RunnerExecutionMode, RunnerPolicyConfig, UpdateRunnerRequest,
 };
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -190,11 +189,7 @@ async fn validate_runner_team(
     let Some(team_id) = team_id.map(str::trim).filter(|id| !id.is_empty()) else {
         return Ok(None);
     };
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM teams WHERE id = ?)")
-        .bind(team_id)
-        .fetch_one(pool)
-        .await?;
-    if !exists {
+    if !crate::store::runners::team_exists(pool, team_id).await? {
         return Err(AppError::ValidationFailed(format!(
             "team '{team_id}' does not exist"
         )));
@@ -278,10 +273,7 @@ pub async fn create_runner(
     Json(req): Json<CreateRunnerRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let created = create_runner_record(&state.pool, &req).await?;
-    let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
-        .bind(&created.id)
-        .fetch_one(&state.pool)
-        .await?;
+    let team_id = crate::store::runners::team_of(&state.pool, &created.id).await?;
 
     let policy = load_runner_policy(&state.pool, &created.id).await?;
     // The register token is deliberately absent from the snapshot.
@@ -337,30 +329,28 @@ pub async fn create_runner_record(
     }
     let execution_mode = execution_mode.as_str();
 
-    sqlx::query(
-        "INSERT INTO runners (id, name, register_token, labels, status, version, team_id, execution_mode,
-         max_concurrent_jobs, clean_workspace_after_job,
-         shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy, claim_strategy)
-         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(&req.name)
     // Hash-only at rest: the plaintext is returned exactly once in the API
     // response and never stored (same discipline as buz_/buzsd_ tokens).
-    .bind(shared::api_token::hash_token(&register_token))
-    .bind(&labels_json)
-    .bind(&req.version)
-    .bind(&team_id)
-    .bind(execution_mode)
-    .bind(max_concurrent as i64)
-    .bind(clean)
-    .bind(shell)
-    .bind(ssh)
-    .bind(docker)
-    .bind(wasm)
-    .bind(&ssh_policy)
-    .bind(&claim_strategy)
-    .execute(pool)
+    crate::store::runners::insert(
+        pool,
+        &crate::store::runners::NewRunner {
+            id: &id,
+            name: &req.name,
+            register_token_hash: &shared::api_token::hash_token(&register_token),
+            labels_json: &labels_json,
+            version: req.version.as_deref(),
+            team_id: team_id.as_deref(),
+            execution_mode,
+            max_concurrent_jobs: max_concurrent as i64,
+            clean_workspace: clean,
+            shell,
+            ssh,
+            docker,
+            wasm,
+            ssh_host_key_policy: &ssh_policy,
+            claim_strategy: &claim_strategy,
+        },
+    )
     .await?;
 
     tracing::info!(
@@ -415,10 +405,7 @@ pub async fn ensure_standalone_auto_approve(
         if name.is_empty() {
             continue;
         }
-        let exists: i64 = sqlx::query_scalar("SELECT COUNT(1) FROM runners WHERE name = ?")
-            .bind(name)
-            .fetch_one(pool)
-            .await?;
+        let exists = crate::store::runners::count_by_name(pool, name).await?;
         if exists > 0 {
             tracing::info!(runner = %name, "standalone auto_approve: runner already exists");
             continue;
@@ -820,8 +807,9 @@ async fn poll_once(
     cancel_acks: &[String],
     active_jobs: i64,
 ) -> Result<Json<ApiResponse<Option<serde_json::Value>>>, AppError> {
-    acknowledge_cancelled(&state.pool, &auth.runner_id, cancel_acks).await?;
-    let cancelled_jobs = pending_cancelled_for_delivery(&state.pool, &auth.runner_id).await?;
+    crate::store::runners::acknowledge_cancelled(&state.pool, &auth.runner_id, cancel_acks).await?;
+    let cancelled_jobs =
+        crate::store::runners::pending_cancelled_for_delivery(&state.pool, &auth.runner_id).await?;
 
     // Reject frozen runners — they should not be dispatched work.
     // Also skip dispatch while a restart is pending: otherwise the window between
@@ -960,7 +948,7 @@ async fn poll_once(
         // Serialize environment gate evaluation with the claim. SQLite's
         // immediate transaction reserves the writer before checking blockers,
         // so another poller must re-evaluate after this transaction commits.
-        let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = crate::store::tx::begin_immediate(&state.pool).await?;
         let Some(candidate) =
             crate::store::runners::claim_candidate_tx(&mut tx, &auth.runner_id, &job_id).await?
         else {
@@ -1266,42 +1254,9 @@ async fn build_claim_payload(
                 .collect();
     }
     let task_rows = if has_frozen_tasks {
-        sqlx::query(
-            "SELECT COALESCE(json_extract(j.value, '$.id'), ''), json_extract(j.value, '$.step_order'),
-                    json_extract(j.value, '$.name'), json_extract(j.value, '$.exec_type'),
-                    COALESCE(json_extract(j.value, '$.host_id'), ''), COALESCE(json_extract(j.value, '$.host_names'), ''),
-                    COALESCE(json_extract(j.value, '$.host_labels'), ''),
-                    COALESCE(json_extract(j.value, '$.command_template'), ''),
-                    COALESCE(json_extract(j.value, '$.work_dir'), ''),
-                    COALESCE(json_extract(j.value, '$.retry_count'), 0),
-                    COALESCE(json_extract(j.value, '$.timeout_seconds'), 0),
-                    COALESCE(json_extract(j.value, '$.fail_strategy'), 'stop'),
-                    COALESCE(json_extract(j.value, '$.step_secrets'), ''),
-                    COALESCE(json_extract(j.value, '$.step_env'), '{}'),
-                    COALESCE(json_extract(j.value, '$.image'), ''),
-                    COALESCE(json_extract(j.value, '$.volumes'), '[]'),
-                    COALESCE(json_extract(j.value, '$.hosts_strategy'), 'chain'),
-                    COALESCE(json_extract(j.value, '$.privileged'), 0),
-                    COALESCE(json_extract(j.value, '$.capabilities'), '[]'),
-                    COALESCE(json_extract(j.value, '$.hosts_max_parallel'), NULL),
-                    COALESCE(json_extract(j.value, '$.needs'), '[]')
-             FROM json_each(?, '$.tasks') j
-             ORDER BY json_extract(j.value, '$.step_order')",
-        )
-        .bind(&snapshot_raw)
-        .fetch_all(&state.pool)
-        .await?
+        crate::store::runners::frozen_task_rows(&state.pool, &snapshot_raw).await?
     } else {
-        sqlx::query(
-            "SELECT id, step_order, name, exec_type, COALESCE(host_id, ''), host_names, host_labels, command_template,
-                    work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
-                    hosts_strategy,
-                    privileged, capabilities, hosts_max_parallel, needs_json
-             FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
-        )
-        .bind(&pipeline_id)
-        .fetch_all(&state.pool)
-        .await?
+        crate::store::runners::live_task_rows(&state.pool, &pipeline_id).await?
     };
 
     // Resolve pipeline secrets from explicit bindings + team_shared (sensitive).
@@ -1332,19 +1287,9 @@ async fn build_claim_payload(
 
     // ── Explicit secret bindings (pipeline_secrets table) ──
     // Same-team only: ignore stale/cross-team rows if any slipped into the table.
-    let explicit_rows = sqlx::query(
-        "SELECT s.name, s.value
-         FROM pipeline_secrets ps
-         JOIN secrets s ON s.id = ps.secret_id
-         JOIN pipelines p ON p.id = ps.pipeline_id AND s.team_id = p.team_id AND p.team_id != ''
-         WHERE ps.pipeline_id = ?",
-    )
-    .bind(&pipeline_id)
-    .fetch_all(&state.pool)
-    .await?;
-    for sr in &explicit_rows {
-        let name: String = sr.get(0);
-        let stored: String = sr.get(1);
+    let explicit_rows =
+        crate::store::runners::bound_secret_values(&state.pool, &pipeline_id).await?;
+    for (name, stored) in explicit_rows {
         match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
             Ok(decrypted) => {
                 let value = env_secret_overrides
@@ -1365,18 +1310,9 @@ async fn build_claim_payload(
     }
 
     // ── Team auto-access: same team_id AND team_shared opt-in ──
-    let team_secret_rows = sqlx::query(
-        "SELECT s.name, s.value
-         FROM secrets s
-         JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
-         WHERE p.id = ? AND s.team_shared = 1",
-    )
-    .bind(&pipeline_id)
-    .fetch_all(&state.pool)
-    .await?;
-    for sr in &team_secret_rows {
-        let name: String = sr.get(0);
-        let stored: String = sr.get(1);
+    let team_secret_rows =
+        crate::store::runners::team_shared_secret_values(&state.pool, &pipeline_id).await?;
+    for (name, stored) in team_secret_rows {
         match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
             Ok(decrypted) => {
                 let value = env_secret_overrides
@@ -1417,18 +1353,8 @@ async fn build_claim_payload(
     }
 
     // ── Explicit variable bindings (pipeline_vars table) — not secrets ──
-    let var_rows = sqlx::query(
-        "SELECT pv.name, pv.value
-         FROM pipeline_vars pvars
-         JOIN platform_vars pv ON pv.id = pvars.var_id
-         WHERE pvars.pipeline_id = ?",
-    )
-    .bind(&pipeline_id)
-    .fetch_all(&state.pool)
-    .await?;
-    for vr in &var_rows {
-        let name: String = vr.get(0);
-        let value: String = vr.get(1);
+    let var_rows = crate::store::runners::bound_variable_values(&state.pool, &pipeline_id).await?;
+    for (name, value) in var_rows {
         if let Some(obj) = env.as_object_mut() {
             obj.insert(name, serde_json::Value::String(value));
         }
@@ -1436,19 +1362,10 @@ async fn build_claim_payload(
 
     // Environment Variable overrides (same keys only — does not inject unbound vars).
     if let Some(ref env_id) = job_environment_id {
-        let override_rows = sqlx::query(
-            "SELECT pv.name, o.value
-             FROM environment_var_overrides o
-             JOIN platform_vars pv ON pv.id = o.var_id
-             WHERE o.environment_id = ?",
-        )
-        .bind(env_id)
-        .fetch_all(&state.pool)
-        .await?;
+        let override_rows =
+            crate::store::runners::environment_variable_overrides(&state.pool, env_id).await?;
         let mut applied = 0u32;
-        for orow in &override_rows {
-            let name: String = orow.get(0);
-            let value: String = orow.get(1);
+        for (name, value) in override_rows {
             if let Some(obj) = env.as_object_mut() {
                 if obj.contains_key(&name) {
                     obj.insert(name, serde_json::Value::String(value));
@@ -1465,16 +1382,8 @@ async fn build_claim_payload(
     }
 
     // ── Inline env vars (user-defined per pipeline, from `env:` YAML block or form) ──
-    let env_rows = sqlx::query(
-        "SELECT var_name, value FROM variables
-         WHERE pipeline_id = ? AND source_type = 'inline' AND is_secret = 0",
-    )
-    .bind(&pipeline_id)
-    .fetch_all(&state.pool)
-    .await?;
-    for er in &env_rows {
-        let name: String = er.get(0);
-        let value: String = er.get(1);
+    let env_rows = crate::store::pipelines::inline_envs(&state.pool, &pipeline_id).await?;
+    for (name, value) in env_rows {
         if let Some(obj) = env.as_object_mut() {
             obj.insert(name, serde_json::Value::String(value));
         }
@@ -1817,13 +1726,11 @@ async fn build_claim_payload(
 
             if host_ids.len() == 1 {
                 // Single host — return as object (backward-compatible)
-                if let Ok(Some(host_row)) = sqlx::query(
-                    "SELECT host, port, username, credential_type, credential_data, credential_passphrase
-                     FROM hosts WHERE id = ? AND (team_id IS NULL OR team_id = ?)",
+                if let Ok(Some(host_row)) = crate::store::hosts::visible_credentials_by_id(
+                    &state.pool,
+                    &host_ids[0],
+                    team_id.as_deref(),
                 )
-                .bind(&host_ids[0])
-                .bind(team_id.as_deref())
-                .fetch_optional(&state.pool)
                 .await
                 {
                     task_json["host"] = build_host_json(&host_row, &state.config.auth.jwt_secret);
@@ -1836,13 +1743,11 @@ async fn build_claim_payload(
                 // Multiple hosts — return as array
                 let mut host_list: Vec<serde_json::Value> = Vec::new();
                 for hid in &host_ids {
-                    if let Ok(Some(host_row)) = sqlx::query(
-                        "SELECT host, port, username, credential_type, credential_data \
-                         FROM hosts WHERE id = ? AND (team_id IS NULL OR team_id = ?)",
+                    if let Ok(Some(host_row)) = crate::store::hosts::visible_credentials_by_id(
+                        &state.pool,
+                        hid,
+                        team_id.as_deref(),
                     )
-                    .bind(hid)
-                    .bind(team_id.as_deref())
-                    .fetch_optional(&state.pool)
                     .await
                     {
                         host_list.push(build_host_json(&host_row, &state.config.auth.jwt_secret));
@@ -1906,11 +1811,10 @@ async fn build_claim_payload(
 
     // Job metadata for the runner's BUZ_* env (ADR §5.2) — plugin steps
     // render messages like "build #<job> passed" from this.
-    let team_name: Option<String> = sqlx::query_scalar("SELECT name FROM teams WHERE id = ?")
-        .bind(&team_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .flatten();
+    let team_name = match team_id.as_deref() {
+        Some(id) => crate::store::teams::name_of(&state.pool, id).await?,
+        None => None,
+    };
 
     Ok(serde_json::json!({
         "job_id": job_id,
@@ -1959,20 +1863,8 @@ async fn merge_team_secrets_by_name(
     if needed.is_empty() {
         return Ok(());
     }
-    let placeholders = vec!["?"; needed.len()].join(",");
-    let query = format!(
-        "SELECT s.name, s.value FROM secrets s
-         JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
-         WHERE p.id = ? AND s.name IN ({placeholders})"
-    );
-    let mut q = sqlx::query_as::<_, (String, String)>(&query).bind(pipeline_id);
-    for name in &needed {
-        q = q.bind(*name);
-    }
-    let rows = q
-        .fetch_all(pool)
-        .await
-        .map_err(|e| AppError::Internal(format!("failed to load secrets by name: {e}")))?;
+    let rows =
+        crate::store::runners::team_secret_values_by_name(pool, pipeline_id, &needed).await?;
     for (name, stored) in rows {
         match crypto::decrypt(&stored, jwt_secret) {
             Ok(decrypted) => {
@@ -2072,13 +1964,16 @@ fn resolve_var_ref(raw: &str, inputs: &serde_json::Value) -> Vec<String> {
 /// Credential data (private key or password) is decrypted from the encrypted
 /// database value and sent as `credential_value` so the runner can use it
 /// directly without reading local files.
-fn build_host_json(host_row: &sqlx::sqlite::SqliteRow, jwt_secret: &str) -> serde_json::Value {
-    let host: String = host_row.get(0);
-    let port: i64 = host_row.get(1);
-    let username: String = host_row.get(2);
-    let cred_type: String = host_row.get(3);
-    let cred_data_encrypted: String = host_row.get(4);
-    let passphrase_encrypted: String = host_row.get(5);
+fn build_host_json(
+    host_row: &crate::store::hosts::HostCredentialsRow,
+    jwt_secret: &str,
+) -> serde_json::Value {
+    let host = host_row.host.clone();
+    let port = host_row.port;
+    let username = host_row.username.clone();
+    let cred_type = host_row.credential_type.clone();
+    let cred_data_encrypted = host_row.credential_data.clone();
+    let passphrase_encrypted = host_row.credential_passphrase.clone();
 
     let cred_data = if cred_data_encrypted.is_empty() {
         tracing::warn!(
@@ -2136,59 +2031,41 @@ pub async fn list_runners(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let rows = sqlx::query(
-        "SELECT r.id, r.name, r.labels, r.status, r.version, r.system_info, r.last_seen, r.is_frozen,
-                r.max_concurrent_jobs, r.clean_workspace_after_job,
-                r.shell_enabled, r.ssh_enabled, r.docker_enabled, r.wasm_enabled, r.ssh_host_key_policy,
-                r.created_at, r.updated_at, r.team_id,
-                (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs,
-                r.execution_mode, r.host_id, r.runner_instance_id, r.claim_strategy,
-                r.netns_isolation,
-                r.capability_reprobe_requested, r.capability_reprobe_requested_at,
-                r.capability_reprobe_served_at
-         FROM runners r ORDER BY r.created_at DESC",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let rows = crate::store::runners::list_for_admin(&state.pool).await?;
 
     let runners: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| -> Result<serde_json::Value, AppError> {
-            let labels: String = r.get(2);
-            let system_info_raw: String = r.get(5);
-            let system_info = serde_json::from_str::<serde_json::Value>(&system_info_raw).ok();
+            let system_info = serde_json::from_str::<serde_json::Value>(&r.system_info).ok();
             let policy = RunnerPolicyConfig {
-                max_concurrent_jobs: r.get::<i64, _>(8).max(1) as u32,
-                clean_workspace_after_job: i64_bool(r.get(9)),
-                shell_enabled: i64_bool(r.get(10)),
-                ssh_enabled: i64_bool(r.get(11)),
-                docker_enabled: i64_bool(r.get(12)),
-                wasm_enabled: i64_bool(r.get(13)),
-                ssh_host_key_policy: {
-                    let p: String = r.get(14);
-                    if p == "insecure" {
-                        p
-                    } else {
-                        "known_hosts".into()
-                    }
+                max_concurrent_jobs: r.max_concurrent_jobs.max(1) as u32,
+                clean_workspace_after_job: i64_bool(r.clean_workspace_after_job),
+                shell_enabled: i64_bool(r.shell_enabled),
+                ssh_enabled: i64_bool(r.ssh_enabled),
+                docker_enabled: i64_bool(r.docker_enabled),
+                wasm_enabled: i64_bool(r.wasm_enabled),
+                ssh_host_key_policy: if r.ssh_host_key_policy == "insecure" {
+                    r.ssh_host_key_policy.clone()
+                } else {
+                    "known_hosts".into()
                 },
-                execution_mode: parse_execution_mode(r.get::<String, _>(19))?,
-                claim_strategy: normalize_claim_strategy(Some(r.get::<String, _>(22)))
+                execution_mode: parse_execution_mode(r.execution_mode)?,
+                claim_strategy: normalize_claim_strategy(Some(r.claim_strategy.clone()))
                     .unwrap_or_else(|_| "backfill".into()),
-                netns_isolation: i64_bool(r.get(24)),
+                netns_isolation: i64_bool(r.netns_isolation),
             };
             Ok(serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "name": r.get::<String, _>(1),
-                "labels": serde_json::from_str::<Vec<String>>(&labels).unwrap_or_default(),
-                "status": r.get::<String, _>(3),
-                "version": r.get::<Option<String>, _>(4),
+                "id": r.id,
+                "name": r.name,
+                "labels": serde_json::from_str::<Vec<String>>(&r.labels).unwrap_or_default(),
+                "status": r.status,
+                "version": r.version,
                 "system_info": system_info,
-                "last_seen": r.get::<Option<String>, _>(6),
-                "is_frozen": r.get::<i64, _>(7) != 0,
-                "capability_reprobe_requested": r.get::<i64, _>("capability_reprobe_requested") != 0,
-                "capability_reprobe_requested_at": r.get::<Option<String>, _>("capability_reprobe_requested_at"),
-                "capability_reprobe_served_at": r.get::<Option<String>, _>("capability_reprobe_served_at"),
+                "last_seen": r.last_seen,
+                "is_frozen": r.is_frozen != 0,
+                "capability_reprobe_requested": r.capability_reprobe_requested != 0,
+                "capability_reprobe_requested_at": r.capability_reprobe_requested_at,
+                "capability_reprobe_served_at": r.capability_reprobe_served_at,
                 "max_concurrent_jobs": policy.max_concurrent_jobs,
                 "clean_workspace_after_job": policy.clean_workspace_after_job,
                 "shell_enabled": policy.shell_enabled,
@@ -2199,12 +2076,12 @@ pub async fn list_runners(
                 "ssh_host_key_policy": policy.ssh_host_key_policy,
                 "claim_strategy": policy.claim_strategy,
                 "execution_mode": policy.execution_mode.as_str(),
-                "team_id": r.get::<Option<String>, _>(17),
-                "created_at": r.get::<Option<String>, _>(15),
-                "updated_at": r.get::<Option<String>, _>(16),
-                "running_jobs": r.get::<i64, _>(18),
-                "host_id": r.get::<String, _>(20),
-                "runner_instance_id": r.get::<String, _>(21),
+                "team_id": r.team_id,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at,
+                "running_jobs": r.running_jobs,
+                "host_id": r.host_id,
+                "runner_instance_id": r.runner_instance_id,
             }))
         })
         .collect::<Result<Vec<_>, AppError>>()?;
@@ -2217,45 +2094,30 @@ pub async fn get_runner(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let r = sqlx::query(
-        "SELECT id, name, labels, status, version, system_info, last_seen,
-                created_at, updated_at, team_id, host_id, runner_instance_id,
-                capability_reprobe_requested, capability_reprobe_requested_at,
-                capability_reprobe_served_at
-         FROM runners WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
+    let r = crate::store::runners::detail_of(&state.pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
 
-    let labels: String = r.get(2);
-    let system_info_raw: String = r.get(5);
-    let system_info = serde_json::from_str::<serde_json::Value>(&system_info_raw).ok();
-    let running_jobs: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
-            .bind(&id)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(0);
+    let system_info = serde_json::from_str::<serde_json::Value>(&r.system_info).ok();
+    let running_jobs = crate::store::runners::running_jobs_of(&state.pool, &id).await?;
     let policy = load_runner_policy(&state.pool, &id).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
-        "id": r.get::<String, _>(0),
-        "name": r.get::<String, _>(1),
-        "labels": serde_json::from_str::<Vec<String>>(&labels).unwrap_or_default(),
-        "status": r.get::<String, _>(3),
-        "version": r.get::<Option<String>, _>(4),
+        "id": r.id,
+        "name": r.name,
+        "labels": serde_json::from_str::<Vec<String>>(&r.labels).unwrap_or_default(),
+        "status": r.status,
+        "version": r.version,
         "system_info": system_info,
-        "last_seen": r.get::<Option<String>, _>(6),
-        "created_at": r.get::<Option<String>, _>(7),
-        "updated_at": r.get::<Option<String>, _>(8),
-        "team_id": r.get::<Option<String>, _>(9),
-        "host_id": r.get::<String, _>(10),
-        "runner_instance_id": r.get::<String, _>(11),
-        "capability_reprobe_requested": r.get::<i64, _>("capability_reprobe_requested") != 0,
-        "capability_reprobe_requested_at": r.get::<Option<String>, _>("capability_reprobe_requested_at"),
-        "capability_reprobe_served_at": r.get::<Option<String>, _>("capability_reprobe_served_at"),
+        "last_seen": r.last_seen,
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+        "team_id": r.team_id,
+        "host_id": r.host_id,
+        "runner_instance_id": r.runner_instance_id,
+        "capability_reprobe_requested": r.capability_reprobe_requested != 0,
+        "capability_reprobe_requested_at": r.capability_reprobe_requested_at,
+        "capability_reprobe_served_at": r.capability_reprobe_served_at,
         "running_jobs": running_jobs,
         "max_concurrent_jobs": policy.max_concurrent_jobs,
         "clean_workspace_after_job": policy.clean_workspace_after_job,
@@ -2268,62 +2130,6 @@ pub async fn get_runner(
         "claim_strategy": policy.claim_strategy,
         "netns_isolation": policy.netns_isolation,
     }))))
-}
-
-/// Validates switching `runner_id` to `mode` against the runner's live state:
-/// sandbox capability freshness for non-Host modes and no running jobs. Must
-/// be called inside the caller's `BEGIN IMMEDIATE` transaction that also
-/// performs the update; on error the caller must roll the transaction back.
-async fn validate_execution_mode_transition(
-    tx: &mut sqlx::SqliteConnection,
-    runner_id: &str,
-    mode: RunnerExecutionMode,
-) -> Result<(), AppError> {
-    let (status, last_seen, system_info_raw) =
-        crate::store::runners::transition_facts_tx(tx, runner_id).await?;
-    if mode != RunnerExecutionMode::Host {
-        if status != "online" {
-            return Err(AppError::Conflict(
-                "runner must be online and report fresh sandbox capabilities before selecting this execution mode".into(),
-            ));
-        }
-        let fresh = crate::store::runners::seen_within_90s_tx(tx, last_seen.as_deref()).await?;
-        let capabilities = serde_json::from_str::<SystemInfo>(&system_info_raw)
-            .ok()
-            .and_then(|info| info.execution_capabilities);
-        let Some(capabilities) = capabilities else {
-            return Err(AppError::Conflict(
-                "runner has not reported sandbox capabilities yet; wait for its next heartbeat"
-                    .into(),
-            ));
-        };
-        // One per-tier lookup for every sandboxed tier — Host never reaches here.
-        let Some((backend, reason)) = capabilities.backend(mode) else {
-            return Err(AppError::Conflict(format!(
-                "runner does not support {} execution: host has no sandbox backend",
-                mode.as_str()
-            )));
-        };
-        let checked_fresh = crate::store::runners::capability_check_fresh_tx(
-            tx,
-            capabilities.checked_at.as_deref(),
-        )
-        .await?;
-        if !fresh || !checked_fresh || backend != ExecutionBackendStatus::Supported {
-            let detail = reason.unwrap_or("capability check is stale or unsupported");
-            return Err(AppError::Conflict(format!(
-                "runner does not support {} execution: {detail}",
-                mode.as_str()
-            )));
-        }
-    }
-    let running = crate::store::runners::running_job_count_tx(tx, runner_id).await?;
-    if running > 0 {
-        return Err(AppError::Conflict(format!(
-            "execution mode cannot change while {running} job(s) are running"
-        )));
-    }
-    Ok(())
 }
 
 pub async fn update_runner(
@@ -2371,16 +2177,7 @@ pub async fn update_runner(
     }
 
     if let Some(mode) = req.execution_mode {
-        let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let current = crate::store::runners::execution_mode_tx(&mut tx, &id).await?;
-        if current != mode.as_str() {
-            if let Err(error) = validate_execution_mode_transition(&mut tx, &id, mode).await {
-                tx.rollback().await?;
-                return Err(error);
-            }
-        }
-        crate::store::runners::set_execution_mode_tx(&mut tx, &id, mode.as_str()).await?;
-        tx.commit().await?;
+        crate::store::runners::change_execution_mode(&state.pool, &id, mode).await?;
     }
 
     if let Some(v) = req.clean_workspace_after_job {
@@ -2683,39 +2480,4 @@ pub async fn get_events(
 /// Poll response envelope for no-job paths; cancel notices ride the claim channel.
 fn cancel_only_response(cancelled_jobs: Vec<String>) -> serde_json::Value {
     serde_json::json!({ "cancelled_jobs": cancelled_jobs })
-}
-
-/// Clear only the notices this runner explicitly acked after applying them.
-async fn acknowledge_cancelled(
-    pool: &sqlx::SqlitePool,
-    runner_id: &str,
-    ids: &[String],
-) -> Result<(), AppError> {
-    for id in ids {
-        sqlx::query(
-            "UPDATE jobs SET cancel_ack_pending = 0 \
-             WHERE id = ? AND runner_id = ? AND status = 'cancelled' AND cancel_ack_pending = 1",
-        )
-        .bind(id)
-        .bind(runner_id)
-        .execute(pool)
-        .await?;
-    }
-    Ok(())
-}
-
-/// Read undelivered cancellation IDs. They remain pending until a subsequent
-/// Runner poll acknowledges receipt, so a lost response is safely retried.
-async fn pending_cancelled_for_delivery(
-    pool: &sqlx::SqlitePool,
-    runner_id: &str,
-) -> Result<Vec<String>, AppError> {
-    Ok(sqlx::query_scalar(
-        "SELECT id FROM jobs \
-         WHERE runner_id = ? AND status = 'cancelled' AND cancel_ack_pending = 1 \
-         ORDER BY updated_at, id LIMIT 32",
-    )
-    .bind(runner_id)
-    .fetch_all(pool)
-    .await?)
 }

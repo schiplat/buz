@@ -302,3 +302,11 @@ pub async fn remove_member(
         .await?;
     Ok(result.rows_affected() > 0)
 }
+
+/// A team's display name (`None` = no such team).
+pub async fn name_of(pool: &SqlitePool, id: &str) -> Result<Option<String>, AppError> {
+    Ok(sqlx::query_scalar("SELECT name FROM teams WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?)
+}

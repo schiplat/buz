@@ -10,6 +10,7 @@ use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use shared::error::AppError;
+use shared::protocol::{ExecutionBackendStatus, RunnerExecutionMode, SystemInfo};
 
 /// Why the last poll round skipped a pending job. Display-only, cleared on
 /// claim. Logged only when the reason changes, so a job parked on one reason
@@ -523,6 +524,55 @@ pub async fn clear_capability_reprobe_requested(
 // so no SQL text is ever assembled from a variable. A generic
 // `update(column)` would reintroduce an identifier-injection surface for no
 // benefit (`UPDATE runners SET {column} …`).
+
+/// A new runner row. `register_token_hash` is SHA-256 — the plaintext token
+/// exists only in the create response and is never persisted.
+pub struct NewRunner<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub register_token_hash: &'a str,
+    pub labels_json: &'a str,
+    pub version: Option<&'a str>,
+    pub team_id: Option<&'a str>,
+    pub execution_mode: &'a str,
+    pub max_concurrent_jobs: i64,
+    pub clean_workspace: i64,
+    pub shell: i64,
+    pub ssh: i64,
+    pub docker: i64,
+    pub wasm: i64,
+    pub ssh_host_key_policy: &'a str,
+    pub claim_strategy: &'a str,
+}
+
+/// Insert one runner row; it starts `offline` and goes online at first
+/// successful register.
+pub async fn insert(pool: &SqlitePool, r: &NewRunner<'_>) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO runners (id, name, register_token, labels, status, version, team_id,
+         execution_mode, max_concurrent_jobs, clean_workspace_after_job,
+         shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy, claim_strategy)
+         VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(r.id)
+    .bind(r.name)
+    .bind(r.register_token_hash)
+    .bind(r.labels_json)
+    .bind(r.version)
+    .bind(r.team_id)
+    .bind(r.execution_mode)
+    .bind(r.max_concurrent_jobs)
+    .bind(r.clean_workspace)
+    .bind(r.shell)
+    .bind(r.ssh)
+    .bind(r.docker)
+    .bind(r.wasm)
+    .bind(r.ssh_host_key_policy)
+    .bind(r.claim_strategy)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
 
 /// Replace the `clean_workspace_after_job` flag.
 pub async fn update_clean_workspace(
@@ -1205,4 +1255,309 @@ pub async fn resolution_inputs(
     .bind(pipeline_id)
     .fetch_all(pool)
     .await?)
+}
+
+/// Clear the cancel notices a runner explicitly acked after applying them.
+pub async fn acknowledge_cancelled(
+    pool: &SqlitePool,
+    runner_id: &str,
+    ids: &[String],
+) -> Result<(), AppError> {
+    for id in ids {
+        sqlx::query(
+            "UPDATE jobs SET cancel_ack_pending = 0 \
+             WHERE id = ? AND runner_id = ? AND status = 'cancelled' AND cancel_ack_pending = 1",
+        )
+        .bind(id)
+        .bind(runner_id)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Undelivered cancellation IDs. They stay pending until a later poll acks
+/// them, so a lost response is safely retried (oldest first, bounded).
+pub async fn pending_cancelled_for_delivery(
+    pool: &SqlitePool,
+    runner_id: &str,
+) -> Result<Vec<String>, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM jobs \
+         WHERE runner_id = ? AND status = 'cancelled' AND cancel_ack_pending = 1 \
+         ORDER BY updated_at, id LIMIT 32",
+    )
+    .bind(runner_id)
+    .fetch_all(pool)
+    .await?)
+}
+// ───────────────────────── shared admin row shapes ─────────────────────────
+//
+// The two admin read screens select different column sets; both map into a
+// typed struct here so a renamed/reordered column fails to compile instead of
+// silently shifting a `get(n)` index.
+
+pub struct RunnerListRow {
+    pub id: String,
+    pub name: String,
+    pub labels: String,
+    pub status: String,
+    pub version: Option<String>,
+    pub system_info: String,
+    pub last_seen: Option<String>,
+    pub is_frozen: i64,
+    pub max_concurrent_jobs: i64,
+    pub clean_workspace_after_job: i64,
+    pub shell_enabled: i64,
+    pub ssh_enabled: i64,
+    pub docker_enabled: i64,
+    pub wasm_enabled: i64,
+    pub ssh_host_key_policy: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub team_id: Option<String>,
+    pub running_jobs: i64,
+    pub execution_mode: String,
+    pub host_id: String,
+    pub runner_instance_id: String,
+    pub claim_strategy: String,
+    pub netns_isolation: i64,
+    pub capability_reprobe_requested: i64,
+    pub capability_reprobe_requested_at: Option<String>,
+    pub capability_reprobe_served_at: Option<String>,
+}
+
+pub struct RunnerDetailRow {
+    pub id: String,
+    pub name: String,
+    pub labels: String,
+    pub status: String,
+    pub version: Option<String>,
+    pub system_info: String,
+    pub last_seen: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub team_id: Option<String>,
+    pub host_id: String,
+    pub runner_instance_id: String,
+    pub capability_reprobe_requested: i64,
+    pub capability_reprobe_requested_at: Option<String>,
+    pub capability_reprobe_served_at: Option<String>,
+}
+
+fn runner_list_row(r: sqlx::sqlite::SqliteRow) -> RunnerListRow {
+    RunnerListRow {
+        id: r.get(0),
+        name: r.get(1),
+        labels: r.get(2),
+        status: r.get(3),
+        version: r.get(4),
+        system_info: r.get(5),
+        last_seen: r.get(6),
+        is_frozen: r.get(7),
+        max_concurrent_jobs: r.get(8),
+        clean_workspace_after_job: r.get(9),
+        shell_enabled: r.get(10),
+        ssh_enabled: r.get(11),
+        docker_enabled: r.get(12),
+        wasm_enabled: r.get(13),
+        ssh_host_key_policy: r.get(14),
+        created_at: r.get(15),
+        updated_at: r.get(16),
+        team_id: r.get(17),
+        running_jobs: r.get(18),
+        execution_mode: r.get(19),
+        host_id: r.get(20),
+        runner_instance_id: r.get(21),
+        claim_strategy: r.get(22),
+        netns_isolation: r.get(23),
+        capability_reprobe_requested: r.get(24),
+        capability_reprobe_requested_at: r.get(25),
+        capability_reprobe_served_at: r.get(26),
+    }
+}
+
+/// Every runner for the admin list, newest first, with its running-job count.
+pub async fn list_for_admin(pool: &SqlitePool) -> Result<Vec<RunnerListRow>, AppError> {
+    let rows = sqlx::query(
+        "SELECT r.id, r.name, r.labels, r.status, r.version, r.system_info, r.last_seen, r.is_frozen,
+                r.max_concurrent_jobs, r.clean_workspace_after_job,
+                r.shell_enabled, r.ssh_enabled, r.docker_enabled, r.wasm_enabled, r.ssh_host_key_policy,
+                r.created_at, r.updated_at, r.team_id,
+                (SELECT COUNT(*) FROM jobs j WHERE j.runner_id = r.id AND j.status = 'running') AS running_jobs,
+                r.execution_mode, r.host_id, r.runner_instance_id, r.claim_strategy,
+                r.netns_isolation,
+                r.capability_reprobe_requested, r.capability_reprobe_requested_at,
+                r.capability_reprobe_served_at
+         FROM runners r ORDER BY r.created_at DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(runner_list_row).collect())
+}
+
+fn runner_detail_row(r: sqlx::sqlite::SqliteRow) -> RunnerDetailRow {
+    RunnerDetailRow {
+        id: r.get(0),
+        name: r.get(1),
+        labels: r.get(2),
+        status: r.get(3),
+        version: r.get(4),
+        system_info: r.get(5),
+        last_seen: r.get(6),
+        created_at: r.get(7),
+        updated_at: r.get(8),
+        team_id: r.get(9),
+        host_id: r.get(10),
+        runner_instance_id: r.get(11),
+        capability_reprobe_requested: r.get(12),
+        capability_reprobe_requested_at: r.get(13),
+        capability_reprobe_served_at: r.get(14),
+    }
+}
+
+/// One runner for the admin detail screen (`None` = not found).
+pub async fn detail_of(pool: &SqlitePool, id: &str) -> Result<Option<RunnerDetailRow>, AppError> {
+    let row = sqlx::query(
+        "SELECT id, name, labels, status, version, system_info, last_seen,
+                created_at, updated_at, team_id, host_id, runner_instance_id,
+                capability_reprobe_requested, capability_reprobe_requested_at,
+                capability_reprobe_served_at
+         FROM runners WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(runner_detail_row))
+}
+
+/// Jobs currently running on this runner — display-only count.
+pub async fn running_jobs_of(pool: &SqlitePool, id: &str) -> Result<i64, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0),
+    )
+}
+
+/// `(name, stored value)` for the named team secrets a claim may expose, in
+/// one round trip. The `IN (...)` list is built from `?` placeholders — only
+/// the *count* varies, never SQL text.
+pub async fn team_secret_values_by_name(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+    names: &[&str],
+) -> Result<Vec<(String, String)>, AppError> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; names.len()].join(",");
+    let query = format!(
+        "SELECT s.name, s.value FROM secrets s
+         JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
+         WHERE p.id = ? AND s.name IN ({placeholders})"
+    );
+    let mut q = sqlx::query_as::<_, (String, String)>(&query).bind(pipeline_id);
+    for name in names {
+        q = q.bind(*name);
+    }
+    Ok(q.fetch_all(pool).await?)
+}
+
+/// Validates switching `runner_id` to `mode` against the runner's live state:
+/// sandbox capability freshness for non-Host modes and no running jobs. Must
+/// be called inside the caller's `BEGIN IMMEDIATE` transaction that also
+/// performs the update; on error the caller must roll the transaction back.
+pub async fn validate_execution_mode_transition(
+    tx: &mut sqlx::SqliteConnection,
+    runner_id: &str,
+    mode: RunnerExecutionMode,
+) -> Result<(), AppError> {
+    let (status, last_seen, system_info_raw) =
+        crate::store::runners::transition_facts_tx(tx, runner_id).await?;
+    if mode != RunnerExecutionMode::Host {
+        if status != "online" {
+            return Err(AppError::Conflict(
+                "runner must be online and report fresh sandbox capabilities before selecting this execution mode".into(),
+            ));
+        }
+        let fresh = crate::store::runners::seen_within_90s_tx(tx, last_seen.as_deref()).await?;
+        let capabilities = serde_json::from_str::<SystemInfo>(&system_info_raw)
+            .ok()
+            .and_then(|info| info.execution_capabilities);
+        let Some(capabilities) = capabilities else {
+            return Err(AppError::Conflict(
+                "runner has not reported sandbox capabilities yet; wait for its next heartbeat"
+                    .into(),
+            ));
+        };
+        // One per-tier lookup for every sandboxed tier — Host never reaches here.
+        let Some((backend, reason)) = capabilities.backend(mode) else {
+            return Err(AppError::Conflict(format!(
+                "runner does not support {} execution: host has no sandbox backend",
+                mode.as_str()
+            )));
+        };
+        let checked_fresh = crate::store::runners::capability_check_fresh_tx(
+            tx,
+            capabilities.checked_at.as_deref(),
+        )
+        .await?;
+        if !fresh || !checked_fresh || backend != ExecutionBackendStatus::Supported {
+            let detail = reason.unwrap_or("capability check is stale or unsupported");
+            return Err(AppError::Conflict(format!(
+                "runner does not support {} execution: {detail}",
+                mode.as_str()
+            )));
+        }
+    }
+    let running = crate::store::runners::running_job_count_tx(tx, runner_id).await?;
+    if running > 0 {
+        return Err(AppError::Conflict(format!(
+            "execution mode cannot change while {running} job(s) are running"
+        )));
+    }
+    Ok(())
+}
+
+/// Switch one runner's execution mode under one `BEGIN IMMEDIATE`: the
+/// transition rule and the write share the lock, so a concurrent claim or
+/// heartbeat cannot interleave between them.
+pub async fn change_execution_mode(
+    pool: &SqlitePool,
+    runner_id: &str,
+    mode: RunnerExecutionMode,
+) -> Result<(), AppError> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let current: String = sqlx::query("SELECT execution_mode FROM runners WHERE id = ?")
+        .bind(runner_id)
+        .fetch_one(&mut *tx)
+        .await?
+        .get(0);
+
+    if current != mode.as_str() {
+        if let Err(error) = validate_execution_mode_transition(&mut tx, runner_id, mode).await {
+            tx.rollback()
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+            return Err(error);
+        }
+    }
+
+    sqlx::query("UPDATE runners SET execution_mode = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(mode.as_str())
+        .bind(runner_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(())
 }
