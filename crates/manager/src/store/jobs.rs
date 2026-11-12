@@ -3,7 +3,16 @@
 //! Transaction-internal cores: the caller opens `BEGIN IMMEDIATE`, these
 //! functions do the guarded writes, and the caller handles post-commit
 //! fan-out (notify, WebSocket, `wake_all`).
+//!
+//! On the dual-backend dispatcher (`store::exec`): pool-level reads and plain
+//! writes travel as SQLite-dialect strings with backend-neutral binds, rows
+//! decode by column name. The `BEGIN IMMEDIATE` write paths (`approve`,
+//! `reject`, `apply_runner_status`, `insert_rerun`, `cancel`, and the `*_in_tx`
+//! cores) stay on `sqlx::SqlitePool` / `sqlx::Transaction<Sqlite>` — they
+//! share the transaction scope with `crate::audit::record` / `record_in` and
+//! migrate with the audit tx-scope slice.
 
+use crate::store::exec::{self, DbPool, SqlValue};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
@@ -25,6 +34,7 @@ pub struct CancelledJob {
 /// marks the currently running step cancelled and records the approval
 /// outcome for `waiting_approval` jobs. Returns `None` when the job is
 /// missing or already terminal, so batch callers can skip instead of fail.
+/// Stays on the caller's `sqlx::Transaction` — tx-scope slice.
 pub(crate) async fn cancel_job_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     job_id: &str,
@@ -172,7 +182,9 @@ pub struct ApproveOutcome {
 ///
 /// Authorization (min approve role, self-approve ban) runs before any write;
 /// the status re-check happens inside the transaction so a concurrent
-/// reject/cancel wins.
+/// reject/cancel wins. Stays on `&sqlx::SqlitePool` — its own `BEGIN
+/// IMMEDIATE` scope and the post-commit `crate::audit::record` call; tx-scope
+/// slice.
 pub async fn approve(
     pool: &SqlitePool,
     auth: &crate::middleware::AuthUser,
@@ -385,7 +397,9 @@ pub async fn approve(
 }
 
 /// Record a rejection: the job goes to `cancelled`, re-reading the snapshot
-/// inside the transaction so a concurrent approval is not clobbered.
+/// inside the transaction so a concurrent approval is not clobbered. Stays on
+/// `&sqlx::SqlitePool` — its own `BEGIN IMMEDIATE` scope and the post-commit
+/// `crate::audit::record` call; tx-scope slice.
 pub async fn reject(
     pool: &SqlitePool,
     auth: &crate::middleware::AuthUser,
@@ -518,12 +532,15 @@ pub async fn reject(
 }
 
 /// Pipeline id for a job — enough to scope a post-commit status broadcast.
-pub async fn job_pipeline_id(pool: &SqlitePool, job_id: &str) -> Result<String, AppError> {
-    sqlx::query_scalar("SELECT pipeline_id FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("job not found".into()))
+pub async fn job_pipeline_id(pool: &DbPool, job_id: &str) -> Result<String, AppError> {
+    exec::fetch_optional(
+        pool,
+        "SELECT pipeline_id FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await?
+    .map(|r| r.text_of("pipeline_id"))
+    .ok_or_else(|| AppError::NotFound("job not found".into()))
 }
 
 /// Runner status report: one job, one status, optional per-step order.
@@ -554,7 +571,8 @@ pub struct StatusReportOutcome {
 /// - `truncated_steps` is a union, never an assignment (DAG steps report
 ///   concurrently; a late per-step report must not erase earlier ones).
 ///
-/// Post-commit fan-out (poller wake, announce) stays with the caller.
+/// Post-commit fan-out (poller wake, announce) stays with the caller. Stays
+/// on `&sqlx::SqlitePool` — its own `BEGIN IMMEDIATE` scope; tx-scope slice.
 pub async fn apply_runner_status(
     pool: &SqlitePool,
     runner_id: &str,
@@ -759,7 +777,9 @@ pub struct RerunInsert<'a> {
 /// Insert a re-run attempt atomically: `is_active` is re-checked inside the
 /// transaction (closing the check-to-insert race with a concurrent disable,
 /// same as `reserve_job`), the row and its audit record land together.
-/// Returns the new job id. Poller wake happens after commit.
+/// Returns the new job id. Poller wake happens after commit. Stays on
+/// `&sqlx::SqlitePool` — its own `BEGIN IMMEDIATE` around
+/// `crate::audit::record_in`; audit tx-scope slice.
 pub async fn insert_rerun(
     pool: &SqlitePool,
     insert: &RerunInsert<'_>,
@@ -832,12 +852,13 @@ pub async fn insert_rerun(
 //
 // Team scope / debug filtering arrive pre-built from the handler (that is
 // authorization); these functions assemble and run the queries and shape rows.
+// They run on the dual-backend dispatcher (`store::exec`).
 
 pub type TeamScope = Option<(String, Vec<String>)>;
 
 /// `ORDER BY`-stable listing of the latest 200 jobs (admin list page).
 pub async fn list_jobs(
-    pool: &SqlitePool,
+    pool: &DbPool,
     team_scope: &TeamScope,
     hide_debug: bool,
 ) -> Result<Vec<serde_json::Value>, AppError> {
@@ -862,40 +883,40 @@ pub async fn list_jobs(
         }
     };
 
-    let mut q = sqlx::query(&sql);
+    let mut binds: Vec<SqlValue> = Vec::new();
     if let Some((_, ids)) = team_scope {
         for id in ids {
-            q = q.bind(id);
+            binds.push(id.as_str().into());
         }
     }
-    let rows = q.fetch_all(pool).await?;
+    let rows = exec::fetch_all(pool, &sql, &binds).await?;
 
     Ok(rows
         .into_iter()
         .map(|r| {
             let step_statuses: serde_json::Value =
-                serde_json::from_str(&r.get::<String, _>(7)).unwrap_or_default();
+                serde_json::from_str(&r.text_of("step_statuses")).unwrap_or_default();
             let snapshot: serde_json::Value =
-                serde_json::from_str(&r.get::<String, _>(8)).unwrap_or_default();
+                serde_json::from_str(&r.text_of("snapshot")).unwrap_or_default();
             serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "pipeline_id": r.get::<String, _>(1),
-                "pipeline_name": r.get::<Option<String>, _>(2),
-                "runner_id": r.get::<Option<String>, _>(3),
-                "status": r.get::<String, _>(4),
-                "trigger_by": r.get::<String, _>(5),
-                "retry_times": r.get::<i64, _>(6),
+                "id": r.text_of("id"),
+                "pipeline_id": r.text_of("pipeline_id"),
+                "pipeline_name": r.opt_text_of("pipeline_name"),
+                "runner_id": r.opt_text_of("runner_id"),
+                "status": r.text_of("status"),
+                "trigger_by": r.text_of("trigger_by"),
+                "retry_times": r.i64_of("retry_times"),
                 "step_statuses": step_statuses,
                 "snapshot": snapshot,
-                "start_time": r.get::<Option<String>, _>(9),
-                "end_time": r.get::<Option<String>, _>(10),
-                "created_at": r.get::<Option<String>, _>(11),
-                "updated_at": r.get::<Option<String>, _>(12),
-                "team_id": r.get::<String, _>(13),
-                "verbose_logs": r.get::<i64, _>(14) != 0,
-                "debug_unredact": r.get::<i64, _>(15) != 0,
-                "trigger_user_id": r.get::<Option<String>, _>(16),
-                "run_number": r.get::<i64, _>(17),
+                "start_time": r.opt_text_of("start_time"),
+                "end_time": r.opt_text_of("end_time"),
+                "created_at": r.opt_text_of("created_at"),
+                "updated_at": r.opt_text_of("updated_at"),
+                "team_id": r.text_of("team_id"),
+                "verbose_logs": r.i64_of("verbose_logs") != 0,
+                "debug_unredact": r.i64_of("debug_unredact") != 0,
+                "trigger_user_id": r.opt_text_of("trigger_user_id"),
+                "run_number": r.i64_of("run_number"),
             })
         })
         .collect())
@@ -903,7 +924,7 @@ pub async fn list_jobs(
 
 /// Dashboard build trend: `(day, status, count)` rows since `cutoff`.
 pub async fn trend_rows(
-    pool: &SqlitePool,
+    pool: &DbPool,
     cutoff: &str,
     team_scope: &TeamScope,
     hide_debug: bool,
@@ -928,22 +949,22 @@ pub async fn trend_rows(
         ),
     };
 
-    let mut q = sqlx::query(&sql).bind(cutoff);
+    let mut binds: Vec<SqlValue> = vec![cutoff.into()];
     if let Some((_, ids)) = team_scope {
         for id in ids {
-            q = q.bind(id);
+            binds.push(id.as_str().into());
         }
     }
-    let rows = q.fetch_all(pool).await?;
+    let rows = exec::fetch_all(pool, &sql, &binds).await?;
     Ok(rows
         .into_iter()
-        .map(|r| (r.get(0), r.get(1), r.get(2)))
+        .map(|r| (r.text(0), r.text(1), r.i64(2)))
         .collect())
 }
 
 /// Overview build stream: latest `limit` jobs, team- and role-scoped.
 pub async fn recent_rows(
-    pool: &SqlitePool,
+    pool: &DbPool,
     limit: i64,
     team_scope: &TeamScope,
     hide_debug: bool,
@@ -972,25 +993,25 @@ pub async fn recent_rows(
         ),
     };
 
-    let mut q = sqlx::query(&sql);
+    let mut binds: Vec<SqlValue> = Vec::new();
     if let Some((_, ids)) = team_scope {
         for id in ids {
-            q = q.bind(id);
+            binds.push(id.as_str().into());
         }
     }
-    q = q.bind(limit);
-    let rows = q.fetch_all(pool).await?;
+    binds.push(SqlValue::Int(limit));
+    let rows = exec::fetch_all(pool, &sql, &binds).await?;
     Ok(rows
         .into_iter()
         .map(|r| {
             serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "pipeline_id": r.get::<String, _>(1),
-                "pipeline_name": r.get::<Option<String>, _>(2),
-                "status": r.get::<String, _>(3),
-                "trigger_by": r.get::<String, _>(4),
-                "team_id": r.get::<String, _>(5),
-                "created_at": r.get::<Option<String>, _>(6),
+                "id": r.text_of("id"),
+                "pipeline_id": r.text_of("pipeline_id"),
+                "pipeline_name": r.opt_text_of("pipeline_name"),
+                "status": r.text_of("status"),
+                "trigger_by": r.text_of("trigger_by"),
+                "team_id": r.text_of("team_id"),
+                "created_at": r.opt_text_of("created_at"),
             })
         })
         .collect())
@@ -998,28 +1019,28 @@ pub async fn recent_rows(
 
 /// Approval history rows for one job.
 pub async fn list_job_approvals(
-    pool: &SqlitePool,
+    pool: &DbPool,
     job_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
-    let rows = sqlx::query(
+    let rows = exec::fetch_all(
+        pool,
         "SELECT id, user_id, username, action, comment, created_at
          FROM job_approvals
          WHERE job_id = ?
          ORDER BY created_at ASC, id ASC",
+        &[job_id.into()],
     )
-    .bind(job_id)
-    .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
         .map(|r| {
             serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "user_id": r.get::<String, _>(1),
-                "username": r.get::<String, _>(2),
-                "action": r.get::<String, _>(3),
-                "comment": r.get::<String, _>(4),
-                "created_at": r.get::<Option<String>, _>(5),
+                "id": r.text_of("id"),
+                "user_id": r.text_of("user_id"),
+                "username": r.text_of("username"),
+                "action": r.text_of("action"),
+                "comment": r.text_of("comment"),
+                "created_at": r.opt_text_of("created_at"),
             })
         })
         .collect())
@@ -1054,8 +1075,9 @@ pub struct JobDetailRow {
 }
 
 /// Fetch one job with pipeline identity (`None` = no such job).
-pub async fn job_detail_row(pool: &SqlitePool, id: &str) -> Result<Option<JobDetailRow>, AppError> {
-    let r = sqlx::query(
+pub async fn job_detail_row(pool: &DbPool, id: &str) -> Result<Option<JobDetailRow>, AppError> {
+    let r = exec::fetch_optional(
+        pool,
         "SELECT j.id, j.pipeline_id, p.name as pipeline_name, j.runner_id,
                 j.status, j.trigger_by, j.trigger_params, j.snapshot, j.step_statuses, j.retry_times,
                 j.start_time, j.end_time, j.created_at, j.updated_at, j.debug_unredact, j.verbose_logs,
@@ -1065,81 +1087,79 @@ pub async fn job_detail_row(pool: &SqlitePool, id: &str) -> Result<Option<JobDet
          FROM jobs j
          LEFT JOIN pipelines p ON j.pipeline_id = p.id
          WHERE j.id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
     .await?;
     Ok(r.map(|r| JobDetailRow {
-        id: r.get(0),
-        pipeline_id: r.get(1),
-        pipeline_name: r.get(2),
-        runner_id: r.get(3),
-        status: r.get(4),
-        trigger_by: r.get(5),
-        trigger_params: r.get(6),
-        snapshot_raw: r.get(7),
-        step_statuses_raw: r.get(8),
-        retry_times: r.get(9),
-        start_time: r.get(10),
-        end_time: r.get(11),
-        created_at: r.get(12),
-        updated_at: r.get(13),
-        debug_unredact: r.get::<i64, _>(14) != 0,
-        verbose_logs: r.get::<i64, _>(15) != 0,
-        trigger_user_id: r.get(16),
-        run_number: r.get(17),
-        run_attempt: r.get(18),
-        resource_profile: r.get(19),
-        resource_slots: r.get(20),
-        resource_spec_raw: r.get(21),
-        sandbox_instance_id: r.get(22),
-        dispatch_reason: r.get(23),
+        id: r.text_of("id"),
+        pipeline_id: r.text_of("pipeline_id"),
+        pipeline_name: r.opt_text_of("pipeline_name"),
+        runner_id: r.opt_text_of("runner_id"),
+        status: r.text_of("status"),
+        trigger_by: r.text_of("trigger_by"),
+        trigger_params: r.opt_text_of("trigger_params"),
+        snapshot_raw: r.opt_text_of("snapshot"),
+        step_statuses_raw: r.opt_text_of("step_statuses"),
+        retry_times: r.i64_of("retry_times"),
+        start_time: r.opt_text_of("start_time"),
+        end_time: r.opt_text_of("end_time"),
+        created_at: r.opt_text_of("created_at"),
+        updated_at: r.opt_text_of("updated_at"),
+        debug_unredact: r.i64_of("debug_unredact") != 0,
+        verbose_logs: r.i64_of("verbose_logs") != 0,
+        trigger_user_id: r.opt_text_of("trigger_user_id"),
+        run_number: r.i64_of("run_number"),
+        run_attempt: r.i64_of("run_attempt"),
+        resource_profile: r.text_of("resource_profile"),
+        resource_slots: r.i64_of("resource_slots"),
+        resource_spec_raw: r.text_of("resource_spec"),
+        sandbox_instance_id: r.text_of("sandbox_instance_id"),
+        dispatch_reason: r.text_of("dispatch_reason"),
     }))
 }
 
 /// `(status, pipeline_id, pipeline_name?)` — the audit context for cancel/delete.
 pub async fn job_context(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
 ) -> Result<Option<(String, String, Option<String>)>, AppError> {
-    let row = sqlx::query(
+    let row = exec::fetch_optional(
+        pool,
         "SELECT j.status, j.pipeline_id, p.name
          FROM jobs j
          LEFT JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
     .await?;
-    Ok(row.map(|row| (row.get(0), row.get(1), row.try_get(2).ok().flatten())))
+    Ok(row.map(|r| (r.text(0), r.text(1), r.opt_text(2))))
 }
 
 /// Owner-scoped status poll for the Runner.
 pub async fn runner_job_status(
-    pool: &SqlitePool,
+    pool: &DbPool,
     runner_id: &str,
     job_id: &str,
 ) -> Result<Option<String>, AppError> {
-    let row = sqlx::query("SELECT status, runner_id FROM jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("job not found".into()))?;
-    let owner: Option<String> = row.get(1);
+    let row = exec::fetch_optional(
+        pool,
+        "SELECT status, runner_id FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await?
+    .ok_or_else(|| AppError::NotFound("job not found".into()))?;
+    let owner = row.opt_text_of("runner_id");
     if owner.as_deref() != Some(runner_id) {
         return Err(AppError::Forbidden(
             "job is not assigned to this runner".into(),
         ));
     }
-    Ok(Some(row.get(0)))
+    Ok(Some(row.text_of("status")))
 }
 
 /// Delete one job row.
-pub async fn delete_job(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
-    sqlx::query("DELETE FROM jobs WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn delete_job(pool: &DbPool, id: &str) -> Result<(), AppError> {
+    exec::execute(pool, "DELETE FROM jobs WHERE id = ?", &[id.into()]).await?;
     Ok(())
 }
 
@@ -1149,14 +1169,16 @@ pub async fn delete_job(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
 ///
 /// Prefers the durable job column (survives job_log_retention sweeping the
 /// marker chunk); legacy fallback reads the marker chunk while logs remain.
-pub async fn truncated_steps(pool: &SqlitePool, job_id: &str) -> Vec<i64> {
-    let stored: Option<String> =
-        sqlx::query_scalar("SELECT truncated_steps FROM jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
+pub async fn truncated_steps(pool: &DbPool, job_id: &str) -> Vec<i64> {
+    let stored = exec::fetch_optional(
+        pool,
+        "SELECT truncated_steps FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await
+    .ok()
+    .flatten()
+    .and_then(|r| r.opt_text_of("truncated_steps"));
     if let Some(raw) = stored {
         if let Ok(mut steps) = serde_json::from_str::<Vec<i64>>(&raw) {
             if !steps.is_empty() {
@@ -1167,34 +1189,36 @@ pub async fn truncated_steps(pool: &SqlitePool, job_id: &str) -> Vec<i64> {
         }
     }
 
-    let mut steps: Vec<i64> = sqlx::query_scalar(
+    let mut steps: Vec<i64> = match exec::fetch_all(
+        pool,
         "SELECT DISTINCT step_order FROM job_logs
          WHERE job_id = ? AND chunk_index >= 0
            AND chunk_index % 10000 = ?",
+        &[job_id.into(), shared::protocol::LOG_STEP_TRUNCATED.into()],
     )
-    .bind(job_id)
-    .bind(shared::protocol::LOG_STEP_TRUNCATED)
-    .fetch_all(pool)
     .await
-    .unwrap_or_default();
+    {
+        Ok(rows) => rows.into_iter().map(|r| r.i64(0)).collect(),
+        Err(_) => Vec::new(),
+    };
     steps.sort_unstable();
     steps
 }
 
 /// `(pipeline_id, pipeline name?)` for cancel-path audit context.
 pub async fn job_pipeline_name(
-    pool: &SqlitePool,
+    pool: &DbPool,
     job_id: &str,
 ) -> Result<Option<(String, Option<String>)>, AppError> {
-    let row = sqlx::query(
+    let row = exec::fetch_optional(
+        pool,
         "SELECT j.pipeline_id, p.name FROM jobs j
          LEFT JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.id = ?",
+        &[job_id.into()],
     )
-    .bind(job_id)
-    .fetch_optional(pool)
     .await?;
-    Ok(row.map(|row| (row.get(0), row.try_get(1).ok().flatten())))
+    Ok(row.map(|r| (r.text(0), r.opt_text(1))))
 }
 
 /// Source-job facts for a re-run — gates and snapshot rebuild read these.
@@ -1218,8 +1242,9 @@ pub struct RerunSource {
 }
 
 /// Fetch the terminal job being re-run, joined with its pipeline's gate state.
-pub async fn rerun_source(pool: &SqlitePool, id: &str) -> Result<RerunSource, AppError> {
-    let row = sqlx::query(
+pub async fn rerun_source(pool: &DbPool, id: &str) -> Result<RerunSource, AppError> {
+    let row = exec::fetch_optional(
+        pool,
         "SELECT j.status, j.pipeline_id, j.trigger_params, j.snapshot,
                 j.environment_id, j.debug_unredact, j.verbose_logs,
                 j.run_number, j.run_attempt, j.resource_profile,
@@ -1227,35 +1252,35 @@ pub async fn rerun_source(pool: &SqlitePool, id: &str) -> Result<RerunSource, Ap
                 p.concurrency_group, p.concurrency_mode, p.concurrency_max_queue
          FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
     .await?
     .ok_or_else(|| AppError::NotFound("job not found".into()))?;
     Ok(RerunSource {
-        status: row.get(0),
-        pipeline_id: row.get(1),
-        trigger_params_raw: row.get(2),
-        snapshot_raw: row.get(3),
-        environment_id: row.get(4),
-        debug_unredact: row.get::<i64, _>(5) != 0,
-        verbose_logs: row.get::<i64, _>(6) != 0,
-        run_number: row.get(7),
-        run_attempt: row.get(8),
-        resource_profile: row.get(9),
-        team_id: row.get(10),
-        pipeline_name: row.get(11),
-        pipeline_active: row.get::<i64, _>(12) != 0,
-        concurrency_group: row.get(13),
-        concurrency_mode: row.get(14),
-        concurrency_max_queue: row.get(15),
+        status: row.text_of("status"),
+        pipeline_id: row.text_of("pipeline_id"),
+        trigger_params_raw: row.opt_text_of("trigger_params"),
+        snapshot_raw: row.text_of("snapshot"),
+        environment_id: row.opt_text_of("environment_id"),
+        debug_unredact: row.i64_of("debug_unredact") != 0,
+        verbose_logs: row.i64_of("verbose_logs") != 0,
+        run_number: row.i64_of("run_number"),
+        run_attempt: row.i64_of("run_attempt"),
+        resource_profile: row.text_of("resource_profile"),
+        team_id: row.text_of("team_id"),
+        pipeline_name: row.text_of("name"),
+        pipeline_active: row.i64_of("is_active") != 0,
+        concurrency_group: row.opt_text_of("concurrency_group"),
+        concurrency_mode: row.text_of("concurrency_mode"),
+        concurrency_max_queue: row.i64_of("concurrency_max_queue"),
     })
 }
 
 /// Operator cancellation: the guard update and its audit record land in one
 /// `BEGIN IMMEDIATE` (`Err(NotFound)` when the job is missing or already
 /// terminal — the transaction is rolled back). Post-commit announce stays
-/// with the caller.
+/// with the caller. Stays on `&sqlx::SqlitePool` — its own `BEGIN IMMEDIATE`
+/// around `crate::audit::record_in`; audit tx-scope slice.
 pub async fn cancel(
     pool: &SqlitePool,
     actor: &crate::middleware::AuthUser,

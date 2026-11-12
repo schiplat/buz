@@ -58,7 +58,7 @@ pub async fn list(
     };
 
     let jobs =
-        crate::store::jobs::list_jobs(&state.pool, &team_filter, !auth.is_platform_admin).await?;
+        crate::store::jobs::list_jobs(&state.db(), &team_filter, !auth.is_platform_admin).await?;
 
     Ok(Json(ApiResponse::success(jobs)))
 }
@@ -148,7 +148,7 @@ pub async fn stats_trend(
     let team_scope = dashboard_team_scope(&auth, q.team_id.as_deref())?;
 
     let rows =
-        crate::store::jobs::trend_rows(&state.pool, &cutoff, &team_scope, !auth.is_platform_admin)
+        crate::store::jobs::trend_rows(&state.db(), &cutoff, &team_scope, !auth.is_platform_admin)
             .await?;
 
     let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
@@ -180,7 +180,7 @@ pub async fn recent(
     let team_scope = dashboard_team_scope(&auth, q.team_id.as_deref())?;
 
     let jobs =
-        crate::store::jobs::recent_rows(&state.pool, limit, &team_scope, !auth.is_platform_admin)
+        crate::store::jobs::recent_rows(&state.db(), limit, &team_scope, !auth.is_platform_admin)
             .await?;
 
     tracing::info!(
@@ -198,7 +198,7 @@ pub async fn get_one(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let r = crate::store::jobs::job_detail_row(&state.pool, &id)
+    let r = crate::store::jobs::job_detail_row(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
 
@@ -224,7 +224,7 @@ pub async fn get_one(
         .unwrap_or_default();
 
     let trigger_params_safe = redact_trigger_params_for_api(r.trigger_params.as_deref(), &snapshot);
-    let approvals = crate::store::jobs::list_job_approvals(&state.pool, &id).await?;
+    let approvals = crate::store::jobs::list_job_approvals(&state.db(), &id).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "id": r.id,
@@ -260,7 +260,7 @@ pub async fn get_one(
         // Steps whose streamed output overflowed the per-step log window —
         // the UI badges them without downloading every chunk. The offset
         // (9991) is the shared LOG_STEP_TRUNCATED layout constant.
-        "truncated_steps": crate::store::jobs::truncated_steps(&state.pool, &id).await,
+        "truncated_steps": crate::store::jobs::truncated_steps(&state.db(), &id).await,
     }))))
 }
 
@@ -269,7 +269,7 @@ pub async fn cancel(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let (pipeline_id, pipeline_name) = crate::store::jobs::job_pipeline_name(&state.pool, &id)
+    let (pipeline_id, pipeline_name) = crate::store::jobs::job_pipeline_name(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
 
@@ -359,7 +359,7 @@ pub async fn reject(
 
     tracing::info!(job_id = %id, actor = %auth.username, "environments: reject started");
 
-    let pipeline_id = crate::store::jobs::job_pipeline_id(&state.pool, &id).await?;
+    let pipeline_id = crate::store::jobs::job_pipeline_id(&state.db(), &id).await?;
     crate::store::jobs::reject(&state.pool, &auth, &id, &comment).await?;
     broadcast_job_status(&state, &id, &pipeline_id, "cancelled");
 
@@ -382,7 +382,7 @@ pub async fn rerun(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let src = crate::store::jobs::rerun_source(&state.pool, &id).await?;
+    let src = crate::store::jobs::rerun_source(&state.db(), &id).await?;
 
     let status: String = src.status;
     let pipeline_id: String = src.pipeline_id;
@@ -555,13 +555,13 @@ pub async fn delete(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     // Fetch job context before deletion for logging
-    let ctx = crate::store::jobs::job_context(&state.pool, &id).await?;
+    let ctx = crate::store::jobs::job_context(&state.db(), &id).await?;
 
     match ctx {
         Some((status, pipeline_id, pipeline)) => {
             let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
             auth.check_team(&team_id, Perm::PipelineWrite)?;
-            crate::store::jobs::delete_job(&state.pool, &id).await?;
+            crate::store::jobs::delete_job(&state.db(), &id).await?;
             audit::record(
                 &state.pool,
                 AuditEvent::new(Action::JobDelete, &auth)
@@ -606,7 +606,7 @@ pub async fn status_check(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     // Runner↔job binding enforced in the store (only poll()'s owner polls).
-    let status = crate::store::jobs::runner_job_status(&state.pool, &auth.runner_id, &id)
+    let status = crate::store::jobs::runner_job_status(&state.db(), &auth.runner_id, &id)
         .await?
         .unwrap_or_default();
     Ok(Json(ApiResponse::success(serde_json::json!({
