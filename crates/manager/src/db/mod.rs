@@ -1,6 +1,11 @@
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 
+/// Postgres migration runner (advisory-locked baseline application). Declared
+/// only under the `postgres` feature — default builds carry no PG driver code.
+#[cfg(feature = "postgres")]
+pub mod migrate_pg;
+
 use crate::config::ClusterMode;
 use crate::config::Config;
 use crate::config::{DatabaseConfig, StorageKind};
