@@ -143,10 +143,15 @@ async fn store_statements() -> (Vec<String>, Vec<String>) {
         // rewriter's grammar tokens ("INSERT OR IGNORE INTO" & co.), which the
         // validator would otherwise try to compile as statements. Its
         // correctness is covered by `dialect_test` instead.
+        //
+        // Same for `exec.rs`'s `#[cfg(test)]` module: its toy statements
+        // (`FROM t`, `missing_table`) target throwaway in-memory tables that
+        // only exist inside those tests, and their real coverage is the unit
+        // tests themselves.
         .filter(|path| {
             path.file_name()
                 .and_then(|n| n.to_str())
-                .is_none_or(|name| name != "dialect.rs")
+                .is_none_or(|name| name != "dialect.rs" && name != "exec.rs")
         })
         .collect();
     files.sort();
