@@ -1,7 +1,10 @@
 //! Incoming webhook lookups: the pipeline behind a webhook path and its
 //! team-secret signing value.
+//!
+//! On the dual-backend dispatcher (`store::exec`): the statements are
+//! backend-neutral and rows decode by column name.
 
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::{self, DbPool};
 
 use shared::error::AppError;
 
@@ -18,16 +21,13 @@ pub struct WebhookPipeline {
 }
 
 /// Find the pipeline bound to `webhook_path` (case-sensitive exact match).
-pub async fn find_by_path(
-    pool: &SqlitePool,
-    webhook_path: &str,
-) -> Result<WebhookPipeline, AppError> {
-    let pipeline = sqlx::query(
+pub async fn find_by_path(pool: &DbPool, webhook_path: &str) -> Result<WebhookPipeline, AppError> {
+    let pipeline = exec::fetch_optional(
+        pool,
         "SELECT id, name, is_active, input_defs, webhook_secret, team_id, webhook_environment \
          FROM pipelines WHERE trigger_type = 'webhook' AND webhook_path = ?",
+        &[webhook_path.into()],
     )
-    .bind(webhook_path)
-    .fetch_optional(pool)
     .await?
     .ok_or_else(|| {
         AppError::NotFound(format!(
@@ -36,29 +36,28 @@ pub async fn find_by_path(
     })?;
 
     Ok(WebhookPipeline {
-        id: pipeline.get(0),
-        name: pipeline.get(1),
-        active: pipeline.get::<i64, _>(2) != 0,
-        input_defs_json: pipeline.get(3),
-        webhook_secret_name: pipeline.get(4),
-        team_id: pipeline.get(5),
-        webhook_environment: pipeline.get(6),
+        id: pipeline.text_of("id"),
+        name: pipeline.text_of("name"),
+        active: pipeline.i64_of("is_active") != 0,
+        input_defs_json: pipeline.text_of("input_defs"),
+        webhook_secret_name: pipeline.text_of("webhook_secret"),
+        team_id: pipeline.text_of("team_id"),
+        webhook_environment: pipeline.text_of("webhook_environment"),
     })
 }
 
 /// Resolve a team secret's ciphertext by name (`None` = no such secret).
 /// Decryption happens at the call site — it needs the JWT secret.
 pub async fn team_secret_value(
-    pool: &SqlitePool,
+    pool: &DbPool,
     team_id: &str,
     name: &str,
 ) -> Result<Option<String>, AppError> {
-    Ok(
-        sqlx::query("SELECT value FROM secrets WHERE team_id = ? AND name = ?")
-            .bind(team_id)
-            .bind(name)
-            .fetch_optional(pool)
-            .await?
-            .map(|r| r.get(0)),
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT value FROM secrets WHERE team_id = ? AND name = ?",
+        &[team_id.into(), name.into()],
     )
+    .await?
+    .map(|r| r.text_of("value")))
 }

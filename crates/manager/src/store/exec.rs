@@ -13,6 +13,7 @@
 //! (`health`, `metrics` first as the proof slice); the rest still take
 //! `&SqlitePool` and are tracked in HANDOFF §3.
 
+use sqlx::Column as _;
 use sqlx::Row as _;
 use sqlx::ValueRef as _;
 
@@ -175,6 +176,11 @@ impl From<i64> for SqlValue {
         Self::Int(v)
     }
 }
+impl From<f64> for SqlValue {
+    fn from(v: f64) -> Self {
+        Self::Real(v)
+    }
+}
 impl From<i32> for SqlValue {
     fn from(v: i32) -> Self {
         Self::Int(i64::from(v))
@@ -204,12 +210,25 @@ impl From<Option<i64>> for SqlValue {
 // ───────────────────────────── generic rows ─────────────────────────────
 
 /// A decoded result row: every column mapped to its backend-neutral value.
+/// Column names are captured at decode time, so wide rows address fields by
+/// name (immune to projection reorders) and narrow rows may use positions.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GenericRow {
+    names: Vec<String>,
     values: Vec<SqlValue>,
 }
 
 impl GenericRow {
+    fn from_parts(names: Vec<String>, values: Vec<SqlValue>) -> Self {
+        Self { names, values }
+    }
+
+    /// Position of a column by name; `None` when absent (callers decide
+    /// whether that is a query-shape bug worth surfacing).
+    pub fn idx(&self, name: &str) -> Option<usize> {
+        self.names.iter().position(|n| n == name)
+    }
+
     pub fn len(&self) -> usize {
         self.values.len()
     }
@@ -217,6 +236,8 @@ impl GenericRow {
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+
+    // ── positional accessors (narrow, fixed projections) ──
 
     /// Text decode: `Int`/`Real` stringify (SQLite semantics), `Null` → "".
     pub fn text(&self, i: usize) -> String {
@@ -269,14 +290,42 @@ impl GenericRow {
     pub fn is_null(&self, i: usize) -> bool {
         matches!(self.values.get(i), None | Some(SqlValue::Null))
     }
+
+    // ── by-name accessors (wide rows) ──
+
+    pub fn text_of(&self, name: &str) -> String {
+        self.idx(name).map(|i| self.text(i)).unwrap_or_default()
+    }
+
+    pub fn opt_text_of(&self, name: &str) -> Option<String> {
+        self.idx(name).and_then(|i| self.opt_text(i))
+    }
+
+    pub fn i64_of(&self, name: &str) -> i64 {
+        self.idx(name).map(|i| self.i64(i)).unwrap_or(0)
+    }
+
+    pub fn opt_i64_of(&self, name: &str) -> Option<i64> {
+        self.idx(name).and_then(|i| self.opt_i64(i))
+    }
+
+    pub fn real_of(&self, name: &str) -> f64 {
+        self.idx(name).map(|i| self.real(i)).unwrap_or(0.0)
+    }
+
+    pub fn is_null_at(&self, name: &str) -> bool {
+        self.idx(name).map(|i| self.is_null(i)).unwrap_or(true)
+    }
 }
 
 // ───────────────────── per-backend row decoding ─────────────────────
 
 /// Type cascade: try each backend-neutral value in priority order. SQLite is
 /// dynamically typed per value; PG is strict per column — the cascade works
-/// on both because a column that IS the requested type decodes first.
+/// on both because a column that IS the requested type decodes first, and
+/// NULL falls through to `Null` (no non-Option type decodes a NULL).
 fn decode_sqlite_row(row: sqlx::sqlite::SqliteRow) -> GenericRow {
+    let names: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
     let ncols = row.columns().len();
     let mut values = Vec::with_capacity(ncols);
     for i in 0..ncols {
@@ -295,11 +344,12 @@ fn decode_sqlite_row(row: sqlx::sqlite::SqliteRow) -> GenericRow {
         };
         values.push(v);
     }
-    GenericRow { values }
+    GenericRow::from_parts(names, values)
 }
 
 #[cfg(feature = "postgres")]
 fn decode_pg_row(row: sqlx::postgres::PgRow) -> GenericRow {
+    let names: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
     let ncols = row.columns().len();
     let mut values = Vec::with_capacity(ncols);
     for i in 0..ncols {
@@ -318,7 +368,7 @@ fn decode_pg_row(row: sqlx::postgres::PgRow) -> GenericRow {
         };
         values.push(v);
     }
-    GenericRow { values }
+    GenericRow::from_parts(names, values)
 }
 
 // ───────────────────────────── binding ─────────────────────────────
@@ -448,4 +498,118 @@ pub async fn fetch_scalar_i64(
         .await?
         .map(|r| r.i64(0))
         .unwrap_or(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn sqlite_mem() -> DbPool {
+        DbPool::Sqlite(
+            sqlx::SqlitePool::connect("sqlite::memory:")
+                .await
+                .expect("in-memory pool"),
+        )
+    }
+
+    #[tokio::test]
+    async fn execute_fetch_and_by_name() {
+        let pool = sqlite_mem().await;
+        execute(
+            &pool,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT, score REAL)",
+            &[],
+        )
+        .await
+        .unwrap();
+        let n = execute(
+            &pool,
+            "INSERT INTO t (id, name, note, score) VALUES (?, ?, ?, ?)",
+            &[SqlValue::Int(7), "seven".into(), SqlValue::Null, 0.5.into()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(n, 1);
+
+        let row = fetch_optional(
+            &pool,
+            "SELECT id, name, note, score FROM t WHERE id = ?",
+            &[SqlValue::Int(7)],
+        )
+        .await
+        .unwrap()
+        .expect("row");
+
+        // by-name accessors across the type cascade
+        assert_eq!(row.i64_of("id"), 7);
+        assert_eq!(row.text_of("name"), "seven");
+        assert!(row.is_null_at("note"));
+        assert_eq!(row.opt_text_of("note"), None);
+        assert!((row.real_of("score") - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn scalar_and_bind_kinds() {
+        let pool = sqlite_mem().await;
+        execute(&pool, "CREATE TABLE c (v INTEGER)", &[])
+            .await
+            .unwrap();
+        execute(&pool, "INSERT INTO c (v) VALUES (?)", &[SqlValue::Int(1)])
+            .await
+            .unwrap();
+        execute(&pool, "INSERT INTO c (v) VALUES (?)", &[SqlValue::Int(2)])
+            .await
+            .unwrap();
+        // bool binds as 1/0; text bind; Option<i64> Some/None
+        execute(&pool, "INSERT INTO c (v) VALUES (?)", &[true.into()])
+            .await
+            .unwrap();
+        assert_eq!(
+            fetch_scalar_i64(&pool, "SELECT COUNT(*) FROM c", &[])
+                .await
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            fetch_scalar_i64(&pool, "SELECT v FROM c WHERE v = ?", &[SqlValue::Int(2)])
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            fetch_scalar_i64(&pool, "SELECT v FROM c WHERE v = ?", &[999.into()])
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn transaction_commit_and_rollback() {
+        let pool = sqlite_mem().await;
+        execute(&pool, "CREATE TABLE tx_t (v TEXT)", &[])
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin_immediate().await.unwrap();
+        tx.execute("INSERT INTO missing_table (v) VALUES (?)", &[])
+            .await
+            .unwrap_err(); // a failed statement must not poison the tx handle
+        tx.execute("INSERT INTO tx_t (v) VALUES (?)", &["kept".into()])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let mut tx = pool.begin_immediate().await.unwrap();
+        tx.execute("INSERT INTO tx_t (v) VALUES (?)", &["dropped".into()])
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+
+        let rows = fetch_all(&pool, "SELECT v FROM tx_t ORDER BY v", &[])
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text_of("v"), "kept");
+    }
 }
