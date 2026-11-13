@@ -91,9 +91,12 @@ async fn purges_expired_terminal_jobs_only() {
     seed_job(&pool, "old-debug", "failed", "-40 days", true).await;
     broadcaster.broadcast("old-failed", 0, None, "history");
 
-    let purged = purge_expired_job_logs(&pool, &broadcaster)
-        .await
-        .expect("purge runs");
+    let purged = purge_expired_job_logs(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &broadcaster,
+    )
+    .await
+    .expect("purge runs");
     assert_eq!(purged, 2, "two expired terminal jobs purged");
 
     assert_eq!(log_count(&pool, "old-failed").await, 0);
@@ -130,11 +133,21 @@ async fn idempotent_after_marker_set() {
     seed_job(&pool, "old", "failed", "-40 days", false).await;
 
     assert_eq!(
-        purge_expired_job_logs(&pool, &broadcaster).await.unwrap(),
+        purge_expired_job_logs(
+            &manager::store::exec::DbPool::from_sqlite(&pool),
+            &broadcaster
+        )
+        .await
+        .unwrap(),
         1
     );
     assert_eq!(
-        purge_expired_job_logs(&pool, &broadcaster).await.unwrap(),
+        purge_expired_job_logs(
+            &manager::store::exec::DbPool::from_sqlite(&pool),
+            &broadcaster
+        )
+        .await
+        .unwrap(),
         0,
         "marker prevents rescan"
     );
@@ -150,7 +163,12 @@ async fn setting_zero_disables_and_override_applies() {
     // 0 = keep forever.
     set_retention_days(&pool, "0").await;
     assert_eq!(
-        purge_expired_job_logs(&pool, &broadcaster).await.unwrap(),
+        purge_expired_job_logs(
+            &manager::store::exec::DbPool::from_sqlite(&pool),
+            &broadcaster
+        )
+        .await
+        .unwrap(),
         0
     );
     assert_eq!(log_count(&pool, "old").await, 2);
@@ -158,7 +176,12 @@ async fn setting_zero_disables_and_override_applies() {
     // Override to 1 day: the 40-day-old job now expires.
     set_retention_days(&pool, "1").await;
     assert_eq!(
-        purge_expired_job_logs(&pool, &broadcaster).await.unwrap(),
+        purge_expired_job_logs(
+            &manager::store::exec::DbPool::from_sqlite(&pool),
+            &broadcaster
+        )
+        .await
+        .unwrap(),
         1
     );
     assert_eq!(log_count(&pool, "old").await, 0);

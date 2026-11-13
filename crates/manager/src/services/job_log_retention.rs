@@ -8,7 +8,7 @@
 //! `job_log_retention_days` platform setting (default 30, `0` = keep
 //! forever).
 
-use sqlx::SqlitePool;
+use crate::store::exec::DbPool;
 use std::time::Duration;
 use tokio::time;
 
@@ -25,11 +25,11 @@ const BATCH: i64 = 500;
 /// Returns the number of jobs whose logs were purged. Exposed for testing;
 /// the spawned task calls it on an hourly timer.
 pub async fn purge_expired_job_logs(
-    pool: &SqlitePool,
+    pool: &DbPool,
     broadcaster: &LogBroadcaster,
 ) -> anyhow::Result<usize> {
     let days: i64 = effective(
-        &crate::store::exec::DbPool::from_sqlite(pool),
+        pool,
         KEY_JOB_LOG_RETENTION_DAYS,
         &DEFAULT_JOB_LOG_RETENTION_DAYS.to_string(),
     )
@@ -41,32 +41,15 @@ pub async fn purge_expired_job_logs(
         return Ok(0); // keep forever
     }
 
-    let expired: Vec<(String,)> = sqlx::query_as(
-        "SELECT id FROM jobs
-         WHERE status IN ('success', 'failed', 'cancelled', 'timeout')
-           AND debug_unredact = 0
-           AND logs_purged = 0
-           AND created_at < datetime('now', ?)
-         ORDER BY created_at
-         LIMIT ?",
-    )
-    .bind(format!("-{days} days"))
-    .bind(BATCH)
-    .fetch_all(pool)
-    .await?;
+    let expired = crate::store::jobs::expired_log_retention_job_ids(pool, days, BATCH)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let mut purged = 0usize;
-    for (job_id,) in &expired {
-        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-        sqlx::query("DELETE FROM job_logs WHERE job_id = ?")
-            .bind(job_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("UPDATE jobs SET logs_purged = 1 WHERE id = ?")
-            .bind(job_id)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
+    for job_id in &expired {
+        crate::store::jobs::purge_job_logs(pool, job_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         // Drop the in-memory WS replay sink so purged chunks can never be
         // replayed over the job log stream.
         broadcaster.cleanup(job_id);
@@ -80,7 +63,7 @@ pub async fn purge_expired_job_logs(
 /// dedicated debug cleaner drops their plaintext logs after 24h and resets
 /// the flag, after which normal retention applies to the (already empty)
 /// remainder.
-pub fn spawn_job_log_retention(pool: SqlitePool, broadcaster: LogBroadcaster) {
+pub fn spawn_job_log_retention(pool: DbPool, broadcaster: LogBroadcaster) {
     tokio::spawn(async move {
         tracing::info!(
             "Job log retention started (default: {}d via {KEY_JOB_LOG_RETENTION_DAYS}, check hourly)",

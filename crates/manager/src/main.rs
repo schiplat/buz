@@ -73,7 +73,11 @@ async fn main() -> anyhow::Result<()> {
             let config = config::load(Some(&cli.config))?;
             let pool = db::init(&config).await?;
             db::run_migrations(&pool, &config.auth.jwt_secret).await?;
-            let report = services::definition_transfer::export_definitions(&pool, &dir).await?;
+            let report = services::definition_transfer::export_definitions(
+                &manager::store::exec::DbPool::from_sqlite(&pool),
+                &dir,
+            )
+            .await?;
             let stdout = std::io::stdout();
             services::definition_transfer::print_export(&report, &mut stdout.lock())?;
             return Ok(());
@@ -97,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
             .parse()
             .unwrap_or(services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
             let report = services::definition_transfer::import_definitions(
-                &pool,
+                &manager::store::exec::DbPool::from_sqlite(&pool),
                 &dir,
                 &step_index_dir,
                 sync_timeout_secs,
@@ -293,7 +297,10 @@ async fn main() -> anyhow::Result<()> {
         manager::store::exec::DbPool::from_sqlite(&db_pool),
         log_broadcast.clone(),
     );
-    services::job_log_retention::spawn_job_log_retention(db_pool.clone(), log_broadcast.clone());
+    services::job_log_retention::spawn_job_log_retention(
+        manager::store::exec::DbPool::from_sqlite(&db_pool),
+        log_broadcast.clone(),
+    );
 
     // Definitions live in the database (`pipelines.yaml_source`). Rows created
     // before that change are backfilled once here; the legacy directory is

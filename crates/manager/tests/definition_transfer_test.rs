@@ -36,7 +36,7 @@ async fn import_stores_then_export_round_trips() {
     std::fs::write(src.path().join("transfer-demo.yml"), YAML).unwrap();
 
     let imported = manager::services::definition_transfer::import_definitions(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         src.path(),
         std::path::Path::new("."),
         60,
@@ -56,9 +56,12 @@ async fn import_stores_then_export_round_trips() {
     assert_eq!(stored, YAML);
 
     let out = tempfile::tempdir().unwrap();
-    let exported = manager::services::definition_transfer::export_definitions(&pool, out.path())
-        .await
-        .unwrap();
+    let exported = manager::services::definition_transfer::export_definitions(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        out.path(),
+    )
+    .await
+    .unwrap();
     assert_eq!(exported.written, 1);
     assert_eq!(
         std::fs::read_to_string(out.path().join("transfer-demo.yml")).unwrap(),
@@ -66,9 +69,12 @@ async fn import_stores_then_export_round_trips() {
     );
 
     // Exporting again writes nothing — stable diffs in a git working tree.
-    let again = manager::services::definition_transfer::export_definitions(&pool, out.path())
-        .await
-        .unwrap();
+    let again = manager::services::definition_transfer::export_definitions(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        out.path(),
+    )
+    .await
+    .unwrap();
     assert_eq!(again.written, 0);
     assert_eq!(again.unchanged, 1);
 }
@@ -80,7 +86,7 @@ async fn dry_run_reports_without_writing_and_import_never_deletes() {
     std::fs::write(src.path().join("transfer-demo.yml"), YAML).unwrap();
 
     let dry = manager::services::definition_transfer::import_definitions(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         src.path(),
         std::path::Path::new("."),
         60,
@@ -96,7 +102,7 @@ async fn dry_run_reports_without_writing_and_import_never_deletes() {
     assert_eq!(rows, 0, "dry run must not write");
 
     manager::services::definition_transfer::import_definitions(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         src.path(),
         std::path::Path::new("."),
         60,
@@ -108,7 +114,7 @@ async fn dry_run_reports_without_writing_and_import_never_deletes() {
     // A second import of an empty directory leaves the stored definition.
     let empty = tempfile::tempdir().unwrap();
     let report = manager::services::definition_transfer::import_definitions(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         empty.path(),
         std::path::Path::new("."),
         60,
@@ -132,7 +138,7 @@ async fn invalid_file_is_reported_per_file() {
     std::fs::write(src.path().join("transfer-demo.yml"), YAML).unwrap();
 
     let report = manager::services::definition_transfer::import_definitions(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         src.path(),
         std::path::Path::new("."),
         60,

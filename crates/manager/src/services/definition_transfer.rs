@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::DbPool;
 
 use crate::services::pipeline_scanner::{
     filename_from_pipeline_name, validate_yaml_filename, write_and_upsert_yaml,
@@ -44,24 +44,17 @@ pub fn print_export(report: &ExportReport, out: &mut dyn std::io::Write) -> std:
 /// Files are replaced only when their bytes differ, so exporting into a git
 /// working tree produces a stable diff. Rows without a stored definition are
 /// listed as skipped (their YAML was never backfilled).
-pub async fn export_definitions(pool: &SqlitePool, dir: &Path) -> anyhow::Result<ExportReport> {
+pub async fn export_definitions(pool: &DbPool, dir: &Path) -> anyhow::Result<ExportReport> {
     std::fs::create_dir_all(dir)?;
-    let rows = sqlx::query(
-        "SELECT id, name, yaml_path, yaml_source FROM pipelines
-         WHERE source = 'yaml' ORDER BY yaml_path",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows = crate::store::pipelines::yaml_definition_rows(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let mut report = ExportReport {
         dir: dir.to_path_buf(),
         ..Default::default()
     };
-    for row in rows {
-        let id: String = row.get(0);
-        let name: String = row.get(1);
-        let yaml_path: Option<String> = row.get(2);
-        let source: String = row.get(3);
+    for (id, name, yaml_path, source) in rows {
         if source.is_empty() {
             report
                 .skipped
@@ -117,7 +110,7 @@ pub fn print_import(report: &ImportReport, out: &mut dyn std::io::Write) -> std:
 /// and the task projection run exactly as for an API save. A file that fails is
 /// reported and does not stop the remaining files.
 pub async fn import_definitions(
-    pool: &SqlitePool,
+    pool: &DbPool,
     dir: &Path,
     step_index_dir: &Path,
     sync_timeout_secs: u64,
@@ -154,12 +147,7 @@ pub async fn import_definitions(
             }
         };
         if dry_run {
-            match crate::services::yaml_validate::validate_pipeline_yaml(
-                &crate::store::exec::DbPool::from_sqlite(pool),
-                &content,
-            )
-            .await
-            {
+            match crate::services::yaml_validate::validate_pipeline_yaml(pool, &content).await {
                 Ok(validation) if validation.valid => report.stored += 1,
                 Ok(validation) => {
                     let messages: Vec<String> = validation
@@ -176,7 +164,7 @@ pub async fn import_definitions(
             continue;
         }
         match write_and_upsert_yaml(
-            &crate::store::exec::DbPool::from_sqlite(pool),
+            pool,
             &filename,
             &content,
             step_index_dir,

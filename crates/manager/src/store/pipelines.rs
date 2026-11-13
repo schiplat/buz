@@ -1915,6 +1915,64 @@ pub async fn set_yaml_path(pool: &DbPool, id: &str, yaml_path: &str) -> Result<(
     Ok(())
 }
 
+/// `cron_last_fired_at` inside the caller's transaction (`None` = unset).
+pub async fn cron_last_fired_tx(tx: &mut DbTx<'_>, id: &str) -> Result<Option<String>, AppError> {
+    Ok(tx
+        .fetch_optional(
+            "SELECT cron_last_fired_at FROM pipelines WHERE id = ?",
+            &[id.into()],
+        )
+        .await?
+        .map(|r| r.text(0)))
+}
+
+/// Stamp `cron_last_fired_at` inside the caller's transaction.
+pub async fn stamp_cron_fired_tx(tx: &mut DbTx<'_>, id: &str) -> Result<(), AppError> {
+    tx.execute(
+        "UPDATE pipelines SET cron_last_fired_at = datetime('now') WHERE id = ?",
+        &[id.into()],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Active cron pipelines: `(id, name, cron_expr, cron_environment)`.
+pub async fn active_cron_pipelines(
+    pool: &DbPool,
+) -> Result<Vec<(String, String, Option<String>, String)>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT p.id, p.name, p.cron_expr, p.cron_environment
+         FROM pipelines p
+         WHERE p.trigger_type = 'cron'
+           AND p.is_active = 1
+           AND p.cron_expr IS NOT NULL
+           AND p.cron_expr != ''",
+        &[],
+    )
+    .await?
+    .into_iter()
+    .map(|r| (r.text(0), r.text(1), r.opt_text(2), r.text(3)))
+    .collect())
+}
+
+/// `(id, name, yaml_path, yaml_source)` of YAML-sourced pipelines, ordered by
+/// their origin basename — the definition export source.
+pub async fn yaml_definition_rows(
+    pool: &DbPool,
+) -> Result<Vec<(String, String, Option<String>, String)>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT id, name, yaml_path, yaml_source FROM pipelines
+         WHERE source = 'yaml' ORDER BY yaml_path",
+        &[],
+    )
+    .await?
+    .into_iter()
+    .map(|r| (r.text(0), r.text(1), r.opt_text(2), r.text(3)))
+    .collect())
+}
+
 /// Stored canonical YAML of one pipeline (`None` = no such row).
 pub async fn yaml_source_of(pool: &DbPool, id: &str) -> Result<Option<String>, AppError> {
     Ok(exec::fetch_optional(

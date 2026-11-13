@@ -1336,6 +1336,49 @@ pub async fn notify_job_row(pool: &DbPool, job_id: &str) -> Result<Option<Notify
     }))
 }
 
+/// Ids of terminal jobs whose logs are past the retention window, oldest
+/// first, bounded by `batch`.
+pub async fn expired_log_retention_job_ids(
+    pool: &DbPool,
+    days: i64,
+    batch: i64,
+) -> Result<Vec<String>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT id FROM jobs
+         WHERE status IN ('success', 'failed', 'cancelled', 'timeout')
+           AND debug_unredact = 0
+           AND logs_purged = 0
+           AND created_at < datetime('now', ?)
+         ORDER BY created_at
+         LIMIT ?",
+        &[format!("-{days} days").into(), SqlValue::Int(batch)],
+    )
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect())
+}
+
+/// Drop one job's log chunks and stamp `logs_purged`, atomically.
+pub async fn purge_job_logs(pool: &DbPool, job_id: &str) -> Result<(), AppError> {
+    let mut tx = pool
+        .begin_immediate()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    tx.execute("DELETE FROM job_logs WHERE job_id = ?", &[job_id.into()])
+        .await?;
+    tx.execute(
+        "UPDATE jobs SET logs_purged = 1 WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(())
+}
+
 /// `(pipeline_id, pipeline name?)` for cancel-path audit context.
 pub async fn job_pipeline_name(
     pool: &DbPool,
