@@ -542,13 +542,18 @@ pub async fn queued_jobs_for_profile(
     team_id: &str,
     profile: &str,
 ) -> Result<i64, AppError> {
-    let Some(pool) = pool.as_sqlite() else {
-        return Err(AppError::Internal(
-            "queued_jobs_for_profile is SQLite-only until its Postgres variant lands \
-             (json_extract walk; see HANDOFF §12.4)"
-                .into(),
-        ));
-    };
+    match pool {
+        DbPool::Sqlite(pool) => queued_jobs_for_profile_sqlite(pool, team_id, profile).await,
+        #[cfg(feature = "postgres")]
+        DbPool::Pg(pool) => queued_jobs_for_profile_pg(pool, team_id, profile).await,
+    }
+}
+
+async fn queued_jobs_for_profile_sqlite(
+    pool: &sqlx::SqlitePool,
+    team_id: &str,
+    profile: &str,
+) -> Result<i64, AppError> {
     Ok(sqlx::query_scalar(
         "SELECT COUNT(*) FROM jobs WHERE status = 'pending'
                AND COALESCE(json_extract(snapshot, '$.team_id'), '') = ?
@@ -560,26 +565,70 @@ pub async fn queued_jobs_for_profile(
     .await?)
 }
 
+/// Postgres form of [`queued_jobs_for_profile_sqlite`]: `->>` over jsonb.
+#[cfg(feature = "postgres")]
+async fn queued_jobs_for_profile_pg(
+    pool: &sqlx::PgPool,
+    team_id: &str,
+    profile: &str,
+) -> Result<i64, AppError> {
+    Ok(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM jobs WHERE status = 'pending'
+               AND COALESCE(snapshot::jsonb ->> 'team_id', '') = $1
+               AND COALESCE(snapshot::jsonb ->> 'resource_profile', '') = $2",
+    )
+    .bind(team_id)
+    .bind(profile)
+    .fetch_one(pool)
+    .await?)
+}
+
 /// Grant (or re-grant) one team profile.
-///
-/// Stays SQLite-only for now: `INSERT OR REPLACE` needs the per-site PG upsert
-/// decision (named conflict target) — the rewriter does not guess it.
 pub async fn replace_grant(
     pool: &DbPool,
     team_id: &str,
     profile: &str,
     granted_by: &str,
 ) -> Result<(), AppError> {
-    let Some(pool) = pool.as_sqlite() else {
-        return Err(AppError::Internal(
-            "replace_grant is SQLite-only until its Postgres variant lands \
-             (named upsert conflict target; see HANDOFF §12.4)"
-                .into(),
-        ));
-    };
+    match pool {
+        DbPool::Sqlite(pool) => replace_grant_sqlite(pool, team_id, profile, granted_by).await,
+        #[cfg(feature = "postgres")]
+        DbPool::Pg(pool) => replace_grant_pg(pool, team_id, profile, granted_by).await,
+    }
+}
+
+async fn replace_grant_sqlite(
+    pool: &sqlx::SqlitePool,
+    team_id: &str,
+    profile: &str,
+    granted_by: &str,
+) -> Result<(), AppError> {
     sqlx::query(
         "INSERT OR REPLACE INTO team_resource_grants (team_id, profile, granted_by)
                  VALUES (?, ?, ?)",
+    )
+    .bind(team_id)
+    .bind(profile)
+    .bind(granted_by)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Postgres form of [`replace_grant_sqlite`]: the primary key is the named
+/// conflict target (SQLite's `INSERT OR REPLACE` would also swap the row id,
+/// which this table does not have).
+#[cfg(feature = "postgres")]
+async fn replace_grant_pg(
+    pool: &sqlx::PgPool,
+    team_id: &str,
+    profile: &str,
+    granted_by: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO team_resource_grants (team_id, profile, granted_by)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (team_id, profile) DO UPDATE SET granted_by = excluded.granted_by",
     )
     .bind(team_id)
     .bind(profile)

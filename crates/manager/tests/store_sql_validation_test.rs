@@ -133,7 +133,7 @@ fn resolve_fragments(text: &str) -> Option<String> {
     Some(resolved)
 }
 
-async fn store_statements() -> (Vec<String>, Vec<String>) {
+async fn store_statements() -> (Vec<String>, Vec<String>, Vec<String>) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/store");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .expect("store dir")
@@ -158,6 +158,7 @@ async fn store_statements() -> (Vec<String>, Vec<String>) {
 
     let mut statements = Vec::new();
     let mut skipped = Vec::new();
+    let mut pg_only = Vec::new();
     let mut seen = BTreeSet::new();
     for path in files {
         let label = path
@@ -173,21 +174,41 @@ async fn store_statements() -> (Vec<String>, Vec<String>) {
             match resolve_fragments(&literal) {
                 Some(text) => {
                     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    // Hand-written Postgres bodies use `$n` placeholders and
+                    // jsonb syntax: they cannot compile against SQLite. They
+                    // are counted and checked by `postgres_statements_are_declared`.
+                    if text.contains("$1") {
+                        if seen.insert(format!("pg:{text}")) {
+                            pg_only.push(text);
+                        }
+                        continue;
+                    }
                     if seen.insert(text.clone()) {
                         statements.push(text);
                     }
                 }
-                None => skipped.push(format!("{label}: {}", literal.trim())),
+                None => {
+                    // A literal `'{}'` (JSON default) looks like an unresolved
+                    // fragment; keep the PG bodies out of the dynamic list.
+                    let normalized = literal.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if normalized.contains("$1") || normalized.contains("jsonb") {
+                        if seen.insert(format!("pg:{normalized}")) {
+                            pg_only.push(normalized);
+                        }
+                    } else {
+                        skipped.push(format!("{label}: {}", literal.trim()));
+                    }
+                }
             }
         }
     }
-    (statements, skipped)
+    (statements, skipped, pg_only)
 }
 
 /// Every SQL literal in the store must compile against the migrated schema.
 #[tokio::test]
 async fn store_sql_compiles_against_the_schema() {
-    let (statements, skipped) = store_statements().await;
+    let (statements, skipped, _pg_only) = store_statements().await;
 
     // Guard the scanner itself: a broken extractor would otherwise pass by finding
     // nothing, which is the failure mode this test exists to prevent.
@@ -227,6 +248,36 @@ async fn store_sql_compiles_against_the_schema() {
         failures.len(),
         failures.join("\n\n")
     );
+}
+
+/// The store's hand-written Postgres bodies are exactly the six dialect
+/// statements (jsonb walks, epoch math, named-conflict upserts). They cannot be
+/// compiled by the SQLite validator, so they are listed here instead: a new
+/// unverified PG statement fails the test, and a removed one is noticed.
+#[tokio::test]
+async fn postgres_statements_are_declared() {
+    let (_, _, pg_only) = store_statements().await;
+    const EXPECTED_MARKERS: &[&str] = &[
+        "jsonb ->> 'team_id'",                    // claim_candidates
+        "jsonb_array_elements(",                  // frozen_task_rows
+        "jsonb_array_elements_text(",             // visible_ids_by_label
+        "snapshot::jsonb ->> 'resource_profile'", // queued_jobs_for_profile
+        "ON CONFLICT (team_id, profile)",         // replace_grant
+        "ON CONFLICT (job_id, chunk_index)",      // insert_chunk
+    ];
+    // A PG body carrying a JSON default (`'{}'`) is still a PG body, not a
+    // dynamic fragment — the extraction routes it here by the `$1` marker.
+    assert_eq!(
+        pg_only.len(),
+        EXPECTED_MARKERS.len(),
+        "Postgres statement set drifted:\n{pg_only:#?}"
+    );
+    for marker in EXPECTED_MARKERS {
+        assert!(
+            pg_only.iter().any(|statement| statement.contains(marker)),
+            "missing Postgres statement with marker: {marker}"
+        );
+    }
 }
 
 /// Dynamic statements are not compiled: their text is assembled from a
@@ -276,7 +327,7 @@ const EXPECTED_DYNAMIC_SHAPES: &[&str] = &[
 /// above: no silent growth of unchecked SQL.
 #[tokio::test]
 async fn dynamic_sql_is_declared() {
-    let (_, skipped) = store_statements().await;
+    let (_, skipped, _) = store_statements().await;
     let mut undeclared = Vec::new();
     for entry in &skipped {
         // Compare normalised: labels/indentation from the multi-line source do

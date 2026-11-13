@@ -68,7 +68,12 @@ fn all_statements() -> Vec<(String, String)> {
                     j += 1;
                 }
                 if is_statement(&lit) {
-                    out.push((entry.display().to_string(), lit));
+                    // Hand-written Postgres bodies already use `$n` and jsonb
+                    // operators; they are not SQLite-dialect input for the
+                    // rewriter (see `postgres_statements_are_declared`).
+                    if !lit.contains("$1") {
+                        out.push((entry.display().to_string(), lit));
+                    }
                 }
                 i = j + 1;
                 continue;

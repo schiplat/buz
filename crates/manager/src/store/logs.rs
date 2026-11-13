@@ -67,16 +67,59 @@ pub async fn insert_chunk(
     content: &str,
     level: Option<&str>,
 ) -> Result<(), AppError> {
-    let Some(pool) = pool.as_sqlite() else {
-        return Err(AppError::Internal(
-            "insert_chunk is SQLite-only until its Postgres upsert lands \
-             (see HANDOFF §12.4)"
-                .into(),
-        ));
-    };
+    match pool {
+        DbPool::Sqlite(pool) => {
+            insert_chunk_sqlite(pool, job_id, chunk_index, step_order, content, level).await
+        }
+        #[cfg(feature = "postgres")]
+        DbPool::Pg(pool) => {
+            insert_chunk_pg(pool, job_id, chunk_index, step_order, content, level).await
+        }
+    }
+}
+
+async fn insert_chunk_sqlite(
+    pool: &sqlx::SqlitePool,
+    job_id: &str,
+    chunk_index: i32,
+    step_order: i32,
+    content: &str,
+    level: Option<&str>,
+) -> Result<(), AppError> {
     sqlx::query(
         "INSERT OR REPLACE INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
          VALUES (?, ?, ?, ?, ?, 1, ?)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(job_id)
+    .bind(chunk_index)
+    .bind(step_order)
+    .bind(content)
+    .bind(level)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Postgres form of [`insert_chunk_sqlite`]: the unique key is the named
+/// conflict target, so a retried chunk overwrites in place.
+#[cfg(feature = "postgres")]
+async fn insert_chunk_pg(
+    pool: &sqlx::PgPool,
+    job_id: &str,
+    chunk_index: i32,
+    step_order: i32,
+    content: &str,
+    level: Option<&str>,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
+         VALUES ($1, $2, $3, $4, $5, 1, $6)
+         ON CONFLICT (job_id, chunk_index) DO UPDATE SET
+           step_order = excluded.step_order,
+           log_content = excluded.log_content,
+           is_masked = excluded.is_masked,
+           level = excluded.level",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(job_id)

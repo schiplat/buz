@@ -357,16 +357,42 @@ pub async fn visible_ids_by_label(
     label: &str,
     team_id: Option<&str>,
 ) -> Result<Vec<String>, AppError> {
-    let Some(pool) = pool.as_sqlite() else {
-        return Err(AppError::Internal(
-            "visible_ids_by_label is SQLite-only until its Postgres variant lands \
-             (json_each walk; see HANDOFF §12.4)"
-                .into(),
-        ));
-    };
+    match pool {
+        DbPool::Sqlite(pool) => visible_ids_by_label_sqlite(pool, label, team_id).await,
+        #[cfg(feature = "postgres")]
+        DbPool::Pg(pool) => visible_ids_by_label_pg(pool, label, team_id).await,
+    }
+}
+
+async fn visible_ids_by_label_sqlite(
+    pool: &sqlx::SqlitePool,
+    label: &str,
+    team_id: Option<&str>,
+) -> Result<Vec<String>, AppError> {
     Ok(sqlx::query(
         "SELECT hosts.id FROM hosts, json_each(hosts.labels) \
          WHERE json_each.value = ? AND (hosts.team_id IS NULL OR hosts.team_id = ?)",
+    )
+    .bind(label)
+    .bind(team_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| sqlx::Row::get::<String, _>(&r, 0))
+    .collect())
+}
+
+/// Postgres form of [`visible_ids_by_label_sqlite`]: the JSON walk becomes
+/// `jsonb_array_elements_text` over the TEXT labels column.
+#[cfg(feature = "postgres")]
+async fn visible_ids_by_label_pg(
+    pool: &sqlx::PgPool,
+    label: &str,
+    team_id: Option<&str>,
+) -> Result<Vec<String>, AppError> {
+    Ok(sqlx::query(
+        "SELECT h.id FROM hosts h, jsonb_array_elements_text(h.labels::jsonb) AS label \
+         WHERE label = $1 AND (h.team_id IS NULL OR h.team_id = $2)",
     )
     .bind(label)
     .bind(team_id)
