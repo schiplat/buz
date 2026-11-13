@@ -78,11 +78,11 @@ async fn read_desired(
     // Tiers the host leaves undefined inherit the platform defaults; what is
     // delivered here is the effective document, and the sha256 covers exactly
     // those bytes.
-    let tier_defaults = crate::services::sandbox_defaults::load(&state.pool).await?;
+    let tier_defaults = crate::services::sandbox_defaults::load(&state.db()).await?;
     let profile_defaults =
-        crate::services::sandbox_defaults::load_default_profiles(&state.pool).await?;
+        crate::services::sandbox_defaults::load_default_profiles(&state.db()).await?;
     let network_default =
-        crate::services::sandbox_defaults::load_default_network(&state.pool).await?;
+        crate::services::sandbox_defaults::load_default_network(&state.db()).await?;
     let host_document: SandboxHostDocument = document
         .as_deref()
         .and_then(|raw| serde_json::from_str(raw).ok())

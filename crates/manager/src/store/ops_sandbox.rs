@@ -682,6 +682,72 @@ pub async fn sandbox_host_for_token_hash(
     .map(|r| (r.text(0), r.text(1))))
 }
 
+/// One host row plus its current desired document (platform-defaults bump).
+pub struct HostDocumentRow {
+    pub host_id: String,
+    pub instance_id: String,
+    pub desired_version: i64,
+    pub applied_version: i64,
+    pub desired_document: Option<String>,
+}
+
+/// Hosts with their desired config document — the defaults-change scan.
+pub async fn host_documents_for_bump(pool: &DbPool) -> Result<Vec<HostDocumentRow>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT h.host_id, h.instance_id, h.desired_version, h.applied_version,
+                c.document AS desired_document
+         FROM sandbox_hosts h
+         LEFT JOIN sandbox_host_configs c
+           ON c.host_id = h.host_id AND c.instance_id = h.instance_id
+              AND c.version = h.desired_version",
+        &[],
+    )
+    .await?
+    .into_iter()
+    .map(|r| HostDocumentRow {
+        host_id: r.text(0),
+        instance_id: r.text(1),
+        desired_version: r.i64(2),
+        applied_version: r.i64(3),
+        desired_document: r.opt_text(4),
+    })
+    .collect())
+}
+
+/// Store one host's bumped document version and point the host at it.
+pub async fn bump_host_desired_version(
+    pool: &DbPool,
+    host_id: &str,
+    instance_id: &str,
+    version: i64,
+    document: &str,
+    document_sha256: &str,
+) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "INSERT OR IGNORE INTO sandbox_host_configs
+         (host_id, instance_id, version, document, document_sha256, created_by)
+         VALUES (?, ?, ?, ?, ?, 'platform-defaults')",
+        &[
+            host_id.into(),
+            instance_id.into(),
+            SqlValue::Int(version),
+            document.into(),
+            document_sha256.into(),
+        ],
+    )
+    .await?;
+    exec::execute(
+        pool,
+        "UPDATE sandbox_hosts SET desired_version = ?, updated_at = datetime('now')
+         WHERE host_id = ? AND instance_id = ?",
+        &[SqlValue::Int(version), host_id.into(), instance_id.into()],
+    )
+    .await?;
+    Ok(())
+}
+
 // ────────────── claim-path reads (inside the claim transaction) ──────────────
 //
 // `slot_scheduler::decide` runs inside the claim's BEGIN IMMEDIATE; these are

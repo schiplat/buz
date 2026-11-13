@@ -220,11 +220,11 @@ pub async fn list_hosts(
     // platform default tiers and profiles merged under the host's own
     // definitions, exactly what dispatch offers — a single source of truth
     // for the ops UI (grants table, job-size chips).
-    let tier_defaults = crate::services::sandbox_defaults::load(&state.pool).await?;
+    let tier_defaults = crate::services::sandbox_defaults::load(&state.db()).await?;
     let profile_defaults =
-        crate::services::sandbox_defaults::load_default_profiles(&state.pool).await?;
+        crate::services::sandbox_defaults::load_default_profiles(&state.db()).await?;
     let network_default =
-        crate::services::sandbox_defaults::load_default_network(&state.pool).await?;
+        crate::services::sandbox_defaults::load_default_network(&state.db()).await?;
     let docs: std::collections::HashMap<String, serde_json::Value> =
         crate::store::ops_sandbox::latest_documents_all(&state.db())
             .await?
@@ -384,10 +384,10 @@ pub async fn get_defaults(
     _auth: OpsAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let tiers = crate::services::sandbox_defaults::load(&state.pool).await?;
-    let profiles = crate::services::sandbox_defaults::load_default_profiles(&state.pool).await?;
-    let network = crate::services::sandbox_defaults::load_default_network(&state.pool).await?;
-    let max_slots = crate::services::sandbox_defaults::load_default_max_slots(&state.pool).await?;
+    let tiers = crate::services::sandbox_defaults::load(&state.db()).await?;
+    let profiles = crate::services::sandbox_defaults::load_default_profiles(&state.db()).await?;
+    let network = crate::services::sandbox_defaults::load_default_network(&state.db()).await?;
+    let max_slots = crate::services::sandbox_defaults::load_default_max_slots(&state.db()).await?;
     Ok(Json(ApiResponse::success(json!({
         "tiers": tiers,
         "profiles": profiles,
@@ -446,7 +446,7 @@ pub async fn put_defaults(
         return Err(AppError::ValidationFailed(problems.join("; ")));
     }
 
-    let before = crate::services::sandbox_defaults::load_all_defaults(&state.pool).await?;
+    let before = crate::services::sandbox_defaults::load_all_defaults(&state.db()).await?;
     let after = crate::services::sandbox_defaults::AllDefaults {
         tiers: tiers.clone(),
         profiles: profiles.clone(),
@@ -482,11 +482,11 @@ pub async fn put_defaults(
         }))));
     }
 
-    crate::services::sandbox_defaults::save_all(&state.pool, &after, &auth.username)
+    crate::services::sandbox_defaults::save_all(&state.db(), &after, &auth.username)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let bumped = crate::services::sandbox_defaults::bump_hosts_for_defaults(
-        &state.pool,
+        &state.db(),
         &before.tiers,
         &after.tiers,
         &before.profiles,
@@ -919,12 +919,12 @@ pub async fn approve_change(
         if !problems.is_empty() {
             return Err(AppError::Internal(problems.join("; ")));
         }
-        let before = crate::services::sandbox_defaults::load_all_defaults(&state.pool).await?;
-        crate::services::sandbox_defaults::save_all(&state.pool, &catalog, &requested_by)
+        let before = crate::services::sandbox_defaults::load_all_defaults(&state.db()).await?;
+        crate::services::sandbox_defaults::save_all(&state.db(), &catalog, &requested_by)
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let bumped = crate::services::sandbox_defaults::bump_hosts_for_defaults(
-            &state.pool,
+            &state.db(),
             &before.tiers,
             &catalog.tiers,
             &before.profiles,
