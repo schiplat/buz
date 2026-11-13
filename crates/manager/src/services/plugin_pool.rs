@@ -735,7 +735,7 @@ pub async fn sync_source(
 async fn signature_policy(pool: &SqlitePool) -> (bool, String) {
     let (default_require, default_key) = crate::services::plugin_resolver::signature_defaults();
     let require = crate::services::platform_settings::effective(
-        pool,
+        &crate::store::exec::DbPool::from_sqlite(pool),
         crate::services::platform_settings::KEY_PLUGIN_REQUIRE_SIGNED_INDEX,
         if default_require { "true" } else { "false" },
     )
@@ -743,7 +743,7 @@ async fn signature_policy(pool: &SqlitePool) -> (bool, String) {
     .trim()
         == "true";
     let public_key = crate::services::platform_settings::effective(
-        pool,
+        &crate::store::exec::DbPool::from_sqlite(pool),
         crate::services::platform_settings::KEY_PLUGIN_INDEX_PUBLIC_KEY,
         &default_key,
     )

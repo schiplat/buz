@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
                 &config.plugin_index.local_dir,
             )?;
             let sync_timeout_secs = services::platform_settings::effective(
-                &pool,
+                &manager::store::exec::DbPool::from_sqlite(&pool),
                 services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
                 &config.plugin_index.sync_timeout_seconds.to_string(),
             )
@@ -146,7 +146,10 @@ async fn main() -> anyhow::Result<()> {
     // Step-index settings for `uses:` resolution (index dir + review gate).
     // Admin-edited overrides in platform_settings take precedence over
     // manager.toml and are re-applied at runtime by the settings API.
-    let settings_overrides = services::platform_settings::fetch_overrides(&db_pool).await;
+    let settings_overrides = services::platform_settings::fetch_overrides(
+        &manager::store::exec::DbPool::from_sqlite(&db_pool),
+    )
+    .await;
     let require_reviewed = settings_overrides
         .get(services::platform_settings::KEY_PLUGIN_REVIEW_REQUIRED)
         .and_then(|v| v.parse::<bool>().ok())
@@ -283,7 +286,10 @@ async fn main() -> anyhow::Result<()> {
     // Shared log broadcaster: cleanup needs the same instance the log upload
     // path writes into so expired debug chunks are dropped from memory too.
     let log_broadcast = manager::services::log_broadcast::LogBroadcaster::new();
-    services::debug_log_cleanup::spawn_debug_log_cleanup(db_pool.clone(), log_broadcast.clone());
+    services::debug_log_cleanup::spawn_debug_log_cleanup(
+        manager::store::exec::DbPool::from_sqlite(&db_pool),
+        log_broadcast.clone(),
+    );
     services::job_log_retention::spawn_job_log_retention(db_pool.clone(), log_broadcast.clone());
 
     // Definitions live in the database (`pipelines.yaml_source`). Rows created

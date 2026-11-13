@@ -149,16 +149,12 @@ impl FromRequestParts<AppState> for SandboxdClaims {
             return Err(forbidden_err("sandboxd token required"));
         }
         let token_hash = shared::api_token::hash_token(token);
-        let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT host_id, instance_id FROM sandbox_hosts WHERE token_hash = ? AND token_hash != ''",
-        )
-        .bind(&token_hash)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("sandboxd token lookup failed: {e}");
-            auth_err("invalid or revoked token")
-        })?;
+        let row = crate::store::ops_sandbox::sandbox_host_for_token_hash(&state.db(), &token_hash)
+            .await
+            .map_err(|e| {
+                tracing::error!("sandboxd token lookup failed: {e}");
+                auth_err("invalid or revoked token")
+            })?;
         let Some((host_id, instance_id)) = row else {
             return Err(auth_err("invalid or revoked token"));
         };

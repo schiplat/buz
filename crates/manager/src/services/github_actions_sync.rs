@@ -8,7 +8,6 @@
 use base64::Engine;
 use serde::Deserialize;
 use shared::error::AppError;
-use uuid::Uuid;
 
 /// Base64 decode helper (GitHub returns base64 public keys / we return base64
 /// ciphertext).
@@ -547,7 +546,7 @@ fn extract_gh_error_message(body: &str) -> Option<String> {
 /// auto-fetch scheduler so both produce identical logs. Returns
 /// `(added, existing)`.
 pub async fn fetch_and_upsert_repos(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::store::exec::DbPool,
     connection_id: &str,
     connection_name: &str,
     owner: &str,
@@ -572,15 +571,7 @@ pub async fn fetch_and_upsert_repos(
         let (owner_part, name) = r.full_name.split_once('/').unwrap_or((owner, &r.name));
         let owner_part = owner_part.to_string();
         let name = name.to_string();
-        let dup = sqlx::query(
-            "SELECT id FROM github_repos WHERE connection_id = ? AND owner = ? AND repo = ?",
-        )
-        .bind(connection_id)
-        .bind(&owner_part)
-        .bind(&name)
-        .fetch_optional(pool)
-        .await?;
-        if dup.is_some() {
+        if crate::store::github::repo_exists(pool, connection_id, &owner_part, &name, None).await? {
             existing += 1;
             tracing::debug!(
                 connection = %connection_name,
@@ -589,16 +580,7 @@ pub async fn fetch_and_upsert_repos(
             );
             continue;
         }
-        let id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO github_repos (id, connection_id, owner, repo) VALUES (?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(connection_id)
-        .bind(&owner_part)
-        .bind(&name)
-        .execute(pool)
-        .await?;
+        crate::store::github::insert_repo(pool, connection_id, &owner_part, &name).await?;
         added += 1;
         tracing::info!(
             connection = %connection_name,

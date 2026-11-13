@@ -267,6 +267,19 @@ pub async fn secret_name_optional(pool: &DbPool, id: &str) -> Result<Option<Stri
     Ok(row.and_then(|r| r.opt_text_of("name")))
 }
 
+/// `(name, kind)` of secrets still on a retired kind (deprecated-key scan).
+pub async fn deprecated_secret_kinds(pool: &DbPool) -> Result<Vec<(String, String)>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT name, kind FROM secrets WHERE kind IN ('registry', 'aliyun_oss_auth') ORDER BY name",
+        &[],
+    )
+    .await?
+    .into_iter()
+    .map(|r| (r.text(0), r.text(1)))
+    .collect())
+}
+
 /// `(name, stored value, team_id)` — the GitHub push path's facts.
 pub async fn push_facts(pool: &DbPool, id: &str) -> Result<(String, String, String), AppError> {
     let row = exec::fetch_optional(

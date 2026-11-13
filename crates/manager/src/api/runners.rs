@@ -872,7 +872,7 @@ async fn poll_once(
     let dispatch = {
         let row = crate::store::runners::dispatch_context_row(&state.db(), &auth.runner_id).await?;
         let stale_after_seconds: i64 = crate::services::platform_settings::effective(
-            &state.pool,
+            &state.db(),
             crate::services::platform_settings::KEY_SANDBOX_CONFIG_STALE_SECONDS,
             &crate::services::platform_settings::DEFAULT_SANDBOX_CONFIG_STALE_SECONDS.to_string(),
         )
@@ -894,7 +894,7 @@ async fn poll_once(
     // (0 disables). Read per poll, next to staleness — same cadence, same
     // settings source.
     let starvation_seconds: i64 = crate::services::platform_settings::effective(
-        &state.pool,
+        &state.db(),
         crate::services::platform_settings::KEY_SCHEDULER_STARVATION_SECONDS,
         &crate::services::platform_settings::DEFAULT_SCHEDULER_STARVATION_SECONDS.to_string(),
     )

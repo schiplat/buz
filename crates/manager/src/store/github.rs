@@ -212,6 +212,52 @@ pub async fn mark_fetched(pool: &DbPool, id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// One auto-fetch candidate with everything the cycle needs.
+pub struct FetchCandidate {
+    pub id: String,
+    pub name: String,
+    pub api_base_url: String,
+    pub token_ciphertext: String,
+    pub fetch_owners: String,
+    pub fetch_interval_minutes: i64,
+    pub last_fetch_at: Option<String>,
+}
+
+/// Connections the auto-fetch scheduler may consider (interval and owners set).
+pub async fn fetch_candidates(pool: &DbPool) -> Result<Vec<FetchCandidate>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT id, name, api_base_url, token_ciphertext, fetch_owners, fetch_interval_minutes, last_fetch_at
+         FROM github_connections
+         WHERE fetch_interval_minutes IS NOT NULL AND fetch_interval_minutes > 0
+           AND fetch_owners != ''",
+        &[],
+    )
+    .await?
+    .into_iter()
+    .map(|r| FetchCandidate {
+        id: r.text(0),
+        name: r.text(1),
+        api_base_url: r.text(2),
+        token_ciphertext: r.text(3),
+        fetch_owners: r.text(4),
+        fetch_interval_minutes: r.i64(5),
+        last_fetch_at: r.opt_text(6),
+    })
+    .collect())
+}
+
+/// Stamp an auto-fetch round (`last_fetch_at` and `updated_at`).
+pub async fn mark_auto_fetched(pool: &DbPool, id: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE github_connections SET last_fetch_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+        &[id.into()],
+    )
+    .await?;
+    Ok(())
+}
+
 /// A synced repository row (the `github_repos` projection).
 pub struct RepoRow {
     pub id: String,

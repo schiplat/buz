@@ -35,7 +35,7 @@ pub async fn get_settings(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let overrides = platform_settings::fetch_overrides(&state.pool).await;
+    let overrides = platform_settings::fetch_overrides(&state.db()).await;
     let item = |key: &'static str, kind: &'static str, default: String| {
         json!({
             "key": key,
@@ -142,7 +142,7 @@ pub async fn get_settings(
         .find(|i| i["key"] == KEY_PLUGIN_INDEX_LOCAL_DIR)
     {
         let effective_dir = platform_settings::effective(
-            &state.pool,
+            &state.db(),
             KEY_PLUGIN_INDEX_LOCAL_DIR,
             &state.config.plugin_index.local_dir,
         )
@@ -206,7 +206,7 @@ pub async fn update_setting(
     // save (empty ledger). Refuse the toggle with guidance instead of
     // letting the operator brick saves and discover it via the banner.
     if key == crate::services::platform_settings::KEY_PLUGIN_REVIEW_REQUIRED && value == "true" {
-        let overrides = platform_settings::fetch_overrides(&state.pool).await;
+        let overrides = platform_settings::fetch_overrides(&state.db()).await;
         let manifest_path = crate::services::plugin_resolver::effective_reviewed_manifest(
             &state.config.storage.data_dir,
             &state.config.plugin_index.reviewed_manifest,
@@ -222,11 +222,11 @@ pub async fn update_setting(
         }
     }
 
-    let previous = platform_settings::fetch_overrides(&state.pool)
+    let previous = platform_settings::fetch_overrides(&state.db())
         .await
         .get(&key)
         .cloned();
-    platform_settings::upsert(&state.pool, &key, &value, &auth.username)
+    platform_settings::upsert(&state.db(), &key, &value, &auth.username)
         .await
         .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
     reapply_plugin_index_overrides(&state).await?;
@@ -254,11 +254,11 @@ pub async fn reset_setting(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let previous = platform_settings::fetch_overrides(&state.pool)
+    let previous = platform_settings::fetch_overrides(&state.db())
         .await
         .get(&key)
         .cloned();
-    platform_settings::delete(&state.pool, &key)
+    platform_settings::delete(&state.db(), &key)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     reapply_plugin_index_overrides(&state).await?;
@@ -294,7 +294,7 @@ fn setting_display(key: &str, value: Option<&str>) -> Value {
 /// Resolver-affecting keys must reach the plugin resolver immediately —
 /// full-replace from the DB so keys without a row clear their override.
 async fn reapply_plugin_index_overrides(state: &AppState) -> Result<(), AppError> {
-    let overrides = platform_settings::fetch_overrides(&state.pool).await;
+    let overrides = platform_settings::fetch_overrides(&state.db()).await;
     let require_reviewed = overrides
         .get(KEY_PLUGIN_REVIEW_REQUIRED)
         .and_then(|v| v.parse::<bool>().ok());

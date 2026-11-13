@@ -29,7 +29,7 @@ pub async fn purge_expired_job_logs(
     broadcaster: &LogBroadcaster,
 ) -> anyhow::Result<usize> {
     let days: i64 = effective(
-        pool,
+        &crate::store::exec::DbPool::from_sqlite(pool),
         KEY_JOB_LOG_RETENTION_DAYS,
         &DEFAULT_JOB_LOG_RETENTION_DAYS.to_string(),
     )

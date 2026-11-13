@@ -6,38 +6,18 @@
 //! resolver-affecting keys additionally push a runtime override into
 //! `plugin_resolver` so changes take effect without a restart.
 
-use sqlx::SqlitePool;
 use std::collections::HashMap;
 
-pub const KEY_MARKETPLACE_URL: &str = "marketplace_url";
-pub const KEY_PLUGIN_REVIEW_REQUIRED: &str = "plugin_review_required";
-pub const KEY_PLUGIN_INDEX_LOCAL_DIR: &str = "plugin_index_local_dir";
-pub const KEY_PLUGIN_REVIEWED_MANIFEST: &str = "plugin_reviewed_manifest";
-pub const KEY_PLUGIN_SYNC_TIMEOUT: &str = "plugin_sync_timeout";
-/// Trust anchor for source indexes: when on, every sync verifies
-/// `index.json.sig` against `plugin_index_public_key` and refuses sources
-/// that are unsigned or tampered with.
-pub const KEY_PLUGIN_REQUIRE_SIGNED_INDEX: &str = "plugin_require_signed_index";
-pub const KEY_PLUGIN_INDEX_PUBLIC_KEY: &str = "plugin_index_public_key";
+use crate::store::exec::DbPool;
 
-/// Sandbox host configuration (design record: sandbox-host-configuration).
-/// Two-person approval for config changes; default off.
-pub const KEY_SANDBOX_CONFIG_REQUIRE_APPROVAL: &str = "sandbox_config_require_approval";
-/// Days to keep sandbox config version history and audit diffs.
-pub const KEY_SANDBOX_CONFIG_RETENTION_DAYS: &str = "sandbox_config_history_retention_days";
-/// sandboxd long-poll period in seconds.
-pub const KEY_SANDBOX_CONFIG_POLL_SECONDS: &str = "sandbox_config_poll_seconds";
-/// How long a host may lag behind the desired version before non-default
-/// profile dispatch is paused.
-pub const KEY_SANDBOX_CONFIG_STALE_SECONDS: &str = "sandbox_config_dispatch_stale_after_seconds";
-/// How long a pending job may be overtaken by smaller ones (backfill) before
-/// the runner stops filling gaps and waits for it. 0 disables aging.
-pub const KEY_SCHEDULER_STARVATION_SECONDS: &str = "scheduler_starvation_seconds";
-/// Terminal-job log retention in days (0 = keep forever).
-pub const KEY_JOB_LOG_RETENTION_DAYS: &str = "job_log_retention_days";
-/// When on, resource-profile grant/revoke requests create a pending change
-/// (two-person flow) instead of applying directly.
-pub const KEY_GRANTS_REQUIRE_APPROVAL: &str = "grants_require_approval";
+pub use crate::store::platform_settings::{
+    KEY_GRANTS_REQUIRE_APPROVAL, KEY_JOB_LOG_RETENTION_DAYS, KEY_MARKETPLACE_URL,
+    KEY_PLUGIN_INDEX_LOCAL_DIR, KEY_PLUGIN_INDEX_PUBLIC_KEY, KEY_PLUGIN_REQUIRE_SIGNED_INDEX,
+    KEY_PLUGIN_REVIEWED_MANIFEST, KEY_PLUGIN_REVIEW_REQUIRED, KEY_PLUGIN_SYNC_TIMEOUT,
+    KEY_SANDBOX_CONFIG_POLL_SECONDS, KEY_SANDBOX_CONFIG_REQUIRE_APPROVAL,
+    KEY_SANDBOX_CONFIG_RETENTION_DAYS, KEY_SANDBOX_CONFIG_STALE_SECONDS,
+    KEY_SCHEDULER_STARVATION_SECONDS,
+};
 
 pub const DEFAULT_SANDBOX_CONFIG_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_SANDBOX_CONFIG_POLL_SECONDS: u64 = 30;
@@ -206,61 +186,29 @@ pub fn validate_value(key: &str, value: &str) -> Result<(), String> {
 
 /// All DB overrides for the known keys. Unknown rows are ignored (forward
 /// compatibility with older Managers).
-pub async fn fetch_overrides(pool: &SqlitePool) -> HashMap<String, String> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key, value FROM platform_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(KEY_MARKETPLACE_URL)
-    .bind(KEY_PLUGIN_REVIEW_REQUIRED)
-    .bind(KEY_PLUGIN_INDEX_LOCAL_DIR)
-    .bind(KEY_PLUGIN_REVIEWED_MANIFEST)
-    .bind(KEY_PLUGIN_SYNC_TIMEOUT)
-    .bind(KEY_PLUGIN_REQUIRE_SIGNED_INDEX)
-    .bind(KEY_PLUGIN_INDEX_PUBLIC_KEY)
-    .bind(KEY_SANDBOX_CONFIG_REQUIRE_APPROVAL)
-    .bind(KEY_SANDBOX_CONFIG_RETENTION_DAYS)
-    .bind(KEY_SANDBOX_CONFIG_POLL_SECONDS)
-    .bind(KEY_SANDBOX_CONFIG_STALE_SECONDS)
-    .bind(KEY_SCHEDULER_STARVATION_SECONDS)
-    .bind(KEY_GRANTS_REQUIRE_APPROVAL)
-    .bind(KEY_JOB_LOG_RETENTION_DAYS)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-    rows.into_iter().collect()
+pub async fn fetch_overrides(pool: &DbPool) -> HashMap<String, String> {
+    crate::store::platform_settings::overrides(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
 }
 
-pub async fn upsert(
-    pool: &SqlitePool,
-    key: &str,
-    value: &str,
-    updated_by: &str,
-) -> anyhow::Result<()> {
+pub async fn upsert(pool: &DbPool, key: &str, value: &str, updated_by: &str) -> anyhow::Result<()> {
     validate_value(key, value).map_err(|e| anyhow::anyhow!("{e}"))?;
-    sqlx::query(
-        "INSERT INTO platform_settings (key, value, updated_by, updated_at)
-         VALUES (?, ?, ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-           updated_by = excluded.updated_by, updated_at = excluded.updated_at",
-    )
-    .bind(key)
-    .bind(value)
-    .bind(updated_by)
-    .execute(pool)
-    .await?;
-    Ok(())
+    crate::store::platform_settings::upsert(pool, key, value, updated_by)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-pub async fn delete(pool: &SqlitePool, key: &str) -> anyhow::Result<()> {
-    sqlx::query("DELETE FROM platform_settings WHERE key = ?")
-        .bind(key)
-        .execute(pool)
-        .await?;
-    Ok(())
+pub async fn delete(pool: &DbPool, key: &str) -> anyhow::Result<()> {
+    crate::store::platform_settings::delete(pool, key)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Effective value for one key: DB override, else `default`.
-pub async fn effective(pool: &SqlitePool, key: &str, default: &str) -> String {
+pub async fn effective(pool: &DbPool, key: &str, default: &str) -> String {
     let overrides = fetch_overrides(pool).await;
     overrides
         .get(key)

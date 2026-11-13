@@ -176,7 +176,7 @@ pub async fn create_file(
         .map_err(|e| AppError::Internal(e.to_string()))?,
         None,
         crate::services::platform_settings::effective(
-            &state.pool,
+            &state.db(),
             crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
             &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
@@ -270,7 +270,7 @@ pub async fn put_file(
         .map_err(|e| AppError::Internal(e.to_string()))?,
         req.pipeline_id.as_deref(),
         crate::services::platform_settings::effective(
-            &state.pool,
+            &state.db(),
             crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
             &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )

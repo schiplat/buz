@@ -667,6 +667,21 @@ pub async fn team_exists(pool: &DbPool, team_id: &str) -> Result<bool, AppError>
     .unwrap_or(false))
 }
 
+/// `(host_id, instance_id)` for a sandboxd bearer-token hash (`None` = not
+/// enrolled or the token was rotated away).
+pub async fn sandbox_host_for_token_hash(
+    pool: &DbPool,
+    token_hash: &str,
+) -> Result<Option<(String, String)>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT host_id, instance_id FROM sandbox_hosts WHERE token_hash = ? AND token_hash != ''",
+        &[token_hash.into()],
+    )
+    .await?
+    .map(|r| (r.text(0), r.text(1))))
+}
+
 // ────────────── claim-path reads (inside the claim transaction) ──────────────
 //
 // `slot_scheduler::decide` runs inside the claim's BEGIN IMMEDIATE; these are

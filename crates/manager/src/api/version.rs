@@ -106,7 +106,7 @@ pub async fn health(
     let status = if db_ok { "ok" } else { "degraded" };
     // DB override (admin UI) wins over the manager.toml default.
     let marketplace_override = crate::services::platform_settings::effective(
-        &state.pool,
+        &state.db(),
         crate::services::platform_settings::KEY_MARKETPLACE_URL,
         &state.config.marketplace_url,
     )
@@ -122,7 +122,7 @@ pub async fn health(
     // default now points beside the plugin directory, so a fresh deployment
     // (nothing cloned yet) stays honest about having no review ledger.
     let manifest_path = crate::services::platform_settings::effective(
-        &state.pool,
+        &state.db(),
         crate::services::platform_settings::KEY_PLUGIN_REVIEWED_MANIFEST,
         &state.config.plugin_index.reviewed_manifest,
     )
@@ -132,7 +132,7 @@ pub async fn health(
     let plugin_review = serde_json::json!({
         "manifest_configured": manifest_configured,
         "require_reviewed": crate::services::platform_settings::effective(
-            &state.pool,
+            &state.db(),
             crate::services::platform_settings::KEY_PLUGIN_REVIEW_REQUIRED,
             &state.config.plugin_index.require_reviewed.to_string(),
         )

@@ -667,7 +667,7 @@ pub async fn fetch_repos(
     );
 
     let (added, existing) =
-        fetch_and_upsert_repos(&state.pool, &req.connection_id, &name, &owner, &client).await?;
+        fetch_and_upsert_repos(&state.db(), &req.connection_id, &name, &owner, &client).await?;
 
     // A manual fetch suppresses the next scheduled run.
     crate::store::github::mark_fetched(&state.db(), &req.connection_id).await?;

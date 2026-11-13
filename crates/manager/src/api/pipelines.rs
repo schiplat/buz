@@ -195,7 +195,7 @@ pub async fn create(
         .map_err(|e| AppError::Internal(e.to_string()))?,
         Some(&pipeline_id),
         crate::services::platform_settings::effective(
-            &state.pool,
+            &state.db(),
             crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
             &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
@@ -508,7 +508,7 @@ pub async fn update(
         .map_err(|e| AppError::Internal(e.to_string()))?,
         bind.as_deref(),
         crate::services::platform_settings::effective(
-            &state.pool,
+            &state.db(),
             crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
             &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
@@ -1548,7 +1548,7 @@ pub async fn validate_yaml(
     // Viewer-scoped: no TeamView on YAML `team:` → generic error (no secret oracle).
     // Plugin policy mirrors what save will apply: runtime overrides win over
     // manager.toml, and the reviewed manifest falls back to the data root.
-    let overrides = crate::services::platform_settings::fetch_overrides(&state.pool).await;
+    let overrides = crate::services::platform_settings::fetch_overrides(&state.db()).await;
     let local_dir_setting = overrides
         .get(crate::services::platform_settings::KEY_PLUGIN_INDEX_LOCAL_DIR)
         .map(String::as_str)

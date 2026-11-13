@@ -39,6 +39,7 @@ pub mod logs;
 pub mod metrics;
 pub mod ops_sandbox;
 pub mod pipelines;
+pub mod platform_settings;
 pub mod plugin_sources;
 pub mod runners;
 pub mod sandboxd_config;

@@ -1371,6 +1371,41 @@ pub async fn update_guarded(
     Ok(affected)
 }
 
+/// One task row still carrying a retired column value (deprecated-key scan).
+pub struct DeprecatedTaskColumns {
+    pub pipeline_name: String,
+    pub step_name: String,
+    pub registry_secret: String,
+    pub config_source: String,
+    pub config_key_path: String,
+}
+
+/// Tasks whose retired columns still hold data — the migration report source.
+pub async fn deprecated_task_columns(
+    pool: &DbPool,
+) -> Result<Vec<DeprecatedTaskColumns>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT p.name AS pipeline_name, t.name AS step_name,
+                t.registry_secret, t.config_source, t.config_key_path
+         FROM tasks t
+         JOIN pipelines p ON p.id = t.pipeline_id
+         WHERE t.registry_secret != '' OR t.config_source != '' OR t.config_key_path != ''
+         ORDER BY p.name, t.step_order",
+        &[],
+    )
+    .await?
+    .into_iter()
+    .map(|r| DeprecatedTaskColumns {
+        pipeline_name: r.text_of("pipeline_name"),
+        step_name: r.text_of("step_name"),
+        registry_secret: r.text_of("registry_secret"),
+        config_source: r.text_of("config_source"),
+        config_key_path: r.text_of("config_key_path"),
+    })
+    .collect())
+}
+
 /// `(step_order, input_defs_json)` of a pipeline's marketplace resolutions —
 /// the claim payload's per-step inputs when the job has no frozen tasks.
 pub async fn step_resolution_defs(

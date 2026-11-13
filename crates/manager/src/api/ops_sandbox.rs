@@ -184,7 +184,7 @@ async fn apply_document(
 
 async fn require_approval_enabled(state: &AppState) -> Result<bool, AppError> {
     let raw = platform_settings::effective(
-        &state.pool,
+        &state.db(),
         platform_settings::KEY_SANDBOX_CONFIG_REQUIRE_APPROVAL,
         "false",
     )
@@ -197,7 +197,7 @@ async fn require_approval_enabled(state: &AppState) -> Result<bool, AppError> {
 /// on for host-config changes (or vice versa).
 async fn grants_require_approval_enabled(state: &AppState) -> Result<bool, AppError> {
     let raw = platform_settings::effective(
-        &state.pool,
+        &state.db(),
         platform_settings::KEY_GRANTS_REQUIRE_APPROVAL,
         "false",
     )

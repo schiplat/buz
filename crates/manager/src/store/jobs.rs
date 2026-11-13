@@ -1213,6 +1213,73 @@ pub async fn truncated_steps(pool: &DbPool, job_id: &str) -> Vec<i64> {
     steps
 }
 
+/// Broadcast facts of one job after a committed status change (`None` = the
+/// row vanished concurrently).
+pub struct StatusBroadcastRow {
+    pub pipeline_id: String,
+    pub status: String,
+    pub step_statuses: String,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub debug_unredact: bool,
+}
+
+/// Re-read the committed job row for the WebSocket status payload.
+pub async fn status_broadcast_row(
+    pool: &DbPool,
+    job_id: &str,
+) -> Result<Option<StatusBroadcastRow>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT pipeline_id, status, step_statuses, start_time, end_time, debug_unredact
+         FROM jobs WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await?
+    .map(|r| StatusBroadcastRow {
+        pipeline_id: r.text_of("pipeline_id"),
+        status: r.text_of("status"),
+        step_statuses: r.text_of("step_statuses"),
+        start_time: r.opt_text_of("start_time"),
+        end_time: r.opt_text_of("end_time"),
+        debug_unredact: r.i64_of("debug_unredact") != 0,
+    }))
+}
+
+/// Ids of debug (unredacted) jobs created before `cutoff` — a SQLite datetime
+/// modifier such as `-24 hours`.
+pub async fn expired_debug_job_ids(pool: &DbPool, cutoff: &str) -> Result<Vec<String>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT id FROM jobs
+         WHERE debug_unredact = 1
+           AND created_at < datetime('now', ?)",
+        &[cutoff.into()],
+    )
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect())
+}
+
+/// Remove one debug job's log chunks and reset its unredacted flag (the job
+/// row itself is kept for history/audit).
+pub async fn purge_debug_job_logs(pool: &DbPool, job_id: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "DELETE FROM job_logs WHERE job_id = ?",
+        &[job_id.into()],
+    )
+    .await?;
+    exec::execute(
+        pool,
+        "UPDATE jobs SET debug_unredact = 0, updated_at = datetime('now') WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await?;
+    Ok(())
+}
+
 /// `(pipeline_id, pipeline name?)` for cancel-path audit context.
 pub async fn job_pipeline_name(
     pool: &DbPool,

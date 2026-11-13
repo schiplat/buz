@@ -106,7 +106,7 @@ pub async fn create_source(
     // immediately and the UI polls the list for last_synced_at / error.
     let pool = state.pool.clone();
     let timeout_secs = crate::services::platform_settings::effective(
-        &state.pool,
+        &state.db(),
         crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
         &state.config.plugin_index.sync_timeout_seconds.to_string(),
     )
@@ -143,7 +143,7 @@ pub async fn check_mirror(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let timeout_secs = crate::services::platform_settings::effective(
-        &state.pool,
+        &state.db(),
         crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
         &state.config.plugin_index.sync_timeout_seconds.to_string(),
     )
@@ -171,7 +171,7 @@ pub async fn sync_source(
         .ok_or(AppError::NotFound("source not found".into()))?;
     let pool = state.pool.clone();
     let timeout_secs = crate::services::platform_settings::effective(
-        &state.pool,
+        &state.db(),
         crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
         &state.config.plugin_index.sync_timeout_seconds.to_string(),
     )
@@ -295,7 +295,7 @@ pub async fn refresh_plugin(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     let http = plugin_pool::http_client(
         crate::services::platform_settings::effective(
-            &state.pool,
+            &state.db(),
             crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
             &state.config.plugin_index.sync_timeout_seconds.to_string(),
         )
@@ -348,7 +348,7 @@ pub async fn toggle_pool_entry(
         plugin_pool::verify_entry(
             &plugin_pool::http_client(
                 crate::services::platform_settings::effective(
-                    &state.pool,
+                    &state.db(),
                     crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
                     &state.config.plugin_index.sync_timeout_seconds.to_string(),
                 )
