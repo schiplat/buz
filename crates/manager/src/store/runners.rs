@@ -90,21 +90,23 @@ pub async fn delete_runner(pool: &DbPool, id: &str) -> Result<bool, AppError> {
 ///
 /// Read-modify-write in one `BEGIN IMMEDIATE`, so two concurrent toggles cannot
 /// both read the same value and write the same result.
-pub async fn toggle_freeze(pool: &SqlitePool, id: &str) -> Result<(String, bool, bool), AppError> {
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let row = sqlx::query("SELECT name, is_frozen FROM runners WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&mut *tx)
+pub async fn toggle_freeze(pool: &DbPool, id: &str) -> Result<(String, bool, bool), AppError> {
+    let mut tx = pool.begin_immediate().await?;
+    let row = tx
+        .fetch_optional(
+            "SELECT name, is_frozen FROM runners WHERE id = ?",
+            &[id.into()],
+        )
         .await?
         .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
-    let name: String = row.get(0);
-    let was_frozen = row.get::<i64, _>(1) != 0;
+    let name = row.text(0);
+    let was_frozen = row.i64(1) != 0;
     let now_frozen = !was_frozen;
-    sqlx::query("UPDATE runners SET is_frozen = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(i64::from(now_frozen))
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    tx.execute(
+        "UPDATE runners SET is_frozen = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(i64::from(now_frozen)), id.into()],
+    )
+    .await?;
     tx.commit().await?;
     crate::services::poll_events::wake_all();
     Ok((name, was_frozen, now_frozen))
@@ -675,36 +677,39 @@ pub async fn execution_mode_of(pool: &DbPool, id: &str) -> Result<String, AppErr
 /// `BEGIN IMMEDIATE` so the guard cannot be raced by a concurrent claim.
 /// Returns the previous binding.
 pub async fn move_team(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     new_team_id: Option<&str>,
 ) -> Result<Option<String>, AppError> {
     let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
+        .begin_immediate()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let current: Option<String> = sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let current = tx
+        .fetch_optional("SELECT team_id FROM runners WHERE id = ?", &[id.into()])
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)?
+        .opt_text(0);
     if current.as_deref() != new_team_id {
-        let running: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
-        )
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let running = tx
+            .fetch_optional(
+                "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
+                &[id.into()],
+            )
+            .await?
+            .map(|r| r.i64(0))
+            .unwrap_or(0);
         if running > 0 {
             tx.rollback().await.ok();
             return Err(AppError::Conflict(format!(
                 "runner team binding cannot change while {running} job(s) are running"
             )));
         }
-        sqlx::query("UPDATE runners SET team_id = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(new_team_id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        tx.execute(
+            "UPDATE runners SET team_id = ?, updated_at = datetime('now') WHERE id = ?",
+            &[new_team_id.into(), id.into()],
+        )
+        .await?;
     }
     tx.commit()
         .await

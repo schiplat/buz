@@ -2167,7 +2167,7 @@ pub async fn update_runner(
 
     if let Some(requested_team) = &req.team_id {
         let validated = validate_runner_team(&state.pool, requested_team.as_deref()).await?;
-        crate::store::runners::move_team(&state.pool, &id, validated.as_deref()).await?;
+        crate::store::runners::move_team(&state.db(), &id, validated.as_deref()).await?;
     }
 
     if let Some(labels) = &req.labels {
@@ -2308,7 +2308,7 @@ pub async fn toggle_freeze(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let (name, was_frozen, now_frozen) =
-        crate::store::runners::toggle_freeze(&state.pool, &id).await?;
+        crate::store::runners::toggle_freeze(&state.db(), &id).await?;
 
     let action = if now_frozen { "frozen" } else { "unfrozen" };
     tracing::info!("Runner {name} ({id}) {action}");
