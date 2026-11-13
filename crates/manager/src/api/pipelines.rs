@@ -1170,7 +1170,7 @@ pub async fn do_trigger(
     // Allocate the GHA-style build number and create the job atomically (see
     // `trigger_reserve::reserve_job` for the invariants).
     crate::store::trigger_reserve::reserve_job(
-        &state.pool,
+        &state.db(),
         &crate::store::trigger_reserve::ReservedJob {
             job_id: &job_id,
             pipeline_id,

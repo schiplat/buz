@@ -7,9 +7,8 @@
 
 use serde_json::Value;
 use shared::error::AppError;
-use sqlx::SqlitePool;
 
-use crate::store::tx;
+use crate::store::exec::{DbPool, SqlValue};
 
 /// Everything needed to insert one triggered job.
 pub struct ReservedJob<'a> {
@@ -34,17 +33,22 @@ pub struct ReservedJob<'a> {
 /// `is_active` inside this transaction is what closes the check-to-insert race.
 ///
 /// Returns the allocated `run_number`.
-pub async fn reserve_job(pool: &SqlitePool, job: &ReservedJob<'_>) -> Result<i64, AppError> {
-    let mut tx = tx::begin_immediate(pool).await?;
+pub async fn reserve_job(pool: &DbPool, job: &ReservedJob<'_>) -> Result<i64, AppError> {
+    let mut tx = pool
+        .begin_immediate()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    match sqlx::query_scalar::<_, i64>("SELECT is_active FROM pipelines WHERE id = ?")
-        .bind(job.pipeline_id)
-        .fetch_optional(&mut *tx)
+    match tx
+        .fetch_optional(
+            "SELECT is_active FROM pipelines WHERE id = ?",
+            &[job.pipeline_id.into()],
+        )
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
     {
         None => return Err(AppError::NotFound("pipeline not found".into())),
-        Some(0) => {
+        Some(row) if row.i64(0) == 0 => {
             return Err(AppError::Conflict(
                 "pipeline is disabled — enable it before triggering".into(),
             ))
@@ -52,29 +56,41 @@ pub async fn reserve_job(pool: &SqlitePool, job: &ReservedJob<'_>) -> Result<i64
         Some(_) => {}
     }
 
-    let run_number = crate::db::allocate_run_number(&mut tx, job.pipeline_id)
+    // Gapless per-pipeline build numbers: the UPDATE…RETURNING runs under the
+    // same write lock as the insert (the SQLite trigger path's replacement).
+    let run_number = tx
+        .fetch_optional(
+            "UPDATE pipelines SET run_counter = run_counter + 1 \
+             WHERE id = ? RETURNING run_counter",
+            &[job.pipeline_id.into()],
+        )
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map(|r| r.i64(0))
+        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
 
-    sqlx::query(
+    tx.execute(
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by, trigger_params, snapshot,
                            debug_unredact, verbose_logs, environment_id, trigger_user_id,
                            run_number, run_attempt, resource_profile, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), datetime('now'))",
+        &[
+            job.job_id.into(),
+            job.pipeline_id.into(),
+            job.status.into(),
+            job.triggered_by.into(),
+            job.trigger_params_json.into(),
+            serde_json::to_string(job.snapshot)
+                .unwrap_or_else(|_| "{}".into())
+                .into(),
+            SqlValue::Int(if job.debug_unredact { 1 } else { 0 }),
+            SqlValue::Int(if job.verbose { 1 } else { 0 }),
+            job.environment_id.into(),
+            job.trigger_user_id.into(),
+            SqlValue::Int(run_number),
+            job.resource_profile.into(),
+        ],
     )
-    .bind(job.job_id)
-    .bind(job.pipeline_id)
-    .bind(job.status)
-    .bind(job.triggered_by)
-    .bind(job.trigger_params_json)
-    .bind(serde_json::to_string(job.snapshot).unwrap_or_else(|_| "{}".into()))
-    .bind(if job.debug_unredact { 1 } else { 0 })
-    .bind(if job.verbose { 1 } else { 0 })
-    .bind(job.environment_id)
-    .bind(job.trigger_user_id)
-    .bind(run_number)
-    .bind(job.resource_profile)
-    .execute(&mut *tx)
     .await?;
 
     tx.commit()
