@@ -6,7 +6,7 @@
 //! at `max(desired, applied) + 1`, so a restored database can never collide
 //! with a version a host already applied.
 
-use crate::store::exec::{self, DbPool, SqlValue};
+use crate::store::exec::{self, DbPool, DbTx, SqlValue};
 
 use shared::error::AppError;
 
@@ -670,102 +670,104 @@ pub async fn team_exists(pool: &DbPool, team_id: &str) -> Result<bool, AppError>
 // ────────────── claim-path reads (inside the claim transaction) ──────────────
 //
 // `slot_scheduler::decide` runs inside the claim's BEGIN IMMEDIATE; these are
-// its storage reads, named for the fact each returns. They take the
-// transaction's connection so every read shares the claim's lock.
+// its storage reads, named for the fact each returns. They take the claim
+// transaction so every read shares its lock.
 
 /// `(max_resource_slots, desired_version, applied_version)` of one host —
 /// the slot-budget facts (`None` = host not enrolled).
 pub async fn host_slot_facts(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut DbTx<'_>,
     host_id: &str,
     instance_id: &str,
 ) -> Result<Option<(i64, i64, i64)>, AppError> {
-    Ok(sqlx::query_as(
-        "SELECT max_resource_slots, desired_version, applied_version
+    Ok(tx
+        .fetch_optional(
+            "SELECT max_resource_slots, desired_version, applied_version
          FROM sandbox_hosts WHERE host_id = ? AND instance_id = ?",
-    )
-    .bind(host_id)
-    .bind(instance_id)
-    .fetch_optional(conn)
-    .await?)
+            &[host_id.into(), instance_id.into()],
+        )
+        .await?
+        .map(|r| (r.i64(0), r.i64(1), r.i64(2))))
 }
 
 /// Stored config document at one version, read through the claim
-/// transaction's connection (`None` = no such version). Connection-based core
-/// of [`config_document_at`].
+/// transaction (`None` = no such version). Transaction-based core of
+/// [`config_document_at`].
 pub async fn config_document_at_conn(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut DbTx<'_>,
     host_id: &str,
     instance_id: &str,
     version: i64,
 ) -> Result<Option<String>, AppError> {
-    let row: Option<String> = sqlx::query_scalar(
-        "SELECT document FROM sandbox_host_configs
+    Ok(tx
+        .fetch_optional(
+            "SELECT document FROM sandbox_host_configs
          WHERE host_id = ? AND instance_id = ? AND version = ?",
-    )
-    .bind(host_id)
-    .bind(instance_id)
-    .bind(version)
-    .fetch_optional(conn)
-    .await?;
-    Ok(row)
+            &[host_id.into(), instance_id.into(), SqlValue::Int(version)],
+        )
+        .await?
+        .map(|r| r.text(0)))
 }
 
 /// `sandbox_default_max_slots` platform setting (0 = unlimited).
-pub async fn default_max_slots_setting(conn: &mut sqlx::SqliteConnection) -> Result<i64, AppError> {
-    Ok(sqlx::query_scalar(
-        "SELECT COALESCE(CAST(value AS INTEGER), 0) FROM platform_settings WHERE key = 'sandbox_default_max_slots'",
-    )
-    .fetch_optional(conn)
-    .await?
-    .unwrap_or(0))
+pub async fn default_max_slots_setting(tx: &mut DbTx<'_>) -> Result<i64, AppError> {
+    Ok(tx
+        .fetch_optional(
+            "SELECT COALESCE(CAST(value AS INTEGER), 0) FROM platform_settings WHERE key = 'sandbox_default_max_slots'",
+            &[],
+        )
+        .await?
+        .map(|r| r.i64(0))
+        .unwrap_or(0))
 }
 
 /// `sandbox_default_profiles` platform setting JSON (`None` = unset).
-pub async fn default_profiles_setting(
-    conn: &mut sqlx::SqliteConnection,
-) -> Result<Option<String>, AppError> {
-    Ok(sqlx::query_scalar(
-        "SELECT value FROM platform_settings WHERE key = 'sandbox_default_profiles'",
-    )
-    .fetch_optional(conn)
-    .await?)
+pub async fn default_profiles_setting(tx: &mut DbTx<'_>) -> Result<Option<String>, AppError> {
+    Ok(tx
+        .fetch_optional(
+            "SELECT value FROM platform_settings WHERE key = 'sandbox_default_profiles'",
+            &[],
+        )
+        .await?
+        .map(|r| r.text(0)))
 }
 
 /// True when the config row predates the staleness window close — a host
 /// lagging its desired version for too long stops dispatching non-default
 /// profiles.
 pub async fn config_row_is_stale(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut DbTx<'_>,
     stale_seconds: i64,
     host_id: &str,
     instance_id: &str,
     version: i64,
 ) -> Result<bool, AppError> {
-    Ok(sqlx::query_scalar(
-        "SELECT COALESCE(datetime(created_at) <= datetime('now', ? || ' seconds'), 0)
+    Ok(tx
+        .fetch_optional(
+            "SELECT COALESCE(datetime(created_at) <= datetime('now', ? || ' seconds'), 0)
          FROM sandbox_host_configs WHERE host_id = ? AND instance_id = ? AND version = ?",
-    )
-    .bind(format!("-{}", stale_seconds.max(0)))
-    .bind(host_id)
-    .bind(instance_id)
-    .bind(version)
-    .fetch_optional(conn)
-    .await?
-    .unwrap_or(false))
+            &[
+                format!("-{}", stale_seconds.max(0)).into(),
+                host_id.into(),
+                instance_id.into(),
+                SqlValue::Int(version),
+            ],
+        )
+        .await?
+        .map(|r| r.i64(0) != 0)
+        .unwrap_or(false))
 }
 
 /// Slots currently in use by running jobs on one sandboxd instance — the
 /// budget's occupancy half.
-pub async fn running_slots_used(
-    conn: &mut sqlx::SqliteConnection,
-    sandbox_key: &str,
-) -> Result<i64, AppError> {
-    Ok(sqlx::query_scalar(
-        "SELECT COALESCE(SUM(resource_slots), 0) FROM jobs
+pub async fn running_slots_used(tx: &mut DbTx<'_>, sandbox_key: &str) -> Result<i64, AppError> {
+    Ok(tx
+        .fetch_optional(
+            "SELECT COALESCE(SUM(resource_slots), 0) FROM jobs
          WHERE status = 'running' AND sandbox_instance_id = ?",
-    )
-    .bind(sandbox_key)
-    .fetch_one(conn)
-    .await?)
+            &[sandbox_key.into()],
+        )
+        .await?
+        .map(|r| r.i64(0))
+        .unwrap_or(0))
 }

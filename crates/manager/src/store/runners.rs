@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
-use crate::store::exec::{self, DbPool, SqlValue};
+use crate::store::exec::{self, DbPool, DbTx, SqlValue};
 
 use shared::error::AppError;
 use shared::protocol::{ExecutionBackendStatus, RunnerExecutionMode, SystemInfo};
@@ -265,50 +265,49 @@ pub enum EnvironmentGate {
 /// evaluating the same environment. `Blocked` is not an error and the
 /// function has already left the transaction usable.
 pub async fn environment_gate_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut DbTx<'_>,
     job_id: &str,
     pipeline_id: &str,
     environment_id: &str,
 ) -> Result<EnvironmentGate, AppError> {
-    use sqlx::Row;
-
-    let deployment_concurrency: String = sqlx::query_scalar(
-        "SELECT COALESCE(deployment_concurrency, 'off') FROM environments WHERE id = ?",
-    )
-    .bind(environment_id)
-    .fetch_optional(&mut **tx)
-    .await?
-    .unwrap_or_else(|| "off".to_string());
+    let deployment_concurrency = tx
+        .fetch_optional(
+            "SELECT COALESCE(deployment_concurrency, 'off') FROM environments WHERE id = ?",
+            &[environment_id.into()],
+        )
+        .await?
+        .map(|r| r.text(0))
+        .unwrap_or_else(|| "off".to_string());
 
     if deployment_concurrency == "cancel_in_progress" {
         // The newest pending job for the environment is the only claimant.
-        let newest_pending: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM jobs WHERE environment_id = ? AND status = 'pending' \
+        let newest_pending = tx
+            .fetch_optional(
+                "SELECT id FROM jobs WHERE environment_id = ? AND status = 'pending' \
              ORDER BY seq DESC LIMIT 1",
-        )
-        .bind(environment_id)
-        .fetch_optional(&mut **tx)
-        .await?;
+                &[environment_id.into()],
+            )
+            .await?
+            .map(|r| r.text(0));
         if newest_pending.as_deref() != Some(job_id) {
             return Ok(EnvironmentGate::Blocked);
         }
 
-        let superseded_rows = sqlx::query(
-            "SELECT id, status, step_statuses, COALESCE(snapshot, '{}') \
+        let superseded_rows = tx
+            .fetch_all(
+                "SELECT id, status, step_statuses, COALESCE(snapshot, '{}') \
              FROM jobs WHERE environment_id = ? AND id != ? \
              AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
-        )
-        .bind(environment_id)
-        .bind(job_id)
-        .fetch_all(&mut **tx)
-        .await?;
+                &[environment_id.into(), job_id.into()],
+            )
+            .await?;
 
         let mut superseded = Vec::new();
         for row in superseded_rows {
-            let superseded_id: String = row.get(0);
-            let old_status: String = row.get(1);
-            let step_statuses_raw: String = row.get(2);
-            let snapshot_raw: String = row.get(3);
+            let superseded_id: String = row.text(0);
+            let old_status: String = row.text(1);
+            let step_statuses_raw: String = row.text(2);
+            let snapshot_raw: String = row.text(3);
             let mut step_statuses: Vec<serde_json::Value> =
                 serde_json::from_str(&step_statuses_raw).unwrap_or_default();
             for step in &mut step_statuses {
@@ -336,30 +335,37 @@ pub async fn environment_gate_in_tx(
                     );
                 }
             }
-            let updated = sqlx::query(
-                "UPDATE jobs SET status = 'cancelled', step_statuses = ?, snapshot = ?, \
+            let updated = tx
+                .execute(
+                    "UPDATE jobs SET status = 'cancelled', step_statuses = ?, snapshot = ?, \
                  cancel_ack_pending = ?, \
                  end_time = datetime('now'), updated_at = datetime('now') \
                  WHERE id = ? AND status IN \
                  ('pending', 'queued', 'waiting_approval', 'running')",
-            )
-            .bind(serde_json::to_string(&step_statuses).unwrap_or_else(|_| "[]".into()))
-            .bind(serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()))
-            .bind(i64::from(old_status == "running"))
-            .bind(&superseded_id)
-            .execute(&mut **tx)
-            .await?;
-            if updated.rows_affected() > 0 {
+                    &[
+                        serde_json::to_string(&step_statuses)
+                            .unwrap_or_else(|_| "[]".into())
+                            .into(),
+                        serde_json::to_string(&snapshot)
+                            .unwrap_or_else(|_| "{}".into())
+                            .into(),
+                        SqlValue::Int(i64::from(old_status == "running")),
+                        superseded_id.as_str().into(),
+                    ],
+                )
+                .await?;
+            if updated > 0 {
                 if old_status == "waiting_approval" {
-                    sqlx::query(
+                    tx.execute(
                         "INSERT OR IGNORE INTO job_approvals \
                          (id, job_id, user_id, username, action, comment) \
                          VALUES (?, ?, 'system:environment', 'environment concurrency', \
                                  'cancel', 'superseded by cancel_in_progress')",
+                        &[
+                            Uuid::new_v4().to_string().into(),
+                            superseded_id.as_str().into(),
+                        ],
                     )
-                    .bind(Uuid::new_v4().to_string())
-                    .bind(&superseded_id)
-                    .execute(&mut **tx)
                     .await?;
                 }
                 superseded.push(superseded_id);
@@ -369,27 +375,29 @@ pub async fn environment_gate_in_tx(
     }
 
     // One deployment per (pipeline, environment) at a time.
-    let pair_running: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM jobs \
+    let pair_running = tx
+        .fetch_optional(
+            "SELECT COUNT(*) FROM jobs \
          WHERE pipeline_id = ? AND environment_id = ? AND status = 'running' AND id != ?",
-    )
-    .bind(pipeline_id)
-    .bind(environment_id)
-    .bind(job_id)
-    .fetch_one(&mut **tx)
-    .await?;
+            &[pipeline_id.into(), environment_id.into(), job_id.into()],
+        )
+        .await?
+        .map(|r| r.i64(0))
+        .unwrap_or(0);
     if pair_running > 0 {
         return Ok(EnvironmentGate::Blocked);
     }
 
     // `queue` serialises across pipelines sharing the environment.
     if deployment_concurrency == "queue" {
-        let env_running: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM jobs WHERE environment_id = ? AND status = 'running'",
-        )
-        .bind(environment_id)
-        .fetch_one(&mut **tx)
-        .await?;
+        let env_running = tx
+            .fetch_optional(
+                "SELECT COUNT(*) FROM jobs WHERE environment_id = ? AND status = 'running'",
+                &[environment_id.into()],
+            )
+            .await?
+            .map(|r| r.i64(0))
+            .unwrap_or(0);
         if env_running > 0 {
             return Ok(EnvironmentGate::Blocked);
         }
@@ -759,43 +767,44 @@ pub async fn identity_row(pool: &DbPool, id: &str) -> Result<RunnerIdentityRow, 
 /// Replace the execution mode (caller validated the transition first, inside
 /// its own `BEGIN IMMEDIATE`).
 pub async fn set_execution_mode_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut DbTx<'_>,
     id: &str,
     mode: &str,
 ) -> Result<(), AppError> {
-    sqlx::query("UPDATE runners SET execution_mode = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(mode)
-        .bind(id)
-        .execute(&mut **tx)
-        .await?;
+    tx.execute(
+        "UPDATE runners SET execution_mode = ?, updated_at = datetime('now') WHERE id = ?",
+        &[mode.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Current execution mode inside the caller's transaction.
-pub async fn execution_mode_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    id: &str,
-) -> Result<String, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id = ?")
-            .bind(id)
-            .fetch_one(&mut **tx)
-            .await?,
-    )
+pub async fn execution_mode_tx(tx: &mut DbTx<'_>, id: &str) -> Result<String, AppError> {
+    Ok(tx
+        .fetch_optional(
+            "SELECT execution_mode FROM runners WHERE id = ?",
+            &[id.into()],
+        )
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)?
+        .text(0))
 }
 
 /// `(status, last_seen, system_info)` inside the caller's transaction — the
 /// execution-mode transition validator's facts.
 pub async fn transition_facts_tx(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut DbTx<'_>,
     id: &str,
 ) -> Result<(String, Option<String>, String), AppError> {
-    Ok(
-        sqlx::query_as("SELECT status, last_seen, system_info FROM runners WHERE id = ?")
-            .bind(id)
-            .fetch_one(conn)
-            .await?,
-    )
+    Ok(tx
+        .fetch_optional(
+            "SELECT status, last_seen, system_info FROM runners WHERE id = ?",
+            &[id.into()],
+        )
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)
+        .map(|r| (r.text(0), r.opt_text(1), r.text(2)))?)
 }
 
 /// Was the runner seen within the last 90 seconds? (heartbeat freshness)
@@ -803,31 +812,35 @@ pub async fn transition_facts_tx(
 /// Both probes are separate statements with literal offsets — no caller text
 /// ever reaches the SQL, so `datetime()` modifiers stay constant.
 pub async fn seen_within_90s_tx(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut DbTx<'_>,
     last_seen: Option<&str>,
 ) -> Result<bool, AppError> {
-    let value: i64 =
-        sqlx::query_scalar("SELECT COALESCE(datetime(?) >= datetime('now', '-90 seconds'), 0)")
-            .bind(last_seen)
-            .fetch_one(conn)
-            .await?;
+    let value = tx
+        .fetch_optional(
+            "SELECT COALESCE(datetime(?) >= datetime('now', '-90 seconds'), 0)",
+            &[last_seen.into()],
+        )
+        .await?
+        .map(|r| r.i64(0))
+        .unwrap_or(0);
     Ok(value != 0)
 }
 
 /// Is the reported capability check fresh (within 5 minutes, not from the
 /// future)? Same shape as [`seen_within_90s_tx`].
 pub async fn capability_check_fresh_tx(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut DbTx<'_>,
     checked_at: Option<&str>,
 ) -> Result<bool, AppError> {
-    let value: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(datetime(?) >= datetime('now', '-5 minutes') \
+    let value = tx
+        .fetch_optional(
+            "SELECT COALESCE(datetime(?) >= datetime('now', '-5 minutes') \
          AND datetime(?) <= datetime('now', '+30 seconds'), 0)",
-    )
-    .bind(checked_at)
-    .bind(checked_at)
-    .fetch_one(conn)
-    .await?;
+            &[checked_at.into(), checked_at.into()],
+        )
+        .await?
+        .map(|r| r.i64(0))
+        .unwrap_or(0);
     Ok(value != 0)
 }
 
@@ -897,16 +910,15 @@ pub async fn max_concurrent_of(pool: &DbPool, id: &str) -> Result<i64, AppError>
 
 /// Running-job count inside the caller's transaction (the execution-mode
 /// transition guard reads it under the same `BEGIN IMMEDIATE`).
-pub async fn running_job_count_tx(
-    conn: &mut sqlx::SqliteConnection,
-    id: &str,
-) -> Result<i64, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
-            .bind(id)
-            .fetch_one(conn)
-            .await?,
-    )
+pub async fn running_job_count_tx(tx: &mut DbTx<'_>, id: &str) -> Result<i64, AppError> {
+    Ok(tx
+        .fetch_optional(
+            "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
+            &[id.into()],
+        )
+        .await?
+        .map(|r| r.i64(0))
+        .unwrap_or(0))
 }
 
 /// Jobs currently running on this runner — the capacity gate's occupancy.
@@ -1156,48 +1168,62 @@ pub async fn policy_row(
 /// `None` instead of being claimed twice. Returns the frozen run identity:
 /// `(id, pipeline_id, trigger_params, environment_id, run_number, run_attempt)`.
 pub async fn claim_job_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut DbTx<'_>,
     runner_id: &str,
     job_id: &str,
     slots: i64,
     resource_spec: &str,
     sandbox_key: &str,
 ) -> Result<Option<(String, String, Option<String>, Option<String>, i64, i64)>, AppError> {
-    Ok(sqlx::query_as(
-        "UPDATE jobs SET status = 'running', runner_id = ?, start_time = datetime('now'),
+    Ok(tx
+        .fetch_optional(
+            "UPDATE jobs SET status = 'running', runner_id = ?, start_time = datetime('now'),
          resource_slots = ?, resource_spec = ?, sandbox_instance_id = ?, dispatch_reason = '',
          updated_at = datetime('now')
          WHERE id = ? AND status = 'pending'
          RETURNING id, pipeline_id, trigger_params, environment_id, run_number, run_attempt",
-    )
-    .bind(runner_id)
-    .bind(slots)
-    .bind(resource_spec)
-    .bind(sandbox_key)
-    .bind(job_id)
-    .fetch_optional(&mut **tx)
-    .await?)
+            &[
+                runner_id.into(),
+                SqlValue::Int(slots),
+                resource_spec.into(),
+                sandbox_key.into(),
+                job_id.into(),
+            ],
+        )
+        .await?
+        .map(|r| {
+            (
+                r.text(0),
+                r.text(1),
+                r.opt_text(2),
+                r.opt_text(3),
+                r.i64(4),
+                r.i64(5),
+            )
+        }))
 }
 
 /// The claim decision's re-read, inside the caller's `BEGIN IMMEDIATE` scope:
 /// `(pipeline_id, environment_id, runner_team_id, job_team_id)`. `None` when
 /// the job is gone or no longer pending (the caller rolls back and moves on).
+///
+/// PG-port note: the `json_extract` team read has no mechanical rewrite (see
+/// `store::dialect`), so this statement needs an explicit Postgres variant.
 pub async fn claim_candidate_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut DbTx<'_>,
     runner_id: &str,
     job_id: &str,
 ) -> Result<Option<(String, Option<String>, Option<String>, Option<String>)>, AppError> {
-    let row = sqlx::query(
-        "SELECT j.pipeline_id, j.environment_id, r.team_id, \
+    let row = tx
+        .fetch_optional(
+            "SELECT j.pipeline_id, j.environment_id, r.team_id, \
                 json_extract(j.snapshot, '$.team_id') \
          FROM jobs j JOIN runners r ON r.id = ? \
          WHERE j.id = ? AND j.status = 'pending'",
-    )
-    .bind(runner_id)
-    .bind(job_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    Ok(row.map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))))
+            &[runner_id.into(), job_id.into()],
+        )
+        .await?;
+    Ok(row.map(|r| (r.text(0), r.opt_text(1), r.opt_text(2), r.opt_text(3))))
 }
 
 // ───────────────────────────── claim payload plane ─────────────────────────────
@@ -1295,21 +1321,43 @@ pub async fn frozen_task_rows(
 
 /// Live task rows (un-frozen pipelines), step-ordered — the claim payload shape.
 pub async fn live_task_rows(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
 ) -> Result<Vec<ClaimTaskRow>, AppError> {
-    Ok(sqlx::query(
-            "SELECT id, step_order, name, exec_type, COALESCE(host_id, ''), host_names, host_labels, command_template,
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT id, step_order, name, exec_type, COALESCE(host_id, ''), host_names, host_labels, command_template,
                     work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
                     hosts_strategy,
                     privileged, capabilities, hosts_max_parallel, needs_json
              FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_all(pool)
     .await?
     .into_iter()
-    .map(claim_task_row)
+    .map(|r| ClaimTaskRow {
+        id: r.text(0),
+        step_order: r.i64(1),
+        name: r.text(2),
+        exec_type: r.text(3),
+        host_id: r.text(4),
+        host_names: r.text(5),
+        host_labels: r.text(6),
+        command_template: r.text(7),
+        work_dir: r.text(8),
+        retry_count: r.i64(9),
+        timeout_seconds: r.i64(10),
+        fail_strategy: r.text(11),
+        step_secrets: r.text(12),
+        step_env: r.text(13),
+        image: r.text(14),
+        volumes: r.text(15),
+        hosts_strategy: r.text(16),
+        privileged: r.i64(17),
+        capabilities: r.text(18),
+        hosts_max_parallel: r.opt_i64(19),
+        needs_json: r.text(20),
+    })
     .collect())
 }
 
@@ -1627,7 +1675,7 @@ pub async fn team_secret_values_by_name(
 /// be called inside the caller's `BEGIN IMMEDIATE` transaction that also
 /// performs the update; on error the caller must roll the transaction back.
 pub async fn validate_execution_mode_transition(
-    tx: &mut sqlx::SqliteConnection,
+    tx: &mut DbTx<'_>,
     runner_id: &str,
     mode: RunnerExecutionMode,
 ) -> Result<(), AppError> {
@@ -1682,20 +1730,23 @@ pub async fn validate_execution_mode_transition(
 /// transition rule and the write share the lock, so a concurrent claim or
 /// heartbeat cannot interleave between them.
 pub async fn change_execution_mode(
-    pool: &SqlitePool,
+    pool: &DbPool,
     runner_id: &str,
     mode: RunnerExecutionMode,
 ) -> Result<(), AppError> {
     let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
+        .begin_immediate()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    let current: String = sqlx::query("SELECT execution_mode FROM runners WHERE id = ?")
-        .bind(runner_id)
-        .fetch_one(&mut *tx)
+    let current = tx
+        .fetch_optional(
+            "SELECT execution_mode FROM runners WHERE id = ?",
+            &[runner_id.into()],
+        )
         .await?
-        .get(0);
+        .ok_or(sqlx::Error::RowNotFound)?
+        .text(0);
 
     if current != mode.as_str() {
         if let Err(error) = validate_execution_mode_transition(&mut tx, runner_id, mode).await {
@@ -1706,11 +1757,11 @@ pub async fn change_execution_mode(
         }
     }
 
-    sqlx::query("UPDATE runners SET execution_mode = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(mode.as_str())
-        .bind(runner_id)
-        .execute(&mut *tx)
-        .await?;
+    tx.execute(
+        "UPDATE runners SET execution_mode = ?, updated_at = datetime('now') WHERE id = ?",
+        &[mode.as_str().into(), runner_id.into()],
+    )
+    .await?;
 
     tx.commit()
         .await

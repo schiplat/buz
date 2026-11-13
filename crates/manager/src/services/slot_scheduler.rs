@@ -14,14 +14,13 @@
 //! a profile ops removed or excluded stops dispatching before the host has
 //! even applied the removal.
 
+use crate::services::sandbox_defaults::catalog_from_stored;
+use crate::store::exec::DbTx;
 use serde_json::Value;
 use shared::protocol::RunnerExecutionMode;
 use shared::sandbox_config::{
     apply_profile_exclusions, merge_missing_profiles, SandboxHostDocument, DEFAULT_PROFILE,
 };
-use sqlx::SqliteConnection;
-
-use crate::services::sandbox_defaults::catalog_from_stored;
 
 /// How a Runner walks its candidate queue when a job does not fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -100,7 +99,7 @@ fn storage_error(e: shared::error::AppError) -> sqlx::Error {
 }
 
 async fn load_document(
-    tx: &mut SqliteConnection,
+    tx: &mut DbTx<'_>,
     host_id: &str,
     instance_id: &str,
     version: i64,
@@ -119,7 +118,7 @@ async fn load_document(
 /// enforced in the poll loop before this gate); the sandbox host serves
 /// whichever runner claims through it.
 pub async fn decide(
-    tx: &mut SqliteConnection,
+    tx: &mut DbTx<'_>,
     runner: &RunnerDispatchContext,
     profile: &str,
 ) -> Result<Decision, sqlx::Error> {

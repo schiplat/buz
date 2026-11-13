@@ -50,8 +50,8 @@ pub fn runner_satisfies_labels(runner_labels: &[String], required: &[String]) ->
 
 /// Best-effort note of why a poller skipped a pending job: the store owns the
 /// write and the log-on-change behaviour.
-async fn record_dispatch_reason(pool: &sqlx::SqlitePool, job_id: &str, reason: &str) {
-    crate::store::runners::record_dispatch_reason(&DbPool::from_sqlite(pool), job_id, reason).await;
+async fn record_dispatch_reason(db: &DbPool, job_id: &str, reason: &str) {
+    crate::store::runners::record_dispatch_reason(db, job_id, reason).await;
 }
 
 /// `(resource_profile, team_id)` frozen into the job snapshot at trigger.
@@ -954,7 +954,8 @@ async fn poll_once(
         // Serialize environment gate evaluation with the claim. SQLite's
         // immediate transaction reserves the writer before checking blockers,
         // so another poller must re-evaluate after this transaction commits.
-        let mut tx = crate::store::tx::begin_immediate(&state.pool).await?;
+        let db = state.db();
+        let mut tx = db.begin_immediate().await?;
         let Some(candidate) =
             crate::store::runners::claim_candidate_tx(&mut tx, &auth.runner_id, &job_id).await?
         else {
@@ -986,7 +987,7 @@ async fn poll_once(
             } => (slots, spec, sandbox_key),
             crate::services::slot_scheduler::Decision::WaitForCapacity { reason } => {
                 tx.rollback().await?;
-                record_dispatch_reason(&state.pool, &job_id, &reason).await;
+                record_dispatch_reason(&db, &job_id, &reason).await;
                 match dispatch.strategy {
                     // Strict order within this Runner's eligible set: the
                     // oldest fitting-in-principle job blocks the round.
@@ -1012,7 +1013,7 @@ async fn poll_once(
             }
             crate::services::slot_scheduler::Decision::NotEligible { reason } => {
                 tx.rollback().await?;
-                record_dispatch_reason(&state.pool, &job_id, &reason).await;
+                record_dispatch_reason(&db, &job_id, &reason).await;
                 continue;
             }
         };
@@ -1060,8 +1061,8 @@ async fn poll_once(
                     true,
                 )
                 .await;
-                crate::audit::record(
-                    &state.pool,
+                crate::audit::record_pool(
+                    &state.db(),
                     crate::audit::AuditEvent::system(Action::EnvironmentConcurrencyCancel)
                         .resource("job", superseded_id, "superseded by cancel_in_progress"),
                 )
@@ -1262,7 +1263,7 @@ async fn build_claim_payload(
     let task_rows = if has_frozen_tasks {
         crate::store::runners::frozen_task_rows(&state.pool, &snapshot_raw).await?
     } else {
-        crate::store::runners::live_task_rows(&state.pool, &pipeline_id).await?
+        crate::store::runners::live_task_rows(&state.db(), &pipeline_id).await?
     };
 
     // Resolve pipeline secrets from explicit bindings + team_shared (sensitive).
@@ -2182,7 +2183,7 @@ pub async fn update_runner(
     }
 
     if let Some(mode) = req.execution_mode {
-        crate::store::runners::change_execution_mode(&state.pool, &id, mode).await?;
+        crate::store::runners::change_execution_mode(&state.db(), &id, mode).await?;
     }
 
     if let Some(v) = req.clean_workspace_after_job {
