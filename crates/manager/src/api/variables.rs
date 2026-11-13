@@ -126,7 +126,7 @@ pub async fn update(
     if old_value != req.value {
         github_binds_stale =
             crate::store::github_binds::mark_variable_binds_stale_on_default_change(
-                &state.pool,
+                &state.db(),
                 &id,
             )
             .await

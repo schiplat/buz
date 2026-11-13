@@ -8,8 +8,12 @@
 //! `tests/store_sql_validation_test.rs` compiles every literal here against the
 //! migrated schema, so a wrong column name fails the suite instead of the
 //! endpoint.
+//!
+//! On the dual-backend dispatcher (`store::exec`): statements keep the SQLite
+//! dialect and the PG arm rewrites at execution time; projections are fixed,
+//! so rows decode by position.
 
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::{self, DbPool, SqlValue};
 
 use shared::error::AppError;
 
@@ -44,11 +48,9 @@ pub struct BindTarget {
 }
 
 /// Every secret bind for one secret, secret override plaintext never selected.
-pub async fn list_secret_binds(
-    pool: &SqlitePool,
-    secret_id: &str,
-) -> Result<Vec<BindRow>, AppError> {
-    let rows = sqlx::query(
+pub async fn list_secret_binds(pool: &DbPool, secret_id: &str) -> Result<Vec<BindRow>, AppError> {
+    let rows = exec::fetch_all(
+        pool,
         "SELECT b.id, b.repo_id, c.name, r.owner, r.repo,
                 b.last_pushed_at, b.last_status, b.last_error, b.last_op, b.override_value
          FROM secret_github_binds b
@@ -56,24 +58,23 @@ pub async fn list_secret_binds(
          JOIN github_connections c ON c.id = r.connection_id
          WHERE b.secret_id = ?
          ORDER BY r.owner ASC, r.repo ASC",
+        &[secret_id.into()],
     )
-    .bind(secret_id)
-    .fetch_all(pool)
     .await?;
 
     Ok(rows
         .into_iter()
         .map(|r| BindRow {
-            id: r.get(0),
-            repo_id: r.get(1),
-            connection_name: r.get(2),
-            owner: r.get(3),
-            repo: r.get(4),
-            last_pushed_at: r.get(5),
-            last_status: r.get(6),
-            last_error: r.get(7),
-            last_op: r.get(8),
-            has_override: r.get::<Option<String>, _>(9).is_some(),
+            id: r.text(0),
+            repo_id: r.text(1),
+            connection_name: r.text(2),
+            owner: r.text(3),
+            repo: r.text(4),
+            last_pushed_at: r.opt_text(5),
+            last_status: r.text(6),
+            last_error: r.text(7),
+            last_op: r.text(8),
+            has_override: r.opt_text(9).is_some(),
             override_value: None,
         })
         .collect())
@@ -81,71 +82,65 @@ pub async fn list_secret_binds(
 
 /// Owner/repo plus connection name for a repo id, used when binding.
 pub async fn repo_identity(
-    pool: &SqlitePool,
+    pool: &DbPool,
     repo_id: &str,
 ) -> Result<Option<(String, String, String)>, AppError> {
-    let row = sqlx::query(
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT r.owner, r.repo, c.name FROM github_repos r
          JOIN github_connections c ON c.id = r.connection_id
          WHERE r.id = ?",
+        &[repo_id.into()],
     )
-    .bind(repo_id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|r| (r.get(0), r.get(1), r.get(2))))
+    .await?
+    .map(|r| (r.text(0), r.text(1), r.text(2))))
 }
 
 /// True when this secret is already bound to the repo.
 pub async fn secret_bind_exists(
-    pool: &SqlitePool,
+    pool: &DbPool,
     secret_id: &str,
     repo_id: &str,
 ) -> Result<bool, AppError> {
-    let found: Option<String> = sqlx::query_scalar(
+    let found = exec::fetch_optional(
+        pool,
         "SELECT id FROM secret_github_binds WHERE secret_id = ? AND repo_id = ?",
+        &[secret_id.into(), repo_id.into()],
     )
-    .bind(secret_id)
-    .bind(repo_id)
-    .fetch_optional(pool)
     .await?;
     Ok(found.is_some())
 }
 
 /// Create a secret bind. `override_ciphertext` is already encrypted by the caller.
 pub async fn insert_secret_bind(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     secret_id: &str,
     repo_id: &str,
     override_ciphertext: Option<&str>,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "INSERT INTO secret_github_binds (id, secret_id, repo_id, last_op, override_value) VALUES (?, ?, ?, 'bind', ?)",
+        &[id.into(), secret_id.into(), repo_id.into(), override_ciphertext.into()],
     )
-    .bind(id)
-    .bind(secret_id)
-    .bind(repo_id)
-    .bind(override_ciphertext)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Replace the stored override ciphertext (`None` clears it, inheriting the default).
 pub async fn set_secret_bind_override(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     secret_id: &str,
     override_ciphertext: Option<&str>,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE secret_github_binds SET override_value = ?, updated_at = datetime('now') \
          WHERE id = ? AND secret_id = ?",
+        &[override_ciphertext.into(), bind_id.into(), secret_id.into()],
     )
-    .bind(override_ciphertext)
-    .bind(bind_id)
-    .bind(secret_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
@@ -153,43 +148,41 @@ pub async fn set_secret_bind_override(
 /// After a bind override is patched, mark that bind `stale` if it was previously
 /// `ok` (the effective push value changed). Other states are left alone.
 pub async fn mark_secret_bind_stale_if_ok(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
+    let affected = exec::execute(
+        pool,
         "UPDATE secret_github_binds
          SET last_status = 'stale', last_error = '', updated_at = datetime('now')
          WHERE id = ? AND last_status = 'ok'",
+        &[bind_id.into()],
     )
-    .bind(bind_id)
-    .execute(pool)
     .await?;
-    Ok(result.rows_affected() > 0)
+    Ok(affected > 0)
 }
 
 /// Same for variable binds: mark every `ok` bind on the variable stale.
 pub async fn mark_variable_bind_stale_if_ok(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
+    let affected = exec::execute(
+        pool,
         "UPDATE variable_github_binds
          SET last_status = 'stale', last_error = '', updated_at = datetime('now')
          WHERE id = ? AND last_status = 'ok'",
+        &[bind_id.into()],
     )
-    .bind(bind_id)
-    .execute(pool)
     .await?;
-    Ok(result.rows_affected() > 0)
+    Ok(affected > 0)
 }
 
 /// Every variable bind for one variable. Variable overrides are plaintext, so
 /// unlike the secret variant this returns the stored override value.
-pub async fn list_variable_binds(
-    pool: &SqlitePool,
-    var_id: &str,
-) -> Result<Vec<BindRow>, AppError> {
-    let rows = sqlx::query(
+pub async fn list_variable_binds(pool: &DbPool, var_id: &str) -> Result<Vec<BindRow>, AppError> {
+    let rows = exec::fetch_all(
+        pool,
         "SELECT b.id, b.repo_id, c.name, r.owner, r.repo,
                 b.last_pushed_at, b.last_status, b.last_error, b.last_op, b.override_value
          FROM variable_github_binds b
@@ -197,25 +190,24 @@ pub async fn list_variable_binds(
          JOIN github_connections c ON c.id = r.connection_id
          WHERE b.var_id = ?
          ORDER BY r.owner ASC, r.repo ASC",
+        &[var_id.into()],
     )
-    .bind(var_id)
-    .fetch_all(pool)
     .await?;
 
     Ok(rows
         .into_iter()
         .map(|r| {
-            let override_value: Option<String> = r.get(9);
+            let override_value = r.opt_text(9);
             BindRow {
-                id: r.get(0),
-                repo_id: r.get(1),
-                connection_name: r.get(2),
-                owner: r.get(3),
-                repo: r.get(4),
-                last_pushed_at: r.get(5),
-                last_status: r.get(6),
-                last_error: r.get(7),
-                last_op: r.get(8),
+                id: r.text(0),
+                repo_id: r.text(1),
+                connection_name: r.text(2),
+                owner: r.text(3),
+                repo: r.text(4),
+                last_pushed_at: r.opt_text(5),
+                last_status: r.text(6),
+                last_error: r.text(7),
+                last_op: r.text(8),
                 has_override: override_value.is_some(),
                 override_value,
             }
@@ -225,54 +217,49 @@ pub async fn list_variable_binds(
 
 /// Create a variable bind. Variable overrides are plaintext.
 pub async fn insert_variable_bind(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     var_id: &str,
     repo_id: &str,
     override_value: Option<&str>,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "INSERT INTO variable_github_binds (id, var_id, repo_id, last_op, override_value) VALUES (?, ?, ?, 'bind', ?)",
+        &[id.into(), var_id.into(), repo_id.into(), override_value.into()],
     )
-    .bind(id)
-    .bind(var_id)
-    .bind(repo_id)
-    .bind(override_value)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// True when this variable is already bound to the repo.
 pub async fn variable_bind_exists(
-    pool: &SqlitePool,
+    pool: &DbPool,
     var_id: &str,
     repo_id: &str,
 ) -> Result<bool, AppError> {
-    let found: Option<String> =
-        sqlx::query_scalar("SELECT id FROM variable_github_binds WHERE var_id = ? AND repo_id = ?")
-            .bind(var_id)
-            .bind(repo_id)
-            .fetch_optional(pool)
-            .await?;
+    let found = exec::fetch_optional(
+        pool,
+        "SELECT id FROM variable_github_binds WHERE var_id = ? AND repo_id = ?",
+        &[var_id.into(), repo_id.into()],
+    )
+    .await?;
     Ok(found.is_some())
 }
 
 /// Replace a variable bind's plaintext override (`None` inherits the default).
 pub async fn set_variable_bind_override(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     var_id: &str,
     override_value: Option<&str>,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE variable_github_binds SET override_value = ?, updated_at = datetime('now') \
          WHERE id = ? AND var_id = ?",
+        &[override_value.into(), bind_id.into(), var_id.into()],
     )
-    .bind(override_value)
-    .bind(bind_id)
-    .bind(var_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
@@ -289,130 +276,130 @@ pub struct VariableBindTarget {
 
 /// Load a variable bind by id, scoped to its variable (`None` = not bound).
 pub async fn variable_bind_target(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     var_id: &str,
 ) -> Result<Option<VariableBindTarget>, AppError> {
-    let row = sqlx::query(
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT b.id, r.owner, r.repo, c.api_base_url, c.token_ciphertext, c.name, b.override_value
          FROM variable_github_binds b
          JOIN github_repos r ON r.id = b.repo_id
          JOIN github_connections c ON c.id = r.connection_id
          WHERE b.id = ? AND b.var_id = ?",
+        &[bind_id.into(), var_id.into()],
     )
-    .bind(bind_id)
-    .bind(var_id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|r| VariableBindTarget {
-        owner: r.get(1),
-        repo: r.get(2),
-        api_base_url: r.get(3),
-        token_ciphertext: r.get(4),
-        connection_name: r.get(5),
-        override_value: r.get(6),
+    .await?
+    .map(|r| VariableBindTarget {
+        owner: r.text(1),
+        repo: r.text(2),
+        api_base_url: r.text(3),
+        token_ciphertext: r.text(4),
+        connection_name: r.text(5),
+        override_value: r.opt_text(6),
     }))
 }
 
 /// Ids of a variable's binds (`bind_id` set = just that one, still scoped).
 pub async fn variable_bind_ids(
-    pool: &SqlitePool,
+    pool: &DbPool,
     var_id: &str,
     bind_id: Option<&str>,
 ) -> Result<Vec<String>, AppError> {
     match bind_id {
         Some(bid) if !bid.is_empty() => Ok(vec![bid.to_string()]),
-        _ => Ok(
-            sqlx::query_scalar("SELECT id FROM variable_github_binds WHERE var_id = ?")
-                .bind(var_id)
-                .fetch_all(pool)
-                .await?,
-        ),
+        _ => Ok(exec::fetch_all(
+            pool,
+            "SELECT id FROM variable_github_binds WHERE var_id = ?",
+            &[var_id.into()],
+        )
+        .await?
+        .into_iter()
+        .map(|r| r.text(0))
+        .collect()),
     }
 }
 
 /// Record a successful push of a variable bind.
-pub async fn mark_variable_bind_pushed_ok(
-    pool: &SqlitePool,
-    bind_id: &str,
-) -> Result<(), AppError> {
-    sqlx::query(
+pub async fn mark_variable_bind_pushed_ok(pool: &DbPool, bind_id: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
         "UPDATE variable_github_binds SET last_status = 'ok', last_error = '', \
          last_pushed_at = datetime('now'), last_op = 'push', updated_at = datetime('now') \
          WHERE id = ?",
+        &[bind_id.into()],
     )
-    .bind(bind_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Record a failed push of a variable bind.
 pub async fn mark_variable_bind_push_failed(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     error: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE variable_github_binds SET last_status = 'failed', last_error = ?, \
          last_op = 'push', updated_at = datetime('now') WHERE id = ?",
+        &[error.into(), bind_id.into()],
     )
-    .bind(error)
-    .bind(bind_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Record a failed remote unbind, keeping the local row so the operator can retry.
 pub async fn mark_variable_bind_unbind_failed(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     var_id: &str,
     error: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE variable_github_binds SET last_op = 'unbind', last_status = 'failed', \
          last_error = ?, updated_at = datetime('now') WHERE id = ? AND var_id = ?",
+        &[error.into(), bind_id.into(), var_id.into()],
     )
-    .bind(error)
-    .bind(bind_id)
-    .bind(var_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Delete one variable bind; `false` when it did not exist.
 pub async fn delete_variable_bind(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     var_id: &str,
 ) -> Result<bool, AppError> {
-    let result = sqlx::query("DELETE FROM variable_github_binds WHERE id = ? AND var_id = ?")
-        .bind(bind_id)
-        .bind(var_id)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() != 0)
+    let affected = exec::execute(
+        pool,
+        "DELETE FROM variable_github_binds WHERE id = ? AND var_id = ?",
+        &[bind_id.into(), var_id.into()],
+    )
+    .await?;
+    Ok(affected != 0)
 }
 
 // ───────────────────── secret-side mirrors of the variable paths ─────────────────────
 
 /// Ids of a secret's binds (`bind_id` set = just that one, still scoped).
 pub async fn secret_bind_ids(
-    pool: &SqlitePool,
+    pool: &DbPool,
     secret_id: &str,
     bind_id: Option<&str>,
 ) -> Result<Vec<String>, AppError> {
     match bind_id {
         Some(bid) if !bid.is_empty() => Ok(vec![bid.to_string()]),
-        _ => Ok(
-            sqlx::query_scalar("SELECT id FROM secret_github_binds WHERE secret_id = ?")
-                .bind(secret_id)
-                .fetch_all(pool)
-                .await?,
-        ),
+        _ => Ok(exec::fetch_all(
+            pool,
+            "SELECT id FROM secret_github_binds WHERE secret_id = ?",
+            &[secret_id.into()],
+        )
+        .await?
+        .into_iter()
+        .map(|r| r.text(0))
+        .collect()),
     }
 }
 
@@ -428,88 +415,85 @@ pub struct SecretBindTarget {
 
 /// Load a secret bind by id, scoped to its secret (`None` = not bound).
 pub async fn secret_bind_target(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     secret_id: &str,
 ) -> Result<Option<SecretBindTarget>, AppError> {
-    let row = sqlx::query(
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT b.id, r.owner, r.repo, c.api_base_url, c.token_ciphertext, c.name, b.override_value
              FROM secret_github_binds b
              JOIN github_repos r ON r.id = b.repo_id
              JOIN github_connections c ON c.id = r.connection_id
              WHERE b.id = ? AND b.secret_id = ?",
+        &[bind_id.into(), secret_id.into()],
     )
-    .bind(bind_id)
-    .bind(secret_id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|r| SecretBindTarget {
-        owner: r.get(1),
-        repo: r.get(2),
-        api_base_url: r.get(3),
-        token_ciphertext: r.get(4),
-        connection_name: r.get(5),
-        override_ciphertext: r.get(6),
+    .await?
+    .map(|r| SecretBindTarget {
+        owner: r.text(1),
+        repo: r.text(2),
+        api_base_url: r.text(3),
+        token_ciphertext: r.text(4),
+        connection_name: r.text(5),
+        override_ciphertext: r.opt_text(6),
     }))
 }
 
 /// Record a successful push of a secret bind.
-pub async fn mark_secret_bind_pushed_ok(pool: &SqlitePool, bind_id: &str) -> Result<(), AppError> {
-    sqlx::query(
+pub async fn mark_secret_bind_pushed_ok(pool: &DbPool, bind_id: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
         "UPDATE secret_github_binds SET last_status = 'ok', last_error = '', last_pushed_at = datetime('now'), last_op = 'push', updated_at = datetime('now') WHERE id = ?",
+        &[bind_id.into()],
     )
-    .bind(bind_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Record a failed push of a secret bind.
 pub async fn mark_secret_bind_push_failed(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     error: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE secret_github_binds SET last_status = 'failed', last_error = ?, last_op = 'push', updated_at = datetime('now') WHERE id = ?",
+        &[error.into(), bind_id.into()],
     )
-    .bind(error)
-    .bind(bind_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Record a failed remote unbind, keeping the local row so the operator can retry.
 pub async fn mark_secret_bind_unbind_failed(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     secret_id: &str,
     error: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE secret_github_binds SET last_op = 'unbind', last_status = 'failed', last_error = ?, updated_at = datetime('now') WHERE id = ? AND secret_id = ?",
+        &[error.into(), bind_id.into(), secret_id.into()],
     )
-    .bind(error)
-    .bind(bind_id)
-    .bind(secret_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Delete one secret bind; `false` when it did not exist.
 pub async fn delete_secret_bind(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     secret_id: &str,
 ) -> Result<bool, AppError> {
-    let result = sqlx::query("DELETE FROM secret_github_binds WHERE id = ? AND secret_id = ?")
-        .bind(bind_id)
-        .bind(secret_id)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() != 0)
+    let affected = exec::execute(
+        pool,
+        "DELETE FROM secret_github_binds WHERE id = ? AND secret_id = ?",
+        &[bind_id.into(), secret_id.into()],
+    )
+    .await?;
+    Ok(affected != 0)
 }
 
 /// The bind + repo/connection facts the patch paths echo back
@@ -525,93 +509,89 @@ pub struct BindPatchFacts {
     pub last_op: String,
 }
 
-fn patch_facts_row(r: sqlx::sqlite::SqliteRow) -> BindPatchFacts {
+fn patch_facts_row(r: exec::GenericRow) -> BindPatchFacts {
     BindPatchFacts {
-        repo_id: r.get(1),
-        connection_name: r.get(2),
-        owner: r.get(3),
-        repo: r.get(4),
-        last_pushed_at: r.get(5),
-        last_status: r.get(6),
-        last_error: r.get(7),
-        last_op: r.get(8),
+        repo_id: r.text(1),
+        connection_name: r.text(2),
+        owner: r.text(3),
+        repo: r.text(4),
+        last_pushed_at: r.opt_text(5),
+        last_status: r.text(6),
+        last_error: r.text(7),
+        last_op: r.text(8),
     }
 }
 
 /// Load one secret bind's patch facts, scoped to its secret
 /// (`None` = no such bind).
 pub async fn secret_bind_patch_facts(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     secret_id: &str,
 ) -> Result<Option<BindPatchFacts>, AppError> {
-    let row = sqlx::query(
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT b.id, b.repo_id, c.name, r.owner, r.repo, b.last_pushed_at, b.last_status, b.last_error, b.last_op
          FROM secret_github_binds b
          JOIN github_repos r ON r.id = b.repo_id
          JOIN github_connections c ON c.id = r.connection_id
          WHERE b.id = ? AND b.secret_id = ?",
+        &[bind_id.into(), secret_id.into()],
     )
-    .bind(bind_id)
-    .bind(secret_id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(patch_facts_row))
+    .await?
+    .map(patch_facts_row))
 }
 
 /// Load one variable bind's patch facts, scoped to its variable
 /// (`None` = no such bind).
 pub async fn variable_bind_patch_facts(
-    pool: &SqlitePool,
+    pool: &DbPool,
     bind_id: &str,
     var_id: &str,
 ) -> Result<Option<BindPatchFacts>, AppError> {
-    let row = sqlx::query(
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT b.id, b.repo_id, c.name, r.owner, r.repo, b.last_pushed_at, b.last_status, b.last_error, b.last_op
          FROM variable_github_binds b
          JOIN github_repos r ON r.id = b.repo_id
          JOIN github_connections c ON c.id = r.connection_id
          WHERE b.id = ? AND b.var_id = ?",
+        &[bind_id.into(), var_id.into()],
     )
-    .bind(bind_id)
-    .bind(var_id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(patch_facts_row))
+    .await?
+    .map(patch_facts_row))
 }
 
 /// After the platform default secret value changes, mark inherit binds
 /// (`override_value IS NULL`) that were successfully pushed as `stale`.
 /// Custom-override binds are left alone. Returns how many rows were marked.
 pub async fn mark_secret_binds_stale_on_default_change(
-    pool: &SqlitePool,
+    pool: &DbPool,
     secret_id: &str,
 ) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE secret_github_binds
          SET last_status = 'stale', last_error = '', updated_at = datetime('now')
          WHERE secret_id = ? AND override_value IS NULL AND last_status = 'ok'",
+        &[secret_id.into()],
     )
-    .bind(secret_id)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected())
+    .await
 }
 
 /// After the platform default variable value changes, mark inherit binds as `stale`.
 pub async fn mark_variable_binds_stale_on_default_change(
-    pool: &SqlitePool,
+    pool: &DbPool,
     var_id: &str,
 ) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE variable_github_binds
          SET last_status = 'stale', last_error = '', updated_at = datetime('now')
          WHERE var_id = ? AND override_value IS NULL AND last_status = 'ok'",
+        &[var_id.into()],
     )
-    .bind(var_id)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected())
+    .await
 }
 
 // ─────────────────────────── list-enrichment summaries ───────────────────────────
@@ -627,7 +607,7 @@ pub struct RepoBindSummary {
 
 /// Secret binds for a batch of repos, secret-name-ordered.
 pub async fn repo_secret_bind_summaries(
-    pool: &SqlitePool,
+    pool: &DbPool,
     repo_ids: &[String],
 ) -> Result<Vec<RepoBindSummary>, AppError> {
     if repo_ids.is_empty() {
@@ -641,26 +621,23 @@ pub async fn repo_secret_bind_summaries(
          WHERE b.repo_id IN ({placeholders})
          ORDER BY s.name ASC"
     );
-    let mut q = sqlx::query(&secret_sql);
-    for id in repo_ids {
-        q = q.bind(id);
-    }
-    Ok(q.fetch_all(pool)
+    let binds: Vec<SqlValue> = repo_ids.iter().map(|id| id.as_str().into()).collect();
+    Ok(exec::fetch_all(pool, &secret_sql, &binds)
         .await?
         .into_iter()
         .map(|r| RepoBindSummary {
-            repo_id: r.get(0),
-            id: r.get(1),
-            name: r.get(2),
-            last_status: r.get(3),
-            last_op: r.get(4),
+            repo_id: r.text(0),
+            id: r.text(1),
+            name: r.text(2),
+            last_status: r.text(3),
+            last_op: r.text(4),
         })
         .collect())
 }
 
 /// Variable binds for a batch of repos, variable-name-ordered.
 pub async fn repo_variable_bind_summaries(
-    pool: &SqlitePool,
+    pool: &DbPool,
     repo_ids: &[String],
 ) -> Result<Vec<RepoBindSummary>, AppError> {
     if repo_ids.is_empty() {
@@ -674,19 +651,16 @@ pub async fn repo_variable_bind_summaries(
          WHERE b.repo_id IN ({placeholders})
          ORDER BY v.name ASC"
     );
-    let mut q = sqlx::query(&var_sql);
-    for id in repo_ids {
-        q = q.bind(id);
-    }
-    Ok(q.fetch_all(pool)
+    let binds: Vec<SqlValue> = repo_ids.iter().map(|id| id.as_str().into()).collect();
+    Ok(exec::fetch_all(pool, &var_sql, &binds)
         .await?
         .into_iter()
         .map(|r| RepoBindSummary {
-            repo_id: r.get(0),
-            id: r.get(1),
-            name: r.get(2),
-            last_status: r.get(3),
-            last_op: r.get(4),
+            repo_id: r.text(0),
+            id: r.text(1),
+            name: r.text(2),
+            last_status: r.text(3),
+            last_op: r.text(4),
         })
         .collect())
 }
@@ -707,9 +681,25 @@ pub struct BindListRow {
     pub override_value: Option<String>,
 }
 
+fn bind_list_row(r: exec::GenericRow) -> BindListRow {
+    BindListRow {
+        resource_id: r.text(0),
+        id: r.text(1),
+        repo_id: r.text(2),
+        connection_name: r.text(3),
+        owner: r.text(4),
+        repo: r.text(5),
+        last_status: r.text(6),
+        last_pushed_at: r.opt_text(7),
+        last_error: r.text(8),
+        last_op: r.text(9),
+        override_value: r.opt_text(10),
+    }
+}
+
 /// Secret binds for a batch of secrets, owner/repo-ordered.
 pub async fn secret_bind_summaries(
-    pool: &SqlitePool,
+    pool: &DbPool,
     secret_ids: &[String],
 ) -> Result<Vec<BindListRow>, AppError> {
     if secret_ids.is_empty() {
@@ -724,32 +714,17 @@ pub async fn secret_bind_summaries(
          WHERE b.secret_id IN ({placeholders})
          ORDER BY r.owner ASC, r.repo ASC"
     );
-    let mut q = sqlx::query(&sql);
-    for id in secret_ids {
-        q = q.bind(id);
-    }
-    Ok(q.fetch_all(pool)
+    let binds: Vec<SqlValue> = secret_ids.iter().map(|id| id.as_str().into()).collect();
+    Ok(exec::fetch_all(pool, &sql, &binds)
         .await?
         .into_iter()
-        .map(|r| BindListRow {
-            resource_id: r.get(0),
-            id: r.get(1),
-            repo_id: r.get(2),
-            connection_name: r.get(3),
-            owner: r.get(4),
-            repo: r.get(5),
-            last_status: r.get(6),
-            last_pushed_at: r.get(7),
-            last_error: r.get(8),
-            last_op: r.get(9),
-            override_value: r.get(10),
-        })
+        .map(bind_list_row)
         .collect())
 }
 
 /// Variable binds for a batch of variables, owner/repo-ordered.
 pub async fn variable_bind_summaries(
-    pool: &SqlitePool,
+    pool: &DbPool,
     var_ids: &[String],
 ) -> Result<Vec<BindListRow>, AppError> {
     if var_ids.is_empty() {
@@ -764,25 +739,10 @@ pub async fn variable_bind_summaries(
          WHERE b.var_id IN ({placeholders})
          ORDER BY r.owner ASC, r.repo ASC"
     );
-    let mut q = sqlx::query(&sql);
-    for id in var_ids {
-        q = q.bind(id);
-    }
-    Ok(q.fetch_all(pool)
+    let binds: Vec<SqlValue> = var_ids.iter().map(|id| id.as_str().into()).collect();
+    Ok(exec::fetch_all(pool, &sql, &binds)
         .await?
         .into_iter()
-        .map(|r| BindListRow {
-            resource_id: r.get(0),
-            id: r.get(1),
-            repo_id: r.get(2),
-            connection_name: r.get(3),
-            owner: r.get(4),
-            repo: r.get(5),
-            last_status: r.get(6),
-            last_pushed_at: r.get(7),
-            last_error: r.get(8),
-            last_op: r.get(9),
-            override_value: r.get(10),
-        })
+        .map(bind_list_row)
         .collect())
 }

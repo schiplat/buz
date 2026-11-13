@@ -450,7 +450,7 @@ pub(crate) async fn repo_binds_map(
     let mut map: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
     let secrets =
-        crate::store::github_binds::repo_secret_bind_summaries(&state.pool, repo_ids).await?;
+        crate::store::github_binds::repo_secret_bind_summaries(&state.db(), repo_ids).await?;
     for s in secrets {
         map.entry(s.repo_id).or_default().push(serde_json::json!({
             "kind": "secret",
@@ -461,7 +461,7 @@ pub(crate) async fn repo_binds_map(
         }));
     }
     let vars =
-        crate::store::github_binds::repo_variable_bind_summaries(&state.pool, repo_ids).await?;
+        crate::store::github_binds::repo_variable_bind_summaries(&state.db(), repo_ids).await?;
     for v in vars {
         map.entry(v.repo_id).or_default().push(serde_json::json!({
             "kind": "variable",
@@ -819,7 +819,7 @@ pub async fn list_secret_binds(
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     let team_id = secret_team_id(&state.pool, &secret_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
-    let binds = crate::store::github_binds::list_secret_binds(&state.pool, &secret_id).await?;
+    let binds = crate::store::github_binds::list_secret_binds(&state.db(), &secret_id).await?;
     let out: Vec<serde_json::Value> = binds
         .into_iter()
         .map(|b| {
@@ -853,7 +853,7 @@ pub async fn add_secret_bind(
     // bind state but not change it.
     let team_id = secret_team_id(&state.pool, &secret_id).await?;
 
-    let repo = crate::store::github_binds::repo_identity(&state.pool, &req.repo_id).await?;
+    let repo = crate::store::github_binds::repo_identity(&state.db(), &req.repo_id).await?;
     let (owner, repo_name, conn_name) = match repo {
         Some(r) => r,
         None => {
@@ -877,7 +877,7 @@ pub async fn add_secret_bind(
         }
     };
 
-    if crate::store::github_binds::secret_bind_exists(&state.pool, &secret_id, &req.repo_id).await?
+    if crate::store::github_binds::secret_bind_exists(&state.db(), &secret_id, &req.repo_id).await?
     {
         let secret_name = crate::store::secrets::secret_name(&state.db(), &secret_id).await?;
         audit::record(
@@ -912,7 +912,7 @@ pub async fn add_secret_bind(
         ),
     };
     crate::store::github_binds::insert_secret_bind(
-        &state.pool,
+        &state.db(),
         &id,
         &secret_id,
         &req.repo_id,
@@ -959,7 +959,7 @@ pub async fn patch_secret_bind(
     let team_id = secret_team_id(&state.pool, &secret_id).await?;
 
     let row =
-        crate::store::github_binds::secret_bind_patch_facts(&state.pool, &bind_id, &secret_id)
+        crate::store::github_binds::secret_bind_patch_facts(&state.db(), &bind_id, &secret_id)
             .await?
             .ok_or_else(|| AppError::NotFound("secret github bind not found".into()))?;
 
@@ -977,7 +977,7 @@ pub async fn patch_secret_bind(
     };
 
     crate::store::github_binds::set_secret_bind_override(
-        &state.pool,
+        &state.db(),
         &bind_id,
         &secret_id,
         override_cipher.as_deref(),
@@ -985,7 +985,7 @@ pub async fn patch_secret_bind(
     .await?;
 
     // Override change changes the effective push value — mark previously-ok binds stale.
-    let marked = crate::store::github_binds::mark_secret_bind_stale_if_ok(&state.pool, &bind_id)
+    let marked = crate::store::github_binds::mark_secret_bind_stale_if_ok(&state.db(), &bind_id)
         .await
         .unwrap_or(false);
 
@@ -1051,7 +1051,7 @@ pub async fn delete_secret_bind(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     let team_id = secret_team_id(&state.pool, &secret_id).await?;
 
-    let target = crate::store::github_binds::secret_bind_target(&state.pool, &bind_id, &secret_id)
+    let target = crate::store::github_binds::secret_bind_target(&state.db(), &bind_id, &secret_id)
         .await?
         .ok_or_else(|| AppError::NotFound("secret github bind not found".into()))?;
     let (owner, repo, api_base, token_cipher, conn_name) = (
@@ -1073,7 +1073,7 @@ pub async fn delete_secret_bind(
         // Record the failed unbind on the bind row so the UI can surface it;
         // the row is kept so the operator can fix the connection and retry.
         crate::store::github_binds::mark_secret_bind_unbind_failed(
-            &state.pool,
+            &state.db(),
             &bind_id,
             &secret_id,
             &format!("unbind failed: {e}"),
@@ -1089,7 +1089,7 @@ pub async fn delete_secret_bind(
         return Err(e);
     }
 
-    crate::store::github_binds::delete_secret_bind(&state.pool, &bind_id, &secret_id).await?;
+    crate::store::github_binds::delete_secret_bind(&state.db(), &bind_id, &secret_id).await?;
 
     tracing::info!(
         connection = %conn_name,
@@ -1131,7 +1131,7 @@ pub async fn push_secret_binds(
     validate_gh_name(&secret_name)?;
 
     let bind_ids = crate::store::github_binds::secret_bind_ids(
-        &state.pool,
+        &state.db(),
         &secret_id,
         query.bind_id.as_deref(),
     )
@@ -1145,7 +1145,7 @@ pub async fn push_secret_binds(
     let mut results = Vec::new();
     for bind_id in &bind_ids {
         let target = match crate::store::github_binds::secret_bind_target(
-            &state.pool,
+            &state.db(),
             bind_id,
             &secret_id,
         )
@@ -1201,7 +1201,7 @@ pub async fn push_secret_binds(
 
         let outcome_success = match outcome {
             Ok(()) => {
-                crate::store::github_binds::mark_secret_bind_pushed_ok(&state.pool, bind_id)
+                crate::store::github_binds::mark_secret_bind_pushed_ok(&state.db(), bind_id)
                     .await?;
                 results.push(serde_json::json!({
                     "bind_id": bind_id, "owner": owner, "repo": repo, "status": "ok",
@@ -1216,7 +1216,7 @@ pub async fn push_secret_binds(
             }
             Err(e) => {
                 crate::store::github_binds::mark_secret_bind_push_failed(
-                    &state.pool,
+                    &state.db(),
                     bind_id,
                     &e.to_string(),
                 )
@@ -1269,7 +1269,7 @@ pub async fn list_variable_binds(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     variable_exists(&state, &var_id).await?;
-    let binds = crate::store::github_binds::list_variable_binds(&state.pool, &var_id).await?;
+    let binds = crate::store::github_binds::list_variable_binds(&state.db(), &var_id).await?;
     let out: Vec<serde_json::Value> = binds
         .into_iter()
         .map(|b| {
@@ -1299,7 +1299,7 @@ pub async fn add_variable_bind(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     variable_exists(&state, &var_id).await?;
 
-    let repo = crate::store::github_binds::repo_identity(&state.pool, &req.repo_id).await?;
+    let repo = crate::store::github_binds::repo_identity(&state.db(), &req.repo_id).await?;
     let (owner, repo_name, conn_name) = match repo {
         Some(r) => r,
         None => {
@@ -1322,7 +1322,7 @@ pub async fn add_variable_bind(
         }
     };
 
-    if crate::store::github_binds::variable_bind_exists(&state.pool, &var_id, &req.repo_id).await? {
+    if crate::store::github_binds::variable_bind_exists(&state.db(), &var_id, &req.repo_id).await? {
         let var_name = crate::store::variables::variable_name(&state.db(), &var_id).await?;
         audit::record(
             &state.pool,
@@ -1343,7 +1343,7 @@ pub async fn add_variable_bind(
 
     let id = Uuid::new_v4().to_string();
     crate::store::github_binds::insert_variable_bind(
-        &state.pool,
+        &state.db(),
         &id,
         &var_id,
         &req.repo_id,
@@ -1388,19 +1388,19 @@ pub async fn patch_variable_bind(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     variable_exists(&state, &var_id).await?;
 
-    let row = crate::store::github_binds::variable_bind_patch_facts(&state.pool, &bind_id, &var_id)
+    let row = crate::store::github_binds::variable_bind_patch_facts(&state.db(), &bind_id, &var_id)
         .await?
         .ok_or_else(|| AppError::NotFound("variable github bind not found".into()))?;
 
     crate::store::github_binds::set_variable_bind_override(
-        &state.pool,
+        &state.db(),
         &bind_id,
         &var_id,
         req.override_value.as_deref(),
     )
     .await?;
 
-    let marked = crate::store::github_binds::mark_variable_bind_stale_if_ok(&state.pool, &bind_id)
+    let marked = crate::store::github_binds::mark_variable_bind_stale_if_ok(&state.db(), &bind_id)
         .await
         .unwrap_or(false);
 
@@ -1464,7 +1464,7 @@ pub async fn delete_variable_bind(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     variable_exists(&state, &var_id).await?;
 
-    let target = crate::store::github_binds::variable_bind_target(&state.pool, &bind_id, &var_id)
+    let target = crate::store::github_binds::variable_bind_target(&state.db(), &bind_id, &var_id)
         .await?
         .ok_or_else(|| AppError::NotFound("variable github bind not found".into()))?;
     let (owner, repo, api_base) = (target.owner, target.repo, target.api_base_url);
@@ -1482,7 +1482,7 @@ pub async fn delete_variable_bind(
         // Record the failed unbind on the bind row so the UI can surface it;
         // the row is kept so the operator can fix the connection and retry.
         crate::store::github_binds::mark_variable_bind_unbind_failed(
-            &state.pool,
+            &state.db(),
             &bind_id,
             &var_id,
             &format!("unbind failed: {e}"),
@@ -1498,7 +1498,7 @@ pub async fn delete_variable_bind(
         return Err(e);
     }
 
-    crate::store::github_binds::delete_variable_bind(&state.pool, &bind_id, &var_id).await?;
+    crate::store::github_binds::delete_variable_bind(&state.db(), &bind_id, &var_id).await?;
 
     tracing::info!(
         connection = %conn_name,
@@ -1532,7 +1532,7 @@ pub async fn push_variable_binds(
     validate_gh_name(&var_name)?;
 
     let bind_ids = crate::store::github_binds::variable_bind_ids(
-        &state.pool,
+        &state.db(),
         &var_id,
         query.bind_id.as_deref(),
     )
@@ -1546,7 +1546,7 @@ pub async fn push_variable_binds(
     let mut results = Vec::new();
     for bind_id in &bind_ids {
         let target = match crate::store::github_binds::variable_bind_target(
-            &state.pool,
+            &state.db(),
             bind_id,
             &var_id,
         )
@@ -1583,7 +1583,7 @@ pub async fn push_variable_binds(
 
         let outcome_success = match outcome {
             Ok(()) => {
-                crate::store::github_binds::mark_variable_bind_pushed_ok(&state.pool, bind_id)
+                crate::store::github_binds::mark_variable_bind_pushed_ok(&state.db(), bind_id)
                     .await?;
                 results.push(serde_json::json!({
                     "bind_id": bind_id, "owner": owner, "repo": repo, "status": "ok",
@@ -1598,7 +1598,7 @@ pub async fn push_variable_binds(
             }
             Err(e) => {
                 crate::store::github_binds::mark_variable_bind_push_failed(
-                    &state.pool,
+                    &state.db(),
                     bind_id,
                     &e.to_string(),
                 )
@@ -1647,7 +1647,7 @@ pub(crate) async fn secret_binds_map(
 ) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, AppError> {
     let mut map: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
-    for b in crate::store::github_binds::secret_bind_summaries(&state.pool, secret_ids).await? {
+    for b in crate::store::github_binds::secret_bind_summaries(&state.db(), secret_ids).await? {
         map.entry(b.resource_id)
             .or_default()
             .push(bind_row_json(&BindView {
@@ -1675,7 +1675,7 @@ pub(crate) async fn variable_binds_map(
 ) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, AppError> {
     let mut map: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
-    for b in crate::store::github_binds::variable_bind_summaries(&state.pool, var_ids).await? {
+    for b in crate::store::github_binds::variable_bind_summaries(&state.db(), var_ids).await? {
         map.entry(b.resource_id)
             .or_default()
             .push(bind_row_json(&BindView {

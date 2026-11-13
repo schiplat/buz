@@ -260,7 +260,7 @@ pub async fn update(
         if value_changed {
             github_binds_stale =
                 crate::store::github_binds::mark_secret_binds_stale_on_default_change(
-                    &state.pool,
+                    &state.db(),
                     &id,
                 )
                 .await
