@@ -497,6 +497,13 @@ fn decode_pg_row(row: sqlx::postgres::PgRow) -> GenericRow {
             SqlValue::Null
         } else if let Ok(v) = row.try_get::<i64, _>(i) {
             SqlValue::Int(v)
+        } else if let Ok(v) = row.try_get::<i32, _>(i) {
+            // INT4 columns: literal CASE branches (`THEN 1 ELSE 0 END`),
+            // integer returns, …. sqlx is strict per type, so i64 does not
+            // decode an INT4 column — the cascade must step down.
+            SqlValue::Int(i64::from(v))
+        } else if let Ok(v) = row.try_get::<i16, _>(i) {
+            SqlValue::Int(i64::from(v))
         } else if let Ok(v) = row.try_get::<f64, _>(i) {
             SqlValue::Real(v)
         } else if let Ok(v) = row.try_get::<bool, _>(i) {

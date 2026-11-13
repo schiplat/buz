@@ -169,8 +169,14 @@ jobs:
       - name: Postgres store smoke test
         run: cargo test -p manager --features postgres --test pg_smoke_test -- --nocapture
 
+      - name: Postgres journey tests
+        run: cargo test -p manager --features postgres --test pg_journey_test -- --nocapture
+
       - name: Postgres statement compile gate
         run: cargo test -p manager --features postgres --test pg_sql_compile_test -- --nocapture
+
+      - name: Schema parity between SQLite and Postgres
+        run: cargo test -p manager --features postgres --test schema_parity_test
 
       - name: Store SQL validation (postgres feature)
         run: cargo test -p manager --features postgres --test store_sql_validation_test

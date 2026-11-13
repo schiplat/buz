@@ -22,13 +22,13 @@ CREATE OR REPLACE FUNCTION datetime(value text) RETURNS text LANGUAGE sql
 
 CREATE OR REPLACE FUNCTION datetime(value text, modifier text) RETURNS text
     LANGUAGE sql AS $$
-    SELECT CASE
-        WHEN modifier LIKE '-%' THEN
-            to_char(value::timestamptz - modifier::interval, 'YYYY-MM-DD HH24:MI:SS')
-        ELSE
-            to_char(value::timestamptz + modifier::interval, 'YYYY-MM-DD HH24:MI:SS')
-    END
+    SELECT to_char(value::timestamptz + modifier::interval, 'YYYY-MM-DD HH24:MI:SS')
 $$;
+-- The single `+` is deliberate: a PG interval carries its own sign
+-- ('-90 seconds'::interval IS minus ninety seconds), so SQLite's
+-- `datetime(t, '-90 seconds')` = t + (-90 s). The previous CASE flipped the
+-- operator as well, which doubled minus modifiers into the future
+-- (t - (-90 s) = t + 90 s) and inverted every staleness comparison.
 
 -- ───────────────────────────── tables (FK order) ─────────────────────
 -- `schema_migrations` is NOT part of the baseline: the migration runner owns
