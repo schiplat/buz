@@ -61,7 +61,7 @@ pub async fn host_state_of(
         "SELECT host_id, instance_id, status, max_resource_slots, desired_version,
                 applied_version, applied_sha256, applied_at, last_fetch_at,
                 last_fetch_error, consecutive_fetch_failures, created_at, updated_at,
-                COALESCE(last_fetch_at >= datetime('now', '-300 seconds'), 0) AS live
+                CASE WHEN last_fetch_at >= datetime('now', '-300 seconds') THEN 1 ELSE 0 END AS live
          FROM sandbox_hosts WHERE host_id = ? AND instance_id = ?",
         &[host_id.into(), instance_id.into()],
     )
@@ -76,7 +76,7 @@ pub async fn list_host_states(pool: &DbPool) -> Result<Vec<HostState>, AppError>
         "SELECT host_id, instance_id, status, max_resource_slots, desired_version,
                 applied_version, applied_sha256, applied_at, last_fetch_at,
                 last_fetch_error, consecutive_fetch_failures, created_at, updated_at,
-                COALESCE(last_fetch_at >= datetime('now', '-300 seconds'), 0) AS live
+                CASE WHEN last_fetch_at >= datetime('now', '-300 seconds') THEN 1 ELSE 0 END AS live
          FROM sandbox_hosts ORDER BY host_id, instance_id",
         &[],
     )
@@ -731,9 +731,10 @@ pub async fn bump_host_desired_version(
 ) -> Result<(), AppError> {
     exec::execute(
         pool,
-        "INSERT OR IGNORE INTO sandbox_host_configs
+        "INSERT INTO sandbox_host_configs
          (host_id, instance_id, version, document, document_sha256, created_by)
-         VALUES (?, ?, ?, ?, ?, 'platform-defaults')",
+         VALUES (?, ?, ?, ?, ?, 'platform-defaults')
+         ON CONFLICT DO NOTHING",
         &[
             host_id.into(),
             instance_id.into(),
@@ -830,7 +831,7 @@ pub async fn config_row_is_stale(
 ) -> Result<bool, AppError> {
     Ok(tx
         .fetch_optional(
-            "SELECT COALESCE(datetime(created_at) <= datetime('now', ? || ' seconds'), 0)
+            "SELECT CASE WHEN datetime(created_at) <= datetime('now', ? || ' seconds') THEN 1 ELSE 0 END
          FROM sandbox_host_configs WHERE host_id = ? AND instance_id = ? AND version = ?",
             &[
                 format!("-{}", stale_seconds.max(0)).into(),

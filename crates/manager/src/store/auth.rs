@@ -61,7 +61,8 @@ pub async fn attach_team_owner_tx(
     user_id: &str,
 ) -> Result<(), AppError> {
     tx.execute(
-        "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')",
+        "INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')
+         ON CONFLICT DO NOTHING",
         &[team_id.into(), user_id.into()],
     )
     .await?;

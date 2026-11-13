@@ -3,12 +3,11 @@
 //!
 //! `claim_delivery` is the webhook idempotency gate: the partial unique index
 //! on `(pipeline_id, delivery_id)` decides who proceeds to trigger, so no
-//! transaction is held — `INSERT OR IGNORE` is the serialisation point.
+//! transaction is held — `ON CONFLICT DO NOTHING` is the serialisation point.
 //!
 //! On the dual-backend dispatcher (`store::exec`): statements travel as plain
 //! SQLite-dialect strings with backend-neutral binds, rows decode by column
-//! name. `INSERT OR IGNORE` is rewriter-covered — it becomes
-//! `ON CONFLICT DO NOTHING` on the Postgres path.
+//! name. The portable `ON CONFLICT DO NOTHING` form needs no rewriting.
 
 use crate::store::exec::{self, DbPool, SqlValue};
 
@@ -112,8 +111,8 @@ pub enum ClaimResult {
 }
 
 /// Atomically claim `(pipeline_id, delivery_id)` with `decision=processing`.
-/// Uses `INSERT OR IGNORE` against the partial unique index so concurrent
-/// webhooks cannot both pass the old find-then-insert check.
+/// Uses `ON CONFLICT DO NOTHING` against the partial unique index so
+/// concurrent webhooks cannot both pass the old find-then-insert check.
 pub async fn claim_delivery(pool: &DbPool, e: &TriggerEventWrite) -> Result<ClaimResult, AppError> {
     let delivery = e
         .delivery_id
@@ -134,11 +133,12 @@ pub async fn claim_delivery(pool: &DbPool, e: &TriggerEventWrite) -> Result<Clai
     let id = Uuid::new_v4().to_string();
     let n = exec::execute(
         pool,
-        "INSERT OR IGNORE INTO pipeline_trigger_events (
+        "INSERT INTO pipeline_trigger_events (
             id, pipeline_id, source, provider, event_type, delivery_id,
             repo_full_name, git_ref, branch, tag, commit_sha, commit_message,
             sender, compare_url, received_at, decision, skip_reason, job_id, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'processing', '', NULL, datetime('now'))",
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'processing', '', NULL, datetime('now'))
+         ON CONFLICT DO NOTHING",
         &[
             id.as_str().into(),
             e.pipeline_id.as_str().into(),

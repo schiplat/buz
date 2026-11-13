@@ -140,7 +140,7 @@ async fn store_statements() -> (Vec<String>, Vec<String>, Vec<String>) {
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
         // `dialect.rs` holds no storage SQL — its string literals are the
-        // rewriter's grammar tokens ("INSERT OR IGNORE INTO" & co.), which the
+        // rewriter's grammar tokens (`datetime('now')` & co.), which the
         // validator would otherwise try to compile as statements. Its
         // correctness is covered by `dialect_test` instead.
         //
@@ -151,7 +151,14 @@ async fn store_statements() -> (Vec<String>, Vec<String>, Vec<String>) {
         .filter(|path| {
             path.file_name()
                 .and_then(|n| n.to_str())
-                .is_none_or(|name| name != "dialect.rs" && name != "exec.rs" && name != "sql.rs")
+                .is_none_or(|name| {
+                    // `._*` are macOS AppleDouble sidecars (created when the
+                    // tree is copied through tar/zip): not Rust source.
+                    !name.starts_with("._")
+                        && name != "dialect.rs"
+                        && name != "exec.rs"
+                        && name != "sql.rs"
+                })
         })
         .collect();
     files.sort();
@@ -296,8 +303,8 @@ const EXPECTED_DYNAMIC_SHAPES: &[&str] = &[
     "SELECT COUNT(*) FROM audit_logs {where_sql}",
     "SELECT id, created_at, actor_user_id, actor_username, action, resource_type, resource_id, resource_name, team_id, before_json, after_json, meta_json, ip FROM audit_logs {where_sql}",
     "UPDATE jobs SET status = ?, {end_expr} updated_at = {now}, retry_times = retry_times + 1 WHERE id = ? AND status NOT IN ('cancelled', 'success', 'failed', 'timeout')",
-    "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id WHERE j.created_at >= ? {clause} {debug_filter} GROUP BY date(j.created_at), j.status",
-    "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id WHERE j.created_at >= ? {debug_filter}",
+    "SELECT substr(j.created_at, 1, 10) AS day, j.status, COUNT(*) AS cnt FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id WHERE j.created_at >= ? {clause} {debug_filter} GROUP BY substr(j.created_at, 1, 10), j.status",
+    "SELECT substr(j.created_at, 1, 10) AS day, j.status, COUNT(*) AS cnt FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id WHERE j.created_at >= ? {debug_filter}",
     "SELECT j.id, j.pipeline_id, p.name AS pipeline_name, j.status, j.trigger_by, p.team_id, j.created_at FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id WHERE 1=1 {clause} {debug_filter} ORDER BY j.created_at DESC, j.id DESC LIMIT ?",
     "SELECT j.id, j.pipeline_id, p.name AS pipeline_name, j.status, j.trigger_by, p.team_id, j.created_at FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id WHERE 1=1 {debug_filter} ORDER BY j.created_at DESC, j.id DESC LIMIT ?",
     "SELECT id, status, step_statuses, COALESCE(snapshot, '{}') FROM jobs WHERE environment_id = ? AND id != ?",

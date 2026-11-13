@@ -71,7 +71,7 @@ pub async fn latest_config_document(
 }
 
 /// Store the restoration document at `version` (no-op when the version row
-/// already exists — `INSERT OR IGNORE` keyed by the full version key).
+/// already exists — `ON CONFLICT DO NOTHING` keyed by the full version key).
 pub async fn insert_restore_config(
     pool: &DbPool,
     host_id: &str,
@@ -82,9 +82,10 @@ pub async fn insert_restore_config(
 ) -> Result<(), AppError> {
     exec::execute(
         pool,
-        "INSERT OR IGNORE INTO sandbox_host_configs
+        "INSERT INTO sandbox_host_configs
          (host_id, instance_id, version, document, document_sha256, created_by)
-         VALUES (?, ?, ?, ?, ?, 'db-restore-reconcile')",
+         VALUES (?, ?, ?, ?, ?, 'db-restore-reconcile')
+         ON CONFLICT DO NOTHING",
         &[
             host_id.into(),
             instance_id.into(),

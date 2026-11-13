@@ -98,8 +98,9 @@ pub(crate) async fn cancel_job_in_tx(
     }
     if old_status == "waiting_approval" {
         tx.execute(
-            "INSERT OR IGNORE INTO job_approvals (id, job_id, user_id, username, action, comment)
-             VALUES (?, ?, ?, ?, 'cancel', '')",
+            "INSERT INTO job_approvals (id, job_id, user_id, username, action, comment)
+             VALUES (?, ?, ?, ?, 'cancel', '')
+             ON CONFLICT DO NOTHING",
             &[
                 Uuid::new_v4().to_string().into(),
                 job_id.into(),
@@ -944,16 +945,16 @@ pub async fn trend_rows(
     };
     let sql = match team_scope {
         None => format!(
-            "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt
+            "SELECT substr(j.created_at, 1, 10) AS day, j.status, COUNT(*) AS cnt
              FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
              WHERE j.created_at >= ? {debug_filter}
-             GROUP BY date(j.created_at), j.status"
+             GROUP BY substr(j.created_at, 1, 10), j.status"
         ),
         Some((clause, _)) => format!(
-            "SELECT date(j.created_at) AS day, j.status, COUNT(*) AS cnt
+            "SELECT substr(j.created_at, 1, 10) AS day, j.status, COUNT(*) AS cnt
              FROM jobs j JOIN pipelines p ON j.pipeline_id = p.id
              WHERE j.created_at >= ? {clause} {debug_filter}
-             GROUP BY date(j.created_at), j.status"
+             GROUP BY substr(j.created_at, 1, 10), j.status"
         ),
     };
 

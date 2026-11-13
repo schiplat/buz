@@ -32,7 +32,7 @@ pub async fn try_acquire_lease(
              SELECT $1, $2, datetime(datetime(), $3), datetime()
              WHERE NOT EXISTS (
                  SELECT 1 FROM scheduler_lease
-                 WHERE id = $1 AND expires_at > datetime()
+                 WHERE id = $4 AND expires_at > datetime()
              )
              ON CONFLICT (id) DO UPDATE SET
                instance_id = EXCLUDED.instance_id,

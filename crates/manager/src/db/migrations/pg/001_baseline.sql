@@ -17,12 +17,6 @@ CREATE OR REPLACE FUNCTION datetime() RETURNS text LANGUAGE sql
 CREATE OR REPLACE FUNCTION datetime(value text) RETURNS text LANGUAGE sql
     AS $$ SELECT value::timestamptz::text $$;
 
--- SQLite's date(x) returns the calendar day as TEXT; the jobs trend query
--- groups by it. Postgres' built-in date() only accepts a timestamp, so the
--- text overload is ours (text-slice keeps SQLite's output format exactly).
-CREATE OR REPLACE FUNCTION date(value text) RETURNS text LANGUAGE sql
-    AS $$ SELECT substr(value, 1, 10) $$;
-
 CREATE OR REPLACE FUNCTION datetime(value text, modifier text) RETURNS text
     LANGUAGE sql AS $$
     SELECT CASE

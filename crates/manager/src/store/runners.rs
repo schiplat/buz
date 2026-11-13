@@ -407,10 +407,11 @@ pub async fn environment_gate_in_tx(
             if updated > 0 {
                 if old_status == "waiting_approval" {
                     tx.execute(
-                        "INSERT OR IGNORE INTO job_approvals \
+                        "INSERT INTO job_approvals \
                          (id, job_id, user_id, username, action, comment) \
                          VALUES (?, ?, 'system:environment', 'environment concurrency', \
-                                 'cancel', 'superseded by cancel_in_progress')",
+                                 'cancel', 'superseded by cancel_in_progress') \
+                         ON CONFLICT DO NOTHING",
                         &[
                             Uuid::new_v4().to_string().into(),
                             superseded_id.as_str().into(),
@@ -867,7 +868,10 @@ pub async fn seen_within_90s_tx(
 ) -> Result<bool, AppError> {
     let value = tx
         .fetch_optional(
-            "SELECT COALESCE(datetime(?) >= datetime('now', '-90 seconds'), 0)",
+            // `CASE WHEN … THEN 1 ELSE 0 END`, not `COALESCE(comparison, 0)`:
+            // SQLite comparisons yield 0/1 but Postgres yields a real boolean,
+            // which cannot be coalesced with an integer.
+            "SELECT CASE WHEN datetime(?) >= datetime('now', '-90 seconds') THEN 1 ELSE 0 END",
             &[last_seen.into()],
         )
         .await?
@@ -884,8 +888,8 @@ pub async fn capability_check_fresh_tx(
 ) -> Result<bool, AppError> {
     let value = tx
         .fetch_optional(
-            "SELECT COALESCE(datetime(?) >= datetime('now', '-5 minutes') \
-         AND datetime(?) <= datetime('now', '+30 seconds'), 0)",
+            "SELECT CASE WHEN datetime(?) >= datetime('now', '-5 minutes') \
+         AND datetime(?) <= datetime('now', '+30 seconds') THEN 1 ELSE 0 END",
             &[checked_at.into(), checked_at.into()],
         )
         .await?
@@ -1137,31 +1141,29 @@ pub async fn claim_candidates(
          ORDER BY j.created_at ASC, j.seq ASC
          LIMIT 50",
     };
-    Ok(exec::fetch_all_sql(
-        pool,
-        SQL,
-        &[runner_team_id.into(), runner_team_id.into()],
+    Ok(
+        exec::fetch_all_sql(pool, SQL, &[runner_team_id.into(), runner_team_id.into()])
+            .await?
+            .into_iter()
+            .map(|r| ClaimCandidateRow {
+                job_id: r.text(0),
+                pipeline_id: r.text(1),
+                trigger_params: r.opt_text(2),
+                snapshot: r.text(3),
+                runner_labels: r.text(4),
+                debug_unredact: r.i64(5),
+                verbose_logs: r.i64(6),
+                trigger_by: r.text(7),
+                pipeline_name: r.text(8),
+                team_id: r.opt_text(9),
+                trigger_type: r.text(10),
+                environment_id: r.opt_text(11),
+                run_number: r.i64(12),
+                run_attempt: r.i64(13),
+                waited_seconds: r.i64(14),
+            })
+            .collect(),
     )
-    .await?
-        .into_iter()
-        .map(|r| ClaimCandidateRow {
-            job_id: r.text(0),
-            pipeline_id: r.text(1),
-            trigger_params: r.opt_text(2),
-            snapshot: r.text(3),
-            runner_labels: r.text(4),
-            debug_unredact: r.i64(5),
-            verbose_logs: r.i64(6),
-            trigger_by: r.text(7),
-            pipeline_name: r.text(8),
-            team_id: r.opt_text(9),
-            trigger_type: r.text(10),
-            environment_id: r.opt_text(11),
-            run_number: r.i64(12),
-            run_attempt: r.i64(13),
-            waited_seconds: r.i64(14),
-        })
-        .collect())
 }
 
 /// True when the team row exists — the runner team binding check.

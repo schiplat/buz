@@ -120,8 +120,9 @@ jobs:
 
   # ── Postgres backend (feature build) ────────────────────────────────
   # SQLite is the default build; this job proves the `postgres` feature still
-  # compiles and that the six hand-written PG statements behave against a real
-  # server (jsonb walks, epoch math, named-conflict upserts).
+  # compiles, that every store statement PREPAREs against the PG schema, and
+  # that the hand-written PG bodies behave against a real server (jsonb walks,
+  # epoch math, named-conflict upserts).
   postgres:
     name: Rust test (Postgres)
     runs-on: ubuntu-latest
@@ -167,6 +168,9 @@ jobs:
 
       - name: Postgres store smoke test
         run: cargo test -p manager --features postgres --test pg_smoke_test -- --nocapture
+
+      - name: Postgres statement compile gate
+        run: cargo test -p manager --features postgres --test pg_sql_compile_test -- --nocapture
 
       - name: Store SQL validation (postgres feature)
         run: cargo test -p manager --features postgres --test store_sql_validation_test

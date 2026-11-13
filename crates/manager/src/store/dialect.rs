@@ -9,15 +9,12 @@
 //!   timestamp column is TEXT, so a `now()` timestamptz would break text
 //!   comparisons);
 //! - `datetime('now', '-N seconds')` → `datetime(datetime(), '-N seconds')`
-//!   (same shim, same TEXT output);
-//! - `INSERT OR IGNORE INTO …` → `INSERT INTO … ON CONFLICT DO NOTHING`
-//!   (appended at the statement's end, before a trailing `;` if present).
+//!   (same shim, same TEXT output).
 //!
 //! Statements whose SQLite form has no faithful mechanical translation
 //! (`INSERT OR REPLACE`, `json_each`/`json_extract` walks, `strftime` epochs,
 //! `datetime(?)` casts) must carry an explicit Postgres variant beside the
-//! SQLite one instead of leaning on this function — the boundary document
-//! lists them.
+//! SQLite one (`Sql::Dual`) instead of leaning on this function.
 //!
 //! Invariants tested in `dialect_test`: string literal contents pass through
 //! untouched, no bare `?` survives outside a literal, and `$N` numbers arrive
@@ -28,7 +25,6 @@ pub fn sqlite_to_postgres(sql: &str) -> String {
     let chars: Vec<char> = sql.chars().collect();
     let mut out = String::with_capacity(sql.len() + 24);
     let mut placeholder = 0usize;
-    let mut ignore_insert = false;
     let mut i = 0usize;
     let mut in_literal = false;
 
@@ -86,13 +82,6 @@ pub fn sqlite_to_postgres(sql: &str) -> String {
             }
         }
 
-        if starts_with(&chars, i, "INSERT OR IGNORE INTO") {
-            out.push_str("INSERT INTO");
-            i += "INSERT OR IGNORE INTO".len();
-            ignore_insert = true;
-            continue;
-        }
-
         if c == '?' {
             placeholder += 1;
             out.push_str(&format!("${placeholder}"));
@@ -102,16 +91,6 @@ pub fn sqlite_to_postgres(sql: &str) -> String {
 
         out.push(c);
         i += 1;
-    }
-
-    if ignore_insert {
-        let trimmed = out.trim_end();
-        if trimmed.ends_with(';') {
-            let cut = out.trim_end().len() - 1;
-            out.insert_str(cut, " ON CONFLICT DO NOTHING");
-        } else {
-            out.push_str(" ON CONFLICT DO NOTHING");
-        }
     }
 
     out

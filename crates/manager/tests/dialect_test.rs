@@ -201,28 +201,18 @@ fn datetime_offset_becomes_shim_arithmetic() {
     );
 }
 
-/// `INSERT OR IGNORE` keeps its insert and gains `ON CONFLICT DO NOTHING` at
-/// the statement's end.
+/// Shared statements now carry the portable `ON CONFLICT DO NOTHING`
+/// themselves; the rewriter only renumbers placeholders and leaves the clause
+/// untouched.
 #[test]
-fn insert_or_ignore_gains_on_conflict() {
-    let sql = "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')";
+fn on_conflict_do_nothing_passes_through() {
+    let sql =
+        "INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner') ON CONFLICT DO NOTHING";
     assert_eq!(
         sqlite_to_postgres(sql),
         "INSERT INTO team_members (team_id, user_id, role) VALUES ($1, $2, 'owner') \
          ON CONFLICT DO NOTHING"
     );
-}
-
-/// A trailing `;` stays at the end, with the conflict clause before it.
-#[test]
-fn trailing_semicolon_keeps_conflict_clause_before_it() {
-    let sql = "INSERT OR IGNORE INTO t (a) VALUES (?);";
-    let rewritten = sqlite_to_postgres(sql);
-    assert!(
-        rewritten.ends_with("ON CONFLICT DO NOTHING;"),
-        "{rewritten}"
-    );
-    assert!(!rewritten.contains("DO NOTHING;;"));
 }
 
 /// `INSERT OR REPLACE` is NOT rewritten — it needs an explicit conflict target

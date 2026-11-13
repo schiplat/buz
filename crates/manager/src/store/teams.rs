@@ -91,7 +91,8 @@ pub async fn insert(
 pub async fn attach_owner(pool: &DbPool, team_id: &str, user_id: &str) -> Result<(), AppError> {
     exec::execute(
         pool,
-        "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')",
+        "INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')
+         ON CONFLICT DO NOTHING",
         &[team_id.into(), user_id.into()],
     )
     .await?;
@@ -315,7 +316,8 @@ pub async fn bootstrap(pool: &DbPool) -> Result<(), AppError> {
     for admin_id in crate::store::users::active_platform_admin_ids(pool).await? {
         exec::execute(
             pool,
-            "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')",
+            "INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')
+         ON CONFLICT DO NOTHING",
             &[default_team_id.as_str().into(), admin_id.as_str().into()],
         )
         .await?;

@@ -1057,8 +1057,9 @@ pub async fn insert_var_binding_tx(
     var_id: &str,
 ) -> Result<(), AppError> {
     tx.execute(
-        "INSERT OR IGNORE INTO pipeline_vars (pipeline_id, var_id)
-             VALUES (?, ?)",
+        "INSERT INTO pipeline_vars (pipeline_id, var_id)
+             VALUES (?, ?)
+         ON CONFLICT DO NOTHING",
         &[pipeline_id.into(), var_id.into()],
     )
     .await?;
@@ -1072,8 +1073,9 @@ pub async fn insert_secret_binding_tx(
     secret_id: &str,
 ) -> Result<(), AppError> {
     tx.execute(
-        "INSERT OR IGNORE INTO pipeline_secrets (pipeline_id, secret_id)
-             VALUES (?, ?)",
+        "INSERT INTO pipeline_secrets (pipeline_id, secret_id)
+             VALUES (?, ?)
+         ON CONFLICT DO NOTHING",
         &[pipeline_id.into(), secret_id.into()],
     )
     .await?;
