@@ -7,9 +7,8 @@
 //! and returns rows re-ordered ascending, matching the full read.
 //!
 //! Migration status: everything runs on the dual-backend dispatcher
-//! (`store::exec`); `insert_chunk` carries an explicit per-backend upsert body
-//! (`Sql::Dual`), because SQLite's `INSERT OR REPLACE` and Postgres'
-//! named-conflict `ON CONFLICT` are not mechanically interchangeable.
+//! (`store::exec`); `insert_chunk` is a portable named-conflict upsert valid
+//! on both backends (`ON CONFLICT (job_id, chunk_index) DO UPDATE`).
 
 use crate::store::exec::{self, DbPool};
 use crate::store::sql::Sql;
@@ -52,12 +51,9 @@ pub async fn job_runner_id(
     Ok(row.map(|r| r.opt_text_of("runner_id")))
 }
 
-/// Append one log chunk. `INSERT OR REPLACE` keyed by the per-job unique
-/// `(job_id, step_order, chunk_index)` — a runner retry of the same chunk
-/// overwrites instead of duplicating.
-///
-/// The Postgres body uses the named conflict target, so a retried chunk
-/// overwrites in place instead of duplicating.
+/// Append one log chunk. Portable upsert on the per-job unique
+/// `(job_id, chunk_index)` — a runner retry of the same chunk overwrites in
+/// place (content, masking, level) instead of duplicating the row.
 pub async fn insert_chunk(
     pool: &DbPool,
     job_id: &str,
@@ -66,17 +62,15 @@ pub async fn insert_chunk(
     content: &str,
     level: Option<&str>,
 ) -> Result<(), AppError> {
-    const SQL: Sql<'static> = Sql::Dual {
-        sqlite: "INSERT OR REPLACE INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
-                 VALUES (?, ?, ?, ?, ?, 1, ?)",
-        pg: "INSERT INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
-             VALUES ($1, $2, $3, $4, $5, 1, $6)
-             ON CONFLICT (job_id, chunk_index) DO UPDATE SET
-               step_order = excluded.step_order,
-               log_content = excluded.log_content,
-               is_masked = excluded.is_masked,
-               level = excluded.level",
-    };
+    const SQL: Sql<'static> = Sql::Shared(
+        "INSERT INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
+         VALUES (?, ?, ?, ?, ?, 1, ?)
+         ON CONFLICT (job_id, chunk_index) DO UPDATE SET
+           step_order = EXCLUDED.step_order,
+           log_content = EXCLUDED.log_content,
+           is_masked = EXCLUDED.is_masked,
+           level = EXCLUDED.level",
+    );
     exec::execute_sql(
         pool,
         SQL,

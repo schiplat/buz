@@ -7,7 +7,8 @@
 //! - string literal contents survive byte-for-byte;
 //! - no bare `?` remains outside a literal;
 //! - `$N` numbering is strictly 1..=N in source order;
-//! - known rewrites produce the documented PG forms.
+//! - portable syntax (datetime shims, ON CONFLICT upserts) passes through
+//!   untouched — the rewriter must not "improve" it.
 
 use manager::store::dialect::sqlite_to_postgres;
 
@@ -174,31 +175,24 @@ fn string_literals_survive_unchanged() {
     }
 }
 
-/// `datetime('now')` becomes the TEXT-preserving shim `datetime()` — a
-/// `now()` timestamptz would break every text comparison against a column.
+/// `datetime('now')` passes through untouched: the PG baseline's TEXT shims
+/// accept `'now'` directly (PG parses it as the current time), so the rewriter
+/// carries no datetime rule. Every timestamp stays TEXT, matching SQLite.
 #[test]
-fn datetime_now_becomes_text_shim() {
+fn datetime_now_passes_through_to_the_shim() {
     assert_eq!(
         sqlite_to_postgres("SELECT datetime('now')"),
-        "SELECT datetime()"
+        "SELECT datetime('now')"
     );
-    let complex = sqlite_to_postgres("UPDATE t SET x = datetime('now') WHERE y = datetime('now')");
-    assert_eq!(complex.matches("datetime()").count(), 2);
-    assert!(!complex.contains("datetime('now'"));
-    assert!(!complex.contains("now()"));
-}
-
-/// `datetime('now', '-N seconds')` becomes the two-argument TEXT shim.
-#[test]
-fn datetime_offset_becomes_shim_arithmetic() {
-    assert_eq!(
-        sqlite_to_postgres("SELECT * FROM t WHERE seen >= datetime('now', '-300 seconds')"),
-        "SELECT * FROM t WHERE seen >= datetime(datetime(), '-300 seconds')"
+    let complex = sqlite_to_postgres(
+        "UPDATE t SET x = datetime('now') WHERE y = datetime('now', '-90 seconds')",
     );
+    assert_eq!(complex.matches("datetime('now')").count(), 1);
     assert!(
-        sqlite_to_postgres("SELECT * FROM t WHERE seen <= datetime('now', '+45 seconds')")
-            .contains("datetime(datetime(), '+45 seconds')")
+        complex.contains("datetime('now', '-90 seconds')"),
+        "{complex}"
     );
+    assert!(!complex.contains("now()"), "{complex}");
 }
 
 /// Shared statements now carry the portable `ON CONFLICT DO NOTHING`
@@ -213,6 +207,23 @@ fn on_conflict_do_nothing_passes_through() {
         "INSERT INTO team_members (team_id, user_id, role) VALUES ($1, $2, 'owner') \
          ON CONFLICT DO NOTHING"
     );
+}
+
+/// Portable named-target upserts (`ON CONFLICT (…) DO UPDATE … excluded.…`)
+/// pass through: SQLite ≥3.24 and Postgres share the syntax, so both upsert
+/// statements in the store are single shared texts, not dual bodies.
+#[test]
+fn named_conflict_upsert_passes_through() {
+    let sql = "INSERT INTO team_resource_grants (team_id, profile, granted_by) \
+               VALUES (?, ?, ?) ON CONFLICT (team_id, profile) DO UPDATE \
+               SET granted_by = excluded.granted_by";
+    let rewritten = sqlite_to_postgres(sql);
+    assert!(rewritten.contains("VALUES ($1, $2, $3)"), "{rewritten}");
+    assert!(
+        rewritten.contains("ON CONFLICT (team_id, profile) DO UPDATE"),
+        "{rewritten}"
+    );
+    assert!(rewritten.contains("excluded.granted_by"), "{rewritten}");
 }
 
 /// `INSERT OR REPLACE` is NOT rewritten — it needs an explicit conflict target

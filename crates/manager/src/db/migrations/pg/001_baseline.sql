@@ -10,12 +10,15 @@
 -- These shims make them valid Postgres with identical text output
 -- ("YYYY-MM-DD HH24:MI:SS"), which every timestamp comparison in the shared
 -- statements relies on (columns stay TEXT).
+--
+-- PG accepts 'now' as a timestamptz input, so `datetime('now')` reaches the
+-- one-argument shim directly — the statement rewriter needs no datetime rule.
 
 CREATE OR REPLACE FUNCTION datetime() RETURNS text LANGUAGE sql
     AS $$ SELECT to_char(now(), 'YYYY-MM-DD HH24:MI:SS') $$;
 
 CREATE OR REPLACE FUNCTION datetime(value text) RETURNS text LANGUAGE sql
-    AS $$ SELECT value::timestamptz::text $$;
+    AS $$ SELECT to_char(value::timestamptz, 'YYYY-MM-DD HH24:MI:SS') $$;
 
 CREATE OR REPLACE FUNCTION datetime(value text, modifier text) RETURNS text
     LANGUAGE sql AS $$

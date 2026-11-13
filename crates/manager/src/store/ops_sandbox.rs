@@ -561,16 +561,13 @@ pub async fn replace_grant(
     profile: &str,
     granted_by: &str,
 ) -> Result<(), AppError> {
-    const SQL: Sql<'static> = Sql::Dual {
-        sqlite: "INSERT OR REPLACE INTO team_resource_grants (team_id, profile, granted_by)
-                 VALUES (?, ?, ?)",
-        // The primary key is the named conflict target (SQLite's
-        // `INSERT OR REPLACE` would also swap the row id, which this table
-        // does not have).
-        pg: "INSERT INTO team_resource_grants (team_id, profile, granted_by)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (team_id, profile) DO UPDATE SET granted_by = excluded.granted_by",
-    };
+    // Portable upsert on the primary key: a re-grant refreshes `granted_by`
+    // in place (SQLite's `INSERT OR REPLACE` would have swapped the row).
+    const SQL: Sql<'static> = Sql::Shared(
+        "INSERT INTO team_resource_grants (team_id, profile, granted_by)
+         VALUES (?, ?, ?)
+         ON CONFLICT (team_id, profile) DO UPDATE SET granted_by = EXCLUDED.granted_by",
+    );
     exec::execute_sql(
         pool,
         SQL,

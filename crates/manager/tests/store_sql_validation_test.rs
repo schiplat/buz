@@ -258,10 +258,10 @@ async fn store_sql_compiles_against_the_schema() {
 }
 
 /// The store's hand-written Postgres bodies are the statements whose SQLite
-/// form has no mechanical rewrite (jsonb walks, epoch math, named-conflict
-/// upserts, `INSERT OR REPLACE`). They cannot be compiled by the SQLite
-/// validator, so they are listed here instead: a new unverified PG statement
-/// fails the test, and a removed one is noticed.
+/// form has no portable spelling (jsonb walks, epoch math). They cannot be
+/// compiled by the SQLite validator, so they are listed here instead: a new
+/// unverified PG statement fails the test, and a removed one is noticed.
+/// (The upserts are portable `ON CONFLICT … DO UPDATE` now — no PG body.)
 #[tokio::test]
 async fn postgres_statements_are_declared() {
     let (_, _, pg_only) = store_statements().await;
@@ -270,11 +270,8 @@ async fn postgres_statements_are_declared() {
         "jsonb_array_elements(",                                    // frozen_task_rows
         "jsonb_array_elements_text(",                               // visible_ids_by_label
         "snapshot::jsonb ->> 'resource_profile'",                   // queued_jobs_for_profile
-        "ON CONFLICT (team_id, profile)",                           // replace_grant
-        "ON CONFLICT (job_id, chunk_index)",                        // insert_chunk
         "(j.snapshot::jsonb ->> 'team_id')",                        // claim_candidate_tx
         "jsonb_array_elements_text(h.labels::jsonb) AS host_label", // pipelines host labels
-        "ON CONFLICT (id) DO UPDATE",                               // scheduler lease
     ];
     // A PG body carrying a JSON default (`'{}'`) is still a PG body, not a
     // dynamic fragment — the extraction routes it here by the `$1` marker.

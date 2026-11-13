@@ -18,27 +18,21 @@ pub async fn try_acquire_lease(
     ttl_secs: i64,
 ) -> Result<bool, AppError> {
     let expires = format!("+{ttl_secs} seconds");
-    // SQLite replaces the row wholesale; Postgres needs the named conflict
-    // target. The Postgres body is verbatim (`$n` + the baseline's TEXT
-    // datetime shims) and never passes through the shared rewriter.
-    const SQL: Sql<'static> = Sql::Dual {
-        sqlite: "INSERT OR REPLACE INTO scheduler_lease (id, instance_id, expires_at, updated_at)
-                 SELECT ?, ?, datetime('now', ?), datetime('now')
-                 WHERE NOT EXISTS (
-                     SELECT 1 FROM scheduler_lease
-                     WHERE id = ? AND expires_at > datetime('now')
-                 )",
-        pg: "INSERT INTO scheduler_lease (id, instance_id, expires_at, updated_at)
-             SELECT $1, $2, datetime(datetime(), $3), datetime()
-             WHERE NOT EXISTS (
-                 SELECT 1 FROM scheduler_lease
-                 WHERE id = $4 AND expires_at > datetime()
-             )
-             ON CONFLICT (id) DO UPDATE SET
-               instance_id = EXCLUDED.instance_id,
-               expires_at = EXCLUDED.expires_at,
-               updated_at = EXCLUDED.updated_at",
-    };
+    // One portable upsert on both backends: the WHERE NOT EXISTS leaves an
+    // unexpired foreign lease untouched, and the ON CONFLICT refresh covers
+    // our own expired row. SQLite ≥3.24 and Postgres share the syntax.
+    const SQL: Sql<'static> = Sql::Shared(
+        "INSERT INTO scheduler_lease (id, instance_id, expires_at, updated_at)
+         SELECT ?, ?, datetime('now', ?), datetime('now')
+         WHERE NOT EXISTS (
+             SELECT 1 FROM scheduler_lease
+             WHERE id = ? AND expires_at > datetime('now')
+         )
+         ON CONFLICT (id) DO UPDATE SET
+           instance_id = EXCLUDED.instance_id,
+           expires_at = EXCLUDED.expires_at,
+           updated_at = EXCLUDED.updated_at",
+    );
     let acquired = exec::execute_sql(
         pool,
         SQL,
