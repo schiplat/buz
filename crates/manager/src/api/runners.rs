@@ -18,7 +18,6 @@ use crate::crypto;
 use crate::middleware::{PlatformAdmin, RunnerClaims};
 use crate::state::AppState;
 use crate::store::exec::DbPool;
-use sqlx::Row;
 use uuid::Uuid;
 
 /// Peer address when the server is served with `into_make_service_with_connect_info`.
@@ -910,11 +909,11 @@ async fn poll_once(
         crate::store::runners::claim_candidates(&state.pool, runner_team_id.as_deref()).await?;
     let mut claimed = None;
     for row in candidates {
-        let job_id: String = row.get(0);
-        let snapshot_raw: String = row.get(3);
-        let pipeline_labels_json: String = row.get(4);
-        let debug_unredact: bool = row.get::<i64, _>(5) != 0;
-        let verbose_logs: bool = row.get::<i64, _>(6) != 0;
+        let job_id: String = row.job_id;
+        let snapshot_raw: String = row.snapshot;
+        let pipeline_labels_json: String = row.runner_labels;
+        let debug_unredact: bool = row.debug_unredact != 0;
+        let verbose_logs: bool = row.verbose_logs != 0;
         let required = required_labels_for_job(&snapshot_raw, &pipeline_labels_json);
         if !runner_satisfies_labels(&runner_labels, &required) {
             continue;
@@ -997,7 +996,7 @@ async fn poll_once(
                         // threshold, stop letting later candidates overtake
                         // it — end the round so the next freed capacity goes
                         // to it instead of another small job.
-                        let waited: i64 = row.get("waited_seconds");
+                        let waited: i64 = row.waited_seconds;
                         if starvation_seconds > 0 && waited >= starvation_seconds {
                             tracing::info!(
                                 job = %job_id,
@@ -1090,10 +1089,10 @@ async fn poll_once(
                 snapshot_raw,
                 debug_unredact,
                 verbose_logs,
-                row.get::<String, _>(7),
-                row.get::<String, _>(8),
-                row.get::<Option<String>, _>(9),
-                row.get::<String, _>(10),
+                row.trigger_by,
+                row.pipeline_name,
+                row.team_id,
+                row.trigger_type,
             ));
             // `r` carries the six RETURNING columns; the candidate row above
             // carries the pipeline facts the payload also needs.
@@ -1442,38 +1441,32 @@ async fn build_claim_payload(
 
     let mut tasks: Vec<serde_json::Value> = Vec::new();
     for t in &task_rows {
-        let exec_type: String = t.get(3);
-        let host_id_str: String = t.get(4);
-        let host_names_raw: String = t.get(5);
-        let host_labels_raw: String = t.get(6);
-        let step_secrets_str: String = t.get(12);
-        let step_env_raw: String = t.get(13);
-        let image: String = t.get(14);
-        let volumes_raw: String = t.get(15);
-        let hosts_strategy: String = t.get(16);
-        let privileged: i64 = t.get(17);
-        let capabilities_raw: String = t.get(18);
-        let needs_raw: String = t.get(20);
-        let hosts_max_parallel: Option<i64> = t.get(19);
-        let capabilities: Vec<String> = serde_json::from_str(&capabilities_raw).map_err(|_| {
-            AppError::ValidationFailed(format!(
-                "task {} has invalid capabilities JSON",
-                t.get::<String, _>(0)
-            ))
+        let exec_type: String = t.exec_type.clone();
+        let host_id_str: String = t.host_id.clone();
+        let host_names_raw: String = t.host_names.clone();
+        let host_labels_raw: String = t.host_labels.clone();
+        let step_secrets_str: String = t.step_secrets.clone();
+        let step_env_raw: String = t.step_env.clone();
+        let image: String = t.image.clone();
+        let volumes_raw: String = t.volumes.clone();
+        let hosts_strategy: String = t.hosts_strategy.clone();
+        let privileged: i64 = t.privileged;
+        let capabilities: Vec<String> = serde_json::from_str(&t.capabilities).map_err(|_| {
+            AppError::ValidationFailed(format!("task {} has invalid capabilities JSON", t.id))
         })?;
         shared::plugin_spec::validate_plugin_capabilities(&capabilities, &exec_type)
             .map_err(AppError::ValidationFailed)?;
 
         let mut task_json = serde_json::json!({
-            "id": t.get::<String, _>(0),
-            "step_order": t.get::<i64, _>(1),
-            "name": t.get::<String, _>(2),
+            "id": t.id,
+            "step_order": t.step_order,
+            "name": t.name,
             "exec_type": &exec_type,
-            "command_template": t.get::<String, _>(7),
-            "work_dir": t.get::<String, _>(8),
-            "retry_count": t.get::<i64, _>(9),
-            "timeout_seconds": t.get::<i64, _>(10),
-            "fail_strategy": t.get::<String, _>(11),
+            "command_template": t.command_template,
+            "work_dir": t.work_dir,
+            "retry_count": t.retry_count,
+            "timeout_seconds": t.timeout_seconds,
+            "fail_strategy": t.fail_strategy,
             "image": &image,
             "volumes": serde_json::from_str::<serde_json::Value>(&volumes_raw)
                 .unwrap_or(serde_json::Value::Array(vec![])),
@@ -1483,8 +1476,8 @@ async fn build_claim_payload(
             .unwrap_or("chain"),
             "privileged": privileged != 0,
             "capabilities": capabilities,
-            "hosts_max_parallel": hosts_max_parallel.map(|v| v as u64),
-            "needs": serde_json::from_str::<Vec<String>>(&needs_raw)
+            "hosts_max_parallel": t.hosts_max_parallel.map(|v| v as u64),
+            "needs": serde_json::from_str::<Vec<String>>(&t.needs_json)
                 .unwrap_or_default(),
         });
 
@@ -1498,7 +1491,7 @@ async fn build_claim_payload(
         // plugin-injected sensitive values.
         let log_mask_values: Vec<String> = Vec::new();
 
-        if let Some(defs_raw) = resolutions_by_order.get(&t.get::<i64, _>(1)) {
+        if let Some(defs_raw) = resolutions_by_order.get(&t.step_order) {
             let defs: Vec<shared::protocol::PipelineInputDef> =
                 serde_json::from_str(defs_raw).unwrap_or_default();
             task_json["marketplace_input_defs"] = serde_json::to_value(&defs).unwrap_or_default();
@@ -1611,7 +1604,7 @@ async fn build_claim_payload(
                 .map(serde_json::Value::String)
                 .collect(),
         );
-        if let Some(defs_raw) = resolutions_by_order.get(&t.get::<i64, _>(1)) {
+        if let Some(defs_raw) = resolutions_by_order.get(&t.step_order) {
             let defs: Vec<shared::protocol::PipelineInputDef> =
                 serde_json::from_str(defs_raw).unwrap_or_default();
             let mut input_values = std::collections::HashMap::new();
@@ -1708,7 +1701,7 @@ async fn build_claim_payload(
                     } else {
                         tracing::warn!(
                             "SSH step '{}': resolved dynamic host name '{}' not found",
-                            t.get::<String, _>(2),
+                            t.name,
                             name
                         );
                     }

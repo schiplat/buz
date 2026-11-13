@@ -979,6 +979,27 @@ pub async fn dispatch_context_row(
     Ok((r.text(0), r.text(1), r.text(2), r.text(3)))
 }
 
+/// One claim candidate: the job facts the poller needs to decide, plus the
+/// pipeline labels and the age used by the aging rule.
+pub struct ClaimCandidateRow {
+    pub job_id: String,
+    pub pipeline_id: String,
+    pub trigger_params: Option<String>,
+    /// Job snapshot as stored (JSON).
+    pub snapshot: String,
+    pub runner_labels: String,
+    pub debug_unredact: i64,
+    pub verbose_logs: i64,
+    pub trigger_by: String,
+    pub pipeline_name: String,
+    pub team_id: Option<String>,
+    pub trigger_type: String,
+    pub environment_id: Option<String>,
+    pub run_number: i64,
+    pub run_attempt: i64,
+    pub waited_seconds: i64,
+}
+
 /// The registration queue: pending jobs this runner may claim, queue-fair
 /// order, with the pipeline labels and the age used by the aging rule.
 ///
@@ -989,7 +1010,7 @@ pub async fn dispatch_context_row(
 pub async fn claim_candidates(
     pool: &SqlitePool,
     runner_team_id: Option<&str>,
-) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+) -> Result<Vec<ClaimCandidateRow>, AppError> {
     Ok(sqlx::query(
 
         "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
@@ -1023,7 +1044,26 @@ pub async fn claim_candidates(
     .bind(runner_team_id)
     .bind(runner_team_id)
     .fetch_all(pool)
-    .await?)
+    .await?
+    .into_iter()
+    .map(|r| ClaimCandidateRow {
+        job_id: r.get(0),
+        pipeline_id: r.get(1),
+        trigger_params: r.get(2),
+        snapshot: r.get(3),
+        runner_labels: r.get(4),
+        debug_unredact: r.get(5),
+        verbose_logs: r.get(6),
+        trigger_by: r.get(7),
+        pipeline_name: r.get(8),
+        team_id: r.get(9),
+        trigger_type: r.get(10),
+        environment_id: r.get(11),
+        run_number: r.get(12),
+        run_attempt: r.get(13),
+        waited_seconds: r.get(14),
+    })
+    .collect())
 }
 
 /// True when the team row exists — the runner team binding check.
@@ -1160,12 +1200,64 @@ pub async fn claim_candidate_tx(
 // Payload assembly reads per pipeline / environment. `build_claim_payload` keeps
 // the crypto and the JSON shaping; every query lives here.
 
+/// One claim-payload task row. Both projections below select the same column
+/// order, so the payload builder reads one shape either way.
+pub struct ClaimTaskRow {
+    pub id: String,
+    pub step_order: i64,
+    pub name: String,
+    pub exec_type: String,
+    pub host_id: String,
+    pub host_names: String,
+    pub host_labels: String,
+    pub command_template: String,
+    pub work_dir: String,
+    pub retry_count: i64,
+    pub timeout_seconds: i64,
+    pub fail_strategy: String,
+    pub step_secrets: String,
+    pub step_env: String,
+    pub image: String,
+    pub volumes: String,
+    pub hosts_strategy: String,
+    pub privileged: i64,
+    pub capabilities: String,
+    pub hosts_max_parallel: Option<i64>,
+    pub needs_json: String,
+}
+
+fn claim_task_row(r: sqlx::sqlite::SqliteRow) -> ClaimTaskRow {
+    ClaimTaskRow {
+        id: r.get(0),
+        step_order: r.get(1),
+        name: r.get(2),
+        exec_type: r.get(3),
+        host_id: r.get(4),
+        host_names: r.get(5),
+        host_labels: r.get(6),
+        command_template: r.get(7),
+        work_dir: r.get(8),
+        retry_count: r.get(9),
+        timeout_seconds: r.get(10),
+        fail_strategy: r.get(11),
+        step_secrets: r.get(12),
+        step_env: r.get(13),
+        image: r.get(14),
+        volumes: r.get(15),
+        hosts_strategy: r.get(16),
+        privileged: r.get(17),
+        capabilities: r.get(18),
+        hosts_max_parallel: r.get(19),
+        needs_json: r.get(20),
+    }
+}
+
 /// Snapshot task rows (frozen definition), step-ordered — the claim payload
 /// shape. `snapshot_raw` is the job snapshot as stored.
 pub async fn frozen_task_rows(
     pool: &SqlitePool,
     snapshot_raw: &str,
-) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+) -> Result<Vec<ClaimTaskRow>, AppError> {
     Ok(sqlx::query(
             "SELECT COALESCE(json_extract(j.value, '$.id'), ''), json_extract(j.value, '$.step_order'),
                     json_extract(j.value, '$.name'), json_extract(j.value, '$.exec_type'),
@@ -1190,14 +1282,17 @@ pub async fn frozen_task_rows(
     )
     .bind(snapshot_raw)
     .fetch_all(pool)
-    .await?)
+    .await?
+    .into_iter()
+    .map(claim_task_row)
+    .collect())
 }
 
 /// Live task rows (un-frozen pipelines), step-ordered — the claim payload shape.
 pub async fn live_task_rows(
     pool: &SqlitePool,
     pipeline_id: &str,
-) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+) -> Result<Vec<ClaimTaskRow>, AppError> {
     Ok(sqlx::query(
             "SELECT id, step_order, name, exec_type, COALESCE(host_id, ''), host_names, host_labels, command_template,
                     work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, image, volumes,
@@ -1207,7 +1302,10 @@ pub async fn live_task_rows(
     )
     .bind(pipeline_id)
     .fetch_all(pool)
-    .await?)
+    .await?
+    .into_iter()
+    .map(claim_task_row)
+    .collect())
 }
 
 /// `(name, value)` of a pipeline's explicit secret bindings, same-team only —
