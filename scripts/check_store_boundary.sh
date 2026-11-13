@@ -15,7 +15,8 @@
 # `fetch_all/fetch_one/fetch_optional`. A handler may own a `&SqlitePool` and
 # pass it to store operations, and may shape rows the store returns; what it
 # may not do is write the SQL itself. Wrapping the dialect token belongs in
-# `store/tx.rs`, so `begin_with` is still caught here.
+# `store/exec.rs` (`DbPool::begin_immediate`), so `begin_with` is still caught
+# here.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

@@ -83,7 +83,8 @@ impl DbPool {
         Self::Sqlite(pool.clone())
     }
 
-    /// The dialect-aware write-transaction opener. See `store::tx`.
+    /// The dialect-aware write-transaction opener. See
+    /// `transaction-boundaries.md` for the per-site Postgres translation.
     pub async fn begin_immediate(&self) -> Result<DbTx<'_>, sqlx::Error> {
         match self {
             Self::Sqlite(pool) => Ok(DbTx::Sqlite(pool.begin_with("BEGIN IMMEDIATE").await?)),

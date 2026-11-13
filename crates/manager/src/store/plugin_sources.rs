@@ -1,8 +1,8 @@
 //! Plugin source writes (admin surface). Reads live in `plugin_pool`.
 //!
-//! Pool-level writes run on the dual-backend dispatcher (`store::exec`);
+//! Every write runs on the dual-backend dispatcher (`store::exec`);
 //! `toggle_pool_entry` opens its own transaction around
-//! `crate::audit::record_in` and migrates with the audit tx-scope slice.
+//! `crate::audit::record_in_tx`.
 
 use crate::store::exec::{self, DbPool, SqlValue};
 
@@ -85,7 +85,7 @@ pub async fn mark_official_source_dismissed(
 /// record land together or not at all. `Err(NotFound)` when the entry does not
 /// exist (transaction rolled back).
 pub async fn toggle_pool_entry(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     namespace: &str,
     plugin_id: &str,
     version: &str,
@@ -93,36 +93,37 @@ pub async fn toggle_pool_entry(
     actor: &crate::middleware::AuthUser,
 ) -> Result<(), AppError> {
     let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
+        .begin_immediate()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let previous_enabled: Option<i64> = sqlx::query_scalar(
-        "SELECT enabled FROM plugin_pool \
+    let previous_enabled = tx
+        .fetch_optional(
+            "SELECT enabled FROM plugin_pool \
          WHERE namespace = ? AND plugin_id = ? AND version = ?",
-    )
-    .bind(namespace)
-    .bind(plugin_id)
-    .bind(version)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-    let result = sqlx::query(
-        "UPDATE plugin_pool SET enabled = ?, updated_by = ?, updated_at = datetime('now') \
+            &[namespace.into(), plugin_id.into(), version.into()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map(|r| r.i64(0));
+    let affected = tx
+        .execute(
+            "UPDATE plugin_pool SET enabled = ?, updated_by = ?, updated_at = datetime('now') \
          WHERE namespace = ? AND plugin_id = ? AND version = ?",
-    )
-    .bind(enabled as i64)
-    .bind(&actor.username)
-    .bind(namespace)
-    .bind(plugin_id)
-    .bind(version)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-    if result.rows_affected() == 0 {
+            &[
+                enabled.into(),
+                actor.username.as_str().into(),
+                namespace.into(),
+                plugin_id.into(),
+                version.into(),
+            ],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    if affected == 0 {
         tx.rollback().await.ok();
         return Err(AppError::NotFound("pool entry not found".into()));
     }
-    crate::audit::record_in(
+    crate::audit::record_in_tx(
         &mut tx,
         crate::audit::AuditEvent::new(crate::audit::Action::PluginPoolToggle, actor)
             .on(crate::audit::Resource::plugin_pool(

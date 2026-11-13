@@ -43,10 +43,11 @@ anything touches storage, and refuses to start otherwise:
   scheduling state — gapless build numbers, slot budgets, and claim
   serialisation all rely on the write lock `BEGIN IMMEDIATE` takes. `multi`
   requires the Postgres backend.
-- **Postgres → refused (today).** The schema, the statement rewriter, and the
-  migration runner have landed; the runtime wiring (pool selection and the
-  per-store dialect bodies) is the remaining follow-up. The refusal is fail
-  closed: a config pointing at Postgres never silently runs on SQLite.
+- **Postgres → refused (today).** The schema, the statement rewriter, the
+  dual-backend store dispatcher, and the advisory-locked migration runner have
+  landed; the runtime wiring (`db::init` pool selection, `AppState.pool`) and
+  the services SQL convergence are the remaining follow-up. The refusal is
+  fail closed: a config pointing at Postgres never silently runs on SQLite.
 - **`single` + SQLite → the single-instance lock.** The Manager takes an
   advisory flock on a `<db file>.lock` sidecar and holds it for the process
   lifetime. A systemd restart stacked on the old process, or a hand-started
@@ -67,11 +68,14 @@ timestamp.
 
 ## Roadmap
 
-1. **Runtime wiring** — pool selection on `postgres:` url and the per-store
-   dialect bodies (the statement rewriter in `store::dialect` already covers
-   the mechanical differences).
-2. **Advisory-lock migration runner** — `pg_advisory_lock` serialises startup
-   migrations on Postgres; SQLite keeps its current single-writer behaviour.
+1. **Runtime wiring** — `db::init` produces a `DbPool` (Postgres: pool plus
+   `run_pg_migrations`, no file lock), `AppState.pool` switches to that type,
+   and `validate_cluster_mode` lifts the Postgres refusal.
+2. **Services SQL convergence** — the statements still in `services/` (pipeline
+   scanner, rbac, scheduler, plugin pool, sandbox defaults, key rotation, …)
+   move into `store::`, so "the Postgres port replaces store bodies only"
+   holds. The hand-written Postgres variants for the `json_*` /
+   `INSERT OR REPLACE` / `strftime` sites land in the same pass.
 3. **`multi` enablement** — per-site serialisation review
    (`transaction-boundaries.md`), scheduler coordination, and the removal of
    the single-instance lock on Postgres.

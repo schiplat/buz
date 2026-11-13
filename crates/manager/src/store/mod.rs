@@ -46,7 +46,6 @@ pub mod secrets;
 pub mod teams;
 pub mod trigger_events;
 pub mod trigger_reserve;
-pub mod tx;
 pub mod users;
 pub mod variables;
 pub mod webhook_pipeline;

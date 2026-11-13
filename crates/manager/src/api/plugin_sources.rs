@@ -367,7 +367,7 @@ pub async fn toggle_pool_entry(
     }
     // State change, provenance and audit land together (store owns the tx).
     crate::store::plugin_sources::toggle_pool_entry(
-        &state.pool,
+        &state.db(),
         &namespace,
         &plugin_id,
         &version,
