@@ -941,7 +941,7 @@ async fn poll_once(
                 );
                 let _ = crate::store::runners::fail_pending_job(&state.db(), &job_id).await;
                 crate::services::notify::spawn_job_notify(
-                    state.pool.clone(),
+                    state.db(),
                     state.config.auth.jwt_secret.clone(),
                     state.config.server.public_base_url.clone(),
                     job_id.clone(),

@@ -1,7 +1,6 @@
 //! Pipeline row lookups shared across handlers.
 
 use crate::store::exec::{self, DbPool, DbTx, SqlValue};
-use sqlx::Row;
 use uuid::Uuid;
 
 use shared::error::AppError;
@@ -904,6 +903,23 @@ pub async fn update_tx(tx: &mut DbTx<'_>, id: &str, p: &UpdatePipeline) -> Resul
     Ok(affected)
 }
 
+/// Stored value of one same-team pipeline secret (`None` = no such binding).
+pub async fn team_secret_value_of(
+    pool: &DbPool,
+    pipeline_id: &str,
+    secret_name: &str,
+) -> Result<Option<String>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT s.value FROM secrets s
+         JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
+         WHERE p.id = ? AND s.name = ?",
+        &[pipeline_id.into(), secret_name.into()],
+    )
+    .await?
+    .map(|r| r.text(0)))
+}
+
 /// `Some(name)` when a team secret with this name exists — the
 /// webhook-secret binding check. `None` = no such secret in the team.
 pub async fn team_secret_id_by_name(
@@ -920,38 +936,32 @@ pub async fn team_secret_id_by_name(
     .map(|r| r.text(0)))
 }
 
-/// Id of the host with this exact name, inside the caller's connection
+/// Id of the host with this exact name, inside the caller's transaction
 /// (`None` = unknown host — step resolution logs and defers).
-pub async fn host_id_by_name(
-    conn: &mut sqlx::SqliteConnection,
-    name: &str,
-) -> Result<Option<String>, AppError> {
-    Ok(sqlx::query("SELECT id FROM hosts WHERE name = ?")
-        .bind(name)
-        .fetch_optional(conn)
+pub async fn host_id_by_name(tx: &mut DbTx<'_>, name: &str) -> Result<Option<String>, AppError> {
+    Ok(tx
+        .fetch_optional("SELECT id FROM hosts WHERE name = ?", &[name.into()])
         .await?
-        .map(|r| r.get(0)))
+        .map(|r| r.text(0)))
 }
 
 /// Ids of hosts whose `labels` JSON array contains `label`, inside the
-/// caller's connection.
-pub async fn host_ids_by_label(
-    conn: &mut sqlx::SqliteConnection,
-    label: &str,
-) -> Result<Vec<String>, AppError> {
-    Ok(
+/// caller's transaction.
+///
+/// PG-port note: `json_each` has no mechanical rewrite (see `store::dialect`),
+/// so this statement needs an explicit Postgres variant.
+pub async fn host_ids_by_label(tx: &mut DbTx<'_>, label: &str) -> Result<Vec<String>, AppError> {
+    Ok(tx
         // `hosts.id` must be qualified: `json_each` also exposes an `id`
         // column, so the unqualified form is ambiguous at compile time.
-        sqlx::query(
+        .fetch_all(
             "SELECT hosts.id FROM hosts, json_each(hosts.labels) WHERE json_each.value = ?",
+            &[label.into()],
         )
-        .bind(label)
-        .fetch_all(conn)
         .await?
         .into_iter()
-        .map(|r| r.get(0))
-        .collect(),
-    )
+        .map(|r| r.text(0))
+        .collect())
 }
 
 /// Everything needed to insert one task row.
@@ -981,95 +991,90 @@ pub struct TaskInsert {
     pub needs_json: String,
 }
 
-/// Insert one task row inside the caller's connection.
-pub async fn insert_task_tx(
-    conn: &mut sqlx::SqliteConnection,
-    t: &TaskInsert,
-) -> Result<(), AppError> {
-    sqlx::query(
-            "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
+/// Insert one task row inside the caller's transaction.
+pub async fn insert_task_tx(tx: &mut DbTx<'_>, t: &TaskInsert) -> Result<(), AppError> {
+    tx.execute(
+        "INSERT INTO tasks (id, pipeline_id, step_order, name, exec_type, host_id, host_names, host_labels,
              command_template, image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets,
              step_env, volumes, privileged,
              hosts_strategy, capabilities, hosts_max_parallel, needs_json)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            t.id.as_str().into(),
+            t.pipeline_id.as_str().into(),
+            SqlValue::Int(t.step_order),
+            t.name.as_str().into(),
+            t.exec_type.as_str().into(),
+            t.host_id.as_deref().into(),
+            t.host_names.as_str().into(),
+            t.host_labels.as_str().into(),
+            t.command_template.as_str().into(),
+            t.image.as_str().into(),
+            t.work_dir.as_str().into(),
+            SqlValue::Int(t.retry_count),
+            SqlValue::Int(t.timeout_seconds),
+            t.fail_strategy.as_str().into(),
+            t.step_secrets.as_str().into(),
+            t.step_env.as_str().into(),
+            t.volumes.as_str().into(),
+            SqlValue::Int(t.privileged),
+            t.hosts_strategy.as_str().into(),
+            t.capabilities.as_str().into(),
+            t.hosts_max_parallel.into(),
+            t.needs_json.as_str().into(),
+        ],
     )
-    .bind(&t.id)
-    .bind(&t.pipeline_id)
-    .bind(t.step_order)
-    .bind(&t.name)
-    .bind(&t.exec_type)
-    .bind(&t.host_id)
-    .bind(&t.host_names)
-    .bind(&t.host_labels)
-    .bind(&t.command_template)
-    .bind(&t.image)
-    .bind(&t.work_dir)
-    .bind(t.retry_count)
-    .bind(t.timeout_seconds)
-    .bind(&t.fail_strategy)
-    .bind(&t.step_secrets)
-    .bind(&t.step_env)
-    .bind(&t.volumes)
-    .bind(t.privileged)
-    .bind(&t.hosts_strategy)
-    .bind(&t.capabilities)
-    .bind(t.hosts_max_parallel)
-    .bind(&t.needs_json)
-    .execute(conn)
     .await?;
     Ok(())
 }
 
 /// Insert one inline (non-secret) env var of a pipeline.
 pub async fn insert_inline_env_tx(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut DbTx<'_>,
     pipeline_id: &str,
     name: &str,
     value: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    tx.execute(
         "INSERT INTO variables (id, pipeline_id, var_name, source_type, is_secret, value)
              VALUES (?, ?, ?, 'inline', 0, ?)",
+        &[
+            Uuid::new_v4().to_string().into(),
+            pipeline_id.into(),
+            name.into(),
+            value.into(),
+        ],
     )
-    .bind(Uuid::new_v4().to_string())
-    .bind(pipeline_id)
-    .bind(name)
-    .bind(value)
-    .execute(conn)
     .await?;
     Ok(())
 }
 
 /// Bind one variable id to a pipeline (no-op when already bound).
 pub async fn insert_var_binding_tx(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut DbTx<'_>,
     pipeline_id: &str,
     var_id: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    tx.execute(
         "INSERT OR IGNORE INTO pipeline_vars (pipeline_id, var_id)
              VALUES (?, ?)",
+        &[pipeline_id.into(), var_id.into()],
     )
-    .bind(pipeline_id)
-    .bind(var_id)
-    .execute(conn)
     .await?;
     Ok(())
 }
 
 /// Bind one secret id to a pipeline (no-op when already bound).
 pub async fn insert_secret_binding_tx(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut DbTx<'_>,
     pipeline_id: &str,
     secret_id: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    tx.execute(
         "INSERT OR IGNORE INTO pipeline_secrets (pipeline_id, secret_id)
              VALUES (?, ?)",
+        &[pipeline_id.into(), secret_id.into()],
     )
-    .bind(pipeline_id)
-    .bind(secret_id)
-    .execute(conn)
     .await?;
     Ok(())
 }
@@ -1625,4 +1630,398 @@ pub async fn step_resolution_defs(
     .into_iter()
     .map(|r| (r.i64(0), r.text(1)))
     .collect())
+}
+
+// ─────────────────────── YAML definition projection ───────────────────────
+
+/// One step-resolution row to persist (the resolver's output, store-neutral).
+pub struct StepResolutionWrite {
+    pub step_order: i64,
+    pub uses_ref: String,
+    pub resolved_version: String,
+    pub content_sha256: String,
+    pub source: String,
+    pub expanded_json: String,
+    pub input_defs_json: String,
+    pub reviewed: bool,
+}
+
+/// Replace a pipeline's provenance rows inside the caller's transaction.
+pub async fn replace_step_resolutions_tx(
+    tx: &mut DbTx<'_>,
+    pipeline_id: &str,
+    resolutions: &[StepResolutionWrite],
+) -> Result<(), AppError> {
+    tx.execute(
+        "DELETE FROM step_resolutions WHERE pipeline_id = ?",
+        &[pipeline_id.into()],
+    )
+    .await?;
+    for resolution in resolutions {
+        tx.execute(
+            "INSERT INTO step_resolutions
+             (id, pipeline_id, step_order, uses_ref, resolved_version, content_sha256, source, expanded_json, input_defs_json, reviewed)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Uuid::new_v4().to_string().into(),
+                pipeline_id.into(),
+                SqlValue::Int(resolution.step_order),
+                resolution.uses_ref.as_str().into(),
+                resolution.resolved_version.as_str().into(),
+                resolution.content_sha256.as_str().into(),
+                resolution.source.as_str().into(),
+                resolution.expanded_json.as_str().into(),
+                resolution.input_defs_json.as_str().into(),
+                SqlValue::Int(i64::from(resolution.reviewed)),
+            ],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Drop the expandable projection (tasks, resolutions, inline vars, bindings)
+/// before a YAML save re-projects it. One named operation so the five child
+/// tables cannot drift apart.
+pub async fn clear_projection_tx(tx: &mut DbTx<'_>, pipeline_id: &str) -> Result<(), AppError> {
+    for sql in [
+        "DELETE FROM step_resolutions WHERE pipeline_id = ?",
+        "DELETE FROM tasks WHERE pipeline_id = ?",
+        "DELETE FROM variables WHERE pipeline_id = ?",
+        "DELETE FROM pipeline_secrets WHERE pipeline_id = ?",
+        "DELETE FROM pipeline_vars WHERE pipeline_id = ?",
+    ] {
+        tx.execute(sql, &[pipeline_id.into()]).await?;
+    }
+    Ok(())
+}
+
+/// Everything the YAML upsert writes on an existing pipeline row.
+pub struct YamlPipelineUpdate<'a> {
+    pub name: &'a str,
+    pub description: &'a str,
+    pub trigger_type: &'a str,
+    pub webhook_path: Option<&'a str>,
+    pub webhook_secret: &'a str,
+    pub webhook_environment: &'a str,
+    pub cron_expr: Option<&'a str>,
+    pub cron_environment: &'a str,
+    pub runner_labels: &'a str,
+    pub timeout_seconds: i64,
+    pub resource_profile: &'a str,
+    pub concurrency_group: Option<&'a str>,
+    pub concurrency_mode: &'a str,
+    pub concurrency_max_queue: i64,
+    pub concurrency_queue_timeout_seconds: i64,
+    pub owner_group: &'a str,
+    pub team_id: &'a str,
+    pub input_defs: &'a str,
+    pub environments: &'a str,
+    pub notify_json: &'a str,
+    pub yaml_path: &'a str,
+    pub yaml_sha256: &'a str,
+    pub yaml_source: &'a str,
+}
+
+/// Re-project one YAML definition onto its existing pipeline row.
+pub async fn yaml_update_tx(
+    tx: &mut DbTx<'_>,
+    id: &str,
+    p: &YamlPipelineUpdate<'_>,
+) -> Result<(), AppError> {
+    tx.execute(
+        "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?,
+         webhook_path = ?, webhook_secret = ?, webhook_environment = ?, cron_expr = ?, cron_environment = ?, runner_labels = ?, timeout_seconds = ?,
+         resource_profile = ?,
+         concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
+         concurrency_queue_timeout_seconds = ?,
+         owner_group = ?, team_id = ?, input_defs = ?, environments = ?,
+         notify_json = ?,
+         yaml_path = ?, yaml_sha256 = ?, yaml_source = ?, updated_at = datetime('now')
+         WHERE id = ?",
+        &[
+            p.name.into(),
+            p.description.into(),
+            p.trigger_type.into(),
+            p.webhook_path.into(),
+            p.webhook_secret.into(),
+            p.webhook_environment.into(),
+            p.cron_expr.into(),
+            p.cron_environment.into(),
+            p.runner_labels.into(),
+            SqlValue::Int(p.timeout_seconds),
+            p.resource_profile.into(),
+            p.concurrency_group.into(),
+            p.concurrency_mode.into(),
+            SqlValue::Int(p.concurrency_max_queue),
+            SqlValue::Int(p.concurrency_queue_timeout_seconds),
+            p.owner_group.into(),
+            p.team_id.into(),
+            p.input_defs.into(),
+            p.environments.into(),
+            p.notify_json.into(),
+            p.yaml_path.into(),
+            p.yaml_sha256.into(),
+            p.yaml_source.into(),
+            id.into(),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Everything the YAML create path inserts.
+pub struct YamlPipelineInsert<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub description: &'a str,
+    pub trigger_type: &'a str,
+    pub webhook_path: Option<&'a str>,
+    pub webhook_secret: &'a str,
+    pub webhook_environment: &'a str,
+    pub cron_expr: Option<&'a str>,
+    pub cron_environment: &'a str,
+    pub runner_labels: &'a str,
+    pub timeout_seconds: i64,
+    pub resource_profile: &'a str,
+    pub concurrency_group: Option<&'a str>,
+    pub concurrency_mode: &'a str,
+    pub concurrency_max_queue: i64,
+    pub concurrency_queue_timeout_seconds: i64,
+    pub owner_group: &'a str,
+    pub team_id: &'a str,
+    pub yaml_path: &'a str,
+    pub yaml_sha256: &'a str,
+    pub yaml_source: &'a str,
+    pub input_defs: &'a str,
+    pub environments: &'a str,
+    pub notify_json: &'a str,
+}
+
+/// Insert one fully-projected YAML pipeline row (`source = 'yaml'`, active).
+pub async fn yaml_insert_tx(tx: &mut DbTx<'_>, p: &YamlPipelineInsert<'_>) -> Result<(), AppError> {
+    tx.execute(
+        "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path,
+         webhook_secret, webhook_environment, cron_expr, cron_environment, runner_labels, timeout_seconds, resource_profile, concurrency_group, concurrency_mode,
+         concurrency_max_queue, concurrency_queue_timeout_seconds,
+        owner_group, team_id, source, yaml_path, yaml_sha256, yaml_source, input_defs, environments, notify_json, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, ?, ?, 1)",
+        &[
+            p.id.into(),
+            p.name.into(),
+            p.description.into(),
+            p.trigger_type.into(),
+            p.webhook_path.into(),
+            p.webhook_secret.into(),
+            p.webhook_environment.into(),
+            p.cron_expr.into(),
+            p.cron_environment.into(),
+            p.runner_labels.into(),
+            SqlValue::Int(p.timeout_seconds),
+            p.resource_profile.into(),
+            p.concurrency_group.into(),
+            p.concurrency_mode.into(),
+            SqlValue::Int(p.concurrency_max_queue),
+            SqlValue::Int(p.concurrency_queue_timeout_seconds),
+            p.owner_group.into(),
+            p.team_id.into(),
+            p.yaml_path.into(),
+            p.yaml_sha256.into(),
+            p.yaml_source.into(),
+            p.input_defs.into(),
+            p.environments.into(),
+            p.notify_json.into(),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Same-team secret ids for the given names, inside the caller's transaction.
+pub async fn secret_ids_by_names_tx(
+    tx: &mut DbTx<'_>,
+    team_id: &str,
+    names: &[String],
+) -> Result<Vec<String>, AppError> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; names.len()].join(",");
+    let sql = format!("SELECT id FROM secrets WHERE team_id = ? AND name IN ({placeholders})");
+    let mut binds: Vec<SqlValue> = vec![team_id.into()];
+    binds.extend(names.iter().map(|n| SqlValue::from(n.as_str())));
+    Ok(tx
+        .fetch_all(&sql, &binds)
+        .await?
+        .into_iter()
+        .map(|r| r.text(0))
+        .collect())
+}
+
+/// Platform-variable ids for the given names, inside the caller's transaction.
+pub async fn platform_var_ids_by_names_tx(
+    tx: &mut DbTx<'_>,
+    names: &[String],
+) -> Result<Vec<String>, AppError> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; names.len()].join(",");
+    let sql = format!("SELECT id FROM platform_vars WHERE name IN ({placeholders})");
+    let binds: Vec<SqlValue> = names.iter().map(|n| SqlValue::from(n.as_str())).collect();
+    Ok(tx
+        .fetch_all(&sql, &binds)
+        .await?
+        .into_iter()
+        .map(|r| r.text(0))
+        .collect())
+}
+
+/// Pipeline id by definition basename (`source = 'yaml'`).
+pub async fn pipeline_id_by_yaml_path(
+    pool: &DbPool,
+    yaml_path: &str,
+) -> Result<Option<String>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT id FROM pipelines WHERE yaml_path = ? AND source = 'yaml'",
+        &[yaml_path.into()],
+    )
+    .await?
+    .map(|r| r.text(0)))
+}
+
+/// `(id, yaml_path)` of every YAML-sourced pipeline — legacy path matching.
+pub async fn legacy_yaml_rows(pool: &DbPool) -> Result<Vec<(String, Option<String>)>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT id, yaml_path FROM pipelines WHERE source = 'yaml'",
+        &[],
+    )
+    .await?
+    .into_iter()
+    .map(|r| (r.text(0), r.opt_text(1)))
+    .collect())
+}
+
+/// Rewrite one pipeline's origin basename (legacy path migration).
+pub async fn set_yaml_path(pool: &DbPool, id: &str, yaml_path: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE pipelines SET yaml_path = ? WHERE id = ?",
+        &[yaml_path.into(), id.into()],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Stored canonical YAML of one pipeline (`None` = no such row).
+pub async fn yaml_source_of(pool: &DbPool, id: &str) -> Result<Option<String>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT yaml_source FROM pipelines WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .map(|r| r.text(0)))
+}
+
+/// Stored canonical YAML of one pipeline inside the caller's transaction.
+pub async fn yaml_source_tx(tx: &mut DbTx<'_>, id: &str) -> Result<Option<String>, AppError> {
+    Ok(tx
+        .fetch_optional(
+            "SELECT yaml_source FROM pipelines WHERE id = ?",
+            &[id.into()],
+        )
+        .await?
+        .map(|r| r.text(0)))
+}
+
+/// One YAML-sourced pipeline row for the file list.
+pub struct YamlFileRow {
+    pub yaml_path: String,
+    pub id: String,
+    pub name: String,
+    pub team_id: String,
+    pub is_active: bool,
+}
+
+/// YAML-sourced pipelines with an origin basename, ordered by it.
+pub async fn yaml_file_rows(pool: &DbPool) -> Result<Vec<YamlFileRow>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT yaml_path, id, name, team_id, is_active FROM pipelines \
+         WHERE source = 'yaml' AND yaml_path NOT IN ('', 'form') ORDER BY yaml_path",
+        &[],
+    )
+    .await?
+    .into_iter()
+    .map(|r| YamlFileRow {
+        yaml_path: r.text(0),
+        id: r.text(1),
+        name: r.text(2),
+        team_id: r.text(3),
+        is_active: r.i64(4) != 0,
+    })
+    .collect())
+}
+
+/// `(yaml_path, yaml_source, updated_at)` — the definition sync status.
+pub async fn yaml_sync_row(
+    pool: &DbPool,
+    id: &str,
+) -> Result<Option<(Option<String>, String, Option<String>)>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT yaml_path, yaml_source, updated_at FROM pipelines WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .map(|r| (r.opt_text(0), r.text(1), r.opt_text(2))))
+}
+
+/// `(id, source, yaml_path)` of one pipeline — the write path's ownership check.
+pub async fn yaml_row_identity(
+    pool: &DbPool,
+    id: &str,
+) -> Result<Option<(String, String, Option<String>)>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT id, source, yaml_path FROM pipelines WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .map(|r| (r.text(0), r.text(1), r.opt_text(2))))
+}
+
+/// Retarget an existing pipeline row at a YAML definition (the API create
+/// path binds a Form/API row to its stored definition).
+pub async fn bind_pipeline_to_yaml(
+    pool: &DbPool,
+    id: &str,
+    yaml_path: &str,
+) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE pipelines SET source = 'yaml', yaml_path = ?, updated_at = datetime('now') WHERE id = ?",
+        &[yaml_path.into(), id.into()],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Restore a pipeline row's pre-bind `(source, yaml_path)` after a failed bind.
+pub async fn restore_pipeline_binding(
+    pool: &DbPool,
+    id: &str,
+    source: &str,
+    yaml_path: Option<&str>,
+) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE pipelines SET source = ?, yaml_path = ?, updated_at = datetime('now') WHERE id = ?",
+        &[source.into(), yaml_path.into(), id.into()],
+    )
+    .await?;
+    Ok(())
 }

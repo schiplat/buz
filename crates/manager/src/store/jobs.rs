@@ -1302,6 +1302,40 @@ pub async fn fail_orphaned_job(pool: &DbPool, job_id: &str, log_content: &str) {
     .await;
 }
 
+/// One job row read for a notification payload.
+pub struct NotifyJobRow {
+    pub snapshot: String,
+    pub trigger_by: String,
+    pub pipeline_id: String,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub pipeline_name: Option<String>,
+    pub run_number: i64,
+}
+
+/// Notification payload facts of one job (`None` = no such job).
+pub async fn notify_job_row(pool: &DbPool, job_id: &str) -> Result<Option<NotifyJobRow>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT j.snapshot, j.trigger_by, j.pipeline_id, j.start_time, j.end_time, p.name,
+                j.run_number
+         FROM jobs j
+         LEFT JOIN pipelines p ON p.id = j.pipeline_id
+         WHERE j.id = ?",
+        &[job_id.into()],
+    )
+    .await?
+    .map(|r| NotifyJobRow {
+        snapshot: r.text(0),
+        trigger_by: r.text(1),
+        pipeline_id: r.text(2),
+        start_time: r.opt_text(3),
+        end_time: r.opt_text(4),
+        pipeline_name: r.opt_text(5),
+        run_number: r.i64(6),
+    }))
+}
+
 /// `(pipeline_id, pipeline name?)` for cancel-path audit context.
 pub async fn job_pipeline_name(
     pool: &DbPool,

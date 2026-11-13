@@ -98,6 +98,18 @@ impl DbPool {
         }
     }
 
+    /// Open a plain (deferred) transaction — for write scopes that only insert
+    /// and have no read-then-write invariant to serialise. Prefer
+    /// `begin_immediate` wherever correctness depends on the writer lock; the
+    /// boundary document enumerates those sites.
+    pub async fn begin(&self) -> Result<DbTx<'_>, sqlx::Error> {
+        match self {
+            Self::Sqlite(pool) => Ok(DbTx::Sqlite(pool.begin().await?)),
+            #[cfg(feature = "postgres")]
+            Self::Pg(pool) => Ok(DbTx::Pg(pool.begin().await?)),
+        }
+    }
+
     pub async fn acquire(&self) -> Result<DbConn, sqlx::Error> {
         match self {
             Self::Sqlite(pool) => Ok(DbConn::Sqlite(Box::new(pool.acquire().await?))),

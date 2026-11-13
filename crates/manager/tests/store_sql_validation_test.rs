@@ -268,6 +268,8 @@ const EXPECTED_DYNAMIC_SHAPES: &[&str] = &[
     "SELECT {POOL_ROW_COLUMNS} FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id ORDER BY p.namespace, p.plugin_id, p.version",
     "SELECT {POOL_ROW_COLUMNS} FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id WHERE p.namespace = ? AND p.plugin_id = ? AND p.enabled = 1",
     "SELECT {POOL_ROW_COLUMNS} FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id WHERE p.namespace = ? AND p.plugin_id = ? ORDER BY p.version",
+    "SELECT id FROM secrets WHERE team_id = ? AND name IN ({placeholders})",
+    "SELECT id FROM platform_vars WHERE name IN ({placeholders})",
 ];
 
 /// Every unresolved-fragment statement in the store must be one of the shapes

@@ -1,5 +1,5 @@
+use anyhow::anyhow;
 use sha2::{Digest, Sha256};
-use sqlx::{Row, SqlitePool};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ use shared::protocol::{EnvPair, PipelineInputDef, StepDef};
 use crate::api::{
     insert_env_vars, insert_pipeline_secret_bindings, insert_pipeline_var_bindings, insert_steps,
 };
+use crate::store::exec::DbPool;
 
 #[derive(Debug)]
 struct StepResolutionError(String);
@@ -53,7 +54,7 @@ fn is_unique_violation(error: &anyhow::Error) -> bool {
 /// into a conflict (POST semantics).
 #[allow(clippy::too_many_arguments)] // definition, provenance, settings, concurrency
 pub async fn upsert_from_yaml(
-    pool: &SqlitePool,
+    pool: &DbPool,
     file_path: &str,
     parsed: &PipelineYaml,
     step_index_dir: &Path,
@@ -150,20 +151,15 @@ pub async fn upsert_from_yaml(
         // An upsert is an explicit save: it always re-projects, so a stale
         // projection is repaired even when the text is unchanged. The scanner
         // tick that made a same-hash short-circuit worthwhile is gone.
-        let row = sqlx::query("SELECT team_id FROM pipelines WHERE id = ?")
-            .bind(id)
-            .fetch_one(pool)
-            .await?;
-        let stored_team_id: String = row.get(0);
+        let stored_team_id = crate::store::pipelines::team_id_of(pool, id)
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+            .ok_or_else(|| anyhow!("pipeline {id} disappeared"))?;
         team_changed = stored_team_id != team_id;
         if team_changed {
-            let active_jobs: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
-                 AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
-            )
-            .bind(id)
-            .fetch_one(pool)
-            .await?;
+            let active_jobs = crate::store::pipelines::active_job_count(pool, id)
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
             if active_jobs > 0 {
                 anyhow::bail!(
                     "pipeline team cannot change while {active_jobs} active job(s) exist; finish or cancel them first"
@@ -178,7 +174,7 @@ pub async fn upsert_from_yaml(
     let resolved_steps = crate::services::plugin_resolver::resolve_uses_steps_async(
         parsed_steps,
         step_index_dir.to_path_buf(),
-        &crate::store::exec::DbPool::from_sqlite(pool),
+        pool,
         &http,
     )
     .await
@@ -195,15 +191,14 @@ pub async fn upsert_from_yaml(
                 "definition {yaml_key} already exists — use PUT to update"
             ))));
         }
-        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = pool.begin_immediate().await?;
         // Optimistic concurrency, evaluated under the write lock so a stale
         // token cannot slip between the check and the UPDATE.
         if let Some(expected) = expected_etag {
-            let current: String =
-                sqlx::query_scalar("SELECT yaml_source FROM pipelines WHERE id = ?")
-                    .bind(&id)
-                    .fetch_one(&mut *tx)
-                    .await?;
+            let current = crate::store::pipelines::yaml_source_tx(&mut tx, &id)
+                .await
+                .map_err(|e| anyhow!("{e}"))?
+                .ok_or_else(|| anyhow!("pipeline {id} disappeared"))?;
             if expected != "*" && expected != yaml_content_etag(&current) {
                 tx.rollback().await?;
                 return Err(anyhow::Error::new(YamlConflictError(
@@ -212,13 +207,9 @@ pub async fn upsert_from_yaml(
             }
         }
         if team_changed {
-            let active_jobs: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
-                 AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
-            )
-            .bind(&id)
-            .fetch_one(&mut *tx)
-            .await?;
+            let active_jobs = crate::store::pipelines::active_job_count_tx(&mut tx, &id)
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
             if active_jobs > 0 {
                 tx.rollback().await?;
                 anyhow::bail!(
@@ -226,72 +217,62 @@ pub async fn upsert_from_yaml(
                 );
             }
         }
-        sqlx::query(
-            "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?,
-             webhook_path = ?, webhook_secret = ?, webhook_environment = ?, cron_expr = ?, cron_environment = ?, runner_labels = ?, timeout_seconds = ?,
-             resource_profile = ?,
-             concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
-             concurrency_queue_timeout_seconds = ?,
-             owner_group = ?, team_id = ?, input_defs = ?, environments = ?,
-             notify_json = ?,
-             yaml_path = ?, yaml_sha256 = ?, yaml_source = ?, updated_at = datetime('now')
-             WHERE id = ?",
+        crate::store::pipelines::yaml_update_tx(
+            &mut tx,
+            &id,
+            &crate::store::pipelines::YamlPipelineUpdate {
+                name: pipeline_name,
+                description: &description,
+                trigger_type: &trigger_type,
+                webhook_path: webhook_path.as_deref(),
+                webhook_secret: webhook_secret.as_deref().unwrap_or_default(),
+                webhook_environment: webhook_environment.as_deref().unwrap_or(""),
+                cron_expr: cron_expr.as_deref(),
+                cron_environment: cron_environment.as_deref().unwrap_or(""),
+                runner_labels: &labels_json,
+                timeout_seconds,
+                resource_profile: &resource_profile,
+                concurrency_group: concurrency_group.as_deref(),
+                concurrency_mode: concurrency_mode.as_deref().unwrap_or(""),
+                concurrency_max_queue: concurrency_max_queue.map(|v| v as i64).unwrap_or(3),
+                concurrency_queue_timeout_seconds: parse_concurrency_timeout_seconds(
+                    concurrency_queue_timeout.as_deref(),
+                ),
+                owner_group: &resolved_slug,
+                team_id: &team_id,
+                input_defs: &input_defs_json,
+                environments: &environments_json,
+                notify_json: &notify_json,
+                yaml_path: &yaml_key,
+                yaml_sha256: &yaml_sha256,
+                yaml_source: yaml_content,
+            },
         )
-        .bind(pipeline_name)
-        .bind(&description)
-        .bind(&trigger_type)
-        .bind(&webhook_path)
-        .bind(webhook_secret.clone().unwrap_or_default())
-        .bind(webhook_environment.as_deref().unwrap_or(""))
-        .bind(&cron_expr)
-        .bind(cron_environment.as_deref().unwrap_or(""))
-        .bind(&labels_json)
-        .bind(timeout_seconds)
-        .bind(&resource_profile)
-        .bind(&concurrency_group)
-        .bind(concurrency_mode.as_deref().unwrap_or(""))
-        .bind(concurrency_max_queue.map(|v| v as i64).unwrap_or(3))
-        .bind(parse_concurrency_timeout_seconds(
-            concurrency_queue_timeout.as_deref(),
-        ))
-        .bind(&resolved_slug)
-        .bind(&team_id)
-        .bind(&input_defs_json)
-        .bind(&environments_json)
-        .bind(&notify_json)
-        .bind(&yaml_key)
-        .bind(&yaml_sha256)
-        .bind(yaml_content)
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
 
         // Replace the previously expanded step projection after resolution succeeded.
-        sqlx::query("DELETE FROM step_resolutions WHERE pipeline_id = ?")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM tasks WHERE pipeline_id = ?")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM variables WHERE pipeline_id = ?")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM pipeline_secrets WHERE pipeline_id = ?")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM pipeline_vars WHERE pipeline_id = ?")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
+        crate::store::pipelines::clear_projection_tx(&mut tx, &id)
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
 
         insert_steps(&mut tx, &id, &steps).await?;
-        crate::services::plugin_resolver::replace_step_resolutions(&mut tx, &id, &resolutions)
+        let resolution_writes: Vec<crate::store::pipelines::StepResolutionWrite> = resolutions
+            .iter()
+            .map(|r| crate::store::pipelines::StepResolutionWrite {
+                step_order: r.step_order,
+                uses_ref: r.uses_ref.clone(),
+                resolved_version: r.resolved_version.clone(),
+                content_sha256: r.content_sha256.clone(),
+                source: r.source.clone(),
+                expanded_json: r.expanded_json.clone(),
+                input_defs_json: r.input_defs_json.clone(),
+                reviewed: r.reviewed,
+            })
+            .collect();
+        crate::store::pipelines::replace_step_resolutions_tx(&mut tx, &id, &resolution_writes)
             .await
-            .map_err(anyhow::Error::msg)?;
+            .map_err(|e| anyhow!("{e}"))?;
 
         if let Some(ref envs) = parsed.env {
             let pairs: Vec<EnvPair> = envs
@@ -305,19 +286,13 @@ pub async fn upsert_from_yaml(
         }
         if !pipeline_secrets.is_empty() {
             // Same-team name resolve only (never bind another team's secret)
-            let placeholders = vec!["?"; pipeline_secrets.len()].join(",");
-            let query =
-                format!("SELECT id FROM secrets WHERE team_id = ? AND name IN ({placeholders})");
-            let mut q = sqlx::query_as::<_, (String,)>(&query).bind(&team_id);
-            for name in &pipeline_secrets {
-                q = q.bind(name);
-            }
-            let secret_ids: Vec<String> = q
-                .fetch_all(&mut *tx)
-                .await?
-                .into_iter()
-                .map(|r| r.0)
-                .collect();
+            let secret_ids = crate::store::pipelines::secret_ids_by_names_tx(
+                &mut tx,
+                &team_id,
+                &pipeline_secrets,
+            )
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
             if secret_ids.len() != pipeline_secrets.len() {
                 tracing::warn!(
                     pipeline = %pipeline_name,
@@ -331,25 +306,10 @@ pub async fn upsert_from_yaml(
         }
         if let Some(ref var_names) = parsed.variables {
             if !var_names.is_empty() {
-                let placeholders: Vec<String> = var_names
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| format!("?{}", i + 1))
-                    .collect();
-                let query = format!(
-                    "SELECT id FROM platform_vars WHERE name IN ({})",
-                    placeholders.join(",")
-                );
-                let mut q = sqlx::query_as::<_, (String,)>(&query);
-                for name in var_names {
-                    q = q.bind(name);
-                }
-                let var_ids: Vec<String> = q
-                    .fetch_all(&mut *tx)
-                    .await?
-                    .into_iter()
-                    .map(|r| r.0)
-                    .collect();
+                let var_ids =
+                    crate::store::pipelines::platform_var_ids_by_names_tx(&mut tx, var_names)
+                        .await
+                        .map_err(|e| anyhow!("{e}"))?;
                 insert_pipeline_var_bindings(&mut tx, &id, &var_ids).await?;
             }
         }
@@ -361,46 +321,57 @@ pub async fn upsert_from_yaml(
         let id = Uuid::new_v4().to_string();
         let mut tx = pool.begin().await?;
 
-        sqlx::query(
-            "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path,
-             webhook_secret, webhook_environment, cron_expr, cron_environment, runner_labels, timeout_seconds, resource_profile, concurrency_group, concurrency_mode,
-             concurrency_max_queue, concurrency_queue_timeout_seconds,
-            owner_group, team_id, source, yaml_path, yaml_sha256, yaml_source, input_defs, environments, notify_json, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?, ?, ?, ?, ?, ?, 1)",
+        crate::store::pipelines::yaml_insert_tx(
+            &mut tx,
+            &crate::store::pipelines::YamlPipelineInsert {
+                id: &id,
+                name: pipeline_name,
+                description: &description,
+                trigger_type: &trigger_type,
+                webhook_path: webhook_path.as_deref(),
+                webhook_secret: webhook_secret.as_deref().unwrap_or_default(),
+                webhook_environment: webhook_environment.as_deref().unwrap_or(""),
+                cron_expr: cron_expr.as_deref(),
+                cron_environment: cron_environment.as_deref().unwrap_or(""),
+                runner_labels: &labels_json,
+                timeout_seconds,
+                resource_profile: &resource_profile,
+                concurrency_group: concurrency_group.as_deref(),
+                concurrency_mode: concurrency_mode.as_deref().unwrap_or(""),
+                concurrency_max_queue: concurrency_max_queue.map(|v| v as i64).unwrap_or(3),
+                concurrency_queue_timeout_seconds: parse_concurrency_timeout_seconds(
+                    concurrency_queue_timeout.as_deref(),
+                ),
+                owner_group: &resolved_slug,
+                team_id: &team_id,
+                yaml_path: &yaml_key,
+                yaml_sha256: &yaml_sha256,
+                yaml_source: yaml_content,
+                input_defs: &input_defs_json,
+                environments: &environments_json,
+                notify_json: &notify_json,
+            },
         )
-        .bind(&id)
-        .bind(pipeline_name)
-        .bind(&description)
-        .bind(&trigger_type)
-        .bind(&webhook_path)
-        .bind(webhook_secret.clone().unwrap_or_default())
-        .bind(webhook_environment.as_deref().unwrap_or(""))
-        .bind(&cron_expr)
-        .bind(cron_environment.as_deref().unwrap_or(""))
-        .bind(&labels_json)
-        .bind(timeout_seconds)
-        .bind(&resource_profile)
-        .bind(&concurrency_group)
-        .bind(concurrency_mode.as_deref().unwrap_or(""))
-        .bind(concurrency_max_queue.map(|v| v as i64).unwrap_or(3))
-        .bind(parse_concurrency_timeout_seconds(
-            concurrency_queue_timeout.as_deref(),
-        ))
-        .bind(&resolved_slug)
-        .bind(&team_id)
-        .bind(&yaml_key)
-        .bind(&yaml_sha256)
-        .bind(yaml_content)
-        .bind(&input_defs_json)
-        .bind(&environments_json)
-        .bind(&notify_json)
-        .execute(&mut *tx)
-        .await?;
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
 
         insert_steps(&mut tx, &id, &steps).await?;
-        crate::services::plugin_resolver::replace_step_resolutions(&mut tx, &id, &resolutions)
+        let resolution_writes: Vec<crate::store::pipelines::StepResolutionWrite> = resolutions
+            .iter()
+            .map(|r| crate::store::pipelines::StepResolutionWrite {
+                step_order: r.step_order,
+                uses_ref: r.uses_ref.clone(),
+                resolved_version: r.resolved_version.clone(),
+                content_sha256: r.content_sha256.clone(),
+                source: r.source.clone(),
+                expanded_json: r.expanded_json.clone(),
+                input_defs_json: r.input_defs_json.clone(),
+                reviewed: r.reviewed,
+            })
+            .collect();
+        crate::store::pipelines::replace_step_resolutions_tx(&mut tx, &id, &resolution_writes)
             .await
-            .map_err(anyhow::Error::msg)?;
+            .map_err(|e| anyhow!("{e}"))?;
 
         if let Some(ref envs) = parsed.env {
             let pairs: Vec<EnvPair> = envs
@@ -414,19 +385,13 @@ pub async fn upsert_from_yaml(
         }
         if !pipeline_secrets.is_empty() {
             // Same-team name resolve only (never bind another team's secret)
-            let placeholders = vec!["?"; pipeline_secrets.len()].join(",");
-            let query =
-                format!("SELECT id FROM secrets WHERE team_id = ? AND name IN ({placeholders})");
-            let mut q = sqlx::query_as::<_, (String,)>(&query).bind(&team_id);
-            for name in &pipeline_secrets {
-                q = q.bind(name);
-            }
-            let secret_ids: Vec<String> = q
-                .fetch_all(&mut *tx)
-                .await?
-                .into_iter()
-                .map(|r| r.0)
-                .collect();
+            let secret_ids = crate::store::pipelines::secret_ids_by_names_tx(
+                &mut tx,
+                &team_id,
+                &pipeline_secrets,
+            )
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
             if secret_ids.len() != pipeline_secrets.len() {
                 tracing::warn!(
                     pipeline = %pipeline_name,
@@ -440,25 +405,10 @@ pub async fn upsert_from_yaml(
         }
         if let Some(ref var_names) = parsed.variables {
             if !var_names.is_empty() {
-                let placeholders: Vec<String> = var_names
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| format!("?{}", i + 1))
-                    .collect();
-                let query = format!(
-                    "SELECT id FROM platform_vars WHERE name IN ({})",
-                    placeholders.join(",")
-                );
-                let mut q = sqlx::query_as::<_, (String,)>(&query);
-                for name in var_names {
-                    q = q.bind(name);
-                }
-                let var_ids: Vec<String> = q
-                    .fetch_all(&mut *tx)
-                    .await?
-                    .into_iter()
-                    .map(|r| r.0)
-                    .collect();
+                let var_ids =
+                    crate::store::pipelines::platform_var_ids_by_names_tx(&mut tx, var_names)
+                        .await
+                        .map_err(|e| anyhow!("{e}"))?;
                 insert_pipeline_var_bindings(&mut tx, &id, &var_ids).await?;
             }
         }
@@ -588,33 +538,18 @@ pub fn yaml_content_etag(content: &str) -> String {
 
 /// Find pipeline id by basename key; migrates legacy full-path rows to basename.
 pub async fn find_yaml_pipeline_row(
-    pool: &SqlitePool,
+    pool: &DbPool,
     filename: &str,
 ) -> Result<Option<String>, AppError> {
     validate_yaml_filename(filename)?;
-    if let Some(id) = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM pipelines WHERE yaml_path = ? AND source = 'yaml'",
-    )
-    .bind(filename)
-    .fetch_optional(pool)
-    .await?
-    {
+    if let Some(id) = crate::store::pipelines::pipeline_id_by_yaml_path(pool, filename).await? {
         return Ok(Some(id));
     }
     // Legacy rows may store absolute/relative paths — match by basename and rewrite.
-    let rows = sqlx::query("SELECT id, yaml_path FROM pipelines WHERE source = 'yaml'")
-        .fetch_all(pool)
-        .await?;
-    for row in rows {
-        let id: String = row.get(0);
-        let path: Option<String> = row.get(1);
+    for (id, path) in crate::store::pipelines::legacy_yaml_rows(pool).await? {
         let Some(path) = path else { continue };
         if normalize_yaml_path_key(&path) == filename {
-            sqlx::query("UPDATE pipelines SET yaml_path = ? WHERE id = ?")
-                .bind(filename)
-                .bind(&id)
-                .execute(pool)
-                .await?;
+            crate::store::pipelines::set_yaml_path(pool, &id, filename).await?;
             return Ok(Some(id));
         }
     }
@@ -659,15 +594,14 @@ pub fn assert_path_under_scan_dir(scan_dir: &str, path: &Path) -> Result<(), App
 ///
 /// The database is the only authority for pipeline definitions; `yaml_path`
 /// is the origin basename the definition was imported under.
-pub async fn read_yaml_file(pool: &SqlitePool, filename: &str) -> Result<String, AppError> {
+pub async fn read_yaml_file(pool: &DbPool, filename: &str) -> Result<String, AppError> {
     validate_yaml_filename(filename)?;
     let id = find_yaml_pipeline_row(pool, filename)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("pipeline {filename} not found")))?;
-    let source: String = sqlx::query_scalar("SELECT yaml_source FROM pipelines WHERE id = ?")
-        .bind(&id)
-        .fetch_one(pool)
-        .await?;
+    let source = crate::store::pipelines::yaml_source_of(pool, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("pipeline {filename} not found")))?;
     if source.is_empty() {
         return Err(AppError::NotFound(format!(
             "pipeline {filename} has no stored YAML"
@@ -677,25 +611,19 @@ pub async fn read_yaml_file(pool: &SqlitePool, filename: &str) -> Result<String,
 }
 
 /// List stored pipeline definitions as their origin filenames.
-pub async fn list_yaml_files(pool: &SqlitePool) -> Result<Vec<YamlFileInfo>, AppError> {
-    let rows = sqlx::query(
-        "SELECT yaml_path, id, name, team_id, is_active FROM pipelines \
-         WHERE source = 'yaml' AND yaml_path NOT IN ('', 'form') ORDER BY yaml_path",
-    )
-    .fetch_all(pool)
-    .await?;
+pub async fn list_yaml_files(pool: &DbPool) -> Result<Vec<YamlFileInfo>, AppError> {
+    let rows = crate::store::pipelines::yaml_file_rows(pool).await?;
     let files = rows
         .into_iter()
         .filter_map(|r| {
-            let yaml_path: String = r.get(0);
-            let filename = filename_from_yaml_path(&yaml_path)?;
+            let filename = filename_from_yaml_path(&r.yaml_path)?;
             Some(YamlFileInfo {
                 filename,
-                yaml_path,
-                pipeline_id: Some(r.get(1)),
-                pipeline_name: Some(r.get(2)),
-                team_id: Some(r.get(3)),
-                is_active: Some(r.get::<i64, _>(4) != 0),
+                yaml_path: r.yaml_path,
+                pipeline_id: Some(r.id),
+                pipeline_name: Some(r.name),
+                team_id: Some(r.team_id),
+                is_active: Some(r.is_active),
             })
         })
         .collect();
@@ -716,7 +644,7 @@ pub async fn list_yaml_files(pool: &SqlitePool) -> Result<Vec<YamlFileInfo>, App
 /// `is_active` is never forced on.
 #[allow(clippy::too_many_arguments)] // scanner context: filename, index, settings
 pub async fn write_and_upsert_yaml(
-    pool: &SqlitePool,
+    pool: &DbPool,
     filename: &str,
     content: &str,
     step_index_dir: &Path,
@@ -728,11 +656,7 @@ pub async fn write_and_upsert_yaml(
     let filename = filename.trim();
     validate_yaml_filename(filename)?;
 
-    let validation = crate::services::yaml_validate::validate_pipeline_yaml(
-        &crate::store::exec::DbPool::from_sqlite(pool),
-        content,
-    )
-    .await?;
+    let validation = crate::services::yaml_validate::validate_pipeline_yaml(pool, content).await?;
     crate::services::yaml_validate::reject_if_invalid(&validation)?;
     let parsed: PipelineYaml = serde_yaml::from_str(content).map_err(|e| {
         AppError::ValidationFailed(format!("YAML syntax error after validate: {e}"))
@@ -744,13 +668,9 @@ pub async fn write_and_upsert_yaml(
     // Preflight bind conflicts before mutating the target row.
     let mut bind_prev: Option<(String, Option<String>)> = None; // (source, yaml_path)
     if let Some(pid) = bind_pipeline_id {
-        let existing = sqlx::query("SELECT id, source, yaml_path FROM pipelines WHERE id = ?")
-            .bind(pid)
-            .fetch_optional(pool)
+        let (_, prev_source, prev_path) = crate::store::pipelines::yaml_row_identity(pool, pid)
             .await?
             .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
-        let prev_source: String = existing.get(1);
-        let prev_path: Option<String> = existing.get(2);
         if let Some(other_id) = find_yaml_pipeline_row(pool, &yaml_path).await? {
             if other_id != pid {
                 return Err(AppError::Conflict(format!(
@@ -763,13 +683,7 @@ pub async fn write_and_upsert_yaml(
 
     if let Some(pid) = bind_pipeline_id {
         // Preserve pipeline id; do not force is_active.
-        if let Err(e) = sqlx::query(
-            "UPDATE pipelines SET source = 'yaml', yaml_path = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(&yaml_path)
-        .bind(pid)
-        .execute(pool)
-        .await
+        if let Err(e) = crate::store::pipelines::bind_pipeline_to_yaml(pool, pid, &yaml_path).await
         {
             let error = anyhow::Error::new(e);
             if is_unique_violation(&error) {
@@ -777,7 +691,9 @@ pub async fn write_and_upsert_yaml(
                     "definition {filename} was created concurrently — reload and retry"
                 )));
             }
-            return Err(AppError::Internal(format!("failed to bind pipeline: {error}")));
+            return Err(AppError::Internal(format!(
+                "failed to bind pipeline: {error}"
+            )));
         }
     }
 
@@ -798,13 +714,12 @@ pub async fn write_and_upsert_yaml(
             if let (Some(pid), Some((prev_source, prev_path))) =
                 (bind_pipeline_id, bind_prev.as_ref())
             {
-                let _ = sqlx::query(
-                    "UPDATE pipelines SET source = ?, yaml_path = ?, updated_at = datetime('now') WHERE id = ?",
+                let _ = crate::store::pipelines::restore_pipeline_binding(
+                    pool,
+                    pid,
+                    prev_source,
+                    prev_path.as_deref(),
                 )
-                .bind(prev_source)
-                .bind(prev_path)
-                .bind(pid)
-                .execute(pool)
                 .await;
             }
             if let Some(error) = e.downcast_ref::<YamlConflictError>() {
@@ -831,20 +746,14 @@ pub async fn write_and_upsert_yaml(
 }
 
 /// Delete a stored pipeline definition (hard delete).
-pub async fn delete_yaml_file(
-    pool: &SqlitePool,
-    filename: &str,
-) -> Result<Option<String>, AppError> {
+pub async fn delete_yaml_file(pool: &DbPool, filename: &str) -> Result<Option<String>, AppError> {
     let yaml_path = filename.trim().to_string();
     validate_yaml_filename(&yaml_path)?;
 
     let pipeline_id = find_yaml_pipeline_row(pool, &yaml_path).await?;
 
     if let Some(ref id) = pipeline_id {
-        sqlx::query("DELETE FROM pipelines WHERE id = ?")
-            .bind(id)
-            .execute(pool)
-            .await?;
+        crate::store::pipelines::delete(pool, id).await?;
     }
 
     Ok(pipeline_id)
@@ -876,17 +785,13 @@ pub struct YamlSyncStatus {
 /// `missing_file` until the startup backfill stores one. Kept for API/UI
 /// compatibility with the file-backed model.
 pub async fn yaml_sync_status(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
 ) -> Result<YamlSyncStatus, AppError> {
-    let row = sqlx::query("SELECT yaml_path, yaml_source, updated_at FROM pipelines WHERE id = ?")
-        .bind(pipeline_id)
-        .fetch_optional(pool)
+    let (yaml_path, source, updated_at) = crate::store::pipelines::yaml_sync_row(pool, pipeline_id)
         .await?
         .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
-    let yaml_path: Option<String> = row.get(0);
-    let source: String = row.get(1);
-    let updated_at: String = row.get(2);
+    let updated_at = updated_at.unwrap_or_default();
     let filename = yaml_path
         .as_deref()
         .and_then(filename_from_yaml_path)
@@ -911,13 +816,12 @@ pub async fn yaml_sync_status(
 
 /// Resolve YAML `team` / `owner_group` slug to `(team_id, slug)`.
 /// Creates no teams — unknown slug fails (Validate / create / update must match).
-async fn resolve_team_for_yaml(pool: &SqlitePool, slug: &str) -> anyhow::Result<(String, String)> {
-    if let Some(row) = sqlx::query("SELECT id, slug FROM teams WHERE slug = ?")
-        .bind(slug)
-        .fetch_optional(pool)
-        .await?
+async fn resolve_team_for_yaml(pool: &DbPool, slug: &str) -> anyhow::Result<(String, String)> {
+    if let Some(row) = crate::store::teams::id_and_slug_by_slug(pool, slug)
+        .await
+        .map_err(|e| anyhow!("{e}"))?
     {
-        return Ok((row.get(0), row.get(1)));
+        return Ok(row);
     }
 
     anyhow::bail!(

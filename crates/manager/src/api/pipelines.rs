@@ -176,7 +176,7 @@ pub async fn create(
     let base = crate::services::pipeline_scanner::filename_from_pipeline_name(&req.name);
     let mut filename = base.clone();
     let mut suffix = 1u32;
-    while crate::services::pipeline_scanner::find_yaml_pipeline_row(&state.pool, &filename)
+    while crate::services::pipeline_scanner::find_yaml_pipeline_row(&state.db(), &filename)
         .await?
         .is_some()
     {
@@ -185,7 +185,7 @@ pub async fn create(
         filename = format!("{stem}-{suffix}.yml");
     }
     let write_result = crate::services::pipeline_scanner::write_and_upsert_yaml(
-        &state.pool,
+        &state.db(),
         &filename,
         &yaml,
         &crate::services::plugin_resolver::effective_local_dir(
@@ -354,7 +354,7 @@ pub async fn get_one(
             .unwrap_or_else(|_| serde_json::json!([])),
         "tasks": tasks,
         "env": envs,
-        "yaml_sync": crate::services::pipeline_scanner::yaml_sync_status(&state.pool, &id)
+        "yaml_sync": crate::services::pipeline_scanner::yaml_sync_status(&state.db(), &id)
             .await
             .ok(),
     }))))
@@ -498,7 +498,7 @@ pub async fn update(
     };
     let bind = (source != "yaml").then(|| id.clone());
     crate::services::pipeline_scanner::write_and_upsert_yaml(
-        &state.pool,
+        &state.db(),
         &filename,
         &yaml,
         &crate::services::plugin_resolver::effective_local_dir(
@@ -1288,7 +1288,7 @@ async fn verify_pipeline_secret_bindings(
 }
 
 pub(crate) async fn insert_steps(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut crate::store::exec::DbTx<'_>,
     pipeline_id: &str,
     steps: &[StepDef],
 ) -> Result<Vec<serde_json::Value>, AppError> {
@@ -1346,8 +1346,7 @@ pub(crate) async fn insert_steps(
                     );
                     continue;
                 }
-                if let Ok(Some(host_id)) =
-                    crate::store::pipelines::host_id_by_name(&mut *conn, name).await
+                if let Ok(Some(host_id)) = crate::store::pipelines::host_id_by_name(tx, name).await
                 {
                     ids.push(host_id);
                 } else {
@@ -1374,7 +1373,7 @@ pub(crate) async fn insert_steps(
                         );
                         continue;
                     }
-                    match crate::store::pipelines::host_ids_by_label(&mut *conn, label).await {
+                    match crate::store::pipelines::host_ids_by_label(tx, label).await {
                         Ok(rows) => {
                             if rows.is_empty() {
                                 tracing::warn!(
@@ -1449,7 +1448,7 @@ pub(crate) async fn insert_steps(
         };
 
         crate::store::pipelines::insert_task_tx(
-            conn,
+            tx,
             &crate::store::pipelines::TaskInsert {
                 id: task_id.clone(),
                 pipeline_id: pipeline_id.to_string(),
@@ -1498,12 +1497,12 @@ fn parse_timeout_seconds(raw: Option<&str>) -> i64 {
 }
 
 pub(crate) async fn insert_env_vars(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut crate::store::exec::DbTx<'_>,
     pipeline_id: &str,
     envs: &[shared::protocol::EnvPair],
 ) -> Result<(), AppError> {
     for env in envs {
-        crate::store::pipelines::insert_inline_env_tx(conn, pipeline_id, &env.name, &env.value)
+        crate::store::pipelines::insert_inline_env_tx(tx, pipeline_id, &env.name, &env.value)
             .await?;
     }
     Ok(())
@@ -1511,24 +1510,24 @@ pub(crate) async fn insert_env_vars(
 
 /// Explicitly bind variable IDs to a pipeline (many-to-many via pipeline_vars).
 pub(crate) async fn insert_pipeline_var_bindings(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut crate::store::exec::DbTx<'_>,
     pipeline_id: &str,
     var_ids: &[String],
 ) -> Result<(), AppError> {
     for var_id in var_ids {
-        crate::store::pipelines::insert_var_binding_tx(conn, pipeline_id, var_id).await?;
+        crate::store::pipelines::insert_var_binding_tx(tx, pipeline_id, var_id).await?;
     }
     Ok(())
 }
 
 /// Explicitly bind secret IDs to a pipeline (many-to-many via pipeline_secrets).
 pub(crate) async fn insert_pipeline_secret_bindings(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut crate::store::exec::DbTx<'_>,
     pipeline_id: &str,
     secret_ids: &[String],
 ) -> Result<(), AppError> {
     for secret_id in secret_ids {
-        crate::store::pipelines::insert_secret_binding_tx(conn, pipeline_id, secret_id).await?;
+        crate::store::pipelines::insert_secret_binding_tx(tx, pipeline_id, secret_id).await?;
     }
     Ok(())
 }

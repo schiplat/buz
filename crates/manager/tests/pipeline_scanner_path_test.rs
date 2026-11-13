@@ -36,7 +36,7 @@ steps:
 "#;
     let parsed = serde_yaml::from_str(cron_yaml).expect("parse cron YAML");
     let pipeline_id = upsert_from_yaml(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         "scanner-projection.yml",
         &parsed,
         Path::new("."),
@@ -66,7 +66,7 @@ steps:
         .expect("simulate stale projection");
     let parsed = serde_yaml::from_str(cron_yaml).expect("parse same cron YAML");
     let same_id = upsert_from_yaml(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         "scanner-projection.yml",
         &parsed,
         Path::new("."),
@@ -94,7 +94,7 @@ steps:
         .replace("echo cron", "echo webhook");
     let parsed = serde_yaml::from_str(&webhook_yaml).expect("parse webhook YAML");
     let updated_id = upsert_from_yaml(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         "scanner-projection.yml",
         &parsed,
         Path::new("."),
@@ -199,7 +199,7 @@ steps:
 "#;
     let parsed = serde_yaml::from_str(large_yaml).expect("parse YAML");
     let pipeline_id = upsert_from_yaml(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         "scanner-resources.yml",
         &parsed,
         Path::new("."),
@@ -221,7 +221,7 @@ steps:
     let default_yaml = large_yaml.replace("resources: large", "resources: default");
     let parsed = serde_yaml::from_str(&default_yaml).expect("parse YAML");
     let same_id = upsert_from_yaml(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         "scanner-resources.yml",
         &parsed,
         Path::new("."),

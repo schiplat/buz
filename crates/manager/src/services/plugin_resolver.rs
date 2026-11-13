@@ -1003,40 +1003,6 @@ pub async fn resolve_uses_steps_async(
     })
 }
 
-/// Replace a pipeline's provenance rows inside the caller's transaction.
-pub async fn replace_step_resolutions(
-    conn: &mut sqlx::SqliteConnection,
-    pipeline_id: &str,
-    resolutions: &[PendingStepResolution],
-) -> Result<(), String> {
-    sqlx::query("DELETE FROM step_resolutions WHERE pipeline_id = ?")
-        .bind(pipeline_id)
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| format!("cannot replace step resolutions: {e}"))?;
-    for resolution in resolutions {
-        sqlx::query(
-            "INSERT INTO step_resolutions
-             (id, pipeline_id, step_order, uses_ref, resolved_version, content_sha256, source, expanded_json, input_defs_json, reviewed)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(pipeline_id)
-        .bind(resolution.step_order)
-        .bind(&resolution.uses_ref)
-        .bind(&resolution.resolved_version)
-        .bind(&resolution.content_sha256)
-        .bind(&resolution.source)
-        .bind(&resolution.expanded_json)
-        .bind(&resolution.input_defs_json)
-        .bind(resolution.reviewed)
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| format!("cannot record step resolution: {e}"))?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod deprecation_overlay_tests {
     use super::*;

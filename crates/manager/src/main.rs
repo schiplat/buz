@@ -299,7 +299,7 @@ async fn main() -> anyhow::Result<()> {
     // before that change are backfilled once here; the legacy directory is
     // read-only input, never watched or written.
     services::definition_backfill::backfill_definitions(
-        &db_pool,
+        &manager::store::exec::DbPool::from_sqlite(&db_pool),
         &config.pipeline.yaml_scan_dir,
         &services::plugin_resolver::effective_local_dir(
             &config.storage.data_dir,

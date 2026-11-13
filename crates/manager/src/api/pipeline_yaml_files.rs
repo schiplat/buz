@@ -49,7 +49,7 @@ pub async fn list_files(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let scan_dir = &state.config.pipeline.yaml_scan_dir;
-    let files = list_yaml_files(&state.pool).await?;
+    let files = list_yaml_files(&state.db()).await?;
     // Filter by team visibility (platform admin sees all).
     let visible: Vec<_> = files
         .into_iter()
@@ -72,7 +72,7 @@ pub async fn get_file(
     let scan_dir = &state.config.pipeline.yaml_scan_dir;
     validate_yaml_filename(&filename)?;
     authorize_file_access(&state, &auth, scan_dir, &filename, Perm::TeamView).await?;
-    let yaml = read_yaml_file(&state.pool, &filename).await?;
+    let yaml = read_yaml_file(&state.db(), &filename).await?;
     let yaml_path = filename.clone();
     let etag = yaml_content_etag(&yaml);
     Ok(Json(ApiResponse::success(serde_json::json!({
@@ -106,7 +106,7 @@ pub async fn get_pipeline_source(
     let filename = filename_from_yaml_path(&yaml_path)
         .ok_or_else(|| AppError::Internal(format!("invalid yaml_path on pipeline: {yaml_path}")))?;
 
-    let yaml = read_yaml_file(&state.pool, &filename).await?;
+    let yaml = read_yaml_file(&state.db(), &filename).await?;
     let etag = yaml_content_etag(&yaml);
 
     Ok(Json(ApiResponse::success(serde_json::json!({
@@ -156,7 +156,7 @@ pub async fn create_file(
     };
 
     // Create refuses overwrite — the origin basename identifies at most one row.
-    if find_yaml_pipeline_row(&state.pool, &filename)
+    if find_yaml_pipeline_row(&state.db(), &filename)
         .await?
         .is_some()
     {
@@ -166,7 +166,7 @@ pub async fn create_file(
     }
 
     let result = write_and_upsert_yaml(
-        &state.pool,
+        &state.db(),
         &filename,
         &yaml,
         &crate::services::plugin_resolver::effective_local_dir(
@@ -240,12 +240,12 @@ pub async fn put_file(
     // any resolution work, and the write path re-checks the same token under
     // its write transaction so two writers cannot both pass.
     let expected_etag = if_match_value(&headers, req.etag.as_deref());
-    if find_yaml_pipeline_row(&state.pool, &filename)
+    if find_yaml_pipeline_row(&state.db(), &filename)
         .await?
         .is_some()
     {
         if let Some(ref expected) = expected_etag {
-            let current = read_yaml_file(&state.pool, &filename).await?;
+            let current = read_yaml_file(&state.db(), &filename).await?;
             let current_etag = yaml_content_etag(&current);
             if expected != "*" && *expected != current_etag {
                 return Err(AppError::Conflict(
@@ -260,7 +260,7 @@ pub async fn put_file(
     reject_if_invalid(&validation)?;
 
     let result = write_and_upsert_yaml(
-        &state.pool,
+        &state.db(),
         &filename,
         &yaml,
         &crate::services::plugin_resolver::effective_local_dir(
@@ -313,7 +313,7 @@ pub async fn delete_file(
     validate_yaml_filename(&filename)?;
     authorize_file_access(&state, &auth, scan_dir, &filename, Perm::PipelineDelete).await?;
 
-    let deleted_id = delete_yaml_file(&state.pool, &filename).await?;
+    let deleted_id = delete_yaml_file(&state.db(), &filename).await?;
 
     if let Some(ref id) = deleted_id {
         audit::record(
@@ -350,7 +350,7 @@ async fn authorize_file_access(
     filename: &str,
     perm: Perm,
 ) -> Result<(), AppError> {
-    match find_yaml_pipeline_row(&state.pool, filename).await? {
+    match find_yaml_pipeline_row(&state.db(), filename).await? {
         Some(pid) => {
             let team_id = pipeline_team_id(&state.db(), &pid).await?;
             auth.check_team(&team_id, perm)?;

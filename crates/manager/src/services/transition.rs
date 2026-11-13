@@ -34,7 +34,7 @@ pub(crate) async fn announce_job_status(
 ) {
     if notify && is_notify_status(status) {
         crate::services::notify::spawn_job_notify(
-            state.pool.clone(),
+            state.db(),
             state.config.auth.jwt_secret.clone(),
             state.config.server.public_base_url.clone(),
             job_id.to_string(),

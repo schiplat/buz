@@ -176,7 +176,7 @@ pub async fn import_definitions(
             continue;
         }
         match write_and_upsert_yaml(
-            pool,
+            &crate::store::exec::DbPool::from_sqlite(pool),
             &filename,
             &content,
             step_index_dir,

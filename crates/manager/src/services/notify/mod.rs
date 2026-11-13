@@ -8,12 +8,12 @@ pub mod feishu;
 pub mod webhook;
 
 use async_trait::async_trait;
-use sqlx::{Row, SqlitePool};
 
 use shared::pipeline_yaml::{notify_should_send, NotifyChannelYaml};
 use shared::secret_ref::resolve_secret_slot;
 
 use crate::crypto;
+use crate::store::exec::DbPool;
 
 #[allow(unused_imports)] // re-export for unit tests / future callers
 pub use feishu::{build_feishu_card, FeishuChannel};
@@ -64,7 +64,7 @@ pub fn job_detail_url(public_base_url: &str, job_id: &str) -> Option<String> {
 
 /// Fire-and-forget notify after a non-terminal → terminal transition.
 pub fn spawn_job_notify(
-    pool: SqlitePool,
+    pool: DbPool,
     jwt_secret: String,
     public_base_url: String,
     job_id: String,
@@ -85,35 +85,23 @@ pub fn spawn_job_notify(
 }
 
 async fn send_job_notifications(
-    pool: &SqlitePool,
+    pool: &DbPool,
     jwt_secret: &str,
     public_base_url: &str,
     job_id: &str,
     new_status: &str,
 ) -> Result<(), NotifyError> {
-    let row = sqlx::query(
-        "SELECT j.snapshot, j.trigger_by, j.pipeline_id, j.start_time, j.end_time, p.name,
-                j.run_number
-         FROM jobs j
-         LEFT JOIN pipelines p ON p.id = j.pipeline_id
-         WHERE j.id = ?",
-    )
-    .bind(job_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| NotifyError::Message(format!("load job for notify: {e}")))?
-    .ok_or_else(|| NotifyError::Message("job not found for notify".into()))?;
+    let row = crate::store::jobs::notify_job_row(pool, job_id)
+        .await
+        .map_err(|e| NotifyError::Message(format!("load job for notify: {e}")))?
+        .ok_or_else(|| NotifyError::Message("job not found for notify".into()))?;
 
-    let snapshot_raw: String = row.get(0);
-    let trigger_by: String = row.get(1);
-    let pipeline_id: String = row.get(2);
-    let start_time: Option<String> = row.get(3);
-    let end_time: Option<String> = row.get(4);
-    let pipeline_name: String = row
-        .try_get::<Option<String>, _>(5)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "(unknown)".into());
+    let snapshot_raw = row.snapshot;
+    let trigger_by = row.trigger_by;
+    let pipeline_id = row.pipeline_id;
+    let start_time = row.start_time;
+    let end_time = row.end_time;
+    let pipeline_name = row.pipeline_name.unwrap_or_else(|| "(unknown)".into());
 
     let snapshot: serde_json::Value =
         serde_json::from_str(&snapshot_raw).unwrap_or(serde_json::json!({}));
@@ -126,7 +114,7 @@ async fn send_job_notifications(
     }
 
     let duration_secs = duration_secs_from_sqlite(start_time.as_deref(), end_time.as_deref());
-    let run_number: i64 = row.get(6);
+    let run_number = row.run_number;
     let event = NotifyEvent {
         pipeline_name,
         pipeline_id: pipeline_id.clone(),
@@ -205,26 +193,18 @@ async fn send_job_notifications(
 }
 
 async fn load_team_secret_value(
-    pool: &SqlitePool,
+    pool: &DbPool,
     jwt_secret: &str,
     pipeline_id: &str,
     secret_name: &str,
 ) -> Result<Option<String>, NotifyError> {
-    let row = sqlx::query(
-        "SELECT s.value FROM secrets s
-         JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
-         WHERE p.id = ? AND s.name = ?",
-    )
-    .bind(pipeline_id)
-    .bind(secret_name)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| NotifyError::Message(format!("query secret: {e}")))?;
+    let stored = crate::store::pipelines::team_secret_value_of(pool, pipeline_id, secret_name)
+        .await
+        .map_err(|e| NotifyError::Message(format!("query secret: {e}")))?;
 
-    let Some(row) = row else {
+    let Some(stored) = stored else {
         return Ok(None);
     };
-    let stored: String = row.get(0);
     let plain = crypto::decrypt(&stored, jwt_secret)
         .map_err(|e| NotifyError::Message(format!("decrypt secret '{secret_name}': {e}")))?;
     Ok(Some(plain))
