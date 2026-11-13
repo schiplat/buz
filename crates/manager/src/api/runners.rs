@@ -1689,7 +1689,7 @@ async fn build_claim_payload(
                 // Look up resolved names in hosts table
                 for name in &resolved_names {
                     if let Ok(Some(id)) = crate::store::hosts::visible_id_by_name(
-                        &state.pool,
+                        &state.db(),
                         name,
                         team_id.as_deref(),
                     )
@@ -1710,6 +1710,7 @@ async fn build_claim_payload(
                 // Look up resolved labels
                 for label in &resolved_labels {
                     let rows = crate::store::hosts::visible_ids_by_label(
+                        // json_each walk: still SQLite-only (dialect gap), takes the raw pool.
                         &state.pool,
                         label,
                         team_id.as_deref(),
@@ -1727,7 +1728,7 @@ async fn build_claim_payload(
             if host_ids.len() == 1 {
                 // Single host — return as object (backward-compatible)
                 if let Ok(Some(host_row)) = crate::store::hosts::visible_credentials_by_id(
-                    &state.pool,
+                    &state.db(),
                     &host_ids[0],
                     team_id.as_deref(),
                 )
@@ -1744,7 +1745,7 @@ async fn build_claim_payload(
                 let mut host_list: Vec<serde_json::Value> = Vec::new();
                 for hid in &host_ids {
                     if let Ok(Some(host_row)) = crate::store::hosts::visible_credentials_by_id(
-                        &state.pool,
+                        &state.db(),
                         hid,
                         team_id.as_deref(),
                     )
@@ -1812,7 +1813,7 @@ async fn build_claim_payload(
     // Job metadata for the runner's BUZ_* env (ADR §5.2) — plugin steps
     // render messages like "build #<job> passed" from this.
     let team_name = match team_id.as_deref() {
-        Some(id) => crate::store::teams::name_of(&state.pool, id).await?,
+        Some(id) => crate::store::teams::name_of(&state.db(), id).await?,
         None => None,
     };
 

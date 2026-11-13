@@ -4,8 +4,12 @@
 //! Visibility: `team_id` NULL/'' is the "shared" tier (everyone sees,
 //! admins manage); team-scoped rows are member-only. The list OR-filter
 //! can't be expressed by `team_in_clause` (pure AND), so it is built here.
+//!
+//! Migration status: on the dual-backend dispatcher (`store::exec`) except
+//! `visible_ids_by_label`, whose `json_each` walk is a known dialect gap
+//! (`store::dialect` note) and needs the per-site PG body first.
 
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::{self, DbPool, SqlValue};
 
 use shared::error::AppError;
 
@@ -26,19 +30,19 @@ pub struct HostRow {
     pub team_id: Option<String>,
 }
 
-fn host_row(r: sqlx::sqlite::SqliteRow) -> HostRow {
+fn host_row(r: exec::GenericRow) -> HostRow {
     HostRow {
-        id: r.get(0),
-        name: r.get(1),
-        host: r.get(2),
-        port: r.get(3),
-        username: r.get(4),
-        credential_type: r.get(5),
-        credential_data: r.get(6),
-        labels: r.get(7),
-        created_at: r.get(8),
-        updated_at: r.get(9),
-        team_id: r.get(10),
+        id: r.text_of("id"),
+        name: r.text_of("name"),
+        host: r.text_of("host"),
+        port: r.i64_of("port"),
+        username: r.text_of("username"),
+        credential_type: r.text_of("credential_type"),
+        credential_data: r.text_of("credential_data"),
+        labels: r.text_of("labels"),
+        created_at: r.opt_text_of("created_at"),
+        updated_at: r.opt_text_of("updated_at"),
+        team_id: r.opt_text_of("team_id"),
     }
 }
 
@@ -46,25 +50,27 @@ fn host_row(r: sqlx::sqlite::SqliteRow) -> HostRow {
 /// `Some([])` = shared tier only; `Some(ids)` = shared tier plus the given
 /// teams. Creation-ordered (newest first).
 pub async fn list(
-    pool: &SqlitePool,
+    pool: &DbPool,
     visible_team_ids: Option<&[String]>,
 ) -> Result<Vec<HostRow>, AppError> {
     let rows =
         match visible_team_ids {
-            None => sqlx::query(
+            None => exec::fetch_all(
+                pool,
                 "SELECT id, name, host, port, username, credential_type, credential_data, labels,
                     created_at, updated_at, team_id
              FROM hosts ORDER BY created_at DESC",
+                &[],
             )
-            .fetch_all(pool)
             .await?,
-            Some([]) => sqlx::query(
+            Some([]) => exec::fetch_all(
+                pool,
                 "SELECT id, name, host, port, username, credential_type, credential_data, labels,
-                        created_at, updated_at, team_id
-                 FROM hosts WHERE team_id IS NULL OR team_id = ''
-                 ORDER BY created_at DESC",
+                    created_at, updated_at, team_id
+             FROM hosts WHERE team_id IS NULL OR team_id = ''
+             ORDER BY created_at DESC",
+                &[],
             )
-            .fetch_all(pool)
             .await?,
             Some(ids) => {
                 let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -75,11 +81,8 @@ pub async fn list(
                  WHERE team_id IS NULL OR team_id = '' OR team_id IN ({placeholders})
                  ORDER BY created_at DESC"
             );
-                let mut q = sqlx::query(&sql);
-                for id in ids {
-                    q = q.bind(id);
-                }
-                q.fetch_all(pool).await?
+                let binds: Vec<SqlValue> = ids.iter().map(|id| id.as_str().into()).collect();
+                exec::fetch_all(pool, &sql, &binds).await?
             }
         };
     Ok(rows.into_iter().map(host_row).collect())
@@ -89,7 +92,7 @@ pub async fn list(
 /// `credential_passphrase` arrive already encrypted (empty = none stored).
 #[allow(clippy::too_many_arguments)]
 pub async fn insert(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     name: &str,
     host: &str,
@@ -101,37 +104,39 @@ pub async fn insert(
     labels: &str,
     team_id: Option<&str>,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "INSERT INTO hosts (id, name, host, port, username, credential_type, credential_data,
          credential_passphrase, labels, team_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            id.into(),
+            name.into(),
+            host.into(),
+            SqlValue::Int(port),
+            username.into(),
+            credential_type.into(),
+            credential_data.into(),
+            credential_passphrase.into(),
+            labels.into(),
+            team_id.into(),
+        ],
     )
-    .bind(id)
-    .bind(name)
-    .bind(host)
-    .bind(port)
-    .bind(username)
-    .bind(credential_type)
-    .bind(credential_data)
-    .bind(credential_passphrase)
-    .bind(labels)
-    .bind(team_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Full host row by id (`None` = no such host).
-pub async fn find_full_by_id(pool: &SqlitePool, id: &str) -> Result<Option<HostRow>, AppError> {
-    let row = sqlx::query(
+pub async fn find_full_by_id(pool: &DbPool, id: &str) -> Result<Option<HostRow>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT id, name, host, port, username, credential_type, credential_data, labels,
                 created_at, updated_at, team_id
          FROM hosts WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(host_row))
+    .await?
+    .map(host_row))
 }
 
 /// `(name, host, port, username, credential_type, team_id)` — the audit
@@ -146,139 +151,143 @@ pub struct HostFacts {
     pub team_id: Option<String>,
 }
 
-pub async fn facts(pool: &SqlitePool, id: &str) -> Result<Option<HostFacts>, AppError> {
-    let row = sqlx::query(
+pub async fn facts(pool: &DbPool, id: &str) -> Result<Option<HostFacts>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT name, host, port, username, credential_type, team_id FROM hosts WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|r| HostFacts {
-        name: r.get(0),
-        host: r.get(1),
-        port: r.get(2),
-        username: r.get(3),
-        credential_type: r.get(4),
-        team_id: r.get(5),
+    .await?
+    .map(|r| HostFacts {
+        name: r.text_of("name"),
+        host: r.text_of("host"),
+        port: r.i64_of("port"),
+        username: r.text_of("username"),
+        credential_type: r.text_of("credential_type"),
+        team_id: r.opt_text_of("team_id"),
     }))
 }
 
 /// Set one host's team (`None` = move to the shared tier).
 pub async fn update_team_id(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     team_id: Option<&str>,
 ) -> Result<(), AppError> {
-    sqlx::query("UPDATE hosts SET team_id = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(team_id)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    exec::execute(
+        pool,
+        "UPDATE hosts SET team_id = ?, updated_at = datetime('now') WHERE id = ?",
+        &[team_id.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace one host's labels (JSON array string).
-pub async fn update_labels(pool: &SqlitePool, id: &str, labels: &str) -> Result<(), AppError> {
-    sqlx::query("UPDATE hosts SET labels = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(labels)
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_labels(pool: &DbPool, id: &str, labels: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE hosts SET labels = ?, updated_at = datetime('now') WHERE id = ?",
+        &[labels.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace one host's address.
-pub async fn update_address(pool: &SqlitePool, id: &str, host: &str) -> Result<(), AppError> {
-    sqlx::query("UPDATE hosts SET host = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(host)
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_address(pool: &DbPool, id: &str, host: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE hosts SET host = ?, updated_at = datetime('now') WHERE id = ?",
+        &[host.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace one host's SSH port.
-pub async fn update_port(pool: &SqlitePool, id: &str, port: i64) -> Result<(), AppError> {
-    sqlx::query("UPDATE hosts SET port = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(port)
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_port(pool: &DbPool, id: &str, port: i64) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE hosts SET port = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(port), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace one host's login username.
-pub async fn update_username(pool: &SqlitePool, id: &str, username: &str) -> Result<(), AppError> {
-    sqlx::query("UPDATE hosts SET username = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(username)
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_username(pool: &DbPool, id: &str, username: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE hosts SET username = ?, updated_at = datetime('now') WHERE id = ?",
+        &[username.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace one host's credential type.
 pub async fn update_credential_type(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     credential_type: &str,
 ) -> Result<(), AppError> {
-    sqlx::query("UPDATE hosts SET credential_type = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(credential_type)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    exec::execute(
+        pool,
+        "UPDATE hosts SET credential_type = ?, updated_at = datetime('now') WHERE id = ?",
+        &[credential_type.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace one host's credential (ciphertext; empty clears it).
 pub async fn update_credential_data(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     credential_data: &str,
 ) -> Result<(), AppError> {
-    sqlx::query("UPDATE hosts SET credential_data = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(credential_data)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    exec::execute(
+        pool,
+        "UPDATE hosts SET credential_data = ?, updated_at = datetime('now') WHERE id = ?",
+        &[credential_data.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace one host's credential passphrase (ciphertext; empty clears it).
 pub async fn update_credential_passphrase(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     credential_passphrase: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE hosts SET credential_passphrase = ?, updated_at = datetime('now') WHERE id = ?",
+        &[credential_passphrase.into(), id.into()],
     )
-    .bind(credential_passphrase)
-    .bind(id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Replace one host's display name.
-pub async fn update_name(pool: &SqlitePool, id: &str, name: &str) -> Result<(), AppError> {
-    sqlx::query("UPDATE hosts SET name = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(name)
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_name(pool: &DbPool, id: &str, name: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE hosts SET name = ?, updated_at = datetime('now') WHERE id = ?",
+        &[name.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Delete one host; returns `false` when nothing matched (caller surfaces
 /// `NotFound`).
-pub async fn delete(pool: &SqlitePool, id: &str) -> Result<bool, AppError> {
-    let result = sqlx::query("DELETE FROM hosts WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() > 0)
+pub async fn delete(pool: &DbPool, id: &str) -> Result<bool, AppError> {
+    let affected = exec::execute(pool, "DELETE FROM hosts WHERE id = ?", &[id.into()]).await?;
+    Ok(affected > 0)
 }
 
 /// Stored credentials of one host — the connection prober's decrypt input.
@@ -290,20 +299,17 @@ pub struct HostCredentials {
     pub credential_passphrase: String,
 }
 
-pub async fn credentials_of(
-    pool: &SqlitePool,
-    id: &str,
-) -> Result<Option<HostCredentials>, AppError> {
-    let row = sqlx::query(
+pub async fn credentials_of(pool: &DbPool, id: &str) -> Result<Option<HostCredentials>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT credential_type, credential_data, credential_passphrase FROM hosts WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|r| HostCredentials {
-        credential_type: r.get(0),
-        credential_data: r.get(1),
-        credential_passphrase: r.get(2),
+    .await?
+    .map(|r| HostCredentials {
+        credential_type: r.text_of("credential_type"),
+        credential_data: r.text_of("credential_data"),
+        credential_passphrase: r.text_of("credential_passphrase"),
     }))
 }
 
@@ -316,22 +322,26 @@ pub async fn credentials_of(
 /// Id of the host with this name when it is visible to `team_id` (`None` =
 /// unknown, or owned by another team).
 pub async fn visible_id_by_name(
-    pool: &SqlitePool,
+    pool: &DbPool,
     name: &str,
     team_id: Option<&str>,
 ) -> Result<Option<String>, AppError> {
-    let row =
-        sqlx::query("SELECT id FROM hosts WHERE name = ? AND (team_id IS NULL OR team_id = ?)")
-            .bind(name)
-            .bind(team_id)
-            .fetch_optional(pool)
-            .await?;
-    Ok(row.map(|r| r.get(0)))
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT id FROM hosts WHERE name = ? AND (team_id IS NULL OR team_id = ?)",
+        &[name.into(), team_id.into()],
+    )
+    .await?
+    .map(|r| r.text_of("id")))
 }
 
 /// Ids of hosts carrying `label` that are visible to `team_id`.
+///
+/// Stays on `SqlitePool`: the `json_each` table-valued walk is a known
+/// dialect gap (`store::dialect`); the PG body wants `jsonb_array_elements_text`
+/// and a per-site review, not a mechanical rewrite.
 pub async fn visible_ids_by_label(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     label: &str,
     team_id: Option<&str>,
 ) -> Result<Vec<String>, AppError> {
@@ -344,7 +354,7 @@ pub async fn visible_ids_by_label(
     .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| r.get(0))
+    .map(|r| sqlx::Row::get::<String, _>(&r, 0))
     .collect())
 }
 
@@ -360,24 +370,23 @@ pub struct HostCredentialsRow {
 }
 
 pub async fn visible_credentials_by_id(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     team_id: Option<&str>,
 ) -> Result<Option<HostCredentialsRow>, AppError> {
-    Ok(sqlx::query(
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT host, port, username, credential_type, credential_data, credential_passphrase
          FROM hosts WHERE id = ? AND (team_id IS NULL OR team_id = ?)",
+        &[id.into(), team_id.into()],
     )
-    .bind(id)
-    .bind(team_id)
-    .fetch_optional(pool)
     .await?
     .map(|r| HostCredentialsRow {
-        host: r.get(0),
-        port: r.get(1),
-        username: r.get(2),
-        credential_type: r.get(3),
-        credential_data: r.get(4),
-        credential_passphrase: r.get(5),
+        host: r.text_of("host"),
+        port: r.i64_of("port"),
+        username: r.text_of("username"),
+        credential_type: r.text_of("credential_type"),
+        credential_data: r.text_of("credential_data"),
+        credential_passphrase: r.text_of("credential_passphrase"),
     }))
 }

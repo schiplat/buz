@@ -21,7 +21,7 @@ pub async fn list(
     } else {
         Some(auth.team_ids())
     };
-    let rows = crate::store::teams::list(&state.pool, visible.as_deref()).await?;
+    let rows = crate::store::teams::list(&state.db(), visible.as_deref()).await?;
 
     let teams = rows
         .into_iter()
@@ -67,7 +67,7 @@ pub async fn create(
 
     let id = Uuid::new_v4().to_string();
     crate::store::teams::insert(
-        &state.pool,
+        &state.db(),
         &id,
         name,
         &slug,
@@ -77,7 +77,7 @@ pub async fn create(
 
     // Creator (platform admin) becomes owner if they also want membership — optional.
     // Platform admin already bypasses checks; still add as owner for visibility in /me.
-    crate::store::teams::attach_owner(&state.pool, &id, &auth.id).await?;
+    crate::store::teams::attach_owner(&state.db(), &id, &auth.id).await?;
 
     audit::record(
         &state.pool,
@@ -107,7 +107,7 @@ pub async fn get_one(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     auth.check_team(&id, Perm::TeamView)?;
 
-    let t = crate::store::teams::find_by_id(&state.pool, &id)
+    let t = crate::store::teams::find_by_id(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("team not found".into()))?;
 
@@ -133,7 +133,7 @@ pub async fn update(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     auth.check_team(&id, Perm::TeamManageMembers)?;
 
-    let before_facts = crate::store::teams::facts(&state.pool, &id).await?;
+    let before_facts = crate::store::teams::facts(&state.db(), &id).await?;
     let before = before_facts.as_ref().map(|f| {
         serde_json::json!({
             "id": id,
@@ -148,13 +148,13 @@ pub async fn update(
         .unwrap_or_else(|| id.clone());
 
     if let Some(ref name) = req.name {
-        crate::store::teams::update_name(&state.pool, &id, name.trim()).await?;
+        crate::store::teams::update_name(&state.db(), &id, name.trim()).await?;
     }
     if let Some(ref desc) = req.description {
-        crate::store::teams::update_description(&state.pool, &id, desc).await?;
+        crate::store::teams::update_description(&state.db(), &id, desc).await?;
     }
 
-    let after_facts = crate::store::teams::facts(&state.pool, &id).await?;
+    let after_facts = crate::store::teams::facts(&state.db(), &id).await?;
     let after = after_facts.as_ref().map(|f| {
         serde_json::json!({
             "id": id,
@@ -183,16 +183,16 @@ pub async fn delete(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     auth.check_team(&id, Perm::TeamDelete)?;
 
-    let pipe_count = crate::store::teams::pipeline_count(&state.pool, &id).await?;
-    let secret_count = crate::store::teams::secret_count(&state.pool, &id).await?;
-    let runner_count = crate::store::teams::runner_count(&state.pool, &id).await?;
+    let pipe_count = crate::store::teams::pipeline_count(&state.db(), &id).await?;
+    let secret_count = crate::store::teams::secret_count(&state.db(), &id).await?;
+    let runner_count = crate::store::teams::runner_count(&state.db(), &id).await?;
     if pipe_count > 0 || secret_count > 0 || runner_count > 0 {
         return Err(AppError::Conflict(format!(
             "team still has {pipe_count} pipeline(s), {secret_count} secret(s), and {runner_count} bound runner(s)"
         )));
     }
 
-    let facts = crate::store::teams::facts(&state.pool, &id).await?;
+    let facts = crate::store::teams::facts(&state.db(), &id).await?;
     let (team_name, before) = match facts {
         Some(f) => {
             let name = f.name.clone();
@@ -209,7 +209,7 @@ pub async fn delete(
         None => (id.clone(), None),
     };
 
-    let deleted = crate::store::teams::delete(&state.pool, &id).await?;
+    let deleted = crate::store::teams::delete(&state.db(), &id).await?;
     if !deleted {
         return Err(AppError::NotFound("team not found".into()));
     }
@@ -238,7 +238,7 @@ async fn list_members_inner(
     state: &AppState,
     team_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
-    crate::store::teams::list_members(&state.pool, team_id).await
+    crate::store::teams::list_members(&state.db(), team_id).await
 }
 
 pub async fn upsert_member(
@@ -255,14 +255,14 @@ pub async fn upsert_member(
         ));
     };
 
-    let user_exists = crate::store::teams::active_user_id(&state.pool, &req.user_id).await?;
+    let user_exists = crate::store::teams::active_user_id(&state.db(), &req.user_id).await?;
     if user_exists.is_none() {
         return Err(AppError::NotFound("user not found".into()));
     }
 
-    let prev = crate::store::teams::member_role(&state.pool, &id, &req.user_id).await?;
+    let prev = crate::store::teams::member_role(&state.db(), &id, &req.user_id).await?;
 
-    crate::store::teams::upsert_member(&state.pool, &id, &req.user_id, role.as_str()).await?;
+    crate::store::teams::upsert_member(&state.db(), &id, &req.user_id, role.as_str()).await?;
 
     audit::record(
         &state.pool,
@@ -293,10 +293,10 @@ pub async fn remove_member(
     auth.check_team(&id, Perm::TeamManageMembers)?;
 
     // Keep at least one owner
-    let current_role = crate::store::teams::member_role(&state.pool, &id, &user_id).await?;
+    let current_role = crate::store::teams::member_role(&state.db(), &id, &user_id).await?;
 
     if current_role.as_deref() == Some("owner") {
-        let owner_count = crate::store::teams::owner_count(&state.pool, &id).await?;
+        let owner_count = crate::store::teams::owner_count(&state.db(), &id).await?;
         if owner_count <= 1 {
             return Err(AppError::ValidationFailed(
                 "cannot remove the last team owner".into(),
@@ -304,7 +304,7 @@ pub async fn remove_member(
         }
     }
 
-    let removed = crate::store::teams::remove_member(&state.pool, &id, &user_id).await?;
+    let removed = crate::store::teams::remove_member(&state.db(), &id, &user_id).await?;
     if !removed {
         return Err(AppError::NotFound("membership not found".into()));
     }

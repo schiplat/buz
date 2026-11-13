@@ -58,7 +58,7 @@ pub async fn list(
     } else {
         Some(auth.team_ids())
     };
-    let rows = crate::store::hosts::list(&state.pool, visible.as_deref()).await?;
+    let rows = crate::store::hosts::list(&state.db(), visible.as_deref()).await?;
 
     let hosts: Vec<serde_json::Value> = rows.iter().map(host_json).collect();
     Ok(Json(ApiResponse::success(hosts)))
@@ -94,7 +94,7 @@ pub async fn create(
     };
 
     crate::store::hosts::insert(
-        &state.pool,
+        &state.db(),
         &id,
         &req.name,
         &req.host,
@@ -143,7 +143,7 @@ pub async fn get_one(
     let team_id = host_team_id(&state.pool, &id).await?;
     assert_host_visible(&auth, &team_id).await?;
 
-    let h = crate::store::hosts::find_full_by_id(&state.pool, &id)
+    let h = crate::store::hosts::find_full_by_id(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("host not found".into()))?;
 
@@ -159,7 +159,7 @@ pub async fn update(
     let current_team = host_team_id(&state.pool, &id).await?;
     assert_host_manage(&auth, &current_team).await?;
 
-    let before_facts = crate::store::hosts::facts(&state.pool, &id).await?;
+    let before_facts = crate::store::hosts::facts(&state.db(), &id).await?;
     let before = before_facts.as_ref().map(|f| {
         serde_json::json!({
             "id": id,
@@ -185,28 +185,28 @@ pub async fn update(
                 .map(|(id, _)| id)
         };
         assert_host_manage(&auth, &new_team).await?;
-        crate::store::hosts::update_team_id(&state.pool, &id, new_team.as_deref()).await?;
+        crate::store::hosts::update_team_id(&state.db(), &id, new_team.as_deref()).await?;
     }
 
     if let Some(labels) = &req.labels {
         let labels_json = serde_json::to_string(labels).unwrap_or_else(|_| "[]".into());
-        crate::store::hosts::update_labels(&state.pool, &id, &labels_json).await?;
+        crate::store::hosts::update_labels(&state.db(), &id, &labels_json).await?;
     }
 
     if let Some(ref host) = req.host {
-        crate::store::hosts::update_address(&state.pool, &id, host).await?;
+        crate::store::hosts::update_address(&state.db(), &id, host).await?;
     }
 
     if let Some(port) = req.port {
-        crate::store::hosts::update_port(&state.pool, &id, port as i64).await?;
+        crate::store::hosts::update_port(&state.db(), &id, port as i64).await?;
     }
 
     if let Some(ref username) = req.username {
-        crate::store::hosts::update_username(&state.pool, &id, username).await?;
+        crate::store::hosts::update_username(&state.db(), &id, username).await?;
     }
 
     if let Some(ref ct) = req.credential_type {
-        crate::store::hosts::update_credential_type(&state.pool, &id, ct).await?;
+        crate::store::hosts::update_credential_type(&state.db(), &id, ct).await?;
     }
 
     if let Some(ref cd) = req.credential_data {
@@ -216,7 +216,7 @@ pub async fn update(
             crypto::encrypt(cd, &state.config.auth.jwt_secret)
                 .map_err(|e| AppError::Internal(format!("credential encryption failed: {e}")))?
         };
-        crate::store::hosts::update_credential_data(&state.pool, &id, &encrypted).await?;
+        crate::store::hosts::update_credential_data(&state.db(), &id, &encrypted).await?;
     }
 
     if let Some(ref pp) = req.credential_passphrase {
@@ -226,16 +226,16 @@ pub async fn update(
             crypto::encrypt(pp, &state.config.auth.jwt_secret)
                 .map_err(|e| AppError::Internal(format!("passphrase encryption failed: {e}")))?
         };
-        crate::store::hosts::update_credential_passphrase(&state.pool, &id, &encrypted).await?;
+        crate::store::hosts::update_credential_passphrase(&state.db(), &id, &encrypted).await?;
     }
 
     if let Some(ref n) = req.name {
-        crate::store::hosts::update_name(&state.pool, &id, n).await?;
+        crate::store::hosts::update_name(&state.db(), &id, n).await?;
     }
 
     tracing::info!("Host updated: {id}");
 
-    let after_facts = crate::store::hosts::facts(&state.pool, &id).await?;
+    let after_facts = crate::store::hosts::facts(&state.db(), &id).await?;
     let after = after_facts.as_ref().map(|f| {
         serde_json::json!({
             "id": id,
@@ -289,7 +289,7 @@ pub async fn delete(
     let team_id = host_team_id(&state.pool, &id).await?;
     assert_host_manage(&auth, &team_id).await?;
 
-    let facts = crate::store::hosts::facts(&state.pool, &id).await?;
+    let facts = crate::store::hosts::facts(&state.db(), &id).await?;
     let (name, before) = match facts {
         Some(f) => {
             let name = f.name.clone();
@@ -307,7 +307,7 @@ pub async fn delete(
         None => (id.clone(), None),
     };
 
-    let deleted = crate::store::hosts::delete(&state.pool, &id).await?;
+    let deleted = crate::store::hosts::delete(&state.db(), &id).await?;
 
     if !deleted {
         return Err(AppError::NotFound("host not found".into()));
@@ -353,7 +353,7 @@ pub async fn test_connection(
         let team_id = host_team_id(&state.pool, host_id).await?;
         assert_host_manage(&auth, &team_id).await?;
 
-        let stored_creds = crate::store::hosts::credentials_of(&state.pool, host_id)
+        let stored_creds = crate::store::hosts::credentials_of(&state.db(), host_id)
             .await?
             .ok_or_else(|| AppError::NotFound("host not found".into()))?;
 
