@@ -39,7 +39,7 @@ pub async fn list_sources(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let items = plugin_pool::list_sources(&state.pool)
+    let items = plugin_pool::list_sources(&state.db())
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
@@ -89,8 +89,8 @@ pub async fn create_source(
         &auth.username,
     )
     .await?;
-    audit::record(
-        &state.pool,
+    audit::record_pool(
+        &state.db(),
         AuditEvent::new(Action::PluginSourceCreate, &auth)
             .on(Resource::plugin_source(&id, &name))
             .after(Some(json!({
@@ -104,7 +104,7 @@ pub async fn create_source(
 
     // Sync runs in the background: the API returns the staged source
     // immediately and the UI polls the list for last_synced_at / error.
-    let pool = state.pool.clone();
+    let pool = state.db();
     let timeout_secs = crate::services::platform_settings::effective(
         &state.db(),
         crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
@@ -113,7 +113,7 @@ pub async fn create_source(
     .await
     .parse()
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
-    let source = plugin_pool::get_source(&state.pool, &id)
+    let source = plugin_pool::get_source(&state.db(), &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or(AppError::NotFound("source disappeared after insert".into()))?;
@@ -151,7 +151,7 @@ pub async fn check_mirror(
     .parse()
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
     let http = plugin_pool::http_client(timeout_secs);
-    let report = plugin_pool::check_mirror(&http, &state.pool, &id)
+    let report = plugin_pool::check_mirror(&http, &state.db(), &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(ApiResponse::success(
@@ -165,11 +165,11 @@ pub async fn sync_source(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let source = plugin_pool::get_source(&state.pool, &id)
+    let source = plugin_pool::get_source(&state.db(), &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or(AppError::NotFound("source not found".into()))?;
-    let pool = state.pool.clone();
+    let pool = state.db();
     let timeout_secs = crate::services::platform_settings::effective(
         &state.db(),
         crate::services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
@@ -178,8 +178,8 @@ pub async fn sync_source(
     .await
     .parse()
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
-    audit::record(
-        &state.pool,
+    audit::record_pool(
+        &state.db(),
         AuditEvent::new(Action::PluginSourceSync, &auth)
             .on(Resource::plugin_source(&source.id, &source.name))
             .meta(Some(json!({ "trigger": "manual" }))),
@@ -208,13 +208,13 @@ pub async fn reset_index_watermark(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let source = plugin_pool::get_source(&state.pool, &id)
+    let source = plugin_pool::get_source(&state.db(), &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or_else(|| AppError::NotFound("source not found".into()))?;
     crate::store::plugin_sources::reset_index_watermark(&state.db(), &id).await?;
-    audit::record(
-        &state.pool,
+    audit::record_pool(
+        &state.db(),
         AuditEvent::new(Action::PluginSourceResetIndexWatermark, &auth)
             .on(Resource::plugin_source(&source.id, &source.name))
             .changes(
@@ -257,13 +257,13 @@ pub async fn delete_source(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     // Snapshot before deleting: once the row is gone (CASCADE also drops its
     // pool rows) the audit record is the only remaining description of it.
-    let removed = plugin_pool::get_source(&state.pool, &id)
+    let removed = plugin_pool::get_source(&state.db(), &id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     crate::store::plugin_sources::delete(&state.db(), &id).await?;
     if let Some(removed) = &removed {
-        audit::record(
-            &state.pool,
+        audit::record_pool(
+            &state.db(),
             AuditEvent::new(Action::PluginSourceDelete, &auth)
                 .on(Resource::plugin_source(&removed.id, &removed.name))
                 .before(Some(json!({
@@ -305,15 +305,15 @@ pub async fn refresh_plugin(
     );
     let rows = plugin_pool::refresh_plugin(
         &http,
-        &state.pool,
+        &state.db(),
         &namespace,
         &plugin_id,
         shared::version::VERSION,
     )
     .await
     .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
-    audit::record(
-        &state.pool,
+    audit::record_pool(
+        &state.db(),
         AuditEvent::new(Action::PluginPoolRefresh, &auth)
             .on(Resource::plugin_pool_entry(&namespace, &plugin_id))
             .meta(Some(json!({ "versions": rows.len() }))),
@@ -327,7 +327,7 @@ pub async fn list_pool(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let items = plugin_pool::list_pool(&state.pool)
+    let items = plugin_pool::list_pool(&state.db())
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(ApiResponse::success(json!({ "items": items }))))
@@ -356,7 +356,7 @@ pub async fn toggle_pool_entry(
                 .parse()
                 .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS),
             ),
-            &state.pool,
+            &state.db(),
             &namespace,
             &plugin_id,
             &version,

@@ -245,7 +245,7 @@ async fn main() -> anyhow::Result<()> {
     // Startup sync of plugin sources (design §6.8: startup + manual refresh;
     // no background timer by default). Failures are logged, never fatal.
     {
-        let pool = db_pool.clone();
+        let pool = manager::store::exec::DbPool::from_sqlite(&db_pool);
         tokio::spawn(async move {
             let synced = services::plugin_pool::sync_all_enabled(
                 &pool,

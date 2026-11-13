@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
-use sqlx::SqlitePool;
+use crate::store::exec::DbPool;
 use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
@@ -923,7 +923,7 @@ pub fn resolve_uses_steps(
 pub async fn resolve_uses_steps_async(
     steps: Vec<StepDef>,
     index_dir: PathBuf,
-    pool: &SqlitePool,
+    pool: &DbPool,
     http: &reqwest::Client,
 ) -> Result<ResolvedSteps, String> {
     let policy = policy_from_settings();

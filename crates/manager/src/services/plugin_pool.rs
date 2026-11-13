@@ -15,10 +15,12 @@
 use anyhow::anyhow;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
 use std::path::PathBuf;
 
 use crate::services::plugin_resolver::{self, ResolutionPolicy, ResolvedPlugin};
+use crate::store::exec::DbPool;
+
+pub use crate::store::plugin_pool::{PoolEntryMeta, PoolRow, SourceRow};
 
 // URL helpers ------------------------------------------------------------------
 
@@ -103,49 +105,6 @@ fn version_sort_key(version: &str) -> (u64, u64, u64) {
     (next(), next(), next())
 }
 
-// Rows ------------------------------------------------------------------
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct SourceRow {
-    pub id: String,
-    pub name: String,
-    pub url: String,
-    /// Optional mirror origin — tried before `url` on every fetch. Content
-    /// is sha256-pinned per file, so endpoint order is availability only.
-    pub mirror_url: Option<String>,
-    pub auto_enable: bool,
-    pub enabled: bool,
-    pub last_synced_at: Option<String>,
-    pub last_sync_error: Option<String>,
-    /// Highest catalog sequence this source has had VERIFIED (signed) and
-    /// accepted. `None` = no signed index synced yet. The anti-rollback
-    /// watermark: sync refuses anything lower.
-    pub last_index_sequence: Option<i64>,
-    /// Issue time of that index (diagnostic, from the signed header).
-    pub last_index_issued_at: Option<String>,
-}
-
-/// The plugin's descriptive scalar meta (from a full-meta index / meta.json),
-/// persisted per pool row as JSON so the dashboard can say what the plugin
-/// does without downloading the template. Every field optional — legacy
-/// sources carry none of it.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct PoolEntryMeta {
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub description_zh: Option<String>,
-    pub category: Option<String>,
-    pub author: Option<String>,
-    pub publisher: Option<String>,
-    pub license: Option<String>,
-    pub source_repo: Option<String>,
-    pub engine: Option<String>,
-    /// Deprecation notice from the source's index overlay (index/meta
-    /// `deprecated`); persisted with the row so resolve can warn.
-    #[serde(default)]
-    pub deprecated: Option<String>,
-}
-
 #[allow(clippy::too_many_arguments)] // one row of pool settings; a struct here would only add noise
 fn meta_json_string(
     category: &Option<String>,
@@ -172,100 +131,6 @@ fn meta_json_string(
         deprecated: deprecated.clone(),
     };
     serde_json::to_string(&meta).ok()
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct PoolRow {
-    pub namespace: String,
-    pub plugin_id: String,
-    pub version: String,
-    pub sha256: String,
-    pub source_id: String,
-    pub source_name: Option<String>,
-    pub file_path: String,
-    pub enabled: bool,
-    pub reviewed: bool,
-    pub added_by: Option<String>,
-    /// Last curator to change `enabled`, and when. `None` = never toggled
-    /// since it entered the pool (or toggled before this was recorded).
-    pub updated_by: Option<String>,
-    pub updated_at: Option<String>,
-    /// The spec's `requires_buz` declaration, if it made one.
-    pub requires_buz: Option<String>,
-    /// Three-state compatibility verdict against this manager build: `None`
-    /// = not checked yet (transient fetch failure at sync time), `Some(false)`
-    /// = spec invalid or requires_buz unmet, `Some(true)` = passes.
-    pub buz_compatible: Option<bool>,
-    /// The gate-identical error behind `buz_compatible = Some(false)`.
-    pub compat_error: Option<String>,
-    /// Descriptive meta from the source's full-meta index (name, description,
-    /// category, …). `None` = legacy source without meta.
-    pub meta: Option<PoolEntryMeta>,
-}
-
-/// Column tuple every plugin_pool row projection reads; `pool_row_from` is the
-/// single mapping so the three SELECT sites can't drift apart.
-type PoolRowSql = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    String,
-    i64,
-    i64,
-    Option<String>,
-    Option<String>,
-    Option<i64>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
-
-const POOL_ROW_COLUMNS: &str = "p.namespace, p.plugin_id, p.version, p.sha256, p.source_id, s.name, \
-     p.file_path, p.enabled, p.reviewed, p.added_by, p.requires_buz, p.buz_compatible, p.compat_error, \
-     p.meta_json, p.updated_by, p.updated_at";
-
-fn pool_row_from(
-    (
-        namespace,
-        plugin_id,
-        version,
-        sha256,
-        source_id,
-        source_name,
-        file_path,
-        enabled,
-        reviewed,
-        added_by,
-        requires_buz,
-        buz_compatible,
-        compat_error,
-        meta_json,
-        updated_by,
-        updated_at,
-    ): PoolRowSql,
-) -> PoolRow {
-    PoolRow {
-        namespace,
-        plugin_id,
-        version,
-        sha256,
-        source_id,
-        source_name,
-        file_path,
-        enabled: enabled != 0,
-        reviewed: reviewed != 0,
-        added_by,
-        updated_by,
-        updated_at,
-        requires_buz,
-        buz_compatible: buz_compatible.map(|v| v != 0),
-        compat_error,
-        meta: meta_json.and_then(|raw| serde_json::from_str(&raw).ok()),
-    }
 }
 
 /// A resolved remote reference: everything `uses:` needs to expand.
@@ -409,87 +274,31 @@ pub fn parse_index(raw: &str) -> Result<PluginIndex, String> {
 
 // DB access ------------------------------------------------------------------
 
-pub async fn list_sources(pool: &SqlitePool) -> Result<Vec<SourceRow>, anyhow::Error> {
-    #[allow(clippy::type_complexity)] // sqlx row tuple mirrors the SELECT column order
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        Option<String>,
-        i64,
-        i64,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        Option<String>,
-    )> = sqlx::query_as(
-        "SELECT id, name, url, mirror_url, auto_enable, enabled, last_synced_at, last_sync_error, \
-                last_index_sequence, last_index_issued_at \
-             FROM plugin_sources ORDER BY created_at",
-    )
-    .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(
-                id,
-                name,
-                url,
-                mirror_url,
-                auto_enable,
-                enabled,
-                last_synced_at,
-                last_sync_error,
-                last_index_sequence,
-                last_index_issued_at,
-            )| SourceRow {
-                id,
-                name,
-                url,
-                mirror_url,
-                auto_enable: auto_enable != 0,
-                enabled: enabled != 0,
-                last_synced_at,
-                last_sync_error,
-                last_index_sequence,
-                last_index_issued_at,
-            },
-        )
-        .collect())
+pub async fn list_sources(pool: &DbPool) -> Result<Vec<SourceRow>, anyhow::Error> {
+    crate::store::plugin_pool::list_sources(pool)
+        .await
+        .map_err(|e| anyhow!("{e}"))
 }
 
-pub async fn get_source(pool: &SqlitePool, id: &str) -> Result<Option<SourceRow>, anyhow::Error> {
+pub async fn get_source(pool: &DbPool, id: &str) -> Result<Option<SourceRow>, anyhow::Error> {
     Ok(list_sources(pool).await?.into_iter().find(|s| s.id == id))
 }
 
-pub async fn list_pool(pool: &SqlitePool) -> Result<Vec<PoolRow>, anyhow::Error> {
-    let rows: Vec<PoolRowSql> = sqlx::query_as(&format!(
-        "SELECT {POOL_ROW_COLUMNS} \
-         FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id \
-         ORDER BY p.namespace, p.plugin_id, p.version"
-    ))
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.into_iter().map(pool_row_from).collect())
+pub async fn list_pool(pool: &DbPool) -> Result<Vec<PoolRow>, anyhow::Error> {
+    crate::store::plugin_pool::list_pool(pool)
+        .await
+        .map_err(|e| anyhow!("{e}"))
 }
 
 /// Enabled pool rows for one namespace (resolution candidates).
 async fn enabled_rows_for_namespace(
-    pool: &SqlitePool,
+    pool: &DbPool,
     namespace: &str,
     plugin_id: &str,
 ) -> Result<Vec<PoolRow>, anyhow::Error> {
-    let rows: Vec<PoolRowSql> = sqlx::query_as(&format!(
-        "SELECT {POOL_ROW_COLUMNS} \
-         FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id \
-         WHERE p.namespace = ? AND p.plugin_id = ? AND p.enabled = 1",
-    ))
-    .bind(namespace)
-    .bind(plugin_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.into_iter().map(pool_row_from).collect())
+    crate::store::plugin_pool::enabled_rows_for_namespace(pool, namespace, plugin_id)
+        .await
+        .map_err(|e| anyhow!("{e}"))
 }
 
 // Sync ------------------------------------------------------------------
@@ -508,46 +317,27 @@ struct ExistingRowState {
 }
 
 async fn existing_rows_for_source(
-    pool: &SqlitePool,
+    pool: &DbPool,
     source_id: &str,
 ) -> Result<std::collections::HashMap<(String, String, String), ExistingRowState>, anyhow::Error> {
-    #[allow(clippy::type_complexity)] // sqlx row tuple mirrors the SELECT column order
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        i64,
-        String,
-        Option<String>,
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-    )> = sqlx::query_as(
-        "SELECT namespace, plugin_id, version, reviewed, sha256, requires_buz, \
-                buz_compatible, compat_error, compat_checked_against \
-         FROM plugin_pool WHERE source_id = ?",
-    )
-    .bind(source_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| anyhow!("{e}"))?;
+    let rows = crate::store::plugin_pool::existing_rows_for_source(pool, source_id)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     Ok(rows
         .into_iter()
-        .map(
-            |(ns, id, v, reviewed, sha256, requires_buz, buz_compatible, compat_error, checked)| {
-                (
-                    (ns, id, v),
-                    ExistingRowState {
-                        reviewed: reviewed != 0,
-                        sha256,
-                        requires_buz,
-                        buz_compatible: buz_compatible.map(|b| b != 0),
-                        compat_error,
-                        compat_checked_against: checked,
-                    },
-                )
-            },
-        )
+        .map(|row| {
+            (
+                (row.namespace, row.plugin_id, row.version),
+                ExistingRowState {
+                    reviewed: row.reviewed,
+                    sha256: row.sha256,
+                    requires_buz: row.requires_buz,
+                    buz_compatible: row.buz_compatible,
+                    compat_error: row.compat_error,
+                    compat_checked_against: row.compat_checked_against,
+                },
+            )
+        })
         .collect())
 }
 
@@ -700,7 +490,7 @@ async fn resolve_compat(
 /// lands in `services::sync_progress` for the dashboard's progress bar.
 pub async fn sync_source(
     http: &reqwest::Client,
-    pool: &SqlitePool,
+    pool: &DbPool,
     source: &SourceRow,
     current_buz: &str,
 ) -> Result<usize, anyhow::Error> {
@@ -716,15 +506,13 @@ pub async fn sync_source(
     // precision makes back-to-back syncs indistinguishable. Success also
     // clears any stale error from a previous failed attempt.
     let stamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let _ = sqlx::query(
-        "UPDATE plugin_sources SET last_synced_at = ?, \
-         enabled = ?, last_sync_error = ? WHERE id = ?",
+    let _ = crate::store::plugin_pool::mark_source_synced(
+        pool,
+        &source.id,
+        &stamp,
+        ok,
+        error.as_deref(),
     )
-    .bind(&stamp)
-    .bind(ok as i64)
-    .bind(error)
-    .bind(&source.id)
-    .execute(pool)
     .await;
     result
 }
@@ -732,10 +520,10 @@ pub async fn sync_source(
 /// Effective signature policy: `(require, public_key)` — the dashboard value
 /// when set, otherwise the `manager.toml` default. Read per call (not cached in
 /// a process-wide slot) so one database's override never leaks into another.
-async fn signature_policy(pool: &SqlitePool) -> (bool, String) {
+async fn signature_policy(pool: &DbPool) -> (bool, String) {
     let (default_require, default_key) = crate::services::plugin_resolver::signature_defaults();
     let require = crate::services::platform_settings::effective(
-        &crate::store::exec::DbPool::from_sqlite(pool),
+        pool,
         crate::services::platform_settings::KEY_PLUGIN_REQUIRE_SIGNED_INDEX,
         if default_require { "true" } else { "false" },
     )
@@ -743,7 +531,7 @@ async fn signature_policy(pool: &SqlitePool) -> (bool, String) {
     .trim()
         == "true";
     let public_key = crate::services::platform_settings::effective(
-        &crate::store::exec::DbPool::from_sqlite(pool),
+        pool,
         crate::services::platform_settings::KEY_PLUGIN_INDEX_PUBLIC_KEY,
         &default_key,
     )
@@ -852,7 +640,7 @@ async fn verified_reviews(
 /// verification, so an unsigned source (or a deployment with the trust anchor
 /// off) never poisons it.
 async fn enforce_index_freshness(
-    pool: &SqlitePool,
+    pool: &DbPool,
     source: &SourceRow,
     index: &PluginIndex,
     raw: &str,
@@ -871,12 +659,9 @@ async fn enforce_index_freshness(
         )
     })?;
     let incoming_sha = sha256_hex(raw);
-    let stored: Option<(Option<i64>, Option<String>)> = sqlx::query_as(
-        "SELECT last_index_sequence, last_index_sha256 FROM plugin_sources WHERE id = ?",
-    )
-    .bind(&source.id)
-    .fetch_optional(pool)
-    .await?;
+    let stored = crate::store::plugin_pool::index_watermark(pool, &source.id)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     let (accepted_sequence, accepted_sha) = stored.unwrap_or((None, None));
     if let Some(accepted) = accepted_sequence {
         if sequence < accepted {
@@ -897,16 +682,15 @@ async fn enforce_index_freshness(
             );
         }
     }
-    sqlx::query(
-        "UPDATE plugin_sources SET last_index_sequence = ?, last_index_sha256 = ?, \
-         last_index_issued_at = ? WHERE id = ?",
+    crate::store::plugin_pool::advance_index_watermark(
+        pool,
+        &source.id,
+        sequence,
+        &incoming_sha,
+        index.issued_at.as_deref(),
     )
-    .bind(sequence)
-    .bind(&incoming_sha)
-    .bind(&index.issued_at)
-    .bind(&source.id)
-    .execute(pool)
-    .await?;
+    .await
+    .map_err(|e| anyhow!("{e}"))?;
     if accepted_sequence != Some(sequence) {
         tracing::info!(
             source = %source.name,
@@ -920,7 +704,7 @@ async fn enforce_index_freshness(
 
 async fn sync_source_inner(
     http: &reqwest::Client,
-    pool: &SqlitePool,
+    pool: &DbPool,
     source: &SourceRow,
     only_plugin: Option<(&str, &str)>,
     current_buz: &str,
@@ -1097,44 +881,33 @@ async fn sync_source_inner(
                 &entry.engine,
                 &entry.deprecated,
             );
-            sqlx::query(
-                "INSERT INTO plugin_pool (namespace, plugin_id, version, sha256, source_id, file_path, \
-                                        enabled, reviewed, added_by, requires_buz, buz_compatible, \
-                                        compat_error, compat_checked_against, meta_json)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sync', ?, ?, ?, ?, ?)
-                 ON CONFLICT(namespace, plugin_id, version) DO UPDATE SET
-                   sha256 = excluded.sha256,
-                   source_id = excluded.source_id,
-                   file_path = excluded.file_path,
-                   reviewed = excluded.reviewed,
-                   requires_buz = excluded.requires_buz,
-                   buz_compatible = excluded.buz_compatible,
-                   compat_error = excluded.compat_error,
-                   compat_checked_against = excluded.compat_checked_against,
-                   meta_json = excluded.meta_json",
-                // NOTE: `enabled` is deliberately NOT updated on conflict — a
-                // re-sync must never reset the curator's enable/disable verdict.
-                // New plugins initialize via the INSERT values (latest
-                // compatible version for auto-enable sources, staged
-                // otherwise). Compatibility columns carry kept-or-recomputed
-                // verdicts (NULL = unknown), so untouched rows are never
-                // invalidated.
+            // NOTE: `enabled` is deliberately NOT updated on conflict — a
+            // re-sync must never reset the curator's enable/disable verdict.
+            // New plugins initialize via the INSERT values (latest compatible
+            // version for auto-enable sources, staged otherwise). Compatibility
+            // columns carry kept-or-recomputed verdicts (NULL = unknown), so
+            // untouched rows are never invalidated.
+            crate::store::plugin_pool::upsert_pool_entry(
+                pool,
+                &crate::store::plugin_pool::PoolEntryWrite {
+                    namespace: &namespace,
+                    plugin_id: &plugin_id,
+                    version: &entry.version,
+                    sha256: &sha256,
+                    source_id: &source.id,
+                    file_path: &entry.file,
+                    enabled: enable,
+                    reviewed,
+                    added_by: "sync",
+                    requires_buz: requires_buz.as_deref(),
+                    buz_compatible,
+                    compat_error: compat_error.as_deref(),
+                    compat_checked_against: checked_against.as_deref(),
+                    meta_json: meta_json.as_deref(),
+                },
             )
-            .bind(&namespace)
-            .bind(&plugin_id)
-            .bind(&entry.version)
-            .bind(&sha256)
-            .bind(&source.id)
-            .bind(&entry.file)
-            .bind(enable as i64)
-            .bind(reviewed as i64)
-            .bind(&requires_buz)
-            .bind(buz_compatible.map(|b| b as i64))
-            .bind(&compat_error)
-            .bind(&checked_against)
-            .bind(&meta_json)
-            .execute(pool)
-            .await?;
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
             super::sync_progress::tick_entry(&source.id);
         }
         super::sync_progress::tick_plugin(&source.id);
@@ -1158,20 +931,16 @@ async fn sync_source_inner(
 /// The curator's enable state survives (see the ON CONFLICT note above).
 pub async fn refresh_plugin(
     http: &reqwest::Client,
-    pool: &SqlitePool,
+    pool: &DbPool,
     namespace: &str,
     plugin_id: &str,
     current_buz: &str,
 ) -> anyhow::Result<Vec<PoolRow>> {
-    let (source_id, file_path): (String, String) = sqlx::query_as(
-        "SELECT source_id, file_path FROM plugin_pool WHERE namespace = ? AND plugin_id = ? LIMIT 1",
-    )
-    .bind(namespace)
-    .bind(plugin_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| anyhow!("{e}"))?
-    .ok_or_else(|| anyhow!("plugin {namespace}/{plugin_id} is not in the pool"))?;
+    let (source_id, file_path) =
+        crate::store::plugin_pool::pool_source_of(pool, namespace, plugin_id)
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+            .ok_or_else(|| anyhow!("plugin {namespace}/{plugin_id} is not in the pool"))?;
     let source = get_source(pool, &source_id)
         .await
         .map_err(|e| anyhow!("{e}"))?
@@ -1229,20 +998,9 @@ pub async fn refresh_plugin(
         }
     }
 
-    let rows: Vec<PoolRow> = sqlx::query_as(&format!(
-        "SELECT {POOL_ROW_COLUMNS} \
-         FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id \
-         WHERE p.namespace = ? AND p.plugin_id = ? \
-         ORDER BY p.version",
-    ))
-    .bind(namespace)
-    .bind(plugin_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| anyhow!("{e}"))?
-    .into_iter()
-    .map(pool_row_from)
-    .collect();
+    let rows = crate::store::plugin_pool::pool_rows_for_plugin(pool, namespace, plugin_id)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     Ok(rows)
 }
 
@@ -1295,7 +1053,7 @@ struct PluginMetaEntry {
 #[allow(clippy::too_many_arguments)] // one row of pool settings; a struct here would only add noise
 async fn upsert_plugin_meta(
     http: &reqwest::Client,
-    pool: &SqlitePool,
+    pool: &DbPool,
     source: &SourceRow,
     raw: &str,
     meta_url: &str,
@@ -1364,35 +1122,26 @@ async fn upsert_plugin_meta(
             &entry.engine,
             &entry.deprecated,
         );
-        sqlx::query(
-            "INSERT INTO plugin_pool (namespace, plugin_id, version, sha256, source_id, file_path, \
-                                    enabled, reviewed, added_by, requires_buz, buz_compatible, \
-                                    compat_error, compat_checked_against, meta_json)
-             VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'refresh', ?, ?, ?, ?, ?)
-             ON CONFLICT(namespace, plugin_id, version) DO UPDATE SET
-               sha256 = excluded.sha256,
-               source_id = excluded.source_id,
-               file_path = excluded.file_path,
-               reviewed = excluded.reviewed,
-               requires_buz = excluded.requires_buz,
-               buz_compatible = excluded.buz_compatible,
-               compat_error = excluded.compat_error,
-               compat_checked_against = excluded.compat_checked_against,
-               meta_json = excluded.meta_json",
+        crate::store::plugin_pool::upsert_pool_entry(
+            pool,
+            &crate::store::plugin_pool::PoolEntryWrite {
+                namespace,
+                plugin_id,
+                version: &entry.version,
+                sha256: &sha256,
+                source_id: &source.id,
+                file_path: &entry.file,
+                // meta.json carries no curator verdict: never enable on refresh.
+                enabled: false,
+                reviewed,
+                added_by: "refresh",
+                requires_buz: requires_buz.as_deref(),
+                buz_compatible,
+                compat_error: compat_error.as_deref(),
+                compat_checked_against: checked_against.as_deref(),
+                meta_json: meta_json.as_deref(),
+            },
         )
-        .bind(namespace)
-        .bind(plugin_id)
-        .bind(&entry.version)
-        .bind(&sha256)
-        .bind(&source.id)
-        .bind(&entry.file)
-        .bind(reviewed as i64)
-        .bind(&requires_buz)
-        .bind(buz_compatible.map(|b| b as i64))
-        .bind(&compat_error)
-        .bind(&checked_against)
-        .bind(&meta_json)
-        .execute(pool)
         .await
         .map_err(|e| anyhow!("{e}"))?;
     }
@@ -1406,23 +1155,17 @@ async fn upsert_plugin_meta(
 /// curation is a checked act, not a flag flip.
 pub async fn verify_entry(
     http: &reqwest::Client,
-    pool: &SqlitePool,
+    pool: &DbPool,
     namespace: &str,
     plugin_id: &str,
     version: &str,
     current_buz: &str,
 ) -> Result<(), String> {
-    let (sha256, source_id, file_path): (String, String, String) = sqlx::query_as(
-        "SELECT sha256, source_id, file_path FROM plugin_pool \
-         WHERE namespace = ? AND plugin_id = ? AND version = ?",
-    )
-    .bind(namespace)
-    .bind(plugin_id)
-    .bind(version)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| format!("pool entry {namespace}/{plugin_id}@{version} not found"))?;
+    let (sha256, source_id, file_path) =
+        crate::store::plugin_pool::pool_entry_facts(pool, namespace, plugin_id, version)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("pool entry {namespace}/{plugin_id}@{version} not found"))?;
 
     let source = get_source(pool, &source_id)
         .await
@@ -1477,11 +1220,7 @@ pub fn evaluate_entry_content(
 /// Startup sync: refresh every enabled source (design §6.8 point 3 —
 /// startup + manual refresh; no background timer by default). Failures are
 /// logged per source and never block startup.
-pub async fn sync_all_enabled(
-    pool: &SqlitePool,
-    http: &reqwest::Client,
-    current_buz: &str,
-) -> usize {
+pub async fn sync_all_enabled(pool: &DbPool, http: &reqwest::Client, current_buz: &str) -> usize {
     let sources = match list_sources(pool).await {
         Ok(sources) => sources,
         Err(e) => {
@@ -1510,7 +1249,7 @@ pub async fn sync_all_enabled(
 /// Shared tail of every pin-kind branch in [`resolve_remote`].
 async fn remote_resolved_for_row(
     http: &reqwest::Client,
-    pool: &SqlitePool,
+    pool: &DbPool,
     row: &PoolRow,
 ) -> Result<RemoteResolved, String> {
     let source = get_source(pool, &row.source_id)
@@ -1537,7 +1276,7 @@ async fn remote_resolved_for_row(
 /// resolve through the branch's own index.json (mutable — frozen at save).
 pub async fn resolve_remote(
     http: &reqwest::Client,
-    pool: &SqlitePool,
+    pool: &DbPool,
     uses_ref: &str,
     policy: &ResolutionPolicy,
     current_buz: &str,
@@ -1907,7 +1646,7 @@ async fn fetch_revision(
 /// so equal bytes mean equal content.
 pub async fn check_mirror(
     http: &reqwest::Client,
-    pool: &SqlitePool,
+    pool: &DbPool,
     source_id: &str,
 ) -> anyhow::Result<MirrorCheck> {
     let source = get_source(pool, source_id)

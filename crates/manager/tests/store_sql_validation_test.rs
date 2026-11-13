@@ -265,6 +265,9 @@ const EXPECTED_DYNAMIC_SHAPES: &[&str] = &[
     "SELECT name FROM secrets WHERE team_id = ? AND name IN ({placeholders})",
     "SELECT name FROM platform_vars WHERE name IN ({placeholders})",
     "SELECT step_order, name, exec_type, COALESCE(command_template, ''), COALESCE(image, ''), COALESCE(work_dir, ''), COALESCE(timeout_seconds, 0), COALESCE(retry_count, 0), COALESCE(fail_strategy, 'stop'), COALESCE(step_secrets, ''), COALESCE(step_env, '{}'), COALESCE(volumes, '[]'), COALESCE(privileged, 0), COALESCE(hosts_strategy, 'chain'), COALESCE(hosts_max_parallel, 0), COALESCE(needs_json, '[]'), COALESCE(host_names, ''), COALESCE(host_labels, '') FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
+    "SELECT {POOL_ROW_COLUMNS} FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id ORDER BY p.namespace, p.plugin_id, p.version",
+    "SELECT {POOL_ROW_COLUMNS} FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id WHERE p.namespace = ? AND p.plugin_id = ? AND p.enabled = 1",
+    "SELECT {POOL_ROW_COLUMNS} FROM plugin_pool p LEFT JOIN plugin_sources s ON s.id = p.source_id WHERE p.namespace = ? AND p.plugin_id = ? ORDER BY p.version",
 ];
 
 /// Every unresolved-fragment statement in the store must be one of the shapes

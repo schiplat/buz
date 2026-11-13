@@ -178,7 +178,7 @@ pub async fn upsert_from_yaml(
     let resolved_steps = crate::services::plugin_resolver::resolve_uses_steps_async(
         parsed_steps,
         step_index_dir.to_path_buf(),
-        pool,
+        &crate::store::exec::DbPool::from_sqlite(pool),
         &http,
     )
     .await
