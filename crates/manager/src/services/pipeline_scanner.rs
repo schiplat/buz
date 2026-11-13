@@ -728,7 +728,11 @@ pub async fn write_and_upsert_yaml(
     let filename = filename.trim();
     validate_yaml_filename(filename)?;
 
-    let validation = crate::services::yaml_validate::validate_pipeline_yaml(pool, content).await?;
+    let validation = crate::services::yaml_validate::validate_pipeline_yaml(
+        &crate::store::exec::DbPool::from_sqlite(pool),
+        content,
+    )
+    .await?;
     crate::services::yaml_validate::reject_if_invalid(&validation)?;
     let parsed: PipelineYaml = serde_yaml::from_str(content).map_err(|e| {
         AppError::ValidationFailed(format!("YAML syntax error after validate: {e}"))

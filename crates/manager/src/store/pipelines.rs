@@ -1406,6 +1406,199 @@ pub async fn deprecated_task_columns(
     .collect())
 }
 
+/// One legacy pipeline row read for the definition backfill
+/// (`yaml_source = ''`).
+pub struct BackfillRow {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub yaml_path: Option<String>,
+    pub description: String,
+    pub trigger_type: String,
+    pub webhook_path: Option<String>,
+    pub webhook_secret: Option<String>,
+    pub webhook_environment: Option<String>,
+    pub cron_expr: Option<String>,
+    pub cron_environment: Option<String>,
+    pub runner_labels: String,
+    pub timeout_seconds: i64,
+    pub concurrency_group: Option<String>,
+    pub concurrency_mode: String,
+    pub concurrency_max_queue: i64,
+    pub concurrency_queue_timeout_seconds: i64,
+    pub owner_group: String,
+    pub environments: String,
+    pub notify_json: String,
+    pub input_defs: String,
+}
+
+/// Rows still missing their stored definition, creation-ordered.
+pub async fn definition_backfill_rows(pool: &DbPool) -> Result<Vec<BackfillRow>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT id, name, source, yaml_path, description, trigger_type, webhook_path,
+                webhook_secret, webhook_environment, cron_expr, cron_environment,
+                runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
+                concurrency_max_queue, concurrency_queue_timeout_seconds, owner_group,
+                environments, notify_json, input_defs
+         FROM pipelines WHERE yaml_source = '' ORDER BY created_at ASC",
+        &[],
+    )
+    .await?
+    .into_iter()
+    .map(|r| BackfillRow {
+        id: r.text(0),
+        name: r.text(1),
+        source: r.text(2),
+        yaml_path: r.opt_text(3),
+        description: r.text(4),
+        trigger_type: r.text(5),
+        webhook_path: r.opt_text(6),
+        webhook_secret: r.opt_text(7),
+        webhook_environment: r.opt_text(8),
+        cron_expr: r.opt_text(9),
+        cron_environment: r.opt_text(10),
+        runner_labels: r.text(11),
+        timeout_seconds: r.i64(12),
+        concurrency_group: r.opt_text(13),
+        concurrency_mode: r.text(14),
+        concurrency_max_queue: r.i64(15),
+        concurrency_queue_timeout_seconds: r.i64(16),
+        owner_group: r.text(17),
+        environments: r.text(18),
+        notify_json: r.text(19),
+        input_defs: r.text(20),
+    })
+    .collect())
+}
+
+/// One task row read for the backfill's YAML rendering.
+pub struct BackfillTask {
+    pub step_order: i64,
+    pub name: String,
+    pub exec_type: String,
+    pub command_template: String,
+    pub image: String,
+    pub work_dir: String,
+    pub timeout_seconds: i64,
+    pub retry_count: i64,
+    pub fail_strategy: String,
+    pub step_secrets: String,
+    pub step_env_json: String,
+    pub volumes: String,
+    pub privileged: i64,
+    pub hosts_strategy: String,
+    pub hosts_max_parallel: i64,
+    pub needs_json: String,
+    pub host_names: String,
+    pub host_labels: String,
+}
+
+/// The relational parts the backfill renders back into YAML.
+pub struct BackfillSourceParts {
+    pub env_pairs: Vec<(String, String)>,
+    pub secret_names: Vec<String>,
+    pub var_names: Vec<String>,
+    pub resolutions: Vec<(i64, String, String)>,
+    pub tasks: Vec<BackfillTask>,
+}
+
+/// Read one legacy pipeline's relational projection parts.
+pub async fn backfill_source_parts(
+    pool: &DbPool,
+    pipeline_id: &str,
+) -> Result<BackfillSourceParts, AppError> {
+    let env_pairs = exec::fetch_all(
+        pool,
+        "SELECT var_name, value FROM variables
+         WHERE pipeline_id = ? AND source_type = 'inline' AND is_secret = 0
+         ORDER BY var_name",
+        &[pipeline_id.into()],
+    )
+    .await?
+    .into_iter()
+    .map(|r| (r.text(0), r.text(1)))
+    .collect();
+
+    let secret_names = exec::fetch_all(
+        pool,
+        "SELECT s.name FROM pipeline_secrets ps
+         JOIN secrets s ON s.id = ps.secret_id
+         WHERE ps.pipeline_id = ? ORDER BY s.name",
+        &[pipeline_id.into()],
+    )
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect();
+
+    let var_names = exec::fetch_all(
+        pool,
+        "SELECT pv.name FROM pipeline_vars pvars
+         JOIN platform_vars pv ON pv.id = pvars.var_id
+         WHERE pvars.pipeline_id = ? ORDER BY pv.name",
+        &[pipeline_id.into()],
+    )
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect();
+
+    let resolutions = exec::fetch_all(
+        pool,
+        "SELECT step_order, uses_ref, resolved_version FROM step_resolutions
+         WHERE pipeline_id = ? ORDER BY step_order",
+        &[pipeline_id.into()],
+    )
+    .await?
+    .into_iter()
+    .map(|r| (r.i64(0), r.text(1), r.text(2)))
+    .collect();
+
+    let tasks = exec::fetch_all(
+        pool,
+        "SELECT step_order, name, exec_type, COALESCE(command_template, ''), COALESCE(image, ''),
+                COALESCE(work_dir, ''), COALESCE(timeout_seconds, 0), COALESCE(retry_count, 0),
+                COALESCE(fail_strategy, 'stop'), COALESCE(step_secrets, ''),
+                COALESCE(step_env, '{}'), COALESCE(volumes, '[]'), COALESCE(privileged, 0),
+                COALESCE(hosts_strategy, 'chain'), COALESCE(hosts_max_parallel, 0),
+                COALESCE(needs_json, '[]'), COALESCE(host_names, ''), COALESCE(host_labels, '')
+         FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
+        &[pipeline_id.into()],
+    )
+    .await?
+    .into_iter()
+    .map(|r| BackfillTask {
+        step_order: r.i64(0),
+        name: r.text(1),
+        exec_type: r.text(2),
+        command_template: r.text(3),
+        image: r.text(4),
+        work_dir: r.text(5),
+        timeout_seconds: r.i64(6),
+        retry_count: r.i64(7),
+        fail_strategy: r.text(8),
+        step_secrets: r.text(9),
+        step_env_json: r.text(10),
+        volumes: r.text(11),
+        privileged: r.i64(12),
+        hosts_strategy: r.text(13),
+        hosts_max_parallel: r.i64(14),
+        needs_json: r.text(15),
+        host_names: r.text(16),
+        host_labels: r.text(17),
+    })
+    .collect();
+
+    Ok(BackfillSourceParts {
+        env_pairs,
+        secret_names,
+        var_names,
+        resolutions,
+        tasks,
+    })
+}
+
 /// `(step_order, input_defs_json)` of a pipeline's marketplace resolutions —
 /// the claim payload's per-step inputs when the job has no frozen tasks.
 pub async fn step_resolution_defs(

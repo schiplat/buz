@@ -102,7 +102,12 @@ async fn backfill_one(
         Some(filename) => {
             let path = std::path::Path::new(legacy_scan_dir).join(filename);
             match tokio::fs::read_to_string(&path).await {
-                Ok(text) => match super::yaml_validate::validate_pipeline_yaml(pool, &text).await {
+                Ok(text) => match super::yaml_validate::validate_pipeline_yaml(
+                    &crate::store::exec::DbPool::from_sqlite(pool),
+                    &text,
+                )
+                .await
+                {
                     Ok(validation) if validation.valid => Some(text),
                     Ok(_) => {
                         tracing::warn!(

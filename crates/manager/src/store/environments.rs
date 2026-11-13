@@ -347,6 +347,17 @@ pub async fn environment_exists(pool: &DbPool, id: &str) -> Result<bool, AppErro
     Ok(count != 0)
 }
 
+/// Does an environment with this slug exist? (YAML `environments:` check)
+pub async fn slug_exists(pool: &DbPool, slug: &str) -> Result<bool, AppError> {
+    Ok(exec::fetch_scalar_i64(
+        pool,
+        "SELECT EXISTS(SELECT 1 FROM environments WHERE slug = ?)",
+        &[slug.into()],
+    )
+    .await?
+        != 0)
+}
+
 /// Idempotent allowlist insert (re-adding an entry is a no-op).
 pub async fn insert_host_allowlist(
     pool: &DbPool,

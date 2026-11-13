@@ -280,6 +280,26 @@ pub async fn deprecated_secret_kinds(pool: &DbPool) -> Result<Vec<(String, Strin
     .collect())
 }
 
+/// Which of these names exist in the team — the YAML `secrets:` check.
+pub async fn existing_names_in_team(
+    pool: &DbPool,
+    team_id: &str,
+    names: &[String],
+) -> Result<std::collections::HashSet<String>, AppError> {
+    if names.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    let placeholders = vec!["?"; names.len()].join(",");
+    let sql = format!("SELECT name FROM secrets WHERE team_id = ? AND name IN ({placeholders})");
+    let mut binds: Vec<SqlValue> = vec![team_id.into()];
+    binds.extend(names.iter().map(|n| SqlValue::from(n.as_str())));
+    Ok(exec::fetch_all(pool, &sql, &binds)
+        .await?
+        .into_iter()
+        .map(|r| r.text(0))
+        .collect())
+}
+
 /// `(name, stored value, team_id)` — the GitHub push path's facts.
 pub async fn push_facts(pool: &DbPool, id: &str) -> Result<(String, String, String), AppError> {
     let row = exec::fetch_optional(

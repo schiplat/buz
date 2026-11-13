@@ -53,7 +53,7 @@ pub fn spawn_scheduler(state: AppState, check_interval_seconds: u64) {
             // dispatch scheduler on a dedicated row so the two never evict
             // each other.
             match crate::services::scheduler::try_acquire_lease(
-                &state.pool,
+                &state.db(),
                 crate::services::scheduler::CRON_TRIGGER_LEASE_ID,
                 &instance_id,
             )

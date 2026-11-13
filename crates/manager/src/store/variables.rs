@@ -7,7 +7,7 @@
 //! SQLite-dialect strings with backend-neutral binds, rows decode through the
 //! runtime type cascade.
 
-use crate::store::exec::{self, DbPool};
+use crate::store::exec::{self, DbPool, SqlValue};
 
 use shared::error::AppError;
 
@@ -138,6 +138,24 @@ pub async fn variable_name_optional(pool: &DbPool, id: &str) -> Result<Option<St
     )
     .await?;
     Ok(row.and_then(|r| r.opt_text_of("name")))
+}
+
+/// Which of these names exist as platform variables — the YAML `variables:` check.
+pub async fn existing_platform_names(
+    pool: &DbPool,
+    names: &[String],
+) -> Result<std::collections::HashSet<String>, AppError> {
+    if names.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    let placeholders = vec!["?"; names.len()].join(",");
+    let sql = format!("SELECT name FROM platform_vars WHERE name IN ({placeholders})");
+    let binds: Vec<SqlValue> = names.iter().map(|n| SqlValue::from(n.as_str())).collect();
+    Ok(exec::fetch_all(pool, &sql, &binds)
+        .await?
+        .into_iter()
+        .map(|r| r.text(0))
+        .collect())
 }
 
 /// `(name, value)` for the GitHub push path (strict: errors when absent).

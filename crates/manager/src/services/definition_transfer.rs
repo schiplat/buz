@@ -154,7 +154,12 @@ pub async fn import_definitions(
             }
         };
         if dry_run {
-            match crate::services::yaml_validate::validate_pipeline_yaml(pool, &content).await {
+            match crate::services::yaml_validate::validate_pipeline_yaml(
+                &crate::store::exec::DbPool::from_sqlite(pool),
+                &content,
+            )
+            .await
+            {
                 Ok(validation) if validation.valid => report.stored += 1,
                 Ok(validation) => {
                     let messages: Vec<String> = validation

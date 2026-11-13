@@ -56,6 +56,56 @@ pub async fn log_runner_event(pool: &DbPool, runner_id: &str, event_type: &str, 
     }
 }
 
+/// `(id, name)` of online, unfrozen runners whose last heartbeat is older
+/// than `timeout_secs` — the monitor's stale set.
+pub async fn stale_online_runners(
+    pool: &DbPool,
+    timeout_secs: i64,
+) -> Result<Vec<(String, String)>, AppError> {
+    let cutoff = format!("-{timeout_secs} seconds");
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT id, name FROM runners
+         WHERE status = 'online'
+           AND is_frozen = 0
+           AND last_seen < datetime('now', ?)",
+        &[cutoff.into()],
+    )
+    .await?
+    .into_iter()
+    .map(|r| (r.text(0), r.text(1)))
+    .collect())
+}
+
+/// Flip the stale set to `offline`; returns the rows affected.
+pub async fn mark_stale_runners_offline(pool: &DbPool, timeout_secs: i64) -> Result<u64, AppError> {
+    let cutoff = format!("-{timeout_secs} seconds");
+    Ok(exec::execute(
+        pool,
+        "UPDATE runners
+         SET status = 'offline',
+             updated_at = datetime('now')
+         WHERE status = 'online'
+           AND is_frozen = 0
+           AND last_seen < datetime('now', ?)",
+        &[cutoff.into()],
+    )
+    .await?)
+}
+
+/// Ids of jobs still running/pending on a runner that just went offline.
+pub async fn orphaned_job_ids(pool: &DbPool, runner_id: &str) -> Result<Vec<String>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT id FROM jobs WHERE runner_id = ? AND status IN ('running', 'pending')",
+        &[runner_id.into()],
+    )
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect())
+}
+
 /// `(name, team_id, status)` snapshot taken before a row is deleted: the audit
 /// record outlives the row and is the last description of it.
 pub async fn runner_snapshot(

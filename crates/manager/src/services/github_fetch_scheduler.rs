@@ -33,7 +33,7 @@ pub fn spawn_fetch_scheduler(state: AppState, check_interval_seconds: u64) {
         );
 
         loop {
-            match try_acquire_lease(&state.pool, FETCH_LEASE_ID, &instance_id).await {
+            match try_acquire_lease(&state.db(), FETCH_LEASE_ID, &instance_id).await {
                 Ok(true) => {
                     if let Err(e) = run_due_fetches(&state).await {
                         tracing::error!("GitHub fetch scheduler cycle failed: {e}");

@@ -1280,6 +1280,28 @@ pub async fn purge_debug_job_logs(pool: &DbPool, job_id: &str) -> Result<(), App
     Ok(())
 }
 
+/// Mark one orphaned job failed and append the runner-lost log chunk. Both
+/// writes are best effort (the monitor has no caller to report to).
+pub async fn fail_orphaned_job(pool: &DbPool, job_id: &str, log_content: &str) {
+    let _ = exec::execute(
+        pool,
+        "UPDATE jobs SET status = 'failed', end_time = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+        &[job_id.into()],
+    )
+    .await;
+    let _ = exec::execute(
+        pool,
+        "INSERT INTO job_logs (id, job_id, chunk_index, step_order, log_content, created_at)
+         VALUES (?, ?, -2, -1, ?, datetime('now'))",
+        &[
+            Uuid::new_v4().to_string().into(),
+            job_id.into(),
+            log_content.into(),
+        ],
+    )
+    .await;
+}
+
 /// `(pipeline_id, pipeline name?)` for cancel-path audit context.
 pub async fn job_pipeline_name(
     pool: &DbPool,

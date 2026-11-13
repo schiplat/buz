@@ -130,10 +130,10 @@ pub async fn create_file(
     }
 
     // Target team from serde (same as upsert) — authorize BEFORE any write.
-    let (parsed, target_team_id, _) = parse_and_resolve_team(&state.pool, &yaml).await?;
+    let (parsed, target_team_id, _) = parse_and_resolve_team(&state.db(), &yaml).await?;
     auth.check_team(&target_team_id, Perm::PipelineWrite)?;
 
-    let validation = validate_pipeline_yaml(&state.pool, &yaml).await?;
+    let validation = validate_pipeline_yaml(&state.db(), &yaml).await?;
     reject_if_invalid(&validation)?;
     let pipeline_name = parsed.name.trim();
     let pipeline_name = if pipeline_name.is_empty() {
@@ -225,7 +225,7 @@ pub async fn put_file(
     }
 
     // Target team from serde — must authorize BEFORE write/upsert (no post-hoc orphan).
-    let (_parsed, target_team_id, _) = parse_and_resolve_team(&state.pool, &yaml).await?;
+    let (_parsed, target_team_id, _) = parse_and_resolve_team(&state.db(), &yaml).await?;
     auth.check_team(&target_team_id, Perm::PipelineWrite)?;
 
     // Also require write on the current binding (source team / migrate source).
@@ -256,7 +256,7 @@ pub async fn put_file(
         }
     }
 
-    let validation = validate_pipeline_yaml(&state.pool, &yaml).await?;
+    let validation = validate_pipeline_yaml(&state.db(), &yaml).await?;
     reject_if_invalid(&validation)?;
 
     let result = write_and_upsert_yaml(

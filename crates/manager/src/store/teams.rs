@@ -299,3 +299,26 @@ pub async fn name_of(pool: &DbPool, id: &str) -> Result<Option<String>, AppError
             .map(|r| r.text_of("name")),
     )
 }
+
+/// Team id by slug (`None` = no such team) — the YAML `team:` resolution.
+pub async fn id_by_slug(pool: &DbPool, slug: &str) -> Result<Option<String>, AppError> {
+    Ok(
+        exec::fetch_optional(pool, "SELECT id FROM teams WHERE slug = ?", &[slug.into()])
+            .await?
+            .map(|r| r.text(0)),
+    )
+}
+
+/// `(id, slug)` by slug (`None` = no such team) — parse-and-resolve callers.
+pub async fn id_and_slug_by_slug(
+    pool: &DbPool,
+    slug: &str,
+) -> Result<Option<(String, String)>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT id, slug FROM teams WHERE slug = ?",
+        &[slug.into()],
+    )
+    .await?
+    .map(|r| (r.text(0), r.text(1))))
+}

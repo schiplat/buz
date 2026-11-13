@@ -1572,7 +1572,7 @@ pub async fn validate_yaml(
             .unwrap_or(state.config.plugin_index.require_reviewed),
     };
     let result = crate::services::yaml_validate::validate_pipeline_yaml_for_viewer(
-        &state.pool,
+        &state.db(),
         &req.yaml,
         &auth,
         &policy,

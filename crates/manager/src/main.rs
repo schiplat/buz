@@ -281,7 +281,10 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    services::runner_monitor::spawn_monitor(db_pool.clone(), config.runner.clone());
+    services::runner_monitor::spawn_monitor(
+        manager::store::exec::DbPool::from_sqlite(&db_pool),
+        config.runner.clone(),
+    );
 
     // Shared log broadcaster: cleanup needs the same instance the log upload
     // path writes into so expired debug chunks are dropped from memory too.
@@ -319,7 +322,7 @@ async fn main() -> anyhow::Result<()> {
 
     services::cron_scheduler::spawn_scheduler(app_state.clone(), 30);
     services::github_fetch_scheduler::spawn_fetch_scheduler(app_state.clone(), 60);
-    services::scheduler::start_scheduler(db_pool.clone());
+    services::scheduler::start_scheduler(manager::store::exec::DbPool::from_sqlite(&db_pool));
 
     // Every response announces the control plane that produced it, so a
     // Runner/sandboxd pointed at the wrong Manager is visible in a tcpdump.

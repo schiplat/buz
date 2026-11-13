@@ -115,7 +115,9 @@ steps:
   - name: a
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+        .await
+        .expect("validate");
     assert!(!r.valid);
     assert!(
         r.errors
@@ -140,7 +142,9 @@ steps:
   - name: a
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+        .await
+        .expect("validate");
     assert!(r.valid, "errors: {:?}", r.errors);
 }
 
@@ -154,7 +158,9 @@ steps:
   - name: a
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+        .await
+        .expect("validate");
     assert!(!r.valid);
     assert!(
         r.errors
@@ -175,7 +181,9 @@ steps:
   - name: a
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+        .await
+        .expect("validate");
     assert!(r.valid, "errors: {:?}", r.errors);
 }
 
@@ -192,7 +200,9 @@ steps:
       ACR_TOKEN: ${secrets.ACR_PERSONAL}
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+        .await
+        .expect("validate");
     assert!(!r.valid);
     assert!(
         r.errors
@@ -217,7 +227,9 @@ steps:
     registry_secret: ${secrets.ACR_PERSONAL}
     run: echo hi
 "#;
-    let r = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+        .await
+        .expect("validate");
     assert!(!r.valid);
     assert!(
         r.errors
@@ -239,7 +251,9 @@ steps:
   - name: a
     run: echo $BUILD_CACHE_DIR
 "#;
-    let r = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    let r = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+        .await
+        .expect("validate");
     assert!(!r.valid);
     assert!(
         r.errors
@@ -292,7 +306,7 @@ steps:
 "#;
     let empty_index = tempfile::tempdir().unwrap();
     let r = validate_pipeline_yaml_for_viewer(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         yaml,
         &outsider,
         &policy(empty_index.path(), false),
@@ -342,10 +356,14 @@ steps:
     run: echo hi
 "#;
     let empty_index = tempfile::tempdir().unwrap();
-    let r =
-        validate_pipeline_yaml_for_viewer(&pool, yaml, &member, &policy(empty_index.path(), false))
-            .await
-            .expect("validate");
+    let r = validate_pipeline_yaml_for_viewer(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        yaml,
+        &member,
+        &policy(empty_index.path(), false),
+    )
+    .await
+    .expect("validate");
     assert!(!r.valid);
     assert!(
         r.errors
@@ -381,7 +399,9 @@ steps:
     run: echo hi
 "#;
 
-    let first = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    let first = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+        .await
+        .expect("validate");
     assert!(
         first.valid,
         "seeds satisfy referential checks: {:?}",
@@ -389,7 +409,9 @@ steps:
     );
 
     // Same content again — now served from the parse cache.
-    let second = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    let second = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+        .await
+        .expect("validate");
     assert!(second.valid);
 
     sqlx::query("DELETE FROM secrets WHERE name = 'DEP_KEY'")
@@ -397,7 +419,9 @@ steps:
         .await
         .unwrap();
 
-    let third = validate_pipeline_yaml(&pool, yaml).await.expect("validate");
+    let third = validate_pipeline_yaml(&manager::store::exec::DbPool::from_sqlite(&pool), yaml)
+        .await
+        .expect("validate");
     assert!(!third.valid, "secret deletion must fail unchanged content");
     assert!(
         third.errors.iter().any(|e| e.field == "secrets"),
@@ -418,9 +442,14 @@ steps:
   - name: run
     uses: alice/typo-plugin@1.0.0
 "#;
-    let r = validate_pipeline_yaml_for_viewer(&pool, yaml, &member, &policy(index.path(), false))
-        .await
-        .expect("validate");
+    let r = validate_pipeline_yaml_for_viewer(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        yaml,
+        &member,
+        &policy(index.path(), false),
+    )
+    .await
+    .expect("validate");
     assert!(!r.valid);
     let error = r
         .errors
@@ -456,9 +485,14 @@ steps:
   - name: run
     uses: alice/hello@1.2.0
 "#;
-    let r = validate_pipeline_yaml_for_viewer(&pool, ok, &member, &policy(index.path(), false))
-        .await
-        .expect("validate");
+    let r = validate_pipeline_yaml_for_viewer(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        ok,
+        &member,
+        &policy(index.path(), false),
+    )
+    .await
+    .expect("validate");
     assert!(
         !r.errors.iter().any(|e| e.field.starts_with("steps.")),
         "available plugin must pass: {:?}",
@@ -467,16 +501,26 @@ steps:
 
     // Major pin matches the local 1.2.0 …
     let major = ok.replace("@1.2.0", "@1");
-    let r = validate_pipeline_yaml_for_viewer(&pool, &major, &member, &policy(index.path(), false))
-        .await
-        .expect("validate");
+    let r = validate_pipeline_yaml_for_viewer(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &major,
+        &member,
+        &policy(index.path(), false),
+    )
+    .await
+    .expect("validate");
     assert!(!r.errors.iter().any(|e| e.field.starts_with("steps.")));
 
     // … while a version nobody has must name what IS available.
     let miss = ok.replace("@1.2.0", "@9.9.9");
-    let r = validate_pipeline_yaml_for_viewer(&pool, &miss, &member, &policy(index.path(), false))
-        .await
-        .expect("validate");
+    let r = validate_pipeline_yaml_for_viewer(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        &miss,
+        &member,
+        &policy(index.path(), false),
+    )
+    .await
+    .expect("validate");
     let error = r
         .errors
         .iter()
@@ -508,9 +552,14 @@ async fn unreviewed_plugin_is_a_warning_when_strict_mode_is_off() {
     let yaml =
         "name: demo\nenvironments: [default]\nsteps:\n  - name: run\n    uses: alice/hello@1.0.0\n";
 
-    let r = validate_pipeline_yaml_for_viewer(&pool, yaml, &member, &policy(index.path(), false))
-        .await
-        .expect("validate");
+    let r = validate_pipeline_yaml_for_viewer(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        yaml,
+        &member,
+        &policy(index.path(), false),
+    )
+    .await
+    .expect("validate");
     assert!(
         r.warnings
             .iter()
@@ -527,9 +576,14 @@ async fn unreviewed_plugin_is_a_warning_when_strict_mode_is_off() {
     );
 
     // Same content with the strict switch on → error.
-    let r = validate_pipeline_yaml_for_viewer(&pool, yaml, &member, &policy(index.path(), true))
-        .await
-        .expect("validate");
+    let r = validate_pipeline_yaml_for_viewer(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        yaml,
+        &member,
+        &policy(index.path(), true),
+    )
+    .await
+    .expect("validate");
     assert!(
         r.errors
             .iter()
@@ -549,9 +603,14 @@ async fn unreviewed_plugin_is_a_warning_when_strict_mode_is_off() {
         format!(r#"{{"reviews":[{{"sha256":"{sha}"}}]}}"#),
     )
     .unwrap();
-    let r = validate_pipeline_yaml_for_viewer(&pool, yaml, &member, &policy(index.path(), true))
-        .await
-        .expect("validate");
+    let r = validate_pipeline_yaml_for_viewer(
+        &manager::store::exec::DbPool::from_sqlite(&pool),
+        yaml,
+        &member,
+        &policy(index.path(), true),
+    )
+    .await
+    .expect("validate");
     assert!(
         !r.errors.iter().any(|e| e.field == "steps.0.uses"),
         "reviewed plugin passes strict mode: {:?}",
