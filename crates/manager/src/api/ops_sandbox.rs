@@ -108,7 +108,7 @@ async fn load_host(
     host_id: &str,
     instance_id: &str,
 ) -> Result<crate::store::ops_sandbox::HostState, AppError> {
-    crate::store::ops_sandbox::host_state_of(&state.pool, host_id, instance_id)
+    crate::store::ops_sandbox::host_state_of(&state.db(), host_id, instance_id)
         .await?
         .ok_or_else(|| AppError::NotFound("sandbox host not enrolled".into()))
 }
@@ -159,14 +159,14 @@ async fn apply_document(
     created_by: &str,
 ) -> Result<i64, AppError> {
     let (desired_version, applied_version) =
-        crate::store::ops_sandbox::host_versions(&state.pool, host_id, instance_id).await?;
+        crate::store::ops_sandbox::host_versions(&state.db(), host_id, instance_id).await?;
     let version = desired_version.max(applied_version) + 1;
     let json = serde_json::to_string(&sandbox_config::canonical_json(document))
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let sha = sandbox_config::sha256_hex(json.as_bytes());
 
     crate::store::ops_sandbox::insert_config_version(
-        &state.pool,
+        &state.db(),
         host_id,
         instance_id,
         version,
@@ -175,7 +175,7 @@ async fn apply_document(
         created_by,
     )
     .await?;
-    crate::store::ops_sandbox::bump_desired_version(&state.pool, host_id, instance_id, version)
+    crate::store::ops_sandbox::bump_desired_version(&state.db(), host_id, instance_id, version)
         .await?;
     // Wake every sandboxd long-poll; each re-checks its own desired version.
     crate::services::sandbox_config_events::wake_all();
@@ -212,7 +212,7 @@ pub async fn list_hosts(
     _auth: OpsAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let rows = crate::store::ops_sandbox::list_host_states(&state.pool).await?;
+    let rows = crate::store::ops_sandbox::list_host_states(&state.db()).await?;
     let mut hosts: Vec<Value> = rows.iter().map(host_json).collect();
     // Attach each host's latest (desired) document — mirrors get_host so the
     // ops UI can read profile inventory and the editor's current text without
@@ -226,7 +226,7 @@ pub async fn list_hosts(
     let network_default =
         crate::services::sandbox_defaults::load_default_network(&state.pool).await?;
     let docs: std::collections::HashMap<String, serde_json::Value> =
-        crate::store::ops_sandbox::latest_documents_all(&state.pool)
+        crate::store::ops_sandbox::latest_documents_all(&state.db())
             .await?
             .into_iter()
             .filter_map(|(host_id, instance_id, raw)| {
@@ -243,7 +243,7 @@ pub async fn list_hosts(
             .collect();
     // Runners bound to each (host_id, sandbox_instance_id) pair — drives the
     // ops UI's runner count and the delete guard.
-    let runner_rows = crate::store::ops_sandbox::attached_runners_all(&state.pool).await?;
+    let runner_rows = crate::store::ops_sandbox::attached_runners_all(&state.db()).await?;
     let mut runners_by_pair: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     for (host, instance, name) in runner_rows {
@@ -280,7 +280,7 @@ pub async fn enroll_host(
     let token_hash = shared::api_token::hash_token(&token);
 
     crate::store::ops_sandbox::enroll_host(
-        &state.pool,
+        &state.db(),
         &host_id,
         &instance_id,
         req.max_resource_slots as i64,
@@ -319,7 +319,7 @@ pub async fn get_host(
     let mut body = host_json(&row);
     body["document"] = serde_json::to_value(&document).unwrap_or(Value::Null);
     // Runners reporting this host (PR #5 wires the heartbeat side).
-    let runners = crate::store::ops_sandbox::runner_names_for_host(&state.pool, &host_id).await?;
+    let runners = crate::store::ops_sandbox::runner_names_for_host(&state.db(), &host_id).await?;
     body["attached_runners"] = json!(runners);
     Ok(Json(ApiResponse::success(body)))
 }
@@ -336,7 +336,7 @@ pub async fn delete_host(
     validate_pair(&host_id, &instance_id)?;
     load_host(&state, &host_id, &instance_id).await?;
     let bound =
-        crate::store::ops_sandbox::runner_count_for_pair(&state.pool, &host_id, &instance_id)
+        crate::store::ops_sandbox::runner_count_for_pair(&state.db(), &host_id, &instance_id)
             .await?;
     if bound > 0 {
         return Err(AppError::ValidationFailed(format!(
@@ -460,7 +460,7 @@ pub async fn put_defaults(
     if require_approval_enabled(&state).await? {
         let change_id = Uuid::new_v4().to_string();
         crate::store::ops_sandbox::insert_defaults_pending_change(
-            &state.pool,
+            &state.db(),
             &change_id,
             &auth.username,
             &serde_json::to_string(&before_json).unwrap_or_default(),
@@ -548,7 +548,7 @@ pub async fn put_config(
         let before = current_document(&state, &host_id, &instance_id).await?;
         let change_id = Uuid::new_v4().to_string();
         crate::store::ops_sandbox::insert_host_pending_change(
-            &state.pool,
+            &state.db(),
             &change_id,
             &host_id,
             &instance_id,
@@ -630,7 +630,7 @@ pub async fn list_versions(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     validate_pair(&host_id, &instance_id)?;
     let rows =
-        crate::store::ops_sandbox::config_versions(&state.pool, &host_id, &instance_id).await?;
+        crate::store::ops_sandbox::config_versions(&state.db(), &host_id, &instance_id).await?;
     let versions: Vec<Value> = rows
         .into_iter()
         .map(|(version, sha, by, at, document)| {
@@ -656,7 +656,7 @@ pub async fn rollback(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     validate_pair(&host_id, &instance_id)?;
     let raw = crate::store::ops_sandbox::config_document_at(
-        &state.pool,
+        &state.db(),
         &host_id,
         &instance_id,
         req.version,
@@ -703,7 +703,7 @@ pub async fn rotate_token(
     load_host(&state, &host_id, &instance_id).await?;
     let token = generate_token();
     crate::store::ops_sandbox::update_token_hash(
-        &state.pool,
+        &state.db(),
         &host_id,
         &instance_id,
         &shared::api_token::hash_token(&token),
@@ -743,7 +743,7 @@ pub async fn update_budget(
     }
     load_host(&state, &host_id, &instance_id).await?;
     crate::store::ops_sandbox::update_max_slots(
-        &state.pool,
+        &state.db(),
         &host_id,
         &instance_id,
         req.max_resource_slots,
@@ -793,7 +793,7 @@ pub async fn list_changes(
         20
     };
     let (total, rows) =
-        crate::store::ops_sandbox::list_changes(&state.pool, &status, page, page_size).await?;
+        crate::store::ops_sandbox::list_changes(&state.db(), &status, page, page_size).await?;
     let changes: Vec<Value> = rows
         .into_iter()
         .map(
@@ -830,7 +830,7 @@ pub async fn approve_change(
     State(state): State<AppState>,
     Json(req): Json<ChangeDecisionRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let row = crate::store::ops_sandbox::change_facts(&state.pool, &change_id).await?;
+    let row = crate::store::ops_sandbox::change_facts(&state.db(), &change_id).await?;
     let Some((status, requested_by, host_id, instance_id, after_document)) = row else {
         return Err(AppError::NotFound("change not found".into()));
     };
@@ -852,7 +852,7 @@ pub async fn approve_change(
         let profile = after["profile"].as_str().unwrap_or_default().to_string();
         let granted = after["granted"].as_bool().unwrap_or(false);
         let pipelines =
-            crate::store::ops_sandbox::pipeline_count_for_profile(&state.pool, &team_id, &profile)
+            crate::store::ops_sandbox::pipeline_count_for_profile(&state.db(), &team_id, &profile)
                 .await?;
         let queued_jobs =
             crate::store::ops_sandbox::queued_jobs_for_profile(&state.pool, &team_id, &profile)
@@ -866,10 +866,10 @@ pub async fn approve_change(
             )
             .await?;
         } else {
-            crate::store::ops_sandbox::delete_grant(&state.pool, &team_id, &profile).await?;
+            crate::store::ops_sandbox::delete_grant(&state.db(), &team_id, &profile).await?;
         }
         crate::store::ops_sandbox::approve_change_row(
-            &state.pool,
+            &state.db(),
             &change_id,
             &auth.username,
             req.comment.clone().as_deref(),
@@ -936,7 +936,7 @@ pub async fn approve_change(
         crate::services::sandbox_config_events::wake_all();
         let version = bumped.len() as i64;
         crate::store::ops_sandbox::approve_change_row(
-            &state.pool,
+            &state.db(),
             &change_id,
             &auth.username,
             req.comment.clone().as_deref(),
@@ -968,7 +968,7 @@ pub async fn approve_change(
         .map_err(|problems| AppError::Internal(problems.join("; ")))?;
     let version = apply_document(&state, &host_id, &instance_id, &document, &auth.username).await?;
     crate::store::ops_sandbox::approve_change_row(
-        &state.pool,
+        &state.db(),
         &change_id,
         &auth.username,
         req.comment.clone().as_deref(),
@@ -1005,7 +1005,7 @@ pub async fn reject_change(
     State(state): State<AppState>,
     Json(req): Json<ChangeDecisionRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let row = crate::store::ops_sandbox::change_facts(&state.pool, &change_id).await?;
+    let row = crate::store::ops_sandbox::change_facts(&state.db(), &change_id).await?;
     let Some((status, requested_by, host_id, instance_id, after_document)) = row else {
         return Err(AppError::NotFound("change not found".into()));
     };
@@ -1042,7 +1042,7 @@ pub async fn reject_change(
     }
 
     crate::store::ops_sandbox::reject_change_row(
-        &state.pool,
+        &state.db(),
         &change_id,
         &auth.username,
         req.comment.clone().as_deref(),
@@ -1080,7 +1080,7 @@ pub async fn list_grants(
     _auth: OpsAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let rows = crate::store::ops_sandbox::list_grants(&state.pool).await?;
+    let rows = crate::store::ops_sandbox::list_grants(&state.db()).await?;
     let grants: Vec<Value> = rows
         .into_iter()
         .map(|(team_id, team_name, profile, created_at)| {
@@ -1119,7 +1119,7 @@ pub async fn upsert_grant(
             "profile name '{profile}' is invalid (expected [a-z0-9][a-z0-9-]{{0,31}})"
         )));
     }
-    let exists = crate::store::ops_sandbox::team_exists(&state.pool, &team_id).await?;
+    let exists = crate::store::ops_sandbox::team_exists(&state.db(), &team_id).await?;
     if !exists {
         return Err(AppError::ValidationFailed(format!(
             "team '{team_id}' does not exist"
@@ -1128,13 +1128,13 @@ pub async fn upsert_grant(
     // Request-time blast radius: the requester (and later the approver) should
     // see how many pipelines this unlocks before the change is approved.
     let pipeline_count =
-        crate::store::ops_sandbox::pipeline_count_for_profile(&state.pool, &team_id, &profile)
+        crate::store::ops_sandbox::pipeline_count_for_profile(&state.db(), &team_id, &profile)
             .await?;
 
     if grants_require_approval_enabled(&state).await? {
         let change_id = Uuid::new_v4().to_string();
         crate::store::ops_sandbox::insert_grant_pending_change(
-            &state.pool,
+            &state.db(),
             &change_id,
             &auth.username,
             &serde_json::to_string(&json!({
@@ -1167,7 +1167,7 @@ pub async fn upsert_grant(
             "pipelines": pipeline_count,
         }))));
     }
-    crate::store::ops_sandbox::insert_grant_ignore(&state.pool, &team_id, &profile, &auth.username)
+    crate::store::ops_sandbox::insert_grant_ignore(&state.db(), &team_id, &profile, &auth.username)
         .await?;
     tracing::info!(
         team = %team_id,
@@ -1197,7 +1197,7 @@ pub async fn delete_grant(
     Path((team_id, profile)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let deleted = crate::store::ops_sandbox::delete_grant(&state.pool, &team_id, &profile).await?;
+    let deleted = crate::store::ops_sandbox::delete_grant(&state.db(), &team_id, &profile).await?;
     if !deleted {
         return Err(AppError::NotFound("grant not found".into()));
     }
@@ -1214,7 +1214,7 @@ pub async fn delete_grant(
         // effective-immediately semantics the operator asked for while the
         // paperwork catches up.
         crate::store::ops_sandbox::insert_revoke_pending_change(
-            &state.pool,
+            &state.db(),
             &change_id,
             &auth.username,
             &serde_json::to_string(&json!({ "team_id": team_id, "profile": profile }))
