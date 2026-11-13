@@ -117,7 +117,7 @@ pub async fn create(
     let mut secret_names: HashMap<String, String> = HashMap::new();
     for secret_id in req.secret_ids.iter().flatten() {
         if let Some(name) =
-            crate::store::pipelines::secret_name_in_team(&state.pool, secret_id, &team_id).await?
+            crate::store::pipelines::secret_name_in_team(&state.db(), secret_id, &team_id).await?
         {
             secret_names.insert(secret_id.clone(), name);
         }
@@ -212,7 +212,7 @@ pub async fn create(
     .await;
     if let Err(error) = write_result {
         // Compensate: the row shell is removed with the pipeline.
-        let _ = crate::store::pipelines::delete(&state.pool, &pipeline_id).await;
+        let _ = crate::store::pipelines::delete(&state.db(), &pipeline_id).await;
         tracing::warn!(
             pipeline = %pipeline_id,
             error = %error,
@@ -280,13 +280,13 @@ pub async fn get_one(
     let input_defs = serde_json::from_str::<serde_json::Value>(&input_defs_raw).ok();
 
     // Fetch explicit secret bindings
-    let secret_ids = crate::store::pipelines::secret_bind_ids(&state.pool, &id).await?;
+    let secret_ids = crate::store::pipelines::secret_bind_ids(&state.db(), &id).await?;
 
     // Fetch explicit variable bindings
-    let var_ids = crate::store::pipelines::var_bind_ids(&state.pool, &id).await?;
+    let var_ids = crate::store::pipelines::var_bind_ids(&state.db(), &id).await?;
 
     // Fetch inline env vars (pipeline-level `env:` block) for the edit form.
-    let env_rows = crate::store::pipelines::inline_envs(&state.pool, &id).await?;
+    let env_rows = crate::store::pipelines::inline_envs(&state.db(), &id).await?;
     let envs: Vec<serde_json::Value> = env_rows
         .iter()
         .map(|(name, value)| {
@@ -381,7 +381,7 @@ pub async fn update(
     // rewrites the pipeline's YAML file (see the write below), so there is no
     // DB-vs-disk split left to guard. The row check is what 404s a bad id.
 
-    let before_facts = crate::store::pipelines::update_facts(&state.pool, &id).await?;
+    let before_facts = crate::store::pipelines::update_facts(&state.db(), &id).await?;
     let before = before_facts
         .as_ref()
         .map(|(name, trigger_type, team, owner, is_active)| {
@@ -405,7 +405,7 @@ pub async fn update(
         auth.check_team(&resolved.0, Perm::PipelineWrite)?;
         resolved
     } else {
-        let slug = crate::store::pipelines::owner_group_of(&state.pool, &id).await?;
+        let slug = crate::store::pipelines::owner_group_of(&state.db(), &id).await?;
         (current_team_id, slug)
     };
 
@@ -419,9 +419,9 @@ pub async fn update(
     )
     .await?;
 
-    let stored_team_id = crate::store::pipelines::team_of(&state.pool, &id).await?;
+    let stored_team_id = crate::store::pipelines::team_of(&state.db(), &id).await?;
     if team_id != stored_team_id {
-        let active_jobs = crate::store::pipelines::active_job_count(&state.pool, &id).await?;
+        let active_jobs = crate::store::pipelines::active_job_count(&state.db(), &id).await?;
         if active_jobs > 0 {
             return Err(AppError::Conflict(format!(
                 "pipeline team cannot change while {active_jobs} active job(s) exist; finish or cancel them first"
@@ -441,7 +441,7 @@ pub async fn update(
     let mut secret_names: HashMap<String, String> = HashMap::new();
     for secret_id in req.secret_ids.iter().flatten() {
         if let Some(name) =
-            crate::store::pipelines::secret_name_in_team(&state.pool, secret_id, &team_id).await?
+            crate::store::pipelines::secret_name_in_team(&state.db(), secret_id, &team_id).await?
         {
             secret_names.insert(secret_id.clone(), name);
         }
@@ -494,7 +494,7 @@ pub async fn update(
     // Rewrite the pipeline's definition (the authority). Un-migrated form rows
     // get bound here too — the same path as the startup migration.
     let (source, yaml_path, _name) =
-        crate::store::pipelines::pipeline_source_row(&state.pool, &id).await?;
+        crate::store::pipelines::pipeline_source_row(&state.db(), &id).await?;
     let filename = match source.as_str() {
         "yaml" => yaml_path
             .map(|path| crate::services::pipeline_scanner::normalize_yaml_path_key(&path))
@@ -568,7 +568,7 @@ pub async fn delete(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::PipelineDelete)?;
 
-    let facts = crate::store::pipelines::delete_facts(&state.pool, &id).await?;
+    let facts = crate::store::pipelines::delete_facts(&state.db(), &id).await?;
     let (name, before) = match facts {
         Some((name, trigger_type, team, owner_group, source, yaml_path)) => {
             let path = if source == "yaml" {
@@ -592,7 +592,7 @@ pub async fn delete(
         None => (id.clone(), None),
     };
 
-    let deleted = crate::store::pipelines::delete(&state.pool, &id).await?;
+    let deleted = crate::store::pipelines::delete(&state.db(), &id).await?;
 
     if !deleted {
         return Err(AppError::NotFound("pipeline not found".into()));
@@ -619,13 +619,13 @@ pub async fn toggle_active(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
-    let (name, current_active) = crate::store::pipelines::name_active_of(&state.pool, &id)
+    let (name, current_active) = crate::store::pipelines::name_active_of(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
 
     let new_active = !current_active;
 
-    crate::store::pipelines::set_active(&state.pool, &id, new_active).await?;
+    crate::store::pipelines::set_active(&state.db(), &id, new_active).await?;
 
     let action = if new_active {
         "activated"
@@ -751,7 +751,7 @@ pub async fn trigger(
         Some(&auth),
     )
     .await?;
-    let name = crate::store::pipelines::name_of(&state.pool, &id)
+    let name = crate::store::pipelines::name_of(&state.db(), &id)
         .await?
         .unwrap_or_else(|| id.clone());
     let job_id = result
@@ -761,7 +761,7 @@ pub async fn trigger(
         .and_then(|d| d.get("job_id"))
         .cloned();
 
-    let input_defs_raw = crate::store::pipelines::input_defs_of(&state.pool, &id)
+    let input_defs_raw = crate::store::pipelines::input_defs_of(&state.db(), &id)
         .await?
         .unwrap_or_else(|| "[]".into());
     let defs: Vec<PipelineInputDef> = serde_json::from_str(&input_defs_raw).unwrap_or_default();
@@ -860,7 +860,7 @@ pub async fn do_trigger(
     // Host references are validated against the hosts registry. Load the
     // name set once up-front so the shared validator stays DB-agnostic.
     let host_names: std::collections::HashSet<String> =
-        crate::store::pipelines::all_host_names(&state.pool)
+        crate::store::pipelines::all_host_names(&state.db())
             .await?
             .into_iter()
             .collect();
@@ -1024,7 +1024,7 @@ pub async fn do_trigger(
     // references resolve only when a Runner claims the job, so restricted
     // environments reject them rather than allowing an unchecked target.
     if let Some(env_id) = environment_id {
-        let allowed = crate::store::pipelines::env_host_allowlist(&state.pool, env_id).await?;
+        let allowed = crate::store::pipelines::env_host_allowlist(&state.db(), env_id).await?;
         if !allowed.is_empty() {
             let allowed_names: std::collections::HashSet<&str> = allowed
                 .iter()
@@ -1041,13 +1041,12 @@ pub async fn do_trigger(
             let host_label_sets: std::collections::HashMap<
                 String,
                 std::collections::HashSet<String>,
-            > = crate::store::pipelines::host_label_rows(&state.pool)
+            > = crate::store::pipelines::host_label_rows(&state.db())
                 .await?
                 .into_iter()
-                .map(|r| {
-                    let name: String = r.get(0);
+                .map(|(name, labels_json)| {
                     let labels: Vec<String> =
-                        serde_json::from_str(&r.get::<String, _>(1)).unwrap_or_default();
+                        serde_json::from_str(&labels_json).unwrap_or_default();
                     (name, labels.into_iter().collect())
                 })
                 .collect();
@@ -1124,7 +1123,7 @@ pub async fn do_trigger(
     // Freeze notify config (keep `${secrets.…}`; resolve at send). The column
     // is projected from the stored definition, so it is the single source.
     let notify_snapshot = {
-        let raw = crate::store::pipelines::notify_json_of(&state.pool, pipeline_id).await?;
+        let raw = crate::store::pipelines::notify_json_of(&state.db(), pipeline_id).await?;
         let channels: Vec<shared::pipeline_yaml::NotifyChannelYaml> = raw
             .as_deref()
             .filter(|raw| !raw.trim().is_empty())
@@ -1264,7 +1263,7 @@ async fn validate_webhook_secret_binding(
         ));
     }
     let exists =
-        crate::store::pipelines::team_secret_id_by_name(&state.pool, team_id, name).await?;
+        crate::store::pipelines::team_secret_id_by_name(&state.db(), team_id, name).await?;
     if exists.is_none() {
         tracing::warn!(
             team = %team_id,

@@ -1207,7 +1207,7 @@ async fn build_claim_payload(
 
     // Fallback for jobs created before masking_input_keys existed: use live pipeline defs.
     if masking_input_keys.is_empty() {
-        let defs_raw = crate::store::pipelines::input_defs_of(&state.pool, &pipeline_id)
+        let defs_raw = crate::store::pipelines::input_defs_of(&state.db(), &pipeline_id)
             .await?
             .unwrap_or_else(|| "[]".into());
         let defs: Vec<shared::protocol::PipelineInputDef> =
@@ -1248,7 +1248,7 @@ async fn build_claim_payload(
         .collect();
     if !has_frozen_tasks {
         resolutions_by_order =
-            crate::store::pipelines::step_resolution_defs(&state.pool, &pipeline_id)
+            crate::store::pipelines::step_resolution_defs(&state.db(), &pipeline_id)
                 .await?
                 .into_iter()
                 .collect();
@@ -1382,7 +1382,7 @@ async fn build_claim_payload(
     }
 
     // ── Inline env vars (user-defined per pipeline, from `env:` YAML block or form) ──
-    let env_rows = crate::store::pipelines::inline_envs(&state.pool, &pipeline_id).await?;
+    let env_rows = crate::store::pipelines::inline_envs(&state.db(), &pipeline_id).await?;
     for (name, value) in env_rows {
         if let Some(obj) = env.as_object_mut() {
             obj.insert(name, serde_json::Value::String(value));

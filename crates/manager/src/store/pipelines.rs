@@ -1,5 +1,6 @@
 //! Pipeline row lookups shared across handlers.
 
+use crate::store::exec::{self, DbPool, SqlValue};
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
@@ -8,15 +9,17 @@ use shared::error::AppError;
 /// `(source, yaml_path, name)` for one pipeline — the definition-page header
 /// facts (origin basename + storage source).
 pub async fn pipeline_source_row(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
 ) -> Result<(String, Option<String>, String), AppError> {
-    let row = sqlx::query("SELECT source, yaml_path, name FROM pipelines WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
-    Ok((row.get(0), row.get(1), row.get(2)))
+    let row = exec::fetch_optional(
+        pool,
+        "SELECT source, yaml_path, name FROM pipelines WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
+    Ok((row.text(0), row.opt_text(1), row.text(2)))
 }
 
 /// Pipeline concurrency decision inside the caller's write transaction:
@@ -132,16 +135,15 @@ pub async fn resolve_concurrency_status(
 
 /// The pipeline's declared environment slugs as stored JSON text — the
 /// git-hook create/update path validates against it.
-pub async fn declared_environments(
-    pool: &SqlitePool,
-    pipeline_id: &str,
-) -> Result<String, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT environments FROM pipelines WHERE id = ?")
-            .bind(pipeline_id)
-            .fetch_one(pool)
-            .await?,
+pub async fn declared_environments(pool: &DbPool, pipeline_id: &str) -> Result<String, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT environments FROM pipelines WHERE id = ?",
+        &[pipeline_id.into()],
     )
+    .await?
+    .ok_or(sqlx::Error::RowNotFound)?
+    .text(0))
 }
 
 // ───────────────────────────── read models ─────────────────────────────
@@ -170,49 +172,46 @@ pub async fn full_row(
 }
 
 /// Secret ids explicitly bound to a pipeline.
-pub async fn secret_bind_ids(
-    pool: &SqlitePool,
-    pipeline_id: &str,
-) -> Result<Vec<String>, AppError> {
-    Ok(
-        sqlx::query("SELECT secret_id FROM pipeline_secrets WHERE pipeline_id = ?")
-            .bind(pipeline_id)
-            .fetch_all(pool)
-            .await?
-            .into_iter()
-            .map(|r| r.get(0))
-            .collect(),
+pub async fn secret_bind_ids(pool: &DbPool, pipeline_id: &str) -> Result<Vec<String>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT secret_id FROM pipeline_secrets WHERE pipeline_id = ?",
+        &[pipeline_id.into()],
     )
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect())
 }
 
 /// Variable ids explicitly bound to a pipeline.
-pub async fn var_bind_ids(pool: &SqlitePool, pipeline_id: &str) -> Result<Vec<String>, AppError> {
-    Ok(
-        sqlx::query("SELECT var_id FROM pipeline_vars WHERE pipeline_id = ?")
-            .bind(pipeline_id)
-            .fetch_all(pool)
-            .await?
-            .into_iter()
-            .map(|r| r.get(0))
-            .collect(),
+pub async fn var_bind_ids(pool: &DbPool, pipeline_id: &str) -> Result<Vec<String>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT var_id FROM pipeline_vars WHERE pipeline_id = ?",
+        &[pipeline_id.into()],
     )
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect())
 }
 
 /// Inline (non-secret) `env:` pairs of a pipeline, name-ordered.
 pub async fn inline_envs(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
 ) -> Result<Vec<(String, String)>, AppError> {
-    Ok(sqlx::query(
+    Ok(exec::fetch_all(
+        pool,
         "SELECT var_name, value FROM variables
          WHERE pipeline_id = ? AND source_type = 'inline' AND is_secret = 0
          ORDER BY var_name",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| (r.get(0), r.get(1)))
+    .map(|r| (r.text(0), r.text(1)))
     .collect())
 }
 
@@ -267,33 +266,35 @@ pub async fn step_resolutions(
 
 /// `(kind, value)` allowlist entries of one environment.
 pub async fn env_host_allowlist(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
 ) -> Result<Vec<(String, String)>, AppError> {
-    Ok(
-        sqlx::query("SELECT kind, value FROM environment_hosts WHERE environment_id = ?")
-            .bind(environment_id)
-            .fetch_all(pool)
-            .await?
-            .into_iter()
-            .map(|r| (r.get(0), r.get(1)))
-            .collect(),
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT kind, value FROM environment_hosts WHERE environment_id = ?",
+        &[environment_id.into()],
     )
+    .await?
+    .into_iter()
+    .map(|r| (r.text(0), r.text(1)))
+    .collect())
 }
 
 /// `(name, labels-json)` of every host — the label-membership preload.
-pub async fn host_label_rows(pool: &SqlitePool) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
-    Ok(sqlx::query("SELECT name, labels FROM hosts")
-        .fetch_all(pool)
-        .await?)
+pub async fn host_label_rows(pool: &DbPool) -> Result<Vec<(String, String)>, AppError> {
+    Ok(exec::fetch_all(pool, "SELECT name, labels FROM hosts", &[])
+        .await?
+        .into_iter()
+        .map(|r| (r.text(0), r.text(1)))
+        .collect())
 }
 
 /// Registered host names — the trigger input validator's host universe.
-pub async fn all_host_names(pool: &SqlitePool) -> Result<Vec<String>, AppError> {
-    Ok(sqlx::query_scalar("SELECT name FROM hosts")
-        .fetch_all(pool)
+pub async fn all_host_names(pool: &DbPool) -> Result<Vec<String>, AppError> {
+    Ok(exec::fetch_all(pool, "SELECT name FROM hosts", &[])
         .await?
         .into_iter()
+        .map(|r| r.text(0))
         .collect())
 }
 
@@ -326,16 +327,14 @@ pub async fn trigger_snapshot_row(
 }
 
 /// Stored notify channels JSON of one pipeline (`None` = unset/absent row).
-pub async fn notify_json_of(
-    pool: &SqlitePool,
-    pipeline_id: &str,
-) -> Result<Option<String>, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT notify_json FROM pipelines WHERE id = ?")
-            .bind(pipeline_id)
-            .fetch_optional(pool)
-            .await?,
+pub async fn notify_json_of(pool: &DbPool, pipeline_id: &str) -> Result<Option<String>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT notify_json FROM pipelines WHERE id = ?",
+        &[pipeline_id.into()],
     )
+    .await?
+    .map(|r| r.text(0)))
 }
 
 /// The trigger gate's pipeline row: identity, concurrency config, inputs,
@@ -356,75 +355,73 @@ pub async fn trigger_row(
 }
 
 /// Pipeline display name (`None` = no such row).
-pub async fn name_of(pool: &SqlitePool, id: &str) -> Result<Option<String>, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT name FROM pipelines WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?,
+pub async fn name_of(pool: &DbPool, id: &str) -> Result<Option<String>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT name FROM pipelines WHERE id = ?",
+        &[id.into()],
     )
+    .await?
+    .map(|r| r.text(0)))
 }
 
 /// Stored input definitions JSON (`None` = no such row).
-pub async fn input_defs_of(pool: &SqlitePool, id: &str) -> Result<Option<String>, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT input_defs FROM pipelines WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?,
+pub async fn input_defs_of(pool: &DbPool, id: &str) -> Result<Option<String>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT input_defs FROM pipelines WHERE id = ?",
+        &[id.into()],
     )
+    .await?
+    .map(|r| r.text(0)))
 }
 
 /// Audit before-snapshot facts of an update (`None` = no such pipeline).
 pub async fn update_facts(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
 ) -> Result<Option<(String, String, String, String, bool)>, AppError> {
-    let row = sqlx::query(
+    let row = exec::fetch_optional(
+        pool,
         "SELECT name, trigger_type, team_id, owner_group, is_active FROM pipelines WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r| {
-        (
-            r.get(0),
-            r.get(1),
-            r.get(2),
-            r.get(3),
-            r.get::<i64, _>(4) != 0,
-        )
-    }))
+    Ok(row.map(|r| (r.text(0), r.text(1), r.text(2), r.text(3), r.i64(4) != 0)))
 }
 
 /// `owner_group` slug of one pipeline (errors when absent).
-pub async fn owner_group_of(pool: &SqlitePool, id: &str) -> Result<String, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT owner_group FROM pipelines WHERE id = ?")
-            .bind(id)
-            .fetch_one(pool)
-            .await?,
+pub async fn owner_group_of(pool: &DbPool, id: &str) -> Result<String, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT owner_group FROM pipelines WHERE id = ?",
+        &[id.into()],
     )
+    .await?
+    .ok_or(sqlx::Error::RowNotFound)?
+    .text(0))
 }
 
 /// Stored team id of one pipeline (errors when absent).
-pub async fn team_of(pool: &SqlitePool, id: &str) -> Result<String, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT team_id FROM pipelines WHERE id = ?")
-            .bind(id)
-            .fetch_one(pool)
-            .await?,
+pub async fn team_of(pool: &DbPool, id: &str) -> Result<String, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT team_id FROM pipelines WHERE id = ?",
+        &[id.into()],
     )
+    .await?
+    .ok_or(sqlx::Error::RowNotFound)?
+    .text(0))
 }
 
 /// Active (non-terminal) job count of a pipeline — the team-move guard.
-pub async fn active_job_count(pool: &SqlitePool, pipeline_id: &str) -> Result<i64, AppError> {
-    Ok(sqlx::query_scalar(
+pub async fn active_job_count(pool: &DbPool, pipeline_id: &str) -> Result<i64, AppError> {
+    Ok(exec::fetch_scalar_i64(
+        pool,
         "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
              AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_one(pool)
     .await?)
 }
 
@@ -445,38 +442,43 @@ pub async fn active_job_count_tx(
 
 /// Audit before-snapshot facts of a delete (`None` = no such pipeline).
 pub async fn delete_facts(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
 ) -> Result<Option<(String, String, String, String, String, Option<String>)>, AppError> {
-    let row = sqlx::query(
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT name, trigger_type, team_id, owner_group, source, yaml_path FROM pipelines WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5))))
+    .await?
+    .map(|r| {
+        (
+            r.text(0),
+            r.text(1),
+            r.text(2),
+            r.text(3),
+            r.text(4),
+            r.opt_text(5),
+        )
+    }))
 }
 
 /// Delete one pipeline row; `false` when it did not exist.
-pub async fn delete(pool: &SqlitePool, id: &str) -> Result<bool, AppError> {
-    let result = sqlx::query("DELETE FROM pipelines WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() != 0)
+pub async fn delete(pool: &DbPool, id: &str) -> Result<bool, AppError> {
+    let affected = exec::execute(pool, "DELETE FROM pipelines WHERE id = ?", &[id.into()]).await?;
+    Ok(affected != 0)
 }
 
 /// `(name, is_active)` of one pipeline (`None` = no such row) — the pool
 /// variant used by toggle-active.
-pub async fn name_active_of(
-    pool: &SqlitePool,
-    id: &str,
-) -> Result<Option<(String, bool)>, AppError> {
-    let row = sqlx::query("SELECT name, is_active FROM pipelines WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|r| (r.get(0), r.get::<i64, _>(1) != 0)))
+pub async fn name_active_of(pool: &DbPool, id: &str) -> Result<Option<(String, bool)>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT name, is_active FROM pipelines WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .map(|r| (r.text(0), r.i64(1) != 0)))
 }
 
 /// `(name, is_active)` inside the caller's transaction — disable/enable's
@@ -493,12 +495,13 @@ pub async fn name_active_tx(
 }
 
 /// Flip a pipeline's active flag (toggle-active).
-pub async fn set_active(pool: &SqlitePool, id: &str, active: bool) -> Result<(), AppError> {
-    sqlx::query("UPDATE pipelines SET is_active = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(if active { 1 } else { 0 })
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn set_active(pool: &DbPool, id: &str, active: bool) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE pipelines SET is_active = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(active as i64), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
@@ -662,17 +665,17 @@ pub async fn update_tx(
 /// `Some(name)` when a team secret with this name exists — the
 /// webhook-secret binding check. `None` = no such secret in the team.
 pub async fn team_secret_id_by_name(
-    pool: &SqlitePool,
+    pool: &DbPool,
     team_id: &str,
     name: &str,
 ) -> Result<Option<String>, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT id FROM secrets WHERE team_id = ? AND name = ?")
-            .bind(team_id)
-            .bind(name)
-            .fetch_optional(pool)
-            .await?,
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT id FROM secrets WHERE team_id = ? AND name = ?",
+        &[team_id.into(), name.into()],
     )
+    .await?
+    .map(|r| r.text(0)))
 }
 
 /// Id of the host with this exact name, inside the caller's connection
@@ -831,17 +834,17 @@ pub async fn insert_secret_binding_tx(
 
 /// Name of one team secret (the YAML emit path resolves ids to names).
 pub async fn secret_name_in_team(
-    pool: &SqlitePool,
+    pool: &DbPool,
     secret_id: &str,
     team_id: &str,
 ) -> Result<Option<String>, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT name FROM secrets WHERE id = ? AND team_id = ?")
-            .bind(secret_id)
-            .bind(team_id)
-            .fetch_optional(pool)
-            .await?,
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT name FROM secrets WHERE id = ? AND team_id = ?",
+        &[secret_id.into(), team_id.into()],
     )
+    .await?
+    .map(|r| r.text(0)))
 }
 
 /// The pipeline-card list: one row per pipeline with its latest job and run
@@ -1078,13 +1081,16 @@ pub async fn update_guarded(
 /// `(step_order, input_defs_json)` of a pipeline's marketplace resolutions —
 /// the claim payload's per-step inputs when the job has no frozen tasks.
 pub async fn step_resolution_defs(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
 ) -> Result<Vec<(i64, String)>, AppError> {
-    Ok(sqlx::query_as(
+    Ok(exec::fetch_all(
+        pool,
         "SELECT step_order, input_defs_json FROM step_resolutions WHERE pipeline_id = ?",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_all(pool)
-    .await?)
+    .await?
+    .into_iter()
+    .map(|r| (r.i64(0), r.text(1)))
+    .collect())
 }

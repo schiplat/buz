@@ -133,7 +133,7 @@ pub async fn create_hook(
         ));
     }
     let declared_raw: String =
-        crate::store::pipelines::declared_environments(&state.pool, &pipeline_id).await?;
+        crate::store::pipelines::declared_environments(&state.db(), &pipeline_id).await?;
     let declared: Vec<String> = serde_json::from_str(&declared_raw).unwrap_or_default();
     if !declared.iter().any(|slug| slug == &environment) {
         return Err(AppError::ValidationFailed(format!(

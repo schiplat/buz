@@ -93,7 +93,7 @@ pub async fn get_pipeline_source(
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let (source, yaml_path, name) =
-        crate::store::pipelines::pipeline_source_row(&state.pool, &id).await?;
+        crate::store::pipelines::pipeline_source_row(&state.db(), &id).await?;
 
     if source != "yaml" {
         return Err(AppError::ValidationFailed(
