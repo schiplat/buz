@@ -11,7 +11,7 @@ Buz's Manager keeps all state in one SQL database. Two backends are planned:
 | Backend | Status | `[cluster] mode` |
 |---|---|---|
 | SQLite (bundled) | **served today** | `single` only |
-| Postgres (14+) | foundation landed, wiring in progress | `multi` target |
+| Postgres (14+) | backend wired, enablement pending | `multi` target |
 
 ## Configuration
 
@@ -43,11 +43,14 @@ anything touches storage, and refuses to start otherwise:
   scheduling state — gapless build numbers, slot budgets, and claim
   serialisation all rely on the write lock `BEGIN IMMEDIATE` takes. `multi`
   requires the Postgres backend.
-- **Postgres → refused (today).** The schema, the statement rewriter, the
-  dual-backend store dispatcher, and the advisory-locked migration runner have
-  landed; the runtime wiring (`db::init` pool selection, `AppState.pool`) and
-  the services SQL convergence are the remaining follow-up. The refusal is
-  fail closed: a config pointing at Postgres never silently runs on SQLite.
+- **Postgres → refused (today).** The schema, statement rewriter, dual-backend
+  dispatcher, PG migration runner, pool selection (`db::init` returns a
+  `DbPool`), `AppState.pool`, and the Postgres single-instance advisory lock
+  have landed. Enablement still waits on hand-written Postgres bodies for six
+  statements whose SQLite form has no faithful mechanical rewrite
+  (`json_each` / `json_extract` walks, `INSERT OR REPLACE` upserts) and on the
+  Postgres test matrix/CI job. The refusal stays fail closed: a config pointing
+  at Postgres never silently runs on SQLite.
 - **`single` + SQLite → the single-instance lock.** The Manager takes an
   advisory flock on a `<db file>.lock` sidecar and holds it for the process
   lifetime. A systemd restart stacked on the old process, or a hand-started
@@ -68,14 +71,16 @@ timestamp.
 
 ## Roadmap
 
-1. **Runtime wiring** — `db::init` produces a `DbPool` (Postgres: pool plus
-   `run_pg_migrations`, no file lock), `AppState.pool` switches to that type,
-   and `validate_cluster_mode` lifts the Postgres refusal.
-2. **Services SQL convergence** — the statements still in `services/` (pipeline
-   scanner, rbac, scheduler, plugin pool, sandbox defaults, key rotation, …)
-   move into `store::`, so "the Postgres port replaces store bodies only"
-   holds. The hand-written Postgres variants for the `json_*` /
-   `INSERT OR REPLACE` / `strftime` sites land in the same pass.
-3. **`multi` enablement** — per-site serialisation review
+1. **Runtime wiring — done.** `db::init` produces a `DbPool` (Postgres: pool
+   plus `run_pg_migrations`; SQLite: the existing PRAGMA setup), `AppState.pool`
+   is backend-neutral, and `single` + Postgres takes a session advisory lock.
+2. **Services SQL convergence — done.** Every service statement now lives in
+   `store::`; only `rotate_key` (a deliberately SQLite-only CLI using
+   `VACUUM INTO` + table rotation) stays outside.
+3. **Postgres enablement** — hand-written Postgres bodies for the six remaining
+   dialect-blocked statements (`json_each` / `json_extract` walks,
+   `INSERT OR REPLACE` upserts), the `BUZ_TEST_DB` matrix, and a CI Postgres
+   service job; then `validate_cluster_mode` lifts the Postgres refusal.
+4. **`multi` enablement** — per-site serialisation review
    (`transaction-boundaries.md`), scheduler coordination, and the removal of
    the single-instance lock on Postgres.

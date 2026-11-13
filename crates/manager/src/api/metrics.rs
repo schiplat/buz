@@ -12,7 +12,6 @@ use axum::{extract::State, http::header::CONTENT_TYPE, response::IntoResponse};
 use std::fmt::Write as _;
 
 use crate::state::AppState;
-use crate::store::exec::DbPool;
 use crate::store::metrics::{entity_counts, job_status_counts};
 
 /// Every job status the schema uses — zero-filled so dashboards never lose a
@@ -34,7 +33,7 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     let mut out = String::new();
 
     // ── Jobs by status ──
-    let counts = job_status_counts(&DbPool::from_sqlite(&state.pool)).await;
+    let counts = job_status_counts(&state.pool).await;
     let _ = writeln!(
         out,
         "# HELP buz_jobs Jobs by status (aggregate, no identifiers)."
@@ -49,7 +48,7 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     }
 
     // ── Runners & pipelines ──
-    let counts = entity_counts(&DbPool::from_sqlite(&state.pool)).await;
+    let counts = entity_counts(&state.pool).await;
     let _ = writeln!(out, "# HELP buz_runners Registered runners (aggregate).");
     let _ = writeln!(out, "# TYPE buz_runners gauge");
     if let Some(total) = counts.runners_total {

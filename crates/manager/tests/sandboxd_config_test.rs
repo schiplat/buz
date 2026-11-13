@@ -73,7 +73,7 @@ async fn app_with_host() -> (Router, sqlx::SqlitePool, String) {
     .await
     .unwrap();
     let state = AppState {
-        pool: pool.clone(),
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };

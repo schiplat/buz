@@ -69,11 +69,7 @@ pub async fn list(
         offset: (page - 1) * page_size,
     };
 
-    let (items, total) = search(
-        &crate::store::exec::DbPool::from_sqlite(&state.pool),
-        &filter,
-    )
-    .await?;
+    let (items, total) = search(&state.pool, &filter).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "items": items,

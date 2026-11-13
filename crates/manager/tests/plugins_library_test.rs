@@ -74,7 +74,7 @@ async fn test_app_with_dir(dir: &std::path::Path) -> (Router, String) {
     config.plugin_index.local_dir = dir.to_string_lossy().into_owned();
 
     let state = AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config,
         log_broadcast: LogBroadcaster::new(),
     };

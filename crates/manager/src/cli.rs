@@ -293,17 +293,15 @@ pub async fn gen_runner_token(
     }
 
     let config = config::load_unchecked(Some(config_path))?;
-    let pool = db::init(&config).await?;
-    db::run_migrations(&pool, &config.auth.jwt_secret).await?;
+    let db = db::init(&config).await?;
+    if let Some(sqlite) = db.as_sqlite() {
+        db::run_migrations(sqlite, &config.auth.jwt_secret).await?;
+    }
 
     // Verify the caller is a platform admin before touching the runners table.
-    rbac::verify_cli_admin_token(
-        &crate::store::exec::DbPool::from_sqlite(&pool),
-        &config.auth.jwt_secret,
-        admin_token,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("token verification failed: {e}"))?;
+    rbac::verify_cli_admin_token(&db, &config.auth.jwt_secret, admin_token)
+        .await
+        .map_err(|e| anyhow::anyhow!("token verification failed: {e}"))?;
 
     let labels = labels.map(|l| {
         l.split(',')
@@ -329,7 +327,7 @@ pub async fn gen_runner_token(
         claim_strategy: None,
     };
 
-    let created = match api::runners::create_runner_record(&pool, &req).await {
+    let created = match api::runners::create_runner_record(&db, &req).await {
         Ok(c) => c,
         Err(e)
             if e.to_string()

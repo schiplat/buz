@@ -1,6 +1,8 @@
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 
+use crate::store::exec::DbPool;
+
 /// Postgres migration runner (advisory-locked baseline application). Declared
 /// only under the `postgres` feature — default builds carry no PG driver code.
 #[cfg(feature = "postgres")]
@@ -24,13 +26,14 @@ fn sqlite_file(database: &DatabaseConfig) -> String {
 }
 
 /// Refuse to start when `[cluster] mode` and the storage backend contradict
-/// each other, or when the configured backend is not wired.
+/// each other, or when the configured backend cannot be served yet.
 ///
 /// - `multi` + SQLite is refused: SQLite has no cross-instance coordination
 ///   (a single writer, no row locks), so two Managers on one file would
 ///   corrupt scheduling state. `multi` needs the Postgres backend.
-/// - Postgres is refused until the PG store backend lands: the config parses,
-///   but no code path can serve it yet — fail closed rather than half-work.
+/// - Postgres is refused while the six SQLite-only statements lack PG variants
+///   or the binary was built without the `postgres` feature — fail closed
+///   rather than pretending to serve a backend that cannot answer every query.
 pub fn validate_cluster_mode(mode: ClusterMode, database: &DatabaseConfig) -> anyhow::Result<()> {
     let kind = database.storage_kind().map_err(anyhow::Error::msg)?;
     match (mode, kind) {
@@ -41,31 +44,67 @@ pub fn validate_cluster_mode(mode: ClusterMode, database: &DatabaseConfig) -> an
              instances on one SQLite file would corrupt scheduling state. Point \
              [database] url at postgres:, or keep mode = \"single\"."
         )),
-        (_, StorageKind::Postgres) => Err(anyhow::anyhow!(
-            "database url points at Postgres, but that backend is not wired yet \
-             (store-boundary follow-up). Run SQLite with [cluster] mode = \"single\" \
-             meanwhile."
-        )),
+        (_, StorageKind::Postgres) => postgres_gate(),
     }
 }
 
+/// Postgres enablement gate. The pool, PG schema, migration runner and the
+/// dual-backend dispatcher are wired; what still blocks serving Postgres is the
+/// handful of statements whose SQLite form has no faithful mechanical rewrite
+/// (see HANDOFF §12.4) plus the PG test matrix/CI job. Fail closed until then.
+#[cfg(feature = "postgres")]
+fn postgres_gate() -> anyhow::Result<()> {
+    Err(anyhow::anyhow!(
+        "Postgres storage is not enabled yet: the pool, schema and dispatcher are wired, \
+         but six SQLite-only statements still need hand-written Postgres variants \
+         (json_each/json_extract walks, INSERT OR REPLACE upserts) and the PG test \
+         matrix/CI job is pending. Run SQLite with [cluster] mode = \"single\" meanwhile."
+    ))
+}
+
+#[cfg(not(feature = "postgres"))]
+fn postgres_gate() -> anyhow::Result<()> {
+    Err(anyhow::anyhow!(
+        "database url points at Postgres, but this binary was compiled without the \
+         `postgres` feature (the default build is SQLite-only). Rebuild with \
+         `--features postgres`, or run SQLite with [cluster] mode = \"single\"."
+    ))
+}
+
 /// Held-for-lifetime proof that this process is the only Manager serving its
-/// storage: an flock on a `<db path>.lock` sidecar. Dropping the handle (or
-/// exiting) releases it. Postgres needs no file lock — its instance lock is a
-/// session advisory lock, which arrives with the PG backend.
+/// storage: an flock on a `<db path>.lock` sidecar for SQLite, a session
+/// advisory lock (held on a dedicated connection) for Postgres. Dropping the
+/// handle (or exiting) releases it.
 #[derive(Debug)]
 pub struct InstanceLock {
     _file: Option<std::fs::File>,
+    #[cfg(feature = "postgres")]
+    _pg: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
 }
 
+impl InstanceLock {
+    fn none() -> Self {
+        Self {
+            _file: None,
+            #[cfg(feature = "postgres")]
+            _pg: None,
+        }
+    }
+}
+
+/// Advisory-lock key for the single-instance gate (distinct from the
+/// session-migration lock: migrations finish, the instance lock lives on).
+#[cfg(feature = "postgres")]
+const INSTANCE_ADVISORY_LOCK_KEY: i64 = 0x6275_7A6D_6772_3032; // "buzmgr02"
+
 /// Take the single-instance lock for the configured storage. Errors when
-/// another process already holds it.
+/// another process already holds it. Postgres returns an empty lock here; the
+/// advisory lock needs a live pool and is taken by
+/// [`acquire_pg_instance_lock`] right after `init`.
 pub fn acquire_instance_lock(database: &DatabaseConfig) -> anyhow::Result<InstanceLock> {
     let kind = database.storage_kind().map_err(anyhow::Error::msg)?;
     if kind == StorageKind::Postgres {
-        // No file lock for PG; the session advisory lock arrives with the
-        // Postgres backend.
-        return Ok(InstanceLock { _file: None });
+        return Ok(InstanceLock::none());
     }
     let lock_path = format!("{}.lock", sqlite_file(database));
     if let Some(parent) = std::path::Path::new(&lock_path).parent() {
@@ -84,10 +123,80 @@ pub fn acquire_instance_lock(database: &DatabaseConfig) -> anyhow::Result<Instan
              start a second one; stop it first (systemd: `systemctl stop buz-manager`)"
         ));
     }
-    Ok(InstanceLock { _file: Some(file) })
+    Ok(InstanceLock {
+        _file: Some(file),
+        #[cfg(feature = "postgres")]
+        _pg: None,
+    })
 }
 
-pub async fn init(config: &Config) -> anyhow::Result<SqlitePool> {
+/// Postgres single-instance gate: take a session advisory lock and hold its
+/// connection for the process lifetime. A second Manager against the same
+/// database is refused before it touches storage.
+#[cfg(feature = "postgres")]
+pub async fn acquire_pg_instance_lock(pool: &DbPool) -> anyhow::Result<InstanceLock> {
+    let DbPool::Pg(pg) = pool else {
+        return Ok(InstanceLock::none());
+    };
+    let mut conn = pg.acquire().await?;
+    let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+        .bind(INSTANCE_ADVISORY_LOCK_KEY)
+        .fetch_one(&mut *conn)
+        .await?;
+    if !acquired {
+        return Err(anyhow::anyhow!(
+            "another Manager instance already holds the Postgres instance lock — \
+             refusing to start a second one; stop it first"
+        ));
+    }
+    Ok(InstanceLock {
+        _file: None,
+        _pg: Some(conn),
+    })
+}
+
+#[cfg(not(feature = "postgres"))]
+pub async fn acquire_pg_instance_lock(_pool: &DbPool) -> anyhow::Result<InstanceLock> {
+    Ok(InstanceLock::none())
+}
+
+/// Open the configured backend. SQLite keeps its current setup (PRAGMAs,
+/// migrations are run by the caller); Postgres builds the pool and applies the
+/// advisory-locked baseline here (there is no separate PG migration step).
+pub async fn init(config: &Config) -> anyhow::Result<DbPool> {
+    match config.database.storage_kind().map_err(anyhow::Error::msg)? {
+        StorageKind::Sqlite => init_sqlite(config).await.map(DbPool::Sqlite),
+        StorageKind::Postgres => init_postgres(config).await,
+    }
+}
+
+#[cfg(feature = "postgres")]
+async fn init_postgres(config: &Config) -> anyhow::Result<DbPool> {
+    let url = config
+        .database
+        .url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Postgres storage requires [database] url"))?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(config.database.max_connections)
+        .connect(url)
+        .await?;
+    migrate_pg::run_pg_migrations(&pool).await?;
+    tracing::info!(
+        "Database initialized: postgres (pool={})",
+        config.database.max_connections
+    );
+    Ok(DbPool::Pg(pool))
+}
+
+#[cfg(not(feature = "postgres"))]
+async fn init_postgres(_config: &Config) -> anyhow::Result<DbPool> {
+    Err(anyhow::anyhow!(
+        "this binary was compiled without the `postgres` feature"
+    ))
+}
+
+async fn init_sqlite(config: &Config) -> anyhow::Result<SqlitePool> {
     let db_file = sqlite_file(&config.database);
     // Ensure data directory exists
     if let Some(parent) = std::path::Path::new(&db_file).parent() {
@@ -147,22 +256,24 @@ pub async fn init(config: &Config) -> anyhow::Result<SqlitePool> {
 }
 
 /// Read one Manager-local fact from `manager_meta`.
-pub async fn manager_meta_get(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<String>> {
-    Ok(
-        sqlx::query_scalar("SELECT value FROM manager_meta WHERE key = ?")
-            .bind(key)
-            .fetch_optional(pool)
-            .await?,
+pub async fn manager_meta_get(pool: &DbPool, key: &str) -> anyhow::Result<Option<String>> {
+    Ok(crate::store::exec::fetch_optional(
+        pool,
+        "SELECT value FROM manager_meta WHERE key = ?",
+        &[key.into()],
     )
+    .await?
+    .map(|r| r.text(0)))
 }
 
 /// Persist one Manager-local fact in `manager_meta` (upsert).
-pub async fn manager_meta_set(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Result<()> {
-    sqlx::query("INSERT INTO manager_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(key)
-        .bind(value)
-        .execute(pool)
-        .await?;
+pub async fn manager_meta_set(pool: &DbPool, key: &str, value: &str) -> anyhow::Result<()> {
+    crate::store::exec::execute(
+        pool,
+        "INSERT INTO manager_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        &[key.into(), value.into()],
+    )
+    .await?;
     Ok(())
 }
 
@@ -176,7 +287,7 @@ pub const META_KEY_MANAGER_INSTANCE_ID: &str = "manager_instance_id";
 /// Multiple Managers on different devices are independent control planes (the
 /// SQLite database is local to one device); this identity binds ownership and
 /// log/audit correlation — it is not an HA coordinator.
-pub async fn ensure_manager_instance_id(pool: &SqlitePool) -> anyhow::Result<String> {
+pub async fn ensure_manager_instance_id(pool: &DbPool) -> anyhow::Result<String> {
     const ENV_VAR: &str = "BUZ_MANAGER_INSTANCE_ID";
     match shared::instance::from_env(ENV_VAR) {
         Ok(Some(id)) => {

@@ -102,7 +102,7 @@ async fn test_app_with_index(index_dir: &std::path::Path) -> (Router, sqlx::Sqli
     config.pipeline.yaml_scan_dir = yaml_dir.to_string_lossy().into_owned();
 
     let state = AppState {
-        pool: pool.clone(),
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config,
         log_broadcast: LogBroadcaster::new(),
     };

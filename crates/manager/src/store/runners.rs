@@ -6,7 +6,7 @@
 //! interleaved with a loop's control flow and moves in a separate step.
 
 use serde_json::{json, Value};
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::store::exec::{self, DbPool, DbTx, SqlValue};
@@ -1075,9 +1075,16 @@ pub struct ClaimCandidateRow {
 /// pending job — the sibling cancellation happens inside the claim
 /// transaction.
 pub async fn claim_candidates(
-    pool: &SqlitePool,
+    pool: &DbPool,
     runner_team_id: Option<&str>,
 ) -> Result<Vec<ClaimCandidateRow>, AppError> {
+    let Some(pool) = pool.as_sqlite() else {
+        return Err(AppError::Internal(
+            "claim_candidates is SQLite-only until its Postgres variant lands \
+             (json_extract + strftime; see HANDOFF §12.4)"
+                .into(),
+        ));
+    };
     Ok(sqlx::query(
 
         "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
@@ -1336,9 +1343,16 @@ fn claim_task_row(r: sqlx::sqlite::SqliteRow) -> ClaimTaskRow {
 /// Snapshot task rows (frozen definition), step-ordered — the claim payload
 /// shape. `snapshot_raw` is the job snapshot as stored.
 pub async fn frozen_task_rows(
-    pool: &SqlitePool,
+    pool: &DbPool,
     snapshot_raw: &str,
 ) -> Result<Vec<ClaimTaskRow>, AppError> {
+    let Some(pool) = pool.as_sqlite() else {
+        return Err(AppError::Internal(
+            "frozen_task_rows is SQLite-only until its Postgres variant lands \
+             (json_each walk; see HANDOFF §12.4)"
+                .into(),
+        ));
+    };
     Ok(sqlx::query(
             "SELECT COALESCE(json_extract(j.value, '$.id'), ''), json_extract(j.value, '$.step_order'),
                     json_extract(j.value, '$.name'), json_extract(j.value, '$.exec_type'),

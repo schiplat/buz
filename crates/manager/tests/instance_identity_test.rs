@@ -82,7 +82,7 @@ async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
     .await
     .unwrap();
     let created = create_runner_record(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &CreateRunnerRequest {
             name: "id-runner-01".into(),
             labels: None,
@@ -102,7 +102,7 @@ async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
     .await
     .unwrap();
     let state = AppState {
-        pool: pool.clone(),
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: production_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -171,19 +171,22 @@ async fn meta_reports_the_manager_instance_id() {
 async fn ensure_manager_instance_id_persists_and_is_stable() {
     let pool = test_pool().await;
     std::env::remove_var("BUZ_MANAGER_INSTANCE_ID");
-    let first = manager::db::ensure_manager_instance_id(&pool)
-        .await
-        .unwrap();
-    let second = manager::db::ensure_manager_instance_id(&pool)
-        .await
-        .unwrap();
+    let first =
+        manager::db::ensure_manager_instance_id(&manager::store::exec::DbPool::from_sqlite(&pool))
+            .await
+            .unwrap();
+    let second =
+        manager::db::ensure_manager_instance_id(&manager::store::exec::DbPool::from_sqlite(&pool))
+            .await
+            .unwrap();
     assert_eq!(first, second, "identity must survive restarts");
     assert!(first.starts_with("mgr-"));
     // Env pin overrides and is re-persisted.
     std::env::set_var("BUZ_MANAGER_INSTANCE_ID", "pinned-mgr-9");
-    let pinned = manager::db::ensure_manager_instance_id(&pool)
-        .await
-        .unwrap();
+    let pinned =
+        manager::db::ensure_manager_instance_id(&manager::store::exec::DbPool::from_sqlite(&pool))
+            .await
+            .unwrap();
     assert_eq!(pinned, "pinned-mgr-9");
     let stored: String =
         sqlx::query_scalar("SELECT value FROM manager_meta WHERE key = 'manager_instance_id'")

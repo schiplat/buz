@@ -127,7 +127,7 @@ async fn test_app() -> Router {
     .expect("seed secret");
 
     let state = AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };

@@ -89,7 +89,7 @@ pub async fn create_source(
         &auth.username,
     )
     .await?;
-    audit::record_pool(
+    audit::record(
         &state.db(),
         AuditEvent::new(Action::PluginSourceCreate, &auth)
             .on(Resource::plugin_source(&id, &name))
@@ -178,7 +178,7 @@ pub async fn sync_source(
     .await
     .parse()
     .unwrap_or(crate::services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
-    audit::record_pool(
+    audit::record(
         &state.db(),
         AuditEvent::new(Action::PluginSourceSync, &auth)
             .on(Resource::plugin_source(&source.id, &source.name))
@@ -213,7 +213,7 @@ pub async fn reset_index_watermark(
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or_else(|| AppError::NotFound("source not found".into()))?;
     crate::store::plugin_sources::reset_index_watermark(&state.db(), &id).await?;
-    audit::record_pool(
+    audit::record(
         &state.db(),
         AuditEvent::new(Action::PluginSourceResetIndexWatermark, &auth)
             .on(Resource::plugin_source(&source.id, &source.name))
@@ -262,7 +262,7 @@ pub async fn delete_source(
         .map_err(|e| AppError::Internal(e.to_string()))?;
     crate::store::plugin_sources::delete(&state.db(), &id).await?;
     if let Some(removed) = &removed {
-        audit::record_pool(
+        audit::record(
             &state.db(),
             AuditEvent::new(Action::PluginSourceDelete, &auth)
                 .on(Resource::plugin_source(&removed.id, &removed.name))
@@ -312,7 +312,7 @@ pub async fn refresh_plugin(
     )
     .await
     .map_err(|e| AppError::ValidationFailed(e.to_string()))?;
-    audit::record_pool(
+    audit::record(
         &state.db(),
         AuditEvent::new(Action::PluginPoolRefresh, &auth)
             .on(Resource::plugin_pool_entry(&namespace, &plugin_id))

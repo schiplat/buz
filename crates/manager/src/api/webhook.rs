@@ -37,11 +37,7 @@ pub async fn handle(
     body: Bytes,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     // Look up pipeline by webhook_path (case-sensitive exact match)
-    let pipeline = crate::store::webhook_pipeline::find_by_path(
-        &crate::store::exec::DbPool::from_sqlite(&state.pool),
-        &webhook_path,
-    )
-    .await?;
+    let pipeline = crate::store::webhook_pipeline::find_by_path(&state.pool, &webhook_path).await?;
     let pipeline_id = pipeline.id.clone();
     let pipeline_name = pipeline.name.clone();
     let webhook_secret_name = pipeline.webhook_secret_name.clone();
@@ -69,7 +65,7 @@ pub async fn handle(
     }
     if !webhook_secret_name.is_empty() {
         let ciphertext: Option<String> = crate::store::webhook_pipeline::team_secret_value(
-            &crate::store::exec::DbPool::from_sqlite(&state.pool),
+            &state.pool,
             &team_id,
             &webhook_secret_name,
         )

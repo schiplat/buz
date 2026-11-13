@@ -83,7 +83,7 @@ async fn test_app() -> (Router, SqlitePool, AppState) {
     .expect("seed runner");
 
     let state = AppState {
-        pool: pool.clone(),
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };

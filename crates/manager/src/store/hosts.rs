@@ -349,14 +349,21 @@ pub async fn visible_id_by_name(
 
 /// Ids of hosts carrying `label` that are visible to `team_id`.
 ///
-/// Stays on `SqlitePool`: the `json_each` table-valued walk is a known
+/// Stays SQLite-only for now: the `json_each` table-valued walk is a known
 /// dialect gap (`store::dialect`); the PG body wants `jsonb_array_elements_text`
 /// and a per-site review, not a mechanical rewrite.
 pub async fn visible_ids_by_label(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     label: &str,
     team_id: Option<&str>,
 ) -> Result<Vec<String>, AppError> {
+    let Some(pool) = pool.as_sqlite() else {
+        return Err(AppError::Internal(
+            "visible_ids_by_label is SQLite-only until its Postgres variant lands \
+             (json_each walk; see HANDOFF §12.4)"
+                .into(),
+        ));
+    };
     Ok(sqlx::query(
         "SELECT hosts.id FROM hosts, json_each(hosts.labels) \
          WHERE json_each.value = ? AND (hosts.team_id IS NULL OR hosts.team_id = ?)",

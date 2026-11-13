@@ -55,14 +55,25 @@ pub async fn job_runner_id(
 /// Append one log chunk. `INSERT OR REPLACE` keyed by the per-job unique
 /// `(job_id, step_order, chunk_index)` — a runner retry of the same chunk
 /// overwrites instead of duplicating.
+///
+/// Stays SQLite-only for now: the Postgres body needs the named conflict
+/// target (`ON CONFLICT (job_id, chunk_index) DO UPDATE`), which is a per-site
+/// decision the statement rewriter does not guess.
 pub async fn insert_chunk(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     job_id: &str,
     chunk_index: i32,
     step_order: i32,
     content: &str,
     level: Option<&str>,
 ) -> Result<(), AppError> {
+    let Some(pool) = pool.as_sqlite() else {
+        return Err(AppError::Internal(
+            "insert_chunk is SQLite-only until its Postgres upsert lands \
+             (see HANDOFF §12.4)"
+                .into(),
+        ));
+    };
     sqlx::query(
         "INSERT OR REPLACE INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
          VALUES (?, ?, ?, ?, ?, 1, ?)",

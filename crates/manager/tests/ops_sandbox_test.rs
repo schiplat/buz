@@ -90,7 +90,7 @@ async fn test_app() -> (Router, sqlx::SqlitePool) {
         .await
         .unwrap();
     let state = AppState {
-        pool: pool.clone(),
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -514,7 +514,7 @@ async fn get_host_reports_document_and_attached_runners() {
     enrolled_host(&app).await;
     // A runner reporting host_id 'host-a' counts as attached.
     let created = manager::api::runners::create_runner_record(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &shared::protocol::CreateRunnerRequest {
             name: "attached-runner".into(),
             labels: None,

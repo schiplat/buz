@@ -8,7 +8,6 @@ use shared::version::{PRODUCT_NAME, VERSION};
 use std::sync::OnceLock;
 
 use crate::state::AppState;
-use crate::store::exec::DbPool;
 use crate::store::health::{db_probe, jobs_backlog};
 
 /// Public plugin-marketplace linked from the Dashboard's YAML editor when
@@ -81,7 +80,7 @@ pub async fn health(
     Query(q): Query<HealthQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     // ── Database probe (SELECT 1 + latency) ──
-    let latency = db_probe(&DbPool::from_sqlite(&state.pool)).await;
+    let latency = db_probe(&state.pool).await;
     let latency_ms = latency.as_ref().copied().unwrap_or(0.0);
     let db_ok = latency.is_ok();
 
@@ -94,7 +93,7 @@ pub async fn health(
     };
 
     // ── Job backlog (best-effort) ──
-    let jobs = jobs_backlog(&DbPool::from_sqlite(&state.pool)).await;
+    let jobs = jobs_backlog(&state.pool).await;
 
     // ── WebSocket broadcast sinks ──
     let ws_job_sinks = state.log_broadcast.job_sink_count();

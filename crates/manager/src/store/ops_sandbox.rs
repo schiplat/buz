@@ -535,13 +535,20 @@ pub async fn pipeline_count_for_profile(
 /// Pending jobs of one (team, profile) — the revocation blast radius that
 /// will fail terminally at claim.
 ///
-/// Stays on `SqlitePool`: the `json_extract` snapshot walk is a known
+/// Stays SQLite-only for now: the `json_extract` snapshot walk is a known
 /// dialect gap (`store::dialect`), wants a hand-written PG body.
 pub async fn queued_jobs_for_profile(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     team_id: &str,
     profile: &str,
 ) -> Result<i64, AppError> {
+    let Some(pool) = pool.as_sqlite() else {
+        return Err(AppError::Internal(
+            "queued_jobs_for_profile is SQLite-only until its Postgres variant lands \
+             (json_extract walk; see HANDOFF §12.4)"
+                .into(),
+        ));
+    };
     Ok(sqlx::query_scalar(
         "SELECT COUNT(*) FROM jobs WHERE status = 'pending'
                AND COALESCE(json_extract(snapshot, '$.team_id'), '') = ?
@@ -555,14 +562,21 @@ pub async fn queued_jobs_for_profile(
 
 /// Grant (or re-grant) one team profile.
 ///
-/// Stays on `SqlitePool`: `INSERT OR REPLACE` needs the per-site PG upsert
+/// Stays SQLite-only for now: `INSERT OR REPLACE` needs the per-site PG upsert
 /// decision (named conflict target) — the rewriter does not guess it.
 pub async fn replace_grant(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     team_id: &str,
     profile: &str,
     granted_by: &str,
 ) -> Result<(), AppError> {
+    let Some(pool) = pool.as_sqlite() else {
+        return Err(AppError::Internal(
+            "replace_grant is SQLite-only until its Postgres variant lands \
+             (named upsert conflict target; see HANDOFF §12.4)"
+                .into(),
+        ));
+    };
     sqlx::query(
         "INSERT OR REPLACE INTO team_resource_grants (team_id, profile, granted_by)
                  VALUES (?, ?, ?)",

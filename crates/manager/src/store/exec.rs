@@ -78,9 +78,47 @@ pub enum DbTx<'a> {
 impl DbPool {
     /// Bridge for call sites that still hold the app's SQLite pool: wrap it
     /// into a `DbPool` (Pool is an Arc clone, no connection is created).
-    /// Removed once db::init produces a `DbPool` directly (runtime wiring).
+    /// Removed once every caller holds the `DbPool` directly.
     pub fn from_sqlite(pool: &sqlx::SqlitePool) -> Self {
         Self::Sqlite(pool.clone())
+    }
+
+    /// The SQLite pool when this is the SQLite backend. SQLite-only paths
+    /// (migrations, the key-rotation CLI) use this to fail closed on Postgres
+    /// instead of pretending to work.
+    pub fn as_sqlite(&self) -> Option<&sqlx::SqlitePool> {
+        match self {
+            Self::Sqlite(pool) => Some(pool),
+            #[cfg(feature = "postgres")]
+            Self::Pg(_) => None,
+        }
+    }
+
+    /// Configured pool capacity — the health probe reports it.
+    pub fn size(&self) -> u32 {
+        match self {
+            Self::Sqlite(pool) => pool.size(),
+            #[cfg(feature = "postgres")]
+            Self::Pg(pool) => pool.size(),
+        }
+    }
+
+    /// Idle connections right now — the health probe reports it.
+    pub fn num_idle(&self) -> usize {
+        match self {
+            Self::Sqlite(pool) => pool.num_idle(),
+            #[cfg(feature = "postgres")]
+            Self::Pg(pool) => pool.num_idle(),
+        }
+    }
+
+    /// Close every pooled connection (tests simulate a DB outage with it).
+    pub async fn close(&self) {
+        match self {
+            Self::Sqlite(pool) => pool.close().await,
+            #[cfg(feature = "postgres")]
+            Self::Pg(pool) => pool.close().await,
+        }
     }
 
     /// The dialect-aware write-transaction opener. See

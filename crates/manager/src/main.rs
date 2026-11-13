@@ -71,13 +71,11 @@ async fn main() -> anyhow::Result<()> {
             command: PipelineCommand::Export { dir },
         }) => {
             let config = config::load(Some(&cli.config))?;
-            let pool = db::init(&config).await?;
-            db::run_migrations(&pool, &config.auth.jwt_secret).await?;
-            let report = services::definition_transfer::export_definitions(
-                &manager::store::exec::DbPool::from_sqlite(&pool),
-                &dir,
-            )
-            .await?;
+            let db = db::init(&config).await?;
+            if let Some(sqlite) = db.as_sqlite() {
+                db::run_migrations(sqlite, &config.auth.jwt_secret).await?;
+            }
+            let report = services::definition_transfer::export_definitions(&db, &dir).await?;
             let stdout = std::io::stdout();
             services::definition_transfer::print_export(&report, &mut stdout.lock())?;
             return Ok(());
@@ -86,14 +84,16 @@ async fn main() -> anyhow::Result<()> {
             command: PipelineCommand::Import { dir, dry_run },
         }) => {
             let config = config::load(Some(&cli.config))?;
-            let pool = db::init(&config).await?;
-            db::run_migrations(&pool, &config.auth.jwt_secret).await?;
+            let db = db::init(&config).await?;
+            if let Some(sqlite) = db.as_sqlite() {
+                db::run_migrations(sqlite, &config.auth.jwt_secret).await?;
+            }
             let step_index_dir = services::plugin_resolver::effective_local_dir(
                 &config.storage.data_dir,
                 &config.plugin_index.local_dir,
             )?;
             let sync_timeout_secs = services::platform_settings::effective(
-                &manager::store::exec::DbPool::from_sqlite(&pool),
+                &db,
                 services::platform_settings::KEY_PLUGIN_SYNC_TIMEOUT,
                 &config.plugin_index.sync_timeout_seconds.to_string(),
             )
@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
             .parse()
             .unwrap_or(services::platform_settings::DEFAULT_STEP_SYNC_TIMEOUT_SECS);
             let report = services::definition_transfer::import_definitions(
-                &manager::store::exec::DbPool::from_sqlite(&pool),
+                &db,
                 &dir,
                 &step_index_dir,
                 sync_timeout_secs,
@@ -120,23 +120,35 @@ async fn main() -> anyhow::Result<()> {
 
     let config = config::load(Some(&cli.config))?;
     // Cluster gate before anything touches storage: a multi-instance config on
-    // SQLite, or a backend that is not wired, must stop the process here.
+    // SQLite, or a backend this build does not carry, must stop the process.
     db::validate_cluster_mode(config.cluster.mode, &config.database)?;
     // Single-instance lock, held for the process lifetime: a systemd restart
     // stacked on the old process, or a hand-started second Manager, stops here.
+    // SQLite uses the file sidecar; Postgres takes a session advisory lock
+    // right after the pool exists (below).
     let _instance_lock = db::acquire_instance_lock(&config.database)?;
     let _log_guard = shared::logging::init("buz_manager", &config.logging);
 
-    let db_pool = db::init(&config).await?;
-    db::run_migrations(&db_pool, &config.auth.jwt_secret).await?;
-    rbac::bootstrap(&manager::store::exec::DbPool::from_sqlite(&db_pool)).await?;
-    api::runners::ensure_standalone_auto_approve(&db_pool, &config).await?;
+    let db = db::init(&config).await?;
+    // Postgres single-instance gate: a session advisory lock on a dedicated
+    // connection, held for the process lifetime like the SQLite flock above.
+    let _pg_instance_lock =
+        if config.database.storage_kind() == Ok(manager::config::StorageKind::Postgres) {
+            Some(db::acquire_pg_instance_lock(&db).await?)
+        } else {
+            None
+        };
+    if let Some(sqlite) = db.as_sqlite() {
+        db::run_migrations(sqlite, &config.auth.jwt_secret).await?;
+    }
+    rbac::bootstrap(&db).await?;
+    api::runners::ensure_standalone_auto_approve(&db, &config).await?;
     api::version::mark_started();
 
     // Control-plane identity: env-pinned (BUZ_MANAGER_INSTANCE_ID) or generated
     // once and persisted in manager_meta. Reported via /api/v1/meta, /health,
     // and the X-Buz-Manager-Instance response header.
-    let manager_instance_id = db::ensure_manager_instance_id(&db_pool).await?;
+    let manager_instance_id = db::ensure_manager_instance_id(&db).await?;
     api::version::set_instance_id(manager_instance_id.clone());
     tracing::info!(manager_instance_id = %manager_instance_id, "manager identity resolved");
 
@@ -150,10 +162,7 @@ async fn main() -> anyhow::Result<()> {
     // Step-index settings for `uses:` resolution (index dir + review gate).
     // Admin-edited overrides in platform_settings take precedence over
     // manager.toml and are re-applied at runtime by the settings API.
-    let settings_overrides = services::platform_settings::fetch_overrides(
-        &manager::store::exec::DbPool::from_sqlite(&db_pool),
-    )
-    .await;
+    let settings_overrides = services::platform_settings::fetch_overrides(&db).await;
     let require_reviewed = settings_overrides
         .get(services::platform_settings::KEY_PLUGIN_REVIEW_REQUIRED)
         .and_then(|v| v.parse::<bool>().ok())
@@ -249,7 +258,7 @@ async fn main() -> anyhow::Result<()> {
     // Startup sync of plugin sources (design §6.8: startup + manual refresh;
     // no background timer by default). Failures are logged, never fatal.
     {
-        let pool = manager::store::exec::DbPool::from_sqlite(&db_pool);
+        let pool = db.clone();
         tokio::spawn(async move {
             let synced = services::plugin_pool::sync_all_enabled(
                 &pool,
@@ -285,28 +294,19 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    services::runner_monitor::spawn_monitor(
-        manager::store::exec::DbPool::from_sqlite(&db_pool),
-        config.runner.clone(),
-    );
+    services::runner_monitor::spawn_monitor(db.clone(), config.runner.clone());
 
     // Shared log broadcaster: cleanup needs the same instance the log upload
     // path writes into so expired debug chunks are dropped from memory too.
     let log_broadcast = manager::services::log_broadcast::LogBroadcaster::new();
-    services::debug_log_cleanup::spawn_debug_log_cleanup(
-        manager::store::exec::DbPool::from_sqlite(&db_pool),
-        log_broadcast.clone(),
-    );
-    services::job_log_retention::spawn_job_log_retention(
-        manager::store::exec::DbPool::from_sqlite(&db_pool),
-        log_broadcast.clone(),
-    );
+    services::debug_log_cleanup::spawn_debug_log_cleanup(db.clone(), log_broadcast.clone());
+    services::job_log_retention::spawn_job_log_retention(db.clone(), log_broadcast.clone());
 
     // Definitions live in the database (`pipelines.yaml_source`). Rows created
     // before that change are backfilled once here; the legacy directory is
     // read-only input, never watched or written.
     services::definition_backfill::backfill_definitions(
-        &manager::store::exec::DbPool::from_sqlite(&db_pool),
+        &db,
         &config.pipeline.yaml_scan_dir,
         &services::plugin_resolver::effective_local_dir(
             &config.storage.data_dir,
@@ -322,14 +322,14 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers(Any);
 
     let app_state = manager::state::AppState {
-        pool: db_pool.clone(),
+        pool: db.clone(),
         config: config.clone(),
         log_broadcast,
     };
 
     services::cron_scheduler::spawn_scheduler(app_state.clone(), 30);
     services::github_fetch_scheduler::spawn_fetch_scheduler(app_state.clone(), 60);
-    services::scheduler::start_scheduler(manager::store::exec::DbPool::from_sqlite(&db_pool));
+    services::scheduler::start_scheduler(db.clone());
 
     // Every response announces the control plane that produced it, so a
     // Runner/sandboxd pointed at the wrong Manager is visible in a tcpdump.

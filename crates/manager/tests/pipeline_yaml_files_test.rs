@@ -75,7 +75,7 @@ async fn test_app(scan_dir: &str) -> Router {
         .expect("seed team");
 
     let state = AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(scan_dir),
         log_broadcast: LogBroadcaster::new(),
     };
@@ -635,7 +635,7 @@ async fn create_rejects_target_team_without_write_before_file_exists() {
     .unwrap();
 
     let state = AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(&scan),
         log_broadcast: LogBroadcaster::new(),
     };

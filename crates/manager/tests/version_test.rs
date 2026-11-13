@@ -59,7 +59,7 @@ async fn test_state() -> AppState {
         .expect("open in-memory db");
     run_migrations(&pool, JWT_SECRET).await.expect("migrate db");
     AppState {
-        pool,
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     }
@@ -89,19 +89,19 @@ async fn health_reports_database_jobs_and_ws_signals() {
         "INSERT INTO pipelines (id, name, trigger_type, runner_labels, input_defs, is_active, team_id)
          VALUES ('p1', 'h-probe', 'manual', '[]', '[]', 1, '')",
     )
-    .execute(&state.pool)
+    .execute(state.pool.as_sqlite().expect("sqlite"))
     .await
     .expect("seed pipeline");
     sqlx::query(
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by) VALUES ('j1', 'p1', 'running', 'manual')",
     )
-    .execute(&state.pool)
+    .execute(state.pool.as_sqlite().expect("sqlite"))
     .await
     .expect("seed running job");
     sqlx::query(
         "INSERT INTO jobs (id, pipeline_id, status, trigger_by) VALUES ('j2', 'p1', 'waiting_approval', 'cron')",
     )
-    .execute(&state.pool)
+    .execute(state.pool.as_sqlite().expect("sqlite"))
     .await
     .expect("seed approval job");
 

@@ -100,7 +100,7 @@ async fn test_app() -> (Router, SqlitePool) {
     .expect("seed host");
 
     let state = AppState {
-        pool: pool.clone(),
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: test_config(),
         log_broadcast: LogBroadcaster::new(),
     };

@@ -81,7 +81,7 @@ async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
     .await
     .unwrap();
     let created = create_runner_record(
-        &pool,
+        &manager::store::exec::DbPool::from_sqlite(&pool),
         &CreateRunnerRequest {
             name: "lab-runner-01".into(),
             labels: None,
@@ -101,7 +101,7 @@ async fn app_with_runner() -> (Router, sqlx::SqlitePool, String, String) {
     .await
     .unwrap();
     let state = AppState {
-        pool: pool.clone(),
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: production_config(),
         log_broadcast: LogBroadcaster::new(),
     };

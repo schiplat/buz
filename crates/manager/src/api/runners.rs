@@ -85,19 +85,8 @@ pub fn required_labels_for_job(snapshot_json: &str, pipeline_labels_json: &str) 
 }
 
 /// Insert a runner event (fire-and-forget; failures are silently logged).
-async fn log_runner_event(
-    pool: &sqlx::SqlitePool,
-    runner_id: &str,
-    event_type: &str,
-    message: &str,
-) {
-    crate::store::runners::log_runner_event(
-        &DbPool::from_sqlite(pool),
-        runner_id,
-        event_type,
-        message,
-    )
-    .await
+async fn log_runner_event(pool: &DbPool, runner_id: &str, event_type: &str, message: &str) {
+    crate::store::runners::log_runner_event(pool, runner_id, event_type, message).await
 }
 
 /// Validate and clamp max_concurrent_jobs to 1..=32.
@@ -189,13 +178,13 @@ pub fn parse_execution_mode(
 }
 
 async fn validate_runner_team(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     team_id: Option<&str>,
 ) -> Result<Option<String>, AppError> {
     let Some(team_id) = team_id.map(str::trim).filter(|id| !id.is_empty()) else {
         return Ok(None);
     };
-    if !crate::store::runners::team_exists(&DbPool::from_sqlite(pool), team_id).await? {
+    if !crate::store::runners::team_exists(pool, team_id).await? {
         return Err(AppError::ValidationFailed(format!(
             "team '{team_id}' does not exist"
         )));
@@ -218,10 +207,10 @@ fn sanitized_instance_id(raw: &str, what: &str, runner: &str) -> String {
 
 /// Load UI policy columns for a runner.
 async fn load_runner_policy(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     runner_id: &str,
 ) -> Result<RunnerPolicyConfig, AppError> {
-    let row = crate::store::runners::policy_row(&DbPool::from_sqlite(pool), runner_id)
+    let row = crate::store::runners::policy_row(pool, runner_id)
         .await?
         .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
 
@@ -311,7 +300,7 @@ pub async fn create_runner(
 /// `gen-runner-token` CLI subcommand. Persists the runner and returns its
 /// one-shot register token.
 pub async fn create_runner_record(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     req: &CreateRunnerRequest,
 ) -> Result<CreatedRunner, AppError> {
     let id = Uuid::new_v4().to_string();
@@ -338,7 +327,7 @@ pub async fn create_runner_record(
     // Hash-only at rest: the plaintext is returned exactly once in the API
     // response and never stored (same discipline as buz_/buzsd_ tokens).
     crate::store::runners::insert(
-        &DbPool::from_sqlite(pool),
+        pool,
         &crate::store::runners::NewRunner {
             id: &id,
             name: &req.name,
@@ -392,10 +381,7 @@ pub struct CreatedRunner {
 
 /// Ensure `standalone.auto_approve` runner rows exist (Manager-side authorization).
 /// No-op when standalone mode is disabled.
-pub async fn ensure_standalone_auto_approve(
-    pool: &sqlx::SqlitePool,
-    config: &Config,
-) -> anyhow::Result<()> {
+pub async fn ensure_standalone_auto_approve(pool: &DbPool, config: &Config) -> anyhow::Result<()> {
     if !config.standalone.enabled {
         return Ok(());
     }
@@ -411,7 +397,7 @@ pub async fn ensure_standalone_auto_approve(
         if name.is_empty() {
             continue;
         }
-        let exists = crate::store::runners::count_by_name(&DbPool::from_sqlite(pool), name).await?;
+        let exists = crate::store::runners::count_by_name(pool, name).await?;
         if exists > 0 {
             tracing::info!(runner = %name, "standalone auto_approve: runner already exists");
             continue;
@@ -1061,7 +1047,7 @@ async fn poll_once(
                     true,
                 )
                 .await;
-                crate::audit::record_pool(
+                crate::audit::record(
                     &state.db(),
                     crate::audit::AuditEvent::system(Action::EnvironmentConcurrencyCancel)
                         .resource("job", superseded_id, "superseded by cancel_in_progress"),
@@ -1848,7 +1834,7 @@ async fn build_claim_payload(
 /// the step allowlist but not resolvable in the pipeline's team. Returns
 /// `None` when `missing` is empty. The message never leaks secret values.
 async fn merge_team_secrets_by_name(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
     jwt_secret: &str,
     names: &[String],
@@ -1865,12 +1851,8 @@ async fn merge_team_secrets_by_name(
     if needed.is_empty() {
         return Ok(());
     }
-    let rows = crate::store::runners::team_secret_values_by_name(
-        &DbPool::from_sqlite(pool),
-        pipeline_id,
-        &needed,
-    )
-    .await?;
+    let rows =
+        crate::store::runners::team_secret_values_by_name(pool, pipeline_id, &needed).await?;
     for (name, stored) in rows {
         match crypto::decrypt(&stored, jwt_secret) {
             Ok(decrypted) => {

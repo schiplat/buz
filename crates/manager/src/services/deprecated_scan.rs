@@ -228,8 +228,10 @@ fn scan_yaml_file(file: &Path, report: &mut ScanReport) {
 /// CLI entry: load config, open + migrate the database, scan, print.
 pub async fn run(config_path: &str) -> anyhow::Result<()> {
     let config = crate::config::load(Some(config_path))?;
-    let pool = crate::db::init(&config).await?;
-    crate::db::run_migrations(&pool, &config.auth.jwt_secret).await?;
+    let db = crate::db::init(&config).await?;
+    if let Some(sqlite) = db.as_sqlite() {
+        crate::db::run_migrations(sqlite, &config.auth.jwt_secret).await?;
+    }
 
     let yaml_dir = {
         let dir = &config.pipeline.yaml_scan_dir;
@@ -240,11 +242,7 @@ pub async fn run(config_path: &str) -> anyhow::Result<()> {
             Some(std::path::PathBuf::from(trimmed))
         }
     };
-    let report = scan_pool(
-        &crate::store::exec::DbPool::from_sqlite(&pool),
-        yaml_dir.as_deref(),
-    )
-    .await;
+    let report = scan_pool(&db, yaml_dir.as_deref()).await;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     report.print(&mut out)?;

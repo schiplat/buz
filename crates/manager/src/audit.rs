@@ -22,7 +22,6 @@
 //! so the audit row commits or rolls back with the change it describes.
 
 use serde_json::{Map, Value};
-use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::crypto::mask_string;
@@ -670,23 +669,7 @@ fn prepare(event: &AuditEvent) -> PreparedAudit {
 
 /// Persist an audit event. Errors are logged and swallowed (best effort —
 /// the audited change already committed).
-pub async fn record(pool: &SqlitePool, event: AuditEvent) {
-    let action = event.action.clone();
-    let resource = event.resource_id.clone();
-    if let Err(e) = insert(pool, event).await {
-        tracing::warn!(
-            action = %action,
-            resource = %resource,
-            "failed to write audit log: {e}"
-        );
-    }
-}
-
-/// [`record`] for the dual-backend dispatcher
-/// ([`crate::store::exec::DbPool`]): same best-effort contract, executed
-/// through `store::exec` so it works on either backend. Store functions that
-/// have migrated off `SqlitePool` call this for their post-commit audit row.
-pub async fn record_pool(pool: &crate::store::exec::DbPool, event: AuditEvent) {
+pub async fn record(pool: &crate::store::exec::DbPool, event: AuditEvent) {
     let action = event.action.clone();
     let resource = event.resource_id.clone();
     if let Err(e) = insert_pool(pool, event).await {
@@ -696,19 +679,6 @@ pub async fn record_pool(pool: &crate::store::exec::DbPool, event: AuditEvent) {
             "failed to write audit log: {e}"
         );
     }
-}
-
-/// Persist an audit event inside the caller's transaction, so the record
-/// commits or rolls back with the change it describes. Propagates the error:
-/// an unauditable mutation is a failed mutation.
-///
-/// SQLite-typed variant, kept for call sites still on `Transaction<Sqlite>`;
-/// new dual-backend transactions use [`record_in_tx`].
-pub async fn record_in(
-    conn: &mut sqlx::SqliteConnection,
-    event: AuditEvent,
-) -> Result<(), sqlx::Error> {
-    insert(conn, event).await
 }
 
 /// Persist an audit event inside a dual-backend transaction
@@ -739,7 +709,7 @@ pub async fn record_in_tx(
     Ok(())
 }
 
-/// Pool-level insertion for the dual-backend dispatcher ([`record_pool`]).
+/// Pool-level insertion for [`record`].
 async fn insert_pool(
     pool: &crate::store::exec::DbPool,
     event: AuditEvent,
@@ -762,29 +732,5 @@ async fn insert_pool(
         event.ip.into(),
     ];
     crate::store::exec::execute(pool, AUDIT_INSERT_SQL, &binds).await?;
-    Ok(())
-}
-
-/// Shared insert used by the SQLite-typed entry points.
-async fn insert<'e, E>(executor: E, event: AuditEvent) -> Result<(), sqlx::Error>
-where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-{
-    let prepared = prepare(&event);
-    sqlx::query(AUDIT_INSERT_SQL)
-        .bind(&prepared.id)
-        .bind(&event.actor_user_id)
-        .bind(&event.actor_username)
-        .bind(&event.action)
-        .bind(&event.resource_type)
-        .bind(&event.resource_id)
-        .bind(&event.resource_name)
-        .bind(&event.team_id)
-        .bind(&prepared.before)
-        .bind(&prepared.after)
-        .bind(&prepared.meta)
-        .bind(&event.ip)
-        .execute(executor)
-        .await?;
     Ok(())
 }

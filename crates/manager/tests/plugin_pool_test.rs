@@ -158,7 +158,7 @@ async fn test_app() -> (Router, sqlx::SqlitePool) {
     .expect("seed runner");
 
     let state = AppState {
-        pool: pool.clone(),
+        pool: manager::store::exec::DbPool::from_sqlite(&pool),
         config: Config {
             server: Default::default(),
             database: Default::default(),

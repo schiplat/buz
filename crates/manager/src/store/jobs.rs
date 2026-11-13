@@ -365,7 +365,7 @@ pub async fn approve(
         approval_tx.commit().await?;
     }
 
-    crate::audit::record_pool(
+    crate::audit::record(
         pool,
         crate::audit::AuditEvent::from_auth(auth, crate::audit::Action::JobApprove)
             .resource("job", job_id, &pipeline_name)
@@ -514,7 +514,7 @@ pub async fn reject(
     reject_tx.commit().await?;
     crate::services::poll_events::wake_all();
 
-    crate::audit::record_pool(
+    crate::audit::record(
         pool,
         crate::audit::AuditEvent::from_auth(auth, crate::audit::Action::JobReject)
             .resource("job", job_id, &pipeline_name)
