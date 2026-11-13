@@ -12,7 +12,6 @@ use shared::protocol::{
     PipelineInputDef, StepDef,
 };
 use shared::rbac::Perm;
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::audit::{self, Action, AuditEvent};
@@ -42,43 +41,39 @@ pub async fn list(
         Some(auth.team_ids())
     };
     let rows =
-        crate::store::pipelines::list_rows(&state.pool, visible.as_deref(), auth.is_platform_admin)
+        crate::store::pipelines::list_rows(&state.db(), visible.as_deref(), auth.is_platform_admin)
             .await?;
 
     let pipelines: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
-            let labels: String = r.get(4);
-            let input_defs_raw: String = r.get(7);
-            let input_defs = serde_json::from_str::<serde_json::Value>(&input_defs_raw).ok();
-            let job_total: i64 = r.get(17);
-            let job_success: i64 = r.get(18);
+            let input_defs = serde_json::from_str::<serde_json::Value>(&r.input_defs).ok();
             serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "name": r.get::<String, _>(1),
-                "description": r.get::<String, _>(2),
-                "trigger_type": r.get::<String, _>(3),
-                "runner_labels": serde_json::from_str::<Vec<String>>(&labels).unwrap_or_default(),
-                "timeout_seconds": r.get::<i64, _>(5),
-                "concurrency_group": r.get::<Option<String>, _>(6),
+                "id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "trigger_type": r.trigger_type,
+                "runner_labels": serde_json::from_str::<Vec<String>>(&r.runner_labels).unwrap_or_default(),
+                "timeout_seconds": r.timeout_seconds,
+                "concurrency_group": r.concurrency_group,
                 "input_defs": input_defs,
-                "is_active": r.get::<i64, _>(8) != 0,
-                "source": r.get::<String, _>(9),
-                "team_id": r.get::<String, _>(10),
-                "owner_group": r.get::<String, _>(11),
-                "created_at": r.get::<Option<String>, _>(12),
-                "updated_at": r.get::<Option<String>, _>(13),
-                "latest_job_id": r.get::<Option<String>, _>(14),
-                "latest_job_status": r.get::<Option<String>, _>(15),
-                "latest_job_start": r.get::<Option<String>, _>(16),
-                "job_total": job_total,
-                "job_success": job_success,
-                "success_rate": job_success_rate(job_success, job_total),
-                "concurrency_mode": r.get::<Option<String>, _>(19),
-                "concurrency_max_queue": r.get::<Option<i64>, _>(20),
-                "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(21),
-                "yaml_path": r.get::<Option<String>, _>(22),
-                "environments": serde_json::from_str::<Vec<String>>(&r.get::<String, _>(23)).unwrap_or_default(),
+                "is_active": r.is_active != 0,
+                "source": r.source,
+                "team_id": r.team_id,
+                "owner_group": r.owner_group,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at,
+                "latest_job_id": r.latest_job_id,
+                "latest_job_status": r.latest_job_status,
+                "latest_job_start": r.latest_job_start,
+                "job_total": r.job_total,
+                "job_success": r.job_success,
+                "success_rate": job_success_rate(r.job_success, r.job_total),
+                "concurrency_mode": r.concurrency_mode,
+                "concurrency_max_queue": r.concurrency_max_queue,
+                "concurrency_queue_timeout_seconds": r.concurrency_queue_timeout_seconds,
+                "yaml_path": r.yaml_path,
+                "environments": serde_json::from_str::<Vec<String>>(&r.environments).unwrap_or_default(),
             })
         })
         .collect();
@@ -271,13 +266,11 @@ pub async fn get_one(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
-    let r = crate::store::pipelines::full_row(&state.pool, &id)
+    let r = crate::store::pipelines::full_row(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
 
-    let labels: String = r.get(6);
-    let input_defs_raw: String = r.get(9);
-    let input_defs = serde_json::from_str::<serde_json::Value>(&input_defs_raw).ok();
+    let input_defs = serde_json::from_str::<serde_json::Value>(&r.input_defs).ok();
 
     // Fetch explicit secret bindings
     let secret_ids = crate::store::pipelines::secret_bind_ids(&state.db(), &id).await?;
@@ -297,68 +290,66 @@ pub async fn get_one(
         })
         .collect();
 
-    let tasks = crate::store::pipelines::tasks_rows(&state.pool, &id)
+    let tasks = crate::store::pipelines::tasks_rows(&state.db(), &id)
         .await?
         .into_iter()
         .map(|t| {
         serde_json::json!({
-            "id": t.get::<String, _>(0),
-            "step_order": t.get::<i64, _>(1),
-            "name": t.get::<String, _>(2),
-            "exec_type": t.get::<String, _>(3),
-            "host_id": t.get::<Option<String>, _>(4),
-            "host_names": t.get::<String, _>(5),
-            "host_labels": t.get::<String, _>(6),
-            "command_template": t.get::<String, _>(7),
-            "image": t.get::<String, _>(8),
-            "work_dir": t.get::<String, _>(9),
-            "retry_count": t.get::<i64, _>(10),
-            "timeout_seconds": t.get::<i64, _>(11),
-            "fail_strategy": t.get::<String, _>(12),
-            "volumes": serde_json::from_str::<serde_json::Value>(
-                &t.get::<String, _>(13),
-            ).unwrap_or(serde_json::Value::Array(vec![])),
-            "step_secrets": t.get::<String, _>(14),
-            "step_env": serde_json::from_str::<serde_json::Value>(
-                &t.get::<String, _>(15),
-            ).ok().filter(|v| v.is_object()),
-            "privileged": t.get::<i64, _>(16) != 0,
+            "id": t.id,
+            "step_order": t.step_order,
+            "name": t.name,
+            "exec_type": t.exec_type,
+            "host_id": t.host_id,
+            "host_names": t.host_names,
+            "host_labels": t.host_labels,
+            "command_template": t.command_template,
+            "image": t.image,
+            "work_dir": t.work_dir,
+            "retry_count": t.retry_count,
+            "timeout_seconds": t.timeout_seconds,
+            "fail_strategy": t.fail_strategy,
+            "volumes": serde_json::from_str::<serde_json::Value>(&t.volumes)
+                .unwrap_or(serde_json::Value::Array(vec![])),
+            "step_secrets": t.step_secrets,
+            "step_env": serde_json::from_str::<serde_json::Value>(&t.step_env)
+                .ok().filter(|v| v.is_object()),
+            "privileged": t.privileged != 0,
             "config_render": serde_json::Value::Null,
             "config_dest": serde_json::Value::Null,
-            "hosts_strategy": t.get::<String, _>(17),
-            "capabilities": serde_json::from_str::<Vec<String>>(&t.get::<String, _>(18)).unwrap_or_default(),
-            "needs": serde_json::from_str::<Vec<String>>(&t.get::<String, _>(20)).unwrap_or_default(),
+            "hosts_strategy": t.hosts_strategy,
+            "capabilities": serde_json::from_str::<Vec<String>>(&t.capabilities).unwrap_or_default(),
+            "needs": serde_json::from_str::<Vec<String>>(&t.needs_json).unwrap_or_default(),
         })
     })
     .collect::<Vec<_>>();
 
     Ok(Json(ApiResponse::success(serde_json::json!({
-        "id": r.get::<String, _>(0),
-        "name": r.get::<String, _>(1),
-        "description": r.get::<String, _>(2),
-        "trigger_type": r.get::<String, _>(3),
-        "webhook_path": r.get::<Option<String>, _>(4),
+        "id": r.id,
+        "name": r.name,
+        "description": r.description,
+        "trigger_type": r.trigger_type,
+        "webhook_path": r.webhook_path,
         // Secret NAME only (never the value) — the form needs it for edits.
-        "webhook_secret": r.get::<Option<String>, _>(5),
-        "cron_expr": r.get::<Option<String>, _>(6),
-        "runner_labels": serde_json::from_str::<Vec<String>>(&labels).unwrap_or_default(),
-        "timeout_seconds": r.get::<i64, _>(8),
-        "source": r.get::<String, _>(9),
+        "webhook_secret": r.webhook_secret,
+        "cron_expr": r.cron_expr,
+        "runner_labels": serde_json::from_str::<Vec<String>>(&r.runner_labels).unwrap_or_default(),
+        "timeout_seconds": r.timeout_seconds,
+        "source": r.source,
         "input_defs": input_defs,
-        "concurrency_group": r.get::<Option<String>, _>(11),
-        "is_active": r.get::<i64, _>(12) != 0,
-        "owner_group": r.get::<String, _>(13),
-        "team_id": r.get::<String, _>(14),
+        "concurrency_group": r.concurrency_group,
+        "is_active": r.is_active != 0,
+        "owner_group": r.owner_group,
+        "team_id": r.team_id,
         "secret_ids": secret_ids,
         "var_ids": var_ids,
-        "created_at": r.get::<Option<String>, _>(15),
-        "updated_at": r.get::<Option<String>, _>(16),
-        "concurrency_mode": r.get::<Option<String>, _>(17),
-        "concurrency_max_queue": r.get::<Option<i64>, _>(18),
-        "concurrency_queue_timeout_seconds": r.get::<Option<i64>, _>(19),
-        "yaml_path": r.get::<Option<String>, _>(20),
-        "environments": serde_json::from_str::<Vec<String>>(&r.get::<String, _>(21)).unwrap_or_default(),
-        "notify": serde_json::from_str::<serde_json::Value>(&r.get::<String, _>(22))
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+        "concurrency_mode": r.concurrency_mode,
+        "concurrency_max_queue": r.concurrency_max_queue,
+        "concurrency_queue_timeout_seconds": r.concurrency_queue_timeout_seconds,
+        "yaml_path": r.yaml_path,
+        "environments": serde_json::from_str::<Vec<String>>(&r.environments).unwrap_or_default(),
+        "notify": serde_json::from_str::<serde_json::Value>(&r.notify_json)
             .unwrap_or_else(|_| serde_json::json!([])),
         "tasks": tasks,
         "env": envs,
@@ -805,27 +796,27 @@ pub async fn do_trigger(
     // broken definition cannot be saved in the first place, so the previous
     // good projection is the current one.
 
-    let pipeline = crate::store::pipelines::trigger_row(&state.pool, pipeline_id)
+    let pipeline = crate::store::pipelines::trigger_row(&state.db(), pipeline_id)
         .await?
         .ok_or_else(|| AppError::NotFound("pipeline not found".into()))?;
-    if pipeline.get::<i64, _>(10) == 0 {
+    if pipeline.is_active == 0 {
         return Err(AppError::Conflict(
             "pipeline is disabled — enable it before triggering".into(),
         ));
     }
 
-    let concurrency_group: Option<String> = pipeline.get(3);
-    let concurrency_mode: String = pipeline.get(4);
-    let concurrency_max_queue: i64 = pipeline.get(5);
-    let concurrency_queue_timeout: i64 = pipeline.get(6);
-    let input_defs_raw: String = pipeline.get(7);
-    let team_id: String = pipeline.get(8);
+    let concurrency_group: Option<String> = pipeline.concurrency_group;
+    let concurrency_mode: String = pipeline.concurrency_mode;
+    let concurrency_max_queue: i64 = pipeline.concurrency_max_queue;
+    let concurrency_queue_timeout: i64 = pipeline.concurrency_queue_timeout_seconds;
+    let input_defs_raw: String = pipeline.input_defs;
+    let team_id: String = pipeline.team_id;
     let declared_environments: Vec<String> =
-        serde_json::from_str(&pipeline.get::<String, _>(9)).unwrap_or_default();
+        serde_json::from_str(&pipeline.environments).unwrap_or_default();
     // Resource profile requested by `runner.resources`. The authorization
     // subject is the job's resolved team (the same team used for dispatch and
     // runner binding). Unauthorized → fail fast before anything is scheduled.
-    let resource_profile: String = pipeline.get::<String, _>(11).trim().to_string();
+    let resource_profile: String = pipeline.resource_profile.trim().to_string();
     crate::services::resource_grants::ensure_team_may_use(&state.pool, &team_id, &resource_profile)
         .await
         .inspect_err(|error| {
@@ -954,63 +945,60 @@ pub async fn do_trigger(
 
     // ── Freeze snapshot ──
     let job_id = Uuid::new_v4().to_string();
-    let pipeline_name: String = pipeline.get(1);
-    let runner_labels: String = pipeline.get(2);
+    let pipeline_name: String = pipeline.name.clone();
+    let runner_labels: String = pipeline.runner_labels.clone();
 
     // Capture the full pipeline definition so historical runs are
     // reproducible even if the pipeline is later modified or deleted.
-    let mut tasks_snapshot = crate::store::pipelines::task_snapshot_rows(&state.pool, pipeline_id)
+    let mut tasks_snapshot = crate::store::pipelines::task_snapshot_rows(&state.db(), pipeline_id)
         .await?
         .into_iter()
         .map(|t| {
         serde_json::json!({
-            "step_order": t.get::<i64, _>(0),
-            "name": t.get::<String, _>(1),
-            "exec_type": t.get::<String, _>(2),
-            "host_id": t.get::<Option<String>, _>(3),
-            "host_names": t.get::<String, _>(4),
-            "host_labels": t.get::<String, _>(5),
-            "command_template": t.get::<String, _>(6),
-            "image": t.get::<String, _>(7),
-            "work_dir": t.get::<String, _>(8),
-            "retry_count": t.get::<i64, _>(9),
-            "timeout_seconds": t.get::<i64, _>(10),
-            "fail_strategy": t.get::<String, _>(11),
-            "step_secrets": t.get::<String, _>(12),
-            "step_env": serde_json::from_str::<serde_json::Value>(
-                &t.get::<String, _>(13),
-            ).ok().filter(|v| v.is_object()),
-            "volumes": serde_json::from_str::<serde_json::Value>(
-                &t.get::<String, _>(14),
-            ).unwrap_or(serde_json::Value::Array(vec![])),
-            "privileged": t.get::<i64, _>(15) != 0,
+            "step_order": t.step_order,
+            "name": t.name,
+            "exec_type": t.exec_type,
+            "host_id": t.host_id,
+            "host_names": t.host_names,
+            "host_labels": t.host_labels,
+            "command_template": t.command_template,
+            "image": t.image,
+            "work_dir": t.work_dir,
+            "retry_count": t.retry_count,
+            "timeout_seconds": t.timeout_seconds,
+            "fail_strategy": t.fail_strategy,
+            "step_secrets": t.step_secrets,
+            "step_env": serde_json::from_str::<serde_json::Value>(&t.step_env)
+                .ok().filter(|v| v.is_object()),
+            "volumes": serde_json::from_str::<serde_json::Value>(&t.volumes)
+                .unwrap_or(serde_json::Value::Array(vec![])),
+            "privileged": t.privileged != 0,
             "config_render": serde_json::Value::Null,
             "config_dest": serde_json::Value::Null,
-            "hosts_strategy": t.get::<String, _>(16),
-            "id": t.get::<String, _>(17),
-            "capabilities": serde_json::from_str::<Vec<String>>(&t.get::<String, _>(18)).unwrap_or_default(),
-            "hosts_max_parallel": t.get::<Option<i64>, _>(19),
-            "needs": serde_json::from_str::<Vec<String>>(&t.get::<String, _>(20))
+            "hosts_strategy": t.hosts_strategy,
+            "id": t.id,
+            "capabilities": serde_json::from_str::<Vec<String>>(&t.capabilities).unwrap_or_default(),
+            "hosts_max_parallel": t.hosts_max_parallel,
+            "needs": serde_json::from_str::<Vec<String>>(&t.needs_json)
                 .unwrap_or_default(),
         })
     })
     .collect::<Vec<_>>();
 
-    let resolutions = crate::store::pipelines::step_resolutions(&state.pool, pipeline_id).await?;
+    let resolutions = crate::store::pipelines::step_resolutions(&state.db(), pipeline_id).await?;
     for resolution in resolutions {
-        let step_order: i64 = resolution.get(0);
         if let Some(task) = tasks_snapshot
             .iter_mut()
-            .find(|task| task["step_order"].as_i64() == Some(step_order))
+            .find(|task| task["step_order"].as_i64() == Some(resolution.step_order))
         {
             task["marketplace"] = serde_json::json!({
-                "uses_ref": resolution.get::<String, _>(1),
-                "resolved_version": resolution.get::<String, _>(2),
-                "content_sha256": resolution.get::<String, _>(3),
-                "source": resolution.get::<String, _>(4),
-                "reviewed": resolution.get::<i64, _>(5) != 0,
+                "uses_ref": resolution.uses_ref,
+                "resolved_version": resolution.resolved_version,
+                "content_sha256": resolution.content_sha256,
+                "source": resolution.source,
+                "reviewed": resolution.reviewed != 0,
                 "inputs": serde_json::from_str::<serde_json::Value>(
-                    &resolution.get::<String, _>(6),
+                    &resolution.input_defs_json,
                 ).unwrap_or(serde_json::json!([])),
             });
         }
@@ -1098,24 +1086,24 @@ pub async fn do_trigger(
         }
     }
 
-    let env_snapshot = crate::store::pipelines::pipeline_var_flags(&state.pool, pipeline_id)
+    let env_snapshot = crate::store::pipelines::pipeline_var_flags(&state.db(), pipeline_id)
         .await?
         .into_iter()
         .map(|v| {
             serde_json::json!({
-                "name": v.get::<String, _>(0),
-                "is_secret": v.get::<i64, _>(1) != 0,
+                "name": v.name,
+                "is_secret": v.is_secret != 0,
             })
         })
         .collect::<Vec<_>>();
 
-    let pipeline_snapshot = crate::store::pipelines::trigger_snapshot_row(&state.pool, pipeline_id)
+    let pipeline_snapshot = crate::store::pipelines::trigger_snapshot_row(&state.db(), pipeline_id)
         .await?
         .map(|p| {
             serde_json::json!({
-                "trigger_type": p.get::<String, _>(0),
-                "timeout_seconds": p.get::<i64, _>(1),
-                "source": p.get::<String, _>(2),
+                "trigger_type": p.trigger_type,
+                "timeout_seconds": p.timeout_seconds,
+                "source": p.source,
             })
         })
         .unwrap_or(serde_json::json!({}));

@@ -154,21 +154,73 @@ pub async fn declared_environments(pool: &DbPool, pipeline_id: &str) -> Result<S
 // compiled against the schema by `store_sql_validation_test`.
 
 /// One pipeline's full edit-form row (`None` = no such pipeline).
-pub async fn full_row(
-    pool: &SqlitePool,
-    id: &str,
-) -> Result<Option<sqlx::sqlite::SqliteRow>, AppError> {
-    Ok(sqlx::query(
+pub struct PipelineFullRow {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub trigger_type: String,
+    pub webhook_path: Option<String>,
+    pub webhook_secret: Option<String>,
+    pub cron_expr: Option<String>,
+    pub runner_labels: String,
+    pub timeout_seconds: i64,
+    pub source: String,
+    pub input_defs: String,
+    pub concurrency_group: Option<String>,
+    pub is_active: i64,
+    pub owner_group: String,
+    pub team_id: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub concurrency_mode: Option<String>,
+    pub concurrency_max_queue: Option<i64>,
+    pub concurrency_queue_timeout_seconds: Option<i64>,
+    pub yaml_path: Option<String>,
+    pub environments: String,
+    pub notify_json: String,
+}
+
+fn full_row_of(r: exec::GenericRow) -> PipelineFullRow {
+    PipelineFullRow {
+        id: r.text(0),
+        name: r.text(1),
+        description: r.text(2),
+        trigger_type: r.text(3),
+        webhook_path: r.opt_text(4),
+        webhook_secret: r.opt_text(5),
+        cron_expr: r.opt_text(6),
+        runner_labels: r.text(7),
+        timeout_seconds: r.i64(8),
+        source: r.text(9),
+        input_defs: r.text(10),
+        concurrency_group: r.opt_text(11),
+        is_active: r.i64(12),
+        owner_group: r.text(13),
+        team_id: r.text(14),
+        created_at: r.opt_text(15),
+        updated_at: r.opt_text(16),
+        concurrency_mode: r.opt_text(17),
+        concurrency_max_queue: r.opt_i64(18),
+        concurrency_queue_timeout_seconds: r.opt_i64(19),
+        yaml_path: r.opt_text(20),
+        environments: r.text(21),
+        notify_json: r.text(22),
+    }
+}
+
+pub async fn full_row(pool: &DbPool, id: &str) -> Result<Option<PipelineFullRow>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT id, name, description, trigger_type, webhook_path, webhook_secret, cron_expr,
                 runner_labels, timeout_seconds, source, input_defs, concurrency_group, is_active,
                 owner_group, team_id, created_at, updated_at,
                 concurrency_mode, concurrency_max_queue, concurrency_queue_timeout_seconds,
                 yaml_path, environments, notify_json
          FROM pipelines WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?)
+    .await?
+    .map(full_row_of))
 }
 
 /// Secret ids explicitly bound to a pipeline.
@@ -215,53 +267,183 @@ pub async fn inline_envs(
     .collect())
 }
 
+/// One edit-form task row.
+pub struct PipelineTaskRow {
+    pub id: String,
+    pub step_order: i64,
+    pub name: String,
+    pub exec_type: String,
+    pub host_id: Option<String>,
+    pub host_names: String,
+    pub host_labels: String,
+    pub command_template: String,
+    pub image: String,
+    pub work_dir: String,
+    pub retry_count: i64,
+    pub timeout_seconds: i64,
+    pub fail_strategy: String,
+    pub volumes: String,
+    pub step_secrets: String,
+    pub step_env: String,
+    pub privileged: i64,
+    pub hosts_strategy: String,
+    pub capabilities: String,
+    pub hosts_max_parallel: Option<i64>,
+    pub needs_json: String,
+}
+
+fn task_row_of(r: exec::GenericRow) -> PipelineTaskRow {
+    PipelineTaskRow {
+        id: r.text(0),
+        step_order: r.i64(1),
+        name: r.text(2),
+        exec_type: r.text(3),
+        host_id: r.opt_text(4),
+        host_names: r.text(5),
+        host_labels: r.text(6),
+        command_template: r.text(7),
+        image: r.text(8),
+        work_dir: r.text(9),
+        retry_count: r.i64(10),
+        timeout_seconds: r.i64(11),
+        fail_strategy: r.text(12),
+        volumes: r.text(13),
+        step_secrets: r.text(14),
+        step_env: r.text(15),
+        privileged: r.i64(16),
+        hosts_strategy: r.text(17),
+        capabilities: r.text(18),
+        hosts_max_parallel: r.opt_i64(19),
+        needs_json: r.text(20),
+    }
+}
+
 /// The edit-form task rows of a pipeline, step-ordered.
 pub async fn tasks_rows(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
-) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
-    Ok(sqlx::query(
+) -> Result<Vec<PipelineTaskRow>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
         "SELECT id, step_order, name, exec_type, host_id, host_names, host_labels, command_template, image,
                 work_dir, retry_count, timeout_seconds, fail_strategy, volumes, step_secrets,
                 step_env, privileged,
                 hosts_strategy, capabilities, hosts_max_parallel, needs_json
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_all(pool)
-    .await?)
+    .await?
+    .into_iter()
+    .map(task_row_of)
+    .collect())
 }
 
-/// The trigger-time snapshot rows of a pipeline, step-ordered (column order
-/// differs from the edit-form shape).
+/// One trigger-time snapshot task row (column order differs from the
+/// edit-form shape).
+pub struct PipelineTaskSnapshotRow {
+    pub step_order: i64,
+    pub name: String,
+    pub exec_type: String,
+    pub host_id: Option<String>,
+    pub host_names: String,
+    pub host_labels: String,
+    pub command_template: String,
+    pub image: String,
+    pub work_dir: String,
+    pub retry_count: i64,
+    pub timeout_seconds: i64,
+    pub fail_strategy: String,
+    pub step_secrets: String,
+    pub step_env: String,
+    pub volumes: String,
+    pub privileged: i64,
+    pub hosts_strategy: String,
+    pub id: String,
+    pub capabilities: String,
+    pub hosts_max_parallel: Option<i64>,
+    pub needs_json: String,
+}
+
+fn task_snapshot_row_of(r: exec::GenericRow) -> PipelineTaskSnapshotRow {
+    PipelineTaskSnapshotRow {
+        step_order: r.i64(0),
+        name: r.text(1),
+        exec_type: r.text(2),
+        host_id: r.opt_text(3),
+        host_names: r.text(4),
+        host_labels: r.text(5),
+        command_template: r.text(6),
+        image: r.text(7),
+        work_dir: r.text(8),
+        retry_count: r.i64(9),
+        timeout_seconds: r.i64(10),
+        fail_strategy: r.text(11),
+        step_secrets: r.text(12),
+        step_env: r.text(13),
+        volumes: r.text(14),
+        privileged: r.i64(15),
+        hosts_strategy: r.text(16),
+        id: r.text(17),
+        capabilities: r.text(18),
+        hosts_max_parallel: r.opt_i64(19),
+        needs_json: r.text(20),
+    }
+}
+
+/// The trigger-time snapshot rows of a pipeline, step-ordered.
 pub async fn task_snapshot_rows(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
-) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
-    Ok(sqlx::query(
+) -> Result<Vec<PipelineTaskSnapshotRow>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
         "SELECT step_order, name, exec_type, host_id, host_names, host_labels, command_template,
                 image, work_dir, retry_count, timeout_seconds, fail_strategy, step_secrets, step_env, volumes,
                 privileged,
                 hosts_strategy, id, capabilities, hosts_max_parallel, needs_json
          FROM tasks WHERE pipeline_id = ? ORDER BY step_order",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_all(pool)
-    .await?)
+    .await?
+    .into_iter()
+    .map(task_snapshot_row_of)
+    .collect())
+}
+
+/// One marketplace step resolution.
+pub struct PipelineStepResolutionRow {
+    pub step_order: i64,
+    pub uses_ref: String,
+    pub resolved_version: String,
+    pub content_sha256: String,
+    pub source: String,
+    pub reviewed: i64,
+    pub input_defs_json: String,
 }
 
 /// Marketplace step resolutions of a pipeline.
 pub async fn step_resolutions(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
-) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
-    Ok(sqlx::query(
+) -> Result<Vec<PipelineStepResolutionRow>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
         "SELECT step_order, uses_ref, resolved_version, content_sha256, source, reviewed, input_defs_json \
          FROM step_resolutions WHERE pipeline_id = ?",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_all(pool)
-    .await?)
+    .await?
+    .into_iter()
+    .map(|r| PipelineStepResolutionRow {
+        step_order: r.i64(0),
+        uses_ref: r.text(1),
+        resolved_version: r.text(2),
+        content_sha256: r.text(3),
+        source: r.text(4),
+        reviewed: r.i64(5),
+        input_defs_json: r.text(6),
+    })
+    .collect())
 }
 
 /// `(kind, value)` allowlist entries of one environment.
@@ -300,30 +482,54 @@ pub async fn all_host_names(pool: &DbPool) -> Result<Vec<String>, AppError> {
 
 /// `(var_name, is_secret)` of a pipeline's inline variables — the snapshot's
 /// env redaction flags.
+/// One inline variable's redaction flag.
+pub struct PipelineVarFlagRow {
+    pub name: String,
+    pub is_secret: i64,
+}
+
 pub async fn pipeline_var_flags(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
-) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
-    Ok(
-        sqlx::query("SELECT var_name, is_secret FROM variables WHERE pipeline_id = ?")
-            .bind(pipeline_id)
-            .fetch_all(pool)
-            .await?,
+) -> Result<Vec<PipelineVarFlagRow>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT var_name, is_secret FROM variables WHERE pipeline_id = ?",
+        &[pipeline_id.into()],
     )
+    .await?
+    .into_iter()
+    .map(|r| PipelineVarFlagRow {
+        name: r.text(0),
+        is_secret: r.i64(1),
+    })
+    .collect())
 }
 
 /// `(trigger_type, timeout_seconds, source)` of one pipeline.
+/// `(trigger_type, timeout_seconds, source)` frozen into the job snapshot.
+pub struct PipelineTriggerSnapshotRow {
+    pub trigger_type: String,
+    pub timeout_seconds: i64,
+    pub source: String,
+}
+
 pub async fn trigger_snapshot_row(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
-) -> Result<Option<sqlx::sqlite::SqliteRow>, AppError> {
-    Ok(sqlx::query(
+) -> Result<Option<PipelineTriggerSnapshotRow>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT trigger_type, timeout_seconds, source
          FROM pipelines WHERE id = ?",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_optional(pool)
-    .await?)
+    .await?
+    .map(|r| PipelineTriggerSnapshotRow {
+        trigger_type: r.text(0),
+        timeout_seconds: r.i64(1),
+        source: r.text(2),
+    }))
 }
 
 /// Stored notify channels JSON of one pipeline (`None` = unset/absent row).
@@ -339,19 +545,49 @@ pub async fn notify_json_of(pool: &DbPool, pipeline_id: &str) -> Result<Option<S
 
 /// The trigger gate's pipeline row: identity, concurrency config, inputs,
 /// team, environments, active flag, resource profile (`None` = no such row).
+/// The trigger gate's pipeline row.
+pub struct PipelineTriggerRow {
+    pub id: String,
+    pub name: String,
+    pub runner_labels: String,
+    pub concurrency_group: Option<String>,
+    pub concurrency_mode: String,
+    pub concurrency_max_queue: i64,
+    pub concurrency_queue_timeout_seconds: i64,
+    pub input_defs: String,
+    pub team_id: String,
+    pub environments: String,
+    pub is_active: i64,
+    pub resource_profile: String,
+}
+
 pub async fn trigger_row(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
-) -> Result<Option<sqlx::sqlite::SqliteRow>, AppError> {
-    Ok(sqlx::query(
+) -> Result<Option<PipelineTriggerRow>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT id, name, runner_labels, concurrency_group, concurrency_mode,
                 concurrency_max_queue, concurrency_queue_timeout_seconds, input_defs, team_id,
                 environments, is_active, resource_profile
          FROM pipelines WHERE id = ?",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_optional(pool)
-    .await?)
+    .await?
+    .map(|r| PipelineTriggerRow {
+        id: r.text(0),
+        name: r.text(1),
+        runner_labels: r.text(2),
+        concurrency_group: r.opt_text(3),
+        concurrency_mode: r.text(4),
+        concurrency_max_queue: r.i64(5),
+        concurrency_queue_timeout_seconds: r.i64(6),
+        input_defs: r.text(7),
+        team_id: r.text(8),
+        environments: r.text(9),
+        is_active: r.i64(10),
+        resource_profile: r.text(11),
+    }))
 }
 
 /// Pipeline display name (`None` = no such row).
@@ -847,16 +1083,73 @@ pub async fn secret_name_in_team(
     .map(|r| r.text(0)))
 }
 
+/// One pipeline-card list row (latest job + run totals).
+pub struct PipelineListRow {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub trigger_type: String,
+    pub runner_labels: String,
+    pub timeout_seconds: i64,
+    pub concurrency_group: Option<String>,
+    pub input_defs: String,
+    pub is_active: i64,
+    pub source: String,
+    pub team_id: String,
+    pub owner_group: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub latest_job_id: Option<String>,
+    pub latest_job_status: Option<String>,
+    pub latest_job_start: Option<String>,
+    pub job_total: i64,
+    pub job_success: i64,
+    pub concurrency_mode: Option<String>,
+    pub concurrency_max_queue: Option<i64>,
+    pub concurrency_queue_timeout_seconds: Option<i64>,
+    pub yaml_path: Option<String>,
+    pub environments: String,
+}
+
+fn list_row_of(r: exec::GenericRow) -> PipelineListRow {
+    PipelineListRow {
+        id: r.text(0),
+        name: r.text(1),
+        description: r.text(2),
+        trigger_type: r.text(3),
+        runner_labels: r.text(4),
+        timeout_seconds: r.i64(5),
+        concurrency_group: r.opt_text(6),
+        input_defs: r.text(7),
+        is_active: r.i64(8),
+        source: r.text(9),
+        team_id: r.text(10),
+        owner_group: r.text(11),
+        created_at: r.opt_text(12),
+        updated_at: r.opt_text(13),
+        latest_job_id: r.opt_text(14),
+        latest_job_status: r.opt_text(15),
+        latest_job_start: r.opt_text(16),
+        job_total: r.i64(17),
+        job_success: r.i64(18),
+        concurrency_mode: r.opt_text(19),
+        concurrency_max_queue: r.opt_i64(20),
+        concurrency_queue_timeout_seconds: r.opt_i64(21),
+        yaml_path: r.opt_text(22),
+        environments: r.text(23),
+    }
+}
+
 /// The pipeline-card list: one row per pipeline with its latest job and run
 /// totals, newest-first. `visible_team_ids = None` is unrestricted (platform
 /// admin); `Some([])` yields nothing; `Some(ids)` filters to those teams.
 /// `include_debug = false` hides debug (unredacted) jobs from latest-job and
 /// run-total subqueries — they are admin-only records.
 pub async fn list_rows(
-    pool: &SqlitePool,
+    pool: &DbPool,
     visible_team_ids: Option<&[String]>,
     include_debug: bool,
-) -> Result<Vec<sqlx::sqlite::SqliteRow>, AppError> {
+) -> Result<Vec<PipelineListRow>, AppError> {
     let Some(ids) = visible_team_ids else {
         let debug_scope = if include_debug {
             ""
@@ -887,9 +1180,13 @@ pub async fn list_rows(
          ) js ON p.id = js.pipeline_id
          WHERE 1=1"
         );
-        return Ok(sqlx::query(&format!("{sql} ORDER BY p.created_at DESC"))
-            .fetch_all(pool)
-            .await?);
+        return Ok(
+            exec::fetch_all(pool, &format!("{sql} ORDER BY p.created_at DESC"), &[])
+                .await?
+                .into_iter()
+                .map(list_row_of)
+                .collect(),
+        );
     };
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -925,11 +1222,12 @@ pub async fn list_rows(
     );
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!("{base} AND p.team_id IN ({placeholders}) ORDER BY p.created_at DESC");
-    let mut q = sqlx::query(&sql);
-    for id in ids {
-        q = q.bind(id);
-    }
-    Ok(q.fetch_all(pool).await?)
+    let binds: Vec<SqlValue> = ids.iter().map(|id| id.as_str().into()).collect();
+    Ok(exec::fetch_all(pool, &sql, &binds)
+        .await?
+        .into_iter()
+        .map(list_row_of)
+        .collect())
 }
 
 /// Result of a pipeline disable: the display name and the ids cancelled in the
