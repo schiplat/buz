@@ -37,7 +37,7 @@ async fn assert_job_team_view(
         ));
     }
 
-    let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)
 }
 
@@ -171,7 +171,7 @@ async fn auth_user_from_query_token(
     if token_str.is_empty() {
         return Err(AppError::AuthFailed("invalid or missing token".into()));
     }
-    rbac::authenticate_user_token(&state.pool, &state.config.auth.jwt_secret, token_str).await
+    rbac::authenticate_user_token(&state.db(), &state.config.auth.jwt_secret, token_str).await
 }
 
 pub async fn stream_logs(
@@ -260,7 +260,7 @@ pub async fn pipeline_stream(
     Query(query): Query<StreamQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let auth = auth_user_from_query_token(&state, query.token.as_deref()).await?;
-    let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let broadcast = state.log_broadcast.clone();

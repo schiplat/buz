@@ -69,7 +69,7 @@ pub async fn create(
     State(state): State<AppState>,
     Json(req): Json<CreateHostRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team = resolve_optional_team_id(&state.pool, req.team_id.as_deref()).await?;
+    let team = resolve_optional_team_id(&state.db(), req.team_id.as_deref()).await?;
     let team_id_opt = team.as_ref().map(|(id, _)| id.clone());
     assert_host_manage(&auth, &team_id_opt).await?;
 
@@ -140,7 +140,7 @@ pub async fn get_one(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = host_team_id(&state.pool, &id).await?;
+    let team_id = host_team_id(&state.db(), &id).await?;
     assert_host_visible(&auth, &team_id).await?;
 
     let h = crate::store::hosts::find_full_by_id(&state.db(), &id)
@@ -156,7 +156,7 @@ pub async fn update(
     State(state): State<AppState>,
     Json(req): Json<UpdateHostRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let current_team = host_team_id(&state.pool, &id).await?;
+    let current_team = host_team_id(&state.db(), &id).await?;
     assert_host_manage(&auth, &current_team).await?;
 
     let before_facts = crate::store::hosts::facts(&state.db(), &id).await?;
@@ -180,7 +180,7 @@ pub async fn update(
         let new_team = if tid.is_empty() {
             None
         } else {
-            resolve_optional_team_id(&state.pool, Some(tid))
+            resolve_optional_team_id(&state.db(), Some(tid))
                 .await?
                 .map(|(id, _)| id)
         };
@@ -286,7 +286,7 @@ pub async fn delete(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let team_id = host_team_id(&state.pool, &id).await?;
+    let team_id = host_team_id(&state.db(), &id).await?;
     assert_host_manage(&auth, &team_id).await?;
 
     let facts = crate::store::hosts::facts(&state.db(), &id).await?;
@@ -350,7 +350,7 @@ pub async fn test_connection(
         .filter(|s| !s.is_empty())
     {
         // Probing pulls stored (decryptable) credentials — manage tier, not view.
-        let team_id = host_team_id(&state.pool, host_id).await?;
+        let team_id = host_team_id(&state.db(), host_id).await?;
         assert_host_manage(&auth, &team_id).await?;
 
         let stored_creds = crate::store::hosts::credentials_of(&state.db(), host_id)

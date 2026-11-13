@@ -640,6 +640,17 @@ pub async fn owner_group_of(pool: &DbPool, id: &str) -> Result<String, AppError>
     .text(0))
 }
 
+/// Stored team id of one pipeline (`None` = no such pipeline).
+pub async fn team_id_of(pool: &DbPool, id: &str) -> Result<Option<String>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT team_id FROM pipelines WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .map(|r| r.text(0)))
+}
+
 /// Stored team id of one pipeline (errors when absent).
 pub async fn team_of(pool: &DbPool, id: &str) -> Result<String, AppError> {
     Ok(exec::fetch_optional(

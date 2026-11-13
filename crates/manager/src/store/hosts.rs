@@ -290,6 +290,18 @@ pub async fn delete(pool: &DbPool, id: &str) -> Result<bool, AppError> {
     Ok(affected > 0)
 }
 
+/// Stored team id of one host. `None` = no such host; the inner `None` = a
+/// NULL team_id (unassigned, distinct from the empty string).
+pub async fn team_id_of(pool: &DbPool, host_id: &str) -> Result<Option<Option<String>>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT team_id FROM hosts WHERE id = ?",
+        &[host_id.into()],
+    )
+    .await?
+    .map(|r| r.opt_text_of("team_id")))
+}
+
 /// Stored credentials of one host — the connection prober's decrypt input.
 /// `None` = no such host.
 #[derive(Debug, Clone)]

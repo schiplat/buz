@@ -87,7 +87,7 @@ pub async fn create(
     Json(req): Json<CreatePipelineRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let (team_id, owner_group) = resolve_required_team_id(
-        &state.pool,
+        &state.db(),
         req.team_id.as_deref(),
         req.owner_group.as_deref(),
     )
@@ -264,7 +264,7 @@ pub async fn get_one(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = pipeline_team_id(&state.pool, &id).await?;
+    let team_id = pipeline_team_id(&state.db(), &id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let r = crate::store::pipelines::full_row(&state.db(), &id)
@@ -366,7 +366,7 @@ pub async fn update(
     State(state): State<AppState>,
     Json(req): Json<CreatePipelineRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let current_team_id = pipeline_team_id(&state.pool, &id).await?;
+    let current_team_id = pipeline_team_id(&state.db(), &id).await?;
     auth.check_team(&current_team_id, Perm::PipelineWrite)?;
 
     // Form retirement: every pipeline is file-backed, and this endpoint
@@ -389,7 +389,7 @@ pub async fn update(
 
     let (team_id, owner_group) = if req.team_id.is_some() || req.owner_group.is_some() {
         let resolved = resolve_required_team_id(
-            &state.pool,
+            &state.db(),
             req.team_id.as_deref(),
             req.owner_group.as_deref(),
         )
@@ -557,7 +557,7 @@ pub async fn delete(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let team_id = pipeline_team_id(&state.pool, &id).await?;
+    let team_id = pipeline_team_id(&state.db(), &id).await?;
     auth.check_team(&team_id, Perm::PipelineDelete)?;
 
     let facts = crate::store::pipelines::delete_facts(&state.db(), &id).await?;
@@ -608,7 +608,7 @@ pub async fn toggle_active(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = pipeline_team_id(&state.pool, &id).await?;
+    let team_id = pipeline_team_id(&state.db(), &id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     let (name, current_active) = crate::store::pipelines::name_active_of(&state.db(), &id)
@@ -659,7 +659,7 @@ pub async fn disable(
     body: Option<Json<DisablePipelineRequest>>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let req = body.map(|Json(b)| b).unwrap_or_default();
-    let team_id = pipeline_team_id(&state.pool, &id).await?;
+    let team_id = pipeline_team_id(&state.db(), &id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     let outcome =
@@ -697,7 +697,7 @@ pub async fn enable(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = pipeline_team_id(&state.pool, &id).await?;
+    let team_id = pipeline_team_id(&state.db(), &id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     let name = crate::store::pipelines::enable(&state.db(), &auth, &team_id, &id).await?;
@@ -715,7 +715,7 @@ pub async fn trigger(
     State(state): State<AppState>,
     Json(body): Json<shared::protocol::TriggerPipelineRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = pipeline_team_id(&state.pool, &id).await?;
+    let team_id = pipeline_team_id(&state.db(), &id).await?;
     auth.check_team(&team_id, Perm::PipelineTrigger)?;
 
     // Admin-only debug trigger: skips secret redaction in the Runner's logs for this job.
@@ -1277,7 +1277,7 @@ async fn verify_pipeline_secret_bindings(
     };
     auth.check_team(team_id, Perm::SecretManage)?;
     for secret_id in ids {
-        let secret_team = secret_team_id(&state.pool, secret_id).await?;
+        let secret_team = secret_team_id(&state.db(), secret_id).await?;
         if secret_team != team_id {
             return Err(AppError::ValidationFailed(format!(
                 "secret '{secret_id}' belongs to a different team"

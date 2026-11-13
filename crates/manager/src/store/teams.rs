@@ -291,6 +291,120 @@ pub async fn remove_member(pool: &DbPool, team_id: &str, user_id: &str) -> Resul
     Ok(affected > 0)
 }
 
+/// `(id, slug)` by id (`None` = no such team) — request team resolution.
+pub async fn id_and_slug_by_id(
+    pool: &DbPool,
+    id: &str,
+) -> Result<Option<(String, String)>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT id, slug FROM teams WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .map(|r| (r.text(0), r.text(1))))
+}
+
+/// Startup team bootstrap: create the `default` team, attach active platform
+/// admins as owners, create teams for legacy `owner_group` values, and
+/// backfill `team_id` on pipelines/secrets. Idempotent; failures that the
+/// legacy path swallowed stay best effort.
+pub async fn bootstrap(pool: &DbPool) -> Result<(), AppError> {
+    let default_team_id = ensure(pool, "default", "Default").await?;
+
+    for admin_id in crate::store::users::active_platform_admin_ids(pool).await? {
+        exec::execute(
+            pool,
+            "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?, ?, 'owner')",
+            &[default_team_id.as_str().into(), admin_id.as_str().into()],
+        )
+        .await?;
+    }
+
+    let groups = exec::fetch_all(
+        pool,
+        "SELECT DISTINCT owner_group FROM (
+            SELECT owner_group FROM pipelines WHERE owner_group != ''
+            UNION
+            SELECT owner_group FROM secrets WHERE owner_group != ''
+         )",
+        &[],
+    )
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect::<Vec<_>>();
+
+    for slug in groups {
+        ensure(pool, &slug, &slug).await?;
+    }
+
+    // Match by owner_group slug, then send the remainder to the default team.
+    let _ = exec::execute(
+        pool,
+        "UPDATE pipelines SET team_id = (
+            SELECT t.id FROM teams t WHERE t.slug = pipelines.owner_group
+         )
+         WHERE (team_id IS NULL OR team_id = '')
+           AND owner_group != ''
+           AND EXISTS (SELECT 1 FROM teams t WHERE t.slug = pipelines.owner_group)",
+        &[],
+    )
+    .await;
+    let _ = exec::execute(
+        pool,
+        "UPDATE secrets SET team_id = (
+            SELECT t.id FROM teams t WHERE t.slug = secrets.owner_group
+         )
+         WHERE (team_id IS NULL OR team_id = '')
+           AND owner_group != ''
+           AND EXISTS (SELECT 1 FROM teams t WHERE t.slug = secrets.owner_group)",
+        &[],
+    )
+    .await;
+
+    let pipelines = exec::execute(
+        pool,
+        "UPDATE pipelines SET team_id = ?, owner_group = 'default'
+         WHERE team_id IS NULL OR team_id = ''",
+        &[default_team_id.as_str().into()],
+    )
+    .await?;
+    if pipelines > 0 {
+        tracing::info!("Backfilled {pipelines} rows in pipelines to default team");
+    }
+    let secrets = exec::execute(
+        pool,
+        "UPDATE secrets SET team_id = ?, owner_group = 'default'
+         WHERE team_id IS NULL OR team_id = ''",
+        &[default_team_id.as_str().into()],
+    )
+    .await?;
+    if secrets > 0 {
+        tracing::info!("Backfilled {secrets} rows in secrets to default team");
+    }
+    Ok(())
+}
+
+async fn ensure(pool: &DbPool, slug: &str, name: &str) -> Result<String, AppError> {
+    if let Some(id) =
+        exec::fetch_optional(pool, "SELECT id FROM teams WHERE slug = ?", &[slug.into()])
+            .await?
+            .map(|r| r.text(0))
+    {
+        return Ok(id);
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    exec::execute(
+        pool,
+        "INSERT INTO teams (id, name, slug, description) VALUES (?, ?, ?, ?)",
+        &[id.as_str().into(), name.into(), slug.into(), "".into()],
+    )
+    .await?;
+    tracing::info!("Created team '{name}' (slug={slug})");
+    Ok(id)
+}
+
 /// A team's display name (`None` = no such team).
 pub async fn name_of(pool: &DbPool, id: &str) -> Result<Option<String>, AppError> {
     Ok(

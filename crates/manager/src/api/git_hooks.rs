@@ -64,7 +64,7 @@ pub async fn list_hooks(
     Path(pipeline_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = rbac::pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = rbac::pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let rows = crate::store::git_hooks::list_for_pipeline(&state.db(), &pipeline_id).await?;
@@ -115,7 +115,7 @@ pub async fn create_hook(
     State(state): State<AppState>,
     Json(req): Json<CreateGitHookRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = rbac::pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = rbac::pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     let provider = normalize_provider(&req.provider).ok_or_else(|| {
@@ -228,7 +228,7 @@ pub async fn update_hook(
     State(state): State<AppState>,
     Json(req): Json<UpdateGitHookRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = rbac::pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = rbac::pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     let label = req.label.unwrap_or_default().trim().to_string();
@@ -306,7 +306,7 @@ pub async fn delete_hook(
     Path((pipeline_id, hook_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = rbac::pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = rbac::pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
     let before_row =
         crate::store::git_hooks::delete_facts(&state.db(), &hook_id, &pipeline_id).await?;

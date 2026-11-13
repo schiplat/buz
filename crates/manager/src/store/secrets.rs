@@ -300,6 +300,17 @@ pub async fn existing_names_in_team(
         .collect())
 }
 
+/// Stored team id of one secret (`None` = no such secret).
+pub async fn team_id_of(pool: &DbPool, secret_id: &str) -> Result<Option<String>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT team_id FROM secrets WHERE id = ?",
+        &[secret_id.into()],
+    )
+    .await?
+    .map(|r| r.text(0)))
+}
+
 /// `(name, stored value, team_id)` — the GitHub push path's facts.
 pub async fn push_facts(pool: &DbPool, id: &str) -> Result<(String, String, String), AppError> {
     let row = exec::fetch_optional(

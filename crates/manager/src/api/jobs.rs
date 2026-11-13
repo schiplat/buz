@@ -202,7 +202,7 @@ pub async fn get_one(
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
 
-    let team_id = pipeline_team_id(&state.pool, &r.pipeline_id).await?;
+    let team_id = pipeline_team_id(&state.db(), &r.pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
     // Debug (unredacted) jobs are admin-only records — non-admins must not
@@ -273,7 +273,7 @@ pub async fn cancel(
         .await?
         .ok_or_else(|| AppError::NotFound("job not found".into()))?;
 
-    let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     let prev_status = crate::store::jobs::cancel(
@@ -559,7 +559,7 @@ pub async fn delete(
 
     match ctx {
         Some((status, pipeline_id, pipeline)) => {
-            let team_id = pipeline_team_id(&state.pool, &pipeline_id).await?;
+            let team_id = pipeline_team_id(&state.db(), &pipeline_id).await?;
             auth.check_team(&team_id, Perm::PipelineWrite)?;
             crate::store::jobs::delete_job(&state.db(), &id).await?;
             audit::record(

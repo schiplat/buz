@@ -89,7 +89,7 @@ pub async fn get_pipeline_source(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = pipeline_team_id(&state.pool, &id).await?;
+    let team_id = pipeline_team_id(&state.db(), &id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let (source, yaml_path, name) =
@@ -230,7 +230,7 @@ pub async fn put_file(
 
     // Also require write on the current binding (source team / migrate source).
     if let Some(ref pid) = req.pipeline_id {
-        let current_team_id = pipeline_team_id(&state.pool, pid).await?;
+        let current_team_id = pipeline_team_id(&state.db(), pid).await?;
         auth.check_team(&current_team_id, Perm::PipelineWrite)?;
     } else {
         authorize_file_access(&state, &auth, &scan_dir, &filename, Perm::PipelineWrite).await?;
@@ -352,7 +352,7 @@ async fn authorize_file_access(
 ) -> Result<(), AppError> {
     match find_yaml_pipeline_row(&state.pool, filename).await? {
         Some(pid) => {
-            let team_id = pipeline_team_id(&state.pool, &pid).await?;
+            let team_id = pipeline_team_id(&state.db(), &pid).await?;
             auth.check_team(&team_id, perm)?;
         }
         None => {

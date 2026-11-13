@@ -125,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
 
     let db_pool = db::init(&config).await?;
     db::run_migrations(&db_pool, &config.auth.jwt_secret).await?;
-    rbac::bootstrap(&db_pool).await?;
+    rbac::bootstrap(&manager::store::exec::DbPool::from_sqlite(&db_pool)).await?;
     api::runners::ensure_standalone_auto_approve(&db_pool, &config).await?;
     api::version::mark_started();
 

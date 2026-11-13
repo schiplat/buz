@@ -297,9 +297,13 @@ pub async fn gen_runner_token(
     db::run_migrations(&pool, &config.auth.jwt_secret).await?;
 
     // Verify the caller is a platform admin before touching the runners table.
-    rbac::verify_cli_admin_token(&pool, &config.auth.jwt_secret, admin_token)
-        .await
-        .map_err(|e| anyhow::anyhow!("token verification failed: {e}"))?;
+    rbac::verify_cli_admin_token(
+        &crate::store::exec::DbPool::from_sqlite(&pool),
+        &config.auth.jwt_secret,
+        admin_token,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("token verification failed: {e}"))?;
 
     let labels = labels.map(|l| {
         l.split(',')

@@ -19,7 +19,7 @@ impl FromRequestParts<AppState> for AuthUser {
     ) -> Result<Self, Self::Rejection> {
         let token = extract_bearer(parts)?;
         let user =
-            crate::rbac::authenticate_user_token(&state.pool, &state.config.auth.jwt_secret, token)
+            crate::rbac::authenticate_user_token(&state.db(), &state.config.auth.jwt_secret, token)
                 .await
                 .map_err(|e| match e {
                     shared::error::AppError::AuthFailed(msg) => auth_err(&msg),

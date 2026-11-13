@@ -817,7 +817,7 @@ pub async fn list_secret_binds(
     Path(secret_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let team_id = secret_team_id(&state.pool, &secret_id).await?;
+    let team_id = secret_team_id(&state.db(), &secret_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
     let binds = crate::store::github_binds::list_secret_binds(&state.db(), &secret_id).await?;
     let out: Vec<serde_json::Value> = binds
@@ -851,7 +851,7 @@ pub async fn add_secret_bind(
     // GitHub binds push the secret to a repo using the connection's PAT, so
     // binding is restricted to platform admins — team maintainers can read the
     // bind state but not change it.
-    let team_id = secret_team_id(&state.pool, &secret_id).await?;
+    let team_id = secret_team_id(&state.db(), &secret_id).await?;
 
     let repo = crate::store::github_binds::repo_identity(&state.db(), &req.repo_id).await?;
     let (owner, repo_name, conn_name) = match repo {
@@ -956,7 +956,7 @@ pub async fn patch_secret_bind(
     State(state): State<AppState>,
     Json(req): Json<PatchBindOverrideRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = secret_team_id(&state.pool, &secret_id).await?;
+    let team_id = secret_team_id(&state.db(), &secret_id).await?;
 
     let row =
         crate::store::github_binds::secret_bind_patch_facts(&state.db(), &bind_id, &secret_id)
@@ -1049,7 +1049,7 @@ pub async fn delete_secret_bind(
     Path((secret_id, bind_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let team_id = secret_team_id(&state.pool, &secret_id).await?;
+    let team_id = secret_team_id(&state.db(), &secret_id).await?;
 
     let target = crate::store::github_binds::secret_bind_target(&state.db(), &bind_id, &secret_id)
         .await?

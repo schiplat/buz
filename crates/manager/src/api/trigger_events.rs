@@ -38,7 +38,7 @@ pub async fn list(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = rbac::pipeline_team_id(&state.pool, &pipeline_id).await?;
+    let team_id = rbac::pipeline_team_id(&state.db(), &pipeline_id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let page = q.page.max(1);

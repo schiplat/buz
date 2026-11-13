@@ -85,7 +85,7 @@ pub async fn create(
     }
 
     let (team_id, slug) = resolve_required_team_id(
-        &state.pool,
+        &state.db(),
         req.team_id.as_deref(),
         req.owner_group.as_deref(),
     )
@@ -152,7 +152,7 @@ pub async fn get_one(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = secret_team_id(&state.pool, &id).await?;
+    let team_id = secret_team_id(&state.db(), &id).await?;
     auth.check_team(&team_id, Perm::TeamView)?;
 
     let s = crate::store::secrets::find_by_id(&state.db(), &id)
@@ -180,12 +180,12 @@ pub async fn update(
     State(state): State<AppState>,
     Json(req): Json<UpdateSecretRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let team_id = secret_team_id(&state.pool, &id).await?;
+    let team_id = secret_team_id(&state.db(), &id).await?;
     auth.check_team(&team_id, Perm::SecretManage)?;
 
     let (new_team_id, slug) = if req.team_id.is_some() || req.owner_group.is_some() {
         let resolved = resolve_required_team_id(
-            &state.pool,
+            &state.db(),
             req.team_id.as_deref(),
             req.owner_group.as_deref(),
         )
@@ -308,7 +308,7 @@ pub async fn delete(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let team_id = secret_team_id(&state.pool, &id).await?;
+    let team_id = secret_team_id(&state.db(), &id).await?;
     auth.check_team(&team_id, Perm::SecretManage)?;
 
     let facts = crate::store::secrets::delete_facts(&state.db(), &id).await?;

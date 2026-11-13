@@ -115,6 +115,67 @@ pub async fn update_facts(pool: &DbPool, id: &str) -> Result<Option<UserUpdateBe
     }))
 }
 
+/// Auth facts of one user (`None` = no such row) — the login/session load.
+pub struct AuthFactsRow {
+    pub id: String,
+    pub username: String,
+    pub is_platform_admin: bool,
+    pub is_super_admin: bool,
+    pub is_active: bool,
+    pub is_ops: bool,
+}
+
+pub async fn auth_facts(pool: &DbPool, user_id: &str) -> Result<Option<AuthFactsRow>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT id, username, is_platform_admin, is_super_admin, is_active, is_ops
+         FROM users WHERE id = ?",
+        &[user_id.into()],
+    )
+    .await?
+    .map(|r| AuthFactsRow {
+        id: r.text_of("id"),
+        username: r.text_of("username"),
+        is_platform_admin: r.i64_of("is_platform_admin") != 0,
+        is_super_admin: r.i64_of("is_super_admin") != 0,
+        is_active: r.i64_of("is_active") != 0,
+        is_ops: r.i64_of("is_ops") != 0,
+    }))
+}
+
+/// `(team_id, slug, name, role)` of one user's memberships, team-name ordered.
+pub async fn memberships(
+    pool: &DbPool,
+    user_id: &str,
+) -> Result<Vec<(String, String, String, String)>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT tm.team_id, t.slug, t.name, tm.role
+         FROM team_members tm
+         JOIN teams t ON t.id = tm.team_id
+         WHERE tm.user_id = ?
+         ORDER BY t.name ASC",
+        &[user_id.into()],
+    )
+    .await?
+    .into_iter()
+    .map(|r| (r.text(0), r.text(1), r.text(2), r.text(3)))
+    .collect())
+}
+
+/// Ids of active platform admins (bootstrap attaches them to the default team).
+pub async fn active_platform_admin_ids(pool: &DbPool) -> Result<Vec<String>, AppError> {
+    Ok(exec::fetch_all(
+        pool,
+        "SELECT id FROM users WHERE is_platform_admin = 1 AND is_active = 1",
+        &[],
+    )
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect())
+}
+
 /// Replace one user's password hash.
 pub async fn update_password(pool: &DbPool, id: &str, password_hash: &str) -> Result<(), AppError> {
     exec::execute(

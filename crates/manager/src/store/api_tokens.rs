@@ -88,6 +88,30 @@ pub async fn list(
         .collect())
 }
 
+/// `(user_id, scope)` of an unrevoked token by hash — the auth lookup.
+pub async fn find_by_hash(
+    pool: &DbPool,
+    token_hash: &str,
+) -> Result<Option<(String, String)>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT user_id, scope FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL",
+        &[token_hash.into()],
+    )
+    .await?
+    .map(|r| (r.text(0), r.text(1))))
+}
+
+/// Best-effort `last_used_at` stamp (never fails the request).
+pub async fn touch_last_used(pool: &DbPool, token_hash: &str) {
+    let _ = exec::execute(
+        pool,
+        "UPDATE api_tokens SET last_used_at = datetime('now') WHERE token_hash = ?",
+        &[token_hash.into()],
+    )
+    .await;
+}
+
 /// `(owner_user_id, name)` of an unrevoked token, for the authorize step.
 pub async fn find_active(pool: &DbPool, id: &str) -> Result<Option<(String, String)>, AppError> {
     Ok(exec::fetch_optional(
