@@ -425,7 +425,7 @@ pub async fn rerun(
 
     // Same authorization subject as trigger: the job's resolved team.
     crate::services::resource_grants::ensure_team_may_use(
-        &state.pool,
+        &state.db(),
         &team_id,
         resource_profile.trim(),
     )

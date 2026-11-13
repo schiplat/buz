@@ -926,7 +926,7 @@ async fn poll_once(
         let (job_profile, job_team) = job_resource_request(&snapshot_raw);
         if let Some(profile) = crate::services::resource_grants::requested_profile(&job_profile) {
             if let Err(error) = crate::services::resource_grants::ensure_team_may_use(
-                &state.pool,
+                &state.db(),
                 job_team.as_deref().unwrap_or_default(),
                 profile,
             )

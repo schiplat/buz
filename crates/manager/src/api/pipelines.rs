@@ -817,7 +817,7 @@ pub async fn do_trigger(
     // subject is the job's resolved team (the same team used for dispatch and
     // runner binding). Unauthorized → fail fast before anything is scheduled.
     let resource_profile: String = pipeline.resource_profile.trim().to_string();
-    crate::services::resource_grants::ensure_team_may_use(&state.pool, &team_id, &resource_profile)
+    crate::services::resource_grants::ensure_team_may_use(&state.db(), &team_id, &resource_profile)
         .await
         .inspect_err(|error| {
             tracing::warn!(
