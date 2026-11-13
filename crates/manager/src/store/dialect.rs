@@ -5,8 +5,11 @@
 //! mechanical differences so ~95% of statements need no second copy:
 //!
 //! - `?` placeholders → numbered `$1, $2, …` (string literals are skipped);
-//! - `datetime('now')` → `now()`;
-//! - `datetime('now', '-N seconds')` → `now() - interval 'N seconds'`;
+//! - `datetime('now')` → `datetime()` (the baseline's TEXT shim — every
+//!   timestamp column is TEXT, so a `now()` timestamptz would break text
+//!   comparisons);
+//! - `datetime('now', '-N seconds')` → `datetime(datetime(), '-N seconds')`
+//!   (same shim, same TEXT output);
 //! - `INSERT OR IGNORE INTO …` → `INSERT INTO … ON CONFLICT DO NOTHING`
 //!   (appended at the statement's end, before a trailing `;` if present).
 //!
@@ -55,12 +58,14 @@ pub fn sqlite_to_postgres(sql: &str) -> String {
         }
 
         if starts_with(&chars, i, "datetime('now')") {
-            out.push_str("now()");
+            // The baseline shim returns SQLite's TEXT format; `now()` would be
+            // a timestamptz and break every text comparison against a column.
+            out.push_str("datetime()");
             i += "datetime('now')".len();
             continue;
         }
 
-        // `datetime('now', '-N seconds')` → `now() - interval 'N seconds'`
+        // `datetime('now', '-N seconds')` → `datetime(datetime(), '-N seconds')`
         // (only minus appears in the codebase; plus is handled for symmetry).
         if starts_with(&chars, i, "datetime('now', '-")
             || starts_with(&chars, i, "datetime('now', '+")
@@ -75,7 +80,7 @@ pub fn sqlite_to_postgres(sql: &str) -> String {
             if j > digits_start && starts_with(&chars, j, tail) {
                 let seconds: String = chars[digits_start..j].iter().collect();
                 let op = if minus { '-' } else { '+' };
-                out.push_str(&format!("now() {op} interval '{seconds} seconds'"));
+                out.push_str(&format!("datetime(datetime(), '{op}{seconds} seconds')"));
                 i = j + tail.len();
                 continue;
             }

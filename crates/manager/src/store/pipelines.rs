@@ -946,18 +946,23 @@ pub async fn host_id_by_name(tx: &mut DbTx<'_>, name: &str) -> Result<Option<Str
 }
 
 /// Ids of hosts whose `labels` JSON array contains `label`, inside the
-/// caller's transaction.
-///
-/// PG-port note: `json_each` has no mechanical rewrite (see `store::dialect`),
-/// so this statement needs an explicit Postgres variant.
+/// caller's transaction. Postgres walks the array with
+/// `jsonb_array_elements_text` (the column stays TEXT, so it is cast).
 pub async fn host_ids_by_label(tx: &mut DbTx<'_>, label: &str) -> Result<Vec<String>, AppError> {
-    Ok(tx
+    let sql = match tx {
         // `hosts.id` must be qualified: `json_each` also exposes an `id`
         // column, so the unqualified form is ambiguous at compile time.
-        .fetch_all(
-            "SELECT hosts.id FROM hosts, json_each(hosts.labels) WHERE json_each.value = ?",
-            &[label.into()],
-        )
+        DbTx::Sqlite(_) => {
+            "SELECT hosts.id FROM hosts, json_each(hosts.labels) WHERE json_each.value = ?"
+        }
+        #[cfg(feature = "postgres")]
+        DbTx::Pg(_) => {
+            "SELECT h.id FROM hosts h, jsonb_array_elements_text(h.labels::jsonb) AS host_label \
+             WHERE host_label = $1"
+        }
+    };
+    Ok(tx
+        .fetch_all(sql, &[label.into()])
         .await?
         .into_iter()
         .map(|r| r.text(0))

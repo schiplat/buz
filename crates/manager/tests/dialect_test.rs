@@ -174,26 +174,30 @@ fn string_literals_survive_unchanged() {
     }
 }
 
-/// `datetime('now')` becomes `now()` — everywhere, including inside
-/// COALESCE/CASE expressions.
+/// `datetime('now')` becomes the TEXT-preserving shim `datetime()` — a
+/// `now()` timestamptz would break every text comparison against a column.
 #[test]
-fn datetime_now_becomes_now() {
-    assert_eq!(sqlite_to_postgres("SELECT datetime('now')"), "SELECT now()");
+fn datetime_now_becomes_text_shim() {
+    assert_eq!(
+        sqlite_to_postgres("SELECT datetime('now')"),
+        "SELECT datetime()"
+    );
     let complex = sqlite_to_postgres("UPDATE t SET x = datetime('now') WHERE y = datetime('now')");
-    assert_eq!(complex.matches("now()").count(), 2);
-    assert!(!complex.contains("datetime"));
+    assert_eq!(complex.matches("datetime()").count(), 2);
+    assert!(!complex.contains("datetime('now'"));
+    assert!(!complex.contains("now()"));
 }
 
-/// `datetime('now', '-N seconds')` becomes a PG interval arithmetic.
+/// `datetime('now', '-N seconds')` becomes the two-argument TEXT shim.
 #[test]
-fn datetime_offset_becomes_interval() {
+fn datetime_offset_becomes_shim_arithmetic() {
     assert_eq!(
         sqlite_to_postgres("SELECT * FROM t WHERE seen >= datetime('now', '-300 seconds')"),
-        "SELECT * FROM t WHERE seen >= now() - interval '300 seconds'"
+        "SELECT * FROM t WHERE seen >= datetime(datetime(), '-300 seconds')"
     );
     assert!(
         sqlite_to_postgres("SELECT * FROM t WHERE seen <= datetime('now', '+45 seconds')")
-            .contains("now() + interval '45 seconds'")
+            .contains("datetime(datetime(), '+45 seconds')")
     );
 }
 

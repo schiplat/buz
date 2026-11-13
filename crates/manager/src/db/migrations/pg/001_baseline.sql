@@ -1,7 +1,8 @@
 
 -- Buz Manager: Postgres baseline schema.
 -- Derived mechanically from the fully migrated SQLite template database
--- (39 tables, indexes, 2 seq triggers). TEXT columns are kept faithful —
+-- (38 application tables, indexes, 2 seq triggers; `schema_migrations` is the
+-- migration runner's own). TEXT columns are kept faithful —
 -- timestamp comparisons in the shared SQL strings rely on text ordering,
 -- and the datetime() shims produce SQLite's exact text format.
 -- ───────────────────────── dialect shim functions ─────────────────────────
@@ -16,6 +17,12 @@ CREATE OR REPLACE FUNCTION datetime() RETURNS text LANGUAGE sql
 CREATE OR REPLACE FUNCTION datetime(value text) RETURNS text LANGUAGE sql
     AS $$ SELECT value::timestamptz::text $$;
 
+-- SQLite's date(x) returns the calendar day as TEXT; the jobs trend query
+-- groups by it. Postgres' built-in date() only accepts a timestamp, so the
+-- text overload is ours (text-slice keeps SQLite's output format exactly).
+CREATE OR REPLACE FUNCTION date(value text) RETURNS text LANGUAGE sql
+    AS $$ SELECT substr(value, 1, 10) $$;
+
 CREATE OR REPLACE FUNCTION datetime(value text, modifier text) RETURNS text
     LANGUAGE sql AS $$
     SELECT CASE
@@ -27,11 +34,8 @@ CREATE OR REPLACE FUNCTION datetime(value text, modifier text) RETURNS text
 $$;
 
 -- ───────────────────────────── tables (FK order) ─────────────────────
--- table schema_migrations
-CREATE TABLE schema_migrations (
-            version BIGINT PRIMARY KEY,
-            applied_at TEXT NOT NULL DEFAULT datetime()
-        );
+-- `schema_migrations` is NOT part of the baseline: the migration runner owns
+-- it (creates it before applying versions and records the row itself).
 -- table manager_meta
 CREATE TABLE manager_meta (
     key TEXT PRIMARY KEY,
@@ -625,9 +629,9 @@ CREATE UNIQUE INDEX ux_step_resolutions_pipeline_order ON step_resolutions(pipel
 CREATE OR REPLACE FUNCTION trg_jobs_insert_seq_fn() RETURNS trigger AS $$
 BEGIN
     UPDATE jobs SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM jobs)
-             WHERE id = NEW.id;;
+             WHERE id = NEW.id;
     RETURN NEW;
-END
+END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trg_jobs_insert_seq
@@ -640,9 +644,9 @@ CREATE TRIGGER trg_jobs_insert_seq
 CREATE OR REPLACE FUNCTION trg_audit_logs_insert_seq_fn() RETURNS trigger AS $$
 BEGIN
     UPDATE audit_logs SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM audit_logs)
-             WHERE id = NEW.id;;
+             WHERE id = NEW.id;
     RETURN NEW;
-END
+END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trg_audit_logs_insert_seq

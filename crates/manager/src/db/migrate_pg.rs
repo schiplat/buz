@@ -25,9 +25,10 @@ pub const ADVISORY_LOCK_KEY: i64 = 0x6275_7A6D_6772_3031; // "buzmgr01"
 
 #[cfg(feature = "postgres")]
 /// `(version, sql)` pairs, ascending. Version 1 is the fresh baseline
-/// translated from the fully migrated SQLite template (39 tables, indexes,
-/// 2 seq triggers, `datetime()` shims) — new PG deployments apply the merged
-/// baseline; there is no incremental replay of the SQLite chain.
+/// translated from the fully migrated SQLite template (38 application tables,
+/// indexes, 2 seq triggers, `datetime()` shims; `schema_migrations` is the
+/// runner's own) — new PG deployments apply the merged baseline; there is no
+/// incremental replay of the SQLite chain.
 pub const PG_MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("migrations/pg/001_baseline.sql"))];
 
 #[cfg(feature = "postgres")]
@@ -107,10 +108,11 @@ mod tests {
     #[test]
     fn baseline_carries_the_full_schema() {
         let sql = PG_MIGRATIONS[0].1;
-        // 39 tables from the migrated template; statements must be plain
+        // 38 application tables from the migrated template; `schema_migrations`
+        // is owned by this runner, not the baseline. Statements must be plain
         // CREATE TABLE (fresh-apply model — no IF NOT EXISTS inside the tx).
         let create_tables = sql.matches("CREATE TABLE ").count();
-        assert_eq!(create_tables, 39, "baseline table count drifted");
+        assert_eq!(create_tables, 38, "baseline table count drifted");
         assert!(!sql.contains("CREATE TABLE IF NOT EXISTS"));
         // dialect shims are part of the baseline (shared statements call them)
         assert!(sql.contains("CREATE OR REPLACE FUNCTION datetime()"));

@@ -17,14 +17,34 @@ pub async fn try_acquire_lease(
     ttl_secs: i64,
 ) -> Result<bool, AppError> {
     let expires = format!("+{ttl_secs} seconds");
-    let acquired = exec::execute(
-        pool,
-        "INSERT OR REPLACE INTO scheduler_lease (id, instance_id, expires_at, updated_at)
+    // SQLite replaces the row wholesale; Postgres needs the named conflict
+    // target (the rewriter leaves `INSERT OR REPLACE` alone on purpose).
+    let sql = match pool {
+        DbPool::Sqlite(_) => {
+            "INSERT OR REPLACE INTO scheduler_lease (id, instance_id, expires_at, updated_at)
          SELECT ?, ?, datetime('now', ?), datetime('now')
          WHERE NOT EXISTS (
              SELECT 1 FROM scheduler_lease
              WHERE id = ? AND expires_at > datetime('now')
-         )",
+         )"
+        }
+        #[cfg(feature = "postgres")]
+        DbPool::Pg(_) => {
+            "INSERT INTO scheduler_lease (id, instance_id, expires_at, updated_at)
+         SELECT ?, ?, datetime('now', ?), datetime('now')
+         WHERE NOT EXISTS (
+             SELECT 1 FROM scheduler_lease
+             WHERE id = ? AND expires_at > datetime('now')
+         )
+         ON CONFLICT (id) DO UPDATE SET
+           instance_id = EXCLUDED.instance_id,
+           expires_at = EXCLUDED.expires_at,
+           updated_at = EXCLUDED.updated_at"
+        }
+    };
+    let acquired = exec::execute(
+        pool,
+        sql,
         &[
             SqlValue::Int(lease_id),
             instance_id.into(),
@@ -64,10 +84,13 @@ pub async fn try_acquire_lease(
 pub async fn queued_pipeline_ids(pool: &DbPool) -> Result<Vec<String>, AppError> {
     Ok(exec::fetch_all(
         pool,
-        "SELECT DISTINCT j.pipeline_id
+        // GROUP BY ... MIN keeps the oldest-queued-first order without the
+        // DISTINCT + ORDER BY conflict Postgres rejects.
+        "SELECT j.pipeline_id
          FROM jobs j
          WHERE j.status = 'queued'
-         ORDER BY j.created_at ASC",
+         GROUP BY j.pipeline_id
+         ORDER BY MIN(j.created_at) ASC",
         &[],
     )
     .await?

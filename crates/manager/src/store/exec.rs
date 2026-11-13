@@ -470,6 +470,11 @@ fn decode_pg_row(row: sqlx::postgres::PgRow) -> GenericRow {
             SqlValue::Int(v)
         } else if let Ok(v) = row.try_get::<f64, _>(i) {
             SqlValue::Real(v)
+        } else if let Ok(v) = row.try_get::<bool, _>(i) {
+            // Boolean expressions (`EXISTS(...)`, comparisons) decode as
+            // ints on SQLite; PG returns a real BOOLEAN. Normalise to 0/1 so
+            // `GenericRow::i64` answers both backends identically.
+            SqlValue::Int(i64::from(v))
         } else if let Ok(v) = row.try_get::<String, _>(i) {
             SqlValue::Text(v)
         } else if let Ok(v) = row.try_get::<Vec<u8>, _>(i) {
@@ -498,12 +503,35 @@ fn bind_sqlite<'q>(
 }
 
 #[cfg(feature = "postgres")]
+/// A NULL bind with Postgres' `unknown` type (OID 705), so the server infers
+/// the target column's type. Binding `None::<String>` instead would declare
+/// TEXT and make every BIGINT/TEXT mismatch a runtime type error.
+struct UntypedNull;
+
+#[cfg(feature = "postgres")]
+impl sqlx::Type<sqlx::Postgres> for UntypedNull {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        sqlx::postgres::PgTypeInfo::with_oid(sqlx::postgres::types::Oid(705))
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl sqlx::Encode<'_, sqlx::Postgres> for UntypedNull {
+    fn encode_by_ref(
+        &self,
+        _buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        Ok(sqlx::encode::IsNull::Yes)
+    }
+}
+
+#[cfg(feature = "postgres")]
 fn bind_pg<'q>(
     q: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
     v: &'q SqlValue,
 ) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
     match v {
-        SqlValue::Null => q.bind(None::<String>),
+        SqlValue::Null => q.bind(UntypedNull),
         SqlValue::Text(v) => q.bind(v.as_str()),
         SqlValue::Int(v) => q.bind(*v),
         SqlValue::Real(v) => q.bind(*v),

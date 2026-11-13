@@ -1328,22 +1328,28 @@ pub async fn claim_job_tx(
 /// The claim decision's re-read, inside the caller's `BEGIN IMMEDIATE` scope:
 /// `(pipeline_id, environment_id, runner_team_id, job_team_id)`. `None` when
 /// the job is gone or no longer pending (the caller rolls back and moves on).
-///
-/// PG-port note: the `json_extract` team read has no mechanical rewrite (see
-/// `store::dialect`), so this statement needs an explicit Postgres variant.
 pub async fn claim_candidate_tx(
     tx: &mut DbTx<'_>,
     runner_id: &str,
     job_id: &str,
 ) -> Result<Option<(String, Option<String>, Option<String>, Option<String>)>, AppError> {
-    let row = tx
-        .fetch_optional(
+    let sql = match tx {
+        DbTx::Sqlite(_) => {
             "SELECT j.pipeline_id, j.environment_id, r.team_id, \
                 json_extract(j.snapshot, '$.team_id') \
          FROM jobs j JOIN runners r ON r.id = ? \
-         WHERE j.id = ? AND j.status = 'pending'",
-            &[runner_id.into(), job_id.into()],
-        )
+         WHERE j.id = ? AND j.status = 'pending'"
+        }
+        #[cfg(feature = "postgres")]
+        DbTx::Pg(_) => {
+            "SELECT j.pipeline_id, j.environment_id, r.team_id, \
+                (j.snapshot::jsonb ->> 'team_id') \
+         FROM jobs j JOIN runners r ON r.id = $1 \
+         WHERE j.id = $2 AND j.status = 'pending'"
+        }
+    };
+    let row = tx
+        .fetch_optional(sql, &[runner_id.into(), job_id.into()])
         .await?;
     Ok(row.map(|r| (r.text(0), r.opt_text(1), r.opt_text(2), r.opt_text(3))))
 }
@@ -1478,7 +1484,15 @@ async fn frozen_task_rows_pg(
                 COALESCE(elem ->> 'image', ''),
                 COALESCE(elem ->> 'volumes', '[]'),
                 COALESCE(elem ->> 'hosts_strategy', 'chain'),
-                COALESCE((elem ->> 'privileged')::bigint, 0),
+                -- `privileged` is a JSON boolean in snapshots (SQLite's
+                -- json_extract yields 0/1); normalise either shape to BIGINT.
+                COALESCE(
+                    CASE jsonb_typeof(elem -> 'privileged')
+                        WHEN 'boolean' THEN (CASE WHEN (elem -> 'privileged')::boolean THEN 1 ELSE 0 END)::bigint
+                        WHEN 'number' THEN (elem ->> 'privileged')::bigint
+                        ELSE 0
+                    END,
+                    0),
                 COALESCE(elem ->> 'capabilities', '[]'),
                 COALESCE((elem ->> 'hosts_max_parallel')::bigint, NULL),
                 COALESCE(elem ->> 'needs', '[]')

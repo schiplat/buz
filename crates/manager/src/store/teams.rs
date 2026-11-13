@@ -327,7 +327,7 @@ pub async fn bootstrap(pool: &DbPool) -> Result<(), AppError> {
             SELECT owner_group FROM pipelines WHERE owner_group != ''
             UNION
             SELECT owner_group FROM secrets WHERE owner_group != ''
-         )",
+         ) AS legacy_groups",
         &[],
     )
     .await?
