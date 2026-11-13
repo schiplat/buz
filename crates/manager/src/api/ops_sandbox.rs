@@ -343,7 +343,7 @@ pub async fn delete_host(
             "{bound} runner(s) still bound to {host_id}/{instance_id} — detach them before deleting the enrollment"
         )));
     }
-    crate::store::ops_sandbox::delete_host_cascade(&state.pool, &host_id, &instance_id).await?;
+    crate::store::ops_sandbox::delete_host_cascade(&state.db(), &host_id, &instance_id).await?;
 
     audit::record(
         &state.pool,

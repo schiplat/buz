@@ -180,27 +180,23 @@ pub async fn enroll_host(
 }
 
 /// Delete one enrollment and cascade its pending changes and config
-/// versions (one plain `BEGIN` transaction, as before).
-///
-/// Stays on `SqlitePool`: the transaction is the tx-scope slice's (DbTx).
+/// versions, all in one dispatcher transaction. The table names come from
+/// the fixed list below (never caller text), so the interpolation stays
+/// identifier-safe.
 pub async fn delete_host_cascade(
-    pool: &sqlx::SqlitePool,
+    pool: &DbPool,
     host_id: &str,
     instance_id: &str,
 ) -> Result<(), AppError> {
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_immediate().await?;
     for table in [
         "sandbox_config_changes",
         "sandbox_host_configs",
         "sandbox_hosts",
     ] {
-        sqlx::query(&format!(
-            "DELETE FROM {table} WHERE host_id = ? AND instance_id = ?"
-        ))
-        .bind(host_id)
-        .bind(instance_id)
-        .execute(&mut *tx)
-        .await?;
+        let sql = format!("DELETE FROM {table} WHERE host_id = ? AND instance_id = ?");
+        tx.execute(&sql, &[host_id.into(), instance_id.into()])
+            .await?;
     }
     tx.commit().await?;
     Ok(())
