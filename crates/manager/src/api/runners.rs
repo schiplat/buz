@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::crypto;
 use crate::middleware::{PlatformAdmin, RunnerClaims};
 use crate::state::AppState;
+use crate::store::exec::DbPool;
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -51,7 +52,7 @@ pub fn runner_satisfies_labels(runner_labels: &[String], required: &[String]) ->
 /// Best-effort note of why a poller skipped a pending job: the store owns the
 /// write and the log-on-change behaviour.
 async fn record_dispatch_reason(pool: &sqlx::SqlitePool, job_id: &str, reason: &str) {
-    crate::store::runners::record_dispatch_reason(pool, job_id, reason).await;
+    crate::store::runners::record_dispatch_reason(&DbPool::from_sqlite(pool), job_id, reason).await;
 }
 
 /// `(resource_profile, team_id)` frozen into the job snapshot at trigger.
@@ -91,7 +92,13 @@ async fn log_runner_event(
     event_type: &str,
     message: &str,
 ) {
-    crate::store::runners::log_runner_event(pool, runner_id, event_type, message).await
+    crate::store::runners::log_runner_event(
+        &DbPool::from_sqlite(pool),
+        runner_id,
+        event_type,
+        message,
+    )
+    .await
 }
 
 /// Validate and clamp max_concurrent_jobs to 1..=32.
@@ -189,7 +196,7 @@ async fn validate_runner_team(
     let Some(team_id) = team_id.map(str::trim).filter(|id| !id.is_empty()) else {
         return Ok(None);
     };
-    if !crate::store::runners::team_exists(pool, team_id).await? {
+    if !crate::store::runners::team_exists(&DbPool::from_sqlite(pool), team_id).await? {
         return Err(AppError::ValidationFailed(format!(
             "team '{team_id}' does not exist"
         )));
@@ -215,7 +222,7 @@ async fn load_runner_policy(
     pool: &sqlx::SqlitePool,
     runner_id: &str,
 ) -> Result<RunnerPolicyConfig, AppError> {
-    let row = crate::store::runners::policy_row(pool, runner_id)
+    let row = crate::store::runners::policy_row(&DbPool::from_sqlite(pool), runner_id)
         .await?
         .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
 
@@ -273,7 +280,7 @@ pub async fn create_runner(
     Json(req): Json<CreateRunnerRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let created = create_runner_record(&state.pool, &req).await?;
-    let team_id = crate::store::runners::team_of(&state.pool, &created.id).await?;
+    let team_id = crate::store::runners::team_of(&state.db(), &created.id).await?;
 
     let policy = load_runner_policy(&state.pool, &created.id).await?;
     // The register token is deliberately absent from the snapshot.
@@ -332,7 +339,7 @@ pub async fn create_runner_record(
     // Hash-only at rest: the plaintext is returned exactly once in the API
     // response and never stored (same discipline as buz_/buzsd_ tokens).
     crate::store::runners::insert(
-        pool,
+        &DbPool::from_sqlite(pool),
         &crate::store::runners::NewRunner {
             id: &id,
             name: &req.name,
@@ -405,7 +412,7 @@ pub async fn ensure_standalone_auto_approve(
         if name.is_empty() {
             continue;
         }
-        let exists = crate::store::runners::count_by_name(pool, name).await?;
+        let exists = crate::store::runners::count_by_name(&DbPool::from_sqlite(pool), name).await?;
         if exists > 0 {
             tracing::info!(runner = %name, "standalone auto_approve: runner already exists");
             continue;
@@ -474,7 +481,7 @@ pub async fn register(
     }
 
     // Look up the runner by name first.
-    let existing = crate::store::runners::register_row_by_name(&state.pool, name).await?;
+    let existing = crate::store::runners::register_row_by_name(&state.db(), name).await?;
 
     let runner_id: String;
 
@@ -598,7 +605,7 @@ pub async fn register(
     // its SHA-256, kept for the "already holds a token" state. The JWT itself
     // is stateless (signature-verified per request) and returned to the agent.
     crate::store::runners::mark_registered(
-        &state.pool,
+        &state.db(),
         &runner_id,
         &shared::api_token::hash_token(&runner_jwt),
         version,
@@ -610,7 +617,7 @@ pub async fn register(
     tracing::info!(runner = %name, host_id = %host_id, instance = %runner_instance_id, "Runner registered: {} ({runner_id})", name);
 
     let policy = load_runner_policy(&state.pool, &runner_id).await?;
-    let labels_db = crate::store::runners::labels_of(&state.pool, &runner_id).await?;
+    let labels_db = crate::store::runners::labels_of(&state.db(), &runner_id).await?;
 
     log_runner_event(
         &state.pool,
@@ -667,7 +674,7 @@ pub async fn heartbeat(
         .map(|raw| sanitized_instance_id(raw, "sandbox_instance_id", &auth.runner_id))
         .unwrap_or_default();
     crate::store::runners::mark_heartbeat(
-        &state.pool,
+        &state.db(),
         &auth.runner_id,
         &req.status,
         &system_info_json,
@@ -684,11 +691,11 @@ pub async fn heartbeat(
     // Same for the capability re-probe command: the Runner sees either on its
     // next heartbeat (≤30s) and acts immediately instead of idling.
     let (restart_requested, reprobe_requested) =
-        crate::store::runners::pending_commands(&state.pool, &auth.runner_id).await?;
+        crate::store::runners::pending_commands(&state.db(), &auth.runner_id).await?;
 
     if restart_requested {
         tracing::info!(runner = %auth.runner_id, "Serving restart command via heartbeat");
-        crate::store::runners::clear_restart_requested(&state.pool, &auth.runner_id).await?;
+        crate::store::runners::clear_restart_requested(&state.db(), &auth.runner_id).await?;
         log_runner_event(
             &state.pool,
             &auth.runner_id,
@@ -700,7 +707,7 @@ pub async fn heartbeat(
 
     if reprobe_requested {
         tracing::info!(runner = %auth.runner_id, "Serving capability re-probe command via heartbeat");
-        crate::store::runners::clear_capability_reprobe_requested(&state.pool, &auth.runner_id)
+        crate::store::runners::clear_capability_reprobe_requested(&state.db(), &auth.runner_id)
             .await?;
         log_runner_event(
             &state.pool,
@@ -784,7 +791,7 @@ pub async fn poll_with_wait(
         // Frozen/restarting runners must stop dispatch immediately; restart is
         // also signalled through the restart API, but don't hold up its response.
         let (frozen, restarting) =
-            crate::store::runners::long_poll_gate(&state.pool, &auth.runner_id).await?;
+            crate::store::runners::long_poll_gate(&state.db(), &auth.runner_id).await?;
         if frozen != 0 || restarting != 0 {
             return Ok(response);
         }
@@ -807,16 +814,16 @@ async fn poll_once(
     cancel_acks: &[String],
     active_jobs: i64,
 ) -> Result<Json<ApiResponse<Option<serde_json::Value>>>, AppError> {
-    crate::store::runners::acknowledge_cancelled(&state.pool, &auth.runner_id, cancel_acks).await?;
+    crate::store::runners::acknowledge_cancelled(&state.db(), &auth.runner_id, cancel_acks).await?;
     let cancelled_jobs =
-        crate::store::runners::pending_cancelled_for_delivery(&state.pool, &auth.runner_id).await?;
+        crate::store::runners::pending_cancelled_for_delivery(&state.db(), &auth.runner_id).await?;
 
     // Reject frozen runners — they should not be dispatched work.
     // Also skip dispatch while a restart is pending: otherwise the window between
     // the restart request and the next heartbeat (up to 30s) would let this
     // runner claim pending jobs that then block the graceful exit.
     let (frozen, restart_requested) =
-        crate::store::runners::dispatch_gate(&state.pool, &auth.runner_id).await?;
+        crate::store::runners::dispatch_gate(&state.db(), &auth.runner_id).await?;
 
     if frozen {
         tracing::debug!("Runner {} is frozen — skipping poll", auth.runner_id);
@@ -838,10 +845,10 @@ async fn poll_once(
 
     // Capacity gate: do not claim when this runner is already at max concurrent jobs.
     let max_concurrent =
-        crate::store::runners::max_concurrent_of(&state.pool, &auth.runner_id).await?;
+        crate::store::runners::max_concurrent_of(&state.db(), &auth.runner_id).await?;
 
     let running_count =
-        crate::store::runners::running_job_count(&state.pool, &auth.runner_id).await?;
+        crate::store::runners::running_job_count(&state.db(), &auth.runner_id).await?;
 
     if running_count >= max_concurrent || active_jobs >= max_concurrent {
         tracing::debug!(
@@ -858,13 +865,13 @@ async fn poll_once(
     // Runner team binding is a dispatch boundary. NULL means explicitly shared.
     // Load this runner's labels for scheduling.
     let (runner_team_id, runner_labels_raw) =
-        crate::store::runners::team_and_labels(&state.pool, &auth.runner_id).await?;
+        crate::store::runners::team_and_labels(&state.db(), &auth.runner_id).await?;
     let runner_labels: Vec<String> = serde_json::from_str(&runner_labels_raw).unwrap_or_default();
 
     // Slot-aware dispatch context: execution mode, attached sandbox host,
     // queue-walk strategy, and the staleness threshold (see slot_scheduler).
     let dispatch = {
-        let row = crate::store::runners::dispatch_context_row(&state.pool, &auth.runner_id).await?;
+        let row = crate::store::runners::dispatch_context_row(&state.db(), &auth.runner_id).await?;
         let stale_after_seconds: i64 = crate::services::platform_settings::effective(
             &state.pool,
             crate::services::platform_settings::KEY_SANDBOX_CONFIG_STALE_SECONDS,
@@ -933,7 +940,7 @@ async fn poll_once(
                     %error,
                     "resource profile grant revoked while queued; failing job"
                 );
-                let _ = crate::store::runners::fail_pending_job(&state.pool, &job_id).await;
+                let _ = crate::store::runners::fail_pending_job(&state.db(), &job_id).await;
                 crate::services::notify::spawn_job_notify(
                     state.pool.clone(),
                     state.config.auth.jwt_secret.clone(),
@@ -1288,7 +1295,7 @@ async fn build_claim_payload(
     // ── Explicit secret bindings (pipeline_secrets table) ──
     // Same-team only: ignore stale/cross-team rows if any slipped into the table.
     let explicit_rows =
-        crate::store::runners::bound_secret_values(&state.pool, &pipeline_id).await?;
+        crate::store::runners::bound_secret_values(&state.db(), &pipeline_id).await?;
     for (name, stored) in explicit_rows {
         match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
             Ok(decrypted) => {
@@ -1311,7 +1318,7 @@ async fn build_claim_payload(
 
     // ── Team auto-access: same team_id AND team_shared opt-in ──
     let team_secret_rows =
-        crate::store::runners::team_shared_secret_values(&state.pool, &pipeline_id).await?;
+        crate::store::runners::team_shared_secret_values(&state.db(), &pipeline_id).await?;
     for (name, stored) in team_secret_rows {
         match crypto::decrypt(&stored, &state.config.auth.jwt_secret) {
             Ok(decrypted) => {
@@ -1353,7 +1360,7 @@ async fn build_claim_payload(
     }
 
     // ── Explicit variable bindings (pipeline_vars table) — not secrets ──
-    let var_rows = crate::store::runners::bound_variable_values(&state.pool, &pipeline_id).await?;
+    let var_rows = crate::store::runners::bound_variable_values(&state.db(), &pipeline_id).await?;
     for (name, value) in var_rows {
         if let Some(obj) = env.as_object_mut() {
             obj.insert(name, serde_json::Value::String(value));
@@ -1363,7 +1370,7 @@ async fn build_claim_payload(
     // Environment Variable overrides (same keys only — does not inject unbound vars).
     if let Some(ref env_id) = job_environment_id {
         let override_rows =
-            crate::store::runners::environment_variable_overrides(&state.pool, env_id).await?;
+            crate::store::runners::environment_variable_overrides(&state.db(), env_id).await?;
         let mut applied = 0u32;
         for (name, value) in override_rows {
             if let Some(obj) = env.as_object_mut() {
@@ -1864,8 +1871,12 @@ async fn merge_team_secrets_by_name(
     if needed.is_empty() {
         return Ok(());
     }
-    let rows =
-        crate::store::runners::team_secret_values_by_name(pool, pipeline_id, &needed).await?;
+    let rows = crate::store::runners::team_secret_values_by_name(
+        &DbPool::from_sqlite(pool),
+        pipeline_id,
+        &needed,
+    )
+    .await?;
     for (name, stored) in rows {
         match crypto::decrypt(&stored, jwt_secret) {
             Ok(decrypted) => {
@@ -2032,7 +2043,7 @@ pub async fn list_runners(
     _auth: PlatformAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    let rows = crate::store::runners::list_for_admin(&state.pool).await?;
+    let rows = crate::store::runners::list_for_admin(&state.db()).await?;
 
     let runners: Vec<serde_json::Value> = rows
         .into_iter()
@@ -2095,12 +2106,12 @@ pub async fn get_runner(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let r = crate::store::runners::detail_of(&state.pool, &id)
+    let r = crate::store::runners::detail_of(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
 
     let system_info = serde_json::from_str::<serde_json::Value>(&r.system_info).ok();
-    let running_jobs = crate::store::runners::running_jobs_of(&state.pool, &id).await?;
+    let running_jobs = crate::store::runners::running_jobs_of(&state.db(), &id).await?;
     let policy = load_runner_policy(&state.pool, &id).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
@@ -2139,14 +2150,14 @@ pub async fn update_runner(
     State(state): State<AppState>,
     Json(req): Json<UpdateRunnerRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    if !crate::store::runners::exists(&state.pool, &id).await? {
+    if !crate::store::runners::exists(&state.db(), &id).await? {
         return Err(AppError::NotFound("runner not found".into()));
     }
     // Snapshot before the field-by-field updates so the audit record states
     // the diff, not the whole row.
     let before_policy = load_runner_policy(&state.pool, &id).await?;
-    let before_team = crate::store::runners::team_of(&state.pool, &id).await?;
-    let before_labels = crate::store::runners::labels_of(&state.pool, &id).await?;
+    let before_team = crate::store::runners::team_of(&state.db(), &id).await?;
+    let before_labels = crate::store::runners::labels_of(&state.db(), &id).await?;
     let before = serde_json::json!({
         "team_id": before_team,
         "labels": serde_json::from_str::<Vec<String>>(&before_labels).unwrap_or_default(),
@@ -2168,12 +2179,12 @@ pub async fn update_runner(
 
     if let Some(labels) = &req.labels {
         let labels_json = serde_json::to_string(labels).unwrap_or_else(|_| "[]".into());
-        crate::store::runners::update_labels(&state.pool, &id, &labels_json).await?;
+        crate::store::runners::update_labels(&state.db(), &id, &labels_json).await?;
     }
 
     if req.max_concurrent_jobs.is_some() {
         let max_concurrent = normalize_max_concurrent(req.max_concurrent_jobs)?;
-        crate::store::runners::update_max_concurrent(&state.pool, &id, max_concurrent as i64)
+        crate::store::runners::update_max_concurrent(&state.db(), &id, max_concurrent as i64)
             .await?;
     }
 
@@ -2182,35 +2193,35 @@ pub async fn update_runner(
     }
 
     if let Some(v) = req.clean_workspace_after_job {
-        crate::store::runners::update_clean_workspace(&state.pool, &id, v).await?;
+        crate::store::runners::update_clean_workspace(&state.db(), &id, v).await?;
     }
     if let Some(v) = req.shell_enabled {
-        crate::store::runners::update_shell_enabled(&state.pool, &id, v).await?;
+        crate::store::runners::update_shell_enabled(&state.db(), &id, v).await?;
     }
     if let Some(v) = req.ssh_enabled {
-        crate::store::runners::update_ssh_enabled(&state.pool, &id, v).await?;
+        crate::store::runners::update_ssh_enabled(&state.db(), &id, v).await?;
     }
     if let Some(v) = req.docker_enabled {
-        crate::store::runners::update_docker_enabled(&state.pool, &id, v).await?;
+        crate::store::runners::update_docker_enabled(&state.db(), &id, v).await?;
     }
     if let Some(v) = req.wasm_enabled {
-        crate::store::runners::update_wasm_enabled(&state.pool, &id, v).await?;
+        crate::store::runners::update_wasm_enabled(&state.db(), &id, v).await?;
     }
     if let Some(v) = req.netns_isolation {
-        crate::store::runners::update_netns_isolation(&state.pool, &id, v).await?;
+        crate::store::runners::update_netns_isolation(&state.db(), &id, v).await?;
     }
     if req.ssh_host_key_policy.is_some() {
         let p = normalize_ssh_host_key_policy(req.ssh_host_key_policy.clone())?;
-        crate::store::runners::update_ssh_host_key_policy(&state.pool, &id, &p).await?;
+        crate::store::runners::update_ssh_host_key_policy(&state.db(), &id, &p).await?;
     }
     if req.claim_strategy.is_some() {
         let strategy = normalize_claim_strategy(req.claim_strategy.clone())?;
-        crate::store::runners::update_claim_strategy(&state.pool, &id, &strategy).await?;
+        crate::store::runners::update_claim_strategy(&state.db(), &id, &strategy).await?;
     }
 
     log_runner_event(&state.pool, &id, "updated", "Runner policy updated from UI").await;
 
-    let r = crate::store::runners::identity_row(&state.pool, &id).await?;
+    let r = crate::store::runners::identity_row(&state.db(), &id).await?;
 
     // `identity_row` is (id, name, labels, status, version, system_info,
     // last_seen, created_at, updated_at, team_id).
@@ -2219,7 +2230,7 @@ pub async fn update_runner(
     let system_info_raw: String = r.5.clone();
     let team_after: Option<String> = r.9.clone();
     let system_info = serde_json::from_str::<serde_json::Value>(&system_info_raw).ok();
-    let running_jobs = crate::store::runners::running_job_count(&state.pool, &id).await?;
+    let running_jobs = crate::store::runners::running_job_count(&state.db(), &id).await?;
     let policy = load_runner_policy(&state.pool, &id).await?;
 
     // Diff against the snapshot taken before the updates.
@@ -2275,9 +2286,9 @@ pub async fn delete_runner(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     // Snapshot first: the audit record outlives the row and is the only
     // remaining description of what was deleted.
-    let removed = crate::store::runners::runner_snapshot(&state.pool, &id).await?;
+    let removed = crate::store::runners::runner_snapshot(&state.db(), &id).await?;
 
-    if !crate::store::runners::delete_runner(&state.pool, &id).await? {
+    if !crate::store::runners::delete_runner(&state.db(), &id).await? {
         return Err(AppError::NotFound("runner not found".into()));
     }
 
@@ -2334,7 +2345,7 @@ pub async fn restart(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let state_row = crate::store::runners::runner_restart_state(&state.pool, &id).await?;
+    let state_row = crate::store::runners::runner_restart_state(&state.db(), &id).await?;
     let name = state_row.name;
 
     if !state_row.running_job_ids.is_empty() {
@@ -2345,7 +2356,7 @@ pub async fn restart(
         )));
     }
 
-    crate::store::runners::request_restart(&state.pool, &id).await?;
+    crate::store::runners::request_restart(&state.db(), &id).await?;
 
     tracing::info!("Runner {name} ({id}) restart requested");
     log_runner_event(
@@ -2376,11 +2387,11 @@ pub async fn reprobe_capabilities(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let name = crate::store::runners::runner_name(&state.pool, &id)
+    let name = crate::store::runners::runner_name(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("runner not found".into()))?;
 
-    crate::store::runners::request_capability_reprobe(&state.pool, &id).await?;
+    crate::store::runners::request_capability_reprobe(&state.db(), &id).await?;
 
     tracing::info!("Runner {name} ({id}) capability re-probe requested");
     log_runner_event(
@@ -2420,7 +2431,7 @@ pub async fn reissue_register_token(
     let register_token = Uuid::new_v4().to_string();
     // Hash-only at rest: the plaintext is returned exactly once below.
     let name = crate::store::runners::reissue_register_token(
-        &state.pool,
+        &state.db(),
         &id,
         &shared::api_token::hash_token(&register_token),
     )
@@ -2454,7 +2465,7 @@ pub async fn get_events(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     // Verify runner exists
-    if !crate::store::runners::exists(&state.pool, &id).await? {
+    if !crate::store::runners::exists(&state.db(), &id).await? {
         return Err(AppError::NotFound("runner not found".into()));
     }
 
@@ -2467,7 +2478,7 @@ pub async fn get_events(
     let offset = (page - 1) * page_size;
 
     let crate::store::runners::RunnerEventPage { events, total } =
-        crate::store::runners::event_page(&state.pool, &id, page_size, offset).await?;
+        crate::store::runners::event_page(&state.db(), &id, page_size, offset).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "items": events,

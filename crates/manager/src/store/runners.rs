@@ -9,24 +9,24 @@ use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
+use crate::store::exec::{self, DbPool, SqlValue};
+
 use shared::error::AppError;
 use shared::protocol::{ExecutionBackendStatus, RunnerExecutionMode, SystemInfo};
 
 /// Why the last poll round skipped a pending job. Display-only, cleared on
 /// claim. Logged only when the reason changes, so a job parked on one reason
 /// does not repeat itself every poll round.
-pub async fn record_dispatch_reason(pool: &SqlitePool, job_id: &str, reason: &str) {
-    match sqlx::query(
+pub async fn record_dispatch_reason(pool: &DbPool, job_id: &str, reason: &str) {
+    match exec::execute(
+        pool,
         "UPDATE jobs SET dispatch_reason = ? WHERE id = ? AND status = 'pending'
          AND COALESCE(dispatch_reason, '') != ?",
+        &[reason.into(), job_id.into(), reason.into()],
     )
-    .bind(reason)
-    .bind(job_id)
-    .bind(reason)
-    .execute(pool)
     .await
     {
-        Ok(done) if done.rows_affected() > 0 => {
+        Ok(affected) if affected > 0 => {
             tracing::info!(job = %job_id, reason, "job not dispatched");
         }
         Ok(_) => {}
@@ -38,16 +38,18 @@ pub async fn record_dispatch_reason(pool: &SqlitePool, job_id: &str, reason: &st
 
 /// Append one runner event row. Fire-and-forget: a failure is logged and
 /// not propagated, because event history must never block an operator action.
-pub async fn log_runner_event(pool: &SqlitePool, runner_id: &str, event_type: &str, message: &str) {
+pub async fn log_runner_event(pool: &DbPool, runner_id: &str, event_type: &str, message: &str) {
     let id = Uuid::new_v4().to_string();
-    if let Err(e) = sqlx::query(
+    if let Err(e) = exec::execute(
+        pool,
         "INSERT INTO runner_events (id, runner_id, event_type, message) VALUES (?, ?, ?, ?)",
+        &[
+            id.as_str().into(),
+            runner_id.into(),
+            event_type.into(),
+            message.into(),
+        ],
     )
-    .bind(&id)
-    .bind(runner_id)
-    .bind(event_type)
-    .bind(message)
-    .execute(pool)
     .await
     {
         tracing::warn!("Failed to log runner event for {runner_id}: {e}");
@@ -57,30 +59,31 @@ pub async fn log_runner_event(pool: &SqlitePool, runner_id: &str, event_type: &s
 /// `(name, team_id, status)` snapshot taken before a row is deleted: the audit
 /// record outlives the row and is the last description of it.
 pub async fn runner_snapshot(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
 ) -> Result<Option<(String, Option<String>, String)>, AppError> {
-    let row = sqlx::query("SELECT name, team_id, status FROM runners WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|r| (r.get(0), r.try_get(1).ok().flatten(), r.get(2))))
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT name, team_id, status FROM runners WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .map(|r| (r.text(0), r.opt_text(1), r.text(2))))
 }
 
 /// Delete one runner. False when no row matched.
 ///
 /// `jobs.runner_id` carries a plain FK to `runners(id)` with no `ON DELETE`
 /// action, so the referencing rows must be cleared or the delete fails.
-pub async fn delete_runner(pool: &SqlitePool, id: &str) -> Result<bool, AppError> {
-    sqlx::query("UPDATE jobs SET runner_id = NULL WHERE runner_id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    let result = sqlx::query("DELETE FROM runners WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() != 0)
+pub async fn delete_runner(pool: &DbPool, id: &str) -> Result<bool, AppError> {
+    exec::execute(
+        pool,
+        "UPDATE jobs SET runner_id = NULL WHERE runner_id = ?",
+        &[id.into()],
+    )
+    .await?;
+    let affected = exec::execute(pool, "DELETE FROM runners WHERE id = ?", &[id.into()]).await?;
+    Ok(affected != 0)
 }
 
 /// Flip the freeze flag: `(name, was_frozen, now_frozen)`.
@@ -114,20 +117,19 @@ pub struct RunnerRestartState {
     pub running_job_ids: Vec<String>,
 }
 
-pub async fn runner_restart_state(
-    pool: &SqlitePool,
-    id: &str,
-) -> Result<RunnerRestartState, AppError> {
-    let name: Option<String> = sqlx::query_scalar("SELECT name FROM runners WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    let running_job_ids: Vec<String> = sqlx::query_scalar(
+pub async fn runner_restart_state(pool: &DbPool, id: &str) -> Result<RunnerRestartState, AppError> {
+    let name = exec::fetch_optional(pool, "SELECT name FROM runners WHERE id = ?", &[id.into()])
+        .await?
+        .map(|r| r.text(0));
+    let running_job_ids = exec::fetch_all(
+        pool,
         "SELECT id FROM jobs WHERE runner_id = ? AND status = 'running' ORDER BY created_at",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_all(pool)
-    .await?;
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect();
     Ok(RunnerRestartState {
         name: name.ok_or_else(|| AppError::NotFound("runner not found".into()))?,
         running_job_ids,
@@ -135,27 +137,27 @@ pub async fn runner_restart_state(
 }
 
 /// Set the restart flag served on the runner's next heartbeat.
-pub async fn request_restart(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
-    sqlx::query(
+pub async fn request_restart(pool: &DbPool, id: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
         "UPDATE runners SET restart_requested = 1, updated_at = datetime('now') WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .execute(pool)
     .await?;
     crate::services::poll_events::wake_all();
     Ok(())
 }
 
 /// Set the one-shot capability re-probe flag.
-pub async fn request_capability_reprobe(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
-    sqlx::query(
+pub async fn request_capability_reprobe(pool: &DbPool, id: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
         "UPDATE runners SET capability_reprobe_requested = 1,
             capability_reprobe_requested_at = datetime('now'),
             capability_reprobe_served_at = NULL,
             updated_at = datetime('now') WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .execute(pool)
     .await?;
     Ok(())
 }
@@ -165,33 +167,36 @@ pub async fn request_capability_reprobe(pool: &SqlitePool, id: &str) -> Result<(
 ///
 /// The caller passes an already-hashed token: plaintext is never stored.
 pub async fn reissue_register_token(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     token_hash: &str,
 ) -> Result<Option<String>, AppError> {
-    Ok(sqlx::query_scalar(
+    Ok(exec::fetch_optional(
+        pool,
         "UPDATE runners SET register_token = ?, updated_at = datetime('now') WHERE id = ? RETURNING name",
+        &[token_hash.into(), id.into()],
     )
-    .bind(token_hash)
-    .bind(id)
-    .fetch_optional(pool)
-    .await?)
+    .await?
+    .map(|r| r.text(0)))
 }
 
 /// Runner name by id (`None` when absent).
-pub async fn runner_name(pool: &SqlitePool, id: &str) -> Result<Option<String>, AppError> {
-    Ok(sqlx::query_scalar("SELECT name FROM runners WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?)
+pub async fn runner_name(pool: &DbPool, id: &str) -> Result<Option<String>, AppError> {
+    Ok(
+        exec::fetch_optional(pool, "SELECT name FROM runners WHERE id = ?", &[id.into()])
+            .await?
+            .map(|r| r.text(0)),
+    )
 }
 
 /// True when the runner row exists.
-pub async fn exists(pool: &SqlitePool, id: &str) -> Result<bool, AppError> {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runners WHERE id = ?")
-        .bind(id)
-        .fetch_one(pool)
-        .await?;
+pub async fn exists(pool: &DbPool, id: &str) -> Result<bool, AppError> {
+    let count = exec::fetch_scalar_i64(
+        pool,
+        "SELECT COUNT(*) FROM runners WHERE id = ?",
+        &[id.into()],
+    )
+    .await?;
     Ok(count != 0)
 }
 
@@ -202,35 +207,39 @@ pub struct RunnerEventPage {
 }
 
 pub async fn event_page(
-    pool: &SqlitePool,
+    pool: &DbPool,
     runner_id: &str,
     limit: i64,
     offset: i64,
 ) -> Result<RunnerEventPage, AppError> {
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runner_events WHERE runner_id = ?")
-        .bind(runner_id)
-        .fetch_one(pool)
-        .await?;
-    let rows = sqlx::query(
+    let total = exec::fetch_scalar_i64(
+        pool,
+        "SELECT COUNT(*) FROM runner_events WHERE runner_id = ?",
+        &[runner_id.into()],
+    )
+    .await?;
+    let rows = exec::fetch_all(
+        pool,
         "SELECT id, event_type, message, created_at
          FROM runner_events
          WHERE runner_id = ?
          ORDER BY created_at DESC
          LIMIT ? OFFSET ?",
+        &[
+            runner_id.into(),
+            SqlValue::Int(limit),
+            SqlValue::Int(offset),
+        ],
     )
-    .bind(runner_id)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
     .await?;
     let events = rows
         .into_iter()
         .map(|r| {
             json!({
-                "id": r.get::<String, _>(0),
-                "event_type": r.get::<String, _>(1),
-                "message": r.get::<String, _>(2),
-                "created_at": r.get::<Option<String>, _>(3),
+                "id": r.text(0),
+                "event_type": r.text(1),
+                "message": r.text(2),
+                "created_at": r.opt_text(3),
             })
         })
         .collect();
@@ -397,61 +406,66 @@ pub async fn environment_gate_in_tx(
 /// `(id, register_token, token)` of the row with this name — the registration
 /// lookup (`None` = unknown name).
 pub async fn register_row_by_name(
-    pool: &SqlitePool,
+    pool: &DbPool,
     name: &str,
 ) -> Result<Option<(String, String, Option<String>)>, AppError> {
-    let row = sqlx::query("SELECT id, register_token, token FROM runners WHERE name = ?")
-        .bind(name)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|r| (r.get(0), r.get(1), r.get(2))))
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT id, register_token, token FROM runners WHERE name = ?",
+        &[name.into()],
+    )
+    .await?
+    .map(|r| (r.text(0), r.text(1), r.opt_text(2))))
 }
 
 /// Persist a fresh runner JWT (hash only, never plaintext), burn the one-shot
 /// register token, flip online and record the reported deployment identities.
 #[allow(clippy::too_many_arguments)]
 pub async fn mark_registered(
-    pool: &SqlitePool,
+    pool: &DbPool,
     runner_id: &str,
     token_hash: &str,
     version: Option<&str>,
     host_id: &str,
     runner_instance_id: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE runners SET token = ?, register_token = '', status = 'online', \
          version = COALESCE(?, version), \
          host_id = COALESCE(NULLIF(?, ''), host_id), \
          runner_instance_id = COALESCE(NULLIF(?, ''), runner_instance_id), \
          last_seen = datetime('now'), updated_at = datetime('now'), \
          restart_requested = 0 WHERE id = ?",
+        &[
+            token_hash.into(),
+            version.into(),
+            host_id.into(),
+            runner_instance_id.into(),
+            runner_id.into(),
+        ],
     )
-    .bind(token_hash)
-    .bind(version)
-    .bind(host_id)
-    .bind(runner_instance_id)
-    .bind(runner_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Labels JSON as stored (`"[]"` when absent).
-pub async fn labels_of(pool: &SqlitePool, runner_id: &str) -> Result<String, AppError> {
-    Ok(
-        sqlx::query_scalar::<_, String>("SELECT labels FROM runners WHERE id = ?")
-            .bind(runner_id)
-            .fetch_optional(pool)
-            .await?
-            .unwrap_or_else(|| "[]".into()),
+pub async fn labels_of(pool: &DbPool, runner_id: &str) -> Result<String, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT labels FROM runners WHERE id = ?",
+        &[runner_id.into()],
     )
+    .await?
+    .map(|r| r.text(0))
+    .unwrap_or_else(|| "[]".into()))
 }
 
 /// Heartbeat write: status, system_info, version + deployment identities, and
 /// the liveness stamps. Empty identities keep the stored ones (COALESCE guard).
 #[allow(clippy::too_many_arguments)]
 pub async fn mark_heartbeat(
-    pool: &SqlitePool,
+    pool: &DbPool,
     runner_id: &str,
     status: &str,
     system_info_json: &str,
@@ -460,60 +474,62 @@ pub async fn mark_heartbeat(
     runner_instance_id: &str,
     sandbox_instance_id: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE runners SET status = ?, system_info = ?, version = COALESCE(?, version), \
          host_id = COALESCE(NULLIF(?, ''), host_id), \
          runner_instance_id = COALESCE(NULLIF(?, ''), runner_instance_id), \
          sandbox_instance_id = COALESCE(NULLIF(?, ''), sandbox_instance_id), \
          last_seen = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+        &[
+            status.into(),
+            system_info_json.into(),
+            version.into(),
+            host_id.into(),
+            runner_instance_id.into(),
+            sandbox_instance_id.into(),
+            runner_id.into(),
+        ],
     )
-    .bind(status)
-    .bind(system_info_json)
-    .bind(version)
-    .bind(host_id)
-    .bind(runner_instance_id)
-    .bind(sandbox_instance_id)
-    .bind(runner_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// `(restart_requested, capability_reprobe_requested)` — the two one-shot
 /// command flags served (and then cleared) by a heartbeat.
-pub async fn pending_commands(
-    pool: &SqlitePool,
-    runner_id: &str,
-) -> Result<(bool, bool), AppError> {
-    let row: Option<(i64, i64)> = sqlx::query_as(
+pub async fn pending_commands(pool: &DbPool, runner_id: &str) -> Result<(bool, bool), AppError> {
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT restart_requested, capability_reprobe_requested FROM runners WHERE id = ?",
+        &[runner_id.into()],
     )
-    .bind(runner_id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|(r, c)| (r != 0, c != 0)).unwrap_or((false, false)))
+    .await?
+    .map(|r| (r.i64(0) != 0, r.i64(1) != 0))
+    .unwrap_or((false, false)))
 }
 
 /// Clear the consumed restart flag.
-pub async fn clear_restart_requested(pool: &SqlitePool, runner_id: &str) -> Result<(), AppError> {
-    sqlx::query("UPDATE runners SET restart_requested = 0 WHERE id = ?")
-        .bind(runner_id)
-        .execute(pool)
-        .await?;
+pub async fn clear_restart_requested(pool: &DbPool, runner_id: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE runners SET restart_requested = 0 WHERE id = ?",
+        &[runner_id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Clear the consumed re-probe flag and stamp when it was served.
 pub async fn clear_capability_reprobe_requested(
-    pool: &SqlitePool,
+    pool: &DbPool,
     runner_id: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE runners SET capability_reprobe_requested = 0, \
          capability_reprobe_served_at = datetime('now') WHERE id = ?",
+        &[runner_id.into()],
     )
-    .bind(runner_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
@@ -547,122 +563,111 @@ pub struct NewRunner<'a> {
 
 /// Insert one runner row; it starts `offline` and goes online at first
 /// successful register.
-pub async fn insert(pool: &SqlitePool, r: &NewRunner<'_>) -> Result<(), AppError> {
-    sqlx::query(
+pub async fn insert(pool: &DbPool, r: &NewRunner<'_>) -> Result<(), AppError> {
+    exec::execute(
+        pool,
         "INSERT INTO runners (id, name, register_token, labels, status, version, team_id,
          execution_mode, max_concurrent_jobs, clean_workspace_after_job,
          shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy, claim_strategy)
          VALUES (?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            r.id.into(),
+            r.name.into(),
+            r.register_token_hash.into(),
+            r.labels_json.into(),
+            r.version.into(),
+            r.team_id.into(),
+            r.execution_mode.into(),
+            SqlValue::Int(r.max_concurrent_jobs),
+            SqlValue::Int(r.clean_workspace),
+            SqlValue::Int(r.shell),
+            SqlValue::Int(r.ssh),
+            SqlValue::Int(r.docker),
+            SqlValue::Int(r.wasm),
+            r.ssh_host_key_policy.into(),
+            r.claim_strategy.into(),
+        ],
     )
-    .bind(r.id)
-    .bind(r.name)
-    .bind(r.register_token_hash)
-    .bind(r.labels_json)
-    .bind(r.version)
-    .bind(r.team_id)
-    .bind(r.execution_mode)
-    .bind(r.max_concurrent_jobs)
-    .bind(r.clean_workspace)
-    .bind(r.shell)
-    .bind(r.ssh)
-    .bind(r.docker)
-    .bind(r.wasm)
-    .bind(r.ssh_host_key_policy)
-    .bind(r.claim_strategy)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Replace the `clean_workspace_after_job` flag.
-pub async fn update_clean_workspace(
-    pool: &SqlitePool,
-    id: &str,
-    value: bool,
-) -> Result<(), AppError> {
-    sqlx::query(
-        "UPDATE runners SET clean_workspace_after_job = ?, updated_at = datetime('now') \
-         WHERE id = ?",
+pub async fn update_clean_workspace(pool: &DbPool, id: &str, value: bool) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE runners SET clean_workspace_after_job = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(value as i64), id.into()],
     )
-    .bind(if value { 1i64 } else { 0 })
-    .bind(id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Replace the `shell_enabled` flag.
-pub async fn update_shell_enabled(
-    pool: &SqlitePool,
-    id: &str,
-    value: bool,
-) -> Result<(), AppError> {
-    sqlx::query("UPDATE runners SET shell_enabled = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(if value { 1i64 } else { 0 })
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_shell_enabled(pool: &DbPool, id: &str, value: bool) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE runners SET shell_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(value as i64), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace the `ssh_enabled` flag.
-pub async fn update_ssh_enabled(pool: &SqlitePool, id: &str, value: bool) -> Result<(), AppError> {
-    sqlx::query("UPDATE runners SET ssh_enabled = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(if value { 1i64 } else { 0 })
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_ssh_enabled(pool: &DbPool, id: &str, value: bool) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE runners SET ssh_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(value as i64), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace the `docker_enabled` flag.
-pub async fn update_docker_enabled(
-    pool: &SqlitePool,
-    id: &str,
-    value: bool,
-) -> Result<(), AppError> {
-    sqlx::query("UPDATE runners SET docker_enabled = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(if value { 1i64 } else { 0 })
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_docker_enabled(pool: &DbPool, id: &str, value: bool) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE runners SET docker_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(value as i64), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace the `wasm_enabled` flag.
-pub async fn update_wasm_enabled(pool: &SqlitePool, id: &str, value: bool) -> Result<(), AppError> {
-    sqlx::query("UPDATE runners SET wasm_enabled = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(if value { 1i64 } else { 0 })
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_wasm_enabled(pool: &DbPool, id: &str, value: bool) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE runners SET wasm_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(value as i64), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace the `netns_isolation` flag.
-pub async fn update_netns_isolation(
-    pool: &SqlitePool,
-    id: &str,
-    value: bool,
-) -> Result<(), AppError> {
-    sqlx::query(
+pub async fn update_netns_isolation(pool: &DbPool, id: &str, value: bool) -> Result<(), AppError> {
+    exec::execute(
+        pool,
         "UPDATE runners SET netns_isolation = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(value as i64), id.into()],
     )
-    .bind(if value { 1i64 } else { 0 })
-    .bind(id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Current `execution_mode` string (errors when the row is gone).
-pub async fn execution_mode_of(pool: &SqlitePool, id: &str) -> Result<String, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT execution_mode FROM runners WHERE id = ?")
-            .bind(id)
-            .fetch_one(pool)
-            .await?,
+pub async fn execution_mode_of(pool: &DbPool, id: &str) -> Result<String, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT execution_mode FROM runners WHERE id = ?",
+        &[id.into()],
     )
+    .await?
+    .ok_or(sqlx::Error::RowNotFound)?
+    .text(0))
 }
 
 /// The team-binding move, guarded: refuses while any job of this runner is
@@ -723,14 +728,27 @@ pub type RunnerIdentityRow = (
     Option<String>,
 );
 
-pub async fn identity_row(pool: &SqlitePool, id: &str) -> Result<RunnerIdentityRow, AppError> {
-    Ok(sqlx::query_as(
+pub async fn identity_row(pool: &DbPool, id: &str) -> Result<RunnerIdentityRow, AppError> {
+    let r = exec::fetch_optional(
+        pool,
         "SELECT id, name, labels, status, version, system_info, last_seen,
                 created_at, updated_at, team_id FROM runners WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_one(pool)
-    .await?)
+    .await?
+    .ok_or(sqlx::Error::RowNotFound)?;
+    Ok((
+        r.text(0),
+        r.text(1),
+        r.text(2),
+        r.text(3),
+        r.opt_text(4),
+        r.text(5),
+        r.opt_text(6),
+        r.opt_text(7),
+        r.opt_text(8),
+        r.opt_text(9),
+    ))
 }
 
 /// Replace the execution mode (caller validated the transition first, inside
@@ -809,67 +827,67 @@ pub async fn capability_check_fresh_tx(
 }
 
 /// Replace the labels JSON.
-pub async fn update_labels(pool: &SqlitePool, id: &str, labels_json: &str) -> Result<(), AppError> {
-    sqlx::query("UPDATE runners SET labels = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(labels_json)
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn update_labels(pool: &DbPool, id: &str, labels_json: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
+        "UPDATE runners SET labels = ?, updated_at = datetime('now') WHERE id = ?",
+        &[labels_json.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Replace the concurrency budget.
-pub async fn update_max_concurrent(pool: &SqlitePool, id: &str, max: i64) -> Result<(), AppError> {
-    sqlx::query(
+pub async fn update_max_concurrent(pool: &DbPool, id: &str, max: i64) -> Result<(), AppError> {
+    exec::execute(
+        pool,
         "UPDATE runners SET max_concurrent_jobs = ?, updated_at = datetime('now') WHERE id = ?",
+        &[SqlValue::Int(max), id.into()],
     )
-    .bind(max)
-    .bind(id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Replace the SSH host-key policy string (`known_hosts` | `insecure`).
 pub async fn update_ssh_host_key_policy(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     policy: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE runners SET ssh_host_key_policy = ?, updated_at = datetime('now') WHERE id = ?",
+        &[policy.into(), id.into()],
     )
-    .bind(policy)
-    .bind(id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Replace the claim strategy string (`backfill` | `fifo`).
 pub async fn update_claim_strategy(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     strategy: &str,
 ) -> Result<(), AppError> {
-    sqlx::query("UPDATE runners SET claim_strategy = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(strategy)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    exec::execute(
+        pool,
+        "UPDATE runners SET claim_strategy = ?, updated_at = datetime('now') WHERE id = ?",
+        &[strategy.into(), id.into()],
+    )
+    .await?;
     Ok(())
 }
 
 /// Concurrency budget of one runner (`max_concurrent_jobs`, at least 1).
-pub async fn max_concurrent_of(pool: &SqlitePool, id: &str) -> Result<i64, AppError> {
-    Ok(
-        sqlx::query_scalar::<_, i64>("SELECT max_concurrent_jobs FROM runners WHERE id = ?")
-            .bind(id)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(1)
-            .max(1),
+pub async fn max_concurrent_of(pool: &DbPool, id: &str) -> Result<i64, AppError> {
+    Ok(exec::fetch_scalar_i64(
+        pool,
+        "SELECT max_concurrent_jobs FROM runners WHERE id = ?",
+        &[id.into()],
     )
+    .await
+    .unwrap_or(1)
+    .max(1))
 }
 
 /// Running-job count inside the caller's transaction (the execution-mode
@@ -887,69 +905,78 @@ pub async fn running_job_count_tx(
 }
 
 /// Jobs currently running on this runner — the capacity gate's occupancy.
-pub async fn running_job_count(pool: &SqlitePool, id: &str) -> Result<i64, AppError> {
-    Ok(sqlx::query_scalar::<_, i64>(
+pub async fn running_job_count(pool: &DbPool, id: &str) -> Result<i64, AppError> {
+    Ok(exec::fetch_scalar_i64(
+        pool,
         "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_one(pool)
     .await
     .unwrap_or(0))
 }
 
 /// `(is_frozen, restart_requested)` — the poll dispatch gate.
-pub async fn dispatch_gate(pool: &SqlitePool, id: &str) -> Result<(bool, bool), AppError> {
-    let row: Option<(i64, i64)> =
-        sqlx::query_as("SELECT is_frozen, restart_requested FROM runners WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
-    Ok(row
-        .map(|(frozen, restart)| (frozen != 0, restart != 0))
-        .unwrap_or((false, false)))
+pub async fn dispatch_gate(pool: &DbPool, id: &str) -> Result<(bool, bool), AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT is_frozen, restart_requested FROM runners WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .map(|r| (r.i64(0) != 0, r.i64(1) != 0))
+    .unwrap_or((false, false)))
 }
 
 /// Delivery gate for the long-poll loop (same two flags).
-pub async fn long_poll_gate(pool: &SqlitePool, id: &str) -> Result<(i64, i64), AppError> {
-    Ok(
-        sqlx::query_as("SELECT is_frozen, restart_requested FROM runners WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?
-            .unwrap_or((0, 0)),
+pub async fn long_poll_gate(pool: &DbPool, id: &str) -> Result<(i64, i64), AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT is_frozen, restart_requested FROM runners WHERE id = ?",
+        &[id.into()],
     )
+    .await?
+    .map(|r| (r.i64(0), r.i64(1)))
+    .unwrap_or((0, 0)))
 }
 
 /// `(team_id, labels-json)` — the claim path's dispatch boundary and label set.
 pub async fn team_and_labels(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
 ) -> Result<(Option<String>, String), AppError> {
-    let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
-        .bind(id)
-        .fetch_one(pool)
-        .await?;
-    let labels_raw: Option<String> =
-        sqlx::query_scalar::<_, String>("SELECT labels FROM runners WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
+    let team_id = exec::fetch_optional(
+        pool,
+        "SELECT team_id FROM runners WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .ok_or(sqlx::Error::RowNotFound)?
+    .opt_text(0);
+    let labels_raw = exec::fetch_optional(
+        pool,
+        "SELECT labels FROM runners WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .map(|r| r.text(0));
     Ok((team_id, labels_raw.unwrap_or_else(|| "[]".into())))
 }
 
 /// `(execution_mode, host_id, sandbox_instance_id, claim_strategy)` — the
 /// slot scheduler's dispatch context.
 pub async fn dispatch_context_row(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
 ) -> Result<(String, String, String, String), AppError> {
-    Ok(sqlx::query_as(
+    let r = exec::fetch_optional(
+        pool,
         "SELECT execution_mode, host_id, sandbox_instance_id, claim_strategy
          FROM runners WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_one(pool)
-    .await?)
+    .await?
+    .ok_or(sqlx::Error::RowNotFound)?;
+    Ok((r.text(0), r.text(1), r.text(2), r.text(3)))
 }
 
 /// The registration queue: pending jobs this runner may claim, queue-fair
@@ -1000,44 +1027,48 @@ pub async fn claim_candidates(
 }
 
 /// True when the team row exists — the runner team binding check.
-pub async fn team_exists(pool: &SqlitePool, team_id: &str) -> Result<bool, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM teams WHERE id = ?)")
-            .bind(team_id)
-            .fetch_one(pool)
-            .await?,
+pub async fn team_exists(pool: &DbPool, team_id: &str) -> Result<bool, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT EXISTS(SELECT 1 FROM teams WHERE id = ?)",
+        &[team_id.into()],
     )
+    .await?
+    .map(|r| r.i64(0) != 0)
+    .unwrap_or(false))
 }
 
 /// `team_id` of one runner (`None` = shared/unassigned or absent row).
-pub async fn team_of(pool: &SqlitePool, runner_id: &str) -> Result<Option<String>, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT team_id FROM runners WHERE id = ?")
-            .bind(runner_id)
-            .fetch_one(pool)
-            .await?,
+pub async fn team_of(pool: &DbPool, runner_id: &str) -> Result<Option<String>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT team_id FROM runners WHERE id = ?",
+        &[runner_id.into()],
     )
+    .await?
+    .ok_or(sqlx::Error::RowNotFound)?
+    .opt_text(0))
 }
 
 /// How many runner rows carry this exact name (standalone idempotence check).
-pub async fn count_by_name(pool: &SqlitePool, name: &str) -> Result<i64, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT COUNT(1) FROM runners WHERE name = ?")
-            .bind(name)
-            .fetch_one(pool)
-            .await?,
+pub async fn count_by_name(pool: &DbPool, name: &str) -> Result<i64, AppError> {
+    Ok(exec::fetch_scalar_i64(
+        pool,
+        "SELECT COUNT(1) FROM runners WHERE name = ?",
+        &[name.into()],
     )
+    .await?)
 }
 
 /// Mark a pending job failed because its resource-profile grant was revoked
 /// while it was queued (the claim path's terminal write).
-pub async fn fail_pending_job(pool: &SqlitePool, job_id: &str) -> Result<(), AppError> {
-    sqlx::query(
+pub async fn fail_pending_job(pool: &DbPool, job_id: &str) -> Result<(), AppError> {
+    exec::execute(
+        pool,
         "UPDATE jobs SET status = 'failed', end_time = datetime('now'),
          updated_at = datetime('now') WHERE id = ? AND status = 'pending'",
+        &[job_id.into()],
     )
-    .bind(job_id)
-    .execute(pool)
     .await?;
     Ok(())
 }
@@ -1047,18 +1078,32 @@ pub async fn fail_pending_job(pool: &SqlitePool, job_id: &str) -> Result<(), App
 /// ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy,
 /// execution_mode, claim_strategy, netns_isolation.
 pub async fn policy_row(
-    pool: &SqlitePool,
+    pool: &DbPool,
     runner_id: &str,
 ) -> Result<Option<(i64, i64, i64, i64, i64, i64, String, String, String, i64)>, AppError> {
-    Ok(sqlx::query_as(
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT max_concurrent_jobs, clean_workspace_after_job,
                 shell_enabled, ssh_enabled, docker_enabled, wasm_enabled, ssh_host_key_policy,
                 execution_mode, claim_strategy, netns_isolation
          FROM runners WHERE id = ?",
+        &[runner_id.into()],
     )
-    .bind(runner_id)
-    .fetch_optional(pool)
-    .await?)
+    .await?
+    .map(|r| {
+        (
+            r.i64(0),
+            r.i64(1),
+            r.i64(2),
+            r.i64(3),
+            r.i64(4),
+            r.i64(5),
+            r.text(6),
+            r.text(7),
+            r.text(8),
+            r.i64(9),
+        )
+    }))
 }
 
 /// The claim's write: flip the job to running and stamp the dispatch facts.
@@ -1168,109 +1213,111 @@ pub async fn live_task_rows(
 /// `(name, value)` of a pipeline's explicit secret bindings, same-team only —
 /// stale/cross-team rows are ignored by the join predicate.
 pub async fn bound_secret_values(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
 ) -> Result<Vec<(String, String)>, AppError> {
-    Ok(sqlx::query(
+    Ok(exec::fetch_all(
+        pool,
         "SELECT s.name, s.value
          FROM pipeline_secrets ps
          JOIN secrets s ON s.id = ps.secret_id
          JOIN pipelines p ON p.id = ps.pipeline_id AND s.team_id = p.team_id AND p.team_id != ''
          WHERE ps.pipeline_id = ?",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| (r.get(0), r.get(1)))
+    .map(|r| (r.text(0), r.text(1)))
     .collect())
 }
 
 /// `(name, value)` of secrets a pipeline inherits from its team (opt-in
 /// `team_shared = 1`), excluding the unassigned pseudo-team.
 pub async fn team_shared_secret_values(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
 ) -> Result<Vec<(String, String)>, AppError> {
-    Ok(sqlx::query(
+    Ok(exec::fetch_all(
+        pool,
         "SELECT s.name, s.value
          FROM secrets s
          JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
          WHERE p.id = ? AND s.team_shared = 1",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| (r.get(0), r.get(1)))
+    .map(|r| (r.text(0), r.text(1)))
     .collect())
 }
 
 /// `(name, value)` of a pipeline's explicitly bound platform variables.
 pub async fn bound_variable_values(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
 ) -> Result<Vec<(String, String)>, AppError> {
-    Ok(sqlx::query(
+    Ok(exec::fetch_all(
+        pool,
         "SELECT pv.name, pv.value
          FROM pipeline_vars pvars
          JOIN platform_vars pv ON pv.id = pvars.var_id
          WHERE pvars.pipeline_id = ?",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| (r.get(0), r.get(1)))
+    .map(|r| (r.text(0), r.text(1)))
     .collect())
 }
 
 /// `(name, value)` of an environment's variable overrides.
 pub async fn environment_variable_overrides(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
 ) -> Result<Vec<(String, String)>, AppError> {
-    Ok(sqlx::query(
+    Ok(exec::fetch_all(
+        pool,
         "SELECT pv.name, o.value
          FROM environment_var_overrides o
          JOIN platform_vars pv ON pv.id = o.var_id
          WHERE o.environment_id = ?",
+        &[environment_id.into()],
     )
-    .bind(environment_id)
-    .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| (r.get(0), r.get(1)))
+    .map(|r| (r.text(0), r.text(1)))
     .collect())
 }
 
 /// `(step_order, input_defs_json)` of a pipeline's marketplace resolutions.
 pub async fn resolution_inputs(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
 ) -> Result<Vec<(i64, String)>, AppError> {
-    Ok(sqlx::query_as(
+    Ok(exec::fetch_all(
+        pool,
         "SELECT step_order, input_defs_json FROM step_resolutions WHERE pipeline_id = ?",
+        &[pipeline_id.into()],
     )
-    .bind(pipeline_id)
-    .fetch_all(pool)
-    .await?)
+    .await?
+    .into_iter()
+    .map(|r| (r.i64(0), r.text(1)))
+    .collect())
 }
 
 /// Clear the cancel notices a runner explicitly acked after applying them.
 pub async fn acknowledge_cancelled(
-    pool: &SqlitePool,
+    pool: &DbPool,
     runner_id: &str,
     ids: &[String],
 ) -> Result<(), AppError> {
     for id in ids {
-        sqlx::query(
+        exec::execute(
+            pool,
             "UPDATE jobs SET cancel_ack_pending = 0 \
              WHERE id = ? AND runner_id = ? AND status = 'cancelled' AND cancel_ack_pending = 1",
+            &[id.as_str().into(), runner_id.into()],
         )
-        .bind(id)
-        .bind(runner_id)
-        .execute(pool)
         .await?;
     }
     Ok(())
@@ -1279,17 +1326,20 @@ pub async fn acknowledge_cancelled(
 /// Undelivered cancellation IDs. They stay pending until a later poll acks
 /// them, so a lost response is safely retried (oldest first, bounded).
 pub async fn pending_cancelled_for_delivery(
-    pool: &SqlitePool,
+    pool: &DbPool,
     runner_id: &str,
 ) -> Result<Vec<String>, AppError> {
-    Ok(sqlx::query_scalar(
+    Ok(exec::fetch_all(
+        pool,
         "SELECT id FROM jobs \
          WHERE runner_id = ? AND status = 'cancelled' AND cancel_ack_pending = 1 \
          ORDER BY updated_at, id LIMIT 32",
+        &[runner_id.into()],
     )
-    .bind(runner_id)
-    .fetch_all(pool)
-    .await?)
+    .await?
+    .into_iter()
+    .map(|r| r.text(0))
+    .collect())
 }
 // ───────────────────────── shared admin row shapes ─────────────────────────
 //
@@ -1345,41 +1395,42 @@ pub struct RunnerDetailRow {
     pub capability_reprobe_served_at: Option<String>,
 }
 
-fn runner_list_row(r: sqlx::sqlite::SqliteRow) -> RunnerListRow {
+fn runner_list_row(r: exec::GenericRow) -> RunnerListRow {
     RunnerListRow {
-        id: r.get(0),
-        name: r.get(1),
-        labels: r.get(2),
-        status: r.get(3),
-        version: r.get(4),
-        system_info: r.get(5),
-        last_seen: r.get(6),
-        is_frozen: r.get(7),
-        max_concurrent_jobs: r.get(8),
-        clean_workspace_after_job: r.get(9),
-        shell_enabled: r.get(10),
-        ssh_enabled: r.get(11),
-        docker_enabled: r.get(12),
-        wasm_enabled: r.get(13),
-        ssh_host_key_policy: r.get(14),
-        created_at: r.get(15),
-        updated_at: r.get(16),
-        team_id: r.get(17),
-        running_jobs: r.get(18),
-        execution_mode: r.get(19),
-        host_id: r.get(20),
-        runner_instance_id: r.get(21),
-        claim_strategy: r.get(22),
-        netns_isolation: r.get(23),
-        capability_reprobe_requested: r.get(24),
-        capability_reprobe_requested_at: r.get(25),
-        capability_reprobe_served_at: r.get(26),
+        id: r.text(0),
+        name: r.text(1),
+        labels: r.text(2),
+        status: r.text(3),
+        version: r.opt_text(4),
+        system_info: r.text(5),
+        last_seen: r.opt_text(6),
+        is_frozen: r.i64(7),
+        max_concurrent_jobs: r.i64(8),
+        clean_workspace_after_job: r.i64(9),
+        shell_enabled: r.i64(10),
+        ssh_enabled: r.i64(11),
+        docker_enabled: r.i64(12),
+        wasm_enabled: r.i64(13),
+        ssh_host_key_policy: r.text(14),
+        created_at: r.opt_text(15),
+        updated_at: r.opt_text(16),
+        team_id: r.opt_text(17),
+        running_jobs: r.i64(18),
+        execution_mode: r.text(19),
+        host_id: r.text(20),
+        runner_instance_id: r.text(21),
+        claim_strategy: r.text(22),
+        netns_isolation: r.i64(23),
+        capability_reprobe_requested: r.i64(24),
+        capability_reprobe_requested_at: r.opt_text(25),
+        capability_reprobe_served_at: r.opt_text(26),
     }
 }
 
 /// Every runner for the admin list, newest first, with its running-job count.
-pub async fn list_for_admin(pool: &SqlitePool) -> Result<Vec<RunnerListRow>, AppError> {
-    let rows = sqlx::query(
+pub async fn list_for_admin(pool: &DbPool) -> Result<Vec<RunnerListRow>, AppError> {
+    let rows = exec::fetch_all(
+        pool,
         "SELECT r.id, r.name, r.labels, r.status, r.version, r.system_info, r.last_seen, r.is_frozen,
                 r.max_concurrent_jobs, r.clean_workspace_after_job,
                 r.shell_enabled, r.ssh_enabled, r.docker_enabled, r.wasm_enabled, r.ssh_host_key_policy,
@@ -1390,63 +1441,63 @@ pub async fn list_for_admin(pool: &SqlitePool) -> Result<Vec<RunnerListRow>, App
                 r.capability_reprobe_requested, r.capability_reprobe_requested_at,
                 r.capability_reprobe_served_at
          FROM runners r ORDER BY r.created_at DESC",
+        &[],
     )
-    .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(runner_list_row).collect())
 }
 
-fn runner_detail_row(r: sqlx::sqlite::SqliteRow) -> RunnerDetailRow {
+fn runner_detail_row(r: exec::GenericRow) -> RunnerDetailRow {
     RunnerDetailRow {
-        id: r.get(0),
-        name: r.get(1),
-        labels: r.get(2),
-        status: r.get(3),
-        version: r.get(4),
-        system_info: r.get(5),
-        last_seen: r.get(6),
-        created_at: r.get(7),
-        updated_at: r.get(8),
-        team_id: r.get(9),
-        host_id: r.get(10),
-        runner_instance_id: r.get(11),
-        capability_reprobe_requested: r.get(12),
-        capability_reprobe_requested_at: r.get(13),
-        capability_reprobe_served_at: r.get(14),
+        id: r.text(0),
+        name: r.text(1),
+        labels: r.text(2),
+        status: r.text(3),
+        version: r.opt_text(4),
+        system_info: r.text(5),
+        last_seen: r.opt_text(6),
+        created_at: r.opt_text(7),
+        updated_at: r.opt_text(8),
+        team_id: r.opt_text(9),
+        host_id: r.text(10),
+        runner_instance_id: r.text(11),
+        capability_reprobe_requested: r.i64(12),
+        capability_reprobe_requested_at: r.opt_text(13),
+        capability_reprobe_served_at: r.opt_text(14),
     }
 }
 
 /// One runner for the admin detail screen (`None` = not found).
-pub async fn detail_of(pool: &SqlitePool, id: &str) -> Result<Option<RunnerDetailRow>, AppError> {
-    let row = sqlx::query(
+pub async fn detail_of(pool: &DbPool, id: &str) -> Result<Option<RunnerDetailRow>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
         "SELECT id, name, labels, status, version, system_info, last_seen,
                 created_at, updated_at, team_id, host_id, runner_instance_id,
                 capability_reprobe_requested, capability_reprobe_requested_at,
                 capability_reprobe_served_at
          FROM runners WHERE id = ?",
+        &[id.into()],
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(runner_detail_row))
+    .await?
+    .map(runner_detail_row))
 }
 
 /// Jobs currently running on this runner — display-only count.
-pub async fn running_jobs_of(pool: &SqlitePool, id: &str) -> Result<i64, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'")
-            .bind(id)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0),
+pub async fn running_jobs_of(pool: &DbPool, id: &str) -> Result<i64, AppError> {
+    Ok(exec::fetch_scalar_i64(
+        pool,
+        "SELECT COUNT(*) FROM jobs WHERE runner_id = ? AND status = 'running'",
+        &[id.into()],
     )
+    .await
+    .unwrap_or(0))
 }
 
 /// `(name, stored value)` for the named team secrets a claim may expose, in
 /// one round trip. The `IN (...)` list is built from `?` placeholders — only
 /// the *count* varies, never SQL text.
 pub async fn team_secret_values_by_name(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
     names: &[&str],
 ) -> Result<Vec<(String, String)>, AppError> {
@@ -1459,11 +1510,13 @@ pub async fn team_secret_values_by_name(
          JOIN pipelines p ON p.team_id = s.team_id AND p.team_id != ''
          WHERE p.id = ? AND s.name IN ({placeholders})"
     );
-    let mut q = sqlx::query_as::<_, (String, String)>(&query).bind(pipeline_id);
-    for name in names {
-        q = q.bind(*name);
-    }
-    Ok(q.fetch_all(pool).await?)
+    let mut binds: Vec<SqlValue> = vec![pipeline_id.into()];
+    binds.extend(names.iter().map(|name| SqlValue::from(*name)));
+    Ok(exec::fetch_all(pool, &query, &binds)
+        .await?
+        .into_iter()
+        .map(|r| (r.text(0), r.text(1)))
+        .collect())
 }
 
 /// Validates switching `runner_id` to `mode` against the runner's live state:
