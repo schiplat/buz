@@ -140,7 +140,8 @@ pub async fn create(
         .unwrap_or_else(|_| "[]".into());
     let notify_json = serde_json::to_string(&req.notify).unwrap_or_else(|_| "[]".into());
 
-    let mut tx = state.pool.begin().await?;
+    let db = state.db();
+    let mut tx = db.begin_immediate().await?;
     crate::store::pipelines::insert_tx(
         &mut tx,
         &crate::store::pipelines::NewPipeline {
@@ -452,7 +453,7 @@ pub async fn update(
         &var_names,
     )?;
     let affected = crate::store::pipelines::update_guarded(
-        &state.pool,
+        &state.db(),
         &id,
         team_id != stored_team_id,
         &crate::store::pipelines::UpdatePipeline {
@@ -662,7 +663,7 @@ pub async fn disable(
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     let outcome =
-        crate::store::pipelines::disable(&state.pool, &auth, &team_id, &id, req.cancel_in_flight)
+        crate::store::pipelines::disable(&state.db(), &auth, &team_id, &id, req.cancel_in_flight)
             .await?;
     let name = outcome.name;
     let cancelled = outcome.cancelled;
@@ -699,7 +700,7 @@ pub async fn enable(
     let team_id = pipeline_team_id(&state.pool, &id).await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
-    let name = crate::store::pipelines::enable(&state.pool, &auth, &team_id, &id).await?;
+    let name = crate::store::pipelines::enable(&state.db(), &auth, &team_id, &id).await?;
 
     tracing::info!("Pipeline {name} ({id}) enabled");
 
@@ -933,7 +934,7 @@ pub async fn do_trigger(
         "waiting_approval"
     } else {
         let status = crate::store::pipelines::resolve_concurrency_status(
-            &state.pool,
+            &state.db(),
             pipeline_id,
             concurrency_group.as_deref(),
             &concurrency_mode,

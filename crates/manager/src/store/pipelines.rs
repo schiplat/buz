@@ -1,7 +1,7 @@
 //! Pipeline row lookups shared across handlers.
 
-use crate::store::exec::{self, DbPool, SqlValue};
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::{self, DbPool, DbTx, SqlValue};
+use sqlx::Row;
 use uuid::Uuid;
 
 use shared::error::AppError;
@@ -28,14 +28,12 @@ pub async fn pipeline_source_row(
 /// Guarded writes only — the caller owns the `BEGIN IMMEDIATE` scope and any
 /// post-commit fan-out.
 pub async fn resolve_concurrency_status_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut DbTx<'_>,
     pipeline_id: &str,
     concurrency_group: Option<&str>,
     concurrency_mode: &str,
     concurrency_max_queue: i64,
 ) -> Result<&'static str, AppError> {
-    use sqlx::Row;
-
     let Some(group) = concurrency_group.filter(|g| !g.is_empty()) else {
         return Ok("pending");
     };
@@ -48,14 +46,15 @@ pub async fn resolve_concurrency_status_in_tx(
 
     match mode {
         "discard-new" => {
-            let running = sqlx::query(
-                "SELECT COUNT(*) as cnt FROM jobs
+            let count = tx
+                .fetch_optional(
+                    "SELECT COUNT(*) as cnt FROM jobs
                  WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued')",
-            )
-            .bind(pipeline_id)
-            .fetch_one(&mut **tx)
-            .await?;
-            let count: i64 = running.get(0);
+                    &[pipeline_id.into()],
+                )
+                .await?
+                .map(|r| r.i64(0))
+                .unwrap_or(0);
             if count > 0 {
                 return Err(AppError::Conflict(format!(
                     "concurrency group '{group}' has {count} active/queued job(s)"
@@ -65,24 +64,25 @@ pub async fn resolve_concurrency_status_in_tx(
         }
 
         "discard-old" => {
-            sqlx::query(
+            tx.execute(
                 "UPDATE jobs SET status = 'cancelled', updated_at = datetime('now')
                  WHERE pipeline_id = ? AND status = 'queued'",
+                &[pipeline_id.into()],
             )
-            .bind(pipeline_id)
-            .execute(&mut **tx)
             .await?;
             Ok("pending")
         }
 
         "queue" => {
-            let queued_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM jobs
+            let queued_count = tx
+                .fetch_optional(
+                    "SELECT COUNT(*) FROM jobs
                  WHERE pipeline_id = ? AND status = 'queued'",
-            )
-            .bind(pipeline_id)
-            .fetch_one(&mut **tx)
-            .await?;
+                    &[pipeline_id.into()],
+                )
+                .await?
+                .map(|r| r.i64(0))
+                .unwrap_or(0);
 
             if queued_count >= concurrency_max_queue {
                 return Err(AppError::Conflict(format!(
@@ -90,13 +90,15 @@ pub async fn resolve_concurrency_status_in_tx(
                 )));
             }
 
-            let running_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM jobs
+            let running_count = tx
+                .fetch_optional(
+                    "SELECT COUNT(*) FROM jobs
                  WHERE pipeline_id = ? AND status IN ('pending', 'running')",
-            )
-            .bind(pipeline_id)
-            .fetch_one(&mut **tx)
-            .await?;
+                    &[pipeline_id.into()],
+                )
+                .await?
+                .map(|r| r.i64(0))
+                .unwrap_or(0);
 
             if running_count == 0 {
                 Ok("pending")
@@ -114,13 +116,13 @@ pub async fn resolve_concurrency_status_in_tx(
 /// Pipeline concurrency decision, owning its transaction — the read-only-gate
 /// variant used by re-run and trigger when no other writes share the scope.
 pub async fn resolve_concurrency_status(
-    pool: &SqlitePool,
+    pool: &DbPool,
     pipeline_id: &str,
     concurrency_group: Option<&str>,
     concurrency_mode: &str,
     concurrency_max_queue: i64,
 ) -> Result<&'static str, AppError> {
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut tx = pool.begin_immediate().await?;
     let status = resolve_concurrency_status_in_tx(
         &mut tx,
         pipeline_id,
@@ -663,17 +665,16 @@ pub async fn active_job_count(pool: &DbPool, pipeline_id: &str) -> Result<i64, A
 
 /// Active job count inside the caller's transaction (the re-check that makes
 /// the team-move guard race-free; same statement, same scope).
-pub async fn active_job_count_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    pipeline_id: &str,
-) -> Result<i64, AppError> {
-    Ok(sqlx::query_scalar(
-        "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
+pub async fn active_job_count_tx(tx: &mut DbTx<'_>, pipeline_id: &str) -> Result<i64, AppError> {
+    Ok(tx
+        .fetch_optional(
+            "SELECT COUNT(*) FROM jobs WHERE pipeline_id = ? \
              AND status IN ('pending', 'queued', 'waiting_approval', 'running')",
-    )
-    .bind(pipeline_id)
-    .fetch_one(&mut **tx)
-    .await?)
+            &[pipeline_id.into()],
+        )
+        .await?
+        .map(|r| r.i64(0))
+        .unwrap_or(0))
 }
 
 /// Audit before-snapshot facts of a delete (`None` = no such pipeline).
@@ -720,14 +721,16 @@ pub async fn name_active_of(pool: &DbPool, id: &str) -> Result<Option<(String, b
 /// `(name, is_active)` inside the caller's transaction — disable/enable's
 /// read under the write lock.
 pub async fn name_active_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut DbTx<'_>,
     id: &str,
 ) -> Result<Option<(String, bool)>, AppError> {
-    let row = sqlx::query("SELECT name, is_active FROM pipelines WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&mut **tx)
+    let row = tx
+        .fetch_optional(
+            "SELECT name, is_active FROM pipelines WHERE id = ?",
+            &[id.into()],
+        )
         .await?;
-    Ok(row.map(|r| (r.get(0), r.get::<i64, _>(1) != 0)))
+    Ok(row.map(|r| (r.text(0), r.i64(1) != 0)))
 }
 
 /// Flip a pipeline's active flag (toggle-active).
@@ -744,37 +747,33 @@ pub async fn set_active(pool: &DbPool, id: &str, active: bool) -> Result<(), App
 /// Disable inside the caller's `BEGIN IMMEDIATE` scope — the flip must be
 /// serialized with the concurrent-trigger re-check (see
 /// `transaction-boundaries.md`).
-pub async fn set_active_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    id: &str,
-    active: bool,
-) -> Result<(), AppError> {
+pub async fn set_active_tx(tx: &mut DbTx<'_>, id: &str, active: bool) -> Result<(), AppError> {
     let sql = if active {
         "UPDATE pipelines SET is_active = 1, updated_at = datetime('now') WHERE id = ?"
     } else {
         "UPDATE pipelines SET is_active = 0, updated_at = datetime('now') WHERE id = ?"
     };
-    sqlx::query(sql).bind(id).execute(&mut **tx).await?;
+    tx.execute(sql, &[id.into()]).await?;
     Ok(())
 }
 
 /// Ids of a pipeline's in-flight jobs, queue-fair order — the disable
 /// cancellation scan, inside the caller's transaction.
 pub async fn in_flight_job_ids_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut DbTx<'_>,
     pipeline_id: &str,
 ) -> Result<Vec<String>, AppError> {
-    Ok(sqlx::query(
+    Ok(tx
+        .fetch_all(
             "SELECT id FROM jobs
              WHERE pipeline_id = ? AND status IN ('pending', 'running', 'queued', 'waiting_approval')
              ORDER BY created_at, seq",
-    )
-    .bind(pipeline_id)
-    .fetch_all(&mut **tx)
-    .await?
-    .into_iter()
-    .map(|r| r.get(0))
-    .collect())
+            &[pipeline_id.into()],
+        )
+        .await?
+        .into_iter()
+        .map(|r| r.text(0))
+        .collect())
 }
 
 // ───────────────────────────── write models ─────────────────────────────
@@ -804,36 +803,34 @@ pub struct NewPipeline {
 
 /// Insert one pipeline row inside the caller's transaction (the create path's
 /// shell row; the YAML bind retargets `source` right after).
-pub async fn insert_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    p: &NewPipeline,
-) -> Result<(), AppError> {
-    sqlx::query(
+pub async fn insert_tx(tx: &mut DbTx<'_>, p: &NewPipeline) -> Result<(), AppError> {
+    tx.execute(
         "INSERT INTO pipelines (id, name, description, trigger_type, webhook_path, webhook_secret,
          cron_expr, runner_labels, timeout_seconds, concurrency_group, concurrency_mode,
          concurrency_max_queue, concurrency_queue_timeout_seconds,
          owner_group, team_id, input_defs, environments, notify_json, is_active)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+        &[
+            p.id.as_str().into(),
+            p.name.as_str().into(),
+            p.description.as_str().into(),
+            p.trigger_type.as_str().into(),
+            p.webhook_path.as_deref().into(),
+            p.webhook_secret.as_deref().into(),
+            p.cron_expr.as_deref().into(),
+            p.runner_labels.as_str().into(),
+            SqlValue::Int(p.timeout_seconds),
+            p.concurrency_group.as_deref().into(),
+            p.concurrency_mode.as_str().into(),
+            SqlValue::Int(p.concurrency_max_queue),
+            SqlValue::Int(p.concurrency_queue_timeout_seconds),
+            p.owner_group.as_str().into(),
+            p.team_id.as_str().into(),
+            p.input_defs.as_str().into(),
+            p.environments.as_str().into(),
+            p.notify_json.as_str().into(),
+        ],
     )
-    .bind(&p.id)
-    .bind(&p.name)
-    .bind(&p.description)
-    .bind(&p.trigger_type)
-    .bind(&p.webhook_path)
-    .bind(&p.webhook_secret)
-    .bind(&p.cron_expr)
-    .bind(&p.runner_labels)
-    .bind(p.timeout_seconds)
-    .bind(&p.concurrency_group)
-    .bind(&p.concurrency_mode)
-    .bind(p.concurrency_max_queue)
-    .bind(p.concurrency_queue_timeout_seconds)
-    .bind(&p.owner_group)
-    .bind(&p.team_id)
-    .bind(&p.input_defs)
-    .bind(&p.environments)
-    .bind(&p.notify_json)
-    .execute(&mut **tx)
     .await?;
     Ok(())
 }
@@ -862,40 +859,38 @@ pub struct UpdatePipeline {
 
 /// Replace a pipeline's editable fields inside the caller's `BEGIN IMMEDIATE`
 /// scope (the team-move guard re-check shares the lock).
-pub async fn update_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    id: &str,
-    p: &UpdatePipeline,
-) -> Result<u64, AppError> {
-    let result = sqlx::query(
-        "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?, webhook_path = ?,
+pub async fn update_tx(tx: &mut DbTx<'_>, id: &str, p: &UpdatePipeline) -> Result<u64, AppError> {
+    let affected = tx
+        .execute(
+            "UPDATE pipelines SET name = ?, description = ?, trigger_type = ?, webhook_path = ?,
          webhook_secret = ?, cron_expr = ?, runner_labels = ?, timeout_seconds = ?,
          concurrency_group = ?, concurrency_mode = ?, concurrency_max_queue = ?,
          concurrency_queue_timeout_seconds = ?, owner_group = ?, team_id = ?, input_defs = ?,
          environments = ?, notify_json = ?, updated_at = datetime('now')
          WHERE id = ?",
-    )
-    .bind(&p.name)
-    .bind(&p.description)
-    .bind(&p.trigger_type)
-    .bind(&p.webhook_path)
-    .bind(&p.webhook_secret)
-    .bind(&p.cron_expr)
-    .bind(&p.runner_labels)
-    .bind(p.timeout_seconds)
-    .bind(&p.concurrency_group)
-    .bind(&p.concurrency_mode)
-    .bind(p.concurrency_max_queue)
-    .bind(p.concurrency_queue_timeout_seconds)
-    .bind(&p.owner_group)
-    .bind(&p.team_id)
-    .bind(&p.input_defs)
-    .bind(&p.environments)
-    .bind(&p.notify_json)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(result.rows_affected())
+            &[
+                p.name.as_str().into(),
+                p.description.as_str().into(),
+                p.trigger_type.as_str().into(),
+                p.webhook_path.as_deref().into(),
+                p.webhook_secret.as_deref().into(),
+                p.cron_expr.as_deref().into(),
+                p.runner_labels.as_str().into(),
+                SqlValue::Int(p.timeout_seconds),
+                p.concurrency_group.as_deref().into(),
+                p.concurrency_mode.as_str().into(),
+                SqlValue::Int(p.concurrency_max_queue),
+                SqlValue::Int(p.concurrency_queue_timeout_seconds),
+                p.owner_group.as_str().into(),
+                p.team_id.as_str().into(),
+                p.input_defs.as_str().into(),
+                p.environments.as_str().into(),
+                p.notify_json.as_str().into(),
+                id.into(),
+            ],
+        )
+        .await?;
+    Ok(affected)
 }
 
 /// `Some(name)` when a team secret with this name exists — the
@@ -1249,14 +1244,14 @@ pub struct DisableOutcome {
 /// Post-commit fan-out (poller wake, per-job WebSocket announce) is the
 /// caller's — nothing here notifies outside the transaction.
 pub async fn disable(
-    pool: &SqlitePool,
+    pool: &DbPool,
     auth: &crate::middleware::AuthUser,
     team_id: &str,
     pipeline_id: &str,
     cancel_in_flight: bool,
 ) -> Result<DisableOutcome, AppError> {
     let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
+        .begin_immediate()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let (name, was_active) = name_active_tx(&mut tx, pipeline_id)
@@ -1286,7 +1281,7 @@ pub async fn disable(
         }
     }
 
-    crate::audit::record_in(
+    crate::audit::record_in_tx(
         &mut tx,
         crate::audit::AuditEvent::from_auth(auth, crate::audit::Action::PipelineDisable)
             .resource("pipeline", pipeline_id, &name)
@@ -1312,13 +1307,13 @@ pub async fn disable(
 /// the transaction (an unauditable enable is a failed enable). No-op when
 /// already active. Returns the pipeline name.
 pub async fn enable(
-    pool: &SqlitePool,
+    pool: &DbPool,
     auth: &crate::middleware::AuthUser,
     team_id: &str,
     pipeline_id: &str,
 ) -> Result<String, AppError> {
     let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
+        .begin_immediate()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let (name, was_active) = name_active_tx(&mut tx, pipeline_id)
@@ -1327,7 +1322,7 @@ pub async fn enable(
     if !was_active {
         set_active_tx(&mut tx, pipeline_id, true).await?;
     }
-    crate::audit::record_in(
+    crate::audit::record_in_tx(
         &mut tx,
         crate::audit::AuditEvent::from_auth(auth, crate::audit::Action::PipelineEnable)
             .resource("pipeline", pipeline_id, &name)
@@ -1351,13 +1346,13 @@ pub async fn enable(
 /// Post-commit work (the definition YAML rewrite, the audit record) stays with
 /// the handler — see `transaction-boundaries.md`.
 pub async fn update_guarded(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     team_changed: bool,
     p: &UpdatePipeline,
 ) -> Result<u64, AppError> {
     let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
+        .begin_immediate()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     if team_changed {

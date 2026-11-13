@@ -631,12 +631,65 @@ pub fn secret_snapshot(
     })
 }
 
+/// The one statement every entry point below runs. Kept as a const so the
+/// three execution paths (pool, connection, transaction) cannot drift.
+const AUDIT_INSERT_SQL: &str = "INSERT INTO audit_logs (
+            id, created_at, actor_user_id, actor_username, action,
+            resource_type, resource_id, resource_name, team_id,
+            before_json, after_json, meta_json, ip
+         ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+/// The serialized, redacted column values shared by every insertion path.
+struct PreparedAudit {
+    id: String,
+    before: Option<String>,
+    after: Option<String>,
+    meta: Option<String>,
+}
+
+fn prepare(event: &AuditEvent) -> PreparedAudit {
+    PreparedAudit {
+        id: Uuid::new_v4().to_string(),
+        before: event
+            .before
+            .as_ref()
+            .map(redact_value)
+            .and_then(|v| serde_json::to_string(&v).ok()),
+        after: event
+            .after
+            .as_ref()
+            .map(redact_value)
+            .and_then(|v| serde_json::to_string(&v).ok()),
+        meta: event
+            .meta
+            .as_ref()
+            .map(redact_value)
+            .and_then(|v| serde_json::to_string(&v).ok()),
+    }
+}
+
 /// Persist an audit event. Errors are logged and swallowed (best effort —
 /// the audited change already committed).
 pub async fn record(pool: &SqlitePool, event: AuditEvent) {
     let action = event.action.clone();
     let resource = event.resource_id.clone();
     if let Err(e) = insert(pool, event).await {
+        tracing::warn!(
+            action = %action,
+            resource = %resource,
+            "failed to write audit log: {e}"
+        );
+    }
+}
+
+/// [`record`] for the dual-backend dispatcher
+/// ([`crate::store::exec::DbPool`]): same best-effort contract, executed
+/// through `store::exec` so it works on either backend. Store functions that
+/// have migrated off `SqlitePool` call this for their post-commit audit row.
+pub async fn record_pool(pool: &crate::store::exec::DbPool, event: AuditEvent) {
+    let action = event.action.clone();
+    let resource = event.resource_id.clone();
+    if let Err(e) = insert_pool(pool, event).await {
         tracing::warn!(
             action = %action,
             resource = %resource,
@@ -667,25 +720,9 @@ pub async fn record_in_tx(
 ) -> Result<(), sqlx::Error> {
     use crate::store::exec::SqlValue;
 
-    let id = Uuid::new_v4().to_string();
-    let before = event
-        .before
-        .as_ref()
-        .map(redact_value)
-        .and_then(|v| serde_json::to_string(&v).ok());
-    let after = event
-        .after
-        .as_ref()
-        .map(redact_value)
-        .and_then(|v| serde_json::to_string(&v).ok());
-    let meta = event
-        .meta
-        .as_ref()
-        .map(redact_value)
-        .and_then(|v| serde_json::to_string(&v).ok());
-
+    let prepared = prepare(&event);
     let binds = [
-        SqlValue::from(id),
+        SqlValue::from(prepared.id),
         event.actor_user_id.into(),
         event.actor_username.into(),
         event.action.into(),
@@ -693,65 +730,61 @@ pub async fn record_in_tx(
         event.resource_id.into(),
         event.resource_name.into(),
         event.team_id.into(),
-        before.into(),
-        after.into(),
-        meta.into(),
+        prepared.before.into(),
+        prepared.after.into(),
+        prepared.meta.into(),
         event.ip.into(),
     ];
-    tx.execute(
-        "INSERT INTO audit_logs (
-            id, created_at, actor_user_id, actor_username, action,
-            resource_type, resource_id, resource_name, team_id,
-            before_json, after_json, meta_json, ip
-         ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        &binds,
-    )
-    .await?;
+    tx.execute(AUDIT_INSERT_SQL, &binds).await?;
     Ok(())
 }
 
-/// Shared insert used by both entry points.
+/// Pool-level insertion for the dual-backend dispatcher ([`record_pool`]).
+async fn insert_pool(
+    pool: &crate::store::exec::DbPool,
+    event: AuditEvent,
+) -> Result<(), sqlx::Error> {
+    use crate::store::exec::SqlValue;
+
+    let prepared = prepare(&event);
+    let binds = [
+        SqlValue::from(prepared.id),
+        event.actor_user_id.into(),
+        event.actor_username.into(),
+        event.action.into(),
+        event.resource_type.into(),
+        event.resource_id.into(),
+        event.resource_name.into(),
+        event.team_id.into(),
+        prepared.before.into(),
+        prepared.after.into(),
+        prepared.meta.into(),
+        event.ip.into(),
+    ];
+    crate::store::exec::execute(pool, AUDIT_INSERT_SQL, &binds).await?;
+    Ok(())
+}
+
+/// Shared insert used by the SQLite-typed entry points.
 async fn insert<'e, E>(executor: E, event: AuditEvent) -> Result<(), sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
-    let id = Uuid::new_v4().to_string();
-    let before = event
-        .before
-        .as_ref()
-        .map(redact_value)
-        .and_then(|v| serde_json::to_string(&v).ok());
-    let after = event
-        .after
-        .as_ref()
-        .map(redact_value)
-        .and_then(|v| serde_json::to_string(&v).ok());
-    let meta = event
-        .meta
-        .as_ref()
-        .map(redact_value)
-        .and_then(|v| serde_json::to_string(&v).ok());
-
-    sqlx::query(
-        "INSERT INTO audit_logs (
-            id, created_at, actor_user_id, actor_username, action,
-            resource_type, resource_id, resource_name, team_id,
-            before_json, after_json, meta_json, ip
-         ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(&event.actor_user_id)
-    .bind(&event.actor_username)
-    .bind(&event.action)
-    .bind(&event.resource_type)
-    .bind(&event.resource_id)
-    .bind(&event.resource_name)
-    .bind(&event.team_id)
-    .bind(&before)
-    .bind(&after)
-    .bind(&meta)
-    .bind(&event.ip)
-    .execute(executor)
-    .await?;
+    let prepared = prepare(&event);
+    sqlx::query(AUDIT_INSERT_SQL)
+        .bind(&prepared.id)
+        .bind(&event.actor_user_id)
+        .bind(&event.actor_username)
+        .bind(&event.action)
+        .bind(&event.resource_type)
+        .bind(&event.resource_id)
+        .bind(&event.resource_name)
+        .bind(&event.team_id)
+        .bind(&prepared.before)
+        .bind(&prepared.after)
+        .bind(&prepared.meta)
+        .bind(&event.ip)
+        .execute(executor)
+        .await?;
     Ok(())
 }

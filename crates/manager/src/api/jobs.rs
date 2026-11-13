@@ -277,7 +277,7 @@ pub async fn cancel(
     auth.check_team(&team_id, Perm::PipelineWrite)?;
 
     let prev_status = crate::store::jobs::cancel(
-        &state.pool,
+        &state.db(),
         &auth,
         &id,
         &pipeline_id,
@@ -335,7 +335,7 @@ pub async fn approve(
 
     tracing::info!(job_id = %id, actor = %auth.username, "environments: approve started");
 
-    let outcome = crate::store::jobs::approve(&state.pool, &auth, &id, &comment).await?;
+    let outcome = crate::store::jobs::approve(&state.db(), &auth, &id, &comment).await?;
     broadcast_job_status(&state, &id, &outcome.pipeline_id, &outcome.new_status);
 
     Ok(Json(ApiResponse::success(serde_json::json!({
@@ -360,7 +360,7 @@ pub async fn reject(
     tracing::info!(job_id = %id, actor = %auth.username, "environments: reject started");
 
     let pipeline_id = crate::store::jobs::job_pipeline_id(&state.db(), &id).await?;
-    crate::store::jobs::reject(&state.pool, &auth, &id, &comment).await?;
+    crate::store::jobs::reject(&state.db(), &auth, &id, &comment).await?;
     broadcast_job_status(&state, &id, &pipeline_id, "cancelled");
 
     Ok(Json(ApiResponse::success(serde_json::json!({
@@ -443,7 +443,7 @@ pub async fn rerun(
         }
         _ => {
             crate::store::pipelines::resolve_concurrency_status(
-                &state.pool,
+                &state.db(),
                 &pipeline_id,
                 concurrency_group.as_deref(),
                 &concurrency_mode,
@@ -494,7 +494,7 @@ pub async fn rerun(
     let snapshot_str = serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into());
 
     let job_id = crate::store::jobs::insert_rerun(
-        &state.pool,
+        &state.db(),
         &crate::store::jobs::RerunInsert {
             source_job_id: &id,
             pipeline_id: &pipeline_id,
@@ -635,7 +635,7 @@ pub async fn update_status(
     Json(req): Json<shared::protocol::UpdateJobStatusRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     let outcome = crate::store::jobs::apply_runner_status(
-        &state.pool,
+        &state.db(),
         &auth.runner_id,
         &job_id,
         &crate::store::jobs::RunnerStatusReport {
