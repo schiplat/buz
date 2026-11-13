@@ -435,7 +435,7 @@ pub async fn rerun(
     // gates the re-run (protection belongs to the environment, not to the
     // historical snapshot). A deleted environment is a clear 404.
     let env =
-        super::environments::resolve_environment(&state.pool, environment_id.as_deref()).await?;
+        super::environments::resolve_environment(&state.db(), environment_id.as_deref()).await?;
     let job_status: &str = match env.as_ref().map(|e| &e.protection) {
         Some(p) if p.enabled => {
             auth.check_team_role(&team_id, p.min_trigger_role)?;

@@ -86,7 +86,7 @@ pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     Ok(Json(ApiResponse::success(
-        crate::store::environments::list_environments(&state.pool).await?,
+        crate::store::environments::list_environments(&state.db()).await?,
     )))
 }
 
@@ -99,7 +99,7 @@ pub async fn get_one(
     // Variable overrides carry plaintext values (defaults + overrides) —
     // platform-admin only; everyone else gets the environment shell.
     let payload =
-        crate::store::environments::environment_detail(&state.pool, &id, auth.is_platform_admin)
+        crate::store::environments::environment_detail(&state.db(), &id, auth.is_platform_admin)
             .await?;
     Ok(Json(ApiResponse::success(payload)))
 }
@@ -111,7 +111,7 @@ pub async fn list_host_allowlist(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
     Ok(Json(ApiResponse::success(
-        crate::store::environments::list_host_allowlist_json(&state.pool, &id).await?,
+        crate::store::environments::list_host_allowlist_json(&state.db(), &id).await?,
     )))
 }
 
@@ -132,10 +132,10 @@ pub async fn add_host_allowlist(
     if value.is_empty() {
         return Err(AppError::ValidationFailed("value must not be empty".into()));
     }
-    if !crate::store::environments::environment_exists(&state.pool, &id).await? {
+    if !crate::store::environments::environment_exists(&state.db(), &id).await? {
         return Err(AppError::NotFound("environment not found".into()));
     }
-    crate::store::environments::insert_host_allowlist(&state.pool, &id, &kind, &value).await?;
+    crate::store::environments::insert_host_allowlist(&state.db(), &id, &kind, &value).await?;
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::EnvironmentHostAllowlistAdd)
@@ -155,7 +155,7 @@ pub async fn delete_host_allowlist(
     Path((id, kind, value)): Path<(String, String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    crate::store::environments::delete_host_allowlist(&state.pool, &id, &kind, &value).await?;
+    crate::store::environments::delete_host_allowlist(&state.db(), &id, &kind, &value).await?;
     audit::record(
         &state.pool,
         AuditEvent::from_auth(&auth, Action::EnvironmentHostAllowlistRemove)
@@ -187,7 +187,7 @@ pub async fn create(
     }
     crate::store::environments::validate_slug(&slug)?;
 
-    if crate::store::environments::name_or_slug_taken(&state.pool, &slug, &name, None).await? {
+    if crate::store::environments::name_or_slug_taken(&state.db(), &slug, &name, None).await? {
         return Err(AppError::Conflict(
             "environment name or slug already exists".into(),
         ));
@@ -209,7 +209,7 @@ pub async fn create(
         req.deployment_concurrency.as_deref(),
     )?;
     crate::store::environments::insert_environment(
-        &state.pool,
+        &state.db(),
         &id,
         &name,
         &slug,
@@ -255,7 +255,7 @@ pub async fn update(
     State(state): State<AppState>,
     Json(req): Json<UpdateEnvironmentRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let existing = crate::store::environments::settings_row(&state.pool, &id)
+    let existing = crate::store::environments::settings_row(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("environment not found".into()))?;
 
@@ -304,7 +304,7 @@ pub async fn update(
     };
 
     if (name != existing.name || slug != existing.slug)
-        && crate::store::environments::name_or_slug_taken(&state.pool, &slug, &name, Some(&id))
+        && crate::store::environments::name_or_slug_taken(&state.db(), &slug, &name, Some(&id))
             .await?
     {
         return Err(AppError::Conflict(
@@ -313,7 +313,7 @@ pub async fn update(
     }
 
     crate::store::environments::update_environment(
-        &state.pool,
+        &state.db(),
         &id,
         &name,
         &slug,
@@ -361,11 +361,11 @@ pub async fn delete(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let (name, slug) = crate::store::environments::name_and_slug(&state.pool, &id)
+    let (name, slug) = crate::store::environments::name_and_slug(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("environment not found".into()))?;
 
-    crate::store::environments::delete_environment(&state.pool, &id).await?;
+    crate::store::environments::delete_environment(&state.db(), &id).await?;
 
     tracing::info!(environment = %slug, id = %id, "environments: deleted");
     audit::record(
@@ -385,11 +385,11 @@ pub async fn list_overrides(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    if !crate::store::environments::environment_exists(&state.pool, &id).await? {
+    if !crate::store::environments::environment_exists(&state.db(), &id).await? {
         return Err(AppError::NotFound("environment not found".into()));
     }
     Ok(Json(ApiResponse::success(
-        crate::store::environments::list_overrides_json(&state.pool, &id).await?,
+        crate::store::environments::list_overrides_json(&state.db(), &id).await?,
     )))
 }
 
@@ -400,15 +400,15 @@ pub async fn upsert_override(
     State(state): State<AppState>,
     Json(req): Json<UpsertOverrideRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let (env_name, env_slug) = crate::store::environments::name_and_slug(&state.pool, &id)
+    let (env_name, env_slug) = crate::store::environments::name_and_slug(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("environment not found".into()))?;
 
-    let var_name = crate::store::environments::var_name(&state.pool, &req.var_id)
+    let var_name = crate::store::environments::var_name(&state.db(), &req.var_id)
         .await?
         .ok_or_else(|| AppError::NotFound("variable not found".into()))?;
 
-    crate::store::environments::upsert_override(&state.pool, &id, &req.var_id, &req.value).await?;
+    crate::store::environments::upsert_override(&state.db(), &id, &req.var_id, &req.value).await?;
 
     tracing::info!(
         environment = %env_slug,
@@ -439,11 +439,11 @@ pub async fn delete_override(
     Path((id, var_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let (env_name, env_slug) = crate::store::environments::name_and_slug(&state.pool, &id)
+    let (env_name, env_slug) = crate::store::environments::name_and_slug(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("environment not found".into()))?;
 
-    crate::store::environments::delete_override(&state.pool, &id, &var_id).await?;
+    crate::store::environments::delete_override(&state.db(), &id, &var_id).await?;
 
     tracing::info!(
         environment = %env_slug,
@@ -467,11 +467,11 @@ pub async fn list_secret_overrides(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
-    if !crate::store::environments::environment_exists(&state.pool, &id).await? {
+    if !crate::store::environments::environment_exists(&state.db(), &id).await? {
         return Err(AppError::NotFound("environment not found".into()));
     }
     Ok(Json(ApiResponse::success(
-        crate::store::environments::list_secret_overrides_json(&state.pool, &id).await?,
+        crate::store::environments::list_secret_overrides_json(&state.db(), &id).await?,
     )))
 }
 
@@ -482,12 +482,12 @@ pub async fn upsert_secret_override(
     State(state): State<AppState>,
     Json(req): Json<UpsertSecretOverrideRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let (env_name, env_slug) = crate::store::environments::name_and_slug(&state.pool, &id)
+    let (env_name, env_slug) = crate::store::environments::name_and_slug(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("environment not found".into()))?;
 
     let (secret_name, kind_raw) =
-        crate::store::environments::secret_name_and_kind(&state.pool, &req.secret_id)
+        crate::store::environments::secret_name_and_kind(&state.db(), &req.secret_id)
             .await?
             .ok_or_else(|| AppError::NotFound("secret not found".into()))?;
     let kind = shared::secret_kind::normalize_secret_kind(Some(&kind_raw));
@@ -496,7 +496,7 @@ pub async fn upsert_secret_override(
     let cipher = crypto::encrypt(req.value.trim(), &state.config.auth.jwt_secret)
         .map_err(|e| AppError::Internal(format!("encrypt secret override: {e}")))?;
 
-    crate::store::environments::upsert_secret_override(&state.pool, &id, &req.secret_id, &cipher)
+    crate::store::environments::upsert_secret_override(&state.db(), &id, &req.secret_id, &cipher)
         .await?;
 
     tracing::info!(
@@ -530,11 +530,11 @@ pub async fn delete_secret_override(
     Path((id, secret_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let (env_name, env_slug) = crate::store::environments::name_and_slug(&state.pool, &id)
+    let (env_name, env_slug) = crate::store::environments::name_and_slug(&state.db(), &id)
         .await?
         .ok_or_else(|| AppError::NotFound("environment not found".into()))?;
 
-    crate::store::environments::delete_secret_override(&state.pool, &id, &secret_id).await?;
+    crate::store::environments::delete_secret_override(&state.db(), &id, &secret_id).await?;
 
     tracing::info!(
         environment = %env_slug,

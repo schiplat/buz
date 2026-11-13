@@ -4,8 +4,12 @@
 //! override a subset of those values for a job when the operator selects it at
 //! trigger time. GitHub sync per-repo overrides are a separate axis
 //! (`github_sync`).
+//!
+//! On the dual-backend dispatcher (`store::exec`): statements keep the
+//! SQLite dialect and the PG arm rewrites at execution time; projections are
+//! fixed, so rows decode by position.
 
-use sqlx::{Row, SqlitePool};
+use crate::store::exec::{self, DbPool, SqlValue};
 
 use shared::error::AppError;
 use shared::rbac::TeamRole;
@@ -214,8 +218,9 @@ pub struct ResolvedEnvironment {
 }
 
 /// Every environment with its override counts, protection and concurrency.
-pub async fn list_environments(pool: &SqlitePool) -> Result<Vec<serde_json::Value>, AppError> {
-    let rows = sqlx::query(
+pub async fn list_environments(pool: &DbPool) -> Result<Vec<serde_json::Value>, AppError> {
+    let rows = exec::fetch_all(
+        pool,
         "SELECT e.id, e.name, e.slug, e.description, e.updated_at,
                 (SELECT COUNT(*) FROM environment_var_overrides o WHERE o.environment_id = e.id) AS var_override_count,
                 (SELECT COUNT(*) FROM environment_secret_overrides o WHERE o.environment_id = e.id) AS secret_override_count,
@@ -225,35 +230,35 @@ pub async fn list_environments(pool: &SqlitePool) -> Result<Vec<serde_json::Valu
                 (SELECT COUNT(*) FROM environment_hosts h WHERE h.environment_id = e.id) AS host_allowlist_count
          FROM environments e
          ORDER BY e.name ASC",
+        &[],
     )
-    .fetch_all(pool)
     .await?;
 
     Ok(rows
         .into_iter()
         .map(|r| {
-            let var_n: i64 = r.get(5);
-            let secret_n: i64 = r.get(6);
+            let var_n = r.i64(5);
+            let secret_n = r.i64(6);
             let protection = protection_from_db_row(
-                r.get(7),
-                &r.get::<String, _>(8),
-                &r.get::<String, _>(9),
-                r.get(10),
-                r.get(11),
-                r.get(12),
+                r.i64(7),
+                &r.text(8),
+                &r.text(9),
+                r.i64(10),
+                r.i64(11),
+                r.i64(12),
             );
             let mut obj = serde_json::json!({
-                "id": r.get::<String, _>(0),
-                "name": r.get::<String, _>(1),
-                "slug": r.get::<String, _>(2),
-                "description": r.get::<String, _>(3),
-                "updated_at": r.get::<Option<String>, _>(4),
+                "id": r.text(0),
+                "name": r.text(1),
+                "slug": r.text(2),
+                "description": r.text(3),
+                "updated_at": r.opt_text(4),
                 "var_override_count": var_n,
                 "secret_override_count": secret_n,
                 // Backward-compatible total for list badges.
                 "override_count": var_n + secret_n,
-                "deployment_concurrency": r.get::<String, _>(13),
-                "host_allowlist_count": r.get::<i64, _>(14),
+                "deployment_concurrency": r.text(13),
+                "host_allowlist_count": r.i64(14),
             });
             if let Some(map) = obj.as_object_mut() {
                 map.extend(protection.to_api_fields());
@@ -266,27 +271,26 @@ pub async fn list_environments(pool: &SqlitePool) -> Result<Vec<serde_json::Valu
 /// One environment's detail payload. `include_var_overrides` = platform admin:
 /// variable overrides carry plaintext and are hidden from everyone else.
 pub async fn environment_detail(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     include_var_overrides: bool,
 ) -> Result<serde_json::Value, AppError> {
-    let row = sqlx::query(&format!(
+    let sql = format!(
         "SELECT id, name, slug, description, updated_at, {ENV_PROTECTION_SELECT},
                 COALESCE(deployment_concurrency, 'off')
          FROM environments WHERE id = ?"
-    ))
-    .bind(id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("environment not found".into()))?;
+    );
+    let row = exec::fetch_optional(pool, &sql, &[id.into()])
+        .await?
+        .ok_or_else(|| AppError::NotFound("environment not found".into()))?;
 
     let protection = protection_from_db_row(
-        row.get(5),
-        &row.get::<String, _>(6),
-        &row.get::<String, _>(7),
-        row.get(8),
-        row.get(9),
-        row.get(10),
+        row.i64(5),
+        &row.text(6),
+        &row.text(7),
+        row.i64(8),
+        row.i64(9),
+        row.i64(10),
     );
     let overrides = if include_var_overrides {
         list_overrides_json(pool, id).await?
@@ -294,14 +298,14 @@ pub async fn environment_detail(
         Vec::new()
     };
     let mut obj = serde_json::json!({
-        "id": row.get::<String, _>(0),
-        "name": row.get::<String, _>(1),
-        "slug": row.get::<String, _>(2),
-        "description": row.get::<String, _>(3),
-        "updated_at": row.get::<Option<String>, _>(4),
+        "id": row.text(0),
+        "name": row.text(1),
+        "slug": row.text(2),
+        "description": row.text(3),
+        "updated_at": row.opt_text(4),
         "overrides": overrides,
         "secret_overrides": list_secret_overrides_json(pool, id).await?,
-        "deployment_concurrency": row.get::<String, _>(11),
+        "deployment_concurrency": row.text(11),
         "host_allowlist": list_host_allowlist_json(pool, id).await?,
     });
     if let Some(map) = obj.as_object_mut() {
@@ -311,99 +315,97 @@ pub async fn environment_detail(
 }
 
 pub async fn list_host_allowlist_json(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
-    let rows = sqlx::query(
+    let rows = exec::fetch_all(
+        pool,
         "SELECT kind, value, created_at FROM environment_hosts \
          WHERE environment_id = ? ORDER BY kind, value",
+        &[environment_id.into()],
     )
-    .bind(environment_id)
-    .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
         .map(|r| {
             serde_json::json!({
-                "kind": r.get::<String, _>(0),
-                "value": r.get::<String, _>(1),
-                "created_at": r.get::<Option<String>, _>(2),
+                "kind": r.text(0),
+                "value": r.text(1),
+                "created_at": r.opt_text(2),
             })
         })
         .collect())
 }
 
-pub async fn environment_exists(pool: &SqlitePool, id: &str) -> Result<bool, AppError> {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM environments WHERE id = ?")
-        .bind(id)
-        .fetch_one(pool)
-        .await?;
+pub async fn environment_exists(pool: &DbPool, id: &str) -> Result<bool, AppError> {
+    let count = exec::fetch_scalar_i64(
+        pool,
+        "SELECT COUNT(*) FROM environments WHERE id = ?",
+        &[id.into()],
+    )
+    .await?;
     Ok(count != 0)
 }
 
 /// Idempotent allowlist insert (re-adding an entry is a no-op).
 pub async fn insert_host_allowlist(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
     kind: &str,
     value: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "INSERT INTO environment_hosts (environment_id, kind, value) VALUES (?, ?, ?) \
          ON CONFLICT (environment_id, kind, value) DO NOTHING",
+        &[environment_id.into(), kind.into(), value.into()],
     )
-    .bind(environment_id)
-    .bind(kind)
-    .bind(value)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Delete one allowlist entry; `NotFound` when it did not exist.
 pub async fn delete_host_allowlist(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
     kind: &str,
     value: &str,
 ) -> Result<(), AppError> {
-    let result = sqlx::query(
+    let affected = exec::execute(
+        pool,
         "DELETE FROM environment_hosts WHERE environment_id = ? AND kind = ? AND value = ?",
+        &[environment_id.into(), kind.into(), value.into()],
     )
-    .bind(environment_id)
-    .bind(kind)
-    .bind(value)
-    .execute(pool)
     .await?;
-    if result.rows_affected() == 0 {
+    if affected == 0 {
         return Err(AppError::NotFound("allowlist entry not found".into()));
     }
     Ok(())
 }
 
 pub async fn list_overrides_json(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
-    let rows = sqlx::query(
+    let rows = exec::fetch_all(
+        pool,
         "SELECT o.var_id, v.name, v.value AS default_value, o.value AS override_value, o.updated_at
          FROM environment_var_overrides o
          JOIN platform_vars v ON v.id = o.var_id
          WHERE o.environment_id = ?
          ORDER BY v.name ASC",
+        &[environment_id.into()],
     )
-    .bind(environment_id)
-    .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
         .map(|r| {
             serde_json::json!({
-                "var_id": r.get::<String, _>(0),
-                "var_name": r.get::<String, _>(1),
-                "default_value": r.get::<String, _>(2),
-                "value": r.get::<String, _>(3),
-                "updated_at": r.get::<Option<String>, _>(4),
+                "var_id": r.text(0),
+                "var_name": r.text(1),
+                "default_value": r.text(2),
+                "value": r.text(3),
+                "updated_at": r.opt_text(4),
             })
         })
         .collect())
@@ -411,28 +413,28 @@ pub async fn list_overrides_json(
 
 /// Secret overrides never expose plaintext (override or default) — `has_override` only.
 pub async fn list_secret_overrides_json(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
-    let rows = sqlx::query(
+    let rows = exec::fetch_all(
+        pool,
         "SELECT o.secret_id, s.name, s.kind, o.updated_at
          FROM environment_secret_overrides o
          JOIN secrets s ON s.id = o.secret_id
          WHERE o.environment_id = ?
          ORDER BY s.name ASC",
+        &[environment_id.into()],
     )
-    .bind(environment_id)
-    .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
         .map(|r| {
             serde_json::json!({
-                "secret_id": r.get::<String, _>(0),
-                "secret_name": r.get::<String, _>(1),
-                "kind": normalize_secret_kind(Some(&r.get::<String, _>(2))),
+                "secret_id": r.text(0),
+                "secret_name": r.text(1),
+                "kind": normalize_secret_kind(Some(&r.text(2))),
                 "has_override": true,
-                "updated_at": r.get::<Option<String>, _>(3),
+                "updated_at": r.opt_text(3),
             })
         })
         .collect())
@@ -440,21 +442,22 @@ pub async fn list_secret_overrides_json(
 
 /// `(name, slug)` used for `create` conflict checks and delete audit context.
 pub async fn find_by_slug_or_name(
-    pool: &SqlitePool,
+    pool: &DbPool,
     slug: &str,
     name: &str,
 ) -> Result<Option<(String, String)>, AppError> {
-    let row = sqlx::query("SELECT name, slug FROM environments WHERE slug = ? OR name = ?")
-        .bind(slug)
-        .bind(name)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|r| (r.get(0), r.get(1))))
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT name, slug FROM environments WHERE slug = ? OR name = ?",
+        &[slug.into(), name.into()],
+    )
+    .await?
+    .map(|r| (r.text(0), r.text(1))))
 }
 
 /// Insert a new environment row.
 pub async fn insert_environment(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     name: &str,
     slug: &str,
@@ -462,26 +465,28 @@ pub async fn insert_environment(
     protection: &EnvironmentProtection,
     deployment_concurrency: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "INSERT INTO environments (
             id, name, slug, description,
             protection_enabled, min_trigger_role, min_approve_role,
             require_approvals, forbid_self_approve, approval_timeout_seconds,
             deployment_concurrency
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            id.into(),
+            name.into(),
+            slug.into(),
+            description.into(),
+            SqlValue::Int(protection.enabled as i64),
+            protection.min_trigger_role.as_str().into(),
+            protection.min_approve_role.as_str().into(),
+            SqlValue::Int(protection.require_approvals),
+            SqlValue::Int(protection.forbid_self_approve as i64),
+            SqlValue::Int(protection.approval_timeout_seconds),
+            deployment_concurrency.into(),
+        ],
     )
-    .bind(id)
-    .bind(name)
-    .bind(slug)
-    .bind(description)
-    .bind(if protection.enabled { 1 } else { 0 })
-    .bind(protection.min_trigger_role.as_str())
-    .bind(protection.min_approve_role.as_str())
-    .bind(protection.require_approvals)
-    .bind(if protection.forbid_self_approve { 1 } else { 0 })
-    .bind(protection.approval_timeout_seconds)
-    .bind(deployment_concurrency)
-    .execute(pool)
     .await?;
     Ok(())
 }
@@ -496,64 +501,61 @@ pub struct EnvironmentSettingsRow {
 }
 
 pub async fn settings_row(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
 ) -> Result<Option<EnvironmentSettingsRow>, AppError> {
-    let existing = sqlx::query(&format!(
+    let sql = format!(
         "SELECT name, slug, description, {ENV_PROTECTION_SELECT},
                 COALESCE(deployment_concurrency, 'off')
          FROM environments WHERE id = ?"
-    ))
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
+    );
+    let existing = exec::fetch_optional(pool, &sql, &[id.into()]).await?;
     Ok(existing.map(|existing| EnvironmentSettingsRow {
-        name: existing.get(0),
-        slug: existing.get(1),
-        description: existing.get(2),
+        name: existing.text(0),
+        slug: existing.text(1),
+        description: existing.text(2),
         protection: protection_from_db_row(
-            existing.get(3),
-            &existing.get::<String, _>(4),
-            &existing.get::<String, _>(5),
-            existing.get(6),
-            existing.get(7),
-            existing.get(8),
+            existing.i64(3),
+            &existing.text(4),
+            &existing.text(5),
+            existing.i64(6),
+            existing.i64(7),
+            existing.i64(8),
         ),
-        deployment_concurrency: existing.get(9),
+        deployment_concurrency: existing.text(9),
     }))
 }
 
 /// `true` when another environment already uses this name or slug.
 pub async fn name_or_slug_taken(
-    pool: &SqlitePool,
+    pool: &DbPool,
     slug: &str,
     name: &str,
     except_id: Option<&str>,
 ) -> Result<bool, AppError> {
-    let found: Option<String> = match except_id {
+    let found = match except_id {
         Some(id) => {
-            sqlx::query_scalar(
+            exec::fetch_optional(
+                pool,
                 "SELECT id FROM environments WHERE (slug = ? OR name = ?) AND id != ?",
+                &[slug.into(), name.into(), id.into()],
             )
-            .bind(slug)
-            .bind(name)
-            .bind(id)
-            .fetch_optional(pool)
             .await?
         }
         None => {
-            sqlx::query_scalar("SELECT id FROM environments WHERE slug = ? OR name = ?")
-                .bind(slug)
-                .bind(name)
-                .fetch_optional(pool)
-                .await?
+            exec::fetch_optional(
+                pool,
+                "SELECT id FROM environments WHERE slug = ? OR name = ?",
+                &[slug.into(), name.into()],
+            )
+            .await?
         }
     };
     Ok(found.is_some())
 }
 
 pub async fn update_environment(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     name: &str,
     slug: &str,
@@ -561,72 +563,68 @@ pub async fn update_environment(
     protection: &EnvironmentProtection,
     deployment_concurrency: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "UPDATE environments SET
             name = ?, slug = ?, description = ?,
             protection_enabled = ?, min_trigger_role = ?, min_approve_role = ?,
             require_approvals = ?, forbid_self_approve = ?, approval_timeout_seconds = ?,
             deployment_concurrency = ?, updated_at = datetime('now')
          WHERE id = ?",
+        &[
+            name.into(),
+            slug.into(),
+            description.into(),
+            SqlValue::Int(protection.enabled as i64),
+            protection.min_trigger_role.as_str().into(),
+            protection.min_approve_role.as_str().into(),
+            SqlValue::Int(protection.require_approvals),
+            SqlValue::Int(protection.forbid_self_approve as i64),
+            SqlValue::Int(protection.approval_timeout_seconds),
+            deployment_concurrency.into(),
+            id.into(),
+        ],
     )
-    .bind(name)
-    .bind(slug)
-    .bind(description)
-    .bind(if protection.enabled { 1 } else { 0 })
-    .bind(protection.min_trigger_role.as_str())
-    .bind(protection.min_approve_role.as_str())
-    .bind(protection.require_approvals)
-    .bind(if protection.forbid_self_approve { 1 } else { 0 })
-    .bind(protection.approval_timeout_seconds)
-    .bind(deployment_concurrency)
-    .bind(id)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
-pub async fn delete_environment(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
-    sqlx::query("DELETE FROM environments WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+pub async fn delete_environment(pool: &DbPool, id: &str) -> Result<(), AppError> {
+    exec::execute(pool, "DELETE FROM environments WHERE id = ?", &[id.into()]).await?;
     Ok(())
 }
 
 /// Upsert one Variable override.
 pub async fn upsert_override(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
     var_id: &str,
     value: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "INSERT INTO environment_var_overrides (environment_id, var_id, value, updated_at)
          VALUES (?, ?, ?, datetime('now'))
          ON CONFLICT(environment_id, var_id) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+        &[environment_id.into(), var_id.into(), value.into()],
     )
-    .bind(environment_id)
-    .bind(var_id)
-    .bind(value)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Delete one Variable override; `NotFound` when absent.
 pub async fn delete_override(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
     var_id: &str,
 ) -> Result<(), AppError> {
-    let r = sqlx::query(
+    let affected = exec::execute(
+        pool,
         "DELETE FROM environment_var_overrides WHERE environment_id = ? AND var_id = ?",
+        &[environment_id.into(), var_id.into()],
     )
-    .bind(environment_id)
-    .bind(var_id)
-    .execute(pool)
     .await?;
-    if r.rows_affected() == 0 {
+    if affected == 0 {
         return Err(AppError::NotFound("override not found".into()));
     }
     Ok(())
@@ -635,38 +633,35 @@ pub async fn delete_override(
 /// Upsert one Secret override. The caller encrypts: the store takes ciphertext
 /// so the crypto boundary stays visible at the call site.
 pub async fn upsert_secret_override(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
     secret_id: &str,
     ciphertext: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(
+    exec::execute(
+        pool,
         "INSERT INTO environment_secret_overrides (environment_id, secret_id, value, updated_at)
          VALUES (?, ?, ?, datetime('now'))
          ON CONFLICT(environment_id, secret_id) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+        &[environment_id.into(), secret_id.into(), ciphertext.into()],
     )
-    .bind(environment_id)
-    .bind(secret_id)
-    .bind(ciphertext)
-    .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Delete one Secret override; `NotFound` when absent.
 pub async fn delete_secret_override(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
     secret_id: &str,
 ) -> Result<(), AppError> {
-    let r = sqlx::query(
+    let affected = exec::execute(
+        pool,
         "DELETE FROM environment_secret_overrides WHERE environment_id = ? AND secret_id = ?",
+        &[environment_id.into(), secret_id.into()],
     )
-    .bind(environment_id)
-    .bind(secret_id)
-    .execute(pool)
     .await?;
-    if r.rows_affected() == 0 {
+    if affected == 0 {
         return Err(AppError::NotFound("secret override not found".into()));
     }
     Ok(())
@@ -674,32 +669,32 @@ pub async fn delete_secret_override(
 
 /// `(name, kind)` of a secret, for override audit/response metadata.
 pub async fn secret_name_and_kind(
-    pool: &SqlitePool,
+    pool: &DbPool,
     secret_id: &str,
 ) -> Result<Option<(String, String)>, AppError> {
-    let row = sqlx::query("SELECT name, kind FROM secrets WHERE id = ?")
-        .bind(secret_id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|r| (r.get(0), r.get(1))))
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT name, kind FROM secrets WHERE id = ?",
+        &[secret_id.into()],
+    )
+    .await?
+    .map(|r| (r.text(0), r.text(1))))
 }
 
 /// `name` of a platform variable, for override audit/response metadata.
-pub async fn var_name(pool: &SqlitePool, var_id: &str) -> Result<Option<String>, AppError> {
-    Ok(
-        sqlx::query_scalar("SELECT name FROM platform_vars WHERE id = ?")
-            .bind(var_id)
-            .fetch_optional(pool)
-            .await?,
+pub async fn var_name(pool: &DbPool, var_id: &str) -> Result<Option<String>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT name FROM platform_vars WHERE id = ?",
+        &[var_id.into()],
     )
+    .await?
+    .map(|r| r.text(0)))
 }
 
 /// Validate the slugs a pipeline declares under `environments`: non-empty and
 /// all present in the environments registry (same bar as team slugs).
-pub async fn validate_environment_slugs(
-    pool: &SqlitePool,
-    slugs: &[String],
-) -> Result<(), AppError> {
+pub async fn validate_environment_slugs(pool: &DbPool, slugs: &[String]) -> Result<(), AppError> {
     if slugs.is_empty() {
         return Err(AppError::ValidationFailed(
             "environments is required — declare which environments this pipeline targets".into(),
@@ -722,10 +717,12 @@ pub async fn validate_environment_slugs(
             missing.push(raw_slug.to_string());
             continue;
         }
-        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM environments WHERE slug = ?")
-            .bind(slug)
-            .fetch_one(pool)
-            .await?;
+        let exists = exec::fetch_scalar_i64(
+            pool,
+            "SELECT COUNT(*) FROM environments WHERE slug = ?",
+            &[slug.into()],
+        )
+        .await?;
         if exists == 0 {
             missing.push(slug.to_string());
         }
@@ -741,54 +738,52 @@ pub async fn validate_environment_slugs(
 
 /// Resolve environment slug/id → id + slug + protection. Empty/None → None.
 pub async fn resolve_environment(
-    pool: &SqlitePool,
+    pool: &DbPool,
     slug_or_id: Option<&str>,
 ) -> Result<Option<ResolvedEnvironment>, AppError> {
     let Some(raw) = slug_or_id.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    let row = sqlx::query(&format!(
+    let sql = format!(
         "SELECT id, slug, {ENV_PROTECTION_SELECT}
          FROM environments WHERE slug = ? OR id = ?"
-    ))
-    .bind(raw)
-    .bind(raw)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("environment '{raw}' not found")))?;
+    );
+    let row = exec::fetch_optional(pool, &sql, &[raw.into(), raw.into()])
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("environment '{raw}' not found")))?;
     Ok(Some(ResolvedEnvironment {
-        id: row.get(0),
-        slug: row.get(1),
+        id: row.text(0),
+        slug: row.text(1),
         protection: protection_from_db_row(
-            row.get(2),
-            &row.get::<String, _>(3),
-            &row.get::<String, _>(4),
-            row.get(5),
-            row.get(6),
-            row.get(7),
+            row.i64(2),
+            &row.text(3),
+            &row.text(4),
+            row.i64(5),
+            row.i64(6),
+            row.i64(7),
         ),
     }))
 }
 
 /// Load decrypted Environment secret overrides (name → plaintext) for claim.
 pub async fn load_secret_override_plaintexts(
-    pool: &SqlitePool,
+    pool: &DbPool,
     environment_id: &str,
     jwt_secret: &str,
 ) -> Result<std::collections::HashMap<String, String>, AppError> {
-    let rows = sqlx::query(
+    let rows = exec::fetch_all(
+        pool,
         "SELECT s.name, o.value
          FROM environment_secret_overrides o
          JOIN secrets s ON s.id = o.secret_id
          WHERE o.environment_id = ?",
+        &[environment_id.into()],
     )
-    .bind(environment_id)
-    .fetch_all(pool)
     .await?;
     let mut map = std::collections::HashMap::new();
     for r in rows {
-        let name: String = r.get(0);
-        let cipher: String = r.get(1);
+        let name = r.text(0);
+        let cipher = r.text(1);
         match crypto::decrypt(&cipher, jwt_secret) {
             Ok(plain) => {
                 map.insert(name, plain);
@@ -807,13 +802,12 @@ pub async fn load_secret_override_plaintexts(
 }
 
 /// `(name, slug)` for one environment — the audit/log context of override writes.
-pub async fn name_and_slug(
-    pool: &SqlitePool,
-    id: &str,
-) -> Result<Option<(String, String)>, AppError> {
-    let row = sqlx::query("SELECT name, slug FROM environments WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|r| (r.get(0), r.get(1))))
+pub async fn name_and_slug(pool: &DbPool, id: &str) -> Result<Option<(String, String)>, AppError> {
+    Ok(exec::fetch_optional(
+        pool,
+        "SELECT name, slug FROM environments WHERE id = ?",
+        &[id.into()],
+    )
+    .await?
+    .map(|r| (r.text(0), r.text(1))))
 }

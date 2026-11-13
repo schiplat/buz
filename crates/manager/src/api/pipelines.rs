@@ -99,7 +99,7 @@ pub async fn create(
     .await?;
     auth.check_team(&team_id, Perm::PipelineWrite)?;
     verify_pipeline_secret_bindings(&state, &auth, &team_id, req.secret_ids.as_ref()).await?;
-    super::environments::validate_environment_slugs(&state.pool, &req.environments).await?;
+    super::environments::validate_environment_slugs(&state.db(), &req.environments).await?;
     let webhook_secret = validate_webhook_secret_binding(
         &state,
         &team_id,
@@ -410,7 +410,7 @@ pub async fn update(
     };
 
     verify_pipeline_secret_bindings(&state, &auth, &team_id, req.secret_ids.as_ref()).await?;
-    super::environments::validate_environment_slugs(&state.pool, &req.environments).await?;
+    super::environments::validate_environment_slugs(&state.db(), &req.environments).await?;
     let webhook_secret = validate_webhook_secret_binding(
         &state,
         &team_id,
@@ -915,7 +915,7 @@ pub async fn do_trigger(
         Some(env_slug)
     };
 
-    let env_resolved = super::environments::resolve_environment(&state.pool, environment).await?;
+    let env_resolved = super::environments::resolve_environment(&state.db(), environment).await?;
     let (environment_id, environment_slug, env_protection) = match &env_resolved {
         Some(e) => (
             Some(e.id.as_str()),

@@ -1276,7 +1276,7 @@ async fn build_claim_payload(
     let env_secret_overrides: std::collections::HashMap<String, String> =
         if let Some(ref env_id) = job_environment_id {
             super::environments::load_secret_override_plaintexts(
-                &state.pool,
+                &state.db(),
                 env_id,
                 &state.config.auth.jwt_secret,
             )
