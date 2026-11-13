@@ -5,11 +5,11 @@
 //! admins manage); team-scoped rows are member-only. The list OR-filter
 //! can't be expressed by `team_in_clause` (pure AND), so it is built here.
 //!
-//! Migration status: on the dual-backend dispatcher (`store::exec`) except
-//! `visible_ids_by_label`, whose `json_each` walk is a known dialect gap
-//! (`store::dialect` note) and needs the per-site PG body first.
+//! Migration status: on the dual-backend dispatcher (`store::exec`); the
+//! label walk carries an explicit per-backend body (`Sql::Dual`).
 
 use crate::store::exec::{self, DbPool, SqlValue};
+use crate::store::sql::Sql;
 
 use shared::error::AppError;
 
@@ -349,58 +349,26 @@ pub async fn visible_id_by_name(
 
 /// Ids of hosts carrying `label` that are visible to `team_id`.
 ///
-/// Stays SQLite-only for now: the `json_each` table-valued walk is a known
-/// dialect gap (`store::dialect`); the PG body wants `jsonb_array_elements_text`
-/// and a per-site review, not a mechanical rewrite.
+/// The label walk is an explicit two-dialect statement: `json_each` on
+/// SQLite, `jsonb_array_elements_text` on Postgres (see `store::sql`).
 pub async fn visible_ids_by_label(
     pool: &DbPool,
     label: &str,
     team_id: Option<&str>,
 ) -> Result<Vec<String>, AppError> {
-    match pool {
-        DbPool::Sqlite(pool) => visible_ids_by_label_sqlite(pool, label, team_id).await,
-        #[cfg(feature = "postgres")]
-        DbPool::Pg(pool) => visible_ids_by_label_pg(pool, label, team_id).await,
-    }
-}
-
-async fn visible_ids_by_label_sqlite(
-    pool: &sqlx::SqlitePool,
-    label: &str,
-    team_id: Option<&str>,
-) -> Result<Vec<String>, AppError> {
-    Ok(sqlx::query(
-        "SELECT hosts.id FROM hosts, json_each(hosts.labels) \
-         WHERE json_each.value = ? AND (hosts.team_id IS NULL OR hosts.team_id = ?)",
+    const SQL: Sql<'static> = Sql::Dual {
+        sqlite: "SELECT hosts.id FROM hosts, json_each(hosts.labels) \
+                 WHERE json_each.value = ? AND (hosts.team_id IS NULL OR hosts.team_id = ?)",
+        pg: "SELECT h.id FROM hosts h, jsonb_array_elements_text(h.labels::jsonb) AS label \
+             WHERE label = $1 AND (h.team_id IS NULL OR h.team_id = $2)",
+    };
+    Ok(
+        exec::fetch_all_sql(pool, SQL, &[label.into(), team_id.into()])
+            .await?
+            .into_iter()
+            .map(|r| r.text(0))
+            .collect(),
     )
-    .bind(label)
-    .bind(team_id)
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|r| sqlx::Row::get::<String, _>(&r, 0))
-    .collect())
-}
-
-/// Postgres form of [`visible_ids_by_label_sqlite`]: the JSON walk becomes
-/// `jsonb_array_elements_text` over the TEXT labels column.
-#[cfg(feature = "postgres")]
-async fn visible_ids_by_label_pg(
-    pool: &sqlx::PgPool,
-    label: &str,
-    team_id: Option<&str>,
-) -> Result<Vec<String>, AppError> {
-    Ok(sqlx::query(
-        "SELECT h.id FROM hosts h, jsonb_array_elements_text(h.labels::jsonb) AS label \
-         WHERE label = $1 AND (h.team_id IS NULL OR h.team_id = $2)",
-    )
-    .bind(label)
-    .bind(team_id)
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|r| sqlx::Row::get::<String, _>(&r, 0))
-    .collect())
 }
 
 /// One host's push credentials, scoped to `team_id` (shared rows or the same

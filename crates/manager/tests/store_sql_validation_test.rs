@@ -151,7 +151,7 @@ async fn store_statements() -> (Vec<String>, Vec<String>, Vec<String>) {
         .filter(|path| {
             path.file_name()
                 .and_then(|n| n.to_str())
-                .is_none_or(|name| name != "dialect.rs" && name != "exec.rs")
+                .is_none_or(|name| name != "dialect.rs" && name != "exec.rs" && name != "sql.rs")
         })
         .collect();
     files.sort();
@@ -267,6 +267,7 @@ async fn postgres_statements_are_declared() {
         "ON CONFLICT (job_id, chunk_index)",                        // insert_chunk
         "(j.snapshot::jsonb ->> 'team_id')",                        // claim_candidate_tx
         "jsonb_array_elements_text(h.labels::jsonb) AS host_label", // pipelines host labels
+        "ON CONFLICT (id) DO UPDATE",                               // scheduler lease
     ];
     // A PG body carrying a JSON default (`'{}'`) is still a PG body, not a
     // dynamic fragment — the extraction routes it here by the `$1` marker.

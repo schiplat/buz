@@ -6,10 +6,10 @@
 //! interleaved with a loop's control flow and moves in a separate step.
 
 use serde_json::{json, Value};
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::store::exec::{self, DbPool, DbTx, SqlValue};
+use crate::store::sql::Sql;
 
 use shared::error::AppError;
 use shared::protocol::{ExecutionBackendStatus, RunnerExecutionMode, SystemInfo};
@@ -1078,20 +1078,11 @@ pub async fn claim_candidates(
     pool: &DbPool,
     runner_team_id: Option<&str>,
 ) -> Result<Vec<ClaimCandidateRow>, AppError> {
-    match pool {
-        DbPool::Sqlite(pool) => claim_candidates_sqlite(pool, runner_team_id).await,
-        #[cfg(feature = "postgres")]
-        DbPool::Pg(pool) => claim_candidates_pg(pool, runner_team_id).await,
-    }
-}
-
-async fn claim_candidates_sqlite(
-    pool: &sqlx::SqlitePool,
-    runner_team_id: Option<&str>,
-) -> Result<Vec<ClaimCandidateRow>, AppError> {
-    Ok(sqlx::query(
-
-        "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
+    // SQLite walks the snapshot with `json_extract` and derives the age from
+    // `strftime`; Postgres uses `jsonb ->>` and an epoch subtraction (the
+    // timestamps stay TEXT, so both sides are parsed explicitly).
+    const SQL: Sql<'static> = Sql::Dual {
+        sqlite: "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
                 j.debug_unredact, j.verbose_logs, j.trigger_by, p.name,
                 COALESCE(json_extract(j.snapshot, '$.team_id'), p.team_id), p.trigger_type,
                 j.environment_id, j.run_number, j.run_attempt,
@@ -1118,42 +1109,7 @@ async fn claim_candidates_sqlite(
            )
          ORDER BY j.created_at ASC, j.seq ASC
          LIMIT 50",
-    )
-    .bind(runner_team_id)
-    .bind(runner_team_id)
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|r| ClaimCandidateRow {
-        job_id: r.get(0),
-        pipeline_id: r.get(1),
-        trigger_params: r.get(2),
-        snapshot: r.get(3),
-        runner_labels: r.get(4),
-        debug_unredact: r.get(5),
-        verbose_logs: r.get(6),
-        trigger_by: r.get(7),
-        pipeline_name: r.get(8),
-        team_id: r.get(9),
-        trigger_type: r.get(10),
-        environment_id: r.get(11),
-        run_number: r.get(12),
-        run_attempt: r.get(13),
-        waited_seconds: r.get(14),
-    })
-    .collect())
-}
-
-/// Postgres form of [`claim_candidates_sqlite`]: the snapshot team key becomes
-/// `jsonb ->> 'team_id'` and the waited seconds an epoch subtraction (the
-/// timestamps stay TEXT, so both sides are parsed explicitly).
-#[cfg(feature = "postgres")]
-async fn claim_candidates_pg(
-    pool: &sqlx::PgPool,
-    runner_team_id: Option<&str>,
-) -> Result<Vec<ClaimCandidateRow>, AppError> {
-    Ok(sqlx::query(
-        "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
+        pg: "SELECT j.id, j.pipeline_id, j.trigger_params, COALESCE(j.snapshot, '{}'), p.runner_labels,
                 j.debug_unredact, j.verbose_logs, j.trigger_by, p.name,
                 COALESCE(j.snapshot::jsonb ->> 'team_id', p.team_id), p.trigger_type,
                 j.environment_id, j.run_number, j.run_attempt,
@@ -1161,7 +1117,7 @@ async fn claim_candidates_pg(
          FROM jobs j
          JOIN pipelines p ON p.id = j.pipeline_id
          WHERE j.status = 'pending'
-           AND ($1::text IS NULL OR (j.snapshot::jsonb ->> 'team_id') = $1::text)
+           AND ($1::text IS NULL OR (j.snapshot::jsonb ->> 'team_id') = $2::text)
            AND (
              j.environment_id IS NULL
              OR COALESCE((SELECT deployment_concurrency FROM environments e WHERE e.id = j.environment_id), 'off') != 'cancel_in_progress'
@@ -1180,29 +1136,32 @@ async fn claim_candidates_pg(
            )
          ORDER BY j.created_at ASC, j.seq ASC
          LIMIT 50",
+    };
+    Ok(exec::fetch_all_sql(
+        pool,
+        SQL,
+        &[runner_team_id.into(), runner_team_id.into()],
     )
-    .bind(runner_team_id)
-    .fetch_all(pool)
     .await?
-    .into_iter()
-    .map(|r| ClaimCandidateRow {
-        job_id: r.get(0),
-        pipeline_id: r.get(1),
-        trigger_params: r.get(2),
-        snapshot: r.get(3),
-        runner_labels: r.get(4),
-        debug_unredact: r.get(5),
-        verbose_logs: r.get(6),
-        trigger_by: r.get(7),
-        pipeline_name: r.get(8),
-        team_id: r.get(9),
-        trigger_type: r.get(10),
-        environment_id: r.get(11),
-        run_number: r.get(12),
-        run_attempt: r.get(13),
-        waited_seconds: r.get(14),
-    })
-    .collect())
+        .into_iter()
+        .map(|r| ClaimCandidateRow {
+            job_id: r.text(0),
+            pipeline_id: r.text(1),
+            trigger_params: r.opt_text(2),
+            snapshot: r.text(3),
+            runner_labels: r.text(4),
+            debug_unredact: r.i64(5),
+            verbose_logs: r.i64(6),
+            trigger_by: r.text(7),
+            pipeline_name: r.text(8),
+            team_id: r.opt_text(9),
+            trigger_type: r.text(10),
+            environment_id: r.opt_text(11),
+            run_number: r.i64(12),
+            run_attempt: r.i64(13),
+            waited_seconds: r.i64(14),
+        })
+        .collect())
 }
 
 /// True when the team row exists — the runner team binding check.
@@ -1333,23 +1292,18 @@ pub async fn claim_candidate_tx(
     runner_id: &str,
     job_id: &str,
 ) -> Result<Option<(String, Option<String>, Option<String>, Option<String>)>, AppError> {
-    let sql = match tx {
-        DbTx::Sqlite(_) => {
-            "SELECT j.pipeline_id, j.environment_id, r.team_id, \
-                json_extract(j.snapshot, '$.team_id') \
-         FROM jobs j JOIN runners r ON r.id = ? \
-         WHERE j.id = ? AND j.status = 'pending'"
-        }
-        #[cfg(feature = "postgres")]
-        DbTx::Pg(_) => {
-            "SELECT j.pipeline_id, j.environment_id, r.team_id, \
+    const SQL: Sql<'static> = Sql::Dual {
+        sqlite: "SELECT j.pipeline_id, j.environment_id, r.team_id, \
+                    json_extract(j.snapshot, '$.team_id') \
+             FROM jobs j JOIN runners r ON r.id = ? \
+             WHERE j.id = ? AND j.status = 'pending'",
+        pg: "SELECT j.pipeline_id, j.environment_id, r.team_id, \
                 (j.snapshot::jsonb ->> 'team_id') \
          FROM jobs j JOIN runners r ON r.id = $1 \
-         WHERE j.id = $2 AND j.status = 'pending'"
-        }
+         WHERE j.id = $2 AND j.status = 'pending'",
     };
     let row = tx
-        .fetch_optional(sql, &[runner_id.into(), job_id.into()])
+        .fetch_optional_sql(SQL, &[runner_id.into(), job_id.into()])
         .await?;
     Ok(row.map(|r| (r.text(0), r.opt_text(1), r.opt_text(2), r.opt_text(3))))
 }
@@ -1385,29 +1339,29 @@ pub struct ClaimTaskRow {
     pub needs_json: String,
 }
 
-fn claim_task_row(r: sqlx::sqlite::SqliteRow) -> ClaimTaskRow {
+fn claim_task_row(r: &exec::GenericRow) -> ClaimTaskRow {
     ClaimTaskRow {
-        id: r.get(0),
-        step_order: r.get(1),
-        name: r.get(2),
-        exec_type: r.get(3),
-        host_id: r.get(4),
-        host_names: r.get(5),
-        host_labels: r.get(6),
-        command_template: r.get(7),
-        work_dir: r.get(8),
-        retry_count: r.get(9),
-        timeout_seconds: r.get(10),
-        fail_strategy: r.get(11),
-        step_secrets: r.get(12),
-        step_env: r.get(13),
-        image: r.get(14),
-        volumes: r.get(15),
-        hosts_strategy: r.get(16),
-        privileged: r.get(17),
-        capabilities: r.get(18),
-        hosts_max_parallel: r.get(19),
-        needs_json: r.get(20),
+        id: r.text(0),
+        step_order: r.i64(1),
+        name: r.text(2),
+        exec_type: r.text(3),
+        host_id: r.text(4),
+        host_names: r.text(5),
+        host_labels: r.text(6),
+        command_template: r.text(7),
+        work_dir: r.text(8),
+        retry_count: r.i64(9),
+        timeout_seconds: r.i64(10),
+        fail_strategy: r.text(11),
+        step_secrets: r.text(12),
+        step_env: r.text(13),
+        image: r.text(14),
+        volumes: r.text(15),
+        hosts_strategy: r.text(16),
+        privileged: r.i64(17),
+        capabilities: r.text(18),
+        hosts_max_parallel: r.opt_i64(19),
+        needs_json: r.text(20),
     }
 }
 
@@ -1417,19 +1371,12 @@ pub async fn frozen_task_rows(
     pool: &DbPool,
     snapshot_raw: &str,
 ) -> Result<Vec<ClaimTaskRow>, AppError> {
-    match pool {
-        DbPool::Sqlite(pool) => frozen_task_rows_sqlite(pool, snapshot_raw).await,
-        #[cfg(feature = "postgres")]
-        DbPool::Pg(pool) => frozen_task_rows_pg(pool, snapshot_raw).await,
-    }
-}
-
-async fn frozen_task_rows_sqlite(
-    pool: &sqlx::SqlitePool,
-    snapshot_raw: &str,
-) -> Result<Vec<ClaimTaskRow>, AppError> {
-    Ok(sqlx::query(
-            "SELECT COALESCE(json_extract(j.value, '$.id'), ''), json_extract(j.value, '$.step_order'),
+    // `json_each` on SQLite; `jsonb_array_elements` on Postgres, with every
+    // numeric extraction cast back to BIGINT so the typed row decodes
+    // identically. `privileged` is a JSON boolean in snapshots (SQLite's
+    // json_extract yields 0/1), so the PG body normalises either shape.
+    const SQL: Sql<'static> = Sql::Dual {
+        sqlite: "SELECT COALESCE(json_extract(j.value, '$.id'), ''), json_extract(j.value, '$.step_order'),
                     json_extract(j.value, '$.name'), json_extract(j.value, '$.exec_type'),
                     COALESCE(json_extract(j.value, '$.host_id'), ''), COALESCE(json_extract(j.value, '$.host_names'), ''),
                     COALESCE(json_extract(j.value, '$.host_labels'), ''),
@@ -1449,25 +1396,7 @@ async fn frozen_task_rows_sqlite(
                     COALESCE(json_extract(j.value, '$.needs'), '[]')
              FROM json_each(?, '$.tasks') j
              ORDER BY json_extract(j.value, '$.step_order')",
-    )
-    .bind(snapshot_raw)
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(claim_task_row)
-    .collect())
-}
-
-/// Postgres form of [`frozen_task_rows_sqlite`]: `json_each` becomes
-/// `jsonb_array_elements`, and every numeric extraction is cast back to BIGINT
-/// so the typed row decodes identically to the SQLite path.
-#[cfg(feature = "postgres")]
-async fn frozen_task_rows_pg(
-    pool: &sqlx::PgPool,
-    snapshot_raw: &str,
-) -> Result<Vec<ClaimTaskRow>, AppError> {
-    Ok(sqlx::query(
-        "SELECT COALESCE(elem ->> 'id', ''),
+        pg: "SELECT COALESCE(elem ->> 'id', ''),
                 COALESCE((elem ->> 'step_order')::bigint, 0),
                 elem ->> 'name',
                 elem ->> 'exec_type',
@@ -1498,35 +1427,12 @@ async fn frozen_task_rows_pg(
                 COALESCE(elem ->> 'needs', '[]')
          FROM jsonb_array_elements(($1::jsonb) -> 'tasks') AS elem
          ORDER BY COALESCE((elem ->> 'step_order')::bigint, 0)",
-    )
-    .bind(snapshot_raw)
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|r| ClaimTaskRow {
-        id: r.get(0),
-        step_order: r.get(1),
-        name: r.get(2),
-        exec_type: r.get(3),
-        host_id: r.get(4),
-        host_names: r.get(5),
-        host_labels: r.get(6),
-        command_template: r.get(7),
-        work_dir: r.get(8),
-        retry_count: r.get(9),
-        timeout_seconds: r.get(10),
-        fail_strategy: r.get(11),
-        step_secrets: r.get(12),
-        step_env: r.get(13),
-        image: r.get(14),
-        volumes: r.get(15),
-        hosts_strategy: r.get(16),
-        privileged: r.get(17),
-        capabilities: r.get(18),
-        hosts_max_parallel: r.get(19),
-        needs_json: r.get(20),
-    })
-    .collect())
+    };
+    Ok(exec::fetch_all_sql(pool, SQL, &[snapshot_raw.into()])
+        .await?
+        .iter()
+        .map(claim_task_row)
+        .collect())
 }
 
 /// Live task rows (un-frozen pipelines), step-ordered — the claim payload shape.
@@ -1544,30 +1450,8 @@ pub async fn live_task_rows(
         &[pipeline_id.into()],
     )
     .await?
-    .into_iter()
-    .map(|r| ClaimTaskRow {
-        id: r.text(0),
-        step_order: r.i64(1),
-        name: r.text(2),
-        exec_type: r.text(3),
-        host_id: r.text(4),
-        host_names: r.text(5),
-        host_labels: r.text(6),
-        command_template: r.text(7),
-        work_dir: r.text(8),
-        retry_count: r.i64(9),
-        timeout_seconds: r.i64(10),
-        fail_strategy: r.text(11),
-        step_secrets: r.text(12),
-        step_env: r.text(13),
-        image: r.text(14),
-        volumes: r.text(15),
-        hosts_strategy: r.text(16),
-        privileged: r.i64(17),
-        capabilities: r.text(18),
-        hosts_max_parallel: r.opt_i64(19),
-        needs_json: r.text(20),
-    })
+    .iter()
+    .map(claim_task_row)
     .collect())
 }
 

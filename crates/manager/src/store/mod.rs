@@ -46,6 +46,7 @@ pub mod runners;
 pub mod sandboxd_config;
 pub mod scheduler;
 pub mod secrets;
+pub mod sql;
 pub mod teams;
 pub mod trigger_events;
 pub mod trigger_reserve;

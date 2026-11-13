@@ -1,26 +1,20 @@
 //! Dual-backend execution core.
 //!
 //! `DbPool` wraps the backend pool; store functions that have completed the
-//! boundary migration take it and never name the backend. Statements are
-//! written in SQLite dialect; the Postgres path routes through
-//! [`crate::store::dialect::sqlite_to_postgres`] at execution time.
+//! boundary migration take it and never name the backend. Every statement is
+//! tagged with its dialect provenance ([`Sql::Shared`] / [`Sql::Dual`] /
+//! backend-only) — see `store::sql`; the Postgres path only rewrites
+//! `Shared` statements.
 //!
 //! Rows come back as [`GenericRow`] — decoded from the backend row by runtime
 //! type cascade (NULL → i64 → f64 → text → bytes) — so a renamed or reordered
 //! column surfaces as a decode miss on both dialects identically.
-//!
-//! Migration status: modules migrate to this dispatcher one at a time
-//! (`health`, `metrics` first as the proof slice); the rest still take
-//! `&SqlitePool` and are tracked in HANDOFF §3.
 
 use sqlx::Column as _;
 use sqlx::Row as _;
 use sqlx::ValueRef as _;
 
-// Only the Postgres dispatch arms reference the rewriter; a default build
-// (SQLite-only) would flag the import as unused.
-#[cfg(feature = "postgres")]
-use crate::store::dialect;
+use crate::store::sql::Sql;
 
 // ───────────────────────────── backend pools ─────────────────────────────
 
@@ -43,9 +37,17 @@ pub enum DbConn {
 
 impl DbConn {
     pub async fn execute(&mut self, sql: &str, binds: &[SqlValue]) -> Result<u64, sqlx::Error> {
+        self.execute_sql(Sql::Shared(sql), binds).await
+    }
+
+    pub async fn execute_sql(
+        &mut self,
+        sql: Sql<'_>,
+        binds: &[SqlValue],
+    ) -> Result<u64, sqlx::Error> {
         match self {
             Self::Sqlite(conn) => {
-                let mut q = sqlx::query(sql);
+                let mut q = sqlx::query(sql.sqlite()?);
                 for b in binds {
                     q = bind_sqlite(q, b);
                 }
@@ -55,10 +57,10 @@ impl DbConn {
             }
             #[cfg(feature = "postgres")]
             Self::Pg(conn) => {
-                // The rewritten statement outlives the query builder: bind it
-                // to a named local, not a temporary.
-                let rewritten = dialect::sqlite_to_postgres(sql);
-                let mut q = sqlx::query(&rewritten);
+                // The statement text (possibly rewritten) outlives the query
+                // builder: bind it to a named local, not a temporary.
+                let text = sql.postgres()?;
+                let mut q = sqlx::query(text.as_ref());
                 for b in binds {
                     q = bind_pg(q, b);
                 }
@@ -180,9 +182,18 @@ impl DbTx<'_> {
         sql: &str,
         binds: &[SqlValue],
     ) -> Result<Vec<GenericRow>, sqlx::Error> {
+        self.fetch_all_sql(Sql::Shared(sql), binds).await
+    }
+
+    /// Fetch every row of a dialect-tagged statement inside this transaction.
+    pub async fn fetch_all_sql(
+        &mut self,
+        sql: Sql<'_>,
+        binds: &[SqlValue],
+    ) -> Result<Vec<GenericRow>, sqlx::Error> {
         match self {
             Self::Sqlite(tx) => {
-                let mut q = sqlx::query(sql);
+                let mut q = sqlx::query(sql.sqlite()?);
                 for b in binds {
                     q = bind_sqlite(q, b);
                 }
@@ -194,8 +205,8 @@ impl DbTx<'_> {
             }
             #[cfg(feature = "postgres")]
             Self::Pg(tx) => {
-                let rewritten = dialect::sqlite_to_postgres(sql);
-                let mut q = sqlx::query(&rewritten);
+                let text = sql.postgres()?;
+                let mut q = sqlx::query(text.as_ref());
                 for b in binds {
                     q = bind_pg(q, b);
                 }
@@ -214,9 +225,18 @@ impl DbTx<'_> {
         sql: &str,
         binds: &[SqlValue],
     ) -> Result<Option<GenericRow>, sqlx::Error> {
+        self.fetch_optional_sql(Sql::Shared(sql), binds).await
+    }
+
+    /// Fetch at most one row of a dialect-tagged statement.
+    pub async fn fetch_optional_sql(
+        &mut self,
+        sql: Sql<'_>,
+        binds: &[SqlValue],
+    ) -> Result<Option<GenericRow>, sqlx::Error> {
         match self {
             Self::Sqlite(tx) => {
-                let mut q = sqlx::query(sql);
+                let mut q = sqlx::query(sql.sqlite()?);
                 for b in binds {
                     q = bind_sqlite(q, b);
                 }
@@ -224,8 +244,8 @@ impl DbTx<'_> {
             }
             #[cfg(feature = "postgres")]
             Self::Pg(tx) => {
-                let rewritten = dialect::sqlite_to_postgres(sql);
-                let mut q = sqlx::query(&rewritten);
+                let text = sql.postgres()?;
+                let mut q = sqlx::query(text.as_ref());
                 for b in binds {
                     q = bind_pg(q, b);
                 }
@@ -236,9 +256,18 @@ impl DbTx<'_> {
 
     /// Execute one statement; returns rows affected.
     pub async fn execute(&mut self, sql: &str, binds: &[SqlValue]) -> Result<u64, sqlx::Error> {
+        self.execute_sql(Sql::Shared(sql), binds).await
+    }
+
+    /// Execute one dialect-tagged statement; returns rows affected.
+    pub async fn execute_sql(
+        &mut self,
+        sql: Sql<'_>,
+        binds: &[SqlValue],
+    ) -> Result<u64, sqlx::Error> {
         match self {
             Self::Sqlite(tx) => {
-                let mut q = sqlx::query(sql);
+                let mut q = sqlx::query(sql.sqlite()?);
                 for b in binds {
                     q = bind_sqlite(q, b);
                 }
@@ -246,10 +275,10 @@ impl DbTx<'_> {
             }
             #[cfg(feature = "postgres")]
             Self::Pg(tx) => {
-                // The rewritten statement outlives the query builder: bind it
-                // to a named local, not a temporary.
-                let rewritten = dialect::sqlite_to_postgres(sql);
-                let mut q = sqlx::query(&rewritten);
+                // The statement text (possibly rewritten) outlives the query
+                // builder: bind it to a named local, not a temporary.
+                let text = sql.postgres()?;
+                let mut q = sqlx::query(text.as_ref());
                 for b in binds {
                     q = bind_pg(q, b);
                 }
@@ -541,16 +570,24 @@ fn bind_pg<'q>(
 
 // ───────────────────────────── dispatch ─────────────────────────────
 
-/// Fetch all rows of a statement. On the Postgres path the statement is
-/// rewritten first — see `store::dialect`.
+/// Fetch all rows of a shared (dialect-neutral) statement.
 pub async fn fetch_all(
     pool: &DbPool,
     sql: &str,
     binds: &[SqlValue],
 ) -> Result<Vec<GenericRow>, sqlx::Error> {
+    fetch_all_sql(pool, Sql::Shared(sql), binds).await
+}
+
+/// Fetch all rows of a dialect-tagged statement.
+pub async fn fetch_all_sql(
+    pool: &DbPool,
+    sql: Sql<'_>,
+    binds: &[SqlValue],
+) -> Result<Vec<GenericRow>, sqlx::Error> {
     match pool {
         DbPool::Sqlite(pool) => {
-            let mut q = sqlx::query(sql);
+            let mut q = sqlx::query(sql.sqlite()?);
             for b in binds {
                 q = bind_sqlite(q, b);
             }
@@ -562,8 +599,8 @@ pub async fn fetch_all(
         }
         #[cfg(feature = "postgres")]
         DbPool::Pg(pool) => {
-            let rewritten = dialect::sqlite_to_postgres(sql);
-            let mut q = sqlx::query(&rewritten);
+            let text = sql.postgres()?;
+            let mut q = sqlx::query(text.as_ref());
             for b in binds {
                 q = bind_pg(q, b);
             }
@@ -576,15 +613,24 @@ pub async fn fetch_all(
     }
 }
 
-/// Fetch at most one row.
+/// Fetch at most one row of a shared statement.
 pub async fn fetch_optional(
     pool: &DbPool,
     sql: &str,
     binds: &[SqlValue],
 ) -> Result<Option<GenericRow>, sqlx::Error> {
+    fetch_optional_sql(pool, Sql::Shared(sql), binds).await
+}
+
+/// Fetch at most one row of a dialect-tagged statement.
+pub async fn fetch_optional_sql(
+    pool: &DbPool,
+    sql: Sql<'_>,
+    binds: &[SqlValue],
+) -> Result<Option<GenericRow>, sqlx::Error> {
     match pool {
         DbPool::Sqlite(pool) => {
-            let mut q = sqlx::query(sql);
+            let mut q = sqlx::query(sql.sqlite()?);
             for b in binds {
                 q = bind_sqlite(q, b);
             }
@@ -592,8 +638,8 @@ pub async fn fetch_optional(
         }
         #[cfg(feature = "postgres")]
         DbPool::Pg(pool) => {
-            let rewritten = dialect::sqlite_to_postgres(sql);
-            let mut q = sqlx::query(&rewritten);
+            let text = sql.postgres()?;
+            let mut q = sqlx::query(text.as_ref());
             for b in binds {
                 q = bind_pg(q, b);
             }
@@ -602,11 +648,20 @@ pub async fn fetch_optional(
     }
 }
 
-/// Execute a statement; returns rows affected.
+/// Execute a shared statement; returns rows affected.
 pub async fn execute(pool: &DbPool, sql: &str, binds: &[SqlValue]) -> Result<u64, sqlx::Error> {
+    execute_sql(pool, Sql::Shared(sql), binds).await
+}
+
+/// Execute a dialect-tagged statement; returns rows affected.
+pub async fn execute_sql(
+    pool: &DbPool,
+    sql: Sql<'_>,
+    binds: &[SqlValue],
+) -> Result<u64, sqlx::Error> {
     match pool {
         DbPool::Sqlite(pool) => {
-            let mut q = sqlx::query(sql);
+            let mut q = sqlx::query(sql.sqlite()?);
             for b in binds {
                 q = bind_sqlite(q, b);
             }
@@ -614,8 +669,8 @@ pub async fn execute(pool: &DbPool, sql: &str, binds: &[SqlValue]) -> Result<u64
         }
         #[cfg(feature = "postgres")]
         DbPool::Pg(pool) => {
-            let rewritten = dialect::sqlite_to_postgres(sql);
-            let mut q = sqlx::query(&rewritten);
+            let text = sql.postgres()?;
+            let mut q = sqlx::query(text.as_ref());
             for b in binds {
                 q = bind_pg(q, b);
             }
@@ -625,15 +680,24 @@ pub async fn execute(pool: &DbPool, sql: &str, binds: &[SqlValue]) -> Result<u64
 }
 
 /// Fetch a single i64 scalar (`SELECT 1`, `COUNT(*)`, …). Implemented as a
-/// one-row `fetch_optional` so all four dispatchers share the same bind
-/// helpers; a missing row yields 0 (scalar statements in the store corpus are
-/// aggregates that always produce exactly one row).
+/// one-row `fetch_optional` so all dispatchers share the same bind helpers; a
+/// missing row yields 0 (scalar statements in the store corpus are aggregates
+/// that always produce exactly one row).
 pub async fn fetch_scalar_i64(
     pool: &DbPool,
     sql: &str,
     binds: &[SqlValue],
 ) -> Result<i64, sqlx::Error> {
-    Ok(fetch_optional(pool, sql, binds)
+    fetch_scalar_i64_sql(pool, Sql::Shared(sql), binds).await
+}
+
+/// Scalar variant of [`fetch_optional_sql`].
+pub async fn fetch_scalar_i64_sql(
+    pool: &DbPool,
+    sql: Sql<'_>,
+    binds: &[SqlValue],
+) -> Result<i64, sqlx::Error> {
+    Ok(fetch_optional_sql(pool, sql, binds)
         .await?
         .map(|r| r.i64(0))
         .unwrap_or(0))

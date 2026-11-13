@@ -6,13 +6,13 @@
 //! is stable while a job runs; the tail window reads `ORDER BY ... DESC`
 //! and returns rows re-ordered ascending, matching the full read.
 //!
-//! Migration status: the read paths run on the dual-backend dispatcher
-//! (`store::exec`). `insert_chunk` stays on `SqlitePool` — its `INSERT OR
-//! REPLACE` needs the per-site PG upsert decision (ON CONFLICT DO UPDATE
-//! with a named conflict target), which the statement rewriter deliberately
-//! does not guess (see `store::dialect`'s known-gaps note).
+//! Migration status: everything runs on the dual-backend dispatcher
+//! (`store::exec`); `insert_chunk` carries an explicit per-backend upsert body
+//! (`Sql::Dual`), because SQLite's `INSERT OR REPLACE` and Postgres'
+//! named-conflict `ON CONFLICT` are not mechanically interchangeable.
 
 use crate::store::exec::{self, DbPool};
+use crate::store::sql::Sql;
 
 use shared::error::AppError;
 use shared::protocol::LogLevel;
@@ -56,9 +56,8 @@ pub async fn job_runner_id(
 /// `(job_id, step_order, chunk_index)` — a runner retry of the same chunk
 /// overwrites instead of duplicating.
 ///
-/// Stays SQLite-only for now: the Postgres body needs the named conflict
-/// target (`ON CONFLICT (job_id, chunk_index) DO UPDATE`), which is a per-site
-/// decision the statement rewriter does not guess.
+/// The Postgres body uses the named conflict target, so a retried chunk
+/// overwrites in place instead of duplicating.
 pub async fn insert_chunk(
     pool: &DbPool,
     job_id: &str,
@@ -67,67 +66,29 @@ pub async fn insert_chunk(
     content: &str,
     level: Option<&str>,
 ) -> Result<(), AppError> {
-    match pool {
-        DbPool::Sqlite(pool) => {
-            insert_chunk_sqlite(pool, job_id, chunk_index, step_order, content, level).await
-        }
-        #[cfg(feature = "postgres")]
-        DbPool::Pg(pool) => {
-            insert_chunk_pg(pool, job_id, chunk_index, step_order, content, level).await
-        }
-    }
-}
-
-async fn insert_chunk_sqlite(
-    pool: &sqlx::SqlitePool,
-    job_id: &str,
-    chunk_index: i32,
-    step_order: i32,
-    content: &str,
-    level: Option<&str>,
-) -> Result<(), AppError> {
-    sqlx::query(
-        "INSERT OR REPLACE INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
-         VALUES (?, ?, ?, ?, ?, 1, ?)",
+    const SQL: Sql<'static> = Sql::Dual {
+        sqlite: "INSERT OR REPLACE INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
+                 VALUES (?, ?, ?, ?, ?, 1, ?)",
+        pg: "INSERT INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
+             VALUES ($1, $2, $3, $4, $5, 1, $6)
+             ON CONFLICT (job_id, chunk_index) DO UPDATE SET
+               step_order = excluded.step_order,
+               log_content = excluded.log_content,
+               is_masked = excluded.is_masked,
+               level = excluded.level",
+    };
+    exec::execute_sql(
+        pool,
+        SQL,
+        &[
+            Uuid::new_v4().to_string().into(),
+            job_id.into(),
+            chunk_index.into(),
+            step_order.into(),
+            content.into(),
+            level.into(),
+        ],
     )
-    .bind(Uuid::new_v4().to_string())
-    .bind(job_id)
-    .bind(chunk_index)
-    .bind(step_order)
-    .bind(content)
-    .bind(level)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Postgres form of [`insert_chunk_sqlite`]: the unique key is the named
-/// conflict target, so a retried chunk overwrites in place.
-#[cfg(feature = "postgres")]
-async fn insert_chunk_pg(
-    pool: &sqlx::PgPool,
-    job_id: &str,
-    chunk_index: i32,
-    step_order: i32,
-    content: &str,
-    level: Option<&str>,
-) -> Result<(), AppError> {
-    sqlx::query(
-        "INSERT INTO job_logs (id, job_id, chunk_index, step_order, log_content, is_masked, level)
-         VALUES ($1, $2, $3, $4, $5, 1, $6)
-         ON CONFLICT (job_id, chunk_index) DO UPDATE SET
-           step_order = excluded.step_order,
-           log_content = excluded.log_content,
-           is_masked = excluded.is_masked,
-           level = excluded.level",
-    )
-    .bind(Uuid::new_v4().to_string())
-    .bind(job_id)
-    .bind(chunk_index)
-    .bind(step_order)
-    .bind(content)
-    .bind(level)
-    .execute(pool)
     .await?;
     Ok(())
 }

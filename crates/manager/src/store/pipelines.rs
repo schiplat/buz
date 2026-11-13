@@ -1,6 +1,7 @@
 //! Pipeline row lookups shared across handlers.
 
 use crate::store::exec::{self, DbPool, DbTx, SqlValue};
+use crate::store::sql::Sql;
 use uuid::Uuid;
 
 use shared::error::AppError;
@@ -949,20 +950,15 @@ pub async fn host_id_by_name(tx: &mut DbTx<'_>, name: &str) -> Result<Option<Str
 /// caller's transaction. Postgres walks the array with
 /// `jsonb_array_elements_text` (the column stays TEXT, so it is cast).
 pub async fn host_ids_by_label(tx: &mut DbTx<'_>, label: &str) -> Result<Vec<String>, AppError> {
-    let sql = match tx {
+    const SQL: Sql<'static> = Sql::Dual {
         // `hosts.id` must be qualified: `json_each` also exposes an `id`
         // column, so the unqualified form is ambiguous at compile time.
-        DbTx::Sqlite(_) => {
-            "SELECT hosts.id FROM hosts, json_each(hosts.labels) WHERE json_each.value = ?"
-        }
-        #[cfg(feature = "postgres")]
-        DbTx::Pg(_) => {
-            "SELECT h.id FROM hosts h, jsonb_array_elements_text(h.labels::jsonb) AS host_label \
-             WHERE host_label = $1"
-        }
+        sqlite: "SELECT hosts.id FROM hosts, json_each(hosts.labels) WHERE json_each.value = ?",
+        pg: "SELECT h.id FROM hosts h, jsonb_array_elements_text(h.labels::jsonb) AS host_label \
+             WHERE host_label = $1",
     };
     Ok(tx
-        .fetch_all(sql, &[label.into()])
+        .fetch_all_sql(SQL, &[label.into()])
         .await?
         .into_iter()
         .map(|r| r.text(0))

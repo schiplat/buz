@@ -7,6 +7,7 @@
 //! with a version a host already applied.
 
 use crate::store::exec::{self, DbPool, DbTx, SqlValue};
+use crate::store::sql::Sql;
 
 use shared::error::AppError;
 
@@ -535,52 +536,22 @@ pub async fn pipeline_count_for_profile(
 /// Pending jobs of one (team, profile) — the revocation blast radius that
 /// will fail terminally at claim.
 ///
-/// Stays SQLite-only for now: the `json_extract` snapshot walk is a known
-/// dialect gap (`store::dialect`), wants a hand-written PG body.
+/// The snapshot walk carries explicit SQLite (`json_extract`) and Postgres
+/// (`->>` over jsonb) bodies.
 pub async fn queued_jobs_for_profile(
     pool: &DbPool,
     team_id: &str,
     profile: &str,
 ) -> Result<i64, AppError> {
-    match pool {
-        DbPool::Sqlite(pool) => queued_jobs_for_profile_sqlite(pool, team_id, profile).await,
-        #[cfg(feature = "postgres")]
-        DbPool::Pg(pool) => queued_jobs_for_profile_pg(pool, team_id, profile).await,
-    }
-}
-
-async fn queued_jobs_for_profile_sqlite(
-    pool: &sqlx::SqlitePool,
-    team_id: &str,
-    profile: &str,
-) -> Result<i64, AppError> {
-    Ok(sqlx::query_scalar(
-        "SELECT COUNT(*) FROM jobs WHERE status = 'pending'
-               AND COALESCE(json_extract(snapshot, '$.team_id'), '') = ?
-               AND COALESCE(json_extract(snapshot, '$.resource_profile'), '') = ?",
-    )
-    .bind(team_id)
-    .bind(profile)
-    .fetch_one(pool)
-    .await?)
-}
-
-/// Postgres form of [`queued_jobs_for_profile_sqlite`]: `->>` over jsonb.
-#[cfg(feature = "postgres")]
-async fn queued_jobs_for_profile_pg(
-    pool: &sqlx::PgPool,
-    team_id: &str,
-    profile: &str,
-) -> Result<i64, AppError> {
-    Ok(sqlx::query_scalar(
-        "SELECT COUNT(*) FROM jobs WHERE status = 'pending'
-               AND COALESCE(snapshot::jsonb ->> 'team_id', '') = $1
-               AND COALESCE(snapshot::jsonb ->> 'resource_profile', '') = $2",
-    )
-    .bind(team_id)
-    .bind(profile)
-    .fetch_one(pool)
-    .await?)
+    const SQL: Sql<'static> = Sql::Dual {
+        sqlite: "SELECT COUNT(*) FROM jobs WHERE status = 'pending'
+                 AND COALESCE(json_extract(snapshot, '$.team_id'), '') = ?
+                 AND COALESCE(json_extract(snapshot, '$.resource_profile'), '') = ?",
+        pg: "SELECT COUNT(*) FROM jobs WHERE status = 'pending'
+             AND COALESCE(snapshot::jsonb ->> 'team_id', '') = $1
+             AND COALESCE(snapshot::jsonb ->> 'resource_profile', '') = $2",
+    };
+    Ok(exec::fetch_scalar_i64_sql(pool, SQL, &[team_id.into(), profile.into()]).await?)
 }
 
 /// Grant (or re-grant) one team profile.
@@ -590,50 +561,21 @@ pub async fn replace_grant(
     profile: &str,
     granted_by: &str,
 ) -> Result<(), AppError> {
-    match pool {
-        DbPool::Sqlite(pool) => replace_grant_sqlite(pool, team_id, profile, granted_by).await,
-        #[cfg(feature = "postgres")]
-        DbPool::Pg(pool) => replace_grant_pg(pool, team_id, profile, granted_by).await,
-    }
-}
-
-async fn replace_grant_sqlite(
-    pool: &sqlx::SqlitePool,
-    team_id: &str,
-    profile: &str,
-    granted_by: &str,
-) -> Result<(), AppError> {
-    sqlx::query(
-        "INSERT OR REPLACE INTO team_resource_grants (team_id, profile, granted_by)
+    const SQL: Sql<'static> = Sql::Dual {
+        sqlite: "INSERT OR REPLACE INTO team_resource_grants (team_id, profile, granted_by)
                  VALUES (?, ?, ?)",
+        // The primary key is the named conflict target (SQLite's
+        // `INSERT OR REPLACE` would also swap the row id, which this table
+        // does not have).
+        pg: "INSERT INTO team_resource_grants (team_id, profile, granted_by)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (team_id, profile) DO UPDATE SET granted_by = excluded.granted_by",
+    };
+    exec::execute_sql(
+        pool,
+        SQL,
+        &[team_id.into(), profile.into(), granted_by.into()],
     )
-    .bind(team_id)
-    .bind(profile)
-    .bind(granted_by)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Postgres form of [`replace_grant_sqlite`]: the primary key is the named
-/// conflict target (SQLite's `INSERT OR REPLACE` would also swap the row id,
-/// which this table does not have).
-#[cfg(feature = "postgres")]
-async fn replace_grant_pg(
-    pool: &sqlx::PgPool,
-    team_id: &str,
-    profile: &str,
-    granted_by: &str,
-) -> Result<(), AppError> {
-    sqlx::query(
-        "INSERT INTO team_resource_grants (team_id, profile, granted_by)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (team_id, profile) DO UPDATE SET granted_by = excluded.granted_by",
-    )
-    .bind(team_id)
-    .bind(profile)
-    .bind(granted_by)
-    .execute(pool)
     .await?;
     Ok(())
 }
