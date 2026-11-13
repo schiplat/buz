@@ -43,14 +43,15 @@ anything touches storage, and refuses to start otherwise:
   scheduling state — gapless build numbers, slot budgets, and claim
   serialisation all rely on the write lock `BEGIN IMMEDIATE` takes. `multi`
   requires the Postgres backend.
-- **Postgres → refused (today).** The schema, statement rewriter, dual-backend
-  dispatcher, PG migration runner, pool selection (`db::init` returns a
-  `DbPool`), `AppState.pool`, and the Postgres single-instance advisory lock
-  have landed. Enablement still waits on hand-written Postgres bodies for six
-  statements whose SQLite form has no faithful mechanical rewrite
-  (`json_each` / `json_extract` walks, `INSERT OR REPLACE` upserts) and on the
-  Postgres test matrix/CI job. The refusal stays fail closed: a config pointing
-  at Postgres never silently runs on SQLite.
+- **Postgres → refused (today).** The schema, statement provenance gates,
+  dual-backend dispatcher, PG migration runner, pool selection (`db::init`
+  returns a `DbPool`), `AppState.pool`, and the Postgres single-instance
+  advisory lock have landed, and every store statement is proven to prepare
+  on a real Postgres server (the CI compile gate `PREPARE`s the whole corpus).
+  Enablement still waits on the end-to-end journey set being exercised on a
+  real Postgres server and on the CI Postgres job's first green run. The
+  refusal stays fail closed: a config pointing at Postgres never silently
+  runs on SQLite.
 - **`single` + SQLite → the single-instance lock.** The Manager takes an
   advisory flock on a `<db file>.lock` sidecar and holds it for the process
   lifetime. A systemd restart stacked on the old process, or a hand-started
@@ -58,16 +59,36 @@ anything touches storage, and refuses to start otherwise:
   intentionally never deleted — deleting it would race with the next
   acquirer.
 
+## How the two backends stay isolated
+
+Every statement in `store::` carries its dialect provenance (`store::sql::Sql`):
+
+- **Shared** — dialect-neutral text used on both backends. The only per-backend
+  translation is `?` → `$n` placeholder renumbering; the syntax itself must be
+  portable, which a lint gate enforces (json walks, `INSERT OR …`,
+  `strftime` epochs and friends fail the build if they appear in a shared
+  statement).
+- **Dual** — the handful of statements with no portable spelling (the jsonb
+  walks and epoch math in the runner claim path) carry an explicit SQLite body
+  and an explicit Postgres body side by side; both must accept the same binds
+  in the same order, and both are compile-checked against their schema.
+- **Sqlite-only / Postgres-only** — statements that exist on one backend fail
+  closed on the other instead of mis-executing.
+
+Every shared and Postgres statement is additionally `PREPARE`d against the
+migrated Postgres schema in CI (`pg_sql_compile_test`), so a statement that
+only compiles on SQLite can no longer reach a runtime endpoint.
+
 ## Why the timestamps stay text
 
 Both dialects store timestamps as TEXT in `YYYY-MM-DD HH24:MI:SS` format, and
 every timestamp comparison in the shared SQL strings is a text comparison
 against that exact format. On Postgres, the schema installs `datetime()` shim
-functions that produce the identical text from `now()`, so the ~90
-`datetime(...)` calls in the shared statements are valid on both backends with
-identical semantics. This is a deliberate portability trade: the alternative
-(`timestamptz` columns) would require rewriting every statement that touches a
-timestamp.
+functions that produce the identical text (via `to_char`, `'now'` accepted as
+an input), so the `datetime(...)` calls in the shared statements are valid on
+both backends with identical semantics. This is a deliberate portability
+trade: the alternative (`timestamptz` columns) would require rewriting every
+statement that touches a timestamp.
 
 ## Roadmap
 
@@ -77,10 +98,12 @@ timestamp.
 2. **Services SQL convergence — done.** Every service statement now lives in
    `store::`; only `rotate_key` (a deliberately SQLite-only CLI using
    `VACUUM INTO` + table rotation) stays outside.
-3. **Postgres enablement** — hand-written Postgres bodies for the six remaining
-   dialect-blocked statements (`json_each` / `json_extract` walks,
-   `INSERT OR REPLACE` upserts), the `BUZ_TEST_DB` matrix, and a CI Postgres
-   service job; then `validate_cluster_mode` lifts the Postgres refusal.
+3. **Postgres enablement** — statement-level work is done: every shared
+   statement is portable (the rewriter only renumbers placeholders), the six
+   dual statements carry explicit PG bodies, and the whole corpus prepares on
+   a real server. Remaining: the end-to-end journey set on Postgres, the
+   `BUZ_TEST_DB` matrix, and the CI Postgres job's first green run; then
+   `validate_cluster_mode` lifts the Postgres refusal.
 4. **`multi` enablement** — per-site serialisation review
    (`transaction-boundaries.md`), scheduler coordination, and the removal of
    the single-instance lock on Postgres.

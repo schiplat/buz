@@ -75,6 +75,74 @@ fn backend_mismatch(message: &str) -> sqlx::Error {
     sqlx::Error::Configuration(message.to_string().into())
 }
 
+/// Scan Rust source text for `Sql::Dual { sqlite: "…", pg: "…" }` pairs.
+///
+/// The SQL gates (`store_sql_validation_test`, `pg_sql_compile_test`) use this
+/// to classify extracted string literals: a literal that is one side of a Dual
+/// pair follows the Dual rules (the SQLite side may carry SQLite-only syntax,
+/// the PG side carries `$n`), everything else is shared and must be portable.
+/// Only plain `"…"` literals with `\` escapes are recognised — `store/` does
+/// not use raw strings.
+pub fn dual_bodies(source: &str) -> Vec<(String, String)> {
+    fn parse_literal(source: &str, start: usize) -> Option<(String, usize)> {
+        let bytes = source.as_bytes();
+        let mut i = start;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if bytes.get(i) != Some(&b'"') {
+            return None;
+        }
+        i += 1;
+        let mut text = String::new();
+        while i < bytes.len() {
+            let byte = bytes[i];
+            if byte == b'\\' && i + 1 < bytes.len() {
+                let next = bytes[i + 1];
+                text.push(match next {
+                    b'n' => '\n',
+                    b't' => '\t',
+                    b'r' => '\r',
+                    b'0' => '\0',
+                    other => other as char,
+                });
+                i += 2;
+                continue;
+            }
+            if byte == b'"' {
+                return Some((text, i + 1));
+            }
+            let ch = source[i..].chars().next()?;
+            text.push(ch);
+            i += ch.len_utf8();
+        }
+        None
+    }
+
+    let mut out = Vec::new();
+    let mut search_from = 0usize; // byte offset
+    while let Some(rel) = source[search_from..].find("Sql::Dual") {
+        let after_dual = search_from + rel + "Sql::Dual".len();
+        let Some(rel) = source[after_dual..].find("sqlite:") else {
+            break;
+        };
+        let sqlite_start = after_dual + rel + "sqlite:".len();
+        let Some((sqlite, after_sqlite)) = parse_literal(source, sqlite_start) else {
+            break;
+        };
+        let Some(rel) = source[after_sqlite..].find("pg:") else {
+            break;
+        };
+        let pg_start = after_sqlite + rel + "pg:".len();
+        let Some((pg, after_pg)) = parse_literal(source, pg_start) else {
+            break;
+        };
+        out.push((sqlite, pg));
+        search_from = after_pg;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

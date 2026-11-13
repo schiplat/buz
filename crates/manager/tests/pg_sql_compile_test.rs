@@ -157,68 +157,9 @@ fn store_files() -> Vec<PathBuf> {
     files
 }
 
-/// Consume one Rust string literal starting at byte `start` (after optional
-/// whitespace); returns the decoded text and the byte index just past the
-/// closing quote.
-fn parse_literal(source: &str, start: usize) -> Option<(String, usize)> {
-    let bytes = source.as_bytes();
-    let mut i = start;
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    if bytes.get(i) != Some(&b'"') {
-        return None;
-    }
-    i += 1;
-    let mut text = String::new();
-    while i < bytes.len() {
-        let byte = bytes[i];
-        if byte == b'\\' && i + 1 < bytes.len() {
-            let next = bytes[i + 1];
-            text.push(match next {
-                b'n' => '\n',
-                b't' => '\t',
-                b'r' => '\r',
-                b'0' => '\0',
-                other => other as char,
-            });
-            i += 2;
-            continue;
-        }
-        if byte == b'"' {
-            return Some((text, i + 1));
-        }
-        let ch = source[i..].chars().next()?;
-        text.push(ch);
-        i += ch.len_utf8();
-    }
-    None
-}
-
 /// All `Sql::Dual { sqlite: "…", pg: "…" }` pairs in one source file.
 fn dual_bodies(source: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut search_from = 0usize; // byte offset
-    while let Some(rel) = source[search_from..].find("Sql::Dual") {
-        let after_dual = search_from + rel + "Sql::Dual".len();
-        let Some(rel) = source[after_dual..].find("sqlite:") else {
-            break;
-        };
-        let sqlite_start = after_dual + rel + "sqlite:".len();
-        let Some((sqlite, after_sqlite)) = parse_literal(source, sqlite_start) else {
-            break;
-        };
-        let Some(rel) = source[after_sqlite..].find("pg:") else {
-            break;
-        };
-        let pg_start = after_sqlite + rel + "pg:".len();
-        let Some((pg, after_pg)) = parse_literal(source, pg_start) else {
-            break;
-        };
-        out.push((sqlite, pg));
-        search_from = after_pg;
-    }
-    out
+    manager::store::sql::dual_bodies(source)
 }
 
 /// Mark the characters that are SQL code: outside single-quoted literals and

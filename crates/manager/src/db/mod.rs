@@ -48,17 +48,21 @@ pub fn validate_cluster_mode(mode: ClusterMode, database: &DatabaseConfig) -> an
     }
 }
 
-/// Postgres enablement gate. The pool, PG schema, migration runner and the
-/// dual-backend dispatcher are wired; what still blocks serving Postgres is the
-/// handful of statements whose SQLite form has no faithful mechanical rewrite
-/// (see HANDOFF §12.4) plus the PG test matrix/CI job. Fail closed until then.
+/// Postgres enablement gate. The pool, PG schema, migration runner, the
+/// dual-backend dispatcher and the per-statement isolation gates
+/// (`Sql` provenance + PG PREPARE compile check) are wired and the statement
+/// corpus is PG-proven. What still blocks serving Postgres is the end-to-end
+/// journey coverage (approvals, github binds, plugin sync, cron fire,
+/// retention purge, …) on a real server plus the CI Postgres job's first
+/// green run. Fail closed until then.
 #[cfg(feature = "postgres")]
 fn postgres_gate() -> anyhow::Result<()> {
     Err(anyhow::anyhow!(
-        "Postgres storage is not enabled yet: the pool, schema and dispatcher are wired, \
-         but six SQLite-only statements still need hand-written Postgres variants \
-         (json_each/json_extract walks, INSERT OR REPLACE upserts) and the PG test \
-         matrix/CI job is pending. Run SQLite with [cluster] mode = \"single\" meanwhile."
+        "Postgres storage is not enabled yet: the pool, schema, dispatcher and statement \
+         gates are wired and every store statement prepares on Postgres, but the full \
+         end-to-end journey set has not been exercised on a real Postgres server and \
+         the CI Postgres job has not had its first green run. Run SQLite with \
+         [cluster] mode = \"single\" meanwhile."
     ))
 }
 

@@ -133,6 +133,40 @@ fn resolve_fragments(text: &str) -> Option<String> {
     Some(resolved)
 }
 
+/// Store sources as `(label, source)` pairs, with the same exclusions as the
+/// statement scan.
+fn store_sources() -> Vec<(String, String)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/store");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("store dir")
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_none_or(|name| {
+                    !name.starts_with("._")
+                        && name != "dialect.rs"
+                        && name != "exec.rs"
+                        && name != "sql.rs"
+                })
+        })
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(|path| {
+            let label = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+            let source = std::fs::read_to_string(&path).expect("read store file");
+            (label, source)
+        })
+        .collect()
+}
+
 async fn store_statements() -> (Vec<String>, Vec<String>, Vec<String>) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/store");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -362,5 +396,66 @@ async fn dynamic_sql_is_declared() {
             .map(|text| format!("  \"{text}\","))
             .collect::<Vec<_>>()
             .join("\n")
+    );
+}
+
+/// Backend-isolation lint: a statement that is NOT one side of a `Sql::Dual`
+/// pair is shared and travels to Postgres with only placeholder renumbering —
+/// so it must not contain any SQLite-only syntax. `datetime(...)` is allowed
+/// (the PG baseline's TEXT shims accept it, `'now'` included); json walks,
+/// epoch math and `INSERT OR` conflict forms are not — those belong in a
+/// `Sql::Dual` with an explicit PG body.
+const FORBIDDEN_TOKENS: &[&str] = &[
+    "json_extract(",
+    "json_each(",
+    "json(",
+    "strftime(",
+    "INSERT OR ",
+    "PRAGMA",
+    "VACUUM",
+    "AUTOINCREMENT",
+    "sqlite_master",
+    "rowid",
+    "date(",
+    "group_concat",
+    "ifnull",
+];
+
+#[test]
+fn shared_statements_use_portable_syntax_only() {
+    let mut violations = Vec::new();
+    for (label, source) in store_sources() {
+        let pairs = manager::store::sql::dual_bodies(&source);
+        let dual_sqlite: Vec<&str> = pairs.iter().map(|(sqlite, _)| sqlite.as_str()).collect();
+        let dual_pg: Vec<&str> = pairs.iter().map(|(_, pg)| pg.as_str()).collect();
+        for literal in string_literals(&source) {
+            if !is_statement(&literal) {
+                continue;
+            }
+            // Dual bodies follow their own rules.
+            if dual_sqlite.iter().any(|dual| dual == &literal)
+                || dual_pg.iter().any(|dual| dual == &literal)
+            {
+                continue;
+            }
+            // PG-only bodies are checked by the PREPARE gate.
+            if literal.contains("$1") {
+                continue;
+            }
+            for token in FORBIDDEN_TOKENS {
+                if literal.to_ascii_lowercase().contains(token) {
+                    violations.push(format!(
+                        "{label}: shared statement contains `{token}`:\n  {}",
+                        literal.trim()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "shared store statements carry backend-specific syntax; move them into Sql::Dual \
+         or rewrite portably:\n\n{}",
+        violations.join("\n\n")
     );
 }
