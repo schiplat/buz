@@ -55,7 +55,10 @@ pub async fn setup(
     validate_setup(&req)?;
     let username = req.username.trim().to_string();
 
-    let mut tx = state.pool.begin().await?;
+    // BEGIN IMMEDIATE: setup is a one-shot write whose re-check must not be
+    // raced. The dispatcher's DbTx owns the dialect token.
+    let db = state.db();
+    let mut tx = db.begin_immediate().await?;
 
     let count = crate::store::auth::count_users_tx(&mut tx).await?;
     if count > 0 {
@@ -74,7 +77,7 @@ pub async fn setup(
     }
 
     // No actor exists yet: the first admin is a system-provisioned account.
-    audit::record_in(
+    audit::record_in_tx(
         &mut tx,
         AuditEvent::system(Action::AuthSetup)
             .on(Resource::user(&user_id, &username))

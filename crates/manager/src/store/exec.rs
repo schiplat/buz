@@ -123,6 +123,66 @@ impl DbTx<'_> {
         }
     }
 
+    /// Fetch every row of a statement inside this transaction.
+    pub async fn fetch_all(
+        &mut self,
+        sql: &str,
+        binds: &[SqlValue],
+    ) -> Result<Vec<GenericRow>, sqlx::Error> {
+        match self {
+            Self::Sqlite(tx) => {
+                let mut q = sqlx::query(sql);
+                for b in binds {
+                    q = bind_sqlite(q, b);
+                }
+                Ok(q.fetch_all(&mut **tx)
+                    .await?
+                    .into_iter()
+                    .map(decode_sqlite_row)
+                    .collect())
+            }
+            #[cfg(feature = "postgres")]
+            Self::Pg(tx) => {
+                let rewritten = dialect::sqlite_to_postgres(sql);
+                let mut q = sqlx::query(&rewritten);
+                for b in binds {
+                    q = bind_pg(q, b);
+                }
+                Ok(q.fetch_all(&mut **tx)
+                    .await?
+                    .into_iter()
+                    .map(decode_pg_row)
+                    .collect())
+            }
+        }
+    }
+
+    /// Fetch at most one row of a statement inside this transaction.
+    pub async fn fetch_optional(
+        &mut self,
+        sql: &str,
+        binds: &[SqlValue],
+    ) -> Result<Option<GenericRow>, sqlx::Error> {
+        match self {
+            Self::Sqlite(tx) => {
+                let mut q = sqlx::query(sql);
+                for b in binds {
+                    q = bind_sqlite(q, b);
+                }
+                Ok(q.fetch_optional(&mut **tx).await?.map(decode_sqlite_row))
+            }
+            #[cfg(feature = "postgres")]
+            Self::Pg(tx) => {
+                let rewritten = dialect::sqlite_to_postgres(sql);
+                let mut q = sqlx::query(&rewritten);
+                for b in binds {
+                    q = bind_pg(q, b);
+                }
+                Ok(q.fetch_optional(&mut **tx).await?.map(decode_pg_row))
+            }
+        }
+    }
+
     /// Execute one statement; returns rows affected.
     pub async fn execute(&mut self, sql: &str, binds: &[SqlValue]) -> Result<u64, sqlx::Error> {
         match self {

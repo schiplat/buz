@@ -648,11 +648,66 @@ pub async fn record(pool: &SqlitePool, event: AuditEvent) {
 /// Persist an audit event inside the caller's transaction, so the record
 /// commits or rolls back with the change it describes. Propagates the error:
 /// an unauditable mutation is a failed mutation.
+///
+/// SQLite-typed variant, kept for call sites still on `Transaction<Sqlite>`;
+/// new dual-backend transactions use [`record_in_tx`].
 pub async fn record_in(
     conn: &mut sqlx::SqliteConnection,
     event: AuditEvent,
 ) -> Result<(), sqlx::Error> {
     insert(conn, event).await
+}
+
+/// Persist an audit event inside a dual-backend transaction
+/// ([`crate::store::exec::DbTx`]): same statement, same redaction, executed
+/// through the dispatcher so it works on either backend.
+pub async fn record_in_tx(
+    tx: &mut crate::store::exec::DbTx<'_>,
+    event: AuditEvent,
+) -> Result<(), sqlx::Error> {
+    use crate::store::exec::SqlValue;
+
+    let id = Uuid::new_v4().to_string();
+    let before = event
+        .before
+        .as_ref()
+        .map(redact_value)
+        .and_then(|v| serde_json::to_string(&v).ok());
+    let after = event
+        .after
+        .as_ref()
+        .map(redact_value)
+        .and_then(|v| serde_json::to_string(&v).ok());
+    let meta = event
+        .meta
+        .as_ref()
+        .map(redact_value)
+        .and_then(|v| serde_json::to_string(&v).ok());
+
+    let binds = [
+        SqlValue::from(id),
+        event.actor_user_id.into(),
+        event.actor_username.into(),
+        event.action.into(),
+        event.resource_type.into(),
+        event.resource_id.into(),
+        event.resource_name.into(),
+        event.team_id.into(),
+        before.into(),
+        after.into(),
+        meta.into(),
+        event.ip.into(),
+    ];
+    tx.execute(
+        "INSERT INTO audit_logs (
+            id, created_at, actor_user_id, actor_username, action,
+            resource_type, resource_id, resource_name, team_id,
+            before_json, after_json, meta_json, ip
+         ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &binds,
+    )
+    .await?;
+    Ok(())
 }
 
 /// Shared insert used by both entry points.
