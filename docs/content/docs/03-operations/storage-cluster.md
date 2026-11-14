@@ -6,12 +6,12 @@ weight: 42
 
 ## Storage backends
 
-Buz's Manager keeps all state in one SQL database. Two backends are planned:
+Buz's Manager keeps all state in one SQL database. Two backends are supported:
 
 | Backend | Status | `[cluster] mode` |
 |---|---|---|
-| SQLite (bundled) | **served today** | `single` only |
-| Postgres (14+) | backend wired, enablement pending | `multi` target |
+| SQLite (bundled) | **served** | `single` |
+| Postgres (14+) | **served** (build with the `postgres` feature) | `single` |
 
 ## Configuration
 
@@ -29,7 +29,6 @@ max_connections = 8
 
 [cluster]
 # single (default): this process is the only Manager serving this storage.
-# multi: several Managers serve active-active against one Postgres backend.
 mode = "single"
 ```
 
@@ -38,11 +37,11 @@ mode = "single"
 The Manager validates `[cluster] mode` against the configured backend before
 anything touches storage, and refuses to start otherwise:
 
-- **`multi` + SQLite → refused.** SQLite has no cross-instance coordination
-  (a single writer, no row locks), so two Managers on one file would corrupt
-  scheduling state — gapless build numbers, slot budgets, and claim
-  serialisation all rely on the write lock `BEGIN IMMEDIATE` takes. `multi`
-  requires the Postgres backend.
+- **SQLite + anything other than `single` → refused.** SQLite has no
+  cross-instance coordination (a single writer, no row locks), so two Managers
+  on one file would corrupt scheduling state — gapless build numbers, slot
+  budgets, and claim serialisation all rely on the write lock `BEGIN IMMEDIATE`
+  takes. Run exactly one Manager per SQLite database.
 - **Postgres → served with the `postgres` feature.** The schema, statement
   provenance gates, dual-backend dispatcher, PG migration runner, pool
   selection (`db::init` returns a `DbPool`), `AppState.pool`, and the Postgres
@@ -111,8 +110,3 @@ statement that touches a timestamp.
    before the commit, and an occupancy guard that never overwrites. Plan
    only without `--apply`. The operator stops the Manager, runs the command,
    points `[database] url` at `postgres:` and starts the Manager again.
-6. **`multi` enablement** — per-site serialisation review
-   (`transaction-boundaries.md`; the slot-budget gate's serialization via the
-   guarded host-row reconcile is the pattern the remaining sites follow),
-   scheduler coordination, and the removal of the single-instance lock on
-   Postgres.

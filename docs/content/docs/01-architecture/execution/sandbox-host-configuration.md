@@ -37,7 +37,7 @@ Runner, sandboxd, and hosts end to end.
 - **Identity is env-first and propagated end to end**: `manager_instance_id`, `host_id`,
   `runner_instance_id`, `runner_id`, `sandboxd_instance_id`.
 - **Manager remains single-instance** (SQLite). `manager_instance_id` is an identity and ownership
-  binding, not an HA mechanism.
+  binding, not a coordination mechanism between Managers.
 
 ## Why
 
@@ -614,12 +614,12 @@ Interval and threshold defaults are platform settings (for example
 Manager uses SQLite, a local single-writer database. **Multiple Managers on different devices cannot
 share it** (network filesystems are not a supported way to share SQLite), so they are separate
 control planes, not replicas. The current code has a scheduler lease for same-database process
-coordination, but poll/log broadcasts are in-process; this is not a complete HA design.
+coordination, but poll/log broadcasts are in-process; there is no cross-Manager coordination.
 
 Consequences:
 
 - `manager_instance_id` is an identity and ownership binding: which control plane owns a host, which
-  node issued a config/job, and how to correlate logs. It is **not** an HA coordinator.
+  node issued a config/job, and how to correlate logs. It is **not** a cross-Manager coordinator.
 - Versions are scoped to `(manager_instance_id, host_id, sandboxd_instance_id)`. A sandboxd pins the
   expected Manager ID (`BUZ_MANAGER_INSTANCE_ID`); a different Manager ID is treated as a different
   authority and rejected until re-enrolled.
@@ -629,12 +629,11 @@ Consequences:
   It is an operational invariant; the per-host bootstrap points at exactly one Manager.
 - Restoring the same Manager DB to a replacement device preserves the logical identity and the
   version lineage. A fresh database is a new control plane and requires re-enrollment.
-- True multi-device HA would require a network database, leader election/fencing, and a shared
-  pub/sub for long-poll wakeups. That is out of scope.
+- Sharing one storage across Managers, or making a host follow two control planes, is out of scope.
 
 ## Non-goals
 
-- Multi-device Manager HA or automatic cross-Manager migration.
+- Automatic cross-Manager host migration.
 - Numeric resource requests from pipelines (`memory: 8g` in YAML).
 - Per-step resource profiles (the sandbox is per job).
 - Profiles that carry images, runtimes, networks, mounts, or isolation tiers.
@@ -683,7 +682,7 @@ These are the defaults chosen for items not separately decided; change them deli
 | `default` profile | Implicit for every team; warn when `slots > 1`. |
 | Profile contents | `memory`, `cpu`, `pids`, `slots`; `/tmp` tmpfs stays fixed. |
 | Staleness | ~60s pending, 5 minutes degraded (stop non-default dispatch); configurable. |
-| Manager topology | Single instance; no HA. |
+| Manager topology | Single instance per storage. |
 
 ## Acceptance criteria
 

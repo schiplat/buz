@@ -28,8 +28,8 @@ schedulers (queue dispatch, cron triggers, GitHub fetch) elect a leader via
 the `scheduler_lease` table, so a second process would not double-fire jobs —
 but the Runner wake-up bus and the WebSocket log/status broadcast are
 in-process: a second Manager would serve stale real-time views and its
-Runners would fall back to polling timeouts. High availability at the Manager
-tier is a backup/restore concern, not an active-active deployment.
+Runners would fall back to polling timeouts. Redundancy at the Manager tier
+is a backup/restore concern — run exactly one Manager per storage.
 {{< /callout >}}
 
 ## Embedded Web UI
