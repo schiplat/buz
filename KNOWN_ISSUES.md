@@ -215,27 +215,32 @@ variant needs a host-side cleanup guarantee on cancellation. The
 render/prep + `buz/scp`) avoids the channel entirely and is the recommended
 authoring style today.
 
-## Slot-budget gate: write skew under Postgres (multi-phase fix)
+## Slot-budget gate: write skew under Postgres — RESOLVED (2026-11-14)
 
-- **Found by**: the BUZ_TEST_DB=pg fixture matrix (`slot_scheduling_test`, 8/8 failures,
-  2026-11-14). Not reachable on SQLite.
-- **Symptom**: two concurrent pollers each claim a 4-slot job on a 4-slot host
-  (budget oversold to 8); `fifo`/`backfill` runners claim jobs the gate should
-  have skipped; starvation aging does not suspend backfill.
-- **Root cause**: the claim transaction re-reads
-  `SELECT COALESCE(SUM(resource_slots),0) FROM jobs WHERE status='running'`
-  inside `begin_immediate()`. On SQLite `BEGIN IMMEDIATE` takes the writer
-  lock, serialising the read-then-claim. On Postgres the same call opens a
-  plain deferred transaction (READ COMMITTED), so two claimants both observe
-  the pre-claim SUM and both pass the gate — a classic write skew.
-- **Why not fixed here**: the Postgres-native fixes are design work reserved
-  for the multi-enablement slice (see `transaction-boundaries.md`): either a
-  guarded per-host counter row (`UPDATE … SET running_slots = running_slots + ?
-  WHERE running_slots + ? <= max_resource_slots`, carried as schema + recovery
-  bookkeeping) or `SELECT … FOR UPDATE` on the host row inside the claim
-  transaction (Postgres-only syntax; needs a per-backend branch in
-  `begin_immediate` sites).
-- **Interim status**: `slot_scheduling_test` is excluded from the CI fixture
-  matrix; it remains the executable spec for that fix and passes on SQLite.
-  `single` + Postgres deployments can hit the same skew via concurrent
-  in-process polls until the multi-phase fix lands.
+- **Found by**: the BUZ_TEST_DB=pg fixture matrix (`slot_scheduling_test`,
+  8/8 failures). Not reachable on SQLite.
+- **Symptom**: two concurrent pollers each claimed a 4-slot job on a 4-slot
+  host (budget oversold to 8); fifo/backfill rules and starvation aging all
+  became unreliable.
+- **Root cause**: the claim transaction re-read the running-slot SUM inside
+  `begin_immediate()`. SQLite's writer lock serialised that read; Postgres
+  opens a plain deferred transaction, so two claimants both observed the
+  pre-claim sum and both passed — a classic write skew.
+- **Fix (guarded counter row)**: `sandbox_hosts.running_slots` is a derived
+  occupancy cache. Every claim decision first runs
+  `ops_sandbox::reconcile_running_slots_tx`, a two-step sequence inside the
+  claim transaction: (1) `SELECT … FOR UPDATE` on the host row (`Sql::Dual` —
+  Postgres-only syntax; SQLite relies on the writer lock) which serialises
+  concurrent claimants and anchors the freshness of the following snapshot;
+  (2) a guarded reconcile UPDATE recomputing `running_slots` from the
+  running-jobs sum (refresh-on-read — job completion frees slots at the next
+  candidate's decide, no decrement bookkeeping to miss). The occupancy half
+  of the gate then reads the reconciled counter.
+- **Why two steps**: a single `UPDATE … SET col = (subquery)` whose row lock
+  waits does not re-evaluate the target-list subquery after the wait
+  (EvalPlanQual keeps the old snapshot) — the write would carry a stale sum,
+  exactly the oversell.
+- SUM aggregates in shared statements are `CAST(… AS BIGINT)` (Postgres
+  evaluates SUM as NUMERIC, which the i64 decode cascade cannot read); the
+  portability lint enforces this.
+

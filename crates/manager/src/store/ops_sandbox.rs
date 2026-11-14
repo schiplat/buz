@@ -844,14 +844,74 @@ pub async fn config_row_is_stale(
 
 /// Slots currently in use by running jobs on one sandboxd instance — the
 /// budget's occupancy half.
+///
+/// Superseded for dispatch decisions by [`reconcile_running_slots_tx`]: the
+/// plain SUM read is not serialized between concurrent claim transactions,
+/// which on Postgres lets two claimants both observe the pre-claim sum and
+/// oversell the budget (write skew).
 pub async fn running_slots_used(tx: &mut DbTx<'_>, sandbox_key: &str) -> Result<i64, AppError> {
     Ok(tx
         .fetch_optional(
-            "SELECT COALESCE(SUM(resource_slots), 0) FROM jobs
+            "SELECT CAST(COALESCE(SUM(resource_slots), 0) AS BIGINT) FROM jobs
          WHERE status = 'running' AND sandbox_instance_id = ?",
             &[sandbox_key.into()],
         )
         .await?
         .map(|r| r.i64(0))
         .unwrap_or(0))
+}
+
+/// Refresh the host's `running_slots` occupancy cache from the running-jobs
+/// sum and return the reconciled value — inside the claim transaction.
+///
+/// Serialization point between concurrent claimants, in two steps:
+///
+/// 1. **Lock + freshness anchor** (`Sql::Dual`): Postgres takes `FOR UPDATE`
+///    on the host row — a claimant blocked here resumes only after the other
+///    claimant committed, and its following statements then run under a fresh
+///    READ COMMITTED snapshot that includes the just-claimed job. SQLite
+///    needs no `FOR UPDATE` (the `BEGIN IMMEDIATE` writer lock already
+///    serialises the whole transaction); the plain SELECT is the same anchor.
+/// 2. **Guarded reconcile UPDATE**: recomputes `running_slots` from the
+///    running-jobs sum — a derived cache, refresh-on-read. Job completion
+///    frees slots at the next candidate's decide; there is no decrement
+///    bookkeeping to miss.
+///
+/// A single `UPDATE ... SET col = (subquery)` cannot replace this pair: when
+/// its row lock waits, Postgres re-checks the WHERE but does **not**
+/// re-evaluate the target-list subquery (EvalPlanQual keeps the old
+/// snapshot), so the write would carry a stale sum — exactly the oversell
+/// the concurrent-polls test caught.
+///
+/// `None` = host not enrolled.
+pub async fn reconcile_running_slots_tx(
+    tx: &mut DbTx<'_>,
+    host_id: &str,
+    instance_id: &str,
+    sandbox_key: &str,
+) -> Result<Option<i64>, AppError> {
+    const LOCK_HOST_ROW: Sql<'static> = Sql::Dual {
+        sqlite: "SELECT running_slots FROM sandbox_hosts
+             WHERE host_id = ? AND instance_id = ?",
+        pg: "SELECT running_slots FROM sandbox_hosts
+             WHERE host_id = $1 AND instance_id = $2
+             FOR UPDATE",
+    };
+    let _locked = tx
+        .fetch_optional_sql(LOCK_HOST_ROW, &[host_id.into(), instance_id.into()])
+        .await?;
+    Ok(tx
+        .fetch_optional_sql(
+            Sql::Shared(
+                "UPDATE sandbox_hosts
+         SET running_slots =
+             (SELECT CAST(COALESCE(SUM(resource_slots), 0) AS BIGINT) FROM jobs
+              WHERE status = 'running' AND sandbox_instance_id = ?)
+         WHERE host_id = ? AND instance_id = ?
+         RETURNING running_slots",
+            ),
+            &[sandbox_key.into(), host_id.into(), instance_id.into()],
+        )
+        .await?
+        .map(|r| r.i64(0)))
 }

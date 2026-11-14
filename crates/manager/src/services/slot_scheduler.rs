@@ -160,6 +160,20 @@ pub async fn decide(
         });
     }
 
+    // Refresh the host's slot-occupancy cache under the claim transaction.
+    // The guarded reconcile UPDATE takes the host row's lock first, so two
+    // concurrent pollers serialize here: the second one's recompute observes
+    // the first one's committed claim, and the budget cannot be oversold
+    // (Postgres has no BEGIN IMMEDIATE writer lock — this is the per-site
+    // serialization point; SQLite serializes on the writer lock anyway).
+    let running_slots = crate::store::ops_sandbox::reconcile_running_slots_tx(
+        tx,
+        &runner.host_id,
+        &runner.sandbox_instance_id,
+        &runner.sandbox_key(),
+    )
+    .await
+    .map_err(storage_error)?;
     let host = crate::store::ops_sandbox::host_slot_facts(
         tx,
         &runner.host_id,
@@ -286,9 +300,9 @@ pub async fn decide(
                 ),
             });
         }
-        let used = crate::store::ops_sandbox::running_slots_used(tx, &key)
-            .await
-            .map_err(storage_error)?;
+        // The reconciled counter read inside the same transaction — an
+        // outside writer cannot slip between the reconcile and this check.
+        let used = running_slots.unwrap_or(0);
         if used + slots > max_slots {
             return Ok(Decision::WaitForCapacity {
                 reason: format!(

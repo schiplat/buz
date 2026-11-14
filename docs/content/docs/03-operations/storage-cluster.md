@@ -112,6 +112,7 @@ statement that touches a timestamp.
    only without `--apply`. The operator stops the Manager, runs the command,
    points `[database] url` at `postgres:` and starts the Manager again.
 6. **`multi` enablement** — per-site serialisation review
-   (`transaction-boundaries.md`; the first entry is the slot-budget gate's
-   write skew under Postgres, see KNOWN_ISSUES.md), scheduler coordination,
-   and the removal of the single-instance lock on Postgres.
+   (`transaction-boundaries.md`; the slot-budget gate's serialization via the
+   guarded host-row reconcile is the pattern the remaining sites follow),
+   scheduler coordination, and the removal of the single-instance lock on
+   Postgres.

@@ -587,6 +587,16 @@ async fn apply_v2_yaml_source(pool: &SqlitePool) -> anyhow::Result<()> {
 async fn apply_v3_insertion_order_seq(pool: &SqlitePool) -> anyhow::Result<()> {
     add_column_if_missing(pool, "jobs", "seq INTEGER NOT NULL DEFAULT 0").await;
     add_column_if_missing(pool, "audit_logs", "seq INTEGER NOT NULL DEFAULT 0").await;
+    // Slot-budget occupancy cache for sandbox hosts: refreshed from the
+    // running-jobs sum inside every claim decision (the guarded reconcile
+    // UPDATE is also the serialization point between concurrent claimants —
+    // see services/slot_scheduler.rs).
+    add_column_if_missing(
+        pool,
+        "sandbox_hosts",
+        "running_slots BIGINT NOT NULL DEFAULT 0",
+    )
+    .await;
 
     // Backfill from rowid: it encoded insertion order until now. UPDATE does
     // not fire the INSERT triggers below, so order of operations is free.
