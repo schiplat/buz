@@ -2,7 +2,7 @@
 title: "Documentation"
 type: docs
 weight: 1
-description: "Buz — a self-hosted pipeline platform: one static Rust binary per role, declarative YAML with GitHub Actions ergonomics and Jenkins-grade governance, a full stack in one container in five minutes."
+description: "Buz — a self-hosted pipeline platform with built-in compute governance: one static Rust binary per role, declarative YAML with GitHub Actions ergonomics and Jenkins-grade governance, a full stack in five minutes."
 ---
 
 Buz is a self-hosted pipeline platform that ships as a single static Rust

@@ -1,8 +1,8 @@
 # Buz
 
-**A self-hosted pipeline platform: one static Rust binary per role, a full
-Manager + Runner stack in one container in five minutes, everything declared
-in YAML.**
+**A self-hosted pipeline platform with built-in compute governance: one
+static Rust binary per role, a full Manager + Runner stack in five minutes,
+everything declared in YAML.**
 
 [Buz Docs](https://buz.docs.sconts.com/) ·
 [Plugin Marketplace](https://plugins.buz.schiplat.com/) ·
