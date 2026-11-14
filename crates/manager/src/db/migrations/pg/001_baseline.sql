@@ -123,7 +123,6 @@ CREATE TABLE sandbox_hosts (
     instance_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     max_resource_slots BIGINT NOT NULL DEFAULT 0,
-    running_slots BIGINT NOT NULL DEFAULT 0,
     desired_version BIGINT NOT NULL DEFAULT 0,
     applied_version BIGINT NOT NULL DEFAULT 0,
     applied_sha256 TEXT NOT NULL DEFAULT '',
@@ -134,6 +133,8 @@ CREATE TABLE sandbox_hosts (
     token_hash TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT datetime(),
     updated_at TEXT NOT NULL DEFAULT datetime(),
+    -- Slot-budget occupancy cache (derived; see services/slot_scheduler.rs).
+    running_slots BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (host_id, instance_id)
 );
 -- table sandbox_host_configs
