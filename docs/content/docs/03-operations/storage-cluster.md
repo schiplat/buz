@@ -21,8 +21,8 @@ Buz's Manager keeps all state in one SQL database. Two backends are planned:
 path = "data/manager.db"
 
 # Explicit connection target. When set, it wins over `path`.
-# sqlite:<path> is served today; postgres:<…> is refused at startup until the
-# Postgres backend ships.
+# sqlite:<path> is the default build; postgres:<…> requires the `postgres`
+# cargo feature.
 # url = "sqlite:data/manager.db"
 
 max_connections = 8
@@ -43,15 +43,14 @@ anything touches storage, and refuses to start otherwise:
   scheduling state — gapless build numbers, slot budgets, and claim
   serialisation all rely on the write lock `BEGIN IMMEDIATE` takes. `multi`
   requires the Postgres backend.
-- **Postgres → refused (today).** The schema, statement provenance gates,
-  dual-backend dispatcher, PG migration runner, pool selection (`db::init`
-  returns a `DbPool`), `AppState.pool`, and the Postgres single-instance
-  advisory lock have landed, and every store statement is proven to prepare
-  on a real Postgres server (the CI compile gate `PREPARE`s the whole corpus).
-  Enablement still waits on the end-to-end journey set being exercised on a
-  real Postgres server and on the CI Postgres job's first green run. The
-  refusal stays fail closed: a config pointing at Postgres never silently
-  runs on SQLite.
+- **Postgres → served with the `postgres` feature.** The schema, statement
+  provenance gates, dual-backend dispatcher, PG migration runner, pool
+  selection (`db::init` returns a `DbPool`), `AppState.pool`, and the Postgres
+  single-instance advisory lock have landed; every store statement prepares on
+  a real Postgres 14 server, and the CI `postgres` job runs the journey,
+  parity, and compile-gate suites. Build with `--features postgres` and point
+  `[database] url` at `postgres:`. A binary compiled without the feature
+  refuses a Postgres url (fail closed, never silently falls back to SQLite).
 - **`single` + SQLite → the single-instance lock.** The Manager takes an
   advisory flock on a `<db file>.lock` sidecar and holds it for the process
   lifetime. A systemd restart stacked on the old process, or a hand-started
@@ -98,12 +97,13 @@ statement that touches a timestamp.
 2. **Services SQL convergence — done.** Every service statement now lives in
    `store::`; only `rotate_key` (a deliberately SQLite-only CLI using
    `VACUUM INTO` + table rotation) stays outside.
-3. **Postgres enablement** — statement-level work is done: every shared
-   statement is portable (the rewriter only renumbers placeholders), the six
-   dual statements carry explicit PG bodies, and the whole corpus prepares on
-   a real server. Remaining: the end-to-end journey set on Postgres, the
-   `BUZ_TEST_DB` matrix, and the CI Postgres job's first green run; then
-   `validate_cluster_mode` lifts the Postgres refusal.
+3. **Postgres enablement — done.** Every shared statement is portable (the
+   rewriter only renumbers placeholders), the six dual statements carry
+   explicit PG bodies, the whole corpus prepares on a real server, and the CI
+   Postgres job (journey, parity, compile gate) is green.
+   `validate_cluster_mode` serves Postgres for binaries built with the
+   feature. Still open: the `BUZ_TEST_DB` full matrix (the wider test suite
+   holds SQLite pools directly) as an independent slice.
 4. **`multi` enablement** — per-site serialisation review
    (`transaction-boundaries.md`), scheduler coordination, and the removal of
    the single-instance lock on Postgres.

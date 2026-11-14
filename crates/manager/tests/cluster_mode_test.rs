@@ -4,8 +4,8 @@
 //! The invariants under test:
 //! - `multi` + SQLite is refused — SQLite has no cross-instance coordination,
 //!   so two Managers on one file would corrupt scheduling state;
-//! - a Postgres url is refused until its dialect blockers and test matrix land
-//!   (fail closed rather than half-work);
+//! - a Postgres url is served when the binary carries the `postgres` feature
+//!   and fails closed when it does not;
 //! - `single` takes an exclusive `<db>.lock` flock for its lifetime: a second
 //!   Manager on the same storage is refused, and the lock is released when the
 //!   holder goes away.
@@ -105,11 +105,20 @@ fn multi_on_sqlite_is_refused_with_the_reason() {
 }
 
 #[test]
-fn postgres_is_refused_until_enablement_lands() {
+fn postgres_url_is_gated_on_the_build_feature_only() {
     let db = database_with_url(Some("postgres://user@host/buz"));
     for mode in [ClusterMode::Single, ClusterMode::Multi] {
-        let err = manager::db::validate_cluster_mode(mode, &db).unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("postgres"), "{err}");
+        let result = manager::db::validate_cluster_mode(mode, &db);
+        #[cfg(feature = "postgres")]
+        assert!(
+            result.is_ok(),
+            "Postgres serves both modes once the feature is built in: {result:?}"
+        );
+        #[cfg(not(feature = "postgres"))]
+        {
+            let err = result.expect_err("a binary without the feature must fail closed");
+            assert!(err.to_string().to_lowercase().contains("postgres"), "{err}");
+        }
     }
 }
 

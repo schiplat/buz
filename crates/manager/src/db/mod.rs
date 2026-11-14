@@ -31,9 +31,9 @@ fn sqlite_file(database: &DatabaseConfig) -> String {
 /// - `multi` + SQLite is refused: SQLite has no cross-instance coordination
 ///   (a single writer, no row locks), so two Managers on one file would
 ///   corrupt scheduling state. `multi` needs the Postgres backend.
-/// - Postgres is refused while the six SQLite-only statements lack PG variants
-///   or the binary was built without the `postgres` feature — fail closed
-///   rather than pretending to serve a backend that cannot answer every query.
+/// - Postgres is served when the binary was built with the `postgres`
+///   feature; without it the startup fails closed rather than pretending
+///   to serve a backend it cannot answer.
 pub fn validate_cluster_mode(mode: ClusterMode, database: &DatabaseConfig) -> anyhow::Result<()> {
     let kind = database.storage_kind().map_err(anyhow::Error::msg)?;
     match (mode, kind) {
@@ -48,22 +48,15 @@ pub fn validate_cluster_mode(mode: ClusterMode, database: &DatabaseConfig) -> an
     }
 }
 
-/// Postgres enablement gate. The pool, PG schema, migration runner, the
-/// dual-backend dispatcher and the per-statement isolation gates
-/// (`Sql` provenance + PG PREPARE compile check) are wired and the statement
-/// corpus is PG-proven. What still blocks serving Postgres is the end-to-end
-/// journey coverage (approvals, github binds, plugin sync, cron fire,
-/// retention purge, …) on a real server plus the CI Postgres job's first
-/// green run. Fail closed until then.
+/// Postgres enablement check. The schema, dual-backend dispatcher, migration
+/// runner and isolation gates are all proven — every store statement
+/// prepares on Postgres, the journey suites and the schema parity test run
+/// against a real Postgres 14 server in CI, and the CI `postgres` job is
+/// green. Serving Postgres now requires only that the binary was built with
+/// the feature.
 #[cfg(feature = "postgres")]
 fn postgres_gate() -> anyhow::Result<()> {
-    Err(anyhow::anyhow!(
-        "Postgres storage is not enabled yet: the pool, schema, dispatcher and statement \
-         gates are wired and every store statement prepares on Postgres, but the full \
-         end-to-end journey set has not been exercised on a real Postgres server and \
-         the CI Postgres job has not had its first green run. Run SQLite with \
-         [cluster] mode = \"single\" meanwhile."
-    ))
+    Ok(())
 }
 
 #[cfg(not(feature = "postgres"))]
