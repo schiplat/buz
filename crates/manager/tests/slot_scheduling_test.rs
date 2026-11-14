@@ -389,14 +389,7 @@ async fn concurrent_polls_cannot_oversell_the_budget() {
     .unwrap()
     .unwrap()
     .i64(0);
-    let rows = exec::fetch_all(&pool, "SELECT id, status, resource_slots FROM jobs", &[])
-        .await
-        .unwrap();
-    let dump: Vec<String> = rows
-        .iter()
-        .map(|r| format!("{} status={} slots={}", r.text(0), r.text(1), r.i64(2)))
-        .collect();
-    assert_eq!(running, 4, "job rows: {dump:?}");
+    assert_eq!(running, 4);
 }
 
 #[tokio::test]
