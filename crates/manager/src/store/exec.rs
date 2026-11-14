@@ -373,6 +373,12 @@ impl GenericRow {
         Self { names, values }
     }
 
+    /// The decoded values in column order — data-movement callers (the
+    /// SQLite→PG migration) copy them verbatim instead of re-decoding.
+    pub fn values(&self) -> &[SqlValue] {
+        &self.values
+    }
+
     /// Position of a column by name; `None` when absent (callers decide
     /// whether that is a query-shape bug worth surfacing).
     pub fn idx(&self, name: &str) -> Option<usize> {

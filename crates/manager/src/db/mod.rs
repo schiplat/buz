@@ -8,6 +8,10 @@ use crate::store::exec::DbPool;
 #[cfg(feature = "postgres")]
 pub mod migrate_pg;
 
+/// SQLite → Postgres data migration (feature-gated; see `migrate_sqlite_to_pg`).
+#[cfg(feature = "postgres")]
+pub mod migrate_sqlite_to_pg;
+
 use crate::config::ClusterMode;
 use crate::config::Config;
 use crate::config::{DatabaseConfig, StorageKind};
