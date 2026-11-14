@@ -9,6 +9,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::{TestApp, RUNNER};
+use manager::store::exec;
 
 /// Body of one log chunk (`shared::protocol::LogChunk`).
 fn chunk(step_order: i32, chunk_index: i32) -> serde_json::Value {
@@ -21,19 +22,23 @@ fn chunk(step_order: i32, chunk_index: i32) -> serde_json::Value {
 }
 
 async fn insert_job(app: &TestApp, pipeline_id: &str, runner_id: Option<&str>) {
-    sqlx::query("INSERT INTO pipelines (id, name) VALUES (?, 'log upload guard')")
-        .bind(pipeline_id)
-        .execute(&app.pool)
-        .await
-        .expect("insert pipeline");
-    sqlx::query(
+    exec::execute(
+        &app.pool,
+        "INSERT INTO pipelines (id, name) VALUES (?, 'log upload guard')",
+        &[pipeline_id.into()],
+    )
+    .await
+    .expect("insert pipeline");
+    exec::execute(
+        &app.pool,
         "INSERT INTO jobs (id, pipeline_id, runner_id, status, trigger_by, snapshot, created_at, updated_at)
          VALUES (?, ?, ?, 'pending', 'manual', '{}', datetime('now'), datetime('now'))",
+        &[
+            format!("job-{pipeline_id}").into(),
+            pipeline_id.into(),
+            runner_id.into(),
+        ],
     )
-    .bind(format!("job-{pipeline_id}"))
-    .bind(pipeline_id)
-    .bind(runner_id)
-    .execute(&app.pool)
     .await
     .expect("insert job");
 }
@@ -62,10 +67,14 @@ async fn undispatched_job_rejects_log_upload() {
 #[tokio::test]
 async fn other_runners_job_rejects_log_upload() {
     let app = TestApp::boot().await;
-    sqlx::query("INSERT INTO runners (id, name, register_token, labels, status) VALUES ('runner-not-this-one', 'r2', 'tok2', '[]', 'online')")
-        .execute(&app.pool)
-        .await
-        .expect("insert second runner");
+    exec::execute(
+        &app.pool,
+        "INSERT INTO runners (id, name, register_token, labels, status) \
+         VALUES ('runner-not-this-one', 'r2', 'tok2', '[]', 'online')",
+        &[],
+    )
+    .await
+    .expect("insert second runner");
     insert_job(&app, "pipe-other-runner", Some("runner-not-this-one")).await;
     let runner = app.jwt(RUNNER, shared::auth::Role::Runner);
 

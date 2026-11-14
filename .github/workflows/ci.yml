@@ -178,6 +178,19 @@ jobs:
       - name: Schema parity between SQLite and Postgres
         run: cargo test -p manager --features postgres --test schema_parity_test
 
+      # The dual-backend fixture matrix: suites converted to the shared
+      # `test_db()` factory run unmodified on Postgres via BUZ_TEST_DB=pg.
+      # The list grows with every batch of converted suites.
+      - name: Fixture matrix (BUZ_TEST_DB=pg)
+        run: |
+          BUZ_TEST_DB=pg cargo test -p manager --features postgres \
+            --test settings_test \
+            --test metrics_test \
+            --test logs_unit_pagination_test \
+            --test log_upload_guard_test \
+            --test rerun_test \
+            --test sandbox_journey_test
+
       - name: Store SQL validation (postgres feature)
         run: cargo test -p manager --features postgres --test store_sql_validation_test
 
